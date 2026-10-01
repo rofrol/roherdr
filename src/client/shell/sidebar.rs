@@ -474,7 +474,8 @@ pub(crate) fn render_sidebar(
                         style
                     };
                     put_text(buffer, x, workspace_area.y, width, &label, style);
-                    *slot = Rect::new(x, workspace_area.y, width + 1, 1);
+                    // The pill, so the list opens under its left edge.
+                    *slot = Rect::new(x.saturating_sub(1), workspace_area.y, width + 2, 1);
                     right = x.saturating_sub(1);
                 }
             }

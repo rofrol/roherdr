@@ -200,7 +200,9 @@ impl ClientShellState {
                 id: 0,
                 unix_ms: 0,
                 kind: "bookmark".into(),
-                title: tab.label.clone(),
+                // The label of the tab's sidebar line (its task, or the name it
+                // was given), not the tab number.
+                title: super::render::tabs::sidebar_tab_label(tab, snapshot, &self.config),
                 body: None,
                 agent: None,
                 workspace_id: Some(tab.workspace_id.clone()),
@@ -398,7 +400,8 @@ impl ClientShellState {
         });
         if entry.kind == "bookmark" {
             let mut text = format!("{mark} {}", entry.title);
-            if let Some(workspace) = workspace {
+            // The space only when it says something the label does not.
+            if let Some(workspace) = workspace.filter(|workspace| *workspace != entry.title) {
                 text.push_str(&format!(" · {workspace}"));
             }
             return text;
