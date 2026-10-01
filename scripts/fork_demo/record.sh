@@ -6,7 +6,7 @@ usage() {
 usage: scripts/fork_demo/record.sh [OUTPUT.mp4]
 
 Records the fork demo video (usage widget, middle-click close, notification
-click) from a debug herdr build in a throwaway session. Defaults to
+click, job tabs) from a debug herdr build in a throwaway session. Defaults to
 assets/fork-demo.mp4. See scripts/fork_demo/README.md.
 USAGE
 }
@@ -89,7 +89,8 @@ h pane report-agent --source demo --agent claude --state working w1:p2
 sleep 1
 
 uv run --quiet --with pyte --with pillow python "$script_dir/record.py" \
-  --herdr "$herdr" --socket "$socket" --out-dir "$work/frames" --agent-pane w1:p2
+  --herdr "$herdr" --socket "$socket" --out-dir "$work/frames" --agent-pane w1:p2 \
+  --agent-tab w1:t2 --workspace w1
 
 # Nearest-neighbor 2x keeps the rendered cells crisp.
 ffmpeg -y -loglevel error -f concat -safe 0 -i "$work/frames/frames.txt" \

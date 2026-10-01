@@ -30,6 +30,17 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
   cache (`~/.local/state/herdr/usage-cache.json`): a recent observation is
   reused instead of refetched, and a rate-limited provider backs off
   (5 min doubling to 1 h) while the footer keeps its last good values.
+- **Job tabs from the [job plugin](plugins/job/README.md).** Each
+  `herdr-job` job gets a child tab of the tab that started it. While a
+  workspace has child tabs, a second row under the tab bar lists the active
+  tab's own content and its jobs (`claude  ⏳ tests  ! build`), and the parent
+  tab shows a summary such as `⏳1 !2 ✓3`. The space's sidebar row counts
+  its running and failed tabs (`○ repo ⏳1`, the `tab_jobs` token), so
+  background work stays visible while the agent is idle, and the agent that
+  started the jobs shows their counts (`2⏳ 1✗ 1✓`, the `$jobs` token).
+  Closing a parent tab asks first and closes its jobs too. Child tabs and
+  statuses are ordinary API (`herdr tab parent`, `herdr tab status`), usable
+  by any script.
 - **Middle click closes tabs and workspaces.** Middle-click a tab or a
   workspace in the sidebar to close it, with the same confirmation as the
   context menu's Close. Pane apps with mouse reporting still get middle clicks
@@ -100,7 +111,7 @@ herdr
 
 ---
 
-https://github.com/user-attachments/assets/1168b9e7-3662-4d6e-84fe-5a60d652d95c
+https://github.com/user-attachments/assets/af7d3889-cb5b-4fbf-986c-e9751884a48c
 
 **the runtime your coding agents live on.**
 

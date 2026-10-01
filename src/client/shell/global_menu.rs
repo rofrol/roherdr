@@ -3,8 +3,13 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientGlobalMenuAction {
     Binding(crate::input::KeybindAction),
+    OracleStats,
     WhatsNew,
 }
+
+/// Plugin pane behind the menu's `stats` item: the oracle plugin's usage stats.
+const ORACLE_STATS_PLUGIN_ID: &str = "local.oracle";
+const ORACLE_STATS_ENTRYPOINT: &str = "stats";
 
 pub(super) fn global_menu_attention(snapshot: &ClientShellSnapshot) -> bool {
     snapshot.update_available.is_some() || snapshot.integration_updates_available
@@ -35,6 +40,7 @@ pub(super) fn global_menu_items(
             "reload config",
             ClientGlobalMenuAction::Binding(crate::input::KeybindAction::ReloadConfig),
         ),
+        ("stats", ClientGlobalMenuAction::OracleStats),
     ];
     if snapshot.update_available.is_some() || snapshot.latest_release_notes_available {
         items.push((
@@ -103,8 +109,34 @@ impl ClientShellState {
             ClientGlobalMenuAction::Binding(binding) => {
                 self.record_binding(crate::input::KeybindMatch::Action(binding), outcome)
             }
+            ClientGlobalMenuAction::OracleStats => self.open_oracle_stats(outcome),
             ClientGlobalMenuAction::WhatsNew => self.open_release_notes(),
         }
         outcome.repaint = true;
+    }
+
+    fn open_oracle_stats(&mut self, outcome: &mut ClientShellInput) {
+        let params = crate::api::schema::PluginPaneOpenParams {
+            plugin_id: ORACLE_STATS_PLUGIN_ID.to_owned(),
+            entrypoint: ORACLE_STATS_ENTRYPOINT.to_owned(),
+            placement: None,
+            width: None,
+            height: None,
+            workspace_id: None,
+            target_pane_id: None,
+            direction: None,
+            cwd: None,
+            focus: true,
+            env: Default::default(),
+        };
+        self.popup_pending = true;
+        self.popup_pending_deadline = None;
+        if !self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::PluginPaneOpen(params),
+            PendingEndpointKind::PopupCommand,
+            outcome,
+        ) {
+            self.popup_pending = false;
+        }
     }
 }

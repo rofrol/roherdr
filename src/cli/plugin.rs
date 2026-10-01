@@ -1740,7 +1740,7 @@ fn plugin_platform_name(platform: PluginPlatform) -> &'static str {
     }
 }
 
-fn confirm(prompt: &str) -> std::io::Result<bool> {
+pub(super) fn confirm(prompt: &str) -> std::io::Result<bool> {
     eprint!("{prompt} [y/N] ");
     io::stderr().flush()?;
     let mut line = String::new();

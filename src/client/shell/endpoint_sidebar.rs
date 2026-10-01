@@ -322,6 +322,11 @@ pub(super) fn render_expanded(
                                     workspace,
                                     collapsed_groups,
                                 ),
+                                super::sidebar::displayed_workspace_tab_jobs(
+                                    snapshot,
+                                    workspace,
+                                    collapsed_groups,
+                                ),
                                 entry.indented,
                                 &config.spaces,
                             )
@@ -447,9 +452,15 @@ pub(super) fn render_expanded(
                     workspace,
                     collapsed_groups,
                 );
+                let tab_jobs = super::sidebar::displayed_workspace_tab_jobs(
+                    snapshot,
+                    workspace,
+                    collapsed_groups,
+                );
                 let tokens = super::sidebar::workspace_rows(
                     workspace,
                     status,
+                    tab_jobs,
                     entry.indented,
                     &config.spaces,
                 );

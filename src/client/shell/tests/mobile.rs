@@ -358,6 +358,8 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         zoomed: false,
         focused: false,
         agent_status: AgentStatus::Idle,
+        parent_tab_id: None,
+        status: None,
     });
     projected.workspaces.push(ClientShellWorkspace {
         workspace_id: "ws_2".into(),
@@ -383,6 +385,8 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
             zoomed: false,
             focused: false,
             agent_status: AgentStatus::Idle,
+            parent_tab_id: None,
+            status: None,
         });
     }
     state.set_snapshot(Box::new(projected));
@@ -508,7 +512,7 @@ fn mobile_menu_keeps_inert_notes_open_and_cancel_without_workspace_in_navigate()
         .hits
         .mobile_targets
         .iter()
-        .find_map(|(rect, target)| matches!(target, ClientMobileTarget::Menu(3)).then_some(*rect))
+        .find_map(|(rect, target)| matches!(target, ClientMobileTarget::Menu(4)).then_some(*rect))
         .expect("what's new row");
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),

@@ -38,6 +38,11 @@ enum SplitCommand<'a> {
 pub struct Tab {
     pub custom_name: Option<String>,
     pub number: usize,
+    /// Public number of the top-level tab this tab is nested under. A number
+    /// that no longer names a top-level tab of the workspace means top-level;
+    /// see `Workspace::tab_parent_index`.
+    pub parent: Option<usize>,
+    pub status: Option<crate::api::schema::TabStatus>,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
@@ -182,6 +187,8 @@ impl Tab {
             Self {
                 custom_name: None,
                 number,
+                parent: None,
+                status: None,
                 root_pane: root_id,
                 layout,
                 panes,
@@ -445,6 +452,8 @@ impl Tab {
         Self {
             custom_name,
             number,
+            parent: None,
+            status: None,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,

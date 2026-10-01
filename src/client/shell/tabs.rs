@@ -1,3 +1,4 @@
+use super::super::tab_groups;
 use super::*;
 
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
@@ -16,17 +17,24 @@ pub(crate) fn render_tab_bar(
 ) {
     let palette = &config.palette;
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
-    let tabs = snapshot
-        .tabs
-        .iter()
-        .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
-        .collect::<Vec<_>>();
-    let desired_widths = tabs
+    // Child tabs have their own row; a parent shows a summary of them.
+    let tabs = tab_groups::main_row_tabs(snapshot);
+    let active_tab_id = tab_groups::active_main_tab_id(snapshot);
+    let labels = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab);
-            display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
+            let summary =
+                tab_groups::children_summary(&tab_groups::child_tabs(snapshot, &tab.tab_id));
+            if summary.is_empty() {
+                tab_label(tab)
+            } else {
+                format!("{} {summary}", tab_label(tab))
+            }
         })
+        .collect::<Vec<_>>();
+    let desired_widths = labels
+        .iter()
+        .map(|label| display_width(label).saturating_add(4).max(MIN_TAB_WIDTH))
         .collect::<Vec<_>>();
     let content = tab_bar_content_area(snapshot, area);
     let mouse_chrome = config.mouse_capture;
@@ -51,7 +59,10 @@ pub(crate) fn render_tab_bar(
     if !overflow {
         *tab_scroll = 0;
     } else if *reveal_focused_tab {
-        if let Some(focused) = tabs.iter().position(|tab| tab.focused) {
+        if let Some(focused) = tabs
+            .iter()
+            .position(|tab| Some(tab.tab_id.as_str()) == active_tab_id)
+        {
             *tab_scroll = centered_tab_scroll(focused, &desired_widths, available).min(max_scroll);
         }
     } else {
@@ -92,7 +103,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab);
+        let name = labels[index].clone();
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -100,7 +111,7 @@ pub(crate) fn render_tab_bar(
             break;
         }
         let rect = Rect::new(x, area.y, width, 1);
-        let style = if tab.focused {
+        let style = if Some(tab.tab_id.as_str()) == active_tab_id {
             let base = Style::default()
                 .fg(panel_contrast_fg(palette))
                 .bg(palette.accent);
@@ -221,6 +232,122 @@ pub(crate) fn render_tab_bar(
         }
     }
     render_tab_bar_status(buffer, area, snapshot, palette);
+}
+
+/// The second row: the active tab's own content, then its children, each
+/// with its status icon.
+/// It has no new-tab button or drag and drop; tabs past the edge are cut
+/// off with `…`, starting from the focused one when it would not fit.
+pub(crate) fn render_child_tab_bar(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    buffer.set_style(area, Style::default().bg(palette.panel_bg));
+    // The parent's own content comes first, so exactly one entry of the row is
+    // the tab on screen.
+    let parent = tab_groups::active_main_tab_id(snapshot)
+        .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id));
+    let tabs = parent
+        .into_iter()
+        .chain(tab_groups::active_child_tabs(snapshot))
+        .collect::<Vec<_>>();
+    let labels = tabs
+        .iter()
+        .map(|tab| {
+            if tab.parent_tab_id.is_none() {
+                return tab_groups::parent_entry_label(snapshot, tab);
+            }
+            match tab_groups::status_icon(tab.status) {
+                Some(icon) => format!("{icon} {}", tab_label(tab)),
+                None => tab_label(tab),
+            }
+        })
+        .collect::<Vec<_>>();
+    let widths = labels
+        .iter()
+        .map(|label| display_width(label).saturating_add(2))
+        .collect::<Vec<_>>();
+    // The right-hand status stays in the main row, so children get the full
+    // width. A band of its own background and a bar in the accent colour of
+    // the active tab set the row apart from the tab row and tie it to the
+    // active tab, without lining entries up under the tabs above.
+    let band = palette.active_row_bg;
+    buffer.set_style(area, Style::default().bg(band));
+    put_text(
+        buffer,
+        area.x,
+        area.y,
+        1,
+        "▎",
+        Style::default().fg(palette.accent).bg(band),
+    );
+    let content = Rect {
+        x: area.x.saturating_add(2),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let focused = tabs.iter().position(|tab| tab.focused).unwrap_or(0);
+    let mut first = 0;
+    while first < focused
+        && widths[first..=focused]
+            .iter()
+            .fold(0_u16, |sum, width| sum.saturating_add(width + 1))
+            > content.width
+    {
+        first += 1;
+    }
+    let mut x = content.x;
+    if first > 0 {
+        put_text(
+            buffer,
+            x,
+            area.y,
+            1,
+            "…",
+            Style::default().fg(palette.overlay0),
+        );
+        x = x.saturating_add(2);
+    }
+    for (index, tab) in tabs.iter().enumerate().skip(first) {
+        let remaining = content.right().saturating_sub(x);
+        if remaining == 0 {
+            break;
+        }
+        let width = widths[index].min(remaining);
+        let rect = Rect::new(x, area.y, width, 1);
+        let style = if tab.focused {
+            Style::default()
+                .fg(panel_contrast_fg(palette))
+                .bg(palette.accent)
+        } else {
+            Style::default().fg(palette.overlay1).bg(band)
+        };
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!(" {} ", labels[index]),
+            style,
+        );
+        hits.child_tabs.push((rect, tab.tab_id.clone()));
+        x = x.saturating_add(width + 1);
+        if width < widths[index] {
+            put_text(
+                buffer,
+                content.right().saturating_sub(1),
+                area.y,
+                1,
+                "…",
+                Style::default().fg(palette.overlay0),
+            );
+            break;
+        }
+    }
 }
 
 pub(crate) fn tab_bar_status_width(snapshot: &ClientShellSnapshot) -> u16 {

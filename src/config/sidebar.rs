@@ -130,6 +130,7 @@ pub enum SpaceSidebarToken {
     Workspace,
     Branch,
     GitStatus,
+    TabJobs,
     Custom(String),
     Styled {
         token: Box<SpaceSidebarToken>,
@@ -200,7 +201,10 @@ impl RawSidebarToken {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
                 if !token.rules.is_empty()
-                    && matches!(token.token.as_str(), "state_icon" | "git_status")
+                    && matches!(
+                        token.token.as_str(),
+                        "state_icon" | "git_status" | "tab_jobs"
+                    )
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
@@ -291,6 +295,7 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::Workspace => "workspace".into(),
         SpaceSidebarToken::Branch => "branch".into(),
         SpaceSidebarToken::GitStatus => "git_status".into(),
+        SpaceSidebarToken::TabJobs => "tab_jobs".into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
     }
@@ -387,6 +392,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
                 ("workspace", Self::Workspace),
                 ("branch", Self::Branch),
                 ("git_status", Self::GitStatus),
+                ("tab_jobs", Self::TabJobs),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -467,7 +473,11 @@ impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::TabJobs,
+                ],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -506,7 +516,11 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::TabJobs,
+                ],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ]
         );
@@ -646,6 +660,7 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
             ("agents", "state_icon"),
             ("spaces", "state_icon"),
             ("spaces", "git_status"),
+            ("spaces", "tab_jobs"),
         ] {
             let input = format!(
                 "[{section}]\nrows = [[{{ token = '{token}', rules = [{{ equals = 'x' }}] }}]]"

@@ -1052,6 +1052,12 @@ pub struct ClientShellTab {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// The tab this one is nested under; clients show children in their own row.
+    /// Always serialized: skipping a field breaks the bincode form of this type.
+    #[serde(default)]
+    pub parent_tab_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<crate::api::schema::TabStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2840,6 +2846,8 @@ mod tests {
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                parent_tab_id: None,
+                status: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),

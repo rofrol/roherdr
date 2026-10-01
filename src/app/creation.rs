@@ -225,6 +225,10 @@ impl App {
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
             agent_status: pane_agent_status(agg_state, seen),
+            parent_tab_id: ws
+                .tab_parent_index(tab_idx)
+                .and_then(|parent_idx| self.public_tab_id(ws_idx, parent_idx)),
+            status: tab.status,
         })
     }
 

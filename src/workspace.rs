@@ -441,11 +441,97 @@ impl Workspace {
 
     pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
         let tab = self.tabs.get(tab_idx)?;
-        Some(
-            tab.custom_name
-                .clone()
-                .unwrap_or_else(|| (tab_idx + 1).to_string()),
-        )
+        Some(tab.custom_name.clone().unwrap_or_else(|| {
+            // Auto names count within the tab's own row: top-level tabs, or the
+            // children of one parent.
+            let parent = self.tab_parent_index(tab_idx);
+            let position = (0..tab_idx)
+                .filter(|&idx| self.tab_parent_index(idx) == parent)
+                .count();
+            (position + 1).to_string()
+        }))
+    }
+
+    pub fn tab_index_by_number(&self, number: usize) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.number == number)
+    }
+
+    /// Index of the tab this tab is nested under. A parent that was closed, or
+    /// that is itself nested, leaves the tab top-level.
+    pub fn tab_parent_index(&self, tab_idx: usize) -> Option<usize> {
+        let parent = self.tab_index_by_number(self.tabs.get(tab_idx)?.parent?)?;
+        self.tabs[parent].parent.is_none().then_some(parent)
+    }
+
+    pub fn tab_children(&self, tab_idx: usize) -> Vec<usize> {
+        (0..self.tabs.len())
+            .filter(|&idx| self.tab_parent_index(idx) == Some(tab_idx))
+            .collect()
+    }
+
+    /// Nests `tab_idx` under the top-level tab `parent_idx`, or makes it
+    /// top-level with `None`. Nesting is one level deep.
+    pub fn set_tab_parent(
+        &mut self,
+        tab_idx: usize,
+        parent_idx: Option<usize>,
+    ) -> Result<(), &'static str> {
+        if tab_idx >= self.tabs.len() {
+            return Err("tab not found");
+        }
+        let parent = match parent_idx {
+            Some(parent_idx) => {
+                if parent_idx == tab_idx {
+                    return Err("a tab cannot be its own parent");
+                }
+                if parent_idx >= self.tabs.len() || self.tab_parent_index(parent_idx).is_some() {
+                    return Err("the parent must be a top-level tab");
+                }
+                if !self.tab_children(tab_idx).is_empty() {
+                    return Err("a tab with child tabs cannot be nested");
+                }
+                Some(self.tabs[parent_idx].number)
+            }
+            None => None,
+        };
+        self.tabs[tab_idx].parent = parent;
+        self.normalize_tab_groups();
+        Ok(())
+    }
+
+    /// Keeps each parent's children right after it, in their current relative
+    /// order, so the flat tab order is also the order tabs are shown in, and
+    /// drops parent links that no longer name a top-level tab.
+    fn normalize_tab_groups(&mut self) {
+        for idx in 0..self.tabs.len() {
+            if self.tabs[idx].parent.is_some() && self.tab_parent_index(idx).is_none() {
+                self.tabs[idx].parent = None;
+            }
+        }
+        let mut order = Vec::with_capacity(self.tabs.len());
+        for idx in 0..self.tabs.len() {
+            if self.tabs[idx].parent.is_none() {
+                order.push(idx);
+                order.extend(self.tab_children(idx));
+            }
+        }
+        if order.iter().copied().eq(0..self.tabs.len()) {
+            return;
+        }
+        let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+        let mut slots: Vec<Option<Tab>> = std::mem::take(&mut self.tabs)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.tabs = order
+            .into_iter()
+            .filter_map(|idx| slots[idx].take())
+            .collect();
+        if let Some(root_pane) = active_root_pane {
+            if let Some(idx) = self.tabs.iter().position(|tab| tab.root_pane == root_pane) {
+                self.active_tab = idx;
+            }
+        }
     }
 
     pub fn switch_tab(&mut self, idx: usize) {
@@ -610,6 +696,8 @@ impl Workspace {
         self.active_tab = active_root_pane
             .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
             .unwrap_or(target_idx);
+        // A moved parent takes its children along; a moved child stays with its parent.
+        self.normalize_tab_groups();
         true
     }
 
@@ -1179,6 +1267,8 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             number: 1,
+            parent: None,
+            status: None,
             root_pane: root_id,
             layout,
             panes,
@@ -1235,6 +1325,8 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
+            parent: None,
+            status: None,
             root_pane: root_id,
             layout,
             panes,
@@ -1667,6 +1759,104 @@ mod tests {
         assert_eq!(ws.tabs[2].number, 1);
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
+        ws.assert_invariants_for_test();
+    }
+
+    fn names(ws: &Workspace) -> Vec<String> {
+        (0..ws.tabs.len())
+            .map(|tab_idx| ws.tab_display_name(tab_idx).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn nesting_keeps_children_right_after_their_parent() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(Some("b"));
+        let job = ws.test_add_tab(Some("job"));
+        let active_root = ws.tabs[job].root_pane;
+        ws.switch_tab(job);
+
+        ws.set_tab_parent(job, Some(0)).unwrap();
+
+        assert_eq!(names(&ws), ["1", "job", "b"]);
+        assert_eq!(ws.tab_parent_index(1), Some(0));
+        assert_eq!(ws.tab_children(0), [1]);
+        assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn auto_names_count_within_their_row() {
+        let mut ws = Workspace::test_new("test");
+        let child = ws.test_add_tab(None);
+        ws.test_add_tab(None);
+        ws.set_tab_parent(child, Some(0)).unwrap();
+
+        assert_eq!(names(&ws), ["1", "1", "2"]);
+    }
+
+    #[test]
+    fn moving_a_parent_takes_its_children_along() {
+        let mut ws = Workspace::test_new("test");
+        let a1 = ws.test_add_tab(Some("a1"));
+        ws.test_add_tab(Some("b"));
+        ws.test_add_tab(Some("c"));
+        ws.set_tab_parent(a1, Some(0)).unwrap();
+
+        // Move the parent before "c": index 3 in [1, a1, b, c].
+        assert!(ws.move_tab(0, 3));
+
+        assert_eq!(names(&ws), ["b", "2", "a1", "c"]);
+        assert_eq!(ws.tab_parent_index(2), Some(1));
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn a_moved_child_stays_with_its_parent() {
+        let mut ws = Workspace::test_new("test");
+        let a1 = ws.test_add_tab(Some("a1"));
+        let a2 = ws.test_add_tab(Some("a2"));
+        ws.test_add_tab(Some("b"));
+        ws.set_tab_parent(a1, Some(0)).unwrap();
+        ws.set_tab_parent(a2, Some(0)).unwrap();
+
+        assert!(ws.move_tab(2, 4));
+
+        assert_eq!(names(&ws), ["1", "a1", "a2", "b"]);
+        assert!(ws.move_tab(2, 1));
+        assert_eq!(names(&ws), ["1", "a2", "a1", "b"]);
+    }
+
+    #[test]
+    fn nesting_is_one_level_deep() {
+        let mut ws = Workspace::test_new("test");
+        let a1 = ws.test_add_tab(Some("a1"));
+        let b = ws.test_add_tab(Some("b"));
+        ws.set_tab_parent(a1, Some(0)).unwrap();
+
+        assert!(
+            ws.set_tab_parent(b, Some(1)).is_err(),
+            "a child cannot be a parent"
+        );
+        assert!(
+            ws.set_tab_parent(0, Some(2)).is_err(),
+            "a parent cannot be nested"
+        );
+        assert!(ws.set_tab_parent(2, Some(2)).is_err());
+        ws.set_tab_parent(1, None).unwrap();
+        assert_eq!(ws.tab_parent_index(1), None);
+    }
+
+    #[test]
+    fn closing_a_parent_leaves_its_children_top_level() {
+        let mut ws = Workspace::test_new("test");
+        let a1 = ws.test_add_tab(Some("a1"));
+        ws.set_tab_parent(a1, Some(0)).unwrap();
+
+        assert!(ws.close_tab(0));
+
+        assert_eq!(ws.tab_parent_index(0), None);
+        assert!(ws.tab_children(0).is_empty());
         ws.assert_invariants_for_test();
     }
 }

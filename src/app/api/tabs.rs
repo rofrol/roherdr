@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    TabMoveParams, TabRenameParams, TabSetParentParams, TabSetStatusParams, TabTarget,
 };
 use crate::app::{App, Mode};
 
@@ -224,6 +224,19 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };
+        let children = ws.tab_children(tab_idx).len();
+        if children > 0 {
+            // Child tabs usually run work (jobs); the caller confirms and closes
+            // them first, so this never discards their output unasked.
+            return encode_error(
+                id,
+                "tab_has_children",
+                format!(
+                    "tab {} has {children} child tab(s); close them first",
+                    target.tab_id
+                ),
+            );
+        }
         let closes_workspace = ws.tabs.len() <= 1;
         let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
         let pane_ids = ws
@@ -291,6 +304,66 @@ impl App {
         });
 
         encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_tab_set_parent(
+        &mut self,
+        id: String,
+        params: TabSetParentParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let parent_idx = match params.parent_tab_id.as_deref() {
+            Some(parent_tab_id) => match self.parse_tab_id(parent_tab_id) {
+                Some((parent_ws_idx, parent_idx)) if parent_ws_idx == ws_idx => Some(parent_idx),
+                Some(_) => {
+                    return encode_error(
+                        id,
+                        "tab_set_parent_failed",
+                        "the parent must be in the same workspace",
+                    )
+                }
+                None => return tab_not_found(id, parent_tab_id),
+            },
+            None => None,
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let root_pane = ws.tabs[tab_idx].root_pane;
+        if let Err(err) = ws.set_tab_parent(tab_idx, parent_idx) {
+            return encode_error(id, "tab_set_parent_failed", err);
+        }
+        // Nesting reorders tabs; find this one again by its identity.
+        let Some(tab_idx) = ws.tabs.iter().position(|tab| tab.root_pane == root_pane) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        self.schedule_session_save();
+        let tab = self.tab_info(ws_idx, tab_idx).unwrap();
+        encode_success(id, ResponseResult::TabInfo { tab })
+    }
+
+    pub(super) fn handle_tab_set_status(
+        &mut self,
+        id: String,
+        params: TabSetStatusParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        tab.status = params.status;
+        self.schedule_session_save();
+        let tab = self.tab_info(ws_idx, tab_idx).unwrap();
+        encode_success(id, ResponseResult::TabInfo { tab })
     }
 
     fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
@@ -379,6 +452,74 @@ mod tests {
             } if closed_workspace_id == &workspace_id
                 && workspace.workspace_id == workspace_id
         ));
+    }
+
+    #[test]
+    fn api_child_tabs_report_parent_and_status_and_block_closing_the_parent() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("b"));
+        workspace.test_add_tab(Some("job"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        let parent = app.public_tab_id(0, 0).unwrap();
+        let job = app.public_tab_id(0, 2).unwrap();
+
+        let response = app.handle_tab_set_parent(
+            "req".into(),
+            TabSetParentParams {
+                tab_id: job.clone(),
+                parent_tab_id: Some(parent.clone()),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabInfo { tab } = success.result else {
+            panic!("unexpected response: {response}");
+        };
+        assert_eq!(tab.parent_tab_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(tab.tab_id, job, "public tab ids survive the reorder");
+
+        app.handle_tab_set_status(
+            "req".into(),
+            TabSetStatusParams {
+                tab_id: job.clone(),
+                status: Some(crate::api::schema::TabStatus::Failed),
+            },
+        );
+        let labels = app
+            .tab_list_info(0)
+            .into_iter()
+            .map(|tab| (tab.label, tab.status))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                ("1".to_string(), None),
+                ("job".into(), Some(crate::api::schema::TabStatus::Failed)),
+                ("b".into(), None),
+            ]
+        );
+
+        let response = app.handle_tab_close(
+            "req".into(),
+            TabTarget {
+                tab_id: parent.clone(),
+            },
+        );
+        assert!(response.contains("tab_has_children"), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 3);
+
+        app.handle_tab_close("req".into(), TabTarget { tab_id: job });
+        let response = app.handle_tab_close("req".into(), TabTarget { tab_id: parent });
+        assert!(!response.contains("error"), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
     }
 
     #[test]

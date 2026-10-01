@@ -21,6 +21,7 @@ pub(crate) enum ResolvedTokenKind {
     TerminalTitle(String),
     Branch(String),
     GitStatus { ahead: usize, behind: usize },
+    TabJobs { running: usize, failed: usize },
     Custom(String),
 }
 
@@ -36,7 +37,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } => None,
+            Self::StateIcon | Self::GitStatus { .. } | Self::TabJobs { .. } => None,
         }
     }
 }
@@ -126,6 +127,8 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) branch: Option<&'a str>,
     pub(crate) state_text: &'a str,
     pub(crate) ahead_behind: Option<(usize, usize)>,
+    /// Running and failed tabs (`herdr tab status`), e.g. herdr-job jobs.
+    pub(crate) tab_jobs: (usize, usize),
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
     pub(crate) suppress_git_details: bool,
 }
@@ -159,6 +162,11 @@ pub(crate) fn space_rows(
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
                         SpaceSidebarToken::GitStatus => None,
+                        SpaceSidebarToken::TabJobs => {
+                            let (running, failed) = context.tab_jobs;
+                            (running > 0 || failed > 0)
+                                .then_some(ResolvedTokenKind::TabJobs { running, failed })
+                        }
                         SpaceSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -179,7 +187,10 @@ pub(crate) fn space_rows(
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
     if matches!(previous.kind, ResolvedTokenKind::StateIcon)
-        || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
+        || matches!(
+            current.kind,
+            ResolvedTokenKind::GitStatus { .. } | ResolvedTokenKind::TabJobs { .. }
+        )
     {
         " "
     } else {
@@ -330,6 +341,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
+                    tab_jobs: (0, 0),
                     suppress_git_details: false,
                     tokens: &entry.tokens,
                 },
@@ -379,6 +391,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
+                    tab_jobs: (0, 0),
                     suppress_git_details: false,
                     tokens: &entry.tokens,
                 },
@@ -548,6 +561,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     branch: Some("worktree/feature"),
                     state_text: "idle",
                     ahead_behind: Some((2, 1)),
+                    tab_jobs: (0, 0),
                     tokens: &std::collections::HashMap::new(),
                     suppress_git_details: true,
                 },
@@ -556,6 +570,34 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
                 ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
             ]]
+        );
+    }
+
+    #[test]
+    fn default_space_row_shows_tab_jobs_only_while_some_run_or_failed() {
+        let rows = |tab_jobs| {
+            space_rows(
+                &SpacesSidebarConfig::default(),
+                SpaceTokenContext {
+                    workspace: "feature",
+                    branch: None,
+                    state_text: "idle",
+                    ahead_behind: None,
+                    tab_jobs,
+                    tokens: &std::collections::HashMap::new(),
+                    // Grouped children still show their jobs.
+                    suppress_git_details: true,
+                },
+            )
+        };
+
+        assert_eq!(rows((0, 0))[0].len(), 2);
+        assert_eq!(
+            rows((1, 2))[0][2],
+            ResolvedToken::unstyled(ResolvedTokenKind::TabJobs {
+                running: 1,
+                failed: 2
+            })
         );
     }
 
@@ -575,6 +617,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     branch: None,
                     state_text: "idle",
                     ahead_behind: None,
+                    tab_jobs: (0, 0),
                     tokens: &tokens,
                     suppress_git_details: false,
                 },

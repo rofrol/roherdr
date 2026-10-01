@@ -122,6 +122,11 @@ pub(crate) fn resolved_token_spans(
                     + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
                     + usize::from(*ahead > 0 && *behind > 0)
             }
+            ResolvedTokenKind::TabJobs { running, failed } => {
+                usize::from(*running > 0) * display_width(&format!("⏳{running}"))
+                    + usize::from(*failed > 0) * display_width(&format!("!{failed}"))
+                    + usize::from(*running > 0 && *failed > 0)
+            }
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -259,6 +264,27 @@ pub(crate) fn resolved_token_spans(
                 if *behind > 0 {
                     spans.push(Span::styled(
                         format!("↓{behind}"),
+                        apply_token_style(Style::default().fg(palette.red), token.style),
+                    ));
+                }
+            }
+            ResolvedTokenKind::TabJobs { running, failed } => {
+                // The same icons as the child-tab row: `!` rather than `✗`.
+                if *running > 0 {
+                    spans.push(Span::styled(
+                        format!("⏳{running}"),
+                        apply_token_style(Style::default().fg(palette.yellow), token.style),
+                    ));
+                }
+                if *running > 0 && *failed > 0 {
+                    spans.push(Span::styled(
+                        " ",
+                        apply_token_style(Style::default(), token.style),
+                    ));
+                }
+                if *failed > 0 {
+                    spans.push(Span::styled(
+                        format!("!{failed}"),
                         apply_token_style(Style::default().fg(palette.red), token.style),
                     ));
                 }

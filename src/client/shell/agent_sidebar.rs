@@ -164,9 +164,9 @@ pub(super) fn render_agent_list<T>(
 ) {
     let body = Rect::new(
         area.x,
-        area.y.saturating_add(3),
+        area.y.saturating_add(2),
         area.width,
-        area.height.saturating_sub(3),
+        area.height.saturating_sub(2),
     );
     hits.agent_body = body;
     if body.is_empty() || rows.is_empty() {

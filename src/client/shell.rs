@@ -33,6 +33,7 @@ mod scroll;
 mod settings;
 mod state;
 mod surface_patch;
+mod tab_groups;
 mod text_editor;
 mod usage;
 mod word_selection;

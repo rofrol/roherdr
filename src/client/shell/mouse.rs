@@ -23,6 +23,7 @@ impl ClientShellState {
             .hits
             .tabs
             .iter()
+            .chain(&self.hits.child_tabs)
             .find(|(rect, _)| super::contains(*rect, point))
             .map(|(_, tab_id)| tab_id.clone());
         if let Some(tab_id) = tab_id {
@@ -500,14 +501,10 @@ impl ClientShellState {
         next >= 0 && (next as usize) < tabs.len()
     }
 
+    /// Insert position among the main-row tabs (see `tab_groups::flat_insert_index`).
     fn tab_drop_index_at(&self, point: (u16, u16)) -> Option<usize> {
         let snapshot = self.snapshot.as_deref()?;
-        let workspace_id = snapshot.focused_workspace_id.as_deref()?;
-        let tabs = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == workspace_id)
-            .collect::<Vec<_>>();
+        let tabs = super::tab_groups::main_row_tabs(snapshot);
         let visible = self
             .hits
             .tabs
@@ -1291,7 +1288,9 @@ impl ClientShellState {
                     .column
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
-                if delta >= 1 {
+                // Child tabs are not dragged: their order follows their parent.
+                let main_row = self.hits.tabs.iter().any(|(_, id)| *id == press.tab_id);
+                if delta >= 1 && main_row {
                     if let Some(insert_index) = self.tab_drop_index_at(point) {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id: press.tab_id.clone(),
@@ -1321,20 +1320,21 @@ impl ClientShellState {
                                     tab.tab_id == tab_id && tab.workspace_id == workspace_id
                                 })
                                 && insert_index.is_some_and(|index| {
-                                    index
-                                        <= snapshot
-                                            .tabs
-                                            .iter()
-                                            .filter(|tab| tab.workspace_id == workspace_id)
-                                            .count()
+                                    index <= super::tab_groups::main_row_tabs(snapshot).len()
                                 })
                         });
-                        if valid_drop {
+                        let insert_index = self.snapshot.as_deref().map(|snapshot| {
+                            super::tab_groups::flat_insert_index(
+                                snapshot,
+                                insert_index.unwrap_or_default(),
+                            )
+                        });
+                        if let (true, Some(insert_index)) = (valid_drop, insert_index) {
                             self.push_endpoint_method(
                                 crate::api::schema::Method::TabMove(
                                     crate::api::schema::TabMoveParams {
                                         tab_id,
-                                        insert_index: insert_index.unwrap_or_default(),
+                                        insert_index,
                                     },
                                 ),
                                 outcome,
@@ -1897,6 +1897,7 @@ impl ClientShellState {
                     .hits
                     .tabs
                     .iter()
+                    .chain(&self.hits.child_tabs)
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, tab_id)| tab_id.clone());
                 if let Some(tab_id) = tab_id {
@@ -1920,6 +1921,7 @@ impl ClientShellState {
                     .hits
                     .tabs
                     .iter()
+                    .chain(&self.hits.child_tabs)
                     .any(|(rect, _)| super::contains(*rect, point))
                     || super::contains(self.hits.tab_scroll_left, point)
                     || super::contains(self.hits.tab_scroll_right, point)
@@ -1939,6 +1941,7 @@ impl ClientShellState {
                     .hits
                     .tabs
                     .iter()
+                    .chain(&self.hits.child_tabs)
                     .any(|(rect, _)| super::contains(*rect, point))
                     || super::contains(self.hits.tab_scroll_left, point)
                     || super::contains(self.hits.tab_scroll_right, point)
@@ -2128,19 +2131,9 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.tab_scroll_right, point) {
-                    let tab_count = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| {
-                            snapshot.focused_workspace_id.as_deref().map(|id| {
-                                snapshot
-                                    .tabs
-                                    .iter()
-                                    .filter(|tab| tab.workspace_id == id)
-                                    .count()
-                            })
-                        })
-                        .unwrap_or(0);
+                    let tab_count = self.snapshot.as_deref().map_or(0, |snapshot| {
+                        super::tab_groups::main_row_tabs(snapshot).len()
+                    });
                     self.tab_scroll = self
                         .tab_scroll
                         .saturating_add(1)
@@ -2180,6 +2173,7 @@ impl ClientShellState {
                         self.hits
                             .tabs
                             .iter()
+                            .chain(&self.hits.child_tabs)
                             .find(|(rect, _)| super::contains(*rect, point))
                             .and_then(|(_, tab_id)| {
                                 let tab = self

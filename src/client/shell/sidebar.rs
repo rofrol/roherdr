@@ -246,6 +246,7 @@ pub(crate) fn render_sidebar(
                     workspace_rows(
                         workspace,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                        displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups),
                         entry.indented,
                         &config.spaces,
                     )
@@ -304,7 +305,8 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+        let tab_jobs = displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups);
+        let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
         let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -646,34 +648,67 @@ pub(in crate::client::shell) fn displayed_workspace_status(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
 ) -> crate::api::schema::AgentStatus {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
-    else {
-        return workspace.agent_status;
-    };
-    if !collapsed_groups.contains(&worktree.key) {
-        return workspace.agent_status;
-    }
-    snapshot
-        .workspaces
-        .iter()
-        .filter(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|member| {
-                member.key == worktree.key
-                    && (member.is_linked_worktree
-                        || candidate.workspace_id == workspace.workspace_id)
-            })
-        })
+    displayed_workspaces(snapshot, workspace, collapsed_groups)
         .map(|candidate| candidate.agent_status)
         .max_by_key(|status| status_priority(*status))
         .unwrap_or(workspace.agent_status)
 }
 
+/// Running and failed tabs of the workspace, or of its whole group while the
+/// group is collapsed, so a job in a hidden worktree still shows.
+pub(in crate::client::shell) fn displayed_workspace_tab_jobs(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    collapsed_groups: &HashSet<String>,
+) -> (usize, usize) {
+    use crate::api::schema::TabStatus;
+    let mut counts = (0, 0);
+    for candidate in displayed_workspaces(snapshot, workspace, collapsed_groups) {
+        for tab in snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == candidate.workspace_id)
+        {
+            match tab.status {
+                Some(TabStatus::Running) => counts.0 += 1,
+                Some(TabStatus::Failed) => counts.1 += 1,
+                _ => {}
+            }
+        }
+    }
+    counts
+}
+
+/// The workspace itself, or every workspace of its group when it is the
+/// collapsed parent row that stands for them.
+fn displayed_workspaces<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    workspace: &'a ClientShellWorkspace,
+    collapsed_groups: &HashSet<String>,
+) -> impl Iterator<Item = &'a ClientShellWorkspace> + 'a {
+    let group_key = workspace
+        .worktree
+        .as_ref()
+        .filter(|worktree| !worktree.is_linked_worktree)
+        .filter(|worktree| collapsed_groups.contains(&worktree.key))
+        .map(|worktree| worktree.key.as_str());
+    snapshot
+        .workspaces
+        .iter()
+        .filter(move |candidate| match group_key {
+            Some(key) => candidate.worktree.as_ref().is_some_and(|member| {
+                member.key == key
+                    && (member.is_linked_worktree
+                        || candidate.workspace_id == workspace.workspace_id)
+            }),
+            None => candidate.workspace_id == workspace.workspace_id,
+        })
+}
+
 pub(in crate::client::shell) fn workspace_rows(
     workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
+    tab_jobs: (usize, usize),
     indented: bool,
     config: &SpacesSidebarConfig,
 ) -> Vec<Vec<crate::ui::ResolvedToken>> {
@@ -694,6 +729,7 @@ pub(in crate::client::shell) fn workspace_rows(
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
             ahead_behind: workspace.git_ahead_behind,
+            tab_jobs,
             tokens: &token_values,
             suppress_git_details: indented,
         },

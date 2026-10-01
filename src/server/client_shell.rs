@@ -118,6 +118,8 @@ pub(super) fn snapshot_with_completions(
                 custom_label: !state.is_auto_named(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
+                parent_tab_id: tab.parent_tab_id,
+                status: tab.status,
             }
         })
         .collect();

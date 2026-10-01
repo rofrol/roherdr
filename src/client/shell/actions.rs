@@ -952,11 +952,8 @@ impl ClientShellState {
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
             KeybindAction::SwitchTab(index) => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
+                // Numbers go to main-row tabs; child tabs are reached from their parent.
+                let tabs = super::tab_groups::main_row_tabs(snapshot);
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs.get(index)?.tab_id.clone(),
                 }))
@@ -980,11 +977,16 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
-                let tabs = snapshot
+                // A tab moves within its own row: the main row, or its siblings.
+                let focused_parent = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
+                    .find(|tab| Some(tab.tab_id.as_str()) == focused_tab.as_deref())
+                    .and_then(|tab| tab.parent_tab_id.clone());
+                let tabs = match focused_parent.as_deref() {
+                    Some(parent) => super::tab_groups::child_tabs(snapshot, parent),
+                    None => super::tab_groups::main_row_tabs(snapshot),
+                };
                 if tabs.len() <= 1 {
                     return None;
                 }
@@ -1000,6 +1002,20 @@ impl ClientShellState {
                     tabs.len()
                 } else {
                     source - 1
+                };
+                let flat = snapshot
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .collect::<Vec<_>>();
+                let flat_index = |tab: &&crate::protocol::ClientShellTab| {
+                    flat.iter()
+                        .position(|candidate| candidate.tab_id == tab.tab_id)
+                };
+                let insert_index = match (tabs.get(insert_index), focused_parent) {
+                    (Some(tab), _) => flat_index(tab)?,
+                    (None, None) => flat.len(),
+                    (None, Some(_)) => flat_index(tabs.last()?)? + 1,
                 };
                 Some(Method::TabMove(TabMoveParams {
                     tab_id: focused_tab,

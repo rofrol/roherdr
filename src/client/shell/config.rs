@@ -389,12 +389,14 @@ impl ClientShellConfig {
         sidebar_collapsed: bool,
         tab_count: usize,
         sidebar_width: u16,
+        child_tab_row: bool,
     ) -> ClientShellLayout {
         if cols <= self.mobile_width_threshold {
             let header_height = rows.min(2);
             return ClientShellLayout {
                 sidebar: Rect::default(),
                 tab_bar: Rect::default(),
+                child_tab_bar: Rect::default(),
                 mobile_header: Rect::new(0, 0, cols, header_height),
                 pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
             };
@@ -415,17 +417,16 @@ impl ClientShellConfig {
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
-        let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
+        let show_tab_bar =
+            rows > 1 && (child_tab_row || !(self.hide_tab_bar_when_single_tab && tab_count == 1));
         let tab_height = u16::from(show_tab_bar);
-        let (tab_bar, pane_surface) = match self.tab_bar_position {
+        let child_height = u16::from(show_tab_bar && child_tab_row && rows > 2);
+        let bars = tab_height + child_height;
+        let (tab_bar, child_tab_bar, pane_surface) = match self.tab_bar_position {
             TabBarPositionConfig::Top => (
                 Rect::new(main.x, 0, main.width, tab_height),
-                Rect::new(
-                    main.x,
-                    tab_height,
-                    main.width,
-                    rows.saturating_sub(tab_height),
-                ),
+                Rect::new(main.x, tab_height, main.width, child_height),
+                Rect::new(main.x, bars, main.width, rows.saturating_sub(bars)),
             ),
             TabBarPositionConfig::Bottom => (
                 Rect::new(
@@ -434,13 +435,15 @@ impl ClientShellConfig {
                     main.width,
                     tab_height,
                 ),
-                Rect::new(main.x, 0, main.width, rows.saturating_sub(tab_height)),
+                Rect::new(main.x, rows.saturating_sub(bars), main.width, child_height),
+                Rect::new(main.x, 0, main.width, rows.saturating_sub(bars)),
             ),
         };
 
         ClientShellLayout {
             sidebar: Rect::new(0, 0, sidebar_width, rows),
             tab_bar,
+            child_tab_bar,
             mobile_header: Rect::default(),
             pane_surface,
         }
@@ -460,7 +463,7 @@ impl ClientShellConfig {
             .unwrap_or(self.sidebar_width)
             .clamp(min_width, max_width);
         let surface = self
-            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
+            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width, false)
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),

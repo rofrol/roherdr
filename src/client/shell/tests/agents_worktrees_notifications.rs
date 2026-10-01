@@ -90,6 +90,66 @@ fn collapsed_workspace_jitter_remains_a_click() {
 }
 
 #[test]
+fn space_rows_count_running_and_failed_tabs_and_collapsed_parents_sum_the_group() {
+    let config = ClientShellConfig::from_config(&Config::default());
+    let mut state = ClientShellState::new(config);
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut child = snapshot.workspaces[0].clone();
+    child.workspace_id = "ws_2".into();
+    child.active_tab_id = "tab_ws2".into();
+    child.number = 2;
+    child.label = "repo-feature".into();
+    child.focused = false;
+    child.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    snapshot.workspaces.push(child);
+    for (tab_id, status) in [
+        ("tab_ws2", crate::api::schema::TabStatus::Running),
+        ("tab_ws2_b", crate::api::schema::TabStatus::Failed),
+        ("tab_ws2_c", crate::api::schema::TabStatus::Succeeded),
+    ] {
+        let mut tab = snapshot.tabs[0].clone();
+        tab.tab_id = tab_id.into();
+        tab.workspace_id = "ws_2".into();
+        tab.focused = false;
+        tab.status = Some(status);
+        snapshot.tabs.push(tab);
+    }
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let row_text = |state: &ClientShellState, frame: &FrameData, index: usize| {
+        let rect: Rect = state.hits.workspaces[index].rect;
+        (rect.x..rect.right())
+            .map(|x| {
+                frame.cells[usize::from(rect.y) * usize::from(frame.width) + usize::from(x)]
+                    .symbol
+                    .clone()
+            })
+            .collect::<String>()
+            // `⏳` is two cells wide; the frame shows its second cell as a space.
+            .replace("⏳ ", "⏳")
+    };
+
+    let frame = state.compose(106, 20).expect("expanded group");
+    assert!(!row_text(&state, &frame, 0).contains('⏳'));
+    let child_row = row_text(&state, &frame, 1);
+    assert!(child_row.contains("⏳1 !1"), "{child_row}");
+
+    state.collapsed_groups.insert("repo".into());
+    let frame = state.compose(106, 20).expect("collapsed group");
+    let parent_row = row_text(&state, &frame, 0);
+    assert!(parent_row.contains("⏳1 !1"), "{parent_row}");
+}
+
+#[test]
 fn grouped_worktrees_render_parent_branch_and_indented_child() {
     let config = ClientShellConfig::from_config(&Config::default());
     let mut state = ClientShellState::new(config);

@@ -1104,6 +1104,8 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
         zoomed: false,
         focused: false,
         agent_status: AgentStatus::Idle,
+        parent_tab_id: None,
+        status: None,
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot));

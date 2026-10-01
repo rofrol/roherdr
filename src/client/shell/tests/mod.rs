@@ -50,6 +50,8 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             zoomed: false,
             focused: true,
             agent_status: AgentStatus::Idle,
+            parent_tab_id: None,
+            status: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),

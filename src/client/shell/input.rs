@@ -974,18 +974,13 @@ impl ClientShellState {
                         .is_some()
                 })
             }
-            KeybindMatch::Action(KeybindAction::SwitchTab(index)) => self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| {
-                    let workspace_id = snapshot.focused_workspace_id.as_deref()?;
-                    snapshot
-                        .tabs
-                        .iter()
-                        .filter(|tab| tab.workspace_id == workspace_id)
-                        .nth(*index)
+            KeybindMatch::Action(KeybindAction::SwitchTab(index)) => {
+                self.snapshot.as_deref().is_some_and(|snapshot| {
+                    super::tab_groups::main_row_tabs(snapshot)
+                        .get(*index)
+                        .is_some()
                 })
-                .is_some(),
+            }
             KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {
                 super::aggregate_navigation::online_agent_targets(
                     &self.endpoints,

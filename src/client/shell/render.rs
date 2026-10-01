@@ -11,7 +11,7 @@ pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
-pub(super) use tabs::{render_tab_bar, tab_bar_status_width};
+pub(super) use tabs::{render_child_tab_bar, render_tab_bar, tab_bar_status_width};
 
 pub(in crate::client::shell) fn render_sidebar_background(
     buffer: &mut Buffer,
@@ -321,6 +321,9 @@ pub(super) fn render_shell(
             state.tab_drag_insert_index,
             &mut hits,
         );
+    }
+    if layout.child_tab_bar.height > 0 {
+        render_child_tab_bar(buffer, layout.child_tab_bar, snapshot, config, &mut hits);
     }
     if !config.mouse_capture {
         hits.sidebar_divider = Rect::default();

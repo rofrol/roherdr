@@ -1056,6 +1056,22 @@
               "minimum": 0,
               "type": "integer"
             },
+            "parent_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "tab_id": {
               "type": "string"
             },
@@ -1073,6 +1089,24 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TabStatus": {
+          "description": "Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).\nClients choose how to show it and summarise a parent's children with it.",
+          "oneOf": [
+            {
+              "enum": [
+                "running",
+                "succeeded",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
         },
         "WorkspaceInfo": {
           "properties": {
@@ -4381,6 +4415,64 @@
           ],
           "type": "object"
         },
+        "TabSetParentParams": {
+          "properties": {
+            "parent_tab_id": {
+              "description": "The top-level tab to nest this tab under; omit or null to make it top-level.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
+        "TabSetStatusParams": {
+          "properties": {
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omit or null to clear the status."
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
+        "TabStatus": {
+          "description": "Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).\nClients choose how to show it and summarise a parent's children with it.",
+          "oneOf": [
+            {
+              "enum": [
+                "running",
+                "succeeded",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "TabTarget": {
           "properties": {
             "tab_id": {
@@ -5294,6 +5386,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_parent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetParentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetStatusParams"
             }
           },
           "required": [
@@ -10740,6 +10864,22 @@
               "minimum": 0,
               "type": "integer"
             },
+            "parent_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "tab_id": {
               "type": "string"
             },
@@ -10757,6 +10897,24 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TabStatus": {
+          "description": "Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).\nClients choose how to show it and summarise a parent's children with it.",
+          "oneOf": [
+            {
+              "enum": [
+                "running",
+                "succeeded",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
         },
         "UsageBalance": {
           "properties": {

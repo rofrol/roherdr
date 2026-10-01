@@ -300,6 +300,23 @@ fn tab_command() -> Command {
                 .arg(required("label", "LABEL").num_args(1..)),
         )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
+        .subcommand(
+            Command::new("parent")
+                .about("Nest a tab under a top-level tab, or make it top-level with none")
+                .arg(required("tab_id", "TAB_ID"))
+                .arg(required("parent_tab_id", "PARENT_TAB_ID|none")),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Set a tab's status: running, succeeded, failed or none")
+                .arg(required("tab_id", "TAB_ID"))
+                .arg(required("status", "STATUS").value_parser([
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "none",
+                ])),
+        )
 }
 
 fn notification_command() -> Command {

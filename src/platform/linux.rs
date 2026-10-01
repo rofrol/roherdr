@@ -971,14 +971,30 @@ pub fn show_desktop_notification(title: &str, body: Option<&str>) -> std::io::Re
     show_desktop_notification_with_command(title, body, |program| Command::new(program))
 }
 
-/// Show a desktop notification; `notify-send` has no subtitle or click
-/// command, so the subtitle is folded into the body.
+/// Show a desktop notification; `notify-send` has no subtitle, so it is
+/// folded into the body. A click action is honoured through the notification's
+/// `default` action (libnotify >= 0.7.10).
 pub fn show_desktop_notification_with_details(
     title: &str,
     body: Option<&str>,
     details: &super::DesktopNotificationDetails,
 ) -> std::io::Result<bool> {
-    show_desktop_notification(title, details.flattened_body(body).as_deref())
+    let body = details.flattened_body(body);
+    let click = details
+        .on_click
+        .clone()
+        .zip(WaitingNotificationClick::acquire());
+    match click {
+        Some((action, waiting)) => show_clickable_notification_with_command(
+            title,
+            body.as_deref(),
+            action,
+            waiting,
+            |program| Command::new(program),
+        )
+        .map(|listener| listener.is_some()),
+        None => show_desktop_notification(title, body.as_deref()),
+    }
 }
 
 fn show_desktop_notification_with_command(
@@ -986,16 +1002,126 @@ fn show_desktop_notification_with_command(
     body: Option<&str>,
     mut command: impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+    if !has_graphical_session() {
         return Ok(false);
     }
-
     let mut cmd = command("notify-send");
+    add_notify_send_text(&mut cmd, title, body);
+    run_notification_command(cmd)
+}
+
+fn has_graphical_session() -> bool {
+    std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+fn add_notify_send_text(cmd: &mut Command, title: &str, body: Option<&str>) {
     cmd.arg("--app-name").arg("Herdr").arg("--").arg(title);
     if let Some(body) = body.filter(|body| !body.is_empty()) {
         cmd.arg(body);
     }
-    run_notification_command(cmd)
+}
+
+/// Each clickable notification keeps a `notify-send --wait` process and a
+/// thread until it is clicked or closed, and GNOME keeps unread notifications
+/// open in its tray; past this many, notifications are shown without a click.
+const MAX_WAITING_NOTIFICATION_CLICKS: usize = 16;
+static WAITING_NOTIFICATION_CLICKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+struct WaitingNotificationClick;
+
+impl WaitingNotificationClick {
+    fn acquire() -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        WAITING_NOTIFICATION_CLICKS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
+                (waiting < MAX_WAITING_NOTIFICATION_CLICKS).then_some(waiting + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for WaitingNotificationClick {
+    fn drop(&mut self) {
+        WAITING_NOTIFICATION_CLICKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Show a notification whose click runs `action`. `notify-send --wait` prints
+/// the invoked action's name; the listener runs only this client's own focus
+/// commands, never anything named by the notification daemon. When
+/// `notify-send` rejects `--action` (libnotify < 0.7.10) and printed nothing,
+/// the notification is shown again without a click action.
+///
+/// Returns the listener thread, or `None` when nothing could be shown.
+/// `waiting` is released when the listener ends.
+fn show_clickable_notification_with_command(
+    title: &str,
+    body: Option<&str>,
+    action: super::NotificationClickAction,
+    waiting: WaitingNotificationClick,
+    command: fn(&str) -> Command,
+) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+    if !has_graphical_session() {
+        return Ok(None);
+    }
+    let mut cmd = command("notify-send");
+    cmd.arg("--action=default=Open").arg("--wait");
+    add_notify_send_text(&mut cmd, title, body);
+    let mut child = match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    };
+    let (title, body) = (title.to_owned(), body.map(str::to_owned));
+    std::thread::Builder::new()
+        .name("herdr-notification-click".to_owned())
+        .spawn(move || {
+            let _waiting = waiting;
+            let mut printed = false;
+            for line in std::io::BufRead::lines(std::io::BufReader::new(stdout)) {
+                let Ok(line) = line else { break };
+                printed = true;
+                if line.trim() == "default" {
+                    run_notification_click_action(&action);
+                }
+            }
+            let succeeded = child.wait().is_ok_and(|status| status.success());
+            if !succeeded && !printed {
+                let _ = show_desktop_notification_with_command(&title, body.as_deref(), command);
+            }
+        })
+        .map(Some)
+}
+
+/// Run the click's commands in order until one succeeds.
+fn run_notification_click_action(action: &super::NotificationClickAction) {
+    for argv in &action.commands {
+        let Some((program, args)) = argv.split_first() else {
+            continue;
+        };
+        let status = Command::new(program)
+            .args(args)
+            .envs(action.env.iter().map(|(key, value)| (key, value)))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if status.is_ok_and(|status| status.success()) {
+            return;
+        }
+    }
 }
 
 fn run_notification_command(mut command: Command) -> std::io::Result<bool> {
@@ -2269,6 +2395,83 @@ mod tests {
         let args = std::fs::read_to_string(&path).expect("args file");
         let _ = std::fs::remove_file(&path);
         assert_eq!(args, "--app-name\nHerdr\n--\n-danger\nbody\n");
+    }
+
+    fn fake_notify_send(script: &'static str) -> fn(&str) -> Command {
+        // A fn pointer cannot capture, so the script travels in the env.
+        unsafe { std::env::set_var("HERDR_FAKE_NOTIFY_SEND", script) };
+        |_| {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(std::env::var_os("HERDR_FAKE_NOTIFY_SEND").unwrap_or_default())
+                .arg("notify-send");
+            cmd
+        }
+    }
+
+    fn click_action_appending_to(path: &std::path::Path) -> super::super::NotificationClickAction {
+        let append = |word: &str| -> Vec<std::ffi::OsString> {
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("echo {word} >> \"$OUT\"; [ {word} = second ]").into(),
+            ]
+        };
+        super::super::NotificationClickAction {
+            env: vec![("OUT".to_owned(), path.as_os_str().to_owned())],
+            commands: vec![append("first"), append("second"), append("third")],
+        }
+    }
+
+    fn run_clickable_notification(script: &'static str, name: &str) -> String {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+            std::env::set_var("DISPLAY", ":0");
+        }
+        let path = std::env::temp_dir().join(format!("herdr-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        unsafe { std::env::set_var("OUT", &path) };
+        let listener = show_clickable_notification_with_command(
+            "title",
+            Some("body"),
+            click_action_appending_to(&path),
+            WaitingNotificationClick::acquire().expect("a free click slot"),
+            fake_notify_send(script),
+        )
+        .expect("notification command should run")
+        .expect("listener thread");
+        listener.join().expect("listener thread should finish");
+        let out = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    #[test]
+    fn clicked_notification_runs_focus_commands_until_one_succeeds() {
+        let out = run_clickable_notification(
+            "printf '%s\\n' \"$@\" >> \"$OUT\"; echo default",
+            "notify-click",
+        );
+        assert_eq!(
+            out,
+            "--action=default=Open\n--wait\n--app-name\nHerdr\n--\ntitle\nbody\nfirst\nsecond\n"
+        );
+    }
+
+    #[test]
+    fn closed_notification_runs_no_focus_command() {
+        let out = run_clickable_notification("exit 0", "notify-closed");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn notify_send_without_actions_falls_back_to_a_plain_notification() {
+        let out = run_clickable_notification(
+            "case \"$1\" in --action*) exit 1;; esac; printf '%s\\n' \"$@\" >> \"$OUT\"",
+            "notify-old",
+        );
+        assert_eq!(out, "--app-name\nHerdr\n--\ntitle\nbody\n");
     }
 
     #[test]

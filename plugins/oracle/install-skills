@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Link the oracle skills into an agent's skill directory (default ~/.claude/skills), so they are
+# updated with this checkout. Safe to re-run: existing links to these skills are left alone,
+# anything else under the same name is reported and kept.
+# Usage: install-skills [DIR]
+set -euo pipefail
+src="$(cd "$(dirname "$(realpath "$0")")/skills" && pwd)"
+dest=${1:-$HOME/.claude/skills}
+mkdir -p "$dest"
+rc=0
+for skill in "$src"/*/; do
+  name=$(basename "$skill"); skill=${skill%/}; target="$dest/$name"
+  if [ -L "$target" ] && [ "$(realpath "$target")" = "$(realpath "$skill")" ]; then
+    echo "ok       $target"
+  elif [ -e "$target" ] || [ -L "$target" ]; then
+    echo "skipped  $target exists and is not a link to $skill; move it away and re-run" >&2; rc=1
+  else
+    ln -s "$skill" "$target"; echo "linked   $target -> $skill"
+  fi
+done
+exit $rc

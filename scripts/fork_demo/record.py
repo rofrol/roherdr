@@ -6,6 +6,7 @@ Writes numbered PNG frames and an ffmpeg concat list with their durations.
 
 import argparse
 import fcntl
+import json
 import os
 import pty
 import select
@@ -13,6 +14,7 @@ import struct
 import subprocess
 import termios
 import time
+import unicodedata
 
 import pyte
 from PIL import ImageDraw, ImageFont, Image
@@ -53,6 +55,24 @@ CAPTION = load_font(16, 600)
 SMALL = load_font(12)
 SMALL_BOLD = load_font(12, 700)
 CW = round(FONT.getlength("M"))
+EMOJI_PATH = "/System/Library/Fonts/Apple Color Emoji.ttc"
+EMOJI_CACHE = {}
+
+
+def emoji(char):
+    """A wide glyph such as `⏳` from Apple Color Emoji, sized to two cells;
+    the text fonts have no glyph for it."""
+    if char not in EMOJI_CACHE:
+        tile = None
+        if os.path.exists(EMOJI_PATH):
+            # Apple Color Emoji only has fixed bitmap sizes; 32 is one of them.
+            font = ImageFont.truetype(EMOJI_PATH, 32)
+            tile = Image.new("RGBA", (48, 48))
+            ImageDraw.Draw(tile).text((0, 0), char, font=font, embedded_color=True)
+            tile = tile.crop(tile.getbbox())
+            tile.thumbnail((2 * CW, CH - 2))
+        EMOJI_CACHE[char] = tile
+    return EMOJI_CACHE[char]
 
 
 def color(value, default):
@@ -109,6 +129,9 @@ def render(screen, caption=""):
             elif ch.data in "█░":
                 fill = fg if ch.data == "█" else tuple((a + b * 2) // 3 for a, b in zip(fg, bg))
                 draw.rectangle([px, py + 4, px + CW - 1, py + CH - 5], fill=fill)
+            elif unicodedata.east_asian_width(ch.data[0]) == "W" and emoji(ch.data):
+                tile = emoji(ch.data)
+                img.paste(tile, (px + (2 * CW - tile.width) // 2, py + (CH - tile.height) // 2), tile)
             else:
                 draw.text((px, py + 2), ch.data, font=BOLD if ch.bold else FONT, fill=fg)
     top = ROWS * CH + 2 * PAD
@@ -116,6 +139,15 @@ def render(screen, caption=""):
     if caption:
         text_w = draw.textlength(caption, font=CAPTION)
         draw.text(((width - text_w) / 2, top + 10), caption, font=CAPTION, fill=(250, 250, 250))
+    return img
+
+
+def highlight(img, cell_y, cell_x, cells):
+    """Outline a run of cells, e.g. a counter a pointer would cover."""
+    draw = ImageDraw.Draw(img)
+    x, y = PAD + cell_x * CW, PAD + cell_y * CH
+    draw.rounded_rectangle([x - 4, y - 1, x + cells * CW + 3, y + CH], radius=5,
+                           outline=(64, 120, 242), width=2)
     return img
 
 
@@ -169,7 +201,8 @@ class Recorder:
     def cli(self, *args):
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
         env["HERDR_SOCKET_PATH"] = self.socket_path
-        subprocess.run([self.herdr, *args], env=env, capture_output=True, check=True)
+        done = subprocess.run([self.herdr, *args], env=env, capture_output=True, check=True)
+        return json.loads(done.stdout or "null")
 
     def pump(self, seconds):
         end = time.time() + seconds
@@ -235,12 +268,14 @@ def main():
     parser.add_argument("--socket", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--agent-pane", required=True)
+    parser.add_argument("--agent-tab", required=True)
+    parser.add_argument("--workspace", required=True)
     args = parser.parse_args()
 
     rec = Recorder(args.herdr, args.socket, args.out_dir)
     rec.pump(6)
     rec.wait_for_usage(90)
-    rec.shot("herdr fork: usage widget, middle-click close, clickable notifications", 2200)
+    rec.shot("herdr fork: usage widget, middle-click close, notifications, job tabs", 2200)
 
     cap = "Click the usage footer to see limits and reset times"
     fy, fx = rec.find(lambda y, line: (y, 1) if line.startswith(" AN ") and "%" in line[:24] else None)
@@ -281,6 +316,23 @@ def main():
     rec.cli("agent", "focus", args.agent_pane)
     rec.pump(1.5)
     rec.shot(cap, 3200)
+
+    # herdr-job does this for a long command: a child tab of the agent's tab
+    # whose status says how the job is going.
+    cap = "A long job runs in a child tab; the space row counts it while the agent is idle"
+    for label, status in (("build", "running"), ("tests", "failed")):
+        tab = rec.cli("tab", "create", "--workspace", args.workspace, "--label", label, "--no-focus")
+        tab_id = tab["result"]["tab"]["tab_id"]
+        rec.cli("tab", "parent", tab_id, args.agent_tab)
+        rec.cli("tab", "status", tab_id, status)
+        rec.pump(1.0)
+        rec.shot(cap, 2400)
+    jy, jx, cells = rec.find(
+        # `display` joins a wide glyph's two cells into one character.
+        lambda y, line: (y, line.index("⏳"), line.index("!", line.index("⏳")) + 3 - line.index("⏳"))
+        if "herdr" in line[:24] and "⏳" in line[:24] else None
+    )
+    rec.add(highlight(render(rec.screen, cap), jy, jx, cells), 3000)
     rec.finish()
     print(f"recorded {len(rec.frames)} frames")
 

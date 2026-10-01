@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
-pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
+pub(super) const WORKSPACE_HEADER_ROWS: u16 = 1;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,8 @@ pub(crate) struct ClientShellConfig {
 pub(super) struct ClientShellLayout {
     pub sidebar: Rect,
     pub tab_bar: Rect,
+    /// Children of the active tab, next to the tab bar on the pane side.
+    pub child_tab_bar: Rect,
     pub mobile_header: Rect,
     pub pane_surface: Rect,
 }
@@ -90,6 +92,7 @@ pub(super) struct ShellHitMap {
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
     pub(super) tabs: Vec<(Rect, String)>,
+    pub(super) child_tabs: Vec<(Rect, String)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -569,6 +572,8 @@ pub(super) struct ClientContextMenuItem {
 pub(super) struct ClientTabCloseConfirmation {
     pub(super) tab_id: String,
     pub(super) workspace: WorkspaceNavigationTarget,
+    /// Child tabs closed before the tab; the server refuses to close a parent.
+    pub(super) children: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1245,6 +1250,9 @@ impl ClientShellState {
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
+            self.snapshot
+                .as_deref()
+                .is_some_and(super::tab_groups::workspace_has_child_tabs),
         )
     }
 
@@ -1439,6 +1447,8 @@ impl ClientShellState {
                             || left.workspace_id != right.workspace_id
                             || left.label != right.label
                             || left.zoomed != right.zoomed
+                            || left.parent_tab_id != right.parent_tab_id
+                            || left.status != right.status
                     })
                 || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)
         });

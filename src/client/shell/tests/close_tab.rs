@@ -239,3 +239,120 @@ fn last_tab_close_preserves_parent_group_and_linked_workspace_scope() {
         }
     }
 }
+
+fn parent_with_jobs_state(confirm: bool) -> ClientShellState {
+    let mut state = close_state(confirm, 3);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for (tab, (label, status)) in projected.tabs[1..].iter_mut().zip([
+        ("build", crate::api::schema::TabStatus::Failed),
+        ("tests", crate::api::schema::TabStatus::Running),
+    ]) {
+        tab.parent_tab_id = Some("tab_1".into());
+        tab.status = Some(status);
+        tab.label = label.into();
+        tab.custom_label = true;
+    }
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 24).unwrap();
+    state
+}
+
+fn tab_closes(outcome: &ClientShellInput) -> Vec<String> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                Method::TabClose(target) => Some(target.tab_id.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn child_tabs_get_their_own_row_and_a_summary_on_the_parent() {
+    let mut state = parent_with_jobs_state(true);
+    let frame = state.compose(106, 24).unwrap();
+    // `⏳` is two cells wide; `frame_rows` shows its second cell as a space.
+    let rows = frame_rows(&frame)
+        .into_iter()
+        .map(|row| row.replace("⏳ ", "⏳"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(state.hits.tabs.len(), 1, "children leave the main row");
+    assert!(rows[0].contains("1 ⏳1 !1"), "{}", rows[0]);
+    assert!(
+        rows[1].contains("! build") && rows[1].contains("⏳ tests"),
+        "{}",
+        rows[1]
+    );
+    assert_eq!(
+        state
+            .hits
+            .child_tabs
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["tab_1", "tab_2", "tab_3"],
+        "the parent's own entry comes first"
+    );
+    assert_eq!(state.layout(106, 24).pane_surface.y, 2);
+}
+
+#[test]
+fn the_child_row_stays_while_the_workspace_has_child_tabs() {
+    let mut state = parent_with_jobs_state(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut other = projected.tabs[0].clone();
+    other.tab_id = "tab_4".into();
+    other.label = "lazygit".into();
+    projected.tabs.push(other);
+    for tab in &mut projected.tabs {
+        tab.focused = tab.tab_id == "tab_4";
+    }
+    projected.focused_tab_id = Some("tab_4".into());
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 24).unwrap();
+
+    assert_eq!(
+        state.layout(106, 24).pane_surface.y,
+        2,
+        "no resize on switching"
+    );
+    assert_eq!(
+        state
+            .hits
+            .child_tabs
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["tab_4"],
+        "a tab without children shows only itself"
+    );
+}
+
+#[test]
+fn closing_a_parent_asks_then_closes_its_children_first() {
+    let mut state = parent_with_jobs_state(true);
+    assert_no_close(&request_close(&mut state, false));
+    let frame = state.compose(106, 24).unwrap();
+    let text = frame_rows(&frame).join("\n").replace("⏳ ", "⏳");
+    assert!(text.contains("Close tab and its child tabs?"), "{text}");
+    assert!(text.contains("2 child tabs: ⏳1 !1"), "{text}");
+
+    let accepted = state.handle_input_bytes(b"\r");
+
+    assert_eq!(tab_closes(&accepted), ["tab_2", "tab_3", "tab_1"]);
+}
+
+#[test]
+fn closing_a_parent_without_confirm_close_still_closes_children_first() {
+    let mut state = parent_with_jobs_state(false);
+
+    let requested = request_close(&mut state, false);
+
+    assert!(state.overlay.is_none());
+    assert_eq!(tab_closes(&requested), ["tab_2", "tab_3", "tab_1"]);
+}

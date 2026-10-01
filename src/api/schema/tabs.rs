@@ -36,6 +36,35 @@ pub struct TabMoveParams {
     pub insert_index: usize,
 }
 
+/// Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).
+/// Clients choose how to show it and summarise a parent's children with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TabStatus {
+    Running,
+    Succeeded,
+    Failed,
+    /// A value from a newer server that this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetParentParams {
+    pub tab_id: String,
+    /// The top-level tab to nest this tab under; omit or null to make it top-level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tab_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetStatusParams {
+    pub tab_id: String,
+    /// Omit or null to clear the status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TabStatus>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
@@ -45,4 +74,8 @@ pub struct TabInfo {
     pub focused: bool,
     pub pane_count: usize,
     pub agent_status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TabStatus>,
 }

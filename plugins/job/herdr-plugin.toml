@@ -12,3 +12,8 @@ placement = "popup"
 width = "80%"
 height = 20
 command = ["sh", "-c", "./herdr-job list; printf '\\nEnter closes. '; read -r _"]
+
+# Recount the `$jobs` token of the pane that started a job when its tab closes.
+[[events]]
+on = "tab.closed"
+command = ["./herdr-job", "_tab-closed"]

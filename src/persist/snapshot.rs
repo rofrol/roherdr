@@ -94,6 +94,11 @@ pub struct TabSnapshot {
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+    /// Public number of the parent tab (see `Tab::parent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tab_number: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::api::schema::TabStatus>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -162,6 +167,8 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
+            parent_tab_number: None,
+            status: None,
         };
 
         Self {
@@ -398,6 +405,8 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+        parent_tab_number: tab.parent,
+        status: tab.status,
     }
 }
 
@@ -744,6 +753,8 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    parent_tab_number: None,
+                    status: None,
                 }],
                 active_tab: 0,
             }],
@@ -1445,6 +1456,8 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    parent_tab_number: None,
+                    status: None,
                 }],
                 active_tab: 0,
             }],
