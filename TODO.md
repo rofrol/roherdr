@@ -68,8 +68,40 @@
     integration behind a flag; fixtures in English and Polish with code,
     quotes, rhetorical questions, "let me know if", lists of options, and the
     reported sentence as a positive case.
-  - Decision needed from the user: marking by inference (DeepSeek/GPT), the
-    blocking reminder (Opus), or both. Done: nothing yet.
+  - Decision (the user said "choose yourself", 2026-10-01): order V1 shadow
+    logging, then V5 a stronger instruction, then V2 the blocking Stop-hook
+    reminder as a canary, V3 inference only if V2 is not enough (all three
+    models, second round). The offline audit made V1 unnecessary: it measures
+    the misses from existing transcripts.
+  - Audit (`scripts/awaiting_reply_audit.py`, tests in
+    `scripts/test_awaiting_reply_audit.py`; read only; Claude Code and Pi
+    transcripts; a bilingual question heuristic; per model: question-like
+    turns, reported, missed, false reports, order violations, Wilson interval).
+    First numbers, turns since 2026-10-01 12:40 (when every integration sent
+    the instruction): Claude Sonnet 5.5 (this session): 15 question-like turns,
+    11 missed (73%, CI 48-89%); Claude Opus 5.5: 8 question-like, 1 missed
+    (12%, CI 2-47%); Claude Haiku 4.5: 8 question-like, 7 missed (88%). Older
+    turns, before the instruction, are 90-100% misses for every model, so they
+    prove nothing about compliance. No Pi turn since the extension was
+    installed was in the transcripts yet (rerun after some Pi use). Caveats: the
+    heuristic gives false reports too (reported but the last paragraph is not a
+    question: 12-28 per model), it is a screen to review, not ground truth.
+  - Models' thresholds for moving on: V2 when the lower bound of the miss rate
+    is above 2-5% and the heuristic's false positive rate is at most 2%; V3 only
+    when the inferred precision's lower bound is above 98-99% and V2 is not
+    enough; rubric for an LLM judge: "does the final message ask the user for
+    a decision or an answer before work can continue" (not courtesy offers,
+    rhetorical or quoted questions), two judges, blind to the report status.
+  - Other variants kept here for when it happens again: V1 shadow log from a
+    Stop hook (`last_assistant_message`, else `transcript_path`); V2 block once
+    (`stop_hook_active`, "if you wait for the user run `herdr agent
+    awaiting-reply`, otherwise just stop"); V3 the hook marks the pane itself
+    (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
+    typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
+    an `agent_end` extension that does the same.
+  - Next: V2 for Claude Code needs a `Stop` hook entry in the managed
+    integration (`claude_settings.rs`, the script's new `stop` action,
+    uninstall, tests, the integration version bump). Not started.
 
 - [x] Bookmark rows and popups (user, 2026-10-01, three screenshots): (1) the
   bookmark list showed "1 · job-seeker" and "2 · herdr" where the sidebar says
