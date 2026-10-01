@@ -10,7 +10,7 @@ Uses agy's own login (`~/.gemini/antigravity-cli/`). Gemini CLI (`gemini`) no lo
 
 Only **gemini-3.8-flash-{high,medium,low}** is used (check with `agy models`; when a newer Flash appears, update the
 `case` in ask_gemini.sh). Gemini Pro is disabled by the user's decision (2026-09-25): it drained the shared weekly
-quota, had only `view_file` in agy, and scored lowest in oracle-stats — the script refuses `-m pro`.
+quota, had only `view_file` in agy, and scored lowest in consult-stats — the script refuses `-m pro`.
 
 ```bash
 ~/.claude/skills/gemini/ask_gemini.sh "question"                   # gemini-3.8-flash-high (default)
@@ -31,7 +31,7 @@ The weekly quota is consumed by token cost (check with `agy -p /quota`).
 Headless limits (agy 1.2.x):
 - Writes are auto-denied, and so are shell commands except those in `permissions.allow` of
   `~/.gemini/antigravity-cli/settings.json` (e.g. `git status`, `find`, `odin`) — those *can* run in `-r` mode.
-- A denied tool call ends the run with an empty answer; the script then exits 1 with "Pusta odpowiedź".
+- A denied tool call ends the run with an empty answer; the script then exits 1 with "Empty answer".
   No shell means no `git log/diff` in `-r`: pass the diff with `-f -` alongside `-r`.
 - Conversations are saved in agy's history (no ephemeral mode).
 Answers usually take seconds to a couple of minutes — use a Bash timeout of 600000.
@@ -43,17 +43,21 @@ Guidelines:
 - Sending code sends it to Google's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
 - If the user asks for several models ("Gemini i GPT", "wszystkie"), run them in parallel and compare.
+- Data collection for consult-stats (since 2026-09-26; only high had been used before): whenever you consult Gemini,
+  ask it **three times in parallel with `-e low`, `-e medium` and `-e high`**, same prompt, same round (unless the user
+  named one effort), and rate each call separately — so the efforts are compared on the same task. This uses about
+  three times the weekly quota per consultation.
 - Exit 3 = weekly quota exhausted (the script checks `agy -p /quota` first and remembers the reset time in
-  `~/.local/state/oracle/gemini-quota-reset`; nothing was sent). Don't call Gemini again until the reset
-  and don't retry or swap models; in a multi-oracle round go on with the others and tell the user Gemini was
+  `~/.local/state/consult/gemini-quota-reset`; nothing was sent). Don't call Gemini again until the reset
+  and don't retry or swap models; in a multi-model round go on with the others and tell the user Gemini was
   skipped (and until when). The same for any other quota/usage-limit error.
-- After triaging the answer, rate it (id is printed on stderr as `[oracle id: ...]`):
-  `~/.claude/skills/oracle-stats/oracle.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
-  — see the oracle-stats skill for what the fields mean. Then score yourself for the round with `oracle.py self`
+- After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
+  `~/.claude/skills/consult-stats/consult.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
+  — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- Every consultation is a round: start the command with `export ORACLE_ROUND=$(~/.claude/skills/oracle-stats/oracle.py new-round)`
-  and launch all oracles for that question in the same Bash call, so their calls share the round id
-  (paired token comparisons in `oracle.py stats --pairs`; `oracle.py self --round <id>`).
+- Every consultation is a round: start the command with `export CONSULT_ROUND=$(~/.claude/skills/consult-stats/consult.py new-round)`
+  and launch all models for that question in the same Bash call, so their calls share the round id
+  (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).
 
 ## Code review
 

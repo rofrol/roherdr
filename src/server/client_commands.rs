@@ -36,6 +36,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.swap",
     "pane.zoom",
     "plugin.pane.open",
+    "popup.close",
     "product_announcement.dismiss",
     "release_notes.dismiss",
     "server.reload_config",
@@ -302,6 +303,10 @@ mod tests {
         assert_eq!(
             actual.remove("plugin.pane.open").as_deref(),
             Some("0c6779bf29633941afc467b52f5637adf99239c3581259fde6e89cc16560e42b")
+        );
+        assert_eq!(
+            actual.remove("popup.close").as_deref(),
+            Some("776d774a3cfd2da2ce9d937ac58549e6022f0c265832c67c7dd9bf300955d304")
         );
         assert_eq!(
             actual.remove("usage.read").as_deref(),

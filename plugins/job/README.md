@@ -18,15 +18,15 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
 - The job tab is a child of the tab that started it. While the workspace
   has jobs, a second row under the tab bar lists the active tab's own
   content first (named after its agent, e.g. `claude`) and then its jobs,
-  e.g. `claude  ⏳ tests  ! build`; the parent tab shows a summary such as
-  `1 ⏳1 !2 ✓3`. herdr draws the icons from the tab's status
+  e.g. `claude  ⧖ tests  ! build`; the parent tab shows a summary such as
+  `1 ⧖ 1 !2 ✓3`. herdr draws the icons from the tab's status
   (`herdr tab status`), set to running, then succeeded or failed; failure
   is `!` because `✗` next to a tab label reads as a close button. After
   success the tab closes itself 10 s later (`--keep` leaves it open); after
   a failure it stays open with the output. Closing the parent tab asks first
   and closes its jobs too. herdr builds without child tabs get a top-level
   tab labelled
-  `⏳ Build b17`, then `✓ Build b17` or `✗ Build b17`.
+  `⧖ Build b17`, then `✓ Build b17` or `✗ Build b17`.
 - The tab's last row is a pinned footer: state, name, `--why`, which agent and
   workspace started it, and the job id. Output scrolls above it. It has no
   background (reverse video is a black bar on light themes); the state is
@@ -36,14 +36,14 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   to `$HERDR_JOB_TTY` shows it in the tab but keeps it out of the log that
   `wait` streams (see [Skills](#skills-a-script-in-its-own-job-tab)).
 - The starting pane gets a `$jobs` token with counts of its jobs that still
-  have a tab, e.g. `2⏳ 1✗ 1✓`: running, failed (or lost) and successful.
+  have a tab, e.g. `2⧖ 1✗ 1✓`: running, failed (or lost) and successful.
   Closing a job tab drops it from the counts (a `tab.closed` hook recounts),
   so a success shows until its tab closes itself and a failure until you
   close its tab. Counts, not names: the agents panel cannot scroll, so a
   list would push other agents out of view. Names and exit codes are in
   `herdr-job list` and the tab labels.
 - The space's row in the sidebar counts its running and failed tabs, e.g.
-  `○ repo ⏳1`: the space's dot is its agents' state, so it stays idle while
+  `○ repo ⧖ 1`: the space's dot is its agents' state, so it stays idle while
   the agent waits for a job (the `tab_jobs` token).
 - `herdr-bg-badge` (a Claude Code Stop hook) puts the number of Claude's own
   background tasks in `$bg` (`2 bg`), skipping `herdr-job wait` tasks, which
@@ -112,6 +112,7 @@ To check another desktop: in a herdr pane run
 `herdr notification show T --pane "$HERDR_PANE_ID"` after a short `sleep`,
 switch to another herdr workspace, click the notification; then with a closed
 tab (`herdr-job run --notify always --name T -- true`, workspace fallback).
+On a Mac, `scripts/linux_vm/gnome_vm.sh` builds a small GNOME VM for this.
 
 **Later, research: bring the terminal window forward.** Wayland blocks focus
 stealing, so switching herdr's tab may leave the terminal behind another
@@ -138,8 +139,8 @@ fi
 
 The job runs in another pane, so it cannot read the caller's stdin: save it
 to a file first. Progress meant only for you goes to `$HERDR_JOB_TTY`.
-The oracle skills (`ask_gpt.sh`, `ask_gemini.sh`, `ask_deepseek.py`) do this
-through `~/.claude/skills/oracle-stats/in_herdr_job.sh` (in rofrol/dotfiles).
+The consult skills (`ask_gpt.sh`, `ask_gemini.sh`, `ask_deepseek.py`) do this
+through `~/.claude/skills/consult-stats/in_herdr_job.sh` (in rofrol/dotfiles).
 
 ## Claude background tasks: `herdr-bg-badge`
 

@@ -15,14 +15,13 @@ update the `case` in ask_gpt.sh.
 
 ```bash
 ~/.claude/skills/gpt/ask_gpt.sh "question"                  # astra = gpt-6-astra (default)
-~/.claude/skills/gpt/ask_gpt.sh -e high "hard question"     # more reasoning, uses more of the Plus limit
 ~/.claude/skills/gpt/ask_gpt.sh -m sol "q"                  # gpt-6-sol; also terra (gpt-5.6-terra), luna (gpt-6-luna, fast)
 ~/.claude/skills/gpt/ask_gpt.sh -f src/foo.py "Find bugs in this file"
 git diff | ~/.claude/skills/gpt/ask_gpt.sh -f - "Review this diff"   # stdin only via -f -
 ~/.claude/skills/gpt/ask_gpt.sh -r "Review ... (see Code review below)"  # run in the current git repo, read-only
 ```
 
-Options: `-m astra|sol|terra|luna|<full id>`, `-e low|medium|high|xhigh` (reasoning effort), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
+Options: `-m astra|sol|terra|luna|<full id>`, `-e low|medium` (reasoning effort; high/xhigh are disabled by the user's decision (2026-09-26): ~3× the time and 4–7× the output tokens without more unique findings — the script refuses them), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
 Codex runs ephemeral, in a read-only sandbox. By default it runs in an empty temp dir and sees only what you put in the prompt.
 With `-r` it runs at the top of the current git repo (refuses `$HOME`), so it can read files, callers, tests and git history itself;
 everything in that checkout it reads (including untracked files like `.env`) goes to OpenAI.
@@ -34,18 +33,18 @@ Guidelines:
 - GPT has no context of this conversation: include the goal, relevant code and constraints in the prompt.
 - Sending code sends it to OpenAI's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
-- Data collection for oracle-stats: whenever you consult GPT, ask **astra, sol and terra in parallel** with the same
-  prompt and effort (unless the user named one model), compare them, and rate each call separately — `--unique` counts
+- Data collection for consult-stats: whenever you consult GPT, ask **astra, sol and terra in parallel** with the same
+  prompt and default effort (unless the user named one model), compare them, and rate each call separately — `--unique` counts
   what the other two (and Claude) missed. Luna only on request.
 - If the user asks for "GPT and DeepSeek", run both in parallel and compare.
-- On a usage-limit error, tell the user (Plus limits) and don't call GPT again in this session (no retries, no other GPT model); in a multi-oracle round go on with the others.
-- After triaging the answer, rate it (id is printed on stderr as `[oracle id: ...]`):
-  `~/.claude/skills/oracle-stats/oracle.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
-  — see the oracle-stats skill for what the fields mean. Then score yourself for the round with `oracle.py self`
+- On a usage-limit error, tell the user (Plus limits) and don't call GPT again in this session (no retries, no other GPT model); in a multi-model round go on with the others.
+- After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
+  `~/.claude/skills/consult-stats/consult.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
+  — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- Every consultation is a round: start the command with `export ORACLE_ROUND=$(~/.claude/skills/oracle-stats/oracle.py new-round)`
-  and launch all oracles for that question in the same Bash call, so their calls share the round id
-  (paired token comparisons in `oracle.py stats --pairs`; `oracle.py self --round <id>`).
+- Every consultation is a round: start the command with `export CONSULT_ROUND=$(~/.claude/skills/consult-stats/consult.py new-round)`
+  and launch all models for that question in the same Bash call, so their calls share the round id
+  (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).
 
 ## Code review
 

@@ -111,19 +111,21 @@ pub(crate) fn render_tab_bar(
             break;
         }
         let rect = Rect::new(x, area.y, width, 1);
-        let style = if Some(tab.tab_id.as_str()) == active_tab_id {
-            let base = Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent);
-            if tab.custom_label {
-                base.add_modifier(Modifier::BOLD)
-            } else {
-                base
-            }
-        } else if tab.custom_label {
+        // Full accent marks what is on screen. A parent whose children fill the
+        // second row is only tinted there, like a folder tab opening into it,
+        // so the bar never shows two accent blocks.
+        let style = if Some(tab.tab_id.as_str()) != active_tab_id {
             Style::default().fg(palette.overlay1).bg(palette.surface0)
+        } else if tab_groups::child_tabs(snapshot, &tab.tab_id).is_empty() {
+            Style::default()
+                .fg(panel_contrast_fg(palette))
+                .bg(palette.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(palette.overlay0).bg(palette.surface0)
+            Style::default()
+                .fg(palette.accent)
+                .bg(accent_tint(palette))
+                .add_modifier(Modifier::BOLD)
         };
         let padding = width.saturating_sub(display_width(&name));
         let left = padding / 2;
@@ -234,8 +236,9 @@ pub(crate) fn render_tab_bar(
     render_tab_bar_status(buffer, area, snapshot, palette);
 }
 
-/// The second row: the active tab's own content, then its children, each
-/// with its status icon.
+/// The second row: the active tab's own content, marked as the parent, then
+/// its children, each with its status icon. It stays empty while the active
+/// tab has no children.
 /// It has no new-tab button or drag and drop; tabs past the edge are cut
 /// off with `…`, starting from the focused one when it would not fit.
 pub(crate) fn render_child_tab_bar(
@@ -249,17 +252,15 @@ pub(crate) fn render_child_tab_bar(
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
     // The parent's own content comes first, so exactly one entry of the row is
     // the tab on screen.
-    let parent = tab_groups::active_main_tab_id(snapshot)
-        .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id));
-    let tabs = parent
-        .into_iter()
-        .chain(tab_groups::active_child_tabs(snapshot))
-        .collect::<Vec<_>>();
+    let tabs = tab_groups::active_row_entries(snapshot);
+    if tabs.is_empty() {
+        return;
+    }
     let labels = tabs
         .iter()
         .map(|tab| {
             if tab.parent_tab_id.is_none() {
-                return tab_groups::parent_entry_label(snapshot, tab);
+                return format!("◆ {}", tab_groups::parent_entry_label(snapshot, tab));
             }
             match tab_groups::status_icon(tab.status) {
                 Some(icon) => format!("{icon} {}", tab_label(tab)),
@@ -272,22 +273,13 @@ pub(crate) fn render_child_tab_bar(
         .map(|label| display_width(label).saturating_add(2))
         .collect::<Vec<_>>();
     // The right-hand status stays in the main row, so children get the full
-    // width. A band of its own background and a bar in the accent colour of
-    // the active tab set the row apart from the tab row and tie it to the
-    // active tab, without lining entries up under the tabs above.
-    let band = palette.active_row_bg;
+    // width. The row shares the tint of its parent tab above, and the entry on
+    // screen is the only one in the accent colour.
+    let band = accent_tint(palette);
     buffer.set_style(area, Style::default().bg(band));
-    put_text(
-        buffer,
-        area.x,
-        area.y,
-        1,
-        "▎",
-        Style::default().fg(palette.accent).bg(band),
-    );
     let content = Rect {
-        x: area.x.saturating_add(2),
-        width: area.width.saturating_sub(2),
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(1),
         ..area
     };
     let focused = tabs.iter().position(|tab| tab.focused).unwrap_or(0);
@@ -335,7 +327,19 @@ pub(crate) fn render_child_tab_bar(
             style,
         );
         hits.child_tabs.push((rect, tab.tab_id.clone()));
-        x = x.saturating_add(width + 1);
+        x = x.saturating_add(width);
+        // A divider in the gap after the parent sets it apart from its children.
+        if tab.parent_tab_id.is_none() && x < content.right() {
+            put_text(
+                buffer,
+                x,
+                area.y,
+                1,
+                "│",
+                Style::default().fg(palette.overlay0).bg(band),
+            );
+        }
+        x = x.saturating_add(1);
         if width < widths[index] {
             put_text(
                 buffer,
@@ -347,6 +351,25 @@ pub(crate) fn render_child_tab_bar(
             );
             break;
         }
+    }
+}
+
+/// A pale accent for the active parent tab and its child row: the accent
+/// mixed into the tab bar background, or a surface colour when either is not
+/// an RGB colour.
+fn accent_tint(palette: &Palette) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match (palette.accent, palette.panel_bg) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let mix = |accent: u8, base: u8| {
+                let accent = u16::from(accent);
+                let base = u16::from(base);
+                // A quarter of the accent over the background.
+                ((accent + base * 3 + 2) / 4) as u8
+            };
+            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+        }
+        _ => palette.surface1,
     }
 }
 

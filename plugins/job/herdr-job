@@ -151,7 +151,7 @@ def open_tabs():
 
 def update_owner_token(owner_pane):
     """Summarise the owner's jobs that still have a tab into its `$jobs`
-    sidebar token as counts, e.g. `2⏳ 1✗ 1✓`: the agents panel cannot
+    sidebar token as counts, e.g. `2⧖ 1✗ 1✓`: the agents panel cannot
     scroll, so a list of names would push other agents out of view. A closed
     tab drops its job from the counts (the `tab.closed` hook recounts)."""
     if not owner_pane:
@@ -166,7 +166,7 @@ def update_owner_token(owner_pane):
             continue
         st, _ = status(path, meta)
         counts["failed" if st == "lost" else st] += 1
-    marks = (("running", "⏳"), ("failed", "✗"), ("ok", "✓"))
+    marks = (("running", "⧖"), ("failed", "✗"), ("ok", "✓"))
     parts = [f"{counts[key]}{mark}" for key, mark in marks if counts[key]]
     cmd = ["pane", "report-metadata", owner_pane, "--source", "herdr-job"]
     if parts:
@@ -226,7 +226,7 @@ def cmd_run(args):
     # herdr builds have neither, so the label carries the icon there.
     tab_status = herdr_ok("tab", "status", tab_id, "running")
     if not tab_status:
-        herdr("tab", "rename", tab_id, f"⏳ {short(args.name, 30)}", check=False)
+        herdr("tab", "rename", tab_id, f"⧖ {short(args.name, 30)}", check=False)
     if owner and pane.get("tab_id"):
         herdr_ok("tab", "parent", tab_id, pane["tab_id"])
     path = STATE / job_id
@@ -279,7 +279,7 @@ class Footer:
 
     def __init__(self, meta):
         self.meta = meta
-        self.state = "⏳ running"
+        self.state = "⧖ running"
         self.rows = None
 
     def text(self):
@@ -299,7 +299,7 @@ class Footer:
     def draw(self, rows, cols):
         # No reverse video or background: it turns into a black bar on light
         # themes. The state is bold in a palette colour, which themes adapt.
-        colour = {"⏳": 33, "✓": 32}.get(self.state[:1], 31)
+        colour = {"⧖": 33, "✓": 32}.get(self.state[:1], 31)
         line = short(self.text(), max(cols - len(self.state) - 4, 10))
         sys.stdout.write(
             f"\x1b7\x1b[{rows};1H\x1b[2K\x1b[1;{colour}m {self.state}\x1b[0m: {line}\x1b8"

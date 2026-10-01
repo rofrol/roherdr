@@ -6,8 +6,9 @@ usage() {
 usage: scripts/fork_demo/record.sh [OUTPUT.mp4]
 
 Records the fork demo video (usage widget, middle-click close, notification
-click, job tabs) from a debug herdr build in a throwaway session. Defaults to
-assets/fork-demo.mp4. See scripts/fork_demo/README.md.
+click, job tabs, oracle stats popup) from a debug herdr build in a throwaway
+session, in a real Ghostty window driven by real mouse and key events. It
+takes over the mouse for about a minute. Defaults to assets/fork-demo.mp4. See scripts/fork_demo/README.md.
 USAGE
 }
 
@@ -22,7 +23,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/../.." && pwd)"
 output="${1:-$repo_dir/assets/fork-demo.mp4}"
 
-for tool in cargo uv ffmpeg; do
+for tool in cargo cc uv ffmpeg python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
 done
 
@@ -38,12 +39,23 @@ cleanup() {
     HERDR_SOCKET_PATH="$socket" "$herdr" server stop >/dev/null 2>&1 || true
     wait "$server_pid" 2>/dev/null || true
   fi
-  rm -rf "$work"
+  # HERDR_DEMO_KEEP=1 keeps the work dir (logs, raw capture) for debugging.
+  if [[ -n "${HERDR_DEMO_KEEP:-}" ]]; then echo "kept $work" >&2; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
 
-mkdir -p "$work/config/herdr-dev" "$work/state" "$work/zsh" "$work/frames"
-# Notifications are off so the recording never pops real banners on screen.
+mkdir -p "$work/config/herdr-dev" "$work/state" "$work/zsh"
+# Start from your usage cache: a fresh one makes the demo refetch every
+# provider at once, and Claude's usage endpoint rate-limits that.
+mkdir -p "$work/state/herdr"
+cp "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/usage-cache.json" "$work/state/herdr/" 2>/dev/null || true
+# proxy.py parses the client's output with libghostty-vt, the VT parser herdr
+# vendors, so record.py can find what to click; cargo builds it as a static
+# library, ctypes needs a shared one.
+cc -shared -o "$work/libghostty-vt.dylib" \
+  -Wl,-force_load,"$repo_dir/vendor/libghostty-vt/zig-out/lib/libghostty-vt.a"
+# Notifications are off: macOS hides banners while the screen is recorded, so
+# record.py draws the agent notification onto the video instead.
 cat >"$work/config/herdr-dev/config.toml" <<'EOF'
 onboarding = false
 [theme]
@@ -55,6 +67,8 @@ prompt_new_tab_name = false
 delivery = "off"
 [usage]
 enabled = true
+# Use the copied cache instead of refetching (see above).
+refresh_interval_secs = 86400
 EOF
 echo "PROMPT='%F{blue}%~%f \$ '" >"$work/zsh/.zshrc"
 
@@ -86,14 +100,13 @@ h pane run w1:p1 "clear; git log --oneline -8"
 h pane run w1:p2 "clear; printf '\\e]0;Fix the login bug\\a'; printf '\\n  > fix the login bug in src/auth\\n\\n  * Reading src/auth/login.rs\\n  * Updating session check in login()\\n  * Running cargo test auth\\n'"
 h pane run w1:p3 "clear; tail -n 5 /etc/hosts"
 h pane report-agent --source demo --agent claude --state working w1:p2
+# The oracle stats popup reads the real oracle log under $HOME.
+h plugin link "$repo_dir/plugins/oracle"
 sleep 1
 
-uv run --quiet --with pyte --with pillow python "$script_dir/record.py" \
-  --herdr "$herdr" --socket "$socket" --out-dir "$work/frames" --agent-pane w1:p2 \
-  --agent-tab w1:t2 --workspace w1
-
-# Nearest-neighbor 2x keeps the rendered cells crisp.
-ffmpeg -y -loglevel error -f concat -safe 0 -i "$work/frames/frames.txt" \
-  -vf "scale=iw*2:ih*2:flags=neighbor,fps=30,format=yuv420p" \
-  -c:v libx264 -crf 18 -movflags +faststart "$output"
-echo "wrote $output"
+# The client in the Ghostty window reads the demo's config too.
+XDG_CONFIG_HOME="$work/config" XDG_STATE_HOME="$work/state" \
+  uv run --quiet --with pillow --with pyobjc-framework-Quartz --with pyobjc-framework-Cocoa \
+  python "$script_dir/record.py" --herdr "$herdr" --socket "$socket" --work "$work" \
+  --vt-lib "$work/libghostty-vt.dylib" --python "$(command -v python3)" \
+  --agent-pane w1:p2 --agent-tab w1:t2 --workspace w1 --out "$output"

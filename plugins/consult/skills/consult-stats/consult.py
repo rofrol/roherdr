@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Log oracle consultations (gpt, gemini, deepseek skills), rate them after triage, show stats per model.
+"""Log consultations (gpt, gemini, deepseek skills), rate them after triage, show stats per model.
 
-  oracle.py log --skill S --model M --status ok|error [--effort E] [--mode M] [--seconds N] [--prompt-chars N]
-                [--answer-chars N] [--usage JSON] [--usage-raw JSON]      (round id from $ORACLE_ROUND)
-  oracle.py new-round                                                     # prints a round id for ORACLE_ROUND
-  oracle.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
-  oracle.py self (--round R | --calls ID,ID) [--model M] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
-  oracle.py stats [--days N] [--pairs]
-  oracle.py recent [-n N]
+  consult.py log --skill S --model M --status ok|error [--effort E] [--mode M] [--seconds N] [--prompt-chars N]
+                [--answer-chars N] [--usage JSON] [--usage-raw JSON]      (round id from $CONSULT_ROUND)
+  consult.py new-round                                                     # prints a round id for CONSULT_ROUND
+  consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
+  consult.py self (--round R | --calls ID,ID) [--model M] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
+  consult.py stats [--days N] [--pairs]
+  consult.py recent [-n N]
 
-Data: $ORACLE_LOG or ~/.local/state/oracle/log.jsonl (one JSON object per line; ratings are separate lines).
+Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
 Usage is normalized by the ask_* scripts: input includes cached, output includes reasoning (both are subsets).
 """
 import argparse, json, math, os, sys, time, uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 
-LOG = Path(os.environ.get("ORACLE_LOG", Path.home() / ".local/state/oracle/log.jsonl"))
+LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log.jsonl"))
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
 USAGE_KEYS = ("input", "cached", "output", "reasoning")
 PAIR_REF = {"gpt": "gpt-6-astra"}  # reference model for --pairs, when it is in the group
@@ -66,8 +66,8 @@ def cmd_log(a):
     rec = {"type": "call", "id": cid, "ts": int(time.time()), "skill": a.skill, "model": a.model,
            "effort": a.effort, "mode": a.mode, "status": a.status, "seconds": a.seconds,
            "prompt_chars": a.prompt_chars, "answer_chars": a.answer_chars, "cwd": os.getcwd()}
-    if os.environ.get("ORACLE_ROUND"):
-        rec["round"] = os.environ["ORACLE_ROUND"]
+    if os.environ.get("CONSULT_ROUND"):
+        rec["round"] = os.environ["CONSULT_ROUND"]
     for key, raw in (("usage", a.usage), ("usage_raw", a.usage_raw)):
         try:
             val = json.loads(raw) if raw else None
@@ -78,7 +78,7 @@ def cmd_log(a):
         if val:
             rec[key] = val
     append(rec)
-    print(f"[oracle id: {cid}]", file=sys.stderr)
+    print(f"[consult id: {cid}]", file=sys.stderr)
 
 
 def cmd_new_round(a):
@@ -88,7 +88,7 @@ def cmd_new_round(a):
 def check_counts(a, keys):
     vals = {k: getattr(a, k) for k in keys}
     if any(v is not None and v < 0 for v in vals.values()):
-        sys.exit("Liczby nie mogą być ujemne")
+        sys.exit("Counts must not be negative")
     f, acc, u = vals.get("findings"), vals.get("accepted"), vals.get("unique")
     if f is not None and acc is not None and acc > f:
         sys.exit(f"accepted ({acc}) > findings ({f})")
@@ -99,7 +99,7 @@ def check_counts(a, keys):
 def cmd_rate(a):
     calls, _, _ = load()
     if a.id not in calls:
-        sys.exit(f"Nieznane id: {a.id} (zobacz: oracle.py recent)")
+        sys.exit(f"Unknown id: {a.id} (see: consult.py recent)")
     check_counts(a, ("findings", "accepted", "unique"))
     append({"type": "rating", "id": a.id, "ts": int(time.time()), "verdict": a.verdict,
             "findings": a.findings, "accepted": a.accepted, "unique": a.unique, "note": a.note})
@@ -110,12 +110,12 @@ def cmd_self(a):
     if a.round:
         ids = sorted(i for i, c in calls.items() if c.get("round") == a.round)
         if not ids:
-            sys.exit(f"Brak wywołań w rundzie {a.round}")
+            sys.exit(f"No calls in round {a.round}")
     else:
         ids = sorted({i.strip() for i in a.calls.split(",") if i.strip()})
         unknown = [i for i in ids if i not in calls]
         if not ids or unknown:
-            sys.exit(f"Nieznane id: {unknown or '(brak)'} (zobacz: oracle.py recent)")
+            sys.exit(f"Unknown id: {unknown or '(none)'} (see: consult.py recent)")
     check_counts(a, ("findings", "accepted", "unique"))
     rec = {"type": "self", "calls": ",".join(ids), "ts": int(time.time()), "model": a.model,
            "findings": a.findings, "accepted": a.accepted, "refuted": a.refuted,
@@ -150,7 +150,7 @@ def cmd_stats(a):
                 s["accepted"] += r["accepted"]
             s["unique"] += r.get("unique") or 0
     if not rows:
-        print("Brak danych.")
+        print("No data.")
         return
     hdr = (f'{"skill/model":34} {"calls":>5} {"err":>4} {"avg s":>6} {"rated":>5} {"score":>6} {"acc/find":>9} '
            f'{"unique":>6} {"out/call":>8}')
@@ -163,7 +163,7 @@ def cmd_stats(a):
         print(f'{k:34} {int(s["calls"]):5} {int(s["errors"]):4} {avg:>6} {int(s["rated"]):5} {score:>6} {acc:>9} '
               f'{int(s["unique"]):6} {out:>8}')
     print("\nscore: useful=1, partial=0.5, useless=0 (average of rated calls); "
-          "unique: accepted findings nobody else (Claude, other oracles) had — depends on who else was asked;\n"
+          "unique: accepted findings nobody else (Claude, other models) had — depends on who else was asked;\n"
           "out/call: mean output tokens incl. reasoning, over ok calls with usage (older calls have none).")
     if a.pairs:
         print_pairs(calls, ratings)
@@ -183,7 +183,7 @@ def cmd_stats(a):
             known = s["accepted"] + s["missed"]
             recall = f'{s["accepted"] / known:.2f}' if known else "-"
             print(f'{k:34} {int(s["rounds"]):6} {acc:>9} {int(s["refuted"]):7} {int(s["unique"]):6} {int(s["missed"]):6} {recall:>6}')
-        print("\nrefuted: Claude's own claims disproved (by an oracle or verification); missed: accepted oracle findings "
+        print("\nrefuted: Claude's own claims disproved (by a consulted model or verification); missed: accepted findings of consulted models "
               "Claude did not have; recall: accepted / (accepted + missed), i.e. against findings anyone discovered.")
 
 
@@ -239,7 +239,7 @@ def print_pairs(calls, ratings):
                 lines.append(f'{skill} {model} vs {ref}{" [" + cfg + "]" if cfg else ""}: {len(logs)} rounds · '
                              f'out tokens {geo:.2f}× {spread} · score W/T/L {wtl[0]}/{wtl[1]}/{wtl[2]}')
     print("\npaired within rounds (geometric mean of per-round output-token ratios)")
-    print("\n".join(lines) if lines else "(no rounds with token usage yet; set ORACLE_ROUND for parallel calls)")
+    print("\n".join(lines) if lines else "(no rounds with token usage yet; set CONSULT_ROUND for parallel calls)")
 
 
 def cmd_recent(a):

@@ -964,6 +964,10 @@ pub(crate) struct ClientShellState {
     pub(super) input_leases: ClientInputLeases,
     pub(super) popup_pending: bool,
     pub(super) popup_pending_deadline: Option<std::time::Instant>,
+    /// The pending popup is consult stats: a read-only view a click outside may close.
+    pub(super) popup_pending_dismissable: bool,
+    /// Terminal id of the open popup when a click outside closes it.
+    pub(super) dismissable_popup_id: Option<String>,
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) pending_integration_installs: usize,
@@ -1133,6 +1137,8 @@ impl ClientShellState {
             input_leases: ClientInputLeases::default(),
             popup_pending: false,
             popup_pending_deadline: None,
+            popup_pending_dismissable: false,
+            dismissable_popup_id: None,
             next_request_id: 1,
             pending_requests: HashMap::new(),
             pending_integration_installs: 0,
@@ -1291,6 +1297,8 @@ impl ClientShellState {
         self.pane_scroll_targets.clear();
         self.popup_pending = false;
         self.popup_pending_deadline = None;
+        self.popup_pending_dismissable = false;
+        self.dismissable_popup_id = None;
         self.pending_integration_installs = 0;
         self.endpoint_notice_seen.clear();
         self.visible_endpoint_notice = None;
@@ -1737,9 +1745,16 @@ impl ClientShellState {
             self.endpoint_error = None;
             self.endpoint_error_deadline = None;
         }
+        if previous_popup != next_popup {
+            self.dismissable_popup_id = None;
+        }
         if next_popup.is_some() {
+            if self.popup_pending && self.popup_pending_dismissable {
+                self.dismissable_popup_id = next_popup.clone();
+            }
             self.popup_pending = false;
             self.popup_pending_deadline = None;
+            self.popup_pending_dismissable = false;
         }
         let selection_pane = match &self.word_selection_gesture {
             Some(gesture) => Some(&gesture.pane_id),
@@ -1846,6 +1861,7 @@ impl ClientShellState {
         {
             self.popup_pending = false;
             self.popup_pending_deadline = None;
+            self.popup_pending_dismissable = false;
         }
     }
 

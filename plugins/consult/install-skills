@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Link the oracle skills into an agent's skill directory (default ~/.claude/skills), so they are
+# Link the consult skills into an agent's skill directory (default ~/.claude/skills), so they are
 # updated with this checkout. Safe to re-run: existing links to these skills are left alone,
 # anything else under the same name is reported and kept.
 # Usage: install-skills [DIR]

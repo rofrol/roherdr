@@ -482,12 +482,12 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     }));
     let stats = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = &stats.actions[..] else {
-        panic!("stats should open the oracle plugin pane through the endpoint API");
+        panic!("stats should open the consult plugin pane through the endpoint API");
     };
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::PluginPaneOpen(params)
-            if params.plugin_id == "local.oracle" && params.entrypoint == "stats"
+            if params.plugin_id == "local.consult" && params.entrypoint == "stats"
     ));
     assert!(state.popup_pending);
     assert!(state.overlay.is_none());

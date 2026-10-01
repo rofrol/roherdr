@@ -49,6 +49,20 @@ pub(super) fn active_child_tabs(snapshot: &ClientShellSnapshot) -> Vec<&ClientSh
         .unwrap_or_default()
 }
 
+/// Entries of the second row: the active group's parent, then its children;
+/// empty while the parent has no children.
+pub(super) fn active_row_entries(snapshot: &ClientShellSnapshot) -> Vec<&ClientShellTab> {
+    let children = active_child_tabs(snapshot);
+    if children.is_empty() {
+        return children;
+    }
+    active_main_tab_id(snapshot)
+        .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id))
+        .into_iter()
+        .chain(children)
+        .collect()
+}
+
 /// Maps an insert position among main-row tabs to one in the workspace's flat
 /// tab list, which `tab.move` takes.
 pub(super) fn flat_insert_index(snapshot: &ClientShellSnapshot, main_row_index: usize) -> usize {
@@ -82,7 +96,7 @@ pub(super) fn parent_entry_label(
 
 pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
     match status? {
-        TabStatus::Running => Some("⏳"),
+        TabStatus::Running => Some("⧖"),
         TabStatus::Succeeded => Some("✓"),
         // Not `✗`: next to a tab label it reads as a close button.
         TabStatus::Failed => Some("!"),
@@ -90,7 +104,7 @@ pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
     }
 }
 
-/// Counts of the children's statuses, e.g. `⏳1 !2 ✓3`; empty without children.
+/// Counts of the children's statuses, e.g. `⧖ 1 !2 ✓3`; empty without children.
 /// Children without a status are counted as `•N`.
 pub(super) fn children_summary(children: &[&ClientShellTab]) -> String {
     let count = |wanted: Option<TabStatus>| {
@@ -100,14 +114,18 @@ pub(super) fn children_summary(children: &[&ClientShellTab]) -> String {
             .count()
     };
     [
-        ("⏳", count(Some(TabStatus::Running))),
+        ("⧖", count(Some(TabStatus::Running))),
         ("!", count(Some(TabStatus::Failed))),
         ("✓", count(Some(TabStatus::Succeeded))),
         ("•", count(None)),
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)
-    .map(|(icon, count)| format!("{icon}{count}"))
+    // `⧖` is as tall as a digit and runs into it without a space.
+    .map(|(icon, count)| match icon {
+        "⧖" => format!("{icon} {count}"),
+        _ => format!("{icon}{count}"),
+    })
     .collect::<Vec<_>>()
     .join(" ")
 }
