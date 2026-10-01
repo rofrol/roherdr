@@ -2585,7 +2585,7 @@ fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
 }
 
 #[test]
-fn the_button_of_an_open_list_is_filled_with_the_accent() {
+fn the_button_of_an_open_list_is_tinted_and_keeps_its_own_colour() {
     use crate::api::schema::AgentStatus::{Blocked, Working};
     let mut state = state_with_tabs(true);
     state.sidebar_width = 40;
@@ -2596,10 +2596,16 @@ fn the_button_of_an_open_list_is_filled_with_the_accent() {
     ];
     projected.tabs[0].bookmarked = true;
     state.set_snapshot(Box::new(projected));
-    let accent = crate::protocol::color_to_u32(state.config.palette.accent);
-    let bg = |state: &mut ClientShellState, rect: Rect| {
+    let palette = state.config.palette.clone();
+    let tints = [6, 4].map(|total| {
+        crate::protocol::color_to_u32(
+            crate::client::shell::render::tabs::blend(palette.accent, palette.panel_bg, 1, total)
+                .unwrap_or(palette.accent),
+        )
+    });
+    let cell = |state: &mut ClientShellState, rect: Rect| {
         let frame = state.compose(106, 30).unwrap();
-        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 1].bg
+        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 1].clone()
     };
     state.compose(106, 30).unwrap();
     let buttons = [
@@ -2609,22 +2615,28 @@ fn the_button_of_an_open_list_is_filled_with_the_accent() {
         state.hits.notification_log_button,
     ];
     for (index, button) in buttons.into_iter().enumerate() {
-        assert_ne!(bg(&mut state, button), accent, "closed {index}");
+        let closed = cell(&mut state, button);
+        assert!(!tints.contains(&closed.bg), "closed {index}");
         left_click(&mut state, (button.x + 1, button.y));
-        assert_eq!(bg(&mut state, button), accent, "open {index}");
-        // Only the open one is filled.
+        let open = cell(&mut state, button);
+        // Tinted, and the glyph keeps the colour it had when closed.
+        assert!(tints.contains(&open.bg), "open {index}: {}", open.bg);
+        assert_eq!(open.fg, closed.fg, "colour kept {index}");
+        // Only the open one is tinted.
         for (other, rect) in buttons.into_iter().enumerate() {
             if other != index {
-                assert_ne!(
-                    bg(&mut state, rect),
-                    accent,
-                    "{other} while {index} is open"
+                assert!(
+                    !tints.contains(&cell(&mut state, rect).bg),
+                    "{other} while {index}"
                 );
             }
         }
         // The same button closes it.
         left_click(&mut state, (button.x + 1, button.y));
-        assert_ne!(bg(&mut state, button), accent, "closed again {index}");
+        assert!(
+            !tints.contains(&cell(&mut state, button).bg),
+            "closed again {index}"
+        );
     }
 }
 

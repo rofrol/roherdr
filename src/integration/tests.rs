@@ -976,7 +976,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert_only_the_stop_check_hook(&settings);
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -990,6 +990,19 @@ fn assert_only_the_reminder_prompt_hook(settings: &Value) {
     let hooks = entries[0]["hooks"].as_array().unwrap();
     assert_eq!(hooks.len(), 1);
     assert!(hooks[0]["command"].as_str().unwrap().ends_with(" reminder"));
+}
+
+/// Install leaves herdr only its stop check on `Stop` (it asks once for a final question that the
+/// agent did not report); the old idle/completion hooks are gone.
+fn assert_only_the_stop_check_hook(settings: &Value) {
+    let entries = settings["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" stop-check"));
 }
 
 #[test]
@@ -1088,7 +1101,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert_only_the_stop_check_hook(&settings);
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -1166,7 +1179,7 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
     );
     assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert_only_the_stop_check_hook(&settings);
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);

@@ -40,6 +40,15 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [x] The open header button lost its colour too (user, 2026-10-01: "same
+  here it loses its colour", screenshot of the `◐4` pill in solid blue with white
+  text). Consulted DeepSeek (outline `▐◐4▌`) and GPT (tint); chose the tint, as
+  in the dropdown rows. Done: an open list's button has a light accent tint
+  (a sixth on light, a quarter on dark themes) and its glyph and count keep their
+  colour, in bold; without an RGB palette the solid pill stays. Test: `the_
+  button_of_an_open_list_is_tinted_and_keeps_its_own_colour`. Not done: a darker
+  or lighter shade for a blue `?` or envelope if a theme's tint swallows it.
+
 - [x] Three polish items (user, 2026-10-01, screenshots; consulted DeepSeek,
   Opus and GPT):
   (1) "the job summaries on a space row (`◐ 2 !2`) should be right-aligned":
@@ -179,9 +188,22 @@
     (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
     typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
     an `agent_end` extension that does the same.
-  - Next: V2 for Claude Code needs a `Stop` hook entry in the managed
-    integration (`claude_settings.rs`, the script's new `stop` action,
-    uninstall, tests, the integration version bump). Not started.
+  - Done 2026-10-01 (V2 for Claude Code; committed, not installed into
+    `~/.claude` until `herdr integration install claude` runs): a `Stop` hook
+    (`herdr-agent-state.sh stop-check`, added and removed with the reminder in
+    `claude_settings.rs`): when the final message's last paragraph looks like a
+    question for the user (the audit's bilingual heuristic, a parity test keeps
+    them equal) and the turn ran no `herdr agent awaiting-reply`, it blocks the
+    stop once (`stop_hook_active` guards the loop) with "run `herdr agent
+    awaiting-reply` now as the only command, then stop without repeating your
+    message; if you are not waiting for the user just stop"; every decision is
+    logged to `~/.local/state/herdr/awaiting-reply-stop.jsonl`;
+    `HERDR_AWAITING_REPLY_STOP=0` turns it off, `=shadow` only logs. Tests: the
+    install/uninstall tests, and `StopHook` in `scripts/test_awaiting_reply_
+    audit.py` (block once, reported and statement pass, an earlier turn's
+    report does not count). The integration version stays 11 (not yet
+    released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
+    extension), V3 inference, an LLM judge for the audit.
 
 - [x] Bookmark rows and popups (user, 2026-10-01, three screenshots): (1) the
   bookmark list showed "1 · job-seeker" and "2 · herdr" where the sidebar says
