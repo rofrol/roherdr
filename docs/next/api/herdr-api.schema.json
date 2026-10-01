@@ -8179,6 +8179,13 @@
                 "null"
               ]
             },
+            "request": {
+              "description": "What the agent asked or said when it needed the user: its own message\nfrom the hook report (an approval prompt or a question), one line.\nAbsent when the agent reported none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tab_id": {
               "type": [
                 "string",

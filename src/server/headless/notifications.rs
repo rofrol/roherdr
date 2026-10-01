@@ -857,6 +857,14 @@ impl HeadlessServer {
             .pane_id
             .as_deref()
             .and_then(|pane_id| self.notification_task(pane_id, notification.agent.as_deref()));
+        let request = (kind == "needs_attention")
+            .then(|| {
+                notification
+                    .pane_id
+                    .as_deref()
+                    .and_then(|pane_id| self.notification_request(pane_id))
+            })
+            .flatten();
         // The pane's latest entry of the same kind is the same story told
         // again: it gives way to this one, which counts it.
         let mut repeats = None;
@@ -888,9 +896,31 @@ impl HeadlessServer {
                 tab_id: notification.tab_id.clone(),
                 pane_id: notification.pane_id.clone(),
                 task,
+                request,
                 repeats,
             });
         self.next_notification_id += 1;
+    }
+
+    /// What the agent said when it asked: its hook report's message.
+    fn notification_request(&self, public_pane_id: &str) -> Option<String> {
+        let (ws_idx, pane_id) = self.app.parse_pane_id(public_pane_id)?;
+        let terminal_id = self
+            .app
+            .state
+            .workspaces
+            .get(ws_idx)?
+            .terminal_id(pane_id)?;
+        let message = self
+            .app
+            .state
+            .terminals
+            .get(terminal_id)?
+            .hook_authority
+            .as_ref()?
+            .message
+            .clone()?;
+        clean_notification_line(&message, 300)
     }
 
     /// The pane's task for a history row: its terminal title now, when that
@@ -911,6 +941,25 @@ impl HeadlessServer {
             .terminal_title_stripped()?;
         clean_notification_task(&title, agent)
     }
+}
+
+/// One line of at most `max` characters, or none when empty.
+pub(super) fn clean_notification_line(text: &str, max: usize) -> Option<String> {
+    let line = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    Some(if line.chars().count() > max {
+        format!("{}…", line.chars().take(max - 1).collect::<String>())
+    } else {
+        line
+    })
 }
 
 /// One line of at most 80 characters, or none for a title that names no

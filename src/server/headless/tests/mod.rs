@@ -7810,6 +7810,41 @@ fn history_merges_a_panes_repeats_and_keeps_its_task() {
 }
 
 #[test]
+fn a_needs_attention_row_carries_the_agents_own_message_as_its_request() {
+    use protocol::SemanticNotificationKind::{Finished, NeedsAttention};
+
+    let (writer, _control_rx, _render_rx) = test_client_writer();
+    let (mut server, pane_id) = completion_guard_server(writer);
+    let public = server.app.public_pane_id(0, pane_id).unwrap();
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(pane_id)
+        .unwrap()
+        .clone();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_hook_authority(
+            "custom:pi".into(),
+            "pi".into(),
+            crate::detect::AgentState::Blocked,
+            Some("  Delete\nthe build   directory?  ".into()),
+            Some(1),
+        );
+    server.record_notification(&finished_notification(&public, NeedsAttention));
+    server.record_notification(&finished_notification(&public, Finished));
+    let history = server.notification_history.iter().collect::<Vec<_>>();
+    assert_eq!(
+        history[0].request.as_deref(),
+        Some("Delete the build directory?")
+    );
+    // A finished turn asks nothing, so it carries no request.
+    assert_eq!(history[1].request, None);
+}
+
+#[test]
 fn task_titles_that_name_no_task_are_dropped_and_long_ones_cut() {
     use super::notifications::clean_notification_task as clean;
     assert_eq!(
