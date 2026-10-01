@@ -349,13 +349,22 @@ pub(crate) fn render_global_menu(
     })
 }
 
+/// One row of the dropdown: the time, the text, whether it is unread, and the
+/// tab's state icon with its colour.
+pub(crate) type LogRow = (
+    String,
+    String,
+    bool,
+    Option<(&'static str, ratatui::style::Color)>,
+);
+
 /// The notification history dropdown under its button, over the panes:
 /// `HH:MM` and the text per row, newest first, unread ones marked `•`.
 pub(crate) fn render_notification_log(
     buffer: &mut Buffer,
     button: Rect,
     highlighted: usize,
-    rows: &[(String, String, bool)],
+    rows: &[LogRow],
     palette: &Palette,
 ) -> Option<OverlayRender> {
     let screen = buffer.area;
@@ -364,9 +373,9 @@ pub(crate) fn render_notification_log(
         .max(20.min(screen.width));
     // The highlighted row's whole text, wrapped, under a rule: the rows cut it
     // to one line.
-    let detail = rows
-        .get(highlighted)
-        .map(|(time, text, _)| format!("{time}  {}", text.replace(|c: char| c.is_control(), " ")));
+    let detail = rows.get(highlighted).map(|(time, text, _, _)| {
+        format!("{time}  {}", text.replace(|c: char| c.is_control(), " "))
+    });
     let detail_lines = detail
         .as_deref()
         .map(|text| wrap_detail(text, usize::from(width.saturating_sub(4))))
@@ -394,7 +403,7 @@ pub(crate) fn render_notification_log(
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
     }
-    for (index, (time, text, unread)) in rows.iter().enumerate() {
+    for (index, (time, text, unread, icon)) in rows.iter().enumerate() {
         let row_y = inner.y.saturating_add(index as u16);
         if row_y >= inner.bottom() {
             break;
@@ -427,8 +436,18 @@ pub(crate) fn render_notification_log(
         } else {
             base.fg(palette.overlay1)
         };
-        put_text(buffer, row.x.saturating_add(2), row.y, 13, time, time_style);
-        let text_x = row.x.saturating_add(3 + display_width(time));
+        // The time, when the row has one, then the tab's state icon as its
+        // sidebar line draws it, then the text.
+        let mut text_x = row.x.saturating_add(3);
+        if !time.is_empty() {
+            put_text(buffer, row.x.saturating_add(2), row.y, 13, time, time_style);
+            text_x = row.x.saturating_add(3 + display_width(time));
+        }
+        if let Some((glyph, color)) = icon {
+            let style = if selected { base } else { base.fg(*color) };
+            put_text(buffer, text_x.saturating_sub(1), row.y, 1, glyph, style);
+            text_x = text_x.saturating_add(1);
+        }
         let text = crate::ui::truncate_end(
             &text.replace(|character: char| character.is_control(), " "),
             usize::from(row.right().saturating_sub(text_x)),

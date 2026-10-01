@@ -1173,6 +1173,9 @@ pub(crate) struct ClientShellState {
     pub(super) tab_scroll: usize,
     pub(super) mobile_switcher_scroll: usize,
     pub(super) reveal_focused_workspace: bool,
+    /// A tab line that was just unfolded: the spaces list scrolls to show its
+    /// squares.
+    pub(super) reveal_unfolded_tab: Option<String>,
     pub(super) reveal_mobile_workspace: bool,
     pub(super) mobile_switcher_suspended: bool,
     pub(super) reveal_focused_tab: bool,
@@ -1371,6 +1374,7 @@ impl ClientShellState {
             tab_scroll: 0,
             mobile_switcher_scroll: 0,
             reveal_focused_workspace: true,
+            reveal_unfolded_tab: None,
             reveal_mobile_workspace: false,
             mobile_switcher_suspended: false,
             reveal_focused_tab: true,

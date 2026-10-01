@@ -183,6 +183,8 @@ impl ClientShellState {
                 .or_default();
             unfolded.retain(|key| live.contains(key));
             if !unfolded.remove(&tab_id) {
+                // Unfolding scrolls the list to show the squares.
+                self.reveal_unfolded_tab = Some(tab_id.clone());
                 unfolded.insert(tab_id);
             }
             return Some(None);
@@ -2027,6 +2029,21 @@ impl ClientShellState {
                         // Also the button: it closes what it opened.
                         self.overlay = None;
                         outcome.repaint = true;
+                    }
+                }
+                // A right click on a row opens its tab's menu, where a
+                // bookmark is removed.
+                MouseEventKind::Down(MouseButton::Right) => {
+                    if let Some((_, index)) = row_hit {
+                        if let Some(tab_id) = self
+                            .notification_log_rows()
+                            .into_iter()
+                            .nth(index)
+                            .and_then(|row| row.tab_id)
+                        {
+                            self.open_tab_context_menu(tab_id, point.0, point.1);
+                            outcome.repaint = true;
+                        }
                     }
                 }
                 // A middle click on a bookmark removes it.

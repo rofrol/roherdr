@@ -140,6 +140,14 @@ impl ClientShellState {
         })
     }
 
+    /// The view of the open dropdown, or none when no list is open.
+    pub(super) fn open_notification_list(&self) -> Option<NotificationLogView> {
+        match self.overlay.as_ref() {
+            Some(ClientShellOverlay::NotificationLog(log)) => Some(log.view),
+            _ => None,
+        }
+    }
+
     /// The view the open dropdown shows.
     pub(super) fn notification_log_view(&self) -> NotificationLogView {
         match self.overlay.as_ref() {
@@ -201,6 +209,30 @@ impl ClientShellState {
                 task: None,
                 request: None,
                 repeats: None,
+            })
+            .collect()
+    }
+
+    /// The tab state icon and colour for each row of the open list, as the
+    /// sidebar's tab lines draw them, for the rows whose tab still exists;
+    /// none for the others (they keep their mark in the text).
+    pub(super) fn notification_row_icons(
+        &self,
+        rows: &[NotificationRecord],
+    ) -> Vec<Option<(&'static str, ratatui::style::Color)>> {
+        let snapshot = self.snapshot.as_deref();
+        rows.iter()
+            .map(|row| {
+                let snapshot = snapshot?;
+                let tab = snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| Some(tab.tab_id.as_str()) == row.tab_id.as_deref())?;
+                Some(super::space_tabs::tab_state_icon(
+                    snapshot,
+                    tab,
+                    &self.config,
+                ))
             })
             .collect()
     }
