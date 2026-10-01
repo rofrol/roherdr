@@ -1189,6 +1189,8 @@ impl HeadlessServer {
                     &[protocol::ClientPaneInputEvent::Paste(path)],
                 ) {
                     warn!(client_id, pane_id, err = %err, "client shell clipboard image paste failed");
+                } else {
+                    self.clear_awaiting_reply_on_typing(workspace_index, runtime_pane_id, || true);
                 }
                 true
             }
@@ -1229,6 +1231,27 @@ impl HeadlessServer {
                 true
             }
         }
+    }
+
+    /// Clears the awaiting-reply report of the pane's terminal when the input just
+    /// applied to it was typing (`typed`, evaluated only while a report is held).
+    /// Returns whether the shown mark changed.
+    fn clear_awaiting_reply_on_typing(
+        &mut self,
+        workspace_index: usize,
+        pane_id: crate::layout::PaneId,
+        typed: impl FnOnce() -> bool,
+    ) -> bool {
+        let Some(terminal_id) = self
+            .app
+            .state
+            .terminal_id_for_pane(workspace_index, pane_id)
+        else {
+            return false;
+        };
+        self.app.terminal_has_awaiting_reply_report(&terminal_id)
+            && typed()
+            && self.app.clear_awaiting_reply_on_input(&terminal_id)
     }
 
     fn resolve_terminal_session_target(
@@ -2064,10 +2087,20 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
-                    }
+                let Some(terminal_id) = self.terminal_id_by_string(terminal_id) else {
+                    return true;
+                };
+                let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) else {
+                    return true;
+                };
+                // Classified before the bytes move into the runtime, and only while a
+                // report could be cleared.
+                let typed = self.app.terminal_has_awaiting_reply_report(&terminal_id)
+                    && crate::raw_input::bytes_carry_typed_input(&data);
+                if let Err(err) = apply_terminal_attach_input(runtime, data) {
+                    warn!(client_id, terminal_id = %terminal_id, err = %err);
+                } else if typed {
+                    self.app.clear_awaiting_reply_on_input(&terminal_id);
                 }
                 true
             }
@@ -2406,10 +2439,24 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                if let Err(err) = apply_client_pane_input_events(runtime, &events) {
-                    warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
-                }
-                foreground_changed | geometry_changed || runtime.scroll_metrics() != scroll_before
+                let applied = apply_client_pane_input_events(runtime, &events);
+                let scrolled = runtime.scroll_metrics() != scroll_before;
+                let answered = match applied {
+                    Ok(()) => self.clear_awaiting_reply_on_typing(
+                        workspace_index,
+                        runtime_pane_id,
+                        || {
+                            events.iter().any(|event| {
+                                crate::raw_input::is_typed_input(&event.to_raw_input_event())
+                            })
+                        },
+                    ),
+                    Err(err) => {
+                        warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                        false
+                    }
+                };
+                foreground_changed | geometry_changed | answered || scrolled
             }
             ServerEvent::ClientShellPopupInput {
                 client_id,

@@ -885,6 +885,25 @@ fn plausible_control_string_tail(family: ControlStringFamily, buffer: &[u8]) -> 
     }
 }
 
+/// Whether `event` is someone typing: a key press or repeat, committed text or a
+/// paste. Key releases, mouse, focus changes and replies to host queries are not, so
+/// they cannot count as answering an agent's question.
+pub(crate) fn is_typed_input(event: &RawInputEvent) -> bool {
+    match event {
+        RawInputEvent::Key(key) => key.kind != crossterm::event::KeyEventKind::Release,
+        RawInputEvent::Text(_) | RawInputEvent::Paste(_) => true,
+        _ => false,
+    }
+}
+
+/// Whether raw input bytes from a client terminal carry typing (`is_typed_input`).
+pub(crate) fn bytes_carry_typed_input(data: &[u8]) -> bool {
+    let mut framer = RawInputByteFramer::default();
+    let mut chunks = framer.push(data);
+    chunks.extend(framer.flush_timeout());
+    events_from_framed_chunks(chunks).iter().any(is_typed_input)
+}
+
 #[cfg(any(unix, test))]
 pub(crate) fn events_require_host_surface_redraw(
     events: &[RawInputEvent],
@@ -1552,6 +1571,23 @@ mod tests {
         };
         assert_eq!(key.code, code);
         assert_eq!(key.modifiers, modifiers);
+    }
+
+    #[test]
+    fn typed_input_is_keys_text_and_paste_only() {
+        for typed in [&b"y"[..], b"\r", b"\x1b[A", b"\x1b[200~text\x1b[201~"] {
+            assert!(bytes_carry_typed_input(typed), "{typed:?}");
+        }
+        for untyped in [
+            &b"\x1b[I"[..],
+            b"\x1b[O",
+            b"\x1b[<0;10;5M",
+            b"\x1b[<64;10;5M",
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+            b"",
+        ] {
+            assert!(!bytes_carry_typed_input(untyped), "{untyped:?}");
+        }
     }
 
     fn decode_hex(hex: &str) -> Vec<u8> {

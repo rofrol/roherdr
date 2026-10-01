@@ -8069,3 +8069,47 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[tokio::test]
+async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("awaiting-reply");
+    let pane = workspace.tabs[0].root_pane;
+    let (runtime, mut input) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            0,
+            b"QUESTION",
+            4,
+        );
+    workspace.insert_test_runtime(pane, runtime);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let pane_id = server.app.public_pane_id(0, pane).unwrap();
+    let terminal_id = server.app.state.terminal_id_for_pane(0, pane).unwrap();
+    let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.state = crate::detect::AgentState::Idle;
+    assert!(terminal.report_awaiting_reply());
+    let (control, _render) = connect_test_shell(&mut server, 31, 100, 30);
+    let _ = control.recv().expect("snapshot");
+
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+            client_id: 31,
+            pane_id,
+            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                "yes".into()
+            )],
+        })
+    );
+    assert_eq!(
+        input.try_recv().expect("typed input"),
+        Bytes::from_static(b"yes")
+    );
+    assert!(!server.app.state.terminals[&terminal_id].awaiting_reply());
+    shutdown_test_runtimes(&mut server);
+}

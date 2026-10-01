@@ -2211,27 +2211,21 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                // A line under a space focuses its agent or job tab, not the space.
-                let space_line = self
+                // A tab line under a space enters that tab's group, as the
+                // main tab row does, not the space.
+                let space_tab = self
                     .hits
-                    .space_agents
+                    .space_tabs
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, target)| target.clone());
-                if let Some(target) = space_line {
-                    use super::space_agents::SpaceLineTarget;
-                    let method =
-                        match target {
-                            SpaceLineTarget::Pane(pane_id) => {
-                                crate::api::schema::Method::PaneFocus(
-                                    crate::api::schema::PaneTarget { pane_id },
-                                )
-                            }
-                            SpaceLineTarget::Tab(tab_id) => crate::api::schema::Method::TabFocus(
-                                crate::api::schema::TabTarget { tab_id },
-                            ),
-                        };
-                    self.push_endpoint_method(method, outcome);
+                    .map(|(_, tab_id)| self.group_entry_tab(tab_id));
+                if let Some(tab_id) = space_tab {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                            tab_id,
+                        }),
+                        outcome,
+                    );
                     return;
                 }
                 let workspace_press = self

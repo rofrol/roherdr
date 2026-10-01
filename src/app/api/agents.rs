@@ -265,6 +265,7 @@ impl App {
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
+        self.clear_awaiting_reply_on_pane_input(resolved.ws_idx, resolved.pane_id);
         Ok((id, agent, completion))
     }
 
@@ -421,6 +422,7 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "agent_send_keys_failed", err.to_string());
         }
+        self.clear_awaiting_reply_on_pane_input(resolved.ws_idx, resolved.pane_id);
 
         encode_success(id, ResponseResult::Ok {})
     }

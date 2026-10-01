@@ -5,7 +5,7 @@
 Personal fork of [herdrdev/herdr](https://github.com/herdrdev/herdr); these
 commits sit on top of upstream `master` and are not meant for upstream PRs.
 
-- **Usage widget.** A sidebar footer below the agents list shows how much of
+- **Usage widget.** A footer at the bottom of the sidebar shows how much of
   your coding-agent allowance is used: Anthropic/Claude (`AN`) and
   OpenAI/Codex (`OA`) 5-hour and weekly limits with time to reset, the
   Google/Gemini (`GO`) weekly limit, and the DeepSeek (`DS`) and OpenRouter
@@ -41,6 +41,21 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
   Closing a parent tab asks first and closes its jobs too. Child tabs and
   statuses are ordinary API (`herdr tab parent`, `herdr tab status`), usable
   by any script.
+- **Vertical tabs in the sidebar** (experimental). With
+  `spaces.tabs = true`, each space lists its tabs under it, one line per
+  top-level tab with its agent state, label and the running and failed
+  counts of its nested job tabs; click a line to open that tab. A
+  disclosure triangle before the space's name collapses its tabs.
+  `show_agents_panel = false` hides the agents panel and gives its height
+  to the spaces list:
+
+  ```toml
+  [ui.sidebar]
+  show_agents_panel = false
+
+  [ui.sidebar.spaces]
+  tabs = true
+  ```
 - **Consult stats in the herdr menu.** The sidebar's `menu` has an
   **consult stats** item that opens the [consult plugin](plugins/consult/README.md)'s
   stats popup; a click outside closes it. Plugin popups also dim the

@@ -278,6 +278,7 @@ You can override individual colors:
 sidebar_bg = "#181825"
 active_row_bg = "#1e1e2e"
 selection_bg = "#313244"
+drag_bg = "#45475a"
 panel_bg = "reset"
 accent = "#a6e3a1"
 green = "#a6e3a1"
@@ -286,7 +287,7 @@ red = "#f38ba8"
 yellow = "#f9e2af"
 ```
 
-`sidebar_bg` optionally gives the desktop sidebar its own background. When omitted, the sidebar keeps the host terminal background. `active_row_bg` changes the active Space and focused Agent row background without affecting separators or scrollbar tracks. `selection_bg` changes the Navigate-mode cursor row background in the sidebar.
+`sidebar_bg` optionally gives the desktop sidebar its own background. When omitted, the sidebar keeps the host terminal background. `active_row_bg` changes the active Space and focused Agent row background without affecting separators or scrollbar tracks. `selection_bg` changes the Navigate-mode cursor row background in the sidebar. `drag_bg` changes the background of a Space while it is dragged; `reset` leaves only the accent bar.
 
 Color values accept hex, named colors, `rgb(r,g,b)`, or reset aliases like `reset`, `default`, `none`, and `transparent`.
 
@@ -401,7 +402,7 @@ Space rows accept these built-in tokens:
 - `workspace` — workspace name.
 - `branch` — Git branch when available.
 - `git_status` — Git ahead and behind counts when nonzero.
-- `tab_jobs` — counts of the space's tabs whose status (`herdr tab status`) is running (`⧖ 1`) or failed (`!1`), when nonzero. A collapsed worktree group counts all its spaces. It shows background work such as `herdr-job` jobs while the space's agents are idle. With `ui.sidebar.spaces.agents`, a space that lists agents shows jobs nested under an agent's tab under that agent, and the rest on an `other jobs` line below its agents instead of here.
+- `tab_jobs` — counts of the space's tabs whose status (`herdr tab status`) is running (`⧖ 1`) or failed (`!1`), when nonzero. A collapsed worktree group counts all its spaces. It shows background work such as `herdr-job` jobs while the space's agents are idle. With `ui.sidebar.spaces.tabs`, a space that lists its tabs shows the jobs nested under a tab on that tab's line, and here only jobs nested under a tab that is gone.
 - `$name` — custom workspace metadata named `name`.
 
 Tokens render in their configured order. Herdr normally separates adjacent values with ` · ` and uses a single space after `state_icon`. Missing values and their separators disappear; a row disappears when none of its tokens have a value. Existing custom rows remain unchanged, so add `machine` explicitly if you want machine identity in a custom multi-machine layout. Each layout may contain at most 16 rows, with at most 16 tokens in each row.

@@ -379,7 +379,7 @@ pub(crate) fn render_sidebar(
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
-                    let agents = super::space_agents::space_agent_lines(
+                    let tab_lines = super::space_tabs::space_tab_lines(
                         snapshot,
                         workspace,
                         state.collapsed_groups,
@@ -388,18 +388,18 @@ pub(crate) fn render_sidebar(
                     let rows = workspace_rows(
                         workspace,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
-                        super::space_agents::space_row_tab_jobs(
+                        super::space_tabs::space_row_tab_jobs(
                             snapshot,
                             workspace,
                             state.collapsed_groups,
-                            &agents,
+                            &tab_lines,
                         ),
                         entry.indented,
                         &config.spaces,
                     )
                     .len()
                     .max(1);
-                    (rows + agents.len()).min(u16::MAX as usize) as u16
+                    (rows + tab_lines.len()).min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
         })
@@ -452,22 +452,18 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let agent_lines = super::space_agents::space_agent_lines(
+        let tab_lines =
+            super::space_tabs::space_tab_lines(snapshot, workspace, state.collapsed_groups, config);
+        let tab_jobs = super::space_tabs::space_row_tab_jobs(
             snapshot,
             workspace,
             state.collapsed_groups,
-            config,
-        );
-        let tab_jobs = super::space_agents::space_row_tab_jobs(
-            snapshot,
-            workspace,
-            state.collapsed_groups,
-            &agent_lines,
+            &tab_lines,
         );
         let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
         let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
         let row_height = own_rows
-            .saturating_add(agent_lines.len().min(u16::MAX as usize) as u16)
+            .saturating_add(tab_lines.len().min(u16::MAX as usize) as u16)
             .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -487,9 +483,17 @@ pub(crate) fn render_sidebar(
         } else {
             None
         };
-        if selected {
+        // A pressed or dragged block gets its own background, whichever
+        // space it is, together with the accent grip; themes without one
+        // (terminal) rely on the accent bar.
+        let drag_bg = Some(palette.drag_bg)
+            .filter(|bg| (dragged || pressed) && *bg != ratatui::style::Color::Reset);
+        if let Some(bg) = drag_bg {
+            buffer.set_style(rect, Style::default().bg(bg));
+        } else if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
-        } else if workspace.focused {
+        } else if workspace.focused && !config.spaces.tabs {
+            // With vertical tabs only the tab lines have a background.
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
         let icon = aggregate_icon(snapshot, status, config.status_indicators, |agent| {
@@ -506,8 +510,10 @@ pub(crate) fn render_sidebar(
             workspace.focused,
             selected,
             state.selected_workspace_id.is_some(),
-            grab_color.filter(|_| dragged || pressed),
-            palette,
+            grab_color
+                .filter(|_| dragged || pressed)
+                .map(|name| (name, drag_bg)),
+            config,
         );
         if let Some(color) = grab_color {
             // A grip at the name line's right edge, left of the group
@@ -524,8 +530,8 @@ pub(crate) fn render_sidebar(
                 );
             }
         }
-        hits.space_agents
-            .extend(super::space_agents::render_space_agent_lines(
+        hits.space_tabs
+            .extend(super::space_tabs::render_space_tab_lines(
                 buffer,
                 Rect::new(
                     rect.x,
@@ -533,17 +539,30 @@ pub(crate) fn render_sidebar(
                     rect.width,
                     rect.height.saturating_sub(own_rows),
                 ),
-                &agent_lines,
+                &tab_lines,
+                workspace.focused,
                 config,
             ));
-        let group_toggle = render_parent_group_toggle(
-            buffer,
-            rect,
-            snapshot,
-            entry.index,
-            state.collapsed_groups,
-            palette,
-        );
+        let group_toggle = if config.spaces.tabs {
+            super::space_tabs::render_space_disclosure(
+                buffer,
+                rect,
+                snapshot,
+                entry,
+                workspace,
+                state.collapsed_groups,
+                config,
+            )
+        } else {
+            render_parent_group_toggle(
+                buffer,
+                rect,
+                snapshot,
+                entry.index,
+                state.collapsed_groups,
+                palette,
+            )
+        };
         hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
@@ -857,7 +876,10 @@ pub(crate) fn workspace_entries(
     entries
 }
 
-fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
+pub(in crate::client::shell) fn parent_group_key(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+) -> Option<String> {
     let workspace = snapshot.workspaces.get(index)?;
     let worktree = workspace.worktree.as_ref()?;
     if worktree.is_linked_worktree {
@@ -1025,12 +1047,12 @@ pub(in crate::client::shell) fn workspace_rows(
             suppress_git_details: indented,
         },
     );
-    if !config.agents {
+    if !config.tabs {
         return rows;
     }
-    // Agents listed under the space show their own states, so the space's
-    // aggregate icon is redundant. Dropped for every space, also those without
-    // agents, so the name does not shift as agents come and go.
+    // Tabs listed under the space show their own states, so the space's
+    // aggregate icon is redundant. Dropped for every space, also a collapsed
+    // group that lists no tabs, so names stay aligned.
     rows.into_iter()
         .map(|row| {
             row.into_iter()
@@ -1052,10 +1074,16 @@ pub(in crate::client::shell) fn render_workspace_rows(
     focused: bool,
     selected: bool,
     navigating: bool,
-    // Name colour of a pressed or dragged space.
-    grabbed: Option<ratatui::style::Color>,
-    palette: &Palette,
+    // Name colour of a pressed or dragged space and, while dragged, its
+    // background, which wins over selected and focused.
+    grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
+    config: &ClientShellConfig,
 ) {
+    let palette = &config.palette;
+    // With vertical tabs (`spaces.tabs`): leave two columns in front of the
+    // name for `render_space_disclosure`, and give a focused space no
+    // background; only its tab lines have one.
+    let vertical_tabs = config.spaces.tabs;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -1087,7 +1115,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             x = x.saturating_add(3);
         }
+        if vertical_tabs && row_index == 0 {
+            x = x.saturating_add(2);
+        }
         let highlighted = focused || grabbed.is_some();
+        let grabbed = grabbed.map(|(name, _)| name);
         let workspace_style = Style::default()
             .fg(grabbed.unwrap_or(if highlighted {
                 palette.text
@@ -1120,9 +1152,12 @@ pub(in crate::client::shell) fn render_workspace_rows(
         );
     }
 
-    let background = if selected {
+    let drag_background = grabbed.and_then(|(_, background)| background);
+    let background = if drag_background.is_some() {
+        drag_background
+    } else if selected {
         Some(workspace_selection_background(palette))
-    } else if focused {
+    } else if focused && !vertical_tabs {
         Some(workspace_active_background(palette, navigating))
     } else {
         None

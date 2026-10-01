@@ -288,6 +288,28 @@ pub fn identify_agent_process_in_job(
     best.map(|(_, agent, name, pid)| (agent, name, pid))
 }
 
+/// Whether `process` is an interactive Unix shell: a shell (a login shell's
+/// name starts with `-`, e.g. `-zsh`) given only options, none of them `-c`.
+/// While a pane's interactive shell leads the foreground group, its other
+/// members are rc-file helpers such as `eval "$(omp completions zsh)"`, which
+/// run before job control is on; an agent started at the prompt gets a group
+/// of its own. A `sh -c 'cd x && claude'` pane command is not interactive:
+/// its agent shares the shell's group. Without argv, say no.
+pub(crate) fn is_interactive_shell_process(process: &crate::platform::ForegroundProcess) -> bool {
+    let Some(argv) = process.argv.as_deref() else {
+        return false;
+    };
+    let name = process.argv0.as_deref().unwrap_or(&process.name);
+    let name = normalized_agent_lookup_name(path_basename(name));
+    matches!(
+        name.trim_start_matches('-'),
+        "sh" | "ash" | "dash" | "ksh" | "bash" | "zsh" | "fish"
+    ) && argv
+        .iter()
+        .skip(1)
+        .all(|arg| arg.starts_with("--") || (arg.starts_with('-') && !arg.contains('c')))
+}
+
 /// Detect the state of an agent from the live terminal tail snapshot.
 /// If `agent` is `None`, returns `Unknown`.
 #[cfg(test)]

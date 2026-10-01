@@ -453,7 +453,7 @@ pub(in crate::client::shell) fn tab_status_color(
 /// A pale accent for the active parent tab and its child row: the accent
 /// mixed into the tab bar background, or a surface colour when either is not
 /// an RGB colour.
-fn accent_tint(palette: &Palette) -> ratatui::style::Color {
+pub(in crate::client::shell) fn accent_tint(palette: &Palette) -> ratatui::style::Color {
     // A sixth of the accent over the background.
     blend(palette.accent, palette.panel_bg, 1, 6).unwrap_or(palette.surface1)
 }
@@ -665,6 +665,19 @@ fn tab_label(
     } else {
         label
     }
+}
+
+/// A tab's label in the sidebar's vertical tabs: the tab bar's label, not
+/// padded or cut to the tab bar's fixed title width.
+pub(in crate::client::shell) fn sidebar_tab_label(
+    tab: &ClientShellTab,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+) -> String {
+    agent_task_title(tab, snapshot, config)
+        .or_else(|| running_program(tab, config))
+        .unwrap_or(&tab.label)
+        .to_owned()
 }
 
 /// With `ui.tab_label = "title"`, an unnamed tab shows the terminal title of

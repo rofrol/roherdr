@@ -155,6 +155,34 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     blue only in the current space, derivable from `focused` with no
     protocol change. Decided: every space shows its selected agent blue
     (Astra's), not only the current one.
+  - 2026-09-28: decided to replace the agents under each space with plain
+    vertical tabs, which supersedes the agents sort row, the per-agent
+    selected flag, the `other jobs` line and the agent colouring above.
+    `ui.sidebar.spaces.tabs = true` replaces `spaces.agents`: one line per
+    top-level tab in tab order (plain shells too; a tab with several agents
+    is one line), with the tab's state icon and the tab bar's label. Job
+    tabs nested under a tab are not listed; clicking the tab enters its
+    group's last focused tab and the child row at the top shows them. The
+    line ends with the running and failed counts of its nested jobs
+    (`⧖1 !1`), so a failed job in a background space stays visible;
+    truncate the label first. The active tab of every space is accent
+    foreground, bold (its group: an active child marks its parent's line);
+    `active_tab_id` gives this with no protocol change. With vertical tabs
+    on, the main tab row is hidden and the child row takes the top. A
+    collapsed worktree group shows no tabs. Consulted (GPT-6 Astra,
+    DeepSeek): both wanted some job signal (Astra counts, DeepSeek a
+    single `!` on failure only; counts chosen), agreed on hiding the main
+    row, listing shells, and the new option name. DeepSeek: if middle-click
+    close comes, refuse it when the tab has running jobs.
+  - Done 2026-09-28: the vertical tabs, and a disclosure triangle in front
+    of the space's name (`▼`/`►`, grey, two-column hit) that hides its tab
+    lines, as in tree-style tab lists; a worktree parent's triangle
+    collapses its child spaces and tabs together, replacing its right-edge
+    chevron. Consulted (GPT-6 Astra, DeepSeek): both chose `▼`/`►` (not
+    `▶`, which has an emoji form) and a dim colour; Astra merged the
+    parent's two collapses, DeepSeek wanted them separate. Still open:
+    hiding the main tab row with the child row taking the top, and a `+`
+    as the last thing on the space's name line for a new tab.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -198,6 +226,31 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Keyboard reorder (move space up/down, whole family); none exists now.
   - The move is sent by ids (`move X before Y`); if another client changed
     the order or the anchor vanished, cancel with a notice.
+- [x] A dragged space that is not the active one gets a light grey
+  background (2026-09-28), so the moving block stands out; today only the
+  accent bar and name mark it, while the active space keeps its
+  `active_row_bg`.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), both agreeing:
+    not `active_row_bg` (it would look like the active space) nor
+    `selection_bg` (the two grey blocks decided against above), but a new
+    configurable `drag_bg` palette key with per-theme defaults; the accent
+    bar, name colour and live position stay the primary cue. Only past the
+    drag threshold, not on press (a press may still be a click; the dim bar
+    covers it). Any dragged block, the active one too, uses the same
+    background (dragged > selected > focused, one background per row, also
+    over its worktree children and agent rows), so the gesture looks the
+    same whichever space is grabbed. No background in 16-colour themes
+    (`active_row_bg` is already DarkGray there) and with `NO_COLOR`.
+  - Colour: Astra wants a neutral grey, a bit darker than "light" in the
+    light theme (#e6e9ef active leaves almost no contrast) and checked
+    against agent state colours; DeepSeek wants the accent blended ~10-15%
+    into the sidebar background so it reads as lifted, not selected.
+  - Done 2026-09-28: a `drag_bg` palette key (`theme.custom.drag_bg`),
+    picked per theme (`surface1` matched the active row in nord, kanagawa
+    and rose-pine), very light in light themes, none in `terminal`. Unlike
+    the advice, it shows already on press, together with the grip's accent
+    colour (my call after trying it), and on any grabbed space, the active
+    one too.
 - [ ] The space's name line gives no feedback that it can be dragged
   (2026-09-28). Now: pressing it changes nothing until the pointer moves;
   in prio/name sort, on a remote endpoint or on a linked worktree the drag
@@ -375,6 +428,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   so `just check` fails there and agents run narrower checks, and the fork
   has never had a GitHub Actions run although `ci.yml` has a
   `windows-latest` job (`just check` in pwsh plus the ConPTY smoke test).
+  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`,
+    integration v11): the awaiting-reply instruction it prints from
+    `SessionStart` and the `Bash(herdr agent awaiting-reply)` rule are
+    untested there (Claude may run commands through PowerShell).
   - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
     (the user accepts Microsoft's SDK license), and prove a full
     `just check` passes before the fork section of CLAUDE.md requires it.
@@ -578,8 +635,18 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     (`HERDR_AWAITING_REPLY_INSTRUCTIONS=0` leaves it out). Tried live with
     Claude Haiku 4.5 (Claude Code 2.1.283): it ran the command without a
     prompt, but wrote the question twice, before and after the command.
-  - Later: its own glyph (`?`) with the symbols audit below; adapters for
-    other agents; untested Windows hook (`herdr-agent-state.ps1`).
+  - Done (2026-09-28): its own glyph, `?` in the finished colour in both
+    indicator styles, winning over the waiting-on-job mark; the state text
+    reads "awaiting reply".
+- [ ] Awaiting reply for agents other than Claude, the same way as their
+  integrations (user, 2026-09-28): each integration that can add session
+  context (a session-start hook, an extension, a plugin) injects the same
+  instruction, and where the agent has a command allowlist the install
+  adds `herdr agent awaiting-reply` to it, so reporting never stops at a
+  permission prompt. Integrations today: antigravity_cli, codex, copilot,
+  cursor, devin, droid, grok, hermes, kilo, kimi, letta, mastracode, omp,
+  opencode, pi, qodercli, qwen. Check per agent what it offers; bump each
+  changed integration's version once; try each live.
 - [x] Consult stats log DeepSeek under the alias it was called with
   (`deepseek-flash`, now V4.1), so when the alias moves to a new model the
   stats of both merge and we cannot tell which was which.
@@ -690,6 +757,56 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       tests (`src/integration/tests.rs`) into one table-driven test; the
       same macOS and Linux `scrollback_editor_argv_*` test into one unix
       test.
+- [ ] Refresh the README's "Fork changes" so it says how the fork differs
+  now, with a small looping animation under each change.
+  - Audit first (vertical tabs, the disclosure triangle and
+    `show_agents_panel` are in the README since 2026-09-28);
+    `scripts/fork_demo/README.md` still
+    says "oracle stats" where the menu item is "consult stats".
+  - Format (consulted GPT-6 Astra and DeepSeek, 2026-09-28): a video can't
+    autoplay or loop on github.com (the sanitizer drops `autoplay`/`loop`,
+    user-attachments videos are click-to-play), so use animated WebP as an
+    `<img>`: far smaller than GIF, loops, Safari 14+. Avoid animated AVIF
+    (patchy support). Pilot one clip in the real rendered README (Chrome,
+    Safari, GitHub mobile app) and compare it with a GIF before making the
+    rest. Keep the long MP4 as the full walkthrough.
+  - Clips: each scene of `record.py` runnable on its own from a fresh
+    state, so one changed feature re-records one clip; crop to the feature
+    with enough context; 3-6 s, 8-12 fps, a hold before and after the
+    action so the loop seam is calm; about 500 KB each, under 4 MB total.
+    No caption bar (the bullet is the caption); alt text on every image.
+    Keep scene, crop and encoder settings in the script, not done by hand.
+  - Text must stay readable at README width, desktop and mobile: don't
+    downscale the 104-column window below 1:1, or record fewer columns or
+    a bigger font instead.
+  - Storage: files under `assets/fork/` with relative links, new file names
+    on re-record (camo caches). Each re-record adds its size to git
+    history; if that grows, move them to an orphan `assets` branch.
+  - Risk: seven loops at once are distracting and ignore reduced-motion;
+    if it looks busy, use a static frame per bullet linking to its clip.
+- [ ] Close herdr tabs with Cmd+W.
+  - Conflict: Ghostty binds Cmd+W to `close_surface` and handles its own
+    keybinds before the program sees the key, so herdr never receives it.
+    Ghostty has no per-foreground-program binding. `unconsumed:` still runs
+    `close_surface` (it only also forwards the key) and `performable:` is
+    always true for `close_surface`, so neither routes Cmd+W to herdr.
+    Today Cmd+W in a herdr window only closes the herdr client (after
+    Ghostty's confirmation); the server and agents keep running.
+  - Plan (consulted GPT-6 Astra and DeepSeek, 2026-09-28): in Ghostty,
+    `keybind = cmd+w=unbind` as already done for Cmd+1..9 (herdr gets
+    `super+w` via the kitty keyboard protocol), move `close_surface` to
+    `cmd+shift+w`, and in herdr bind `close_tab = "cmd+w"`. Cost: Cmd+W no
+    longer closes plain Ghostty tabs/splits. Fallback if that hurts: leave
+    Cmd+W to Ghostty and bind `close_tab = "cmd+shift+w"`. Don't use
+    `cmd+w=csi:...`: plain shells would get the escape sequence as input.
+  - First verify that Ghostty delivers `super+w` to herdr after the unbind
+    (`herdr` parses it, `format_key_combo` shows `cmd+w`).
+  - Safety: tabs hold running agents; `confirm_close_running` already asks
+    before closing a tab with running work; check it covers Cmd+W and that
+    Cancel is the default. Both models suggested Cmd+W close the focused
+    pane (closing the tab with its last pane), as Ghostty does with
+    splits; decide tab vs pane before binding. Reopening a closed tab can't
+    bring back killed processes, so a confirmation matters more than undo.
 
 ## Deferred
 
@@ -935,3 +1052,9 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Deferred: sessions already survive server restarts with 48 snapshots;
     recipes only help on a new machine or a fresh checkout. Build it when I
     notice rebuilding the same layout by hand.
+- [ ] Explain the consult/ask naming mismatch: the plugin (`plugins/consult`,
+  `local.consult`) and the stats skill (`consult-stats`, `consult.py`) say
+  "consult", but the scripts inside the skills say "ask" (`ask_gpt.sh`,
+  `ask_gemini.sh`, `ask_deepseek.py`). Decide whether it is deliberate (the
+  verb an agent runs vs. the feature name) or should be unified, and on
+  which name; consult the agents (DeepSeek, GPT-6 Astra) before renaming.

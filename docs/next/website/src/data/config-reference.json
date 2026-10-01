@@ -95,6 +95,12 @@
           "description": "Set the Navigate-mode cursor row background in the sidebar without changing other selection surfaces. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.drag_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Set the background of a Space while it is dragged in the sidebar; reset leaves only the accent bar. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.surface0",
           "type": "color",
           "default": "unset",
@@ -209,6 +215,12 @@
           "description": "Override the selection_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.light.drag_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the drag_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.light.surface0",
           "type": "color",
           "default": "unset",
@@ -321,6 +333,12 @@
           "type": "color",
           "default": "unset",
           "description": "Override the selection_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.drag_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the drag_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.dark.surface0",
@@ -1164,7 +1182,7 @@
           "key": "ui.sidebar.show_agents_panel",
           "type": "boolean",
           "default": "true",
-          "description": "Show the Agents panel. Set to false to give its height to the Spaces list. Meant for use with ui.sidebar.spaces.agents, which lists each Space's agents under it."
+          "description": "Show the Agents panel. Set to false to give its height to the Spaces list. Meant for use with ui.sidebar.spaces.tabs, which lists each Space's tabs under it."
         },
         {
           "key": "ui.sidebar.spaces.row_gap",
@@ -1173,10 +1191,10 @@
           "description": "Blank terminal rows between worktree groups and unrelated top-level Spaces. Worktree parents and their indented children remain packed."
         },
         {
-          "key": "ui.sidebar.spaces.agents",
+          "key": "ui.sidebar.spaces.tabs",
           "type": "boolean",
           "default": "false",
-          "description": "Experimental. List each Space's agents under it: a line with the agent's state and task, and a line with the counts of the job tabs nested under the agent's tab (running, failed, succeeded) when it has any. Running and failed jobs listed under no agent, such as those whose agent pane closed, follow as an other jobs line, which replaces the Space's tab_jobs while the Space lists agents."
+          "description": "Experimental. List each Space's tabs under it as vertical tabs: one line per top-level tab, in tab order, with its agent state, its label and the counts of its running and failed nested job tabs. Nested tabs get no line; clicking a tab enters its group, and the child tab row shows them. The Space's tab_jobs then counts only jobs nested under a tab that is gone. A collapsed worktree group lists no tabs."
         },
         {
           "key": "ui.sidebar.spaces.rows",

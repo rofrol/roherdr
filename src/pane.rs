@@ -981,8 +981,14 @@ fn probe_foreground_process_from_jobs(
         if let Some(hinted) = agent_hint_for_non_leader_foreground_job_members(job, read_hint) {
             return hinted_process_probe_result(job, pid, hinted);
         }
-        if let Some(identified) = crate::detect::identify_agent_process_in_job(job) {
-            return process_probe_result(job, pid, identified);
+        let shell_leads_group = job.process_group_id == pid
+            && job.processes.iter().any(|process| {
+                process.pid == pid && crate::detect::is_interactive_shell_process(process)
+            });
+        if !shell_leads_group {
+            if let Some(identified) = crate::detect::identify_agent_process_in_job(job) {
+                return process_probe_result(job, pid, identified);
+            }
         }
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
@@ -5951,6 +5957,100 @@ mod tests {
 
         assert_eq!(result.agent, Some(Agent::Claude));
         assert_eq!(result.process_name.as_deref(), Some("claude"));
+    }
+
+    fn shell_process(pid: u32, argv: &[&str]) -> crate::platform::ForegroundProcess {
+        crate::platform::ForegroundProcess {
+            argv0: argv.first().map(|arg| arg.to_string()),
+            argv: Some(argv.iter().map(|arg| arg.to_string()).collect()),
+            ..foreground_process(pid, "zsh")
+        }
+    }
+
+    fn probe_pane_group(leader: crate::platform::ForegroundProcess, member: &str) -> Option<Agent> {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 42,
+            processes: vec![leader, foreground_process(43, member)],
+        };
+        probe_foreground_process_from_jobs(42, Some(42), None, || Some(job), |_| None).agent
+    }
+
+    #[test]
+    fn rc_file_helper_in_the_interactive_pane_shells_group_is_not_an_agent() {
+        // `eval "$(omp completions zsh)"` in ~/.zshrc runs before job control
+        // is on, so `omp` sits in the login shell's own foreground group.
+        assert_eq!(probe_pane_group(shell_process(42, &["-zsh"]), "omp"), None);
+        assert_eq!(
+            probe_pane_group(
+                shell_process(42, &["/bin/bash", "-l", "--noprofile"]),
+                "omp"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn agent_in_a_pane_command_shells_group_is_found() {
+        for argv in [
+            &["/bin/sh", "-c", "cd x && claude"][..],
+            &["zsh", "-lc", "claude"],
+            &["bash", "run-agent.sh"],
+        ] {
+            assert_eq!(
+                probe_pane_group(shell_process(42, argv), "claude"),
+                Some(Agent::Claude),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_in_the_pane_shells_group_is_found_without_argv() {
+        assert_eq!(
+            probe_pane_group(foreground_process(42, "zsh"), "claude"),
+            Some(Agent::Claude)
+        );
+    }
+
+    #[test]
+    fn agent_hint_in_the_interactive_pane_shells_group_is_kept() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 42,
+            processes: vec![shell_process(42, &["-zsh"]), foreground_process(43, "node")],
+        };
+
+        let result = probe_foreground_process_from_jobs(
+            42,
+            Some(42),
+            None,
+            || Some(job),
+            |pid| (pid == 43).then_some(Agent::Claude),
+        );
+
+        assert_eq!(result.agent, Some(Agent::Claude));
+    }
+
+    #[test]
+    fn agent_in_the_pane_process_group_is_found_when_a_wrapper_leads_it() {
+        assert_eq!(
+            probe_pane_group(foreground_process(42, "launcher"), "claude"),
+            Some(Agent::Claude)
+        );
+    }
+
+    #[test]
+    fn agent_in_its_own_group_under_the_pane_shell_is_found() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 99,
+            processes: vec![
+                foreground_process(99, "zsh"),
+                foreground_process(100, "claude"),
+            ],
+        };
+
+        let result = probe_foreground_process_from_jobs(42, Some(99), None, || Some(job), |_| None);
+
+        assert_eq!(result.agent, Some(Agent::Claude));
     }
 
     fn process_probe_input() -> ProcessProbeInput {

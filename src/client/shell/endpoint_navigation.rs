@@ -23,7 +23,7 @@ impl ClientShellState {
             && self.overlay.is_none()
             && !self
                 .hits
-                .space_agents
+                .space_tabs
                 .iter()
                 .any(|(rect, _)| super::contains(*rect, point)))
         .then(|| {
