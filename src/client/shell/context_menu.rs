@@ -4,7 +4,10 @@ impl ClientContextMenuOverlay {
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
-        let item = |label, action| ClientContextMenuItem { label, action };
+        let item = |label: &str, action| ClientContextMenuItem {
+            label: label.to_owned(),
+            action,
+        };
         match &self.target {
             ClientContextMenuTarget::Workspace { is_git: false, .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
@@ -45,11 +48,33 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
-            ClientContextMenuTarget::Tab { .. } => vec![
-                item("New tab", Action::NewTab),
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-            ],
+            ClientContextMenuTarget::Tab {
+                running_jobs,
+                succeeded_jobs,
+                failed_jobs,
+                ..
+            } => {
+                // The job actions are chips on one `Close jobs:` row, as the
+                // tab line counts them: `⧖ 2` (asks first), `!1`, `✓3`.
+                let mut items = vec![
+                    item("New tab", Action::NewTab),
+                    item("Rename", Action::Rename),
+                ];
+                if *running_jobs > 0 {
+                    items.push(item(&format!("⧖ {running_jobs}"), Action::StopRunningJobs));
+                }
+                if *failed_jobs > 0 {
+                    items.push(item(&format!("!{failed_jobs}"), Action::CloseFailedJobs));
+                }
+                if *succeeded_jobs > 0 {
+                    items.push(item(
+                        &format!("✓{succeeded_jobs}"),
+                        Action::CloseSucceededJobs,
+                    ));
+                }
+                items.push(item("Close", Action::Close));
+                items
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -131,10 +156,24 @@ impl ClientShellState {
         else {
             return;
         };
+        let jobs = |status| {
+            self.snapshot.as_deref().map_or(0, |snapshot| {
+                super::tab_groups::child_tabs(snapshot, &tab_id)
+                    .iter()
+                    .filter(|child| child.status == Some(status))
+                    .count()
+            })
+        };
+        let running_jobs = jobs(crate::api::schema::TabStatus::Running);
+        let succeeded_jobs = jobs(crate::api::schema::TabStatus::Succeeded);
+        let failed_jobs = jobs(crate::api::schema::TabStatus::Failed);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id: tab.workspace_id.clone(),
+                running_jobs,
+                succeeded_jobs,
+                failed_jobs,
             },
             x,
             y,
@@ -200,6 +239,7 @@ impl ClientShellState {
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,
+                ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Pane {
                 pane_id,
@@ -288,6 +328,38 @@ impl ClientShellState {
     ) {
         use crate::api::schema::{Method, TabTarget};
 
+        if action == ClientContextMenuAction::StopRunningJobs {
+            self.confirm_stop_running_jobs(&tab_id, outcome);
+            return;
+        }
+        // Closing a tab's finished jobs keeps the focus where it is.
+        let job_status = match action {
+            ClientContextMenuAction::CloseSucceededJobs => {
+                Some(crate::api::schema::TabStatus::Succeeded)
+            }
+            ClientContextMenuAction::CloseFailedJobs => Some(crate::api::schema::TabStatus::Failed),
+            _ => None,
+        };
+        if let Some(status) = job_status {
+            // The statuses now, not when the menu opened: a job may have
+            // finished or closed since.
+            let jobs = self
+                .snapshot
+                .as_deref()
+                .map(|snapshot| {
+                    super::tab_groups::child_tabs(snapshot, &tab_id)
+                        .into_iter()
+                        .filter(|child| child.status == Some(status))
+                        .map(|child| child.tab_id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for job in jobs {
+                self.push_endpoint_method(Method::TabClose(TabTarget { tab_id: job }), outcome);
+            }
+            outcome.repaint = true;
+            return;
+        }
         self.push_endpoint_method(
             Method::TabFocus(TabTarget {
                 tab_id: tab_id.clone(),

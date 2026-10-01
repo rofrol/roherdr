@@ -237,7 +237,7 @@ pub(super) enum WorkspaceDragRefusal {
 impl WorkspaceDragRefusal {
     pub(super) fn hint(self) -> &'static str {
         match self {
-            Self::Sort => "sort by cust to reorder",
+            Self::Sort => "use manual to reorder",
             Self::LinkedWorktree => "moves with its parent",
             Self::Remote => "can't reorder here",
         }
@@ -675,6 +675,12 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    /// Closes the tab's nested job tabs that succeeded.
+    CloseSucceededJobs,
+    /// Closes the tab's nested job tabs that failed.
+    CloseFailedJobs,
+    /// Stops the tab's running jobs by closing their tabs, after asking.
+    StopRunningJobs,
 }
 
 #[derive(Debug)]
@@ -690,6 +696,11 @@ pub(super) enum ClientContextMenuTarget {
     Tab {
         tab_id: String,
         workspace_id: String,
+        /// Nested job tabs that run, succeeded and failed, when the menu
+        /// opened.
+        running_jobs: usize,
+        succeeded_jobs: usize,
+        failed_jobs: usize,
     },
     Pane {
         pane_id: String,
@@ -709,7 +720,7 @@ pub(super) struct ClientContextMenuOverlay {
 }
 
 pub(super) struct ClientContextMenuItem {
-    pub(super) label: &'static str,
+    pub(super) label: String,
     pub(super) action: ClientContextMenuAction,
 }
 
@@ -719,6 +730,8 @@ pub(super) struct ClientTabCloseConfirmation {
     pub(super) workspace: WorkspaceNavigationTarget,
     /// Child tabs closed before the tab; the server refuses to close a parent.
     pub(super) children: Vec<String>,
+    /// Close only `children`, keeping the tab: stopping its running jobs.
+    pub(super) children_only: bool,
 }
 
 #[derive(Debug)]
@@ -1706,11 +1719,12 @@ impl ClientShellState {
                     })
                 || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)
         });
-        if self
-            .snapshot
-            .as_deref()
-            .and_then(|current| current.focused_workspace_id.as_deref())
-            != snapshot.focused_workspace_id.as_deref()
+        // A new focused space, or a new focused tab in it (a tab just
+        // created far down a tall space), scrolls the list to it.
+        if self.snapshot.as_deref().is_some_and(|current| {
+            current.focused_workspace_id != snapshot.focused_workspace_id
+                || current.focused_tab_id != snapshot.focused_tab_id
+        }) || self.snapshot.is_none()
         {
             self.reveal_focused_workspace = true;
         }

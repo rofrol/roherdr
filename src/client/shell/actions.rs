@@ -967,7 +967,7 @@ impl ClientShellState {
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
             KeybindAction::MoveSpacePrevious | KeybindAction::MoveSpaceNext => {
-                // As a drag: the sidebar's own order only (cust sort), and a
+                // As a drag: the sidebar's own order only (manual sort), and a
                 // space moves with its worktrees, which never move alone.
                 if !self.space_sort.allows_drag() {
                     return None;

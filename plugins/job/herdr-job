@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "herdr-job"
@@ -375,9 +376,9 @@ def notify(meta, code):
         herdr(*cmd, check=False)
 
 
-class Header:
-    """A status line pinned to the pane's first row: the command's output
-    scrolls in the rows below it (a DECSTBM scroll region). herdr with
+class Footer:
+    """A status line pinned to the pane's last row: the command's output
+    scrolls in the rows above it (a DECSTBM scroll region). herdr with
     vertical tabs shows no tab bar, so this row is the job tab's title:
     ` ← ` in its first three columns goes back to the agent's tab and ` × `
     in its last three closes the job tab (herdr handles those clicks)."""
@@ -401,20 +402,53 @@ class Header:
         except OSError:
             return None
 
+    @staticmethod
+    def clip(text, cells):
+        # Conservative cell accounting: joined emoji may occupy fewer cells,
+        # but never let user-provided text wrap or inject terminal controls.
+        result = []
+        used = 0
+        for char in " ".join(str(text).split()):
+            category = unicodedata.category(char)
+            if category.startswith("C"):
+                continue
+            width = 0 if category.startswith("M") else (
+                2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            )
+            if used + width > cells:
+                break
+            if width == 0 and not result:
+                continue
+            result.append(char)
+            used += width
+        return "".join(result), used
+
     def draw(self, cols):
         # No reverse video or background: it turns into a black bar on light
         # themes. The state is bold in a palette colour, which themes adapt.
         colour = {"⧖": 35, "✓": 32}.get(self.state[:1], 31)
-        name = short(self.meta["name"], max(cols - len(self.state) - 12, 8))
-        rest = short(self.text(), max(cols - len(self.state) - len(name) - 12, 1))
-        used = 3 + len(self.state) + 1 + len(name) + 3 + len(rest)
-        gap = " " * max(cols - used - 3, 1)
+        if cols < 6:
+            return
+        remaining = cols - 6
+        state, used = self.clip(self.state, remaining)
+        remaining -= used
+        name, used = self.clip(" " + self.meta["name"], max(remaining - 4, 0))
+        if name:
+            name = " " + name
+            used += 1
+        remaining -= used
+        rest, used = self.clip("· " + self.text(), max(remaining - 1, 0))
+        if rest:
+            rest = " " + rest
+            used += 1
+        gap = " " * (remaining - used)
         sys.stdout.write(
-            f"\x1b7\x1b[1;1H\x1b[2K\x1b[2m ← \x1b[0m"
-            f"\x1b[1;{colour}m{self.state}\x1b[0m \x1b[1m{name}\x1b[0m"
-            f"\x1b[2m · {rest}\x1b[0m{gap}\x1b[2m × \x1b[0m\x1b8"
+            f"\x1b7\x1b[{self.rows};1H\x1b[2K\x1b[2m ← \x1b[0m"
+            f"\x1b[1;{colour}m{state}\x1b[0m\x1b[1m{name}\x1b[0m"
+            f"\x1b[2m{rest}\x1b[0m{gap}\x1b[2m × \x1b[0m\x1b8"
         )
         sys.stdout.flush()
+        self.drawn_rows = self.rows
 
     def start(self):
         size = self.size()
@@ -422,20 +456,24 @@ class Header:
             return
         rows, cols = size.lines, size.columns
         self.rows = rows
-        # Clear the typed `_exec` line; output starts under the header.
-        sys.stdout.write(f"\x1b[H\x1b[2J\x1b[2;{rows}r\x1b[2;1H")
+        # Start the region at row 1 so output enters terminal scrollback.
+        sys.stdout.write(f"\x1b[H\x1b[2J\x1b[1;{rows - 1}r\x1b[1;1H")
         self.draw(cols)
 
     def resize(self):
-        """SIGWINCH: the region follows the new height; the header stays on
-        the first row (a shorter pane may have pushed it into scrollback)."""
+        """SIGWINCH: the region follows the new height; the footer stays on
+        the last row."""
         size = self.size()
         if not size or size.lines < 4:
             return
         rows, cols = size.lines, size.columns
         self.rows = rows
+        # On growth the old footer becomes an output row. Clear it before
+        # expanding the region, without disturbing the output cursor.
+        old_rows = getattr(self, "drawn_rows", None)
+        clear = f"\x1b[{old_rows};1H\x1b[2K" if old_rows and old_rows < rows else ""
         # DECSTBM homes the cursor; keep the command's output position.
-        sys.stdout.write(f"\x1b7\x1b[2;{rows}r\x1b8")
+        sys.stdout.write(f"\x1b7{clear}\x1b[1;{rows - 1}r\x1b8")
         self.draw(cols)
 
     def finish(self, code):
@@ -443,11 +481,12 @@ class Header:
         size = self.size()
         if not size or size.lines < 4:
             return
+        self.rows = size.lines
         self.draw(size.columns)
 
     def release(self):
-        """Keep the scroll region: the shell prompt that follows scrolls
-        under the header too, so the header stays while the tab is open."""
+        """Leave margins in place; a shell or application may reset them
+        or overwrite the footer after the executor returns."""
         sys.stdout.flush()
 
 
@@ -471,8 +510,8 @@ def cmd_exec(args):
     meta["pid"] = os.getpid()
     meta["started"] = time.time()
     write_meta(path, meta)
-    header = Header(meta)
-    header.start()
+    footer = Footer(meta)
+    footer.start()
     print(f"$ {meta['command']}\n", flush=True)
     code = EXIT_LOST
     env = dict(os.environ, HERDR_JOB_ID=meta["id"])
@@ -505,7 +544,7 @@ def cmd_exec(args):
 
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, forward)
-        signal.signal(signal.SIGWINCH, lambda *_: header.resize())
+        signal.signal(signal.SIGWINCH, lambda *_: footer.resize())
         assert proc.stdout is not None
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):
             sys.stdout.buffer.write(chunk)
@@ -517,9 +556,9 @@ def cmd_exec(args):
     meta["ended"] = time.time()
     write_meta(path, meta)
     write_atomic(path / "exit", f"{code}\n")
-    # The header first: the herdr calls below take a moment, and the tab
+    # The footer first: the herdr calls below take a moment, and the tab
     # label should not be ahead of the job's own status line.
-    header.finish(code)
+    footer.finish(code)
     if meta.get("tab_status"):
         set_final_tab_status(meta, code)
     else:
@@ -533,7 +572,7 @@ def cmd_exec(args):
         print(f"closing this tab in {CLOSE_OK_AFTER_S} s (herdr-job run --keep leaves it open)", flush=True)
         time.sleep(CLOSE_OK_AFTER_S)
         close_job_tab(meta)
-    header.release()
+    footer.release()
     sys.exit(code)
 
 
@@ -617,7 +656,7 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run", help="start a job in its own tab")
     run.add_argument("--name", required=True)
-    run.add_argument("--why", help="why the job runs; shown in the job tab's header")
+    run.add_argument("--why", help="why the job runs; shown in the job tab's footer")
     run.add_argument("--keep", action="store_true", help="keep the tab open after success")
     run.add_argument(
         "--notify",

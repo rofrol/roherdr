@@ -65,7 +65,7 @@ impl SpaceSort {
     fn buttons(self) -> [(SpaceSortKey, String); 3] {
         let arrow = |descending: bool| if descending { "↓" } else { "↑" };
         [
-            (SpaceSortKey::Custom, "cust".to_owned()),
+            (SpaceSortKey::Custom, "manual".to_owned()),
             (
                 SpaceSortKey::Name,
                 format!("name {}", arrow(self.name_descending)),
@@ -101,7 +101,9 @@ pub(super) fn render_sort_header(
         };
         super::render::put_text(buffer, x, area.y, width, &label, style);
         hits.push((Rect::new(x, area.y, width, 1), key));
-        x = x.saturating_add(width + 2);
+        // One column apart: `manual name ↑ prio ↓` leaves room for the
+        // notification button at the right.
+        x = x.saturating_add(width + 1);
     }
     hits
 }

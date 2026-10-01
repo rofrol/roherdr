@@ -356,6 +356,17 @@ To re-record the fork demo video and upload it for the README, follow
 `scripts/fork_demo/README.md`; uploading needs the Claude in Chrome tools
 (see "Uploading as an agent" there).
 
+### Client requests in the background
+
+A client shell sends endpoint methods through one command lane per
+machine: while one request is in flight, the next is refused as
+`endpoint_busy`, and every request promotes that client to the foreground.
+So do not send requests on events (a notification arriving, a reconnect)
+or on timers for new features: a user's click in that moment gets refused.
+Derive state from what the client already receives, and fetch on a user
+action (opening a dropdown). A background `notification.list` fetch broke
+`federated_client_starts_without_local_and_survives_its_restart` this way.
+
 ### Naming options
 
 Name boolean options positively (`show_agents_panel = false`), not as

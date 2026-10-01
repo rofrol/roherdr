@@ -435,6 +435,20 @@ pub(crate) fn render_notification_log(
     })
 }
 
+/// The job status a context menu item closes, when it is one of the
+/// `Close jobs:` row's chips.
+fn job_chip_status(action: ClientContextMenuAction) -> Option<crate::api::schema::TabStatus> {
+    use crate::api::schema::TabStatus;
+    match action {
+        ClientContextMenuAction::StopRunningJobs => Some(TabStatus::Running),
+        ClientContextMenuAction::CloseFailedJobs => Some(TabStatus::Failed),
+        ClientContextMenuAction::CloseSucceededJobs => Some(TabStatus::Succeeded),
+        _ => None,
+    }
+}
+
+const JOB_CHIPS_LABEL: &str = "Close jobs:";
+
 pub(crate) fn render_context_menu(
     buffer: &mut Buffer,
     menu: &ClientContextMenuOverlay,
@@ -442,16 +456,34 @@ pub(crate) fn render_context_menu(
 ) -> Option<OverlayRender> {
     let items = menu.items();
     let screen = buffer.area;
+    let chips = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| job_chip_status(item.action).is_some())
+        .collect::<Vec<_>>();
+    // Each chip is its label with a column of padding each side, a column apart.
+    let chips_width = chips
+        .iter()
+        .map(|(_, item)| display_width(&item.label) + 3)
+        .sum::<u16>();
+    let chips_row_width = if chips.is_empty() {
+        0
+    } else {
+        display_width(JOB_CHIPS_LABEL) + 1 + chips_width
+    };
     let max_item_width = items
         .iter()
-        .map(|item| display_width(item.label))
+        .filter(|item| job_chip_status(item.action).is_none())
+        .map(|item| display_width(&item.label))
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(chips_row_width);
     let width = max_item_width
         .saturating_add(4)
         .max(14)
         .min(screen.width.max(1));
-    let height = (items.len() as u16)
+    let row_count = items.len() - chips.len() + usize::from(!chips.is_empty());
+    let height = (row_count as u16)
         .saturating_add(2)
         .min(screen.height.max(1));
     let x = menu
@@ -464,25 +496,65 @@ pub(crate) fn render_context_menu(
     );
     let rect = Rect::new(x, y, width, height);
     let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
+    let highlight = Style::default()
+        .fg(panel_contrast_fg(palette))
+        .bg(palette.accent)
+        .add_modifier(Modifier::BOLD);
+    let plain = Style::default().fg(palette.text).bg(palette.panel_bg);
     let mut rows = Vec::new();
+    let mut row_y = inner.y;
+    let mut chips_drawn = false;
     for (index, item) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
         if row_y >= inner.bottom() {
             break;
         }
+        if let Some(status) = job_chip_status(item.action) {
+            if chips_drawn {
+                continue;
+            }
+            chips_drawn = true;
+            let row = Rect::new(inner.x, row_y, inner.width, 1);
+            buffer.set_style(row, plain);
+            put_text(buffer, row.x, row.y, row.width, JOB_CHIPS_LABEL, plain);
+            let mut chip_x = row.x.saturating_add(display_width(JOB_CHIPS_LABEL) + 1);
+            for (chip_index, chip) in &chips {
+                let chip_status = job_chip_status(chip.action).unwrap_or(status);
+                let width = display_width(&chip.label) + 2;
+                let chip_rect = Rect::new(chip_x, row.y, width, 1).intersection(row);
+                let style = if *chip_index == menu.highlighted {
+                    highlight
+                } else {
+                    Style::default()
+                        .fg(super::tabs::tab_status_color(Some(chip_status), palette)
+                            .unwrap_or(palette.text))
+                        .bg(palette.surface0)
+                        .add_modifier(Modifier::BOLD)
+                };
+                buffer.set_style(chip_rect, style);
+                put_text(
+                    buffer,
+                    chip_rect.x,
+                    row.y,
+                    chip_rect.width,
+                    &format!(" {} ", chip.label),
+                    style,
+                );
+                rows.push((chip_rect, *chip_index));
+                chip_x = chip_x.saturating_add(width + 1);
+            }
+            row_y = row_y.saturating_add(1);
+            continue;
+        }
         let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
+        let style = if index == menu.highlighted {
+            highlight
         } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
+            plain
         };
         buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, item.label, style);
+        put_text(buffer, row.x, row.y, row.width, &item.label, style);
         rows.push((row, index));
+        row_y = row_y.saturating_add(1);
     }
     Some(OverlayRender {
         area: rect,

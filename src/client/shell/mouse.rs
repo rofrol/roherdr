@@ -58,11 +58,11 @@ impl ClientShellState {
             .map(|(_, tab_id)| tab_id.clone())
     }
 
-    /// With vertical tabs, a job tab's top row is its header, drawn by
+    /// With vertical tabs, a job tab's last row is its footer, drawn by
     /// herdr-job: ` ← ` in its first three columns goes back to the parent
     /// tab and ` × ` in its last three closes the job tab (a running job asks
     /// first). Returns whether the click was one of them.
-    fn job_header_click(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) -> bool {
+    fn job_footer_click(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) -> bool {
         const BUTTON_WIDTH: u16 = 3;
         if !self.config.spaces.tabs
             || !self.config.mouse_capture
@@ -88,7 +88,7 @@ impl ClientShellState {
         let job_id = job.tab_id.clone();
         let Some(hit) = self.hits.panes.iter().find(|hit| {
             !hit.popup
-                && point.1 == hit.inner_rect.y
+                && point.1 == hit.inner_rect.bottom().saturating_sub(1)
                 && super::contains(hit.inner_rect, point)
                 && snapshot
                     .panes
@@ -1162,7 +1162,7 @@ impl ClientShellState {
             return;
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && self.job_header_click(point, outcome)
+            && self.job_footer_click(point, outcome)
         {
             return;
         }

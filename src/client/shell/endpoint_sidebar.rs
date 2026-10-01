@@ -546,7 +546,7 @@ pub(super) fn render_expanded(
                 let partial = cut > 0 || shown < height;
                 let mut block_hits = ShellHitMap::default();
                 let target: &mut Buffer = if partial {
-                    let area = Rect::new(body.x, 0, content_width, height);
+                    let area = Rect::new(body.x, 0, body.width, height);
                     let scratch = scratch.get_or_insert_with(|| Buffer::empty(area));
                     scratch.resize(area);
                     scratch.reset();
@@ -600,6 +600,7 @@ pub(super) fn render_expanded(
                     endpoint_active && workspace.focused,
                     squares_width,
                     state.hovered_square.filter(|_| endpoint_active),
+                    u16::from(show_scrollbar),
                     config,
                 );
                 // Only the active machine's tab lines and squares take clicks:
@@ -650,7 +651,7 @@ pub(super) fn render_expanded(
                 if partial {
                     if let Some(scratch) = scratch.as_ref() {
                         for row in 0..shown {
-                            for x in visible.left()..visible.right() {
+                            for x in body.left()..body.right() {
                                 buffer[(x, y + row)] = scratch[(x, cut as u16 + row)].clone();
                             }
                         }
