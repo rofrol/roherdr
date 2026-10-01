@@ -106,6 +106,9 @@ pub(super) struct ShellHitMap {
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
+    /// Rows the spaces and detail sections split between them; dragging the
+    /// section divider maps a row to a split ratio within it.
+    pub(super) sidebar_sections: Rect,
     pub(super) sidebar_toggle: Rect,
     pub(super) new_workspace: Rect,
     pub(super) new_tab: Rect,

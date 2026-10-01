@@ -249,10 +249,16 @@ pub(super) fn render_expanded(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    let build = super::sidebar::build_row(
+        active_snapshot.and_then(|snapshot| snapshot.build_commit.as_deref()),
+        crate::build_info::commit_line(),
+    );
+    let (sections, build_area) = super::sidebar::split_build_row(area, build);
+    hits.sidebar_sections = sections;
     let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
+        crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
     hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+        crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
     put_text(
         buffer,
         workspace_area.x,
@@ -585,6 +591,9 @@ pub(super) fn render_expanded(
         state.agent_scroll,
         hits,
     );
+    if let Some(build) = build {
+        super::sidebar::render_build_row(buffer, build_area, build, palette);
+    }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),

@@ -10,6 +10,12 @@ pub fn build_id() -> Option<&'static str> {
     non_empty(option_env!("HERDR_BUILD_ID"))
 }
 
+/// Short hash and subject of the commit this binary was built from, when the
+/// build ran inside a git checkout.
+pub fn commit_line() -> Option<&'static str> {
+    non_empty(option_env!("HERDR_GIT_COMMIT_LINE"))
+}
+
 pub fn version() -> String {
     match channel() {
         "stable" => BASE_VERSION.to_string(),

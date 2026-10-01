@@ -52,6 +52,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             agent_status: AgentStatus::Idle,
             parent_tab_id: None,
             status: None,
+            program: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),
@@ -65,6 +66,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         }],
         agents: Vec::new(),
         commands: Vec::new(),
+        build_commit: None,
     }
 }
 

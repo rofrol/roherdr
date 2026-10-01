@@ -7,6 +7,9 @@ use crate::layout::PaneId;
 pub(crate) struct TerminalTitleChanges {
     pub(crate) raw_changed: bool,
     pub(crate) stripped_changed: bool,
+    /// A title that names what runs in its pane changed; panes with their own
+    /// label or an agent are named by those instead.
+    pub(crate) program_title_changed: bool,
 }
 
 impl App {
@@ -26,7 +29,7 @@ impl App {
     pub(crate) fn sync_pending_terminal_titles(&mut self) -> TerminalTitleChanges {
         let sources = self.render_dirty.pending_terminal_title_sources();
         let changes = self.sync_terminal_titles(&sources);
-        if self.terminal_title_sidebar_changed(&changes) {
+        if self.terminal_title_sidebar_changed(&changes) || changes.program_title_changed {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -61,9 +64,12 @@ impl App {
             let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
                 continue;
             };
+            let running_label = terminal.running_label();
             let change = terminal.set_terminal_title(title);
             changes.raw_changed |= change.raw_changed;
             changes.stripped_changed |= change.stripped_changed;
+            changes.program_title_changed |=
+                change.stripped_changed && terminal.running_label() != running_label;
             if change.stripped_changed {
                 publish.push((ws_idx, pane_id));
             }
@@ -115,6 +121,7 @@ mod tests {
             TerminalTitleChanges {
                 raw_changed: true,
                 stripped_changed: true,
+                program_title_changed: false,
             }
         );
         let pane = app.pane_info(0, pane_id).unwrap();
@@ -136,6 +143,7 @@ mod tests {
             TerminalTitleChanges {
                 raw_changed: true,
                 stripped_changed: false,
+                program_title_changed: false,
             }
         );
         let pane = app.pane_info(0, pane_id).unwrap();

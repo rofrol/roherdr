@@ -948,6 +948,10 @@ pub struct ClientShellSnapshot {
     pub panes: Vec<ClientShellPane>,
     pub agents: Vec<ClientShellAgent>,
     pub commands: Vec<ClientShellCommand>,
+    /// Short hash and subject of the commit the endpoint was built from, with a
+    /// `+` after the hash for uncommitted changes.
+    #[serde(default)]
+    pub build_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1058,6 +1062,10 @@ pub struct ClientShellTab {
     pub parent_tab_id: Option<String>,
     #[serde(default)]
     pub status: Option<crate::api::schema::TabStatus>,
+    /// What runs in the tab's focused pane: its label, agent, the current
+    /// program's terminal title, or the program name.
+    #[serde(default)]
+    pub program: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2848,6 +2856,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
                 parent_tab_id: None,
                 status: None,
+                program: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
@@ -2867,6 +2876,7 @@ mod tests {
                 action: ClientShellCommandAction::Shell,
                 description: Some("deploy".into()),
             }],
+            build_commit: None,
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

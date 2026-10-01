@@ -514,6 +514,14 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
         .terminal_id(pane_id)
         .expect("terminal")
         .clone();
+    // An agent names its tab, so its task title renders nothing.
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("terminal state")
+        .detected_agent = Some(crate::detect::Agent::Claude);
     let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes("\x1b]0;⠋ building\x07".as_bytes());
     server
@@ -541,6 +549,38 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
         (false, true)
     );
     assert!(no_window_title(&control_rx));
+
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_program_title_that_names_its_tab_requests_a_render() {
+    let (mut server, _control_rx) = window_title_test_server();
+    server.app.state.ensure_test_terminals();
+    let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(pane_id)
+        .expect("terminal")
+        .clone();
+    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    runtime.test_process_pty_bytes(b"\x1b]0;~/repo\x07");
+    server
+        .app
+        .terminal_runtimes
+        .insert(terminal_id.clone(), runtime);
+
+    assert_eq!(
+        server.sync_terminal_title_sources(&HashSet::from([pane_id])),
+        (true, false)
+    );
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "boot", 1, None, None);
+    assert_eq!(snapshot.tabs[0].program.as_deref(), Some("~/repo"));
+
+    // The same title again changes no tab name.
+    assert_eq!(
+        server.sync_terminal_title_sources(&HashSet::from([pane_id])),
+        (false, false)
+    );
 
     shutdown_test_runtimes(&mut server);
 }

@@ -378,3 +378,16 @@ When the user says the candidate works, commit the fix; the user then runs
 between the test and `keep`. If the installed binary is package-managed
 (Homebrew, Nix, system directories; check `ps -axo command | grep '[h]erdr
 server'` and `command -v herdr`), ask before replacing it.
+
+Other agent sessions often commit to `master` at the same time. `keep`
+installs exactly the tested binary, so build the candidate from current
+`master` with your fix on top, not from a worktree or branch based on an older
+`master`; otherwise `keep` silently drops their commits from the installed
+binary. Another session's candidate may be sitting in the main checkout's
+`target/`: ask that session before rebuilding there, and test and keep one
+candidate that contains both fixes.
+
+Never install Herdr any other way: no symlink to `target/release/herdr`, no
+`cargo install`, and no shell aliases for these steps. The installed binary
+must stay the last build the user confirmed, and only `scripts/herdr_live.sh`
+replaces it.

@@ -280,7 +280,7 @@ fn child_tabs_get_their_own_row_and_a_summary_on_the_parent() {
     assert_eq!(state.hits.tabs.len(), 1, "children leave the main row");
     assert!(rows[0].contains("1 ⧖ 1 !1"), "{}", rows[0]);
     assert!(
-        rows[1].contains("◆ ") && rows[1].contains("│ ! build") && rows[1].contains("⧖ tests"),
+        rows[1].contains("◆ ") && rows[1].contains("│ ! build") && rows[1].contains("│ ⧖ tests"),
         "{}",
         rows[1]
     );
@@ -295,6 +295,27 @@ fn child_tabs_get_their_own_row_and_a_summary_on_the_parent() {
         "the parent's own entry comes first"
     );
     assert_eq!(state.layout(106, 24).pane_surface.y, 2);
+}
+
+#[test]
+fn job_counts_and_icons_use_the_sidebar_status_colors() {
+    let mut state = parent_with_jobs_state(true);
+    let frame = state.compose(106, 24).unwrap();
+    let buffer = frame.to_ratatui_buffer().expect("tab bar buffer");
+    let palette = &state.config.palette;
+    let fg = |rect: Rect, symbol: &str| {
+        (rect.x..rect.right())
+            .map(|x| &buffer[(x, rect.y)])
+            .find(|cell| cell.symbol() == symbol)
+            .map(|cell| cell.fg)
+    };
+
+    let parent = state.hits.tabs[0].0;
+    assert_eq!(fg(parent, "⧖"), Some(palette.yellow));
+    assert_eq!(fg(parent, "!"), Some(palette.red));
+    let children = &state.hits.child_tabs;
+    assert_eq!(fg(children[1].0, "!"), Some(palette.red));
+    assert_eq!(fg(children[2].0, "⧖"), Some(palette.yellow));
 }
 
 #[test]

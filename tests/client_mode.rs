@@ -791,15 +791,28 @@ fn output_len(output: &SharedOutput) -> usize {
     output.lock().unwrap_or_else(|p| p.into_inner()).text.len()
 }
 
+fn sidebar_shows(screen: &str, label: &str) -> bool {
+    let Some(sidebar_width) = sidebar_width(screen) else {
+        return false;
+    };
+    screen.lines().any(|line| {
+        line.chars()
+            .take(sidebar_width)
+            .collect::<String>()
+            .contains(label)
+    })
+}
+
+fn sidebar_width(screen: &str) -> Option<usize> {
+    screen.lines().find_map(|line| {
+        line.chars()
+            .position(|character| character == '│')
+            .filter(|column| *column > 0)
+    })
+}
+
 fn sidebar_row_click(screen: &str, label: &str) -> Vec<u8> {
-    let sidebar_width = screen
-        .lines()
-        .find_map(|line| {
-            line.chars()
-                .position(|character| character == '│')
-                .filter(|column| *column > 0)
-        })
-        .expect("visible sidebar boundary");
+    let sidebar_width = sidebar_width(screen).expect("visible sidebar boundary");
     let row = screen
         .lines()
         .position(|line| {
@@ -1247,7 +1260,15 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         "printf 'LOCAL_RECOVERED_SURFACE\\n'",
     );
     // Select the fresh workspace below Local's restored workspace.
-    // A fast shutdown may leave no saved workspace, so locate the actual row.
+    // A fast shutdown may leave no saved workspace, so locate the actual row
+    // once losing the remote has redrawn the sidebar with Local's workspaces.
+    assert!(
+        wait_until(Duration::from_secs(10), Duration::from_millis(20), || {
+            sidebar_shows(&screen_text(), "local-returned")
+        }),
+        "recovered Local must list its workspace: {}",
+        screen_text()
+    );
     input
         .write_all(&sidebar_row_click(&screen_text(), "local-returned"))
         .unwrap();
