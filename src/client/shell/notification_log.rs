@@ -45,6 +45,8 @@ pub(super) enum NotificationLogView {
     History,
     Working,
     Asking,
+    /// The bookmarked tabs, in the order of the spaces and their tabs.
+    Bookmarks,
 }
 
 impl ClientShellState {
@@ -159,8 +161,81 @@ impl ClientShellState {
                 .take(MAX_ROWS)
                 .cloned()
                 .collect(),
+            NotificationLogView::Bookmarks => self.bookmark_rows(),
             view => self.agent_rows(view),
         }
+    }
+
+    pub(super) fn bookmark_count(&self) -> usize {
+        self.snapshot.as_deref().map_or(0, |snapshot| {
+            snapshot.tabs.iter().filter(|tab| tab.bookmarked).count()
+        })
+    }
+
+    /// Bookmarked tabs as records, in the order of the spaces, then the tabs
+    /// inside each space: computed from the snapshot, so a moved, renamed or
+    /// reordered tab or space shows right away.
+    fn bookmark_rows(&self) -> Vec<NotificationRecord> {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return Vec::new();
+        };
+        snapshot
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                snapshot
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.bookmarked && tab.workspace_id == workspace.workspace_id)
+            })
+            .map(|tab| NotificationRecord {
+                id: 0,
+                unix_ms: 0,
+                kind: "bookmark".into(),
+                title: tab.label.clone(),
+                body: None,
+                agent: None,
+                workspace_id: Some(tab.workspace_id.clone()),
+                tab_id: Some(tab.tab_id.clone()),
+                pane_id: None,
+                task: None,
+                request: None,
+                repeats: None,
+            })
+            .collect()
+    }
+
+    /// Removes the bookmark of the highlighted row (bookmarks view only).
+    pub(super) fn remove_highlighted_bookmark(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_ref() else {
+            return;
+        };
+        if log.view != NotificationLogView::Bookmarks {
+            return;
+        }
+        let highlighted = log.highlighted;
+        self.remove_bookmark_row(highlighted, outcome);
+    }
+
+    pub(super) fn remove_bookmark_row(&mut self, index: usize, outcome: &mut ClientShellInput) {
+        let Some(tab_id) = self
+            .bookmark_rows()
+            .into_iter()
+            .nth(index)
+            .and_then(|row| row.tab_id)
+        else {
+            return;
+        };
+        self.push_endpoint_method(
+            crate::api::schema::Method::TabBookmark(crate::api::schema::TabBookmarkParams {
+                tab_id,
+                bookmarked: false,
+            }),
+            outcome,
+        );
+        // The list shrinks when the snapshot comes back; keep the highlight
+        // inside it meanwhile.
+        outcome.repaint = true;
     }
 
     /// Agents that ask for the user (blocked on an approval or awaiting a
@@ -261,6 +336,7 @@ impl ClientShellState {
         let mark = match entry.kind.as_str() {
             "needs_attention" | "asking" => "?",
             "working" => "◐",
+            "bookmark" => "★",
             "finished" => "✓",
             _ => {
                 return match entry.body.as_deref() {
@@ -288,6 +364,13 @@ impl ClientShellState {
                 .find(|tab| tab.tab_id == tab_id && tab.custom_label)
                 .map(|tab| tab.label.clone())
         });
+        if entry.kind == "bookmark" {
+            let mut text = format!("{mark} {}", entry.title);
+            if let Some(workspace) = workspace {
+                text.push_str(&format!(" · {workspace}"));
+            }
+            return text;
+        }
         let mut parts = Vec::new();
         match (entry.task.as_deref(), entry.agent.as_deref()) {
             (Some(task), agent) => {

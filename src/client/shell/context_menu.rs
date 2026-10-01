@@ -52,6 +52,7 @@ impl ClientContextMenuOverlay {
                 running_jobs,
                 succeeded_jobs,
                 failed_jobs,
+                bookmarked,
                 ..
             } => {
                 // The job actions are chips on one `Close jobs:` row, as the
@@ -60,6 +61,16 @@ impl ClientContextMenuOverlay {
                     item("New tab", Action::NewTab),
                     item("Rename", Action::Rename),
                 ];
+                if let Some(bookmarked) = bookmarked {
+                    items.push(item(
+                        if *bookmarked {
+                            "Remove from bookmarks"
+                        } else {
+                            "Add to bookmarks"
+                        },
+                        Action::ToggleBookmark,
+                    ));
+                }
                 if *running_jobs > 0 {
                     items.push(item(
                         &format!("{} {running_jobs}", crate::ui::motion::job_glyph()),
@@ -78,6 +89,11 @@ impl ClientContextMenuOverlay {
                 items.push(item("Close", Action::Close));
                 items
             }
+            ClientContextMenuTarget::SortSpaces(sort) => sort
+                .menu_items()
+                .into_iter()
+                .map(|(key, label)| item(&label, Action::SortSpaces(key)))
+                .collect(),
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -151,6 +167,22 @@ impl ClientShellState {
         }));
     }
 
+    /// Opens the sort choice under the header button at `(x, y)`.
+    pub(super) fn open_space_sort_menu(&mut self, x: u16, y: u16) {
+        let sort = self.space_sort;
+        let highlighted = sort
+            .menu_items()
+            .iter()
+            .position(|(key, _)| *key == sort.key)
+            .unwrap_or(0);
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::SortSpaces(sort),
+            x,
+            y,
+            highlighted,
+        }));
+    }
+
     pub(super) fn open_tab_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
         let Some(tab) = self
             .snapshot
@@ -170,6 +202,14 @@ impl ClientShellState {
         let running_jobs = jobs(crate::api::schema::TabStatus::Running);
         let succeeded_jobs = jobs(crate::api::schema::TabStatus::Succeeded);
         let failed_jobs = jobs(crate::api::schema::TabStatus::Failed);
+        let bookmarked = self
+            .supports_endpoint_method(&crate::api::schema::Method::TabBookmark(
+                crate::api::schema::TabBookmarkParams {
+                    tab_id: String::new(),
+                    bookmarked: true,
+                },
+            ))
+            .then_some(tab.bookmarked);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -177,6 +217,7 @@ impl ClientShellState {
                 running_jobs,
                 succeeded_jobs,
                 failed_jobs,
+                bookmarked,
             },
             x,
             y,
@@ -244,6 +285,14 @@ impl ClientShellState {
                 workspace_id,
                 ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
+            ClientContextMenuTarget::SortSpaces(_) => {
+                if let ClientContextMenuAction::SortSpaces(key) = action {
+                    self.space_sort = self.space_sort.clicked(key);
+                    self.workspace_scroll = 0;
+                    self.reveal_focused_workspace = true;
+                    self.persist_chrome_preferences(outcome);
+                }
+            }
             ClientContextMenuTarget::Pane {
                 pane_id,
                 workspace_id,
@@ -333,6 +382,23 @@ impl ClientShellState {
 
         if action == ClientContextMenuAction::StopRunningJobs {
             self.confirm_stop_running_jobs(&tab_id, outcome);
+            return;
+        }
+        if action == ClientContextMenuAction::ToggleBookmark {
+            // The flag now, not when the menu opened; the focus stays put.
+            let bookmarked = self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
+                .is_some_and(|tab| tab.bookmarked);
+            self.push_endpoint_method(
+                Method::TabBookmark(crate::api::schema::TabBookmarkParams {
+                    tab_id,
+                    bookmarked: !bookmarked,
+                }),
+                outcome,
+            );
+            outcome.repaint = true;
             return;
         }
         // Closing a tab's finished jobs keeps the focus where it is.

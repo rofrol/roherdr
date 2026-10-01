@@ -62,6 +62,27 @@ impl SpaceSort {
         self.key == SpaceSortKey::Custom
     }
 
+    /// The current key and direction: `manual`, `name ↑`, `prio ↓`.
+    pub(super) fn current_label(self) -> String {
+        self.buttons()
+            .into_iter()
+            .find(|(key, _)| *key == self.key)
+            .map(|(_, label)| label)
+            .unwrap_or_default()
+    }
+
+    /// The menu rows: every key with its direction; the active one is marked
+    /// and clicking it flips its direction.
+    pub(super) fn menu_items(self) -> Vec<(SpaceSortKey, String)> {
+        self.buttons()
+            .into_iter()
+            .map(|(key, label)| {
+                let mark = if key == self.key { "● " } else { "  " };
+                (key, format!("{mark}{label}"))
+            })
+            .collect()
+    }
+
     fn buttons(self) -> [(SpaceSortKey, String); 3] {
         let arrow = |descending: bool| if descending { "↓" } else { "↑" };
         [
@@ -78,34 +99,26 @@ impl SpaceSort {
     }
 }
 
-/// Draws the buttons in place of the `spaces` title and returns their rects.
+/// Draws the one sort button that opens the choice (see
+/// [`SpaceSort::menu_items`]): `⇅ name ↑`, the current key and direction. It
+/// stays short so the indicators fit beside it at the default width.
 pub(super) fn render_sort_header(
     buffer: &mut Buffer,
     area: Rect,
     sort: SpaceSort,
     palette: &Palette,
 ) -> Vec<(Rect, SpaceSortKey)> {
-    let mut hits = Vec::new();
-    let mut x = area.x.saturating_add(1);
-    for (key, label) in sort.buttons() {
-        let width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
-        if x.saturating_add(width) > area.right() {
-            break;
-        }
-        let style = if key == sort.key {
-            Style::default()
-                .fg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.overlay0)
-        };
-        super::render::put_text(buffer, x, area.y, width, &label, style);
-        hits.push((Rect::new(x, area.y, width, 1), key));
-        // One column apart: `manual name ↑ prio ↓` leaves room for the
-        // notification button at the right.
-        x = x.saturating_add(width + 1);
+    let label = format!("⇅ {}", sort.current_label());
+    let width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+    let x = area.x.saturating_add(1);
+    if x.saturating_add(width) > area.right() {
+        return Vec::new();
     }
-    hits
+    let style = Style::default()
+        .fg(palette.accent)
+        .add_modifier(Modifier::BOLD);
+    super::render::put_text(buffer, x, area.y, width, &label, style);
+    vec![(Rect::new(x, area.y, width, 1), sort.key)]
 }
 
 /// `entries` in the order `held` gives their spaces (root ids, as last

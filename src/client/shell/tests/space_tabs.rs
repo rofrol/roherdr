@@ -2407,3 +2407,174 @@ fn a_renamed_tab_shows_its_name_in_the_agent_lists_and_old_history_rows() {
         .notification_row_text(&record)
         .starts_with("✓ Session import · claude"));
 }
+
+#[test]
+fn bookmarked_tabs_are_listed_in_the_order_of_the_spaces_and_removed_from_the_list() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents.clear();
+    let mut second_space = projected.workspaces[0].clone();
+    second_space.workspace_id = "ws_2".into();
+    second_space.label = "second".into();
+    second_space.number = 2;
+    second_space.focused = false;
+    projected.workspaces.push(second_space);
+    // The second space's tab comes first in the snapshot's tab list: the
+    // list still follows the spaces.
+    let mut other = projected.tabs[0].clone();
+    other.tab_id = "tab_other".into();
+    other.workspace_id = "ws_2".into();
+    other.label = "other tab".into();
+    other.focused = false;
+    other.bookmarked = true;
+    projected.tabs.insert(0, other);
+    let own = projected
+        .tabs
+        .iter_mut()
+        .find(|tab| tab.tab_id == "tab_1")
+        .expect("tab_1");
+    own.label = "first tab".into();
+    own.bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(state.bookmark_count(), 2);
+
+    state.compose(106, 30).unwrap();
+    let button = state.hits.bookmarks_list_button;
+    assert!(button.width > 0);
+    let outcome = left_click(&mut state, (button.x + 1, button.y));
+    assert!(outcome.actions.is_empty(), "the list needs no request");
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let first = rows
+        .iter()
+        .position(|row| row.contains("first tab"))
+        .expect("first tab listed");
+    let second = rows
+        .iter()
+        .position(|row| row.contains("other tab"))
+        .expect("other tab listed");
+    assert!(first < second, "spaces order: {first} {second}");
+    assert!(rows[first].contains('★'), "{:?}", rows[first]);
+
+    // A row jumps to its tab.
+    let row = state.hits.notification_log_rows[1].0;
+    let outcome = left_click(&mut state, (row.x + 3, row.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabFocus(target)
+                if target.tab_id == "tab_other"))));
+
+    // A middle click removes the bookmark through the server.
+    left_click(&mut state, (button.x + 1, button.y));
+    state.compose(106, 30).unwrap();
+    let row = state.hits.notification_log_rows[0].0;
+    let outcome =
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle),
+            column: row.x + 3,
+            row: row.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
+                if params.tab_id == "tab_1" && !params.bookmarked))));
+}
+
+#[test]
+fn the_tab_context_menu_adds_and_removes_a_bookmark() {
+    let mut state = state_with_tabs(true);
+    state.compose(106, 30).unwrap();
+    let line = state.hits.space_tabs[0].0;
+    // Right-click the tab line.
+    let menu_labels = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        column: line.x + 6,
+        row: line.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let labels = menu_labels(&state);
+    assert!(
+        labels.iter().any(|label| label == "Add to bookmarks"),
+        "{labels:?}"
+    );
+
+    // Choosing it asks the server and does not move the focus.
+    let index = labels
+        .iter()
+        .position(|label| label == "Add to bookmarks")
+        .unwrap();
+    if let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_mut() {
+        menu.highlighted = index;
+    }
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
+                if params.bookmarked))));
+    assert!(!outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabFocus(_)))));
+}
+
+#[test]
+fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
+    use crate::api::schema::AgentStatus::{Blocked, Working};
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 32;
+    state.notification_log_received(Some("tab_9"));
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![
+        header_agent("p1", Working, false, "a"),
+        header_agent("p2", Blocked, false, "b"),
+    ];
+    projected.tabs[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let header = frame_rows(&frame)[0].clone();
+    assert!(header.starts_with(" ⇅ manual"), "{header:?}");
+    for (name, rect) in [
+        ("working", state.hits.working_list_button),
+        ("asking", state.hits.asking_list_button),
+        ("bookmarks", state.hits.bookmarks_list_button),
+        ("notifications", state.hits.notification_log_button),
+    ] {
+        assert!(rect.width > 0, "{name} hidden: {header:?}");
+    }
+    // The working and asking indicators sit side by side.
+    assert!(
+        state.hits.working_list_button.right() <= state.hits.asking_list_button.x + 1,
+        "{header:?}"
+    );
+
+    // The sort button opens the choice; picking name sorts by name, and
+    // picking it again flips the direction.
+    let button = state.hits.space_sort_buttons[0].0;
+    left_click(&mut state, (button.x + 1, button.y));
+    state.compose(106, 30).unwrap();
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::ContextMenu(_))
+    ));
+    let name_row = state.hits.context_menu_rows[1].0;
+    left_click(&mut state, (name_row.x + 2, name_row.y));
+    assert_eq!(
+        state.space_sort.key,
+        super::super::space_sort::SpaceSortKey::Name
+    );
+    assert!(!state.space_sort.name_descending);
+    left_click(&mut state, (button.x + 1, button.y));
+    state.compose(106, 30).unwrap();
+    let name_row = state.hits.context_menu_rows[1].0;
+    left_click(&mut state, (name_row.x + 2, name_row.y));
+    assert!(state.space_sort.name_descending);
+}

@@ -281,6 +281,8 @@ pub(super) struct ShellRenderState<'a> {
     /// Agents working and agents asking for the user, for the two header
     /// indicators beside the history button.
     pub(super) agent_counts: (usize, usize),
+    /// Bookmarked tabs, for the `★` button.
+    pub(super) bookmark_count: usize,
 }
 
 pub(super) fn render_shell(

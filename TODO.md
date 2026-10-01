@@ -2,6 +2,22 @@
 
 ## Next, in order
 
+- [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
+  work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio
+  ↓` (21 columns) left room for one indicator, so the working count and the
+  bookmark star were silently dropped. "Sessions that ask should be next to the
+  working ones." Consulted DeepSeek, Opus and GPT (unanimous): one sort button
+  that shows the current key and opens a choice, never hide a non-zero
+  indicator, keep `◐` and `?` adjacent. Done: the header has `⇅ manual` /
+  `⇅ name ↑` / `⇅ prio ↓` (the current key and direction); a click opens a
+  small menu of the three keys (the active one marked, a repeat flips its
+  direction); the indicators `★ ◐ ? ✉` fit beside it at 32 columns (test
+  `at_32_columns_every_indicator_fits_beside_the_one_sort_button`). Not done:
+  the models' fallback when counts of two digits still overflow (drop spaces,
+  then a second row); today the leftmost indicator that does not fit is left
+  out; checking `⇅` and `★` when the terminal draws ambiguous-width glyphs
+  double.
+
 - [x] Regression (user, 2026-10-01: "I was able to close a tab with a Claude
   session inside without confirmation"): my earlier change (no question for an
   idle agent with nothing pending) also let an idle interactive Claude session
@@ -74,7 +90,7 @@
     name commit, then the release workflow and a prerelease.
   - Done: nothing yet.
 
-- [ ] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to
+- [x] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to
   bookmarks. It shows at the top, left of the `◓2`. The order in that list is
   the order of the spaces. Do it next."). Consulted DeepSeek, Opus and GPT;
   they agree on the core:
@@ -102,7 +118,18 @@
   - Tests: persistence over a restart, an old snapshot without the field, two
     clients, close, move, space delete and reorder, order, jump, remove,
     32-column degradation, empty state, CLI.
-  - Done: nothing yet.
+  - Done 2026-10-01 (committed, not installed): server `tab.bookmark`
+    (idempotent; `bookmarked` in `tab.list`/`tab.get` and the client snapshot,
+    persisted with the session, optional everywhere; CLI `herdr tab bookmark|
+    unbookmark <id>`; the method is advertised to client shells and its shape
+    frozen next to the other additive methods); the tab context menu (tab
+    lines and tab-bar tabs) has "Add to bookmarks" / "Remove from bookmarks"
+    when the server supports it; a `★N` button, hidden at zero, left of the
+    other header indicators lists the bookmarked tabs in the order of the
+    spaces, then their tabs; a click or Enter jumps, a middle click, Delete,
+    Backspace or `x` removes. Not done: a keybinding that toggles the focused
+    tab, the agent state icon in the rows, the empty-state hint, a change
+    event for other clients (they pick it up with the next snapshot).
 
 - [ ] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
   instance has a list of things it will do from its todo, and I do not see it").

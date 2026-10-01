@@ -63,6 +63,7 @@ impl ClientShellState {
         });
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
+        let bookmark_count = self.bookmark_count();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -110,6 +111,7 @@ impl ClientShellState {
             space_sort: self.space_sort,
             notification_log_button,
             agent_counts,
+            bookmark_count,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -284,6 +286,7 @@ impl ClientShellState {
             .filter(|_| self.space_sort.allows_drag());
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
+        let bookmark_count = self.bookmark_count();
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
             .space_filter
@@ -361,6 +364,7 @@ impl ClientShellState {
                 space_sort: self.space_sort,
                 notification_log_button,
                 agent_counts,
+                bookmark_count,
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -828,6 +832,9 @@ impl ClientShellState {
                     }
                     super::notification_log::NotificationLogView::Asking => {
                         self.hits.asking_list_button
+                    }
+                    super::notification_log::NotificationLogView::Bookmarks => {
+                        self.hits.bookmarks_list_button
                     }
                 };
                 let rendered = render::render_notification_log(
