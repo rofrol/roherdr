@@ -605,6 +605,9 @@ impl ClientShellState {
                     };
                     self.activate_notification_log_row(highlighted, outcome);
                 }
+                KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('x') => {
+                    self.remove_highlighted_bookmark(outcome);
+                }
                 _ => {}
             }
             return;

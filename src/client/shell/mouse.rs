@@ -2029,6 +2029,12 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
+                // A middle click on a bookmark removes it.
+                MouseEventKind::Down(MouseButton::Middle) => {
+                    if let Some((_, index)) = row_hit {
+                        self.remove_bookmark_row(index, outcome);
+                    }
+                }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
                 _ => {}
             }
@@ -2684,17 +2690,14 @@ impl ClientShellState {
                     self.open_usage_overlay(outcome);
                     return;
                 }
-                if let Some(key) = self
+                if let Some(rect) = self
                     .hits
                     .space_sort_buttons
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, key)| *key)
+                    .map(|(rect, _)| *rect)
                 {
-                    self.space_sort = self.space_sort.clicked(key);
-                    self.workspace_scroll = 0;
-                    self.reveal_focused_workspace = true;
-                    self.persist_chrome_preferences(outcome);
+                    self.open_space_sort_menu(rect.x, rect.y.saturating_add(1));
                     outcome.repaint = true;
                     return;
                 }
@@ -2735,6 +2738,10 @@ impl ClientShellState {
                     (
                         self.hits.asking_list_button,
                         super::notification_log::NotificationLogView::Asking,
+                    ),
+                    (
+                        self.hits.bookmarks_list_button,
+                        super::notification_log::NotificationLogView::Bookmarks,
                     ),
                 ] {
                     if super::contains(rect, point) {

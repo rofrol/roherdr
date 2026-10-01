@@ -416,6 +416,7 @@ pub(crate) fn render_sidebar(
                     .fg(palette.accent)
                     .add_modifier(Modifier::BOLD);
                 let working_style = Style::default().fg(palette.overlay1);
+                let bookmark_style = Style::default().fg(palette.mauve);
                 for (count, glyph, style, slot) in [
                     (asking, "?", asking_style, &mut hits.asking_list_button),
                     (
@@ -423,6 +424,12 @@ pub(crate) fn render_sidebar(
                         crate::ui::motion::working_glyph(),
                         working_style,
                         &mut hits.working_list_button,
+                    ),
+                    (
+                        state.bookmark_count,
+                        "★",
+                        bookmark_style,
+                        &mut hits.bookmarks_list_button,
                     ),
                 ] {
                     if count == 0 {
