@@ -187,6 +187,15 @@ pub enum AppEvent {
         pane_id: PaneId,
         cwd: std::path::PathBuf,
     },
+    /// The process group leading a pane's terminal changed, e.g. from the
+    /// shell to `lazygit` and back.
+    // Only the Unix detection task reads foreground process groups.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    ForegroundProgramChanged {
+        pane_id: PaneId,
+        program: Option<String>,
+        observed_at: Instant,
+    },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,

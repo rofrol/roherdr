@@ -84,6 +84,12 @@ filesystems may not honour.
 - A job is alive while its executor holds an `flock`, not while its PID
   exists: after a crash or reboot the PID can belong to another process and
   `wait` would hang forever.
+- The final tab status is retried with backoff (about a minute): during a
+  live handoff the server may not answer. Whatever still slips through is
+  repaired by `run`, `wait`, `list`, `clean` and the `tab.closed` hook: a tab
+  still marked running whose job has ended gets succeeded or failed (a lost
+  job is failed, never succeeded). Tab ids can be reused, so only the newest
+  job of a tab decides, and only while the tab still has that job's label.
 - macOS and Linux only (`flock`, `/bin/sh`, POSIX signals). State files are
   private (0600): commands and logs may contain secrets.
 

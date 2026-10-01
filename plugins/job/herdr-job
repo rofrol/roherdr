@@ -39,7 +39,13 @@ HISTORY_IGNORE = "*herdr-job _exec *"
 
 
 def herdr(*args, check=True):
-    out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=10)
+    try:
+        out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        # A live handoff can leave the socket unanswered for a while.
+        if check:
+            raise SystemExit(f"herdr {' '.join(args)} failed: {err}") from err
+        return ""
     if check and out.returncode != 0:
         raise SystemExit(f"herdr {' '.join(args)} failed: {out.stderr.strip() or out.stdout.strip()}")
     return out.stdout
@@ -144,9 +150,52 @@ def short(text, width=40):
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def list_tabs():
+    return json.loads(herdr("tab", "list"))["result"]["tabs"]
+
+
 def open_tabs():
-    tabs = json.loads(herdr("tab", "list"))["result"]["tabs"]
-    return {tab["tab_id"] for tab in tabs}
+    return {tab["tab_id"] for tab in list_tabs()}
+
+
+def final_tab_status(code):
+    return "succeeded" if code == 0 else "failed"
+
+
+def set_final_tab_status(meta, code):
+    """The job's last word to herdr. A live handoff can leave the server
+    unreachable for a while, so retry with backoff instead of leaving the tab
+    at ⧖; `reconcile_tabs` repairs whatever still slips through."""
+    for delay in (0, 1, 2, 4, 8, 15, 30):
+        time.sleep(delay)
+        if herdr_ok("tab", "status", meta["tab_id"], final_tab_status(code)):
+            return
+
+
+def reconcile_tabs():
+    """Give every tab still marked running whose job has ended its final status.
+
+    Tab ids can come back after a restart, so only the newest job of a tab
+    decides, and only while the tab still carries that job's label: a job
+    starting right now may hold a reused id before its meta.json exists. A
+    job without an `exit` file that is no longer running (lost) is marked
+    failed, never succeeded."""
+    try:
+        running = {tab["tab_id"]: tab.get("label") for tab in list_tabs() if tab.get("status") == "running"}
+    except (SystemExit, ValueError, KeyError):
+        return
+    newest = {}
+    for path, meta in all_jobs():
+        tab_id = meta.get("tab_id")
+        if tab_id in running and meta.get("tab_status"):
+            if tab_id not in newest or meta["created"] > newest[tab_id][1]["created"]:
+                newest[tab_id] = (path, meta)
+    for tab_id, (path, meta) in newest.items():
+        if running[tab_id] != short(meta["name"], 30):
+            continue
+        st, code = status(path, meta)
+        if st != "running":
+            herdr_ok("tab", "status", tab_id, final_tab_status(code))
 
 
 def update_owner_token(owner_pane):
@@ -194,6 +243,7 @@ def cmd_tab_closed(_args):
         tab_id = find_tab_id(json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "")))
     except ValueError:
         return
+    reconcile_tabs()
     for _, meta in all_jobs():
         if meta.get("tab_id") == tab_id:
             update_owner_token(meta.get("owner_pane"))
@@ -252,6 +302,7 @@ def cmd_run(args):
     # `pane run` types into the tab's interactive shell; see HISTORY_IGNORE.
     herdr("pane", "run", meta["pane_id"], f" {shlex.quote(str(SELF))} _exec {job_id}")
     update_owner_token(owner)
+    reconcile_tabs()
     print(job_id)
 
 
@@ -416,7 +467,7 @@ def cmd_exec(args):
     # label should not be ahead of the job's own status line.
     footer.finish(code)
     if meta.get("tab_status"):
-        herdr("tab", "status", meta["tab_id"], "succeeded" if code == 0 else "failed", check=False)
+        set_final_tab_status(meta, code)
     else:
         mark = "✓" if code == 0 else "✗"
         herdr("tab", "rename", meta["tab_id"], f"{mark} {short(meta['name'], 30)}", check=False)
@@ -457,12 +508,14 @@ def cmd_wait(args):
             meta = read_meta(path)
             if st == "lost":
                 update_owner_token(meta.get("owner_pane"))
+            reconcile_tabs()
             print(f"\nherdr-job {args.id} ({meta['name']}): {st}, exit {code}", flush=True)
             sys.exit(code)
         time.sleep(2)
 
 
 def cmd_list(_args):
+    reconcile_tabs()
     jobs = all_jobs()
     if not jobs:
         print("no jobs")
@@ -495,6 +548,7 @@ def cmd_clean(args):
         path.rmdir()
     for owner in owners:
         update_owner_token(owner)
+    reconcile_tabs()
 
 
 def main():

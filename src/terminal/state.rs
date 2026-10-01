@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 use crate::detect::{Agent, AgentState};
 use crate::terminal::TerminalId;
 
+/// How long before a foreground program change a terminal title may be set
+/// and still belong to the new program. Covers detection's polling interval.
+const FOREGROUND_PROGRAM_TITLE_GRACE: Duration = Duration::from_secs(1);
+
 #[path = "metadata.rs"]
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
@@ -140,6 +144,11 @@ pub struct TerminalState {
     reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
     reported_resume_revision: u64,
     pub terminal_title: Option<String>,
+    terminal_title_changed_at: Option<Instant>,
+    /// Name of the process group leading the pane's terminal, e.g. `zsh` or
+    /// `lazygit`.
+    pub foreground_program: Option<String>,
+    foreground_program_changed_at: Option<Instant>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
@@ -180,6 +189,9 @@ impl TerminalState {
             reported_resume: None,
             reported_resume_revision: 0,
             terminal_title: None,
+            terminal_title_changed_at: None,
+            foreground_program: None,
+            foreground_program_changed_at: None,
             manual_label: None,
             agent_name: None,
             agent_name_owner: None,
@@ -275,6 +287,7 @@ impl TerminalState {
         }
         let previous_stripped = self.terminal_title_stripped();
         self.terminal_title = title;
+        self.terminal_title_changed_at = Some(Instant::now());
         let stripped_changed = previous_stripped != self.terminal_title_stripped();
         if stripped_changed {
             self.revision = self.revision.wrapping_add(1);
@@ -283,6 +296,51 @@ impl TerminalState {
             raw_changed: true,
             stripped_changed,
         }
+    }
+
+    pub(crate) fn set_foreground_program(
+        &mut self,
+        program: Option<String>,
+        observed_at: Instant,
+    ) -> bool {
+        if self.foreground_program == program {
+            return false;
+        }
+        self.foreground_program = program;
+        self.foreground_program_changed_at = Some(observed_at);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The terminal title, but only when the foreground program set it. A shell
+    /// without title hooks leaves the last program's title behind, so a title
+    /// older than the current foreground program is stale. Titles set shortly
+    /// before the change still count: detection polls, so a title a shell hook
+    /// wrote just before the command started or right after it ended reaches
+    /// Herdr first.
+    pub(crate) fn current_program_title(&self) -> Option<String> {
+        let title = self.terminal_title_stripped()?;
+        match (
+            self.terminal_title_changed_at,
+            self.foreground_program_changed_at,
+        ) {
+            (Some(title_at), Some(program_at))
+                if title_at + FOREGROUND_PROGRAM_TITLE_GRACE < program_at =>
+            {
+                None
+            }
+            _ => Some(title),
+        }
+    }
+
+    /// What runs in the terminal, for naming the tab that shows it: the pane's
+    /// own label, its agent, the current program's title, or the program name.
+    pub(crate) fn running_label(&self) -> Option<String> {
+        self.manual_label
+            .clone()
+            .or_else(|| self.effective_agent_label().map(str::to_string))
+            .or_else(|| self.current_program_title())
+            .or_else(|| self.foreground_program.clone())
     }
 
     pub fn with_launch_argv(mut self, argv: Vec<String>) -> Self {
@@ -2475,6 +2533,45 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn running_label_prefers_label_then_agent_then_program_title_then_program() {
+        let mut terminal = test_terminal();
+        assert_eq!(terminal.running_label(), None);
+
+        let started = Instant::now();
+        terminal.set_foreground_program(Some("zsh".into()), started);
+        assert_eq!(terminal.running_label().as_deref(), Some("zsh"));
+
+        terminal.set_terminal_title(Some("~/repo".into()));
+        assert_eq!(terminal.running_label().as_deref(), Some("~/repo"));
+
+        terminal.detected_agent = Some(Agent::Claude);
+        assert_eq!(terminal.running_label().as_deref(), Some("claude"));
+
+        terminal.manual_label = Some("build".into());
+        assert_eq!(terminal.running_label().as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn program_title_goes_stale_when_a_later_program_takes_the_terminal() {
+        let mut terminal = test_terminal();
+        terminal.set_terminal_title(Some("notes.md - NVIM".into()));
+        // A shell hook's title lands just before detection sees the program.
+        terminal.set_foreground_program(Some("nvim".into()), Instant::now());
+        assert_eq!(
+            terminal.current_program_title().as_deref(),
+            Some("notes.md - NVIM")
+        );
+
+        // The shell took the terminal back long after, without retitling it.
+        terminal.set_foreground_program(
+            Some("zsh".into()),
+            Instant::now() + FOREGROUND_PROGRAM_TITLE_GRACE * 2,
+        );
+        assert_eq!(terminal.current_program_title(), None);
+        assert_eq!(terminal.running_label().as_deref(), Some("zsh"));
     }
 
     fn test_session_path(name: &str) -> String {

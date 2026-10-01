@@ -1073,7 +1073,7 @@
           "key": "ui.tab_label",
           "type": "enum",
           "default": "\"number\"",
-          "description": "Show an unnamed tab's number, or the task title its agent sets as the terminal title.",
+          "description": "Show an unnamed tab's number, or what runs in it: the task title its agent sets as the terminal title, otherwise the program in its focused pane.",
           "values": [
             "number",
             "title"

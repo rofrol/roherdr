@@ -2,7 +2,8 @@
 set windows-shell := ["cmd.exe", "/d", "/s", "/c"]
 
 # Servers started by integration tests must not poll real provider usage
-# endpoints with the developer's logins.
+# endpoints with the developer's logins. `.cargo/config.toml` sets it for
+# direct cargo runs; this covers recipes that start herdr without cargo.
 export HERDR_DISABLE_USAGE := "1"
 
 python := if os() == "windows" { "python" } else { "python3" }

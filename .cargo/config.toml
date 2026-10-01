@@ -1,2 +1,9 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Servers started by tests must not poll real provider usage endpoints with the
+# developer's logins (e.g. `agy /quota` can ask for a key). Set here, not only
+# in the justfile, so direct `cargo nextest`/`cargo test` runs get it too.
+# `HERDR_DISABLE_USAGE= cargo run` re-enables polling for a dev build.
+[env]
+HERDR_DISABLE_USAGE = "1"

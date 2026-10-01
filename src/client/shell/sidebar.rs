@@ -196,6 +196,82 @@ pub(crate) fn render_collapsed_sidebar(
     );
 }
 
+/// The commit shown in the sidebar's last row: the endpoint's, since it runs
+/// the session, and this client's too when the two builds differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::client::shell) struct BuildRow<'a> {
+    commit: &'a str,
+    differing_client: Option<&'a str>,
+}
+
+pub(in crate::client::shell) fn build_row<'a>(
+    endpoint: Option<&'a str>,
+    client: Option<&'a str>,
+) -> Option<BuildRow<'a>> {
+    let hash = |line: &'a str| line.split(' ').next().unwrap_or(line);
+    match (endpoint, client) {
+        (Some(endpoint), Some(client)) if hash(endpoint) != hash(client) => Some(BuildRow {
+            commit: endpoint,
+            differing_client: Some(hash(client)),
+        }),
+        // Endpoints older than the commit field leave only the client's.
+        (commit, other) => commit.or(other).map(|commit| BuildRow {
+            commit,
+            differing_client: None,
+        }),
+    }
+}
+
+/// Splits the sidebar's last row off for the build commit; the sections
+/// share what is left.
+pub(in crate::client::shell) fn split_build_row(area: Rect, row: Option<BuildRow>) -> (Rect, Rect) {
+    if row.is_none() || area.height == 0 {
+        return (area, Rect::default());
+    }
+    let sections = Rect::new(area.x, area.y, area.width, area.height - 1);
+    let row = Rect::new(area.x, sections.bottom(), area.width, 1);
+    (sections, row)
+}
+
+/// Columns at the right of the build row kept for the sidebar toggle and the
+/// sidebar's own divider.
+const BUILD_ROW_RIGHT_RESERVE: u16 = 3;
+
+pub(in crate::client::shell) fn render_build_row(
+    buffer: &mut Buffer,
+    area: Rect,
+    row: BuildRow,
+    palette: &Palette,
+) {
+    let right = area.right().saturating_sub(BUILD_ROW_RIGHT_RESERVE);
+    let (hash, subject) = row.commit.split_once(' ').unwrap_or((row.commit, ""));
+    let x = super::render::put_segment(
+        buffer,
+        area.x.saturating_add(1),
+        area.y,
+        right,
+        hash,
+        Style::default().fg(palette.overlay1),
+    );
+    // A different client build matters more than the subject.
+    let (tail, style) = match row.differing_client {
+        Some(client) => (format!("≠ cli {client}"), Style::default().fg(palette.red)),
+        None => (subject.to_owned(), Style::default().fg(palette.overlay0)),
+    };
+    let room = right.saturating_sub(x).saturating_sub(1);
+    if tail.is_empty() || room == 0 {
+        return;
+    }
+    super::render::put_segment(
+        buffer,
+        x.saturating_add(1),
+        area.y,
+        right,
+        &crate::ui::truncate_end(&tail, room as usize),
+        style,
+    );
+}
+
 pub(crate) fn render_sidebar(
     buffer: &mut Buffer,
     area: Rect,
@@ -211,10 +287,16 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    let build = build_row(
+        snapshot.build_commit.as_deref(),
+        crate::build_info::commit_line(),
+    );
+    let (sections, build_area) = split_build_row(area, build);
+    hits.sidebar_sections = sections;
     let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
+        crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
     hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+        crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
     put_text(
         buffer,
         workspace_area.x,
@@ -452,6 +534,9 @@ pub(crate) fn render_sidebar(
         hits,
     );
 
+    if let Some(build) = build {
+        render_build_row(buffer, build_area, build, palette);
+    }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),

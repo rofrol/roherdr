@@ -105,12 +105,78 @@ pub fn herdr_server_pids_for_runtime_dir(runtime_dir: &Path) -> std::io::Result<
 }
 
 pub fn cleanup_test_base(base: &Path) {
+    stop_servers_under(base);
     let runtime_dir = base.join("runtime");
     let runtime_dirs = HashSet::from([runtime_dir.clone()]);
 
     terminate_servers_for_runtime_dirs(&runtime_dirs);
     unregister_runtime_dir(&runtime_dir);
     let _ = fs::remove_dir_all(base);
+}
+
+/// Asks every server still listening under a test base to stop. Servers a test
+/// did not spawn itself, such as one a remote bridge started after the test
+/// killed its server, are otherwise left running: process discovery below
+/// needs `/proc`, which macOS lacks. Two passes catch a server a launcher was
+/// still starting during the first one.
+fn stop_servers_under(base: &Path) {
+    for _ in 0..2 {
+        let listening: Vec<PathBuf> = api_sockets_under(base)
+            .into_iter()
+            .filter(|socket| request_server_stop(socket))
+            .collect();
+        if listening.is_empty() {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && listening
+                .iter()
+                .any(|socket| UnixStream::connect(socket).is_ok())
+        {
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+/// Server API sockets (`herdr.sock`, also per named session) below `dir`,
+/// without following symlinks out of it.
+fn api_sockets_under(dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let mut sockets = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return sockets;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            sockets.extend(api_sockets_under(&path));
+        } else if file_type.is_socket() && entry.file_name() == "herdr.sock" {
+            sockets.push(path);
+        }
+    }
+    sockets
+}
+
+/// Sends `server.stop` with bounded I/O; false when nothing listens.
+fn request_server_stop(socket: &Path) -> bool {
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_secs(1));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    let request = r#"{"id":"test:cleanup","method":"server.stop","params":{}}"#;
+    if writeln!(stream, "{request}").is_err() {
+        return true;
+    }
+    let mut response = [0_u8; 256];
+    let _ = stream.read(&mut response);
+    true
 }
 
 pub fn wait_for_socket(path: &Path, timeout: Duration) {

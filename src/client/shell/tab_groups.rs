@@ -107,6 +107,18 @@ pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
 /// Counts of the children's statuses, e.g. `⧖ 1 !2 ✓3`; empty without children.
 /// Children without a status are counted as `•N`.
 pub(super) fn children_summary(children: &[&ClientShellTab]) -> String {
+    children_summary_segments(children)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The parts of [`children_summary`], each with the status it counts, so the
+/// caller can color them; they are joined by single spaces.
+pub(super) fn children_summary_segments(
+    children: &[&ClientShellTab],
+) -> Vec<(Option<TabStatus>, String)> {
     let count = |wanted: Option<TabStatus>| {
         children
             .iter()
@@ -114,20 +126,20 @@ pub(super) fn children_summary(children: &[&ClientShellTab]) -> String {
             .count()
     };
     [
-        ("⧖", count(Some(TabStatus::Running))),
-        ("!", count(Some(TabStatus::Failed))),
-        ("✓", count(Some(TabStatus::Succeeded))),
-        ("•", count(None)),
+        ("⧖", Some(TabStatus::Running)),
+        ("!", Some(TabStatus::Failed)),
+        ("✓", Some(TabStatus::Succeeded)),
+        ("•", None),
     ]
     .into_iter()
-    .filter(|(_, count)| *count > 0)
+    .map(|(icon, status)| (icon, status, count(status)))
+    .filter(|(_, _, count)| *count > 0)
     // `⧖` is as tall as a digit and runs into it without a space.
-    .map(|(icon, count)| match icon {
-        "⧖" => format!("{icon} {count}"),
-        _ => format!("{icon}{count}"),
+    .map(|(icon, status, count)| match icon {
+        "⧖" => (status, format!("{icon} {count}")),
+        _ => (status, format!("{icon}{count}")),
     })
-    .collect::<Vec<_>>()
-    .join(" ")
+    .collect()
 }
 
 fn focused_workspace_tabs(snapshot: &ClientShellSnapshot) -> impl Iterator<Item = &ClientShellTab> {
@@ -158,6 +170,7 @@ mod tests {
             agent_status: crate::api::schema::AgentStatus::Unknown,
             parent_tab_id: parent.map(str::to_string),
             status,
+            program: None,
         }
     }
 

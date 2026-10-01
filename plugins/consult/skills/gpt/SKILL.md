@@ -41,7 +41,7 @@ Guidelines:
   check `consult.py stats --pairs`; if luna@medium is not clearly behind astra on unique findings, make it the default
   and drop astra from routine rounds.
 - If the user asks for "GPT and DeepSeek", run both in parallel and compare.
-- On a usage-limit error, tell the user (Plus limits) and don't call GPT again in this session (no retries, no other GPT model); in a multi-model round go on with the others.
+- On a usage-limit error, tell the user (Plus limits) and don't retry in that round (no other GPT model either); in a multi-model round go on with the others. The reported reset time is not reliable (on 2026-09-26 a limit said "try again tomorrow" and cleared within two hours), so try GPT once again at the next consultation in the session; after a second limit error in a row, skip it for the rest of the session.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
   `~/.claude/skills/consult-stats/consult.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`

@@ -351,6 +351,7 @@ impl App {
                 None
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        let foreground_program_changed = matches!(ev, AppEvent::ForegroundProgramChanged { .. });
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
         if update_ready.is_some() {
@@ -378,6 +379,8 @@ impl App {
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
             self.request_git_identity_refresh(Instant::now());
+        }
+        if terminal_cwd_reported || foreground_program_changed {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
