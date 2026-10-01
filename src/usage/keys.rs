@@ -13,6 +13,7 @@ pub(crate) const DEFAULT_AUTH_FILE: &str = "~/.pi/agent/auth.json";
 pub(super) enum KeyedProvider {
     DeepSeek,
     OpenRouter,
+    Kimi,
 }
 
 impl KeyedProvider {
@@ -20,6 +21,7 @@ impl KeyedProvider {
         match self {
             Self::DeepSeek => "deepseek",
             Self::OpenRouter => "openrouter",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -27,6 +29,7 @@ impl KeyedProvider {
         match self {
             Self::DeepSeek => "DEEPSEEK_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
+            Self::Kimi => "MOONSHOT_API_KEY",
         }
     }
 }

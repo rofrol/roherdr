@@ -388,7 +388,17 @@ impl ClientShellState {
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
-                let target = self.route_key_press(&key, outcome);
+                let target = if key.code == KeyCode::Esc
+                    && matches!(self.chrome_drag, Some(ClientChromeDrag::Workspace { .. }))
+                {
+                    // Esc cancels dragging a space; the pane does not get it.
+                    self.chrome_drag = None;
+                    self.workspace_press = None;
+                    outcome.repaint = true;
+                    None
+                } else {
+                    self.route_key_press(&key, outcome)
+                };
                 if let Some(target) = target.as_ref() {
                     self.push_pane_key(target.clone(), key.clone(), outcome);
                 }

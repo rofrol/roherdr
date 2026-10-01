@@ -461,11 +461,265 @@ fn closing_a_parent_asks_then_closes_its_children_first() {
 }
 
 #[test]
-fn closing_a_parent_without_confirm_close_still_closes_children_first() {
+fn closing_a_parent_without_confirmations_still_closes_children_first() {
     let mut state = parent_with_jobs_state(false);
+    state.config.confirm_close_running = false;
 
     let requested = request_close(&mut state, false);
 
     assert!(state.overlay.is_none());
     assert_eq!(tab_closes(&requested), ["tab_2", "tab_3", "tab_1"]);
+}
+
+fn running_job_state(confirm_running: bool) -> ClientShellState {
+    let mut state = close_state(false, 2);
+    state.config.confirm_close_running = confirm_running;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].label = "build".into();
+    projected.tabs[0].status = Some(crate::api::schema::TabStatus::Running);
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 24).unwrap();
+    state
+}
+
+fn pane_closes(outcome: &ClientShellInput) -> Vec<String> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                Method::PaneClose(target) => Some(target.pane_id.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn closing_a_running_tab_asks_even_with_close_confirmation_off() {
+    for menu in [false, true] {
+        let mut state = running_job_state(true);
+        let requested = request_close(&mut state, menu);
+        assert_no_close(&requested);
+        let frame = state.compose(106, 24).unwrap();
+        let text = frame_rows(&frame).join("\n");
+        assert!(text.contains("Close tab with running work?"), "{text}");
+        assert!(text.contains("stops: build marked running"), "{text}");
+        assert_tab_close(&state.handle_input_bytes(b"\r"));
+        assert!(state.overlay.is_none());
+    }
+}
+
+#[test]
+fn closing_a_running_tab_is_immediate_when_the_setting_is_off() {
+    let mut state = running_job_state(false);
+    assert_tab_close(&request_close(&mut state, false));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn closing_a_parent_names_its_running_children() {
+    let mut state = parent_with_jobs_state(false);
+    let requested = request_close(&mut state, false);
+    assert!(tab_closes(&requested).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.running.as_deref() == Some("tests marked running")));
+    assert_eq!(
+        tab_closes(&state.handle_input_bytes(b"\r")),
+        ["tab_2", "tab_3", "tab_1"]
+    );
+}
+
+fn busy_agent(pane_id: &str, status: AgentStatus) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: Some("claude".into()),
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: status,
+        state_change_seq: 0,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }
+}
+
+fn close_focused_pane(state: &mut ClientShellState) -> ClientShellInput {
+    let mut requested = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ClosePane),
+        &mut requested,
+    );
+    requested
+}
+
+#[test]
+fn closing_a_pane_with_a_waiting_agent_asks_first() {
+    let mut state = close_state(false, 2);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected
+        .agents
+        .push(busy_agent("pane_1", AgentStatus::Blocked));
+    state.set_snapshot(Box::new(projected));
+
+    assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.title == "Close pane with running work?"
+                && confirm.running.as_deref() == Some("claude waiting in 1")));
+    assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
+    assert!(state.overlay.is_none());
+
+    // An idle agent can be resumed, so it closes at once.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].agent_status = AgentStatus::Idle;
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(pane_closes(&close_focused_pane(&mut state)), ["pane_1"]);
+}
+
+#[test]
+fn closing_a_pane_running_a_program_asks_first() {
+    let mut state = close_state(false, 2);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.panes[0].running_program = Some("lazygit".into());
+    state.set_snapshot(Box::new(projected));
+
+    assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.running.as_deref() == Some("lazygit in 1")));
+    assert_eq!(pane_closes(&state.handle_input_bytes(b"\r")), ["pane_1"]);
+}
+
+#[test]
+fn closing_a_workspace_names_its_busy_agent() {
+    let mut state = close_state(false, 1);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected
+        .agents
+        .push(busy_agent("pane_1", AgentStatus::Working));
+    state.set_snapshot(Box::new(projected));
+    let mut requested = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseWorkspace),
+        &mut requested,
+    );
+    assert_no_close(&requested);
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.title == "Close workspace?"
+                && confirm.running.as_deref() == Some("claude working in 1")));
+}
+
+fn focus_tab(state: &mut ClientShellState, tab_id: &str) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for tab in &mut projected.tabs {
+        tab.focused = tab.tab_id == tab_id;
+    }
+    projected.focused_tab_id = Some(tab_id.into());
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 24).unwrap();
+}
+
+fn click_up(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
+    click(state, rect);
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn focused_by(outcome: &ClientShellInput) -> Vec<String> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                Method::TabFocus(target) => Some(target.tab_id.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// `tab_1` with children `tab_2` and `tab_3`, and a plain `tab_4`.
+fn group_memory_state() -> ClientShellState {
+    let mut state = parent_with_jobs_state(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut other = projected.tabs[0].clone();
+    other.tab_id = "tab_4".into();
+    other.number = 4;
+    other.label = "lazygit".into();
+    other.focused = false;
+    projected.tabs.push(other);
+    state.set_snapshot(Box::new(projected));
+    state
+}
+
+fn main_row_rect(state: &ClientShellState, tab_id: &str) -> Rect {
+    state
+        .hits
+        .tabs
+        .iter()
+        .find(|(_, id)| id == tab_id)
+        .map(|(rect, _)| *rect)
+        .expect("main-row tab")
+}
+
+#[test]
+fn a_main_row_tab_returns_to_its_groups_last_tab() {
+    let mut state = group_memory_state();
+    focus_tab(&mut state, "tab_3");
+    focus_tab(&mut state, "tab_4");
+
+    let rect = main_row_rect(&state, "tab_1");
+    assert_eq!(focused_by(&click_up(&mut state, rect)), ["tab_3"]);
+
+    let mut switched = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::SwitchTab(0)),
+        &mut switched,
+    );
+    assert_eq!(focused_by(&switched), ["tab_3"]);
+}
+
+#[test]
+fn a_group_without_history_or_with_its_last_tab_closed_opens_the_parent() {
+    let mut state = group_memory_state();
+    focus_tab(&mut state, "tab_4");
+    let rect = main_row_rect(&state, "tab_4");
+    assert_eq!(focused_by(&click_up(&mut state, rect)), ["tab_4"]);
+
+    focus_tab(&mut state, "tab_3");
+    focus_tab(&mut state, "tab_4");
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.tab_id != "tab_3");
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 24).unwrap();
+    let rect = main_row_rect(&state, "tab_1");
+    assert_eq!(focused_by(&click_up(&mut state, rect)), ["tab_1"]);
+}
+
+#[test]
+fn the_parents_own_entry_in_the_second_row_selects_the_parent() {
+    let mut state = group_memory_state();
+    focus_tab(&mut state, "tab_3");
+    let parent_entry = state
+        .hits
+        .child_tabs
+        .iter()
+        .find(|(_, id)| id == "tab_1")
+        .map(|(rect, _)| *rect)
+        .expect("parent entry");
+    assert_eq!(focused_by(&click_up(&mut state, parent_entry)), ["tab_1"]);
 }

@@ -1005,7 +1005,10 @@ impl ClientShellState {
         close_group: Option<bool>,
         outcome: &mut ClientShellInput,
     ) {
-        if self.config.confirm_close {
+        let running = self.running_summary(|snapshot| {
+            super::close_impact::workspaces_running_work(snapshot, &[workspace_id.as_str()])
+        });
+        if self.config.confirm_close || running.is_some() {
             self.open_close_confirmation(workspace_id, None, close_group);
             return;
         }
@@ -1026,13 +1029,34 @@ impl ClientShellState {
         );
     }
 
+    /// What the close would stop, when the user wants to be asked about it.
+    fn running_summary(
+        &self,
+        running_work: impl FnOnce(&crate::protocol::ClientShellSnapshot) -> Vec<String>,
+    ) -> Option<String> {
+        if !self.config.confirm_close_running {
+            return None;
+        }
+        let snapshot = self.snapshot.as_deref()?;
+        super::close_impact::summary(&running_work(snapshot))
+    }
+
     pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
-        if self.request_parent_tab_close(&tab_id, outcome) {
+        let running = self.running_summary(|snapshot| {
+            let mut tab_ids = vec![tab_id.as_str()];
+            tab_ids.extend(
+                super::tab_groups::child_tabs(snapshot, &tab_id)
+                    .into_iter()
+                    .map(|tab| tab.tab_id.as_str()),
+            );
+            super::close_impact::tabs_running_work(snapshot, &tab_ids)
+        });
+        if self.request_parent_tab_close(&tab_id, running.clone(), outcome) {
             return;
         }
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
             let target = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
-            (self.config.confirm_close
+            ((self.config.confirm_close || running.is_some())
                 && !snapshot
                     .tabs
                     .iter()
@@ -1045,15 +1069,93 @@ impl ClientShellState {
                 return;
             }
         }
+        if let Some(running) = running {
+            if self.open_running_tab_confirmation(&tab_id, running) {
+                outcome.repaint = true;
+                return;
+            }
+        }
         self.push_endpoint_method(
             crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { tab_id }),
             outcome,
         );
     }
 
+    fn open_running_tab_confirmation(&mut self, tab_id: &str, running: String) -> bool {
+        let Some(target) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
+        else {
+            return false;
+        };
+        let label = target.label.clone();
+        let workspace_id = target.workspace_id.clone();
+        let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
+        else {
+            return false;
+        };
+        self.overlay = Some(ClientShellOverlay::ConfirmClose(
+            ClientConfirmCloseOverlay {
+                workspace_id,
+                tab_target: Some(ClientTabCloseConfirmation {
+                    tab_id: tab_id.to_owned(),
+                    workspace,
+                    children: Vec::new(),
+                }),
+                pane_target: None,
+                title: "Close tab with running work?".to_owned(),
+                detail: label,
+                running: Some(running),
+            },
+        ));
+        true
+    }
+
+    /// Closes a pane, asking first when that would stop running work.
+    pub(super) fn request_pane_close(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        let running = self
+            .running_summary(|snapshot| super::close_impact::pane_running_work(snapshot, &pane_id));
+        let target = self.snapshot.as_deref().and_then(|snapshot| {
+            let pane = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+            let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == pane.tab_id)?;
+            Some((
+                pane.workspace_id.clone(),
+                pane.label.clone(),
+                tab.label.clone(),
+            ))
+        });
+        if let (Some(running), Some((workspace_id, pane_label, tab_label))) = (running, target) {
+            self.overlay = Some(ClientShellOverlay::ConfirmClose(
+                ClientConfirmCloseOverlay {
+                    workspace_id,
+                    tab_target: None,
+                    pane_target: Some(pane_id),
+                    title: "Close pane with running work?".to_owned(),
+                    detail: match pane_label {
+                        Some(pane_label) => format!("{pane_label} in {tab_label}"),
+                        None => format!("pane in {tab_label}"),
+                    },
+                    running: Some(running),
+                },
+            ));
+            outcome.repaint = true;
+            return;
+        }
+        self.push_endpoint_method(
+            crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
+            outcome,
+        );
+    }
+
     /// A tab with child tabs (usually jobs) closes only together with them,
     /// after the user confirms with a summary of their statuses.
-    fn request_parent_tab_close(&mut self, tab_id: &str, outcome: &mut ClientShellInput) -> bool {
+    fn request_parent_tab_close(
+        &mut self,
+        tab_id: &str,
+        running: Option<String>,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
@@ -1071,7 +1173,7 @@ impl ClientShellState {
         };
         let label = target.label.clone();
         let workspace_id = target.workspace_id.clone();
-        if !self.config.confirm_close {
+        if !self.config.confirm_close && running.is_none() {
             for child in children {
                 self.push_endpoint_method(
                     crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
@@ -1101,11 +1203,13 @@ impl ClientShellState {
                     workspace,
                     children,
                 }),
+                pane_target: None,
                 title: "Close tab and its child tabs?".to_owned(),
                 detail: format!(
                     "{label} — {count} child {}: {summary}",
                     if count == 1 { "tab" } else { "tabs" }
                 ),
+                running,
             },
         ));
         outcome.repaint = true;
@@ -1117,6 +1221,23 @@ impl ClientShellState {
             return;
         };
         outcome.repaint = true;
+        if let Some(pane_id) = confirm.pane_target {
+            if !self
+                .snapshot
+                .as_deref()
+                .is_some_and(|snapshot| snapshot.panes.iter().any(|pane| pane.pane_id == pane_id))
+            {
+                self.receive_endpoint_unavailable(
+                    "Close target changed; try closing the pane again".into(),
+                );
+                return;
+            }
+            self.push_endpoint_method(
+                crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
+                outcome,
+            );
+            return;
+        }
         let method = if let Some(target) = confirm.tab_target {
             if target.workspace.endpoint_id != self.active_endpoint_id
                 || !self.navigation_target_valid(&target.workspace)
@@ -1213,6 +1334,18 @@ impl ClientShellState {
         } else {
             None
         };
+        let running = if self.config.confirm_close_running {
+            let workspace_ids = group
+                .iter()
+                .map(|member| member.workspace_id.as_str())
+                .collect::<Vec<_>>();
+            super::close_impact::summary(&super::close_impact::workspaces_running_work(
+                snapshot,
+                &workspace_ids,
+            ))
+        } else {
+            None
+        };
         let pane_count = group
             .iter()
             .map(|member| {
@@ -1238,6 +1371,8 @@ impl ClientShellState {
                 workspace_id,
                 close_group: closes_group,
                 tab_target,
+                pane_target: None,
+                running,
                 title: if closes_group {
                     "Close worktree group?".to_owned()
                 } else {

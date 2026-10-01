@@ -356,6 +356,7 @@ pub(super) fn provider_code(provider: &ProviderUsage) -> String {
         "gemini" => "GO".into(),
         "deepseek" => "DS".into(),
         "openrouter" => "OR".into(),
+        "kimi" => "KM".into(),
         _ => provider
             .label
             .chars()

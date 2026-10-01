@@ -488,7 +488,7 @@ impl ClientShellState {
         let tabs = super::tab_groups::main_row_tabs(snapshot);
         let current = tabs.iter().position(|tab| tab.tab_id == active)?;
         let next = current.checked_add_signed(delta)?;
-        tabs.get(next).map(|tab| tab.tab_id.clone())
+        tabs.get(next).map(|tab| self.group_entry_tab(&tab.tab_id))
     }
 
     /// The second-row entry `delta` steps from the focused one; `None` past
@@ -554,7 +554,56 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
-    fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+    /// Top-level blocks of this endpoint's spaces as drawn: (id, top, bottom)
+    /// per space with its indented worktrees.
+    fn workspace_blocks(&self) -> Vec<(String, u16, u16)> {
+        let mut blocks = Vec::<(String, u16, u16)>::new();
+        let snapshot = self.snapshot.as_deref();
+        for hit in self
+            .hits
+            .workspaces
+            .iter()
+            .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
+            // A group's toggle row belongs to the group's main space only.
+            .filter(|hit| {
+                hit.group_toggle.as_ref().is_none_or(|(_, key)| {
+                    snapshot.is_none_or(|snapshot| {
+                        snapshot
+                            .workspaces
+                            .iter()
+                            .find(|workspace| {
+                                workspace.worktree.as_ref().is_some_and(|worktree| {
+                                    worktree.key == *key && !worktree.is_linked_worktree
+                                })
+                            })
+                            .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
+                    })
+                })
+            })
+        {
+            match blocks.last_mut() {
+                Some(block) if hit.indented => block.2 = hit.rect.bottom(),
+                _ => blocks.push((hit.workspace_id.clone(), hit.rect.y, hit.rect.bottom())),
+            }
+        }
+        blocks
+    }
+
+    /// Where the dragged space would land: `Some(before)` (`None` for the
+    /// end), or `None` when the pointer is outside this endpoint's spaces.
+    ///
+    /// Spaces move as whole blocks (a space with its indented worktrees). The
+    /// dragged block's top follows the pointer at the row it was grabbed by,
+    /// and the target is the landing slot nearest to that top in the list
+    /// without the dragged block. That list does not depend on where the live
+    /// preview drew the block, so the target cannot flip back and forth: the
+    /// block passes a neighbour after moving about that neighbour's height.
+    fn workspace_drop_target_at(
+        &self,
+        point: (u16, u16),
+        source_workspace_id: &str,
+        grab_offset: u16,
+    ) -> Option<Option<String>> {
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= self.hits.new_workspace.y
@@ -564,70 +613,43 @@ impl ClientShellState {
         {
             return None;
         }
-        let snapshot = self.snapshot.as_deref()?;
-        let mut slots = self
-            .hits
-            .workspaces
+        let blocks = self.workspace_blocks();
+        let source = blocks
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
-            .filter(|hit| {
-                hit.group_toggle.as_ref().is_none_or(|(_, key)| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| {
-                            workspace.worktree.as_ref().is_some_and(|worktree| {
-                                worktree.key == *key && !worktree.is_linked_worktree
-                            })
-                        })
-                        .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
-                })
-            })
-            .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
-            .collect::<Vec<_>>();
-        let empty_collapsed_groups = HashSet::new();
-        let collapsed_groups = self
-            .collapsed_groups_for_endpoint(&self.active_endpoint_id)
-            .unwrap_or(&empty_collapsed_groups);
-        let entries = render::workspace_entries(snapshot, collapsed_groups);
-        let last_hit = self
-            .hits
-            .workspaces
-            .iter()
-            .rev()
-            .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
-        let last_position = entries.iter().position(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
-        })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| {
-            entry.indented
-                || last_hit.group_toggle.as_ref().is_some_and(|(_, key)| {
-                    snapshot.workspaces[entry.index]
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.key == *key)
-                })
-        }) {
-            let before = next.and_then(|entry| {
-                snapshot
-                    .workspaces
-                    .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
-            });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
+            .position(|(id, ..)| id == source_workspace_id)?;
+        // Blocks after the dragged one move up into its place, gap included.
+        let shift = blocks
+            .get(source + 1)
+            .map_or(0, |next| next.1.saturating_sub(blocks[source].1));
+        let compact_top = |index: usize, top: u16| {
+            if index > source {
+                top.saturating_sub(shift)
+            } else {
+                top
             }
-        }
+        };
+        let mut slots = blocks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != source)
+            .map(|(index, (id, top, _))| (Some(id.clone()), compact_top(index, *top)))
+            .collect::<Vec<_>>();
+        let end = blocks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != source)
+            .map(|(index, (_, top, bottom))| {
+                compact_top(index, *top).saturating_add(bottom.saturating_sub(*top))
+            })
+            .max()
+            .unwrap_or(blocks[source].1);
+        slots.push((None, end));
+        let top = point.1.saturating_sub(grab_offset);
         slots
             .into_iter()
             .enumerate()
-            .min_by_key(|(index, (_, row))| (point.1.abs_diff(*row), *index))
-            .map(|(_, target)| target)
+            .min_by_key(|(index, (_, row))| (top.abs_diff(*row), *index))
+            .map(|(_, (before, _))| before)
     }
 
     fn workspace_move_method(
@@ -1257,8 +1279,13 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                Some(ClientChromeDrag::Workspace { .. }) => {
-                    let target = self.workspace_drop_target_at(point);
+                Some(ClientChromeDrag::Workspace {
+                    source_workspace_id,
+                    grab_offset,
+                    ..
+                }) => {
+                    let (source, grab_offset) = (source_workspace_id.clone(), *grab_offset);
+                    let target = self.workspace_drop_target_at(point, &source, grab_offset);
                     if let Some(ClientChromeDrag::Workspace {
                         target: current, ..
                     }) = self.chrome_drag.as_mut()
@@ -1278,11 +1305,19 @@ impl ClientShellState {
                 if delta >= 1 {
                     let source_workspace_id = press.workspace_id.clone();
                     let draggable = self.endpoint_workspace_is_draggable(press);
+                    let grab_offset = self
+                        .workspace_blocks()
+                        .iter()
+                        .find(|(id, ..)| *id == source_workspace_id)
+                        .map_or(0, |(_, top, _)| press.start_row.saturating_sub(*top));
                     if draggable {
-                        if let Some(target) = self.workspace_drop_target_at(point) {
+                        if let Some(target) =
+                            self.workspace_drop_target_at(point, &source_workspace_id, grab_offset)
+                        {
                             self.chrome_drag = Some(ClientChromeDrag::Workspace {
                                 source_workspace_id,
                                 target: Some(target),
+                                grab_offset,
                             });
                             outcome.repaint = true;
                         }
@@ -1296,8 +1331,7 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 // Child tabs are not dragged: their order follows their parent.
-                let main_row = self.hits.tabs.iter().any(|(_, id)| *id == press.tab_id);
-                if delta >= 1 && main_row {
+                if delta >= 1 && press.main_row {
                     if let Some(insert_index) = self.tab_drop_index_at(point) {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id: press.tab_id.clone(),
@@ -1352,8 +1386,9 @@ impl ClientShellState {
                     ClientChromeDrag::Workspace {
                         source_workspace_id,
                         target,
+                        ..
                     } => {
-                        if let Some((before_workspace_id, _)) = target {
+                        if let Some(before_workspace_id) = target {
                             if let Some(method) = self.workspace_move_method(
                                 &source_workspace_id,
                                 before_workspace_id.as_deref(),
@@ -1430,10 +1465,15 @@ impl ClientShellState {
                 return;
             }
             if let Some(press) = self.tab_press.take() {
+                // A main-row tab stands for its whole group; its own entry in
+                // the second row selects the tab itself.
+                let tab_id = if press.main_row {
+                    self.group_entry_tab(&press.tab_id)
+                } else {
+                    press.tab_id
+                };
                 self.push_endpoint_method(
-                    crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                        tab_id: press.tab_id,
-                    }),
+                    crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
                     outcome,
                 );
                 return;
@@ -2156,6 +2196,22 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
+                // An agent line under a space focuses that agent, not the space.
+                let space_agent = self
+                    .hits
+                    .space_agents
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, pane_id)| pane_id.clone());
+                if let Some(pane_id) = space_agent {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                            pane_id,
+                        }),
+                        outcome,
+                    );
+                    return;
+                }
                 let workspace_press = self
                     .hits
                     .workspaces
@@ -2178,9 +2234,10 @@ impl ClientShellState {
                         self.hits
                             .tabs
                             .iter()
-                            .chain(&self.hits.child_tabs)
-                            .find(|(rect, _)| super::contains(*rect, point))
-                            .and_then(|(_, tab_id)| {
+                            .map(|hit| (hit, true))
+                            .chain(self.hits.child_tabs.iter().map(|hit| (hit, false)))
+                            .find(|((rect, _), _)| super::contains(*rect, point))
+                            .and_then(|((_, tab_id), main_row)| {
                                 let tab = self
                                     .snapshot
                                     .as_deref()?
@@ -2190,6 +2247,7 @@ impl ClientShellState {
                                 Some(ClientTabPress {
                                     tab_id: tab.tab_id.clone(),
                                     workspace_id: tab.workspace_id.clone(),
+                                    main_row,
                                     start_column: mouse.column,
                                     start_row: mouse.row,
                                 })

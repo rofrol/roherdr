@@ -1443,7 +1443,8 @@ fn render_confirm_close_overlay(
     c: &ClientConfirmCloseOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let q = popup(b.area, 64, 6)?;
+    let running_rows = u16::from(c.running.is_some());
+    let q = popup(b.area, 64, 6 + running_rows)?;
     let i = panel(b, q, p.red, p.panel_bg)?;
     put_text(
         b,
@@ -1464,7 +1465,17 @@ fn render_confirm_close_overlay(
         &format!(" {}", c.detail),
         Style::default().fg(p.text).bg(p.panel_bg),
     );
-    let rs = row(i, &[13, 12], 2, 3);
+    if let Some(running) = &c.running {
+        put_text(
+            b,
+            i.x,
+            i.y + 2,
+            i.width,
+            &format!(" stops: {running}"),
+            Style::default().fg(p.yellow).bg(p.panel_bg),
+        );
+    }
+    let rs = row(i, &[13, 12], 2, 3 + running_rows);
     let [ok, cancel] = rs.as_slice() else {
         return None;
     };

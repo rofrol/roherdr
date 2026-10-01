@@ -285,6 +285,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
+# Ask before closing a tab, pane or workspace with running work: a tab marked
+# running (e.g. a herdr-job), a working or blocked agent, or a program the
+# shell started, e.g. lazygit. Independent of confirm_close.
+# confirm_close_running = true
+
 # Ask for a tab name before creating a new tab.
 # Set false to create tabs immediately with generated names.
 # prompt_new_tab_name = true
@@ -365,6 +370,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
 # rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# Experimental: list each space's agents under it, each with its state and
+# task, and a line with its herdr-job counts when it has jobs.
+# agents = false
 
 # Background notification popup delivery
 [ui.toast]

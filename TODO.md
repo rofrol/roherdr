@@ -20,7 +20,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     the `tab.closed` hook reconcile tabs still marked running. Tab ids are
     reused, so the newest job of a tab decides, and only while the tab keeps
     its label. No sweep on server start: herdr has no such plugin event.
-- [ ] Confirm before closing a tab or pane with running work. Closing a
+- [x] Confirm before closing a tab or pane with running work. Closing a
   single job child tab (or a pane) now kills its job with no question; only a
   parent tab with children and the last tab of a workspace ask first.
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): ask when
@@ -41,14 +41,23 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Its own setting beside `confirm_close`, so turning off the other
     confirmations keeps this one. Undo or "keep the job running" only once
     jobs outlive their tab; a delayed kill is not a real undo.
-- [ ] Clicking a top-level tab that has child tabs should open the most
+  - Done 2026-09-26, client-side for now: `ui.confirm_close_running` asks
+    before a close that stops a tab marked running, a working or blocked
+    agent, or a program the shell started (like Ghostty; idle agents and
+    finished job tabs close at once). The server sends each pane's
+    `running_program`. Still open: the API `force` guard and computing the
+    impact on the server.
+- [x] Clicking a top-level tab that has child tabs should open the most
   recently active tab of that group, not the first one.
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): remember
     the last selection per group, the parent itself included, in the per-client
     location state (one client's navigation must not move another's). Fall back
     to the parent when there is no history or the remembered child was closed.
     Keep a way to select the parent directly (its entry in the second row).
-- [ ] The consult stats should show the coordinator's actual model and
+  - Done 2026-09-26: the client remembers each group's last focused tab per
+    endpoint; a main-row click, the tab number keys and the main-row wheel
+    return there. The parent's entry in the second row selects the parent.
+- [x] The consult stats should show the coordinator's actual model and
   reasoning effort (now Opus 5.5 at `medium`; self entries are logged just as
   `claude`), and add Opus at a lower effort as a participant to compare.
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): snapshot
@@ -66,6 +75,11 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     round's roster.
   - Record the metadata now; the paired effort experiment is deferred (its
     own research project, and it uses the subscription quota).
+  - Done 2026-09-26 (metadata only): `consult.py self` records the model id
+    (`--model`, else `unknown`), the effort (`--effort`, else
+    `$CLAUDE_EFFORT`, else `unknown`) with its source, and the Claude Code
+    version; the coordinator table groups by `model@effort`. The effort
+    experiment moved to Deferred.
 - [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
   to the right of the "spaces" header (like the agents panel's
   grouped/priority). Grouped: `<space> <git branch> <git status>`, then per
@@ -140,6 +154,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     circles and job lines; then the attention header and the priority view;
     then clicks and scroll memory. Remove the old panel only after the new
     view works in daily use.
+  - Stage 1 in progress (2026-09-26): `ui.sidebar.spaces.agents = true`
+    (off by default) lists each space's agents under it, with the state
+    icon and task (`claude · no task` without one) and a line with the
+    herdr-job counts from the `$jobs` token; clicking an agent or job line
+    focuses that agent (local endpoint only). Still to do in stage 1: the
+    new state circle shapes, unowned jobs, the chevron.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -166,6 +186,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     when the order or the block's row changes.
   - Do not collapse spaces while dragging (it moves the target as the user
     aims). Worktree children move with the parent, labelled `herdr (+2)`.
+  - Done in part 2026-09-26: the list shows the drop live (the dragged
+    space and its worktrees move to where they would land), the dragged
+    block gets an accent bar instead of the grey, the thin line is gone,
+    the header says `herdr → before try-roguix`, `herdr → end` or
+    `no change · Esc`, and Esc cancels. The target is the landing slot
+    nearest the block's top (grabbed row kept) in the list without the
+    dragged block, so it does not flicker. Still open: the row-by-row
+    slide animation, auto-scroll near the edges, keyboard reorder, the
+    priority-view rule, and the local sidebar only (with remote endpoints
+    the aggregate sidebar keeps the old look).
   - Drag starts only from the space's name line after a small threshold, so
     clicks, chevrons and agent/job rows keep working; a click is suppressed
     after a drag. Esc cancels. Time-based auto-scroll near the list edges.
@@ -197,6 +227,14 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Stages (consulted 2026-09-26): first a manual restart of a selected idle
     agent, after checking that launch flags are recorded and resume works;
     then version detection, the "restart pending" queue and bulk restart.
+  - Stage 1 done 2026-09-26 as the `plugins/restart` plugin (not core):
+    menu actions for the focused pane and for the workspace's idle agents.
+    Launch flags come from the agent process's own argv (old resume
+    arguments and prompts dropped), so nothing has to be recorded; Claude
+    with a draft (non-dim text after `❯`) is skipped; SIGTERM, wait for the
+    shell, then `claude --resume <id>` / `pi --session <path>`. Tested live
+    on a throwaway Claude session. Still to do: version detection, the
+    restart-pending queue, a preview/picker, pi's draft check.
 - [ ] Telegram notifications when I am away from the Mac (agent blocked,
   agent done, herdr-job finished).
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): Telegram
@@ -219,6 +257,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Start with a spike (consulted 2026-09-26): does herdr-job completion
     reach the event stream, and can "away" be detected without core
     changes? Then the plugin.
+  - Spike done 2026-09-26, no core change needed: agent blocked/done comes
+    as `pane.agent_status_changed`, which runs plugin `[[events]]` hooks (no
+    daemon). herdr-job completion has no event (tab status changes emit
+    none), but herdr-job already runs `notify()` at the end, so it can call
+    the plugin's sender itself. The API knows nothing about attached
+    clients or their idleness; "away from the Mac" is better read from the
+    OS: macOS `ioreg -c IOHIDSystem` `HIDIdleTime` (keyboard/mouse idle),
+    on Linux logind's `IdleHint` or `xprintidle`, plus a manual away/mute
+    action writing a state file. Blocked on: a bot token and `chat_id` from
+    me, to test sending.
 - [ ] Usage footer: show OpenAI API (platform, pay-as-you-go) credits, and
   consider Kimi, GLM and other popular providers.
   - Consulted models (DeepSeek, GPT-6 Luna, 2026-09-26; GPT-6 Astra and Gemini
@@ -246,9 +294,68 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `QueryAccountBalance` with signed AccessKey requests, out of scope.
   - Order: Kimi balance, then OpenAI spend (admin key), then GLM Coding Plan.
   - Only Kimi is next; OpenAI spend and GLM wait until there is a real need.
+  - Kimi done 2026-09-26: `usage.kimi` (row `KM`, hidden without a key in
+    `MOONSHOT_API_KEY` or `kimi` in the auth file) and `usage.kimi_host`
+    (`api.moonshot.cn` bills in CNY). Endpoint checked (401 without a key);
+    not tried with a real key, since there is none on this Mac.
+- [ ] Agent status shows a green/teal circle while the agent waits on its
+  herdr-job: its turn ended, so herdr detects it as idle/done, and it reads
+  as "agent finished". Use a different symbol for "waiting on a running job".
+  - Consulted models (GPT-6 Astra, GPT-6 Luna, DeepSeek, 2026-09-26; Gemini
+    hit its weekly quota): all three recommend `◌` (dotted circle), in both
+    the Dots and Symbols styles; Astra and Luna in yellow ("still in
+    progress"), DeepSeek in blue, which no other state uses. `◔` is too close
+    to `◐` (working); `⌛` is double-width in many fonts.
+  - Decided 2026-09-26, after a second round (GPT-6 Astra, GPT-6 Luna,
+    DeepSeek): a filled `●` in mauve in the Dots style, `◷` in mauve in the
+    Symbols style. A filled dot is easier to spot in a long list than `◌`,
+    and yellow already means working. Not blue (Luna's and DeepSeek's pick):
+    blue is the accent, it means finished in the mobile view and in
+    notifications, and it is close to teal (done). Check mauve's contrast on
+    light themes. Yellow `◌` is the fallback.
+  - A TUI presentation override, not a new `AgentStatus`: apply it only when
+    the detected status is idle or done and the pane has running jobs; working
+    and blocked still win. A running job does not prove the agent waits on
+    it, so do not add a `Waiting` status to the frozen API enum.
+  - Derive it from a structured server fact (e.g. a running-jobs count in pane
+    metadata), not by parsing the rendered `$jobs` token text.
+- [ ] Make the consult skills (`plugins/consult`: gpt, gemini, deepseek,
+  consult-stats) work in pi too, not only in Claude Code. pi 0.87.1
+  implements the Agent Skills spec and reads `~/.pi/agent/skills/` (also
+  `~/.agents/skills/`), but every `SKILL.md` hardcodes
+  `~/.claude/skills/...` paths, and `consult.py self` logs the coordinator as
+  `claude` by default. The scripts already find their siblings through
+  `realpath "$0"`, so only the instructions and the logging need changes.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-26; Gemini hit its
+    weekly quota): `install-skills` links into both `~/.claude/skills` and
+    `~/.pi/agent/skills`, not `~/.agents/skills` (not verified that Claude
+    Code reads it). Refuse when the same skill name is already visible to pi
+    from another directory: pi keeps the first one found and only warns, so
+    a stale copy would shadow updates.
+  - `SKILL.md` commands use the skill's own directory (pi tells the model
+    where a skill lives), with quoting; `consult-stats` stays a sibling of
+    the others, as an installer invariant. No `~/.local/bin` wrappers.
+  - Log the coordinator's agent (`claude-code`, `pi`) and its model id
+    separately, `unknown` when not known, never a guessed default. Spike
+    first: does pi expose its model to the bash tool (env, session file)?
+    Otherwise the skill tells the coordinator to pass `--model`. Overlaps
+    the coordinator-metadata item above; do them together.
+  - Descriptions must route: pi's own `oracle` skill (pi-fabric reviewer)
+    also reads as "second opinion"; reword the descriptions so the model can
+    tell them apart, drop "Claude" from them. Keep `oracle` separate for now.
+  - Out of scope: the Claude-only `herdr-bg-badge` hook and
+    `herdr-peer-token` (`~/.claude/sessions`).
+  - Verify in a live pi session: every skill, a round with ratings and
+    `self`, an unrelated cwd, inside and outside herdr; then check Claude
+    Code still works.
 
 ## Deferred
 
+- [ ] Consult stats: pair the coordinator with Opus at a lower effort
+  (`claude -p --model <same id> --effort low`, fresh context without project
+  instructions or tools) to measure what effort buys; see the done
+  coordinator item above for the method (pilot 10 rounds, conclude after
+  20-30, blind ratings where practical, log failures).
 - [ ] herdr > menu > settings > usage: checkboxes choosing which providers the
   usage footer shows. Also token-based usage?
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): the

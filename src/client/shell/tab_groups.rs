@@ -6,6 +6,47 @@
 use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab};
 
+impl super::ClientShellState {
+    /// Records the focused tab as its group's last one, so selecting the
+    /// group from the main row returns there. The group of a child is its
+    /// parent; a top-level tab is its own group.
+    pub(super) fn remember_focused_group_tab(&mut self) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let Some(tab) = snapshot
+            .focused_tab_id
+            .as_deref()
+            .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id))
+        else {
+            return;
+        };
+        let group = tab.parent_tab_id.as_ref().unwrap_or(&tab.tab_id).clone();
+        let focused = tab.tab_id.clone();
+        self.last_group_tabs
+            .insert((self.active_endpoint_id.clone(), group), focused);
+    }
+
+    /// The tab to focus when the main-row tab `main_tab_id` is selected: the
+    /// group's last focused tab, or the tab itself when that one is gone or
+    /// no longer belongs to the group.
+    pub(super) fn group_entry_tab(&self, main_tab_id: &str) -> String {
+        self.last_group_tabs
+            .get(&(self.active_endpoint_id.clone(), main_tab_id.to_owned()))
+            .filter(|remembered| {
+                self.snapshot.as_deref().is_some_and(|snapshot| {
+                    snapshot.tabs.iter().any(|tab| {
+                        tab.tab_id == **remembered
+                            && (tab.tab_id == main_tab_id
+                                || tab.parent_tab_id.as_deref() == Some(main_tab_id))
+                    })
+                })
+            })
+            .cloned()
+            .unwrap_or_else(|| main_tab_id.to_owned())
+    }
+}
+
 /// Tabs of the focused workspace shown in the main row.
 pub(super) fn main_row_tabs(snapshot: &ClientShellSnapshot) -> Vec<&ClientShellTab> {
     focused_workspace_tabs(snapshot)

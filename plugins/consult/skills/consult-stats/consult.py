@@ -5,7 +5,7 @@
                 [--answer-chars N] [--usage JSON] [--usage-raw JSON]      (round id from $CONSULT_ROUND)
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
-  consult.py self (--round R | --calls ID,ID) [--model M] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
+  consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
   consult.py stats [--days N] [--pairs] [--all]
   consult.py recent [-n N]
 
@@ -105,6 +105,28 @@ def cmd_rate(a):
             "findings": a.findings, "accepted": a.accepted, "unique": a.unique, "note": a.note})
 
 
+def coordinator(a):
+    """The coordinator's model id, reasoning effort (and where it came from) and CLI version, as known when the
+    entry is logged. Anything not known is `unknown`, never a guessed default."""
+    if a.effort:
+        effort, source = a.effort, "flag"
+    elif os.environ.get("CLAUDE_EFFORT"):
+        # Claude Code sets it for its Bash tool; a hint of the session's effort, not proof.
+        effort, source = os.environ["CLAUDE_EFFORT"], "CLAUDE_EFFORT"
+    else:
+        effort, source = "unknown", "unknown"
+    execpath = os.environ.get("CLAUDE_CODE_EXECPATH")  # e.g. ~/.local/share/claude/versions/2.1.283
+    cli = f"claude-code {Path(execpath).name}" if execpath else "unknown"
+    return {"model": a.model or "unknown", "effort": effort, "effort_source": source, "cli": cli}
+
+
+def coordinator_label(rd):
+    """model@effort; entries from before 2026-09-26 have only a family name like `claude`."""
+    model = rd.get("model") or "claude"
+    effort = rd.get("effort")
+    return f"{model}@{effort}" if effort and effort != "unknown" else model
+
+
 def cmd_self(a):
     calls, _, _ = load()
     if a.round:
@@ -117,7 +139,7 @@ def cmd_self(a):
         if not ids or unknown:
             sys.exit(f"Unknown id: {unknown or '(none)'} (see: consult.py recent)")
     check_counts(a, ("findings", "accepted", "unique"))
-    rec = {"type": "self", "calls": ",".join(ids), "ts": int(time.time()), "model": a.model,
+    rec = {"type": "self", "calls": ",".join(ids), "ts": int(time.time()), **coordinator(a),
            "findings": a.findings, "accepted": a.accepted, "refuted": a.refuted,
            "unique": a.unique, "missed": a.missed, "note": a.note}
     if a.round:
@@ -189,7 +211,7 @@ def cmd_stats(a):
     for rd in rounds.values():
         if rd["ts"] < since:
             continue
-        s = selves[rd.get("model") or "claude"]
+        s = selves[coordinator_label(rd)]
         s["rounds"] += 1
         for k in ("findings", "accepted", "refuted", "unique", "missed"):
             s[k] += rd.get(k) or 0
@@ -294,7 +316,8 @@ def main():
     c = sub.add_parser("self")
     g = c.add_mutually_exclusive_group(required=True)
     g.add_argument("--calls"); g.add_argument("--round")
-    c.add_argument("--model", default="claude")
+    c.add_argument("--model", help="your exact model id, e.g. claude-opus-5-5 (unknown when left out)")
+    c.add_argument("--effort", help="your reasoning effort (default: $CLAUDE_EFFORT, else unknown)")
     for k in ("--findings", "--accepted", "--refuted", "--unique", "--missed"):
         c.add_argument(k, type=int)
     c.add_argument("--note", default="")

@@ -13,6 +13,7 @@ mod deepseek;
 mod gemini;
 mod http;
 mod keys;
+mod kimi;
 mod openrouter;
 
 pub(crate) use keys::DEFAULT_AUTH_FILE;
@@ -79,6 +80,7 @@ enum Provider {
     Gemini,
     DeepSeek,
     OpenRouter,
+    Kimi,
 }
 
 impl Provider {
@@ -89,6 +91,7 @@ impl Provider {
             Self::Gemini => "gemini",
             Self::DeepSeek => "deepseek",
             Self::OpenRouter => "openrouter",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -99,6 +102,7 @@ impl Provider {
             Self::Gemini => "Gemini",
             Self::DeepSeek => "DeepSeek",
             Self::OpenRouter => "OpenRouter",
+            Self::Kimi => "Kimi",
         }
     }
 
@@ -109,6 +113,7 @@ impl Provider {
             Self::Gemini => Ok(gemini::fetch()?),
             Self::DeepSeek => deepseek::fetch(config),
             Self::OpenRouter => openrouter::fetch(config),
+            Self::Kimi => kimi::fetch(config),
         }
     }
 }
@@ -126,6 +131,10 @@ fn enabled_providers(config: &UsageConfig) -> Vec<Provider> {
         (
             config.openrouter && keys::api_key(config, &keys::KeyedProvider::OpenRouter).is_ok(),
             Provider::OpenRouter,
+        ),
+        (
+            config.kimi && keys::api_key(config, &keys::KeyedProvider::Kimi).is_ok(),
+            Provider::Kimi,
         ),
     ]
     .into_iter()
@@ -371,6 +380,7 @@ mod tests {
         config.codex = false;
         config.gemini = false;
         config.openrouter = false;
+        config.kimi = false;
         assert_eq!(
             enabled_providers(&config)
                 .into_iter()
