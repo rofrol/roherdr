@@ -56,6 +56,14 @@ Inside pane-scaled render and layout loops:
   `just bench-render-scale` to exercise both background-workspace and active-pane
   cardinality when applicable.
 
+Benchmark interpretation: distinguish within-revision cardinality growth
+(15 panes versus 1) from between-revision overhead. Compare exact revisions
+under fixed geometry, avoid concurrent builds/checks during measurement,
+and state what the benchmark actually exercises. Report unsupported platform
+scenarios explicitly; do not silently replace them with a fallback or describe
+a partially failing recipe as green. Small sequential samples are observations,
+not proof of a speedup or regression-free behavior.
+
 Prefer deterministic operation or architecture tests to wall-clock CI limits.
 Performance benchmarks are supporting evidence, not substitutes for behavioral
 coverage. Before a stable release, `just bench-release-smoke` must compare the

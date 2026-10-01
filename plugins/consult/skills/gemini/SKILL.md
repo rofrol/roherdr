@@ -49,10 +49,11 @@ Guidelines:
   ask it **three times in parallel with `-e low`, `-e medium` and `-e high`**, same prompt, same round (unless the user
   named one effort), and rate each call separately — so the efforts are compared on the same task. This uses about
   three times the weekly quota per consultation.
-- Exit 3 = weekly quota exhausted (the script checks `agy -p /quota` first and remembers the reset time in
-  `~/.local/state/consult/gemini-quota-reset`; nothing was sent). Don't call Gemini again until the reset
-  and don't retry or swap models; in a multi-model round go on with the others and tell the user Gemini was
-  skipped (and until when). The same for any other quota/usage-limit error.
+- The helper does not preflight quota or cache availability. It attempts the requested call once;
+  agy decides whether the model is available. A rejected call exits 1 and is logged as an error.
+  After an actual quota/usage-limit rejection, do not retry or silently swap models. In a multi-model
+  round continue with the others and report Gemini's error, including the reset time if supplied.
+  A quota display alone is not a rejection.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
   `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`

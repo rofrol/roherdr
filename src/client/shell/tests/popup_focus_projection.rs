@@ -149,7 +149,7 @@ fn non_overlay_ctrl_v_is_forwarded_to_the_focused_pane() {
 
 #[test]
 fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    let config = config_with_sidebar_width(26);
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());

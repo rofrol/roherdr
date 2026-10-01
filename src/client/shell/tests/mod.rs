@@ -7,6 +7,14 @@ use crate::protocol::{
 use crossterm::event::MouseEvent;
 mod text_editing;
 
+/// The default config with the sidebar at `width` columns, for tests whose
+/// expected columns were written against an older default width.
+pub(super) fn config_with_sidebar_width(width: u16) -> ClientShellConfig {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.sidebar_width = width;
+    config
+}
+
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),

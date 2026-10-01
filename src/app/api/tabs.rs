@@ -448,6 +448,50 @@ mod tests {
     };
 
     #[test]
+    fn api_tab_close_focuses_main_neighbor_instead_of_nested_job() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut ws = Workspace::test_new("tabs");
+        let job1 = ws.test_add_tab(Some("job1"));
+        let job2 = ws.test_add_tab(Some("job2"));
+        let main = ws.test_add_tab(Some("main"));
+        ws.set_tab_parent(job1, Some(0)).unwrap();
+        ws.set_tab_parent(job2, Some(0)).unwrap();
+        ws.switch_tab(main);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let parent_id = app.public_tab_id(0, 0).unwrap();
+        let job_ids = [
+            app.public_tab_id(0, job1).unwrap(),
+            app.public_tab_id(0, job2).unwrap(),
+        ];
+        let closed_id = app.public_tab_id(0, main).unwrap();
+
+        let response = app.handle_tab_close("req".into(), TabTarget { tab_id: closed_id });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
+        let tabs = app.tab_list_info(0);
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(
+            tabs.iter().find(|tab| tab.focused).unwrap().tab_id,
+            parent_id
+        );
+        for (tab, id) in tabs[1..].iter().zip(job_ids) {
+            assert_eq!(tab.tab_id, id);
+            assert_eq!(tab.parent_tab_id.as_deref(), Some(parent_id.as_str()));
+        }
+        app.state.workspaces[0].assert_invariants_for_test();
+    }
+
+    #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

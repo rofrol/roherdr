@@ -34,7 +34,7 @@
   - [ ] Maki (`maki`)
   - [ ] Muse (`muse`)
 
-- [ ] Regression (reported 2026-09-30 16:05): closing a tab moved focus to
+- [x] Regression (reported 2026-09-30 16:05): closing a tab moved focus to
   the last herdr-job tab instead of a tab at the same nesting level.
   Hypothesis before the consult: `Workspace::close_tab` (`src/workspace.rs`)
   keeps the closed tab's flat index when the closed tab is the active one
@@ -54,7 +54,17 @@
   the nearest tab at the same level (previous sibling, else the
   next one, else the row's parent) instead of the flat index. Consider
   `Alt-1…9` numbering, the sidebar's squares, and spaces whose only tabs
-  are job tabs. Reproduced, not implemented.
+  are job tabs. Done 2026-10-01 (`faf566fa`): installed with live handoff
+  and user-confirmed. Full `just check` passed (3808 tests plus lint,
+  Windows lint, maintenance, integration and documentation checks).
+  - Consulted DeepSeek 2026-10-01 (`7235da15`): agreed on previous sibling,
+    then next sibling, then parent for an only child; preserve the active
+    identity on inactive close. Highlighted stale raw parent links when
+    state callers remove a parent directly: clear those links without
+    reordering survivors. Implemented with stable tab numbers and tests
+    for 14 focus scenarios, invalid/last-tab rejection and API projection.
+    First-child close intentionally prefers its next sibling over its
+    parent. No protocol or close-cascade changes.
   - Reproduced 2026-09-30 16:10 in a throwaway session
     (`herdr-throwaway-repro`, herdr 0.9.1, no agent tokens): tabs
     `[A, job1, job2, mainB]`, both jobs nested under A with
@@ -99,6 +109,153 @@
     treats such a child as top-level; the client sends no `tab.focus` of
     its own after a close in the paths checked. It did not run anything.
 
+- [ ] Diagnose four sidebar tab-tree oddities (2026-10-01).
+  - Screenshot: `/Users/romanfrolow/Screenshots/Screenshot 2026-10-01 at 01.41.46.png`
+    (workspace `herdr`, branch `master`). Rows in order: `lazygit`,
+    `Zakładki poziome n…`, `Anthropic limit wyczerp…`, `π - herdr`,
+    `ask claude claude-opus-…`, `ask gemini 3.8-flash-lo…`, then a worktree
+    group `▼ Pi compact job act…` with a `└─` connector, then `zsh`.
+  - [x] (fixed: `herdr-job run` nests under the owner tab's top-level parent
+    and reports a refused `tab parent`) Why are `ask claude` and `ask gemini` (consult helpers) shown as
+    ordinary top-level tabs instead of inside the herdr-job group? They are
+    presumably launched by `plugins/consult` outside `herdr-job run`; check
+    whether they should go through it (see `herdr-job` in the global rules).
+  - [ ] Why does the worktree group look like this (a bare `▼ name  +` row
+    with a `└─` stub, unlike the tab rows above it)? Check which parent
+    link and row kind the renderer uses for a worktree group.
+  - [ ] Why does the worktree's `└─` connector hang under `ask gemini`, as
+    if it were its child? Verify the real parent ids (`tab_parent_index`)
+    versus a purely visual artefact of the connector drawing.
+  - [x] (fixed by the worktree tab indent below; installed build pending)
+    Why is `zsh` after the worktree group not indented like the other
+    tabs? Check whether it is a child of the group or a top-level tab drawn
+    at the wrong depth.
+  - Findings from `herdr tab list --workspace wR` and the code (2026-10-01):
+    - Q1: both `ask claude` (`wR:tZ7`) and `ask gemini` (`wR:t07`) ARE
+      herdr-job tabs (they carry `job`), but have no `parent_tab_id`.
+      `herdr-job` nests a job under its owner's tab with `herdr tab parent`
+      and ignores a failure (`herdr_ok`, `plugins/job/herdr-job`). Nesting
+      is one level only (`Workspace::set_tab_parent`: "the parent must be a
+      top-level tab"). `ask gemini` ran from pane `wR:p0M`, which now lives
+      in job tab `wR:t03` (itself a child of `wR:tVM`), so the parent
+      request was refused: the likely cause. `ask claude` ran from pane
+      `wR:pZP`, which no longer exists (its tab was closed, and a closed
+      parent leaves the child top-level): unverified for the exact close.
+      Fix idea to consider: nest under the owner's top-level ancestor, and
+      log a refused `tab parent` instead of ignoring it.
+    - Q2-Q4: `Pi compact job act…` is not a tab: it is the separate
+      workspace `w1B` (linked worktree of `herdr`), drawn as a child of the
+      repo workspace, and `zsh` is that workspace's only tab (`w1B:t1`).
+      The tabs were not indented below the worktree header (fixed). The
+      `└─` stub is the worktree's tree connector to its parent space; it
+      starts under `ask gemini` only because that is the parent space's
+      last tab line. Whether the stub needs more separation is a design
+      question for the user. Read the sidebar renderer
+      (`src/ui`) for worktree-workspace rows before judging.
+  - Consulted DeepSeek (generic hypotheses, nothing the data above did not
+    settle better); GPT sol hit the Plus usage limit this round.
+
+- [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
+  - User reports Claude CLI selection copies as expected, whereas Pi inserts
+    newline characters into copied multiline text. Determine whether these
+    are extra breaks at visual wraps rather than intentional paragraph/code
+    breaks. No exact reproduction or clipboard-byte comparison yet.
+  - Installed Pi 0.99.1 fullscreen `getActiveSelectionText()` reads rendered
+    rows and joins them with `\n` in `pi-tui/dist/tui-alt-screen.js`.
+    This is a plausible mechanism in fullscreen, not proof for regular mode.
+    Global settings currently omit `tuiMode` (default regular); CLI/project
+    overrides and the user's actual gesture remain unknown. Do not assume
+    Claude's selection implementation without inspecting/reproducing it.
+  - Consulted DeepSeek and Gemini (low/medium/high): compare the same
+    synthetic paragraph, real-newline code block, unwrapped control and
+    Unicode text at 80/120 columns, in Pi regular/fullscreen and Claude CLI.
+    Record terminal/version, resize geometry, mouse modifiers and whether
+    copying uses terminal selection, Pi copy-on-select or OSC 52/native
+    clipboard. Compare exact LF/CRLF bytes, not just pasted appearance.
+    Preserve real newlines, indentation, graphemes and trailing spaces;
+    never fix this by blindly joining every selected row. Do not inspect or
+    overwrite the user's existing clipboard without permission; use a
+    disposable synthetic reproduction. No upstream issue without reproduction.
+
+- [x] Dragging tabs in the spaces list does not work (2026-10-01, reported
+  again; v1 done, see the entry below): pressing a tab line and moving starts no drag. The earlier entry
+  "Dragging tabs in the spaces list does not work (2026-09-29)" below holds
+  the design and the consultations; this one only records that the user
+  still sees it and wants it done.
+
+- [x] Show herdr's own toasts in the top right corner instead of the bottom
+  right (2026-10-01). The option already exists: `[ui.toast.herdr]
+  position = "top-right"` (values `top-left`, `top-right`, `bottom-left`,
+  `bottom-right`; default `bottom-right`). The user's `config.toml` does not
+  set it. Decide whether to set it there or to make the fork's default
+  `top-right`; then check that a top-right toast does not hide the tab bar's
+  right side or the notification button and that its dismiss click still
+  works.
+  - Set 2026-10-01 in `~/.config/herdr/config.toml` (`[ui.toast.herdr]
+    position = "top-right"`), not in the fork's default. With
+    `delivery = "system"` herdr's own toast shows only while the window is
+    focused; the overlap checks above are still to do by eye.
+
+- [ ] Filter bar above the spaces list, like fzf (2026-10-01): a text field
+  at the top of the sidebar that narrows the visible spaces and tabs as the
+  user types. Not designed yet: decide what it matches (space names,
+  branches, tab labels, agent names), the open/close key and mouse
+  affordance, how a match is highlighted, what happens to folding and drag
+  while a filter is active, what Enter selects, and where its state lives
+  (client-only presentation state, not server state).
+  - Consulted DeepSeek, Claude Opus 5.5 and Gemini (low/high) 2026-10-01;
+    GPT sol hit the Plus limit again. Unanimous recommendations, not an
+    approved design: match space name, branch, tab label and agent name
+    (not cwd) with fzf-style fuzzy subsequence and smart case (a crate such
+    as `nucleo-matcher`; Opus adds space-separated AND tokens and a `7/23`
+    match counter). Keep tree order; score only picks the default selection.
+    Keep the tree: a matching space shows all its tabs, a matching tab or
+    child worktree shows its ancestors dimmed; collapsed groups expand for
+    display only, without changing the stored fold state. Highlight matched
+    characters. Open by clicking the bar or a key (`/` only when the
+    sidebar has focus, or `prefix + /`; never steal printable keys from a
+    focused pane). Up/Down move a selection kept by id, Enter focuses it
+    and returns focus to the pane, Esc clears and then closes. Drag
+    reordering is disabled while a filter is active. State is client-only,
+    not persisted, no server requests; cache matches per
+    (query, snapshot generation). Not in v1: cwd or scrollback matching,
+    score ranking, fzf operator syntax, regex, saved queries, state filters.
+
+- [ ] Compact Pi activity rows with click-through to herdr-job details.
+  - User request and screenshot, 2026-10-01:
+    `/Users/romanfrolow/Screenshots/Screenshot 2026-10-01 at 01.12.20.png`.
+    The main Pi transcript should show successive short status rows, each
+    with an animated half-circle indicator while work actually runs and a
+    small summary of the activity. Clicking a row should focus its herdr-job
+    pane. Keep available verbose tool input/output, job logs and explicitly
+    emitted model progress in the detail view, not walls of JSON and `wait`
+    output in the main conversation. Do not claim to expose or relocate
+    hidden internal model reasoning.
+  - Presentation belongs in the Pi/client extension; process state, job
+    identity and logs belong to Herdr runtime. First verify supported Pi
+    render/mouse hooks and Herdr navigation APIs before choosing a design.
+    Reuse existing job identity and focus behavior; do not infer identity
+    from tab titles or create a process/job for every token.
+  - Show real running/done/failed/blocked/cancelled state, stop animation
+    when work settles, retain meaningful completion/error summaries and
+    keyboard/expandable fallback when clicking is unavailable. Do not hide
+    permission prompts or lose original tool results needed for review.
+    Handle reconnect, resume, deleted job tabs and unavailable servers.
+  - No timer/background endpoint requests: use received job state, and
+    navigate only on explicit user action. Bound redraw frequency and keep
+    hidden rows idle. Do not copy credentials or unredacted sensitive tool
+    output into new logs. Outside Herdr preserve ordinary Pi rendering.
+    This is a planning task; no transcript replacement implemented yet.
+  - Consulted DeepSeek and Gemini (medium/high), 2026-10-01: preserve
+    scrollback, selection/copy, narrow-width reflow, session export and raw
+    transcript evidence; bound summaries and sanitise control sequences.
+    Provide reduced-motion/static indicators and a way back to the origin.
+    Renderer/navigation failures must not stop tools or cancel jobs. Use
+    supported Pi rendering rather than injecting carriage-return/escape
+    sequences into its transcript. Test concurrent jobs with explicit
+    tool-call/job mappings, not an assumed universal one-to-one relationship.
+    Gemini low was rejected for exhausted capacity (reported reset 0s);
+    no retry was made and no answer is attributed to that attempt.
 - [ ] Add easily accessible advisor checkboxes in Herdr so it injects
   `Consult with <selected agents>` into coding-agent requests. Let the user
   select advisors (for example DeepSeek) and disable the instruction easily.
@@ -161,7 +318,7 @@
     Verify font rendering, baseline and cell width (including CJK), and
     retain a static fallback when motion is disabled. No variant chosen.
 
-- [ ] Indent vertical tab rows under nested worktree spaces (screenshot,
+- [x] Indent vertical tab rows under nested worktree spaces (screenshot,
   2026-09-30 00:49). The `Job client footer` worktree header is indented,
   but its `zsh` tab aligns with the parent space's `pi - herdr` tab and
   appears to be a sibling rather than a child. Propagate the worktree
@@ -175,8 +332,15 @@
   hits and tooltip anchors together. Test wrap boundaries with/without the
   scrollbar, narrow widths, partial rows and scroll anchoring. Decide gutter
   click behavior explicitly; do not create zero-width tooltip targets.
+  - Done 2026-10-01 (committed, not yet installed): tab lines, fills, fold
+    hits, tooltips and squares of an indented space move 5 columns right
+    (`space_tabs::tab_indent`), and the width squares wrap in shrinks by the
+    same amount in the measure, render and focus-reveal paths of both
+    sidebars. A click in the gutter in front of the line still selects its
+    tab. One scalar per entry, no new work per pane, so no scaling
+    benchmark was run. `just check` passes.
 
-- [ ] Pi does not change its title to the task name as Claude CLI does:
+- [x] Pi does not change its title to the task name as Claude CLI does:
   concurrent sidebar entries remain `π - herdr` (screenshot, 2026-09-29
   23:56). Investigate Pi's emitted terminal titles (OSC 0/2), available
   task/session metadata, and Herdr's title precedence before assigning a
@@ -187,6 +351,21 @@
   Preserve explicit user names and avoid per-token title churn. Verify
   that two Pi sessions with different tasks have distinct labels, unknown
   tasks retain a fallback, and Claude's labels remain unchanged.
+  - Root cause (verified 2026-10-01): Pi emits `π - <session name> - <cwd>`
+    only once a session has a name, and never names one itself (only `/name`
+    or an extension calling `pi.setSessionName`). The pane's
+    `terminal_title` stayed `π - herdr` for the whole session; the label
+    changed only after Pi exited because the shell then set its own title.
+    Consulted DeepSeek and Gemini (low/high; medium returned nothing): all
+    recommend a small Pi extension that names the session once from the first
+    prompt, deterministic and without an LLM call.
+  - Fixed (committed, not yet reloaded in a running Pi): `plugins/pi-title/`
+    names the session once from the first interactive prompt (one line,
+    controls and bidi removed, 48 graphemes), skips slash commands and keeps
+    a name from `/name` or a resumed session. `plugins/pi-title/install`
+    links it into `~/.pi/agent/extensions/`; run `/reload` in Pi. Unknown:
+    whether Pi follows a symlinked extension file (checked only by unit
+    tests with a mocked `pi`, not by a live Pi run).
 
 - [ ] Consider adding a subtle gradient in the empty space between the job
   indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
@@ -605,12 +784,75 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     pointer (a middle-click could stop the wrong job). DeepSeek wanted the
     footer dropped (chosen); Astra wanted the top line and footer to split
     the fields.
-- [ ] A `claude` consult skill in `plugins/consult/skills/`, like `gpt` and
-  `deepseek`, so pi (and other agents) can ask Claude Opus 5.5 for a second
-  opinion: `ask_claude.sh` running `claude -p --model claude-opus-5-5`
-  (billed to the Claude subscription, so it shares Claude Code's usage
-  limit), in its own herdr-job tab, logged to consult-stats; linked into
-  `~/.pi/agent/skills/` by `plugins/consult/install-skills` (2026-09-29).
+- [x] A `claude` consult skill in `plugins/consult/skills/`, like `gpt` and
+  `deepseek`: implemented as `ask_claude.py`, with Herdr-job visibility,
+  consult-stats logging and links for Pi and Claude Code. Explicit Opus:
+  `ask_claude.py -m claude-opus-5-5`; Sonnet remains the default. Both use
+  `claude -p --model`, not a direct API client. Subscription billing requires
+  Claude Code subscription login, not API-key/cloud-provider billing.
+  - Opus argument forwarding and resolved-model logging have offline tests.
+    Live attempt on 2026-10-01 was rejected by the weekly limit (reset 02:00
+    Europe/Warsaw); this does not establish Opus availability. Do not retry
+    before reset or silently substitute another model.
+- [ ] Add a model-selection review workflow for the consult/ask skills.
+  - Use official model announcements, CLI release notes and authentication /
+    subscription availability first. Terminal-Bench and SWE-bench Verified /
+    Pro are candidate sources, not automatic rankings for a read-only
+    consultation task. Record benchmark version, date, model snapshot and
+    harness/agent settings; do not compare unlike evaluation setups.
+  - Treat these user-supplied links as unverified leads, not evidence that
+    Opus is better than Sonnet:
+    https://www.reddit.com/r/Anthropic/comments/1wso4lj/silly_question_if_sonnet_opus_55_is_better_than/
+    https://x.com/BalegaNorbert/status/2102451570608853211
+  - Additional sources read in the browser on 2026-10-01, including their
+    attached images (claims not independently reproduced):
+    https://x.com/BalegaNorbert/status/2102280368909111497 compares dated
+    MiMo V2.6 Command Code/OpenCode promotions, including 72-hour / one-week
+    windows. Track plan, provider, expiry, actual quotas, overage and normal
+    non-promotional pricing; an offer multiplier is not a quality score.
+    https://x.com/BalegaNorbert/status/2102055662087786534 claims Qwen 27B
+    reproduces an earlier proprietary frontier about six months later.
+    Its chart attributes scores to Artificial Analysis Intelligence Index
+    v4.3, with current re-evaluations plotted against original release dates
+    and roughly 4-bit models in the single-24GB class. Verify the primary
+    model pages, index methodology, model/version and deployment details.
+    Neither score differences nor parameter counts establish the post's
+    "1000x" claim or parity for coding consultations.
+  - Also read on 2026-10-01:
+    https://www.reddit.com/r/singularity/comments/1wspt5z/gpt6_sol_vs_sonnet_55_at_the_same_cost_per_task/
+    The author plots claimed Artificial Analysis scores against API cost per
+    task at different effort settings: Sol is claimed more efficient at
+    overlapping budgets, Sonnet has a higher maximum-effort ceiling. The
+    post separately cites Terminal-Bench 4.0 scores; those are not the same
+    metric as the composite Intelligence Index. Verify primary data and
+    token accounting (including reasoning/cache) before adopting conclusions.
+    Equal token prices do not imply equal task costs, and effort labels are
+    not comparable across providers. API dollars/task do not establish
+    subscription quota consumption. Do not transfer GPT-6 Sol results to
+    GPT-6.1 Sol without matching the exact model snapshot. User comments
+    and unverified scores are leads, not grounds for switching defaults.
+  - Keep quality, total cost and delivery route separate. Tag CLI subscription,
+    hosted API and local weights distinctly; provider wrappers can alter
+    harnesses, privacy terms and quotas. For local candidates record hardware,
+    quantization, memory/context headroom, latency and throughput; local
+    serving is not cost-free merely because there is no API invoice.
+    Evaluate read-only consultations separately from tool-using coding
+    agents. No purchases, default switches or new provider integration based
+    solely on these posts. Verify offers again at decision time.
+  - Consulted DeepSeek and Gemini (low/medium/high), 2026-10-01: distinguish
+    temporary promotion value from quality; verify primary benchmark data
+    and local consultation usefulness, with delivery/privacy constraints.
+    Do not treat a screenshot, composite chart or marketing multiplier as
+    a reproducible result.
+  - Before switching a skill default, verify the exact model through its
+    subscribed CLI and run a small representative local evaluation. Compare
+    accepted/unique findings, incorrect advice, latency and quota consumption
+    using consult-stats. Record the decision and a rollback path; do not
+    auto-switch defaults based on leaderboard or social-media claims.
+  - Consulted DeepSeek on 2026-10-01: prioritise primary sources, exact model
+    identities and local usefulness; preserve explicit selection and report
+    unavailable models without silent fallback. No scheduled polling or
+    paid benchmark/model calls until the workflow is designed and approved.
 - [x] The job square's tooltip should appear after the same dwell as the
   cut tab label's (450 ms), not at once (2026-09-29, my request; consult
   GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
@@ -625,7 +867,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   is left), and the cancelled confirmation leaves the space selected or
   highlighted. Reproduce, check whether it predates the vertical tabs, and
   consult (GPT-6 Astra, DeepSeek) on what closing the last tab should do.
-- [ ] Disable upstream binary update notifications in fork builds
+- [x] Disable upstream binary update notifications in fork builds
   (reported 2026-09-29, confirmed 2026-09-30). The fork is installed with
   `scripts/herdr_live.sh`; upstream `herdr update` would replace it.
   Screenshot `Screenshot 2026-09-30 at 12.58.09.png` shows "Herdr v0.9.3
@@ -649,6 +891,20 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Consulted DeepSeek 2026-09-30: agreed on fork-specific suppression,
     explicit updater protection, stale-state handling and informational
     activation. This remains unimplemented; no build or install performed.
+  - Done 2026-10-01 (committed, not installed; `just check` passes), except
+    the targetless notification activation: `HERDR_FORK_BUILD=1` in
+    `.cargo/config.toml` marks builds from this checkout
+    (`build_info::upstream_updates_disabled`; unit tests always behave like
+    upstream). A fork build starts no background version check, ignores a
+    restored upstream `update_available` (the saved release notes stay
+    readable) and `herdr update` refuses with a pointer to
+    `scripts/herdr_live.sh`. Agent manifest updates keep running. Untested
+    live; an already open session keeps its current badge until the server
+    is restarted by the install.
+  - [ ] Still open: clicking a notification-history entry without a target
+    (an old "update available" entry) still closes silently; show the full
+    title and body with the existing UI patterns, never run commands from
+    the text.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -818,7 +1074,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Then, also at my request: one colour, accent blue, while pressed and
     while dragged (mauve read as a git branch; a darker grey and a darker
     blue were tried and dropped).
-- [ ] Dragging tabs in the spaces list does not work (2026-09-29): pressing
+- [x] Dragging tabs in the spaces list does not work (2026-09-29): pressing
   a tab line and moving starts no drag. Only the top tab bar reorders tabs
   (`tab_press` comes from `hits.tabs`, the bar), with a thin insertion
   marker, and only in the focused space. It should work like dragging a
@@ -853,6 +1109,61 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     read as the space moving, and a target space id in the move API now.
     Astra: the top bar may keep its marker for now, but the same order,
     cancel and child-tab rules.
+  - v1 done 2026-10-01 (committed, not installed; `just check` passes): a
+    press on a tab line (not its triangle, counts or squares) now opens the
+    tab on release; one row of vertical movement starts a drag (sideways
+    alone never does). The drop slot is the one nearest the dragged line's
+    top among the slots the others leave (as for spaces), within its own
+    space and also in a space that is not focused; the pointer above the
+    first line or below the space cancels (header `release cancels · Esc`,
+    nothing clamped); Esc cancels; a drop at its own place sends nothing;
+    children follow their parent (server normalises). Sends `tab.move` with
+    the flat index of that space's tabs. Differences from the design above:
+    the line does not move live; the lifted line takes `drag_bg` and accent
+    text and a `▸` (before a line) or `▾` (after the last line) marks the
+    slot in the gutter. Still open: live movement of the block, auto-scroll
+    while dragging near the list's edge, the drag look for themes without
+    `drag_bg`, a short tab dragged past a tall unfolded one (the lifted
+    height is computed but untested), and a live check in a real terminal.
+  - Reported 2026-10-01 after trying the installed build: dragging down, the
+    triangle looked like "two positions" but the tab moved one. Diagnosis: the
+    server is right (new test `every_drop_slot_of_a_top_level_tab_lands_where_asked`
+    checks every slot with and without child tabs, and the client computes the
+    marker and the drop with the same function). The marker `▸` on line k
+    means "before line k", but once the dragged tab leaves, line k moves up
+    one row, so a reader takes it as "ends up at k". The feedback is the bug;
+    the user also wants to see which tab moves and where, and live movement.
+  - Consulted DeepSeek, Claude Opus 5.5, GPT sol 6.1 and Gemini (low/high),
+    2026-10-01; all five rank the same first. Proposals, not decided:
+    1. Live splice preview (recommended for v2, as for spaces): the block
+       (tab line, its unfolded squares, its child tabs) is taken out of the
+       list and drawn at its landing slot, highlighted, with the original
+       slot dimmed or empty. Hit-test against geometry frozen at drag start
+       (never the reordered preview), change slots only after crossing the
+       neighbour's middle (hysteresis), apply server updates without changing
+       row counts. Header hint like spaces: `build: 2 → 4 · before review`,
+       `no change`, `release cancels · Esc`; numbers count top-level tabs after
+       the move. One pure `preview_order` function plus a small drag state;
+       logic shared with the space drag.
+    2. Cheap fix now: draw the marker between rows, a divider row or `──▸`
+       in the gutter, not a glyph on a line, plus the same header hint and
+       the source dimmed. Geometry stays frozen. Removes the off-by-one
+       reading without live movement.
+    3. Ghost: a one-row floating label at the pointer plus a gap at the
+       landing slot (Gemini low; Opus and DeepSeek call it costly or
+       redundant).
+    Shared: `no change` dims the highlight and sends nothing; Esc or a drop
+    outside restores the order and may flash `cancelled`.
+  - Proposal 1 done 2026-10-01 (committed; `just check` passes; the
+    flaky `federated_client_starts_without_local…` failed once and passed on
+    rerun): the dragged block is drawn at its landing slot with the drag
+    background and accent text, the `▸`/`▾` markers are gone, the header says
+    `2 → 4 · build · before review`, `no change · build · Esc` or
+    `release cancels · Esc`. The drop is measured against the rows frozen at
+    the drag start (`TabLineGeometry`), so the slot depends on the pointer
+    alone and cannot flicker. Not done: the same header hint in the
+    multi-machine sidebar, auto-scroll at the list's edge, scrolling the list
+    with the wheel during a drag (the frozen rows would be stale), a live check.
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
@@ -926,8 +1237,14 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     build on it. The Admin API (`GET /v1/organization/costs`, needs an
     `sk-admin` key) gives spend only, so show month-to-date spend, optionally
     against a budget set in `[usage]`, labeled "spend", never "credits left".
-    An admin key reads org-wide billing: opt-in, its own env var or
-    `auth.json` entry, never logged.
+    An admin key reads org-wide billing: opt-in and disabled by default.
+    Use a dedicated credential file outside the repository, readable only
+    by its owner (0600), containing a restricted Usage Read key. Do not
+    reuse Pi's shared `auth.json`; the server alone reads this credential,
+    and must never expose it in logs, errors, client snapshots or prompts.
+    Separate storage is not a sandbox against agents running as the same
+    OS user. The key has not been created; implementation remains pending
+    an explicit user decision. Label costs as spend, not prepaid balance.
   - Kimi (Moonshot): documented `GET https://api.moonshot.ai/v1/users/me/balance`
     (Bearer key) returns `available_balance`, `voucher_balance`,
     `cash_balance` (cash can go negative). Same shape as `deepseek.rs`; the
@@ -950,6 +1267,54 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     not tried with a real key, since there is none on this Mac.
   - Noted 2026-09-28: the footer still has no row for an OpenAI API key
     (platform, pay-as-you-go); only Codex's ChatGPT limits show.
+- [x] Classify the native-graphics CoW retention benchmark failure.
+  - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
+    `src/platform/mod.rs::clone_native_image_source` deliberately returns
+    Unsupported outside Linux. Both that contract and the benchmark's
+    `source_file` assertion exist at `a4ec9556^`, before the job-footer fix.
+    The ignored source-retention profile therefore requires a capability
+    this platform does not implement. The master rerun alone did not prove
+    this; the historical code comparison establishes the platform mismatch.
+    No runtime benchmark was run on the parent revision. Other graphics
+    regressions are not ruled out by this finding.
+  - [x] Make the manual benchmark distinguish unsupported platform source
+    retention from a regression. Test-only implementation capability lives
+    in `src/platform/mod.rs`; scenario selection has deterministic tests.
+    Non-Linux reports `status=unsupported` explicitly for 1 and 15 panes,
+    without measuring decoded fallback as source retention. The other modes
+    remain, including native export at both pane counts. DS reviewed the
+    design. Verified 2026-10-01: `just check` passes 3809 Rust tests;
+    `just bench-render-scale` passes all 8 profiles with two explicitly
+    unsupported source-retention scenarios. No runtime or protocol change.
+    Linux retains the real source assertion, so a filesystem without
+    reflinks still fails visibly. Linux/reflink live validation remains
+    unperformed; macOS CoW support is outside this task.
+- [x] Reproduce the general render scaling comparison for the job-footer fix.
+  - Measured 2026-10-01: exact baseline `f89ac503` (`a4ec9556^`) and candidate
+    `a4ec9556`, three `just bench-render-scale` runs each, macOS, fixed
+    120x40, 5 warmups / 40 samples for the pipeline profile. No concurrent
+    project validation during the retained comparison. Seven profiles pass
+    in each run; native-file source retention fails on both due to unsupported
+    macOS CoW. The recipe itself exits 101; it is not an all-green benchmark.
+  - Median of the three run medians, combined pipeline in microseconds:
+    background 1 pane 564 -> 561 (-0.5%), 15 panes 603 -> 585 (-3.0%);
+    active 1 pane 568 -> 555 (-2.3%), 15 panes 666 -> 658 (-1.2%).
+    Within-revision 15/1 growth is background 6.9% -> 4.3%, active
+    17.3% -> 18.6%. Earlier +7%/+17% described cardinality growth, not the
+    overhead of the footer commit. These small sequential samples establish
+    neither a speedup nor regression-free behavior; no general slowdown was
+    demonstrated. DS reviewed this interpretation and agreed with those limits.
+    Logs remain in `.local/prd/footer-perf-comparison/`.
+  - [ ] Add an explicit occupied-job-footer profile: the general benchmark
+    does not configure job metadata and does not isolate footer drawing.
+    Use 1/15 populated panes with and without metadata and interleaved
+    baseline/candidate samples before attributing any cost to the footer.
+    Optimise only if repeatable measurements justify it.
+- [ ] Push the fork's pending commits after explicit user approval.
+  - Fetch and refresh the ahead/behind comparison first; the earlier count
+    of 52 unpushed commits is stale. Review the outgoing changes, follow
+    the rebase-only fork sync rules in AGENTS.md, and never merge upstream
+    into master. Do not push or rewrite remote history without approval.
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
   ends with new commits, list them as "to review" until I acknowledge them.
   - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
@@ -1463,7 +1828,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     closes the tab.
   - Verify on Linux: plain Ctrl+T/W still reach the shell inside herdr.
 
-- [ ] Raise the default sidebar width: it now carries spaces with branch
+- [x] Raise the default sidebar width: it now carries spaces with branch
   and git status, agents with their task, job lines and tab lines, and
   truncates a lot at 26 columns. Plan: `sidebar_width` 26 → 32,
   `sidebar_max_width` 36 → 44 (so dragging can go wider), min stays 18.
@@ -1486,6 +1851,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     "auto-scaled based on workspace names"; nothing scales it. Update the
     defaults in `src/config/model.rs`, the doc comments and the sample
     config together.
+  - Done 2026-10-01 (committed, not installed): `sidebar_width` 32,
+    `sidebar_max_width` 44, min 18; the sample config, the config reference
+    and the stale "auto-scaled" comment are updated. Six layout tests that
+    pinned columns for the old default now set 26 explicitly
+    (`config_with_sidebar_width`). Not done: the cap at a share of the
+    terminal below about 120 columns (still "consider"); a dragged width
+    is unchanged.
 
 ## Deferred
 
@@ -1505,6 +1877,28 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `<1m`, expired `now`. Floor units and omit zero secondary units;
     `24h 30m` therefore shows `1d`. Check footer width and boundary tests
     (23h 59m, 24h, 34h, 48h). Presentation only; no provider/API changes.
+  - Countdown format done 2026-10-01 (committed, not installed): the
+    footer shows `1d10h`, `2h15m`, `45m`, `<1m`, `now` without inner spaces so
+    a cell keeps five columns (cells start at columns 4 and 14); the modal
+    shows `1d 10h`, `2h 15m`. Boundary tests cover 59s, 24h, 24h30m, 34h,
+    48h and 23h59m. The two bullets below (reset entitlement research,
+    redeemable resets, credits) are still open.
+  - [ ] Investigate whether Anthropic offers a reset entitlement comparable
+    to the user's ChatGPT Plus `Full reset (Weekly + 5 hr)` observation, and
+    whether it could explain successful Sonnet calls at weekly 100%.
+    This is a hypothesis, not an established Anthropic feature or cause.
+    Distinguish scheduled renewal, a manually redeemed reset, model-specific
+    allowance, delayed/aggregate telemetry and paid usage credits.
+    Record the exact model, plan/auth mode, timestamps, displayed buckets,
+    rejection/reset text and any actual redemption or billing evidence.
+    Use official Claude/Claude Code subscription docs and account usage /
+    billing UI, not API Console limits as proof of subscription semantics.
+    Do not redeem anything, enable paid overage or expose credentials.
+    Consulted DeepSeek and Gemini (low/medium/high) on 2026-10-01: successful
+    calls alone cannot identify the mechanism; none verified an Anthropic
+    reset grant. Gemini's API headers/Console suggestions are not evidence
+    for Claude Code subscription quotas. Claude consultation was deferred
+    after the actual weekly-limit rejection until 02:00 Europe/Warsaw.
   Also show how many redeemable quota resets are available, their types /
   scope, and when each expires; keep these separate from automatic limit
   renewals. Show a compact count in the footer and details in the usage modal.

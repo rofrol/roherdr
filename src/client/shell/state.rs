@@ -252,8 +252,19 @@ pub(super) struct ClientTabPress {
     /// Pressed in the main row, not the second row (where a parent also has
     /// its own entry).
     pub(super) main_row: bool,
+    /// Pressed on a tab line in the sidebar's spaces list, not in the tab
+    /// bar: the click opens the tab on release, a drag reorders it there.
+    pub(super) sidebar_line: bool,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
+}
+
+/// Where a space's tab lines were drawn: (index among its top-level tabs, first
+/// row) per drawn line in order, and the row below the space's block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TabLineGeometry {
+    pub(super) lines: Vec<(usize, i32)>,
+    pub(super) bottom: i32,
 }
 
 pub(super) enum ClientChromeDrag {
@@ -281,6 +292,18 @@ pub(super) enum ClientChromeDrag {
         tab_id: String,
         workspace_id: String,
         insert_index: Option<usize>,
+    },
+    /// A tab line dragged in the sidebar's spaces list, within its space.
+    TabLine {
+        tab_id: String,
+        workspace_id: String,
+        /// Where the tab would land among its space's top-level tabs (counting
+        /// the dragged one), or none while the pointer is outside them.
+        insert_index: Option<usize>,
+        /// The lines' rows when the drag started. The list shows the tab at
+        /// its landing slot, so the drop is measured against these, never the
+        /// reordered frame.
+        geometry: TabLineGeometry,
     },
     Workspace {
         source_workspace_id: String,

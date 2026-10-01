@@ -397,36 +397,45 @@ pub(super) fn used_color(used_percent: u8, palette: &Palette) -> ratatui::style:
     }
 }
 
-/// `3d`, `4h`, `25m`, or `now`.
-pub(super) fn compact_countdown(resets_at: u64, now_unix: u64) -> String {
-    let seconds = resets_at.saturating_sub(now_unix);
-    if seconds < 60 {
-        "now".into()
-    } else if seconds < 3_600 {
-        format!("{}m", seconds / 60)
-    } else if seconds < 86_400 {
-        format!("{}h", seconds / 3_600)
-    } else {
-        format!("{}d", seconds / 86_400)
-    }
-}
-
-/// `2d 4h`, `3h 20m`, `12m`, or `now`.
-pub(super) fn detailed_countdown(resets_at: u64, now_unix: u64) -> String {
+/// The two most significant units of a countdown: days and hours from a day
+/// up, hours and minutes from an hour up, else minutes. Units are floored and
+/// a zero second unit is left out (`24h 30m` is `1d`). A positive time under
+/// a minute is `<1m`; a reset that has passed is `now`.
+fn countdown_parts(resets_at: u64, now_unix: u64) -> (String, Option<String>) {
     let seconds = resets_at.saturating_sub(now_unix);
     let (days, hours, minutes) = (
         seconds / 86_400,
         seconds % 86_400 / 3_600,
         seconds % 3_600 / 60,
     );
-    if days > 0 {
-        format!("{days}d {hours}h")
+    let second = |value: u64, unit: &str| (value > 0).then(|| format!("{value}{unit}"));
+    if seconds == 0 {
+        ("now".into(), None)
+    } else if days > 0 {
+        (format!("{days}d"), second(hours, "h"))
     } else if hours > 0 {
-        format!("{hours}h {minutes}m")
+        (format!("{hours}h"), second(minutes, "m"))
     } else if minutes > 0 {
-        format!("{minutes}m")
+        (format!("{minutes}m"), None)
     } else {
-        "now".into()
+        ("<1m".into(), None)
+    }
+}
+
+/// `3d`, `1d10h`, `2h15m`, `45m`, `<1m` or `now`: without a space, so a cell
+/// in the footer fits five columns.
+pub(super) fn compact_countdown(resets_at: u64, now_unix: u64) -> String {
+    match countdown_parts(resets_at, now_unix) {
+        (first, Some(second)) => format!("{first}{second}"),
+        (first, None) => first,
+    }
+}
+
+/// `2d 4h`, `3h 20m`, `12m`, `<1m` or `now`, for the usage modal.
+pub(super) fn detailed_countdown(resets_at: u64, now_unix: u64) -> String {
+    match countdown_parts(resets_at, now_unix) {
+        (first, Some(second)) => format!("{first} {second}"),
+        (first, None) => first,
     }
 }
 
@@ -675,19 +684,33 @@ mod tests {
 
     #[test]
     fn countdowns_pick_a_readable_unit() {
-        assert_eq!(compact_countdown(1_030, 1_000), "now");
-        assert_eq!(compact_countdown(1_000 + 25 * 60, 1_000), "25m");
-        assert_eq!(compact_countdown(1_000 + 4 * 3_600, 1_000), "4h");
-        assert_eq!(compact_countdown(1_000 + 3 * 86_400, 1_000), "3d");
+        let (minute, hour, day) = (60, 3_600, 86_400);
+        let compact = |seconds: u64| compact_countdown(1_000 + seconds, 1_000);
+        let detailed = |seconds: u64| detailed_countdown(1_000 + seconds, 1_000);
+        // A reset that has passed, and one under a minute away.
         assert_eq!(compact_countdown(500, 1_000), "now");
-        assert_eq!(
-            detailed_countdown(1_000 + 2 * 86_400 + 4 * 3_600, 1_000),
-            "2d 4h"
-        );
-        assert_eq!(
-            detailed_countdown(1_000 + 3 * 3_600 + 20 * 60, 1_000),
-            "3h 20m"
-        );
+        assert_eq!(compact(0), "now");
+        assert_eq!(compact(30), "<1m");
+        assert_eq!(detailed(59), "<1m");
+        assert_eq!(compact(25 * minute), "25m");
+        assert_eq!(compact(45 * minute + 59), "45m");
+        // From an hour: hours and minutes, a zero minute left out.
+        assert_eq!(compact(hour), "1h");
+        assert_eq!(compact(2 * hour + 15 * minute), "2h15m");
+        assert_eq!(detailed(2 * hour + 15 * minute), "2h 15m");
+        assert_eq!(compact(23 * hour + 59 * minute), "23h59m");
+        // From a day: days and hours; minutes are dropped, and `24h 30m` is a day.
+        assert_eq!(compact(24 * hour), "1d");
+        assert_eq!(compact(24 * hour + 30 * minute), "1d");
+        assert_eq!(compact(34 * hour), "1d10h");
+        assert_eq!(detailed(34 * hour), "1d 10h");
+        assert_eq!(compact(48 * hour), "2d");
+        assert_eq!(compact(3 * day), "3d");
+        assert_eq!(detailed(2 * day + 4 * hour), "2d 4h");
+        assert_eq!(detailed(3 * hour + 20 * minute), "3h 20m");
+        // An observation's age keeps its wording.
+        assert_eq!(observed_age(1_000, 1_030), "just now");
+        assert_eq!(observed_age(1_000, 1_000 + 4 * minute), "4m ago");
     }
 
     #[test]

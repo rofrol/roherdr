@@ -964,8 +964,8 @@
         {
           "key": "ui.sidebar_width",
           "type": "integer",
-          "default": "26",
-          "description": "Default expanded sidebar width in columns. Auto-scales based on workspace names."
+          "default": "32",
+          "description": "Default expanded sidebar width in columns. A width set by dragging the divider replaces it."
         },
         {
           "key": "ui.sidebar_min_width",
@@ -976,7 +976,7 @@
         {
           "key": "ui.sidebar_max_width",
           "type": "integer",
-          "default": "36",
+          "default": "44",
           "description": "Maximum sidebar width (columns) when expanded."
         },
         {

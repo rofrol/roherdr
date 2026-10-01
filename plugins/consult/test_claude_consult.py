@@ -21,11 +21,13 @@ Path(os.environ["CAPTURE"]).write_text(json.dumps({"args":sys.argv[1:], "prompt"
 mode = os.environ["FAKE_MODE"]
 if mode == "timeout": time.sleep(3)
 if mode == "malformed": print("not JSON"); sys.exit(0)
-print(json.dumps({"subtype":"success", "is_error":mode == "error", "result":"answer", "usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":5,"output_tokens":7,"output_tokens_details":{"thinking_tokens":3}}, "modelUsage":{"claude-sonnet-5-5":{"canonicalModel":"claude-sonnet-5-5"}}}))
+model = sys.argv[sys.argv.index("--model") + 1]
+print(json.dumps({"subtype":"success", "is_error":mode == "error", "result":"answer", "usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":5,"output_tokens":7,"output_tokens_details":{"thinking_tokens":3}}, "modelUsage":{model:{"canonicalModel":model}}}))
 ''')
             cli.chmod(0o755)
             log = root / "log.jsonl"
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", CONSULT_IN_JOB="1",
+                       CLAUDE_CONSULT_MODEL="claude-sonnet-5-5",
                        CONSULT_LOG=str(log), CONSULT_ROUND="test-round", CAPTURE=str(root / "capture"), FAKE_MODE=mode)
             result = subprocess.run([sys.executable, str(HELPER), *extra, "question"],
                                     input=stdin, capture_output=True, text=True, env=env, timeout=10)
@@ -47,6 +49,14 @@ print(json.dumps({"subtype":"success", "is_error":mode == "error", "result":"ans
         self.assertIn("--strict-mcp-config", capture["args"])
         self.assertEqual(capture["args"][capture["args"].index("--tools") + 1], "")
         self.assertNotEqual(capture["cwd"], os.getcwd())
+
+    def test_explicit_opus_model_is_forwarded_and_logged(self):
+        result, record, capture = self.call(extra=("-m", "claude-opus-5-5"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(capture["args"][capture["args"].index("--model") + 1],
+                         "claude-opus-5-5")
+        self.assertEqual(record["model"], "claude-opus-5-5")
+        self.assertEqual(record["model_version"], "claude-opus-5-5")
 
     def test_error_malformed_and_timeout_logged(self):
         for mode in ("error", "malformed", "timeout"):

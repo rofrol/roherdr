@@ -115,6 +115,24 @@ pub(super) fn flat_insert_index(snapshot: &ClientShellSnapshot, main_row_index: 
         .map_or(tabs.len(), |(index, _)| index)
 }
 
+/// [`flat_insert_index`] for any workspace, as the sidebar's tab lines need.
+pub(super) fn workspace_flat_insert_index(
+    snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
+    main_row_index: usize,
+) -> usize {
+    let tabs = snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == workspace_id)
+        .collect::<Vec<_>>();
+    tabs.iter()
+        .enumerate()
+        .filter(|(_, tab)| tab.parent_tab_id.is_none())
+        .nth(main_row_index)
+        .map_or(tabs.len(), |(index, _)| index)
+}
+
 /// Name of a parent's own entry in the child row: the agent running in it
 /// (e.g. `claude`), else the tab's label.
 pub(super) fn parent_entry_label(

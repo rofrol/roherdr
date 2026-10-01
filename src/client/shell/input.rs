@@ -394,11 +394,15 @@ impl ClientShellState {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
                 let target = if key.code == KeyCode::Esc
-                    && matches!(self.chrome_drag, Some(ClientChromeDrag::Workspace { .. }))
-                {
-                    // Esc cancels dragging a space; the pane does not get it.
+                    && matches!(
+                        self.chrome_drag,
+                        Some(ClientChromeDrag::Workspace { .. } | ClientChromeDrag::TabLine { .. })
+                    ) {
+                    // Esc cancels dragging a space or a tab line; the pane
+                    // does not get it.
                     self.chrome_drag = None;
                     self.workspace_press = None;
+                    self.tab_press = None;
                     outcome.repaint = true;
                     None
                 } else {

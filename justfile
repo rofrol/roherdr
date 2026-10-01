@@ -22,6 +22,7 @@ maintenance-test:
     {{python}} -m unittest discover -s plugins/job -p "test_*.py"
     {{python}} -m unittest discover -s plugins/consult -p "test_*.py"
     bun test scripts/release-workflows.test.ts
+    bun test plugins/pi-title/*.test.ts
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
 [windows]

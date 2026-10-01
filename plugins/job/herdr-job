@@ -302,6 +302,15 @@ def cmd_tab_closed(_args):
             return
 
 
+def top_level_tab(tab_id):
+    """Tabs nest one level only, so a job started from a job tab goes under that tab's parent."""
+    try:
+        tab = json.loads(herdr("tab", "get", tab_id))["result"]["tab"]
+    except (SystemExit, ValueError, KeyError, TypeError):
+        return tab_id
+    return tab.get("parent_tab_id") or tab_id
+
+
 def cmd_run(args):
     if not args.command:
         raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
@@ -330,7 +339,9 @@ def cmd_run(args):
     if not tab_status:
         herdr("tab", "rename", tab_id, f"⧖ {short(args.name, 30)}", check=False)
     if owner and pane.get("tab_id"):
-        herdr_ok("tab", "parent", tab_id, pane["tab_id"])
+        parent_tab = top_level_tab(pane["tab_id"])
+        if not herdr_ok("tab", "parent", tab_id, parent_tab):
+            print(f"herdr-job: could not nest tab {tab_id} under {parent_tab}", file=sys.stderr)
     path = STATE / job_id
     path.mkdir(parents=True, mode=0o700)
     meta = {

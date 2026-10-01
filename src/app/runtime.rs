@@ -111,7 +111,7 @@ impl App {
     }
 
     pub(crate) fn run_auto_update_check(&mut self) {
-        if !background_update_check_enabled(
+        if !super::version_check_enabled(
             self.policy.background_updates,
             self.update_version_check_enabled,
         ) {

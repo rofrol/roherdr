@@ -7,3 +7,8 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # `HERDR_DISABLE_USAGE= cargo run` re-enables polling for a dev build.
 [env]
 HERDR_DISABLE_USAGE = "1"
+
+# This checkout is the rofrol/herdr fork, installed with scripts/herdr_live.sh.
+# Upstream's binary releases would replace it, so a build from here never
+# checks for, announces or installs them (see `build_info::is_fork`).
+HERDR_FORK_BUILD = "1"
