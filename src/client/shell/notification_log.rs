@@ -277,13 +277,30 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == id)
                 .map(|workspace| workspace.label.clone())
         });
+        // A tab the user renamed shows its name first, as the sidebar does, and
+        // keeps the task after it so the name does not hide what the agent
+        // does. It is looked up by tab id, so a rename also reaches old rows.
+        let tab_name = entry.tab_id.as_deref().and_then(|tab_id| {
+            self.snapshot
+                .as_deref()?
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == tab_id && tab.custom_label)
+                .map(|tab| tab.label.clone())
+        });
         let mut parts = Vec::new();
         match (entry.task.as_deref(), entry.agent.as_deref()) {
             (Some(task), agent) => {
-                parts.push(format!("{mark} {task}"));
+                match tab_name.as_deref().filter(|name| *name != task) {
+                    Some(name) => parts.push(format!("{mark} {name} · {task}")),
+                    None => parts.push(format!("{mark} {task}")),
+                }
                 parts.extend(agent.map(str::to_owned));
             }
-            (None, _) => parts.push(format!("{mark} {}", entry.title)),
+            (None, _) => match tab_name {
+                Some(name) => parts.push(format!("{mark} {name} · {}", entry.title)),
+                None => parts.push(format!("{mark} {}", entry.title)),
+            },
         }
         parts.extend(workspace);
         // A live row says what it waits for (an approval or a reply).

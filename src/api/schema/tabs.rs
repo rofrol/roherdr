@@ -65,6 +65,14 @@ pub struct TabSetStatusParams {
     pub status: Option<TabStatus>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabBookmarkParams {
+    pub tab_id: String,
+    /// True to bookmark the tab, false to remove the bookmark; repeating it is
+    /// harmless.
+    pub bookmarked: bool,
+}
+
 /// Runtime facts supplied by a job runner; presentation belongs to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabJobMetadata {
@@ -99,4 +107,8 @@ pub struct TabInfo {
     pub parent_tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<TabStatus>,
+    /// Whether the user bookmarked the tab (see `tab.bookmark`). Absent
+    /// means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bookmarked: bool,
 }

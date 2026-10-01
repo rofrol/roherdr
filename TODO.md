@@ -2,6 +2,35 @@
 
 ## Next, in order
 
+- [x] Regression (user, 2026-10-01: "I was able to close a tab with a Claude
+  session inside without confirmation"): my earlier change (no question for an
+  idle agent with nothing pending) also let an idle interactive Claude session
+  in a normal tab close silently. Consulted DeepSeek, Opus and GPT (agree: the
+  rule confused "not working" with "disposable"): an agent session in a normal
+  tab asks in every state, also idle; only the leftover agent of a finished job
+  tab is exempt (it asks only while it works or has background tasks). Closing
+  ends the live process and loses unsent input, queued context and scrollback;
+  a resume brings back only the saved conversation.
+  - Done 2026-10-01: `close_impact::pane_work` restored for normal tabs, the
+    idle case tested (`an_idle_agent_session_in_a_normal_tab_is_still_asked_
+    about`). Not done (the models' proposals): skipping the question for a
+    truly fresh session (no turns, empty input), which needs data the snapshot
+    lacks; the dialog text with the saved turn count and `claude --resume
+    <id>`; a `confirm_close = always | work | never` enum replacing
+    `confirm_close_running`.
+
+- [x] A renamed tab keeps its old name in the lists (user, 2026-10-01, screenshot:
+  the tab was renamed `try-roguix` but the working list and its detail line still
+  said "Session import"). Consulted DeepSeek and GPT (agree): the live lists use
+  the sidebar's label, and the agent task stays after it so a name does not hide
+  what the agent does; history rows keep their stored task but also show the
+  tab's current custom name while the tab exists. Done: a custom tab name is
+  shown first (`? try-guix · Session import · claude · space`) in the working,
+  asking and history lists, looked up by tab id; test `a_renamed_tab_shows_its_
+  name_in_the_agent_lists_and_old_history_rows`. Not done: a name that
+  `ui.tab_label` derives from the title is already the task, so nothing changes
+  for it.
+
 - [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
   a name for the herdr fork, I already have roguix, maybe follow similar
   conventions; make the Windows tests pass; do we build releases on GitHub

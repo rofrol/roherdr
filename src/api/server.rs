@@ -640,6 +640,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TabMove(_) => "tab.move",
         Method::TabSetParent(_) => "tab.set_parent",
         Method::TabSetStatus(_) => "tab.set_status",
+        Method::TabBookmark(_) => "tab.bookmark",
         Method::TabSetJobMetadata(_) => "tab.set_job_metadata",
         Method::TabClose(_) => "tab.close",
         Method::AgentList(_) => "agent.list",

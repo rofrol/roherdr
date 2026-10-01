@@ -22,6 +22,8 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "close" => tab_close(&args[1..]),
         "parent" => tab_parent(&args[1..]),
         "status" => tab_status(&args[1..]),
+        "bookmark" => tab_bookmark(&args[1..], true),
+        "unbookmark" => tab_bookmark(&args[1..], false),
         "job-metadata" => tab_job_metadata(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -328,6 +330,23 @@ fn tab_status(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn tab_bookmark(args: &[String], bookmarked: bool) -> std::io::Result<i32> {
+    let (Some(raw_tab_id), 1) = (args.first(), args.len()) else {
+        eprintln!(
+            "usage: herdr tab {} <tab_id>",
+            if bookmarked { "bookmark" } else { "unbookmark" }
+        );
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:bookmark".into(),
+        method: Method::TabBookmark(crate::api::schema::TabBookmarkParams {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+            bookmarked,
+        }),
+    })?)
+}
+
 fn tab_job_metadata(args: &[String]) -> std::io::Result<i32> {
     let (Some(raw_tab_id), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
         eprintln!("usage: herdr tab job-metadata <tab_id> <JSON|null>");
@@ -362,4 +381,6 @@ fn print_tab_help() {
     eprintln!("  herdr tab close <tab_id>");
     eprintln!("  herdr tab parent <tab_id> <parent_tab_id>|none");
     eprintln!("  herdr tab status <tab_id> running|succeeded|failed|none");
+    eprintln!("  herdr tab bookmark <tab_id>");
+    eprintln!("  herdr tab unbookmark <tab_id>");
 }

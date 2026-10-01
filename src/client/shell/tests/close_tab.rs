@@ -593,14 +593,18 @@ fn closing_a_pane_with_a_waiting_agent_asks_first() {
     assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
     assert!(state.overlay.is_none());
 
-    // An idle agent with nothing pending closes without asking.
+    // An idle interactive agent session asks too: closing ends the live
+    // process and loses its unsent input and scrollback.
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.agents[0].agent_status = AgentStatus::Idle;
     state.set_snapshot(Box::new(projected));
-    assert_eq!(pane_closes(&close_focused_pane(&mut state)), ["pane_1"]);
-    assert!(state.overlay.is_none());
+    assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.running.as_deref() == Some("claude idle in 1")));
+    assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
 
-    // With background tasks it asks: they die with the pane.
+    // With background tasks it names them: they die with the pane.
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.agents[0]
         .tokens

@@ -1853,6 +1853,7 @@ fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
     // stood before it, ahead of `review`.
     let boot = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
     let tab = crate::api::schema::TabInfo {
+        bookmarked: false,
         job: None,
         tab_id: "tab_9".into(),
         workspace_id: "ws_1".into(),
@@ -2361,4 +2362,48 @@ fn the_working_list_includes_an_agent_that_waits_on_a_running_job() {
     assert!(text.contains("Session import"), "{text}");
     assert!(text.contains("Claude Code"), "{text}");
     assert!(!text.contains("finished, no job"), "{text}");
+}
+
+#[test]
+fn a_renamed_tab_shows_its_name_in_the_agent_lists_and_old_history_rows() {
+    use crate::api::schema::AgentStatus::Working;
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].label = "try-guix".into();
+    projected.tabs[0].custom_label = true;
+    projected.agents = vec![header_agent("pane_1", Working, false, "Session import")];
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let working = state.hits.working_list_button;
+    left_click(&mut state, (working.x + 1, working.y));
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("try-guix · Session import"), "{text}");
+
+    // A history row stored with the old task gets the new name too.
+    let record = crate::api::schema::NotificationRecord {
+        id: 1,
+        unix_ms: 1_790_633_100_000,
+        kind: "finished".into(),
+        title: "claude finished".into(),
+        body: None,
+        agent: Some("claude".into()),
+        workspace_id: Some("ws_1".into()),
+        tab_id: Some("tab_1".into()),
+        pane_id: None,
+        task: Some("Session import".into()),
+        request: None,
+        repeats: None,
+    };
+    assert!(state
+        .notification_row_text(&record)
+        .starts_with("✓ try-guix · Session import · claude"));
+    // An unnamed tab shows the task alone, as before.
+    let mut plain = state.snapshot.as_deref().expect("snapshot").clone();
+    plain.tabs[0].custom_label = false;
+    state.set_snapshot(Box::new(plain));
+    assert!(state
+        .notification_row_text(&record)
+        .starts_with("✓ Session import · claude"));
 }

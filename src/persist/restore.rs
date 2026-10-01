@@ -800,6 +800,7 @@ fn restore_tab(
     (
         Some((
             crate::workspace::Tab {
+                bookmarked: snap.bookmarked,
                 custom_name: snap.custom_name.clone(),
                 number,
                 parent: snap.parent_tab_number,
@@ -1550,6 +1551,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1634,6 +1636,7 @@ mod tests {
                 public_tab_numbers: vec![5],
                 next_public_tab_number: 6,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1751,6 +1754,7 @@ mod tests {
                 next_public_tab_number: 6,
                 tabs: vec![
                     TabSnapshot {
+                        bookmarked: false,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
@@ -1762,6 +1766,7 @@ mod tests {
                         job: None,
                     },
                     TabSnapshot {
+                        bookmarked: false,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
@@ -1773,6 +1778,7 @@ mod tests {
                         job: None,
                     },
                     TabSnapshot {
+                        bookmarked: false,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
@@ -1784,6 +1790,7 @@ mod tests {
                         job: None,
                     },
                     TabSnapshot {
+                        bookmarked: false,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
@@ -1845,6 +1852,7 @@ mod tests {
             public_tab_numbers: Vec::new(),
             next_public_tab_number: 0,
             tabs: vec![TabSnapshot {
+                bookmarked: false,
                 custom_name: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1887,6 +1895,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -2252,6 +2261,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
