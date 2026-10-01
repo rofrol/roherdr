@@ -6,7 +6,7 @@ usage() {
 usage: scripts/fork_demo/record.sh [OUTPUT.mp4]
 
 Records the fork demo video (usage widget, middle-click close, notification
-click, job tabs, oracle stats popup) from a debug herdr build in a throwaway
+click, job tabs, consult stats popup) from a debug herdr build in a throwaway
 session, in a real Ghostty window driven by real mouse and key events. It
 takes over the mouse for about a minute. Defaults to assets/fork-demo.mp4. See scripts/fork_demo/README.md.
 USAGE
@@ -100,8 +100,8 @@ h pane run w1:p1 "clear; git log --oneline -8"
 h pane run w1:p2 "clear; printf '\\e]0;Fix the login bug\\a'; printf '\\n  > fix the login bug in src/auth\\n\\n  * Reading src/auth/login.rs\\n  * Updating session check in login()\\n  * Running cargo test auth\\n'"
 h pane run w1:p3 "clear; tail -n 5 /etc/hosts"
 h pane report-agent --source demo --agent claude --state working w1:p2
-# The oracle stats popup reads the real oracle log under $HOME.
-h plugin link "$repo_dir/plugins/oracle"
+# The consult stats popup reads the real consult log under $HOME.
+h plugin link "$repo_dir/plugins/consult"
 sleep 1
 
 # The client in the Ghostty window reads the demo's config too.

@@ -65,7 +65,7 @@ fn spaces_list_their_tabs_without_nested_jobs_when_enabled() {
     // The label is cut first; the counts include the succeeded job.
     assert!(sidebar(&rows[line]).contains("agent…"), "{}", rows[line]);
     assert!(
-        sidebar(&rows[line]).contains("► ⧖ 1 !1 ✓1"),
+        sidebar(&rows[line]).contains("► ◐ 1 !1 ✓1"),
         "{}",
         rows[line]
     );
@@ -231,12 +231,12 @@ fn the_triangle_before_the_counts_folds_and_unfolds_the_squares() {
     let frame = state.compose(106, 30).unwrap();
     let rows = frame_rows(&frame);
     assert!(
-        rows[line.y as usize].contains("⧖ 1 !1"),
+        rows[line.y as usize].contains("◐ 1 !1"),
         "{}",
         rows[line.y as usize]
     );
     let square_row = rows[square.y as usize].chars().collect::<Vec<_>>();
-    assert_eq!(square_row[square.x as usize + 1], '⧖');
+    assert_eq!(square_row[square.x as usize + 1], '◐');
     // The first square starts under the tab's fill, past the state icon.
     assert_eq!(square.x, line.x + 5);
     let fold_line = rows[line.y as usize].chars().collect::<Vec<_>>();
@@ -364,6 +364,13 @@ fn the_job_footers_ends_go_back_and_close() {
     ));
     assert!(!focuses(
         &left_click(&mut state, (pane.x + 10, footer_y)),
+        "tab_1"
+    ));
+    // A full-screen program owns the last row: its click is not the footer's.
+    state.pane_surface.as_mut().expect("surface").panes[0].alternate_screen_active = true;
+    state.compose(106, 30).unwrap();
+    assert!(!focuses(
+        &left_click(&mut state, (pane.x + 1, footer_y)),
         "tab_1"
     ));
 }
@@ -603,7 +610,7 @@ fn an_idle_tab_with_a_running_job_shows_the_waiting_mark() {
     with_job(&mut state, "job_1", TabStatus::Running);
     let mauve = state.config.palette.mauve;
     // The shapes style (the default) marks it with a clock.
-    assert_eq!(tab_icon_color(&mut state), ("⧖".to_owned(), mauve));
+    assert_eq!(tab_icon_color(&mut state), ("◐".to_owned(), mauve));
 
     // A finished job, or a working agent, keeps the usual status.
     let mut state = state_with_tabs(true);
@@ -638,12 +645,12 @@ fn a_tab_with_an_agent_awaiting_a_reply_shows_a_question_mark_in_the_tab_bar() {
 }
 
 #[test]
-fn the_symbols_style_uses_an_hourglass_for_waiting() {
+fn the_symbols_style_uses_a_half_circle_for_waiting() {
     let mut state = state_with_tabs(true);
     state.config.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
     set_agent_status(&mut state, AgentStatus::Done, false);
     with_job(&mut state, "job_1", TabStatus::Running);
-    assert_eq!(tab_icon_color(&mut state).0, "⧖");
+    assert_eq!(tab_icon_color(&mut state).0, "◐");
 }
 
 #[test]
@@ -985,7 +992,7 @@ fn the_spaces_list_scrolls_by_rows_to_the_last_square_of_a_tall_space() {
     let row = frame_rows(&frame)[last.y as usize]
         .chars()
         .collect::<Vec<_>>();
-    assert_eq!(row[last.x as usize + 1], '⧖');
+    assert_eq!(row[last.x as usize + 1], '◐');
     assert!(focuses(
         &left_click(&mut state, (last.x + 1, last.y)),
         "job_59"
@@ -1266,7 +1273,7 @@ fn the_tab_menu_closes_its_jobs_by_state_from_chips() {
     let (rows, hits) = open_menu(&mut state);
     let chips_row = chip(&rows, &hits, "!1").y as usize;
     assert!(
-        rows[chips_row].contains("Close jobs:  ⧖ 1   !1   ✓1 "),
+        rows[chips_row].contains("Close jobs:  ◐ 1   !1   ✓1 "),
         "{}",
         rows[chips_row]
     );
@@ -1279,7 +1286,7 @@ fn the_tab_menu_closes_its_jobs_by_state_from_chips() {
 
     // Running jobs ask first, then close only them, not the tab.
     let (rows, hits) = open_menu(&mut state);
-    let running = chip(&rows, &hits, "⧖ 1");
+    let running = chip(&rows, &hits, "◐ 1");
     assert!(closes(&left_click(&mut state, (running.x + 1, running.y))).is_empty());
     assert!(matches!(
         state.overlay,
@@ -1492,4 +1499,453 @@ fn the_drag_hint_names_the_tab_and_where_it_lands() {
     assert_eq!(hint(Some(3)), "2 → 3 · tests · at the end");
     let hint = |slot| crate::client::shell::space_tabs::tab_drag_hint(snapshot, "tab_1", slot);
     assert_eq!(hint(Some(2)), "1 → 2 · build · before review");
+}
+
+/// `state_with_three_tabs` with distinct tab labels: build, tests, review.
+fn state_with_named_tabs() -> ClientShellState {
+    let mut state = state_with_three_tabs();
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for (tab, label) in projected.tabs.iter_mut().zip(["build", "tests", "review"]) {
+        tab.label = label.into();
+        tab.custom_label = true;
+    }
+    state.set_snapshot(Box::new(projected));
+    state
+}
+
+fn type_text(state: &mut ClientShellState, text: &str) {
+    state.handle_input_bytes(text.as_bytes());
+}
+
+fn shown_tabs(state: &mut ClientShellState) -> Vec<String> {
+    state.compose(106, 30).unwrap();
+    drawn_order(state)
+}
+
+#[test]
+fn the_filter_bar_opens_from_its_button_and_narrows_the_list_as_you_type() {
+    let mut state = state_with_named_tabs();
+    state.compose(106, 30).unwrap();
+    assert!(
+        !state.hits.space_filter_button.is_empty(),
+        "the header has a button"
+    );
+    let button = state.hits.space_filter_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    assert!(state.space_filter.open && state.space_filter.focused);
+    // Nothing typed yet: every tab is listed.
+    assert_eq!(shown_tabs(&mut state), ["tab_1", "tab_2", "tab_3"]);
+    // `rev` fits only the review tab (the space and its branch do not match).
+    type_text(&mut state, "rev");
+    assert_eq!(state.space_filter.query, "rev");
+    assert_eq!(shown_tabs(&mut state), ["tab_3"]);
+    let rows = frame_rows(&state.compose(106, 30).unwrap());
+    assert!(rows.iter().any(|row| row.contains("/ rev")), "{rows:?}");
+    assert!(
+        rows.iter().any(|row| row.contains("1/1")),
+        "the count: {rows:?}"
+    );
+    // The matched characters of the label are underlined, the others not.
+    let frame = state.compose(106, 30).unwrap();
+    let line = state.hits.space_tabs[0].0;
+    let row =
+        &frame.cells[usize::from(line.y) * usize::from(frame.width)..][..usize::from(frame.width)];
+    let underlined = |symbol: &str| {
+        row.iter()
+            .find(|cell| cell.symbol == symbol)
+            .map(|cell| cell.modifier & ratatui::style::Modifier::UNDERLINED.bits() != 0)
+    };
+    assert_eq!(underlined("r"), Some(true));
+    assert_eq!(underlined("i"), Some(false));
+    // The space's own name shows all its tabs.
+    state.space_filter.query = "client".into();
+    assert_eq!(shown_tabs(&mut state), ["tab_1", "tab_2", "tab_3"]);
+    // No match says so and lists nothing.
+    state.space_filter.query = "zzz".into();
+    let rows = frame_rows(&state.compose(106, 30).unwrap());
+    assert!(state.hits.space_tabs.is_empty());
+    assert!(rows.iter().any(|row| row.contains("no match")), "{rows:?}");
+}
+
+#[test]
+fn escape_clears_the_text_then_closes_and_enter_opens_the_first_match() {
+    let mut state = state_with_named_tabs();
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    type_text(&mut state, "tes");
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.space_filter.open && state.space_filter.query.is_empty());
+    state.handle_input_bytes(b"\x1b");
+    assert!(!state.space_filter.open);
+
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    type_text(&mut state, "tes");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(focuses(&outcome, "tab_2"), "the matching tab opens");
+    assert!(!state.space_filter.open, "choosing closes the bar");
+
+    // A query that matches the space opens the space.
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    type_text(&mut state, "client");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_1"))));
+}
+
+#[test]
+fn a_blurred_filter_leaves_the_keys_to_the_pane_and_a_press_blurs_it() {
+    let mut state = state_with_named_tabs();
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    state.compose(106, 30).unwrap();
+    // A click on a pane gives the keys back and leaves the filter on.
+    left_click(&mut state, (60, 10));
+    assert!(state.space_filter.open && !state.space_filter.focused);
+    type_text(&mut state, "x");
+    assert!(state.space_filter.query.is_empty(), "the pane got the key");
+    // The bar takes them again, and its cross closes it.
+    state.compose(106, 30).unwrap();
+    let bar = state.hits.space_filter_bar;
+    left_click(&mut state, (bar.x + 4, bar.y));
+    assert!(state.space_filter.focused);
+    state.compose(106, 30).unwrap();
+    let close = state.hits.space_filter_close;
+    left_click(&mut state, (close.x + 1, close.y));
+    assert!(!state.space_filter.open);
+}
+
+#[test]
+fn tabs_are_not_dragged_while_the_list_is_filtered() {
+    let mut state = state_with_named_tabs();
+    state.space_filter.open = true;
+    state.space_filter.query = "e".into();
+    state.compose(106, 30).unwrap();
+    let first = state.hits.space_tabs[0].0;
+    left_click(&mut state, (first.x + 6, first.y));
+    left_drag(&mut state, (first.x + 6, first.y + 1));
+    assert!(state.chrome_drag.is_none());
+}
+
+#[test]
+fn working_and_job_glyphs_turn_with_the_clock_and_stand_still_when_animations_are_off() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Running);
+    // The agent works and a job runs: something turns, so the timer runs.
+    state.compose(106, 30).unwrap();
+    assert!(state.motion_active);
+    let delay = state.timer_delay(state.motion_epoch);
+    assert!(delay <= std::time::Duration::from_millis(100));
+    let row = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        frame_rows(&frame)[state.hits.space_tabs[0].0.y as usize].clone()
+    };
+    let first = row(&mut state);
+    assert!(first.contains("◐  agent tab"), "{first}");
+    // 160 ms later the working circle has turned once, the job's has not.
+    assert!(state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(170)));
+    let second = row(&mut state);
+    assert!(second.contains("◓  agent tab"), "{second}");
+    assert!(
+        second.contains("◐ 1"),
+        "the job loop is still on its first frame: {second}"
+    );
+    // A tick inside the same frame changes nothing, so nothing repaints.
+    assert!(!state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(180)));
+    // Animations off: static glyphs, no timer.
+    state.config.animations = false;
+    let still = row(&mut state);
+    assert!(
+        still.contains("◐  agent tab") && still.contains("◑ 1"),
+        "{still}"
+    );
+    assert!(!state.motion_active);
+}
+
+#[test]
+fn nothing_turns_without_a_working_agent_or_a_running_job() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for agent in &mut projected.agents {
+        agent.agent_status = AgentStatus::Idle;
+    }
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    assert!(!state.motion_active);
+    assert!(!state.tick_motion(state.motion_epoch + std::time::Duration::from_secs(5)));
+    assert_eq!(
+        state.timer_delay(state.motion_epoch),
+        std::time::Duration::from_millis(100)
+    );
+}
+
+#[test]
+fn the_waiting_icon_and_the_job_count_turn_in_step() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for agent in &mut projected.agents {
+        agent.agent_status = AgentStatus::Idle;
+    }
+    projected.tabs[0].agent_status = AgentStatus::Idle;
+    state.set_snapshot(Box::new(projected));
+    with_job(&mut state, "job_1", TabStatus::Running);
+    state.compose(106, 30).unwrap();
+    assert!(state.motion_active);
+    let mut seen = Vec::new();
+    for ms in [0u64, 160, 320, 480, 640] {
+        state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(ms + 5));
+        let frame = state.compose(106, 30).unwrap();
+        let row = frame_rows(&frame)[state.hits.space_tabs[0].0.y as usize].clone();
+        let glyphs = row
+            .chars()
+            .filter(|c| "◐◓◑◒".contains(*c))
+            .collect::<String>();
+        seen.push(glyphs);
+    }
+    // Icon first, count last; the same glyph in both at every instant.
+    for glyphs in &seen {
+        let chars = glyphs.chars().collect::<Vec<_>>();
+        assert_eq!(chars.first(), chars.last(), "{seen:?}");
+    }
+    assert_eq!(seen[0].chars().next(), Some('◐'));
+    assert_eq!(seen[2].chars().next(), Some('◒'));
+}
+
+#[test]
+fn arrows_move_the_filter_selection_and_enter_opens_the_selected_space() {
+    let mut state = state_with_named_tabs();
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for (id, label) in [("ws_2", "notes"), ("ws_3", "client-docs")] {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = id.into();
+        workspace.label = label.into();
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    state.set_snapshot(Box::new(projected));
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    state.compose(106, 30).unwrap();
+    // Down from the first space selects the second; Up goes back, and the
+    // ends do not wrap.
+    state.handle_input_bytes(b"\x1b[B");
+    assert_eq!(state.space_filter.selected.as_deref(), Some("ws_2"));
+    state.handle_input_bytes(b"\x1b[B");
+    state.handle_input_bytes(b"\x1b[B");
+    assert_eq!(state.space_filter.selected.as_deref(), Some("ws_3"));
+    state.handle_input_bytes(b"\x1b[A");
+    assert_eq!(state.space_filter.selected.as_deref(), Some("ws_2"));
+    state.compose(106, 30).unwrap();
+    // Typing narrows the list and selects its first space again.
+    type_text(&mut state, "docs");
+    assert_eq!(state.space_filter.selected.as_deref(), Some("ws_3"));
+    // Enter opens the selected space.
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_3"))));
+    assert!(!state.space_filter.open);
+}
+
+#[test]
+fn the_filter_spaces_key_opens_the_bar_even_with_the_sidebar_collapsed() {
+    let mut state = state_with_named_tabs();
+    state.sidebar_collapsed = true;
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FilterSpaces),
+        &mut outcome,
+    );
+    assert!(state.space_filter.open && state.space_filter.focused);
+    assert!(!state.sidebar_collapsed);
+    assert!(outcome.repaint && outcome.resize);
+    // The resize dropped the pane surface; the next one brings it back.
+    state.set_pane_surface(surface());
+    type_text(&mut state, "rev");
+    assert_eq!(state.space_filter.query, "rev");
+    assert_eq!(shown_tabs(&mut state), ["tab_3"]);
+}
+
+fn endpoint_requests(outcome: &ClientShellInput) -> Vec<(String, crate::api::schema::Method)> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => {
+                Some((request.id.clone(), request.method.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn accept(state: &mut ClientShellState, id: &str) -> Vec<ClientShellAction> {
+    let boot = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    state
+        .handle_endpoint_result(&boot, id, Ok(crate::api::schema::ResponseResult::Ok {}))
+        .1
+}
+
+/// Closes `tab_id` as the user does and has the server accept it.
+fn close_tab_accepted(state: &mut ClientShellState, tab_id: &str) {
+    let mut outcome = ClientShellInput::default();
+    state.config.confirm_close = false;
+    state.request_tab_close(tab_id.into(), &mut outcome);
+    let [(id, crate::api::schema::Method::TabClose(target))] = &endpoint_requests(&outcome)[..]
+    else {
+        panic!("expected one tab close: {:?}", outcome.actions);
+    };
+    assert_eq!(target.tab_id, tab_id);
+    accept(state, id);
+}
+
+fn reopen(state: &mut ClientShellState) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ReopenTab),
+        &mut outcome,
+    );
+    outcome
+}
+
+#[test]
+fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
+    let mut state = state_with_named_tabs();
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        tab_id: "tab_2".into(),
+        cwd: Some("/work/tests".into()),
+        foreground_cwd: None,
+        ..projected.panes[0].clone()
+    });
+    state.set_snapshot(Box::new(projected));
+    close_tab_accepted(&mut state, "tab_2");
+    assert_eq!(state.closed_tabs.len(), 1);
+    // Gone from the snapshot, as the server would project it.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
+    state.set_snapshot(Box::new(projected));
+
+    let outcome = reopen(&mut state);
+    let requests = endpoint_requests(&outcome);
+    let [(create_id, crate::api::schema::Method::TabCreate(params))] = &requests[..] else {
+        panic!("expected one tab create: {:?}", outcome.actions);
+    };
+    assert_eq!(params.workspace_id.as_deref(), Some("ws_1"));
+    assert_eq!(params.cwd.as_deref(), Some("/work/tests"));
+    assert_eq!(params.label.as_deref(), Some("tests"));
+    assert!(params.focus);
+    assert!(state.closed_tabs.is_empty(), "used up when sent");
+    // A second press has nothing to reopen.
+    assert!(endpoint_requests(&reopen(&mut state)).is_empty());
+
+    // The server created the tab; it goes back after `build`, the tab that
+    // stood before it, ahead of `review`.
+    let boot = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    let tab = crate::api::schema::TabInfo {
+        job: None,
+        tab_id: "tab_9".into(),
+        workspace_id: "ws_1".into(),
+        number: 9,
+        label: "tests".into(),
+        focused: true,
+        pane_count: 1,
+        agent_status: AgentStatus::Unknown,
+        parent_tab_id: None,
+        status: None,
+    };
+    let root_pane = crate::api::schema::PaneInfo {
+        pane_id: "pane_9".into(),
+        terminal_id: "term_9".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_9".into(),
+        focused: true,
+        cwd: None,
+        foreground_cwd: None,
+        restore_error: None,
+        label: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        display_agent: None,
+        agent_status: AgentStatus::Unknown,
+        state_labels: Default::default(),
+        tokens: Default::default(),
+        agent_session: None,
+        scroll: None,
+        revision: 0,
+    };
+    let (_, actions) = state.handle_endpoint_result(
+        &boot,
+        create_id,
+        Ok(crate::api::schema::ResponseResult::TabCreated { tab, root_pane }),
+    );
+    let moves = actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::TabMove(params) => {
+                    Some((params.tab_id.clone(), params.insert_index))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(moves, [("tab_9".to_string(), 1)]);
+}
+
+#[test]
+fn a_refused_close_and_a_closed_job_or_parent_are_not_remembered() {
+    let mut state = state_with_three_tabs();
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    state.config.confirm_close = false;
+    // A tab with a job under it is not recorded.
+    assert!(state.closed_tab_record("tab_1").is_none());
+    // Neither is the job (a child).
+    assert!(state.closed_tab_record("job_1").is_none());
+    // A refused close leaves no entry.
+    let mut outcome = ClientShellInput::default();
+    state.request_tab_close("tab_3".into(), &mut outcome);
+    let [(id, _)] = &endpoint_requests(&outcome)[..] else {
+        panic!("one request");
+    };
+    let boot = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    state.handle_endpoint_result(
+        &boot,
+        id,
+        Err(ClientShellEndpointError {
+            code: Some("tab_close_failed".into()),
+            message: "no".into(),
+        }),
+    );
+    assert!(state.closed_tabs.is_empty());
+}
+
+#[test]
+fn reopening_skips_a_vanished_space_keeps_ten_and_reuses_nothing_twice() {
+    let mut state = state_with_three_tabs();
+    for n in 0..12 {
+        state.remember_closed_tab(crate::client::shell::closed_tabs::ClosedTab {
+            endpoint_id: ClientEndpointId::Local,
+            workspace_id: if n == 11 { "ws_gone" } else { "ws_1" }.into(),
+            label: Some(format!("t{n}")),
+            cwd: None,
+            after_tab_id: None,
+        });
+    }
+    assert_eq!(state.closed_tabs.len(), 10);
+    // The newest entry's space is gone: it is skipped, the next one reopens.
+    let outcome = reopen(&mut state);
+    let requests = endpoint_requests(&outcome);
+    let [(_, crate::api::schema::Method::TabCreate(params))] = &requests[..] else {
+        panic!("expected a tab create");
+    };
+    assert_eq!(params.label.as_deref(), Some("t10"));
 }

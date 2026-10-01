@@ -10,9 +10,9 @@ by real mouse and key events:
 4. an agent finishes in a background tab, and clicking its notification jumps
    to that tab.
 5. a long job runs in a child tab of the agent's tab (the second tab row), and
-   the space's row counts running and failed jobs (`⧖ 1 !1`) while the agent
+   the space's row counts running and failed jobs (`◐ 1 !1`) while the agent
    is idle.
-6. the herdr menu's **oracle stats** item opens the oracle plugin's stats
+6. the herdr menu's **consult stats** item opens the consult plugin's stats
    popup over a dimmed background, and a click outside closes it.
 
 ## Re-record
@@ -50,8 +50,8 @@ The script:
 - creates the `herdr` space (tabs `code`, `agent`, `logs`), `website`, and
   `notes`, and marks the `agent` pane as a working `claude` agent through
   `herdr pane report-agent`; the agent's output is placeholder text;
-- links the [oracle plugin](../../plugins/oracle/README.md), whose stats
-  popup reads the real oracle log in `~/.local/state/oracle/`;
+- links the [consult plugin](../../plugins/consult/README.md), whose stats
+  popup reads the real consult log in `~/.local/state/consult/`;
 - runs `record.py`, which opens a Ghostty window (104x30, `Atom One Light`,
   its own config, no title bar) in the top-right corner of the screen. The
   window runs `proxy.py`: the herdr client in a pseudo-terminal, with a copy

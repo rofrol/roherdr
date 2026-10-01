@@ -917,10 +917,20 @@ impl ClientShellState {
             if key.code == KeyCode::Enter {
                 self.accept_close_confirmation(outcome);
             } else if key.code == KeyCode::Esc {
+                // Closing a tab or a pane began in the terminal: cancelling it
+                // must not leave the space selected as if navigating. A
+                // workspace close returns to navigate mode, where it began.
+                let from_terminal = matches!(
+                    &self.overlay,
+                    Some(ClientShellOverlay::ConfirmClose(confirm))
+                        if confirm.tab_target.is_some() || confirm.pane_target.is_some()
+                );
                 self.overlay = None;
-                self.mode = ClientShellMode::Navigate;
-                self.navigate_workspace_id = self.focused_navigation_target();
-                self.reveal_navigation_workspace = true;
+                if !from_terminal {
+                    self.mode = ClientShellMode::Navigate;
+                    self.navigate_workspace_id = self.focused_navigation_target();
+                    self.reveal_navigation_workspace = true;
+                }
                 outcome.repaint = true;
             }
             return;
@@ -1101,10 +1111,7 @@ impl ClientShellState {
                 return;
             }
         }
-        self.push_endpoint_method(
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { tab_id }),
-            outcome,
-        );
+        self.push_tab_close(tab_id, outcome);
     }
 
     fn open_running_tab_confirmation(&mut self, tab_id: &str, running: String) -> bool {
@@ -1349,9 +1356,8 @@ impl ClientShellState {
             if children_only {
                 return;
             }
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
-                tab_id: target.tab_id,
-            })
+            self.push_tab_close(target.tab_id, outcome);
+            return;
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,

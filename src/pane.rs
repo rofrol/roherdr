@@ -326,7 +326,25 @@ fn program_display_name(name: &str) -> Option<String> {
 struct ForegroundProgramTracker {
     last_pgid: Option<u32>,
     last_program: Option<ForegroundProgram>,
+    /// Lookups of the current group that found a wrapper (see [`is_exec_wrapper`]).
+    wrapper_lookups: u8,
 }
+
+/// Programs that start another one and take its place (`env VAR=1 brew
+/// upgrade` runs `env`, which then execs `brew` inside the same process
+/// group) or stay in front of it. The name seen at the first lookup is then
+/// stale, so these are looked up again for a few ticks.
+#[cfg(unix)]
+fn is_exec_wrapper(name: &str) -> bool {
+    matches!(
+        name,
+        "env" | "command" | "exec" | "nice" | "nohup" | "time" | "timeout" | "sudo" | "doas"
+    )
+}
+
+/// Ticks a wrapper's group is looked up again before its name is believed.
+#[cfg(unix)]
+const WRAPPER_LOOKUPS: u8 = 6;
 
 /// The program leading a pane's terminal, and whether it is the pane's own
 /// shell (its group is the shell's) rather than something the shell started.
@@ -342,6 +360,7 @@ impl ForegroundProgramTracker {
     /// Forget the observed group so the next tick looks the program up again.
     fn reset(&mut self) {
         self.last_pgid = None;
+        self.wrapper_lookups = 0;
     }
 
     async fn observe(
@@ -388,7 +407,14 @@ impl ForegroundProgramTracker {
         // A failed lookup (the group is still starting or already gone) is
         // retried on the next tick instead of being remembered for the group.
         let program = lookup(pgid)?;
-        self.last_pgid = Some(pgid);
+        // A wrapper that is about to exec the real command is looked up
+        // again for a few ticks, so the group is not named after it for good.
+        if is_exec_wrapper(&program.name) && self.wrapper_lookups < WRAPPER_LOOKUPS {
+            self.wrapper_lookups += 1;
+        } else {
+            self.last_pgid = Some(pgid);
+            self.wrapper_lookups = 0;
+        }
         if self.last_program.as_ref() == Some(&program) {
             return None;
         }
@@ -4190,6 +4216,46 @@ mod tests {
         // is not published twice.
         tracker.reset();
         assert_eq!(named(tracker.changed_program(Some(10), name("zsh"))), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrapper_is_looked_up_again_until_the_real_program_shows() {
+        let mut tracker = ForegroundProgramTracker::default();
+        let name = |program: &'static str| {
+            move |_: u32| {
+                Some(ForegroundProgram {
+                    name: program.to_string(),
+                    shell: false,
+                })
+            }
+        };
+        let named = |program: Option<ForegroundProgram>| program.map(|program| program.name);
+        // `env VAR=1 brew upgrade`: the group first shows `env`, then `brew`.
+        assert_eq!(
+            named(tracker.changed_program(Some(30), name("env"))).as_deref(),
+            Some("env")
+        );
+        assert_eq!(
+            named(tracker.changed_program(Some(30), name("brew"))).as_deref(),
+            Some("brew")
+        );
+        assert_eq!(
+            named(
+                tracker.changed_program(Some(30), |_| panic!("settled groups are not looked up"))
+            ),
+            None
+        );
+        // A wrapper that stays (`sudo` waiting on its child) is believed after
+        // a few lookups, so it is not polled for good.
+        let mut tracker = ForegroundProgramTracker::default();
+        for _ in 0..=WRAPPER_LOOKUPS {
+            tracker.changed_program(Some(40), name("sudo"));
+        }
+        assert_eq!(
+            named(tracker.changed_program(Some(40), |_| panic!("no more lookups"))),
+            None
+        );
     }
 
     #[cfg(unix)]

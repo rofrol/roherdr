@@ -10,6 +10,22 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::Detach) => {
                 outcome.detach = true;
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ReopenTab) => {
+                self.reopen_closed_tab(outcome);
+            }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::FilterSpaces) => {
+                // Opens the bar for typing; the sidebar shows if it was collapsed.
+                if self.sidebar_collapsed {
+                    self.sidebar_collapsed = false;
+                    self.sidebar_collapsed_manual = true;
+                    self.invalidate_pane_surface();
+                    outcome.resize = true;
+                    self.persist_chrome_preferences(outcome);
+                }
+                self.space_filter.open = true;
+                self.space_filter.focused = true;
+                outcome.repaint = true;
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
@@ -575,6 +591,14 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
+            PendingEndpointKind::TabClose { closed } => {
+                if let (Some(closed), true) = (closed, result.is_ok()) {
+                    self.remember_closed_tab(*closed);
+                }
+            }
+            PendingEndpointKind::ReopenTab { closed } => {
+                return self.complete_reopen(*closed, result);
+            }
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {

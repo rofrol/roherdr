@@ -91,10 +91,21 @@ impl ClientShellState {
             }
             self.hits.job_footer
         } else {
+            // The footer is drawn into the job's last row, which a full-screen
+            // program (vim, less) uses itself: its click is the program's.
+            let alternate_screen = |pane_id: &str| {
+                self.pane_surface.as_ref().is_some_and(|surface| {
+                    surface
+                        .panes
+                        .iter()
+                        .any(|pane| pane.pane_id == pane_id && pane.alternate_screen_active)
+                })
+            };
             let Some(hit) = self.hits.panes.iter().find(|hit| {
                 !hit.popup
                     && point.1 == hit.inner_rect.bottom().saturating_sub(1)
                     && super::contains(hit.inner_rect, point)
+                    && !alternate_screen(&hit.pane_id)
                     && snapshot
                         .panes
                         .iter()
@@ -745,6 +756,10 @@ impl ClientShellState {
     /// A press on a tab line in the spaces list (not on its triangle, counts
     /// or squares). The tab opens on release, so a drag can start from it.
     fn space_tab_line_press(&self, mouse: &MouseEvent) -> Option<ClientTabPress> {
+        // A filtered list hides tabs: no drag slots, so a press just opens.
+        if self.space_filter.active() {
+            return None;
+        }
         let point = (mouse.column, mouse.row);
         let on =
             |hits: &[(Rect, String)]| hits.iter().any(|(rect, _)| super::contains(*rect, point));
@@ -1136,6 +1151,12 @@ impl ClientShellState {
         self.update_workspace_hover(mouse, outcome);
         self.update_tooltip(mouse, outcome);
         let point = (mouse.column, mouse.row);
+        // A press anywhere gives the keys back to the pane; the filter bar
+        // and its button take them again below.
+        if self.space_filter.focused && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.space_filter.focused = false;
+            outcome.repaint = true;
+        }
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
             && self.overlay.is_none()
@@ -2686,6 +2707,27 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.notification_log_button, point) {
                     self.toggle_notification_log(outcome);
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.space_filter_button, point) {
+                    // The button opens the bar for typing, or closes it.
+                    if self.space_filter.open {
+                        self.space_filter.close();
+                    } else {
+                        self.space_filter.open = true;
+                        self.space_filter.focused = true;
+                    }
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.space_filter_close, point) {
+                    self.space_filter.close();
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.space_filter_bar, point) {
+                    self.space_filter.focused = true;
                     outcome.repaint = true;
                     return;
                 }

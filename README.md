@@ -33,9 +33,9 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
 - **Job tabs from the [job plugin](plugins/job/README.md).** Each
   `herdr-job` job gets a child tab of the tab that started it. While a
   workspace has child tabs, a second row under the tab bar lists the active
-  tab's own content and its jobs (`claude  ⧖ tests  ! build`), and the parent
-  tab shows a summary such as `⧖ 1 !2 ✓3`. The space's sidebar row counts
-  its running and failed tabs (`○ repo ⧖ 1`, the `tab_jobs` token), so
+  tab's own content and its jobs (`claude  ◐ tests  ! build`), and the parent
+  tab shows a summary such as `◐ 1 !2 ✓3`. The space's sidebar row counts
+  its running and failed tabs (`○ repo ◐ 1`, the `tab_jobs` token), so
   background work stays visible while the agent is idle, and the agent that
   started the jobs shows their counts (`2⧖ 1✗ 1✓`, the `$jobs` token).
   Closing a parent tab asks first and closes its jobs too. Child tabs and
@@ -46,7 +46,7 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
   top-level tab with its agent state, label and the running and failed
   counts of its nested job tabs; click a line to open that tab. Both tab
   rows above the panes go. Click `►` before a tab's job counts to unfold
-  its job tabs as small squares under it (`⧖` running, `!` failed, `✓`
+  its job tabs as small squares under it (`◐` running, `!` failed, `✓`
   done), and `▼` to fold them; click a square to open that job, click it
   again to go back, middle-click to close it; hovering a square names its
   job on the tab line. A job's first row is its header, with ` ← ` to
@@ -63,6 +63,27 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
   [ui.sidebar.spaces]
   tabs = true
   ```
+  Tab lines can be dragged to reorder tabs within their space (also in a
+  space that is not focused): the tab is drawn at the slot where it would
+  land and the header says which tab moves and where (`2 → 4 · build · before
+  review`), Esc or a drop outside the space cancels. Worktree spaces indent
+  their tab lines under the worktree's name.
+- **Spaces filter.** The `/ filter` button between `new` and `menu` opens a
+  bar under the spaces header, like fzf: type to narrow the list to the
+  spaces and tabs that match (a smart-case subsequence of a space's name,
+  branch or agents and a tab's label, agents or nested jobs). The list keeps
+  its order, a matching space shows all its tabs, folded groups open for the
+  view, Enter opens the first match and Esc clears, then closes. It is
+  client-only and nothing is saved.
+- **Animated status glyphs.** A working agent turns `◐ ◓ ◑ ◒` clockwise, and
+  a running job (and an agent waiting on one, in mauve) turns the other way,
+  twice as slowly; the hourglass is gone. The timer runs only while
+  something is drawn that turns. `[ui] animations = false` keeps them still
+  (`◐` working, `◑` job).
+- **Fork builds ignore upstream updates.** A build from this checkout
+  (`HERDR_FORK_BUILD` in `.cargo/config.toml`) starts no check for upstream
+  binary releases, ignores a restored "update available" and makes
+  `herdr update` refuse; agent-manifest updates still run.
 - **Awaiting-reply mark.** An agent whose turn ends with a question for you
   shows `?` in the sidebar and tab bar, so it stands out from agents that
   simply finished. The agent reports it with `herdr agent awaiting-reply`
@@ -114,6 +135,9 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
 - [**restart**](plugins/restart/README.md): restarts idle Claude and pi
   agents in place after they update and resumes their sessions, keeping the
   flags they were started with.
+- [**pi-title**](plugins/pi-title/README.md): a Pi extension that names the
+  session after its first prompt, so the sidebar shows the task like it does
+  for Claude (`plugins/pi-title/install`, then `/reload` in Pi).
 - [**consult**](plugins/consult/README.md): `gpt`, `gemini` and `deepseek`
   skills that let a coding agent ask another model for a second opinion, and
   `consult-stats`, which logs every call and rates which models helped.
@@ -122,7 +146,7 @@ The demo video below is recorded with `scripts/fork_demo/record.sh`; see
 [scripts/fork_demo/README.md](scripts/fork_demo/README.md) to re-record it.
 
 Install from source (needs Zig 0.16.0) with `cargo install --path . --locked`.
-Don't run `herdr update`: it replaces the fork with the upstream release.
+A fork build refuses `herdr update`, which would replace it with the upstream release; install with `scripts/herdr_live.sh` instead.
 To switch the running server to the new build without losing panes, hand it
 off live (experimental upstream), then start the client again:
 

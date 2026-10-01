@@ -116,6 +116,28 @@ pub(super) fn space_tab_lines(
     held_squares: &HeldSquares,
     config: &ClientShellConfig,
 ) -> Vec<SpaceTabLine> {
+    space_tab_lines_filtered(
+        snapshot,
+        workspace,
+        collapsed_groups,
+        unfolded_squares,
+        held_squares,
+        None,
+        config,
+    )
+}
+
+/// [`space_tab_lines`] narrowed by the spaces filter: only the tabs the query
+/// shows (see [`super::space_filter::FilterView::shows_tab`]).
+pub(super) fn space_tab_lines_filtered(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    collapsed_groups: &HashSet<String>,
+    unfolded_squares: &HashSet<String>,
+    held_squares: &HeldSquares,
+    filter: Option<&super::space_filter::FilterView>,
+    config: &ClientShellConfig,
+) -> Vec<SpaceTabLine> {
     if !config.spaces.tabs
         || stands_for_a_group(snapshot, workspace, collapsed_groups)
         || collapsed_groups.contains(&tabs_collapse_key(&workspace.workspace_id))
@@ -128,6 +150,7 @@ pub(super) fn space_tab_lines(
         .find(|tab| tab.tab_id == workspace.active_tab_id)
         .map(|tab| tab.parent_tab_id.as_deref().unwrap_or(&tab.tab_id));
     top_level_tabs(snapshot, workspace)
+        .filter(|tab| filter.is_none_or(|view| view.shows_tab(workspace, &tab.tab_id)))
         .map(|tab| {
             let group = snapshot
                 .tabs
@@ -455,6 +478,8 @@ pub(super) fn render_space_tab_lines(
     // The tab dragged from one of these lines and where it would land among
     // them (see [`ClientChromeDrag::TabLine`]); ignored for other spaces.
     tab_drag: Option<(&str, Option<usize>)>,
+    // The spaces filter query: its matched characters in a label stand out.
+    highlight: Option<&str>,
     config: &ClientShellConfig,
 ) -> SpaceTabHits {
     let palette = &config.palette;
@@ -568,6 +593,24 @@ pub(super) fn render_space_tab_lines(
             });
         }
         super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
+        if let Some(positions) =
+            highlight.and_then(|query| super::space_filter::match_positions(query, &label))
+        {
+            let chars = label.chars().collect::<Vec<_>>();
+            let mut column = 0u16;
+            for (at, c) in chars.iter().enumerate() {
+                let width = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0) as u16;
+                if positions.contains(&at) && column + width <= label_width {
+                    buffer.set_style(
+                        Rect::new(text_x + column, y, width.max(1), 1).intersection(buffer.area),
+                        Style::default()
+                            .fg(palette.accent)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    );
+                }
+                column += width;
+            }
+        }
         if fold_width > 0 {
             let fold_x = right.saturating_sub(fold_width);
             super::render::put_text(
@@ -847,7 +890,7 @@ mod tests {
                     "tab_1",
                     true,
                     vec![
-                        (Some(TabStatus::Running), "⧖ 1".to_owned()),
+                        (Some(TabStatus::Running), "◑ 1".to_owned()),
                         (Some(TabStatus::Failed), "!1".to_owned()),
                         (Some(TabStatus::Succeeded), "✓1".to_owned()),
                     ]

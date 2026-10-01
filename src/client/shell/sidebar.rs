@@ -337,6 +337,16 @@ pub(crate) fn render_sidebar(
         entries = super::space_sort::held_entries(snapshot, entries, held);
     }
     hits.space_order = super::space_sort::root_ids(snapshot, &entries);
+    // The filter bar narrows the list; the order held above stays whole.
+    let total_spaces = entries.len();
+    if let Some(view) = state
+        .space_filter
+        .as_ref()
+        .and_then(|filter| filter.view.as_ref())
+    {
+        entries = view.filter_entries(snapshot, entries);
+    }
+    let shown_spaces = entries.len();
     // While a space is dragged the list shows where it would land; the
     // header keeps its sort buttons. With the pointer outside the list the
     // order stays, the block stays lifted and the header says a release
@@ -404,15 +414,49 @@ pub(crate) fn render_sidebar(
         .pressed_workspace_id
         .map(|pressed| family_ids(snapshot, &entries, pressed))
         .unwrap_or_default();
+    // The filter bar takes the row under the header.
+    let header_rows = WORKSPACE_HEADER_ROWS + u16::from(state.space_filter.is_some());
+    if let Some(filter) = state.space_filter.as_ref() {
+        let bar = Rect::new(
+            workspace_area.x,
+            workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+            workspace_area.width,
+            1,
+        )
+        .intersection(workspace_area);
+        let (bar, close) = super::space_filter::render_filter_bar(
+            buffer,
+            bar,
+            filter.query,
+            filter.focused,
+            filter.view.as_ref().map(|_| (shown_spaces, total_spaces)),
+            palette,
+        );
+        hits.space_filter_bar = bar;
+        hits.space_filter_close = close;
+    }
     let body = Rect::new(
         workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+        workspace_area.y.saturating_add(header_rows),
         workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+        workspace_area.height.saturating_sub(header_rows + 1),
     );
     hits.workspace_body = body;
+    if entries.is_empty()
+        && state
+            .space_filter
+            .as_ref()
+            .is_some_and(|f| f.view.is_some())
+    {
+        put_text(
+            buffer,
+            body.x.saturating_add(1),
+            body.y,
+            body.width.saturating_sub(1),
+            "no match",
+            Style::default().fg(palette.overlay0),
+        );
+    }
     // Unfolded squares wrap at the block's width, which loses a column to the
     // scrollbar when the list overflows: measure without it first, and again
     // with it if it is needed (narrower only adds rows, so that settles it).
@@ -424,12 +468,16 @@ pub(crate) fn render_sidebar(
                     .workspaces
                     .get(entry.index)
                     .map(|workspace| {
-                        let tab_lines = super::space_tabs::space_tab_lines(
+                        let tab_lines = super::space_tabs::space_tab_lines_filtered(
                             snapshot,
                             workspace,
                             state.collapsed_groups,
                             state.unfolded_squares,
                             state.held_squares,
+                            state
+                                .space_filter
+                                .as_ref()
+                                .and_then(|filter| filter.view.as_ref()),
                             config,
                         );
                         let rows = workspace_rows(
@@ -603,12 +651,16 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let tab_lines = super::space_tabs::space_tab_lines(
+        let tab_lines = super::space_tabs::space_tab_lines_filtered(
             snapshot,
             workspace,
             state.collapsed_groups,
             state.unfolded_squares,
             state.held_squares,
+            state
+                .space_filter
+                .as_ref()
+                .and_then(|filter| filter.view.as_ref()),
             config,
         );
         let tab_jobs = super::space_tabs::space_row_tab_jobs(
@@ -737,6 +789,11 @@ pub(crate) fn render_sidebar(
             u16::from(show_scrollbar),
             super::space_tabs::tab_indent(entry.indented),
             state.tab_line_drag,
+            state
+                .space_filter
+                .as_ref()
+                .filter(|filter| filter.view.is_some())
+                .map(|filter| filter.query),
             config,
         );
         block_hits.space_tabs.extend(tab_hits.lines);
@@ -809,6 +866,18 @@ pub(crate) fn render_sidebar(
         );
         let attention = super::super::global_menu::global_menu_attention(snapshot);
         let launcher_width = if attention { 8 } else { 6 }.min(workspace_area.width);
+        // `/ filter` between `new` and `menu`, when it fits.
+        hits.space_filter_button = super::space_filter::render_filter_button(
+            buffer,
+            Rect::new(
+                workspace_area.x.saturating_add(5),
+                footer_y,
+                workspace_area.width.saturating_sub(5 + launcher_width),
+                1,
+            ),
+            state.space_filter.is_some(),
+            palette,
+        );
         hits.global_launcher = Rect::new(
             workspace_area.right().saturating_sub(launcher_width),
             footer_y,
@@ -1409,12 +1478,16 @@ fn focus_depth(
     squares_width: u16,
     config: &ClientShellConfig,
 ) -> u16 {
-    let tab_lines = super::space_tabs::space_tab_lines(
+    let tab_lines = super::space_tabs::space_tab_lines_filtered(
         snapshot,
         workspace,
         state.collapsed_groups,
         state.unfolded_squares,
         state.held_squares,
+        state
+            .space_filter
+            .as_ref()
+            .and_then(|filter| filter.view.as_ref()),
         config,
     );
     let own_rows = workspace_rows(

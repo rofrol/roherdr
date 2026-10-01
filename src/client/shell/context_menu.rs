@@ -55,13 +55,16 @@ impl ClientContextMenuOverlay {
                 ..
             } => {
                 // The job actions are chips on one `Close jobs:` row, as the
-                // tab line counts them: `⧖ 2` (asks first), `!1`, `✓3`.
+                // tab line counts them: `◑ 2` (asks first), `!1`, `✓3`.
                 let mut items = vec![
                     item("New tab", Action::NewTab),
                     item("Rename", Action::Rename),
                 ];
                 if *running_jobs > 0 {
-                    items.push(item(&format!("⧖ {running_jobs}"), Action::StopRunningJobs));
+                    items.push(item(
+                        &format!("{} {running_jobs}", crate::ui::motion::job_glyph()),
+                        Action::StopRunningJobs,
+                    ));
                 }
                 if *failed_jobs > 0 {
                     items.push(item(&format!("!{failed_jobs}"), Action::CloseFailedJobs));

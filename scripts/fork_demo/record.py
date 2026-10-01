@@ -377,7 +377,7 @@ def note_fonts():
 
 
 def scenes(rec, args):
-    rec.caption("herdr fork: usage widget, middle-click close, notifications, job tabs, oracle stats")
+    rec.caption("herdr fork: usage widget, middle-click close, notifications, job tabs, consult stats")
     time.sleep(2.4)
 
     rec.caption("Click the usage footer to see limits and reset times")
@@ -432,17 +432,27 @@ def scenes(rec, args):
         rec.cli("tab", "parent", tab_id, args.agent_tab)
         rec.cli("tab", "status", tab_id, status)
         time.sleep(2.2)
-    jy, jx = rec.find(lambda y, line: (y, line.index("⧖")) if "herdr" in line[:24] and "⧖" in line[:24] else None)
+    # The running-job counter is a turning half circle, so any frame will do.
+    turning = "◐◓◑◒"
+
+    def job_counter(y, line):
+        head = line[:24]
+        if "herdr" not in head:
+            return None
+        at = [i for i, c in enumerate(head) if c in turning]
+        return (y, at[-1]) if at else None
+
+    jy, jx = rec.find(job_counter)
     # Point at the counter from below: the arrow would cover it otherwise.
     rec.move_to(jy + 1, jx)
     time.sleep(2.8)
 
-    rec.caption("The herdr menu opens oracle stats: which second-opinion models helped")
+    rec.caption("The herdr menu opens consult stats: which second-opinion models helped")
     my, mx = rec.find(lambda y, line: (y, line.index("menu") + 1) if "menu" in line[:26] else None)
     rec.move_to(my, mx)
     time.sleep(0.4)
     rec.click()
-    oy, ox = rec.find(lambda y, line: (y, line.index("oracle stats") + 2) if "oracle stats" in line else None)
+    oy, ox = rec.find(lambda y, line: (y, line.index("consult stats") + 2) if "consult stats" in line else None)
     rec.move_to(oy, ox)
     time.sleep(0.4)
     rec.click()

@@ -256,6 +256,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_collapsed: bool,
     pub(super) sidebar_section_split: f32,
     pub(super) tab_drag_insert_index: Option<usize>,
+    /// The filter bar, when open: its text and what the list shows.
+    pub(super) space_filter: Option<super::space_filter::FilterRender<'a>>,
     /// While a tab line is dragged in the spaces list: the tab and where it
     /// would land among its space's top-level tabs.
     pub(super) tab_line_drag: Option<(&'a str, Option<usize>)>,

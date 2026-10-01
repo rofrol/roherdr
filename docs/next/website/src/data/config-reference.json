@@ -938,6 +938,18 @@
           "description": "Toggle sidebar collapse."
         },
         {
+          "key": "keys.filter_spaces",
+          "type": "keybinding",
+          "default": "\"prefix+/\"",
+          "description": "Open the spaces filter bar: type to narrow the spaces list to the spaces and tabs that match; Enter opens the first match or the one chosen with Up and Down, Esc clears and then closes."
+        },
+        {
+          "key": "keys.reopen_tab",
+          "type": "keybinding",
+          "default": "\"prefix+u\"",
+          "description": "Open the last tab this client closed again: a new tab in the same space and place, with its working directory and name. It starts a fresh shell: no command is replayed, no agent resumed, no jobs restored. Only closes this client made are remembered (10 at most, not kept across restarts)."
+        },
+        {
           "key": "keys.indexed.tabs",
           "type": "string",
           "default": "unset",
@@ -1128,6 +1140,16 @@
           ]
         },
         {
+          "key": "ui.focus_after_tab_close",
+          "type": "enum",
+          "default": "\"next\"",
+          "description": "Which top-level tab gets focus when the active one is closed: the next one to the right (then the previous), or the previous one (then the next). A closed child tab, such as a finished job, always returns to its parent.",
+          "values": [
+            "next",
+            "previous"
+          ]
+        },
+        {
           "key": "ui.tab_bar_right",
           "type": "array",
           "default": "[]",
@@ -1172,6 +1194,12 @@
             "symbols",
             "shapes"
           ]
+        },
+        {
+          "key": "ui.animations",
+          "type": "boolean",
+          "default": "true",
+          "description": "Turn the half circles of a working agent (clockwise) and of a running job (counter-clockwise, slower) instead of showing them still. They only exist in the symbols and shapes styles. When false they stay still: ◐ for working and ◑ for a running job."
         },
         {
           "key": "ui.sidebar.agents.row_gap",
