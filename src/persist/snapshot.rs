@@ -99,6 +99,8 @@ pub struct TabSnapshot {
     pub parent_tab_number: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::api::schema::TabStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<crate::api::schema::TabJobMetadata>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,6 +171,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             root_pane: snap.root_pane,
             parent_tab_number: None,
             status: None,
+            job: None,
         };
 
         Self {
@@ -407,6 +410,7 @@ fn capture_tab(
         root_pane: Some(tab.root_pane.raw()),
         parent_tab_number: tab.parent,
         status: tab.status,
+        job: tab.job.clone(),
     }
 }
 
@@ -755,6 +759,7 @@ mod tests {
                     root_pane: Some(0),
                     parent_tab_number: None,
                     status: None,
+                    job: None,
                 }],
                 active_tab: 0,
             }],
@@ -945,6 +950,36 @@ mod tests {
         assert_eq!(snapshot.sidebar_width, None);
         assert_eq!(snapshot.sidebar_section_split, None);
         assert!(snapshot.collapsed_space_keys.is_empty());
+    }
+
+    #[test]
+    fn capture_contract_preserves_completed_job_metadata_and_legacy_defaults() {
+        let mut state = AppState::test_with_adversarial_identity_state();
+        let job = crate::api::schema::TabJobMetadata {
+            id: "completed-build".into(),
+            name: "Build".into(),
+            why: Some("verify output".into()),
+            origin: "agent".into(),
+            owner_pane: None,
+        };
+        state.workspaces[0].tabs[0].job = Some(job.clone());
+        state.workspaces[0].tabs[0].status = Some(crate::api::schema::TabStatus::Succeeded);
+        state.assert_invariants_for_test();
+        let snapshot = capture_from_state(&state);
+        let mut json = serde_json::to_value(&snapshot).unwrap();
+        let restored: SessionSnapshot = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.workspaces[0].tabs[0].job, Some(job));
+        assert_eq!(
+            restored.workspaces[0].tabs[0].status,
+            Some(crate::api::schema::TabStatus::Succeeded)
+        );
+        json["workspaces"][0]["tabs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("job");
+        let legacy: SessionSnapshot = serde_json::from_value(json).unwrap();
+        assert!(legacy.workspaces[0].tabs[0].job.is_none());
+        state.assert_invariants_for_test();
     }
 
     #[test]
@@ -1458,6 +1493,7 @@ mod tests {
                     root_pane: Some(0),
                     parent_tab_number: None,
                     status: None,
+                    job: None,
                 }],
                 active_tab: 0,
             }],

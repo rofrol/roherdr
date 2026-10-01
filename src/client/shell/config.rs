@@ -407,6 +407,7 @@ impl ClientShellConfig {
                 child_tab_bar: Rect::default(),
                 mobile_header: Rect::new(0, 0, cols, header_height),
                 pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
+                job_footer: Rect::default(),
             };
         }
 
@@ -457,6 +458,7 @@ impl ClientShellConfig {
             child_tab_bar,
             mobile_header: Rect::default(),
             pane_surface,
+            job_footer: Rect::default(),
         }
     }
 

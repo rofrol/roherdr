@@ -58,13 +58,14 @@ impl ClientShellState {
             .map(|(_, tab_id)| tab_id.clone())
     }
 
-    /// With vertical tabs, a job tab's last row is its footer, drawn by
-    /// herdr-job: ` ← ` in its first three columns goes back to the parent
+    /// Client chrome (or the legacy PTY footer with vertical tabs):
+    /// ` ← ` in its first three columns goes back to the parent
     /// tab and ` × ` in its last three closes the job tab (a running job asks
     /// first). Returns whether the click was one of them.
     fn job_footer_click(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) -> bool {
         const BUTTON_WIDTH: u16 = 3;
-        if !self.config.spaces.tabs
+        let client_footer = self.active_job_metadata().is_some();
+        if (!client_footer && !self.config.spaces.tabs)
             || !self.config.mouse_capture
             || self.overlay.is_some()
             || self.mode != ClientShellMode::Terminal
@@ -78,30 +79,38 @@ impl ClientShellState {
             .focused_tab_id
             .as_deref()
             .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id))
-            .filter(|tab| tab.status.is_some())
+            .filter(|tab| client_footer || tab.status.is_some())
         else {
             return false;
         };
-        let Some(parent) = job.parent_tab_id.clone() else {
-            return false;
-        };
+        let parent = job.parent_tab_id.clone();
         let job_id = job.tab_id.clone();
-        let Some(hit) = self.hits.panes.iter().find(|hit| {
-            !hit.popup
-                && point.1 == hit.inner_rect.bottom().saturating_sub(1)
-                && super::contains(hit.inner_rect, point)
-                && snapshot
-                    .panes
-                    .iter()
-                    .any(|pane| pane.pane_id == hit.pane_id && pane.tab_id == job_id)
-        }) else {
-            return false;
+        let inner = if client_footer {
+            if !super::contains(self.hits.job_footer, point) {
+                return false;
+            }
+            self.hits.job_footer
+        } else {
+            let Some(hit) = self.hits.panes.iter().find(|hit| {
+                !hit.popup
+                    && point.1 == hit.inner_rect.bottom().saturating_sub(1)
+                    && super::contains(hit.inner_rect, point)
+                    && snapshot
+                        .panes
+                        .iter()
+                        .any(|pane| pane.pane_id == hit.pane_id && pane.tab_id == job_id)
+            }) else {
+                return false;
+            };
+            hit.inner_rect
         };
-        let inner = hit.inner_rect;
         if inner.width < BUTTON_WIDTH * 2 {
             return false;
         }
         if point.0 < inner.x.saturating_add(BUTTON_WIDTH) {
+            let Some(parent) = parent else {
+                return client_footer;
+            };
             self.push_endpoint_method(
                 crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
                     tab_id: parent,

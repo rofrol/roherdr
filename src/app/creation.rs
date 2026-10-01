@@ -229,6 +229,7 @@ impl App {
                 .tab_parent_index(tab_idx)
                 .and_then(|parent_idx| self.public_tab_id(ws_idx, parent_idx)),
             status: tab.status,
+            job: tab.job.clone(),
         })
     }
 

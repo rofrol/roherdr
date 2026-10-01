@@ -366,6 +366,52 @@ impl App {
         encode_success(id, ResponseResult::TabInfo { tab })
     }
 
+    pub(super) fn handle_tab_set_job_metadata(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabSetJobMetadataParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        if let Some(job) = &params.job {
+            let fields = [
+                Some(job.id.as_str()),
+                Some(job.name.as_str()),
+                job.why.as_deref(),
+                Some(job.origin.as_str()),
+                job.owner_pane.as_deref(),
+            ];
+            if job.id.trim().is_empty()
+                || job.name.trim().is_empty()
+                || fields
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.len() > 4096 || text.chars().any(char::is_control))
+            {
+                return encode_error(
+                    id,
+                    "invalid_job_metadata",
+                    "job fields must be nonempty identifiers and bounded single-line text",
+                );
+            }
+        }
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        tab.job = params.job;
+        self.schedule_session_save();
+        match self.tab_info(ws_idx, tab_idx) {
+            Some(tab) => encode_success(id, ResponseResult::TabInfo { tab }),
+            None => tab_not_found(id, &params.tab_id),
+        }
+    }
+
     fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
         self.state
             .workspaces
@@ -452,6 +498,63 @@ mod tests {
             } if closed_workspace_id == &workspace_id
                 && workspace.workspace_id == workspace_id
         ));
+    }
+
+    #[test]
+    fn api_job_metadata_registers_rejects_controls_and_clears_without_identity_changes() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("jobs")];
+        app.state.active = Some(0);
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let job = crate::api::schema::TabJobMetadata {
+            id: "test-job".into(),
+            name: "Build".into(),
+            why: Some("verify".into()),
+            origin: "test".into(),
+            owner_pane: None,
+        };
+        let response = app.handle_tab_set_job_metadata(
+            "req".into(),
+            crate::api::schema::TabSetJobMetadataParams {
+                tab_id: tab_id.clone(),
+                job: Some(job.clone()),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabInfo { tab } = success.result else {
+            panic!("unexpected response");
+        };
+        assert_eq!(tab.job, Some(job.clone()));
+        assert_eq!(tab.tab_id, tab_id);
+        app.state.workspaces[0].assert_invariants_for_test();
+        let mut invalid = job.clone();
+        invalid.name = "bad\u{1b}[2J".into();
+        let response = app.handle_tab_set_job_metadata(
+            "req".into(),
+            crate::api::schema::TabSetJobMetadataParams {
+                tab_id: tab_id.clone(),
+                job: Some(invalid),
+            },
+        );
+        assert!(response.contains("invalid_job_metadata"));
+        assert_eq!(app.state.workspaces[0].tabs[0].job, Some(job));
+        app.handle_tab_set_job_metadata(
+            "req".into(),
+            crate::api::schema::TabSetJobMetadataParams {
+                tab_id: tab_id.clone(),
+                job: None,
+            },
+        );
+        assert!(app.tab_info(0, 0).unwrap().job.is_none());
+        assert_eq!(app.public_tab_id(0, 0).as_deref(), Some(tab_id.as_str()));
+        app.state.workspaces[0].assert_invariants_for_test();
     }
 
     #[test]

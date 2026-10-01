@@ -10,6 +10,25 @@
 # and HERDR_JOB_TTY (set by herdr-job) is the job tab, for progress the caller should not get.
 set -euo pipefail
 skill=$1; shift
+
+# The skill files say not to consult the model the session runs on. Warn here,
+# in the one place every helper passes through, so it is visible in the log
+# instead of being a rule only the model is expected to remember.
+vendor_of() {
+  case ${1:-} in
+    *deepseek*) echo deepseek ;;
+    *claude* | *sonnet* | *opus* | *haiku* | *fable*) echo claude ;;
+    *gemini*) echo gemini ;;
+    *gpt* | *codex* | *o[0-9]*) echo gpt ;;
+    *) echo "" ;;
+  esac
+}
+acting_vendor=$(vendor_of "${PI_MODEL:-}")
+asked_vendor=$(vendor_of "$skill")
+if [ -n "$acting_vendor" ] && [ "$acting_vendor" = "$asked_vendor" ]; then
+  printf "warning: consulting %s while this session runs on %s (%s); that is not an independent opinion\n" \
+    "$skill" "$acting_vendor" "${PI_MODEL:-unknown}" >&2
+fi
 dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
 
 # The job runs in another pane, so it cannot read our stdin: save it for -f -.
@@ -21,7 +40,7 @@ done
 
 # The job tab starts from its own environment: pass on the round id, the log path and model settings.
 passenv=()
-while IFS= read -r v; do passenv+=("$v=${!v}"); done < <(compgen -e | grep -E '^(CONSULT_ROUND|CONSULT_LOG|GPT_|GEMINI_|DEEPSEEK_)' || true)
+while IFS= read -r v; do passenv+=("$v=${!v}"); done < <(compgen -e | grep -E '^(CONSULT_ROUND|CONSULT_LOG|GPT_|GEMINI_|DEEPSEEK_|CLAUDE_CONSULT_)' || true)
 
 last=${*: -1}
 question=$(tr -s '[:space:]' ' ' <<<"$last")

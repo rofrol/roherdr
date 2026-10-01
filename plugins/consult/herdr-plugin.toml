@@ -2,7 +2,7 @@ id = "local.consult"
 name = "Consult"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Second-opinion skills (GPT, Gemini, DeepSeek) for coding agents, with usage and usefulness stats"
+description = "Second-opinion skills (GPT, Gemini, DeepSeek, Claude) for coding agents, with usage and usefulness stats"
 platforms = ["macos", "linux"]
 
 # less keeps long tables readable; q closes the popup.

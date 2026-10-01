@@ -9,6 +9,7 @@ const originalArgv = process.argv;
 const originalCreateConnection = net.createConnection;
 const originalEnvironment = {
   HERDR_ENV: process.env.HERDR_ENV,
+  HERDR_AGENT_CONTEXT: process.env.HERDR_AGENT_CONTEXT,
   HERDR_OMP_IDLE_DEBOUNCE_MS: process.env.HERDR_OMP_IDLE_DEBOUNCE_MS,
   HERDR_PANE_ID: process.env.HERDR_PANE_ID,
   HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
@@ -90,10 +91,81 @@ function createExtensionHarness() {
 function configureIntegrationEnvironment(recordingSocketPath: string) {
   // Tests may run inside an OMP shell; nested-session cases opt in explicitly.
   delete process.env.OMPCODE;
+  delete process.env.HERDR_AGENT_CONTEXT;
   process.env.HERDR_ENV = "1";
   process.env.HERDR_SOCKET_PATH = recordingSocketPath;
   process.env.HERDR_PANE_ID = "test:p1";
 }
+
+test("Pi adds a replaceable Herdr prompt section without I/O or changing the user prompt", async () => {
+  configureIntegrationEnvironment("context-test-unused.sock");
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  const { pi, handlers } = createExtensionHarness();
+  install(pi);
+  const handler = handlers.get("before_agent_start")!;
+  net.createConnection = (() => { throw new Error("context must not perform IPC"); }) as typeof net.createConnection;
+  const event = { prompt: "continue my authorized task", systemPrompt: "existing user instructions",
+    systemPromptOptions: { sections: { existing: "keep me" } as Record<string, string> } };
+  for (let turn = 0; turn < 3; turn += 1) {
+    expect(handler(event, { mode: "tui" })).toBeUndefined();
+    const sections = event.systemPromptOptions.sections;
+    expect(Object.keys(sections)).toEqual(["existing", "herdr_runtime_context"]);
+    expect(sections.existing).toBe("keep me");
+    expect(sections.herdr_runtime_context.match(/\[Herdr behavior context v1\]/g)).toHaveLength(1);
+    expect(sections.herdr_runtime_context).toContain("earlier turn");
+    expect(sections.herdr_runtime_context).toContain("approval requirements");
+    expect(event.prompt).toBe("continue my authorized task");
+    expect(event.systemPrompt).toBe("existing user instructions");
+  }
+  // Fresh options after reload/resume/compaction receive the same one section.
+  const fresh = { systemPromptOptions: { sections: {} as Record<string, string> } };
+  handler(fresh, { mode: "tui" });
+  expect(fresh.systemPromptOptions.sections.herdr_runtime_context)
+    .toBe(event.systemPromptOptions.sections.herdr_runtime_context);
+  expect(handlers.has("agent_before_settle")).toBe(false);
+});
+
+test("Pi preserves legacy prompts and does not duplicate Herdr context", async () => {
+  configureIntegrationEnvironment("context-test-unused.sock");
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  const { pi, handlers } = createExtensionHarness();
+  install(pi);
+  const handler = handlers.get("before_agent_start")!;
+  const result = handler({ systemPrompt: "original", prompt: "user request" }, { mode: "tui" }) as { systemPrompt: string };
+  expect(result.systemPrompt).toStartWith("original\n\n[Herdr behavior context v1]");
+  expect(handler({ systemPrompt: result.systemPrompt }, { mode: "tui" })).toBeUndefined();
+  expect(handler({}, { mode: "tui" })).toBeUndefined();
+});
+
+test("Pi behavior context is disabled outside a Herdr pane", async () => {
+  for (const missing of ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_PANE_ID"]) {
+    configureIntegrationEnvironment("context-test-unused.sock");
+    delete process.env[missing];
+    const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+    const { pi, handlers } = createExtensionHarness();
+    install(pi);
+    expect(handlers.has("before_agent_start")).toBe(false);
+  }
+});
+
+test("Pi context opt-out and headless modes leave prompts and status hooks unchanged", async () => {
+  configureIntegrationEnvironment("context-test-unused.sock");
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  const { pi, handlers } = createExtensionHarness();
+  install(pi);
+  const handler = handlers.get("before_agent_start")!;
+  for (const mode of ["rpc", "json", "print"]) {
+    const event = { systemPromptOptions: { sections: {} } };
+    expect(handler(event, { mode })).toBeUndefined();
+    expect(event.systemPromptOptions.sections).toEqual({});
+  }
+  process.env.HERDR_AGENT_CONTEXT = "0";
+  const event = { systemPromptOptions: { sections: {} } };
+  expect(handler(event, { mode: "tui" })).toBeUndefined();
+  expect(event.systemPromptOptions.sections).toEqual({});
+  expect(handlers.has("agent_start")).toBe(true);
+  expect(handlers.has("agent_settled")).toBe(true);
+});
 
 function captureConnectionEndpoint() {
   let connectedEndpoint: unknown;

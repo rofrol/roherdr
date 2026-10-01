@@ -2007,6 +2007,17 @@ impl HeadlessServer {
                         return false;
                     }
                 };
+                let job_projection =
+                    crate::server::client_shell::job_metadata(&self.app, &seed_snapshot);
+                let job_message =
+                    match crate::protocol::endpoint::job_metadata_message(&job_projection) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            warn!(client_id, err = %err, "failed to encode job metadata");
+                            return false;
+                        }
+                    };
+                connection.shell_job_metadata = Some(job_projection);
                 connection.shell_location = Some(location);
                 connection.shell_snapshot = Some(seed_snapshot);
                 connection.shell_agent_completions = Some(completion_projection);
@@ -2018,6 +2029,7 @@ impl HeadlessServer {
                 if let Some(message) = projection_message {
                     self.send_to_client(client_id, message);
                 }
+                self.send_to_client(client_id, job_message);
                 self.send_to_client(client_id, completion_message);
                 self.send_to_client(client_id, snapshot_message);
                 if surface_active {

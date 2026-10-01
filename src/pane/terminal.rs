@@ -5839,6 +5839,26 @@ mod tests {
     }
 
     #[test]
+    fn job_content_scrollback_survives_repeated_width_and_height_changes() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(80, 8, 100).unwrap();
+        write_numbered_lines(&mut terminal, 200);
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+        // A client-owned footer must remain outside these terminal cells.
+        // Narrowing and widening content must not sacrifice its oldest output.
+        for (rows, cols) in [(8, 40), (8, 20), (4, 20), (12, 40), (8, 80)] {
+            pane.resize(rows, cols, 0, 0);
+            let metrics = pane.scroll_metrics().expect("scroll metrics after resize");
+            pane.set_scroll_offset_from_bottom(metrics.max_offset_from_bottom);
+            assert!(
+                pane.visible_text().contains("000000"),
+                "oldest output must survive resize to {cols}x{rows}"
+            );
+            pane.set_scroll_offset_from_bottom(0);
+        }
+    }
+
+    #[test]
     fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback() {
         for initial in [b"".as_slice(), b"seed\r\n".as_slice()] {
             let (tx, _rx) = mpsc::channel(4);

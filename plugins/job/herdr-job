@@ -350,9 +350,10 @@ def cmd_run(args):
         "pane_id": created["root_pane"]["pane_id"],
         "created": time.time(),
     }
+    meta["client_footer"] = register_job_metadata(meta)
     write_meta(path, meta)
     # `pane run` types into the tab's interactive shell; see HISTORY_IGNORE.
-    herdr("pane", "run", meta["pane_id"], f" {shlex.quote(str(SELF))} _exec {job_id}")
+    launch_job_executor(meta, job_id)
     update_owner_token(owner)
     reconcile_tabs()
     print(job_id)
@@ -490,6 +491,28 @@ class Footer:
         sys.stdout.flush()
 
 
+def launch_job_executor(meta, job_id):
+    """A rejected launch must not leave client chrome on an unused shell tab."""
+    try:
+        herdr("pane", "run", meta["pane_id"], f" {shlex.quote(str(SELF))} _exec {job_id}")
+    except SystemExit:
+        if meta.get("client_footer"):
+            herdr_ok("tab", "job-metadata", meta["tab_id"], "null")
+        raise
+
+
+def register_job_metadata(meta):
+    """Only the new method's explicit success disables legacy PTY chrome."""
+    job = {key: meta.get(key) for key in ("id", "name", "why", "origin", "owner_pane")}
+    # Normalize display fields only; runtime identifiers and saved metadata stay
+    # unchanged. Enforce the API byte limit too, including zero-width marks.
+    for key in ("name", "why", "origin"):
+        if job[key] is not None:
+            job[key] = Footer.clip(job[key], 1000)[0].encode("utf-8")[:4096].decode("utf-8", errors="ignore")
+    job["name"] = job["name"] or "Job"
+    return herdr_ok("tab", "job-metadata", meta["tab_id"], json.dumps(job))
+
+
 def cmd_exec(args):
     """Runs inside the job's own pane: stream output to the terminal and the log."""
     path = job_dir(args.id)
@@ -511,7 +534,8 @@ def cmd_exec(args):
     meta["started"] = time.time()
     write_meta(path, meta)
     footer = Footer(meta)
-    footer.start()
+    if not meta.get("client_footer"):
+        footer.start()
     print(f"$ {meta['command']}\n", flush=True)
     code = EXIT_LOST
     env = dict(os.environ, HERDR_JOB_ID=meta["id"])
@@ -544,12 +568,14 @@ def cmd_exec(args):
 
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, forward)
-        signal.signal(signal.SIGWINCH, lambda *_: footer.resize())
+        if not meta.get("client_footer"):
+            signal.signal(signal.SIGWINCH, lambda *_: footer.resize())
         assert proc.stdout is not None
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
             log.write(chunk)
+        proc.stdout.close()
         code = proc.wait()
         if code < 0:
             code = 128 - code
@@ -558,7 +584,8 @@ def cmd_exec(args):
     write_atomic(path / "exit", f"{code}\n")
     # The footer first: the herdr calls below take a moment, and the tab
     # label should not be ahead of the job's own status line.
-    footer.finish(code)
+    if not meta.get("client_footer"):
+        footer.finish(code)
     if meta.get("tab_status"):
         set_final_tab_status(meta, code)
     else:
@@ -572,7 +599,8 @@ def cmd_exec(args):
         print(f"closing this tab in {CLOSE_OK_AFTER_S} s (herdr-job run --keep leaves it open)", flush=True)
         time.sleep(CLOSE_OK_AFTER_S)
         close_job_tab(meta)
-    footer.release()
+    if not meta.get("client_footer"):
+        footer.release()
     sys.exit(code)
 
 

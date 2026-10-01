@@ -64,6 +64,7 @@ pub(super) struct ClientShellLayout {
     pub child_tab_bar: Rect,
     pub mobile_header: Rect,
     pub pane_surface: Rect,
+    pub job_footer: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +102,7 @@ pub(super) struct ShellHitMap {
     pub(super) child_tabs: Vec<(Rect, String)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
+    pub(super) job_footer: Rect,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
     /// Tab lines under a space (`ui.sidebar.spaces.tabs`), with their tab ids.
@@ -1507,7 +1509,7 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
-        self.config.layout(
+        let mut layout = self.config.layout(
             cols,
             rows,
             self.sidebar_collapsed,
@@ -1516,7 +1518,20 @@ impl ClientShellState {
             self.snapshot
                 .as_deref()
                 .is_some_and(super::tab_groups::workspace_has_child_tabs),
-        )
+        );
+        if self.active_job_metadata().is_some()
+            && layout.pane_surface.height >= 2
+            && layout.pane_surface.width >= 6
+        {
+            layout.pane_surface.height -= 1;
+            layout.job_footer = Rect::new(
+                layout.pane_surface.x,
+                layout.pane_surface.bottom(),
+                layout.pane_surface.width,
+                1,
+            );
+        }
+        layout
     }
 
     pub(crate) fn surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {

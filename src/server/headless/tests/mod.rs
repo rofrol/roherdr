@@ -19,7 +19,8 @@ fn client_shell_projection(
     Box<protocol::ClientShellSnapshot>,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    let read_control = |expected| {
+    let mut job_metadata: Option<protocol::endpoint::EndpointJobMetadata> = None;
+    let mut read_control = |expected| loop {
         let ServerMessage::EndpointControl { kind, data } = read_server_message(
             receiver
                 .recv_timeout(Duration::from_secs(1))
@@ -27,8 +28,13 @@ fn client_shell_projection(
         ) else {
             panic!("expected endpoint control {expected}");
         };
+        // Optional companions are not part of the frozen snapshot codec.
+        if kind == protocol::endpoint::JOB_METADATA_KIND {
+            job_metadata = Some(serde_json::from_str(&data).expect("job metadata companion"));
+            continue;
+        }
         assert_eq!(kind, expected);
-        data
+        break data;
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
         serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();
@@ -36,6 +42,11 @@ fn client_shell_projection(
         serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)).unwrap();
     assert_eq!(completions.boot_id, snapshot.boot_id);
     assert_eq!(completions.revision, snapshot.revision);
+    if let Some(job) = job_metadata {
+        assert_eq!(job.boot_id, snapshot.boot_id);
+        assert_eq!(job.revision, snapshot.revision);
+        assert_eq!(job.tab_id, snapshot.focused_tab_id);
+    }
     (snapshot, completions)
 }
 

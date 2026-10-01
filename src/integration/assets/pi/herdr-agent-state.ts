@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=9
+// HERDR_INTEGRATION_VERSION=10
 // @ts-nocheck
 
 import net from "node:net";
@@ -14,6 +14,17 @@ const socketEndpoint =
   process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
 const source = "herdr:pi";
+
+// Session-scoped guidance, not a status authority or an automatic continuation.
+const contextSection = "herdr_runtime_context";
+const contextMarker = "[Herdr behavior context v1]";
+const behaviorContext = `${contextMarker}
+You are running in a Herdr pane. Herdr shows actual runtime activity, not promises.
+- When authorized work has an executable next step, perform it instead of ending your turn with only a promise to continue.
+- Only say work is running or queued when it has actually started and that claim is still accurate. This includes work started in an earlier turn.
+- If you cannot start the next step, state what was not started and why. Ask explicitly when you need approval, a decision, credentials, or information.
+- Report idle or finished truthfully. Do not fake activity, override an explicit stop, loop indefinitely, or start extra paid/model calls without authorization.
+- User and repository instructions, approval requirements, and safety rules take precedence. This guidance is not permission to bypass them.`;
 
 function enabled() {
   return HERDR_ENV === "1" && !!socketPath && !!paneId;
@@ -187,6 +198,22 @@ export default function (pi) {
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
   let rootSession = false;
+
+  pi.on("before_agent_start", (event, ctx) => {
+    // Use a named prompt section when supported: Pi retains it across compaction
+    // and updates it by key, without appending a message or triggering a run.
+    if (ctx?.mode !== "tui" || process.env.HERDR_AGENT_CONTEXT === "0") {
+      return;
+    }
+    if (event?.systemPromptOptions?.sections) {
+      event.systemPromptOptions.sections[contextSection] = behaviorContext;
+      return;
+    }
+    // Older Pi releases expose only systemPrompt. Preserve all existing text.
+    if (typeof event?.systemPrompt === "string" && !event.systemPrompt.includes(contextMarker)) {
+      return { systemPrompt: `${event.systemPrompt}\n\n${behaviorContext}` };
+    }
+  });
 
   function desiredState() {
     if (blockedCount > 0) {

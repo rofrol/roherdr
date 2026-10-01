@@ -1,13 +1,13 @@
 ---
 name: consult-stats
-description: Statistics of consulted models (gpt: astra/sol/terra, gemini flash, deepseek skills) — which were most useful. Use when the user asks for consult/model statistics ("statystyki consult", "statystyki oracle", "który model najlepszy"), or to rate a past consultation.
+description: 'Statistics of consulted models (gpt: astra/sol/terra, gemini flash, deepseek, claude Sonnet 5.5 skills) — which were most useful. Use when the user asks for consult/model statistics ("statystyki consult", "statystyki oracle", "który model najlepszy"), or to rate a past consultation.'
 ---
 
 # Consult statistics
 
 Commands below use `$D` for this skill's directory, the one holding this `SKILL.md` (Claude Code shows it as "Base directory for this skill", pi lists the skill's location); set it first, e.g. `D=~/.claude/skills/consult-stats` or `D=~/.pi/agent/skills/consult-stats`.
 
-The gpt, gemini and deepseek scripts log every call to `~/.local/state/consult/log.jsonl` (skill, model, effort, mode, status,
+The gpt, gemini, deepseek and claude scripts log every call to `~/.local/state/consult/log.jsonl` (skill, model, effort, mode, status,
 seconds, prompt/answer size, cwd, round id from `$CONSULT_ROUND`, token usage) and print `[consult id: XXXXXXXX]` on stderr. Usefulness comes from ratings:
 
 ```bash
@@ -38,6 +38,10 @@ Rate after triaging the answer, not on first read:
 When showing stats, point out small samples (<5 rated calls per model) instead of drawing conclusions from them.
 
 ## You as coordinator
+
+Never consult the model you are running on (`$PI_MODEL`): answers from the same model are not an independent second
+opinion, and their `--unique` count is not meaningful (rate such a call with `--unique 0` and say so in the note).
+Check the acting model before choosing the round's models.
 
 The agent that asks (Claude Code, pi) is scored too, once per round (all consult calls on the same question), with `self`:
 - **Before reading any model's answer**, write down your own findings/hypotheses (in the conversation or a scratchpad

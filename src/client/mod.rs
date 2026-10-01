@@ -2064,6 +2064,16 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::JobMetadata(projection)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    shell.set_endpoint_job_metadata(
+                                        &endpoint_id,
+                                        generation,
+                                        projection,
+                                    );
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::AgentCompletions(projection)) => {
                                 if let Some(shell) = state.shell.as_mut() {
                                     shell.set_endpoint_agent_completions(
