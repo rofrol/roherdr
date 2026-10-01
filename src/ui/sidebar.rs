@@ -123,7 +123,8 @@ pub(crate) fn resolved_token_spans(
                     + usize::from(*ahead > 0 && *behind > 0)
             }
             ResolvedTokenKind::TabJobs { running, failed } => {
-                usize::from(*running > 0) * display_width(&format!("⧖ {running}"))
+                usize::from(*running > 0)
+                    * display_width(&format!("{} {running}", crate::ui::motion::job_glyph()))
                     + usize::from(*failed > 0) * display_width(&format!("!{failed}"))
                     + usize::from(*running > 0 && *failed > 0)
             }
@@ -272,8 +273,8 @@ pub(crate) fn resolved_token_spans(
                 // The same icons as the child-tab row: `!` rather than `✗`.
                 if *running > 0 {
                     spans.push(Span::styled(
-                        // A space: `⧖` runs into the digit otherwise.
-                        format!("⧖ {running}"),
+                        // A space: the glyph runs into the digit otherwise.
+                        format!("{} {running}", crate::ui::motion::job_glyph()),
                         apply_token_style(Style::default().fg(palette.yellow), token.style),
                     ));
                 }

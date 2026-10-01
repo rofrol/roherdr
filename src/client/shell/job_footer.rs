@@ -19,7 +19,7 @@ pub(super) fn render(state: &ClientShellState, buffer: &mut Buffer, area: Rect) 
             .find(|t| Some(&t.tab_id) == s.focused_tab_id.as_ref())
     });
     let status = match tab.and_then(|t| t.status) {
-        Some(crate::api::schema::TabStatus::Running) => "⧖",
+        Some(crate::api::schema::TabStatus::Running) => crate::ui::motion::job_glyph(),
         Some(crate::api::schema::TabStatus::Succeeded) => "✓",
         Some(crate::api::schema::TabStatus::Failed) => "✗",
         _ => "·",

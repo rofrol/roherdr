@@ -465,6 +465,10 @@ pub struct KeysConfig {
     pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
+    /// Open the spaces filter bar. Default: "prefix+/"
+    pub filter_spaces: BindingConfig,
+    /// Open the last tab this client closed again. Default: "prefix+u"
+    pub reopen_tab: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -606,6 +610,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    filter_spaces: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reopen_tab: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
     command: Option<Vec<CommandKeybindConfig>>,
@@ -719,6 +727,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_up);
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
+        apply_field!(filter_spaces);
+        apply_field!(reopen_tab);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -826,6 +836,8 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
+        copy_effective_action_field!(filter_spaces, keybinds.filter_spaces);
+        copy_effective_action_field!(reopen_tab, keybinds.reopen_tab);
         copy_user_field!(indexed);
 
         profile
@@ -904,6 +916,18 @@ pub enum TabLabelConfig {
     #[default]
     Number,
     Title,
+}
+
+/// Which top-level tab gets focus when the active one is closed. A closed
+/// child tab always returns to its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusAfterTabCloseConfig {
+    /// The next top-level tab to the right, else the previous one.
+    #[default]
+    Next,
+    /// The previous top-level tab to the left, else the next one.
+    Previous,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1017,6 +1041,9 @@ pub struct UiConfig {
     /// What an unnamed tab shows: its number, or the task title its agent
     /// sets as the terminal title (the number until it sets one). Default: number.
     pub tab_label: TabLabelConfig,
+    /// Which top-level tab is focused after the active one is closed:
+    /// "next" or "previous". Default: "next".
+    pub focus_after_tab_close: FocusAfterTabCloseConfig,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
     pub tab_bar_right: Vec<TabBarRightEntryConfig>,
     /// Text inserted between visible right-side tab bar entries. Default: one space.
@@ -1032,6 +1059,9 @@ pub struct UiConfig {
     /// Agent status indicator style. Saved values are "dots", "symbols" or
     /// "shapes". Default: "shapes".
     pub status_indicators: StatusIndicatorStyle,
+    /// Turn the working and running-job half circles instead of showing them
+    /// still. Default: true.
+    pub animations: bool,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1216,6 +1246,8 @@ impl Default for KeysConfig {
             resize_pane_up: BindingConfig::empty(),
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
+            filter_spaces: BindingConfig::one("prefix+/"),
+            reopen_tab: BindingConfig::one("prefix+u"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),
@@ -1258,12 +1290,14 @@ impl Default for UiConfig {
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_label: TabLabelConfig::Number,
+            focus_after_tab_close: FocusAfterTabCloseConfig::Next,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Shapes,
+            animations: true,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),

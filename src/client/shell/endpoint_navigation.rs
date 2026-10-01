@@ -88,6 +88,8 @@ impl ClientShellState {
             Err(Some(WorkspaceDragRefusal::LinkedWorktree))
         } else if *endpoint_id != self.active_endpoint_id {
             Err(Some(WorkspaceDragRefusal::Remote))
+        } else if self.space_filter.active() {
+            Err(Some(WorkspaceDragRefusal::Filtered))
         } else if !self.space_sort.allows_drag() {
             Err(Some(WorkspaceDragRefusal::Sort))
         } else {

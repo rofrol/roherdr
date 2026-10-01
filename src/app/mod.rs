@@ -493,6 +493,9 @@ impl App {
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
             "using pane scrollback configuration"
         );
+        crate::workspace::set_focus_next_after_close(
+            config.ui.focus_after_tab_close == crate::config::FocusAfterTabCloseConfig::Next,
+        );
 
         let latest_release_notes = crate::release_notes::load_latest();
         // A fork build ignores a restored upstream release; the saved notes
@@ -1002,6 +1005,12 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
+        }
+
+        if !invalid_section("ui") {
+            crate::workspace::set_focus_next_after_close(
+                config.ui.focus_after_tab_close == crate::config::FocusAfterTabCloseConfig::Next,
+            );
         }
 
         if !invalid_section("usage") {

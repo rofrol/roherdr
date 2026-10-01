@@ -222,6 +222,17 @@ impl DerefMut for Workspace {
     }
 }
 
+/// `ui.focus_after_tab_close = "next"`, set from the config when it loads. A
+/// process-wide choice, not per workspace; unit tests keep the default
+/// `false` (previous tab first).
+static FOCUS_NEXT_AFTER_CLOSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Chooses which top-level tab is focused after the active one closes.
+pub fn set_focus_next_after_close(next: bool) {
+    FOCUS_NEXT_AFTER_CLOSE.store(next, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl Workspace {
     fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
         if self.tabs.is_empty() {
@@ -661,23 +672,38 @@ impl Workspace {
     /// Select before removal, while sibling/parent relationships still exist.
     /// Public tab numbers survive index shifts and are never reused.
     fn tab_number_to_focus_after_close(&self, idx: usize) -> Option<usize> {
+        self.tab_number_to_focus_after_close_with(
+            idx,
+            FOCUS_NEXT_AFTER_CLOSE.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn tab_number_to_focus_after_close_with(&self, idx: usize, prefer_next: bool) -> Option<usize> {
         if idx != self.active_tab {
             return self.active_tab().map(|tab| tab.number);
         }
         let parent = self.tab_parent_index(idx);
-        let sibling = (0..idx)
+        // A closed child, such as a finished job, goes back to the tab that
+        // started it, not to a sibling.
+        if let Some(parent_tab) = parent.and_then(|parent| self.tabs.get(parent)) {
+            return Some(parent_tab.number);
+        }
+        let previous = (0..idx)
             .rev()
-            .find(|&candidate| self.tab_parent_index(candidate) == parent)
-            .or_else(|| {
-                (idx + 1..self.tabs.len())
-                    .find(|&candidate| self.tab_parent_index(candidate) == parent)
-            });
-        let next = sibling.or(parent).or_else(|| {
+            .find(|&candidate| self.tab_parent_index(candidate) == parent);
+        let next = (idx + 1..self.tabs.len())
+            .find(|&candidate| self.tab_parent_index(candidate) == parent);
+        let sibling = if prefer_next {
+            next.or(previous)
+        } else {
+            previous.or(next)
+        };
+        let focus = sibling.or(parent).or_else(|| {
             // Direct state callers can close a lone parent and leave its
             // children top-level. The API closes children before the parent.
             (0..self.tabs.len()).find(|&candidate| candidate != idx)
         })?;
-        self.tabs.get(next).map(|tab| tab.number)
+        self.tabs.get(focus).map(|tab| tab.number)
     }
 
     pub fn close_tab(&mut self, idx: usize) -> bool {
@@ -1946,7 +1972,74 @@ mod tests {
     }
 
     #[test]
-    fn closing_tabs_selects_same_level_neighbors_and_preserves_inactive_focus() {
+    fn the_focus_option_picks_the_next_or_the_previous_top_level_tab() {
+        // Main tabs a, b, c; b has two jobs. Closing the active b:
+        let mut ws = Workspace::test_new("test");
+        let b = ws.test_add_tab(Some("b"));
+        let c = ws.test_add_tab(Some("c"));
+        let j1 = ws.test_add_tab(Some("j1"));
+        let j2 = ws.test_add_tab(Some("j2"));
+        ws.set_tab_parent(j1, Some(b)).unwrap();
+        ws.set_tab_parent(j2, Some(b)).unwrap();
+        let name_of = |ws: &Workspace, number: usize| {
+            ws.tabs
+                .iter()
+                .find(|tab| tab.number == number)
+                .and_then(|tab| tab.custom_name.clone())
+                .unwrap_or_else(|| "a".into())
+        };
+        let b_idx = ws
+            .tabs
+            .iter()
+            .position(|t| t.custom_name.as_deref() == Some("b"))
+            .unwrap();
+        ws.active_tab = b_idx;
+        let next = ws
+            .tab_number_to_focus_after_close_with(b_idx, true)
+            .unwrap();
+        let previous = ws
+            .tab_number_to_focus_after_close_with(b_idx, false)
+            .unwrap();
+        // Next skips b's own jobs; previous is the tab before b.
+        assert_eq!(name_of(&ws, next), "c");
+        assert_eq!(name_of(&ws, previous), "a");
+        // The last main tab falls back the other way in both modes.
+        let c_idx = ws
+            .tabs
+            .iter()
+            .position(|t| t.custom_name.as_deref() == Some("c"))
+            .unwrap();
+        ws.active_tab = c_idx;
+        assert_eq!(
+            name_of(
+                &ws,
+                ws.tab_number_to_focus_after_close_with(c_idx, true)
+                    .unwrap()
+            ),
+            "b"
+        );
+        // A job returns to its parent in both modes.
+        let j_idx = ws
+            .tabs
+            .iter()
+            .position(|t| t.custom_name.as_deref() == Some("j1"))
+            .unwrap();
+        ws.active_tab = j_idx;
+        for prefer_next in [true, false] {
+            assert_eq!(
+                name_of(
+                    &ws,
+                    ws.tab_number_to_focus_after_close_with(j_idx, prefer_next)
+                        .unwrap()
+                ),
+                "b"
+            );
+        }
+        let _ = c;
+    }
+
+    #[test]
+    fn closing_tabs_returns_children_to_their_parent_and_keeps_inactive_focus() {
         // Parent indices, active index, closed index, expected survivor's original index.
         type CloseCase<'a> = (&'a str, &'a [Option<usize>], usize, usize, usize);
         let cases: &[CloseCase<'_>] = &[
@@ -1973,18 +2066,25 @@ mod tests {
             ),
             ("first flat tab", &[None, None], 0, 0, 1),
             (
-                "previous child",
+                "middle child returns to its parent",
                 &[None, Some(0), Some(0), Some(0)],
                 2,
                 2,
-                1,
+                0,
             ),
             (
-                "first child prefers sibling",
+                "first child returns to its parent",
                 &[None, Some(0), Some(0)],
                 1,
                 1,
-                2,
+                0,
+            ),
+            (
+                "last child returns to its parent",
+                &[None, Some(0), Some(0), Some(0)],
+                3,
+                3,
+                0,
             ),
             (
                 "only child returns to parent",

@@ -196,6 +196,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_up = ""     # optional, e.g. "ctrl+shift+alt+up"
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
+# filter_spaces = "prefix+/"   # open the spaces filter bar (type to narrow the list)
+# reopen_tab = "prefix+u"       # open the last closed tab again (fresh shell, same place)
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
 # They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.
@@ -248,6 +250,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Maximum sidebar width when expanded (columns)
 # sidebar_max_width = 44
+
+# Which top-level tab gets focus when the active one is closed: "next" (the one to
+# the right, else the previous) or "previous". A closed child tab, such as a
+# finished job, always returns to its parent.
+# focus_after_tab_close = "next"
 
 # Start with the sidebar collapsed. Changes take effect on the next launch.
 # sidebar_start_collapsed = false
@@ -351,6 +358,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "shapes" (the default) uses circles that differ by shape: ◐ working, ◉ blocked,
 # ● done, ○ idle.
 # status_indicators = "shapes"
+
+# Turn the half circles of a working agent (clockwise) and of a running job
+# (counter-clockwise, slower) instead of showing them still. Only the "symbols"
+# and "shapes" styles use these glyphs. Set false for static glyphs: ◐ working,
+# ◑ job running.
+# animations = true
 
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)

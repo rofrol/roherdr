@@ -183,6 +183,8 @@ pub(crate) fn keybind_help_groups(
                     "resize pane right",
                 ),
                 entry(binding_label(&keybinds.toggle_sidebar), "toggle sidebar"),
+                entry(binding_label(&keybinds.filter_spaces), "filter spaces"),
+                entry(binding_label(&keybinds.reopen_tab), "reopen closed tab"),
                 entry(binding_label(&keybinds.focus_pane_left), "focus pane left"),
                 entry(binding_label(&keybinds.focus_pane_down), "focus pane down"),
                 entry(binding_label(&keybinds.focus_pane_up), "focus pane up"),

@@ -196,7 +196,7 @@
     `delivery = "system"` herdr's own toast shows only while the window is
     focused; the overlap checks above are still to do by eye.
 
-- [ ] Filter bar above the spaces list, like fzf (2026-10-01): a text field
+- [x] Filter bar above the spaces list, like fzf (2026-10-01; v1 done, see below): a text field
   at the top of the sidebar that narrows the visible spaces and tabs as the
   user types. Not designed yet: decide what it matches (space names,
   branches, tab labels, agent names), the open/close key and mouse
@@ -220,6 +220,35 @@
     not persisted, no server requests; cache matches per
     (query, snapshot generation). Not in v1: cwd or scrollback matching,
     score ranking, fzf operator syntax, regex, saved queries, state filters.
+  - v1 done 2026-10-01 (committed, not installed; `just check` passes):
+    the `/ filter` button sits in the bottom row between `new` and `menu`
+    (the header has no room at 26 columns) and opens a bar under the header,
+    `/ text▏ ×`. While it is focused, typed text (printable keys,
+    Backspace, Ctrl+U) goes to it; Esc clears the text, then closes; Enter
+    opens the first matching space, or its first matching tab when the
+    space itself does not match, and closes the bar. A click anywhere else
+    blurs it (the filter stays on and the pane gets the keys); a click on the
+    bar focuses it; `×` closes it. Matching is a smart-case subsequence
+    (`space_filter::matches`) against a space's name, branch and agents, and
+    a tab's label, its agents and the labels of the tabs nested under it. The
+    list keeps its order; a matching space shows all its tabs, one shown
+    for a tab only the matching tabs, a worktree parent stays for a
+    matching child, folded groups open for the view only, `no match` when
+    nothing fits. Space and tab drag are off while filtering (the header
+    says `clear the filter to reorder`). Client-only, not saved.
+  - Up/Down selection done 2026-10-01 (committed, not installed): Up and
+    Down move a selected space (the list highlights it like the navigation
+    selection and scrolls to it, no wrap), typing selects the first shown
+    space again, and Enter opens the selected space, or its first matching
+    tab when the space itself does not match.
+  - Key done 2026-10-01 (committed, not installed): `keys.filter_spaces`
+    (default `prefix+/`, documented in the sample config and the config
+    reference) opens the bar for typing and shows a collapsed sidebar.
+  - Done 2026-10-01 (committed): the bar shows `shown/total` spaces while a
+    query is on, and the matched characters of a tab label are bold and
+    underlined (`match_positions`).
+  - Left for later: highlighting matches in space names and AND tokens, the multi-machine sidebar (it ignores the
+    filter), the mobile layout, and a live check.
 
 - [ ] Compact Pi activity rows with click-through to herdr-job details.
   - User request and screenshot, 2026-10-01:
@@ -285,6 +314,18 @@
   flicker, output-driven churn and per-render process-tree polling. Check
   many-pane idle overhead if fallback detection is added. No root cause
   verified and no implementation approved yet.
+  - Probable cause found 2026-10-01 (not reproduced live): the tab label comes
+    from the program leading the pane's foreground group (`TerminalState::
+    running_label`), and `ForegroundProgramTracker` looks that name up once
+    per new group. A command like `env VAR=1 brew upgrade` starts as `env`,
+    which then execs the real program inside the same group, so the group
+    kept the name `env`. Mitigation committed (not installed): wrappers
+    (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `timeout`, `sudo`,
+    `doas`) are looked up again for up to six ticks per group, then believed.
+    Bounded extra work, only for panes running a wrapper. Not done: the rest
+    of this item (a title or foreground-command fallback beyond the program
+    name, OSC title precedence), and the user should say whether `env` still
+    appears after the next install.
 
 - [ ] Explore a subtle animated indicator while an agent instance is working,
   instead of a static status glyph (screenshots, 2026-09-30 01:09). The
@@ -317,6 +358,52 @@
     frame is only a prototype starting point, not a measured result.
     Verify font rendering, baseline and cell width (including CJK), and
     retain a static fallback when motion is disabled. No variant chosen.
+  - User follow-up 2026-10-01 (screenshots): `◐` for a working agent does
+    not animate today, and the hourglass `⧖` should become an animated half
+    circle everywhere it appears. Where it appears now (from the code): the
+    tab line's state icon when the tab waits on a job (`AgentMark::WaitsOnJob`,
+    mauve, `src/client/shell.rs`); the running count `⧖ 1` next to `!6` and
+    `✓2` in tab lines and space rows (`tab_groups.rs`, `ui/sidebar.rs`); a
+    running job's square (`tab_groups.rs`); the job pane footer
+    (`job_footer.rs`); the tab bar; the context menu item `⧖ N`.
+  - Consulted DeepSeek, Claude Opus 5.5, GPT sol 6.1 and Gemini (low/high),
+    2026-10-01. Agreed: one family of half circles; one shared client timer
+    whose deadline is `None` when no animated glyph is drawn (collapsed
+    sidebar, unfocused client, `ui.animations = false`); frame from the
+    monotonic clock (`(now / period) % 4`) so all glyphs stay in step and
+    missed frames are skipped; the glyph is one cell in every frame, so
+    counts, columns and hit rects do not move; blocked, idle and done stay
+    static; no server requests. Proposed frames (not decided): working
+    `◐ ◓ ◑ ◒` clockwise at 125-200 ms in the working colour; waiting on a
+    job and running-job counts `◐ ◒ ◑ ◓` counter-clockwise at 250-400 ms in
+    mauve (Opus, GPT, Gemini low). DeepSeek instead: ping-pong `◐ ↔ ◑` at
+    400 ms. Gemini high: quadrant circles `◴ ◵ ◶ ◷` for jobs, which the
+    others reject (weaker font coverage, reads as 25%). Static fallback when
+    `ui.animations = false`: working `◐`, job `◑` in mauve. Risks: `◐◑` are
+    East Asian Ambiguous width (wide in CJK terminals), screen readers, ssh
+    and tmux bandwidth (diff only). GPT: direction and colour alone are weak
+    cues, so keep text labels in details. First step: a Python demo of both
+    loops side by side, monochrome and reduced motion.
+  - Done 2026-10-01 at the user's request (committed; `just check` passes;
+    no Python demo was made, the user chose the implementation directly):
+    `ui.animations` (default true). Working `◐ ◓ ◑ ◒` clockwise, 160 ms a
+    frame; a running job `◐ ◒ ◑ ◓` counter-clockwise, 320 ms a frame, still
+    mauve; the hourglass `⧖` is gone from the client UI (state icon, counts
+    in tab lines and space rows, squares, job footer, tab menu, the legacy
+    `ui` sidebar token). Without animations: `◐` working, `◑` job. One timer
+    deadline at the next frame change, only while an agent works or a job
+    runs (`motion_active`, computed in compose); `ui::motion` holds the
+    frames and a thread-local phase set around each compose, so the many
+    `status_icon` call sites need no new argument. Not changed: the plugin
+    texts (`herdr-job` labels for old builds, the `$jobs` token, README and
+    plugin docs still say `⧖`); the confirm-close dialog text, built when it
+    opens, shows the static `◑`; Dots style keeps `●`. Open: a live look at
+    the cadence in a real terminal, ambiguous-width terminals, the 100 ms
+    wake-up that already existed (the new deadline only adds the exact frame
+    boundaries).
+  - Installed as `b4c56cec` and the speeds confirmed by the user on a live
+    demo job ("ok", 2026-10-01): installed build, working clockwise at 160 ms
+    and job counter-clockwise at 320 ms.
 
 - [x] Indent vertical tab rows under nested worktree spaces (screenshot,
   2026-09-30 00:49). The `Job client footer` worktree header is indented,
@@ -400,6 +487,12 @@
        Consider skipping footer-end click mappings on the alternate screen:
        a full-screen program such as vim or less could otherwise be closed
        by a click intended for its own bottom row.
+       Done 2026-10-01 for the legacy PTY footer (committed): its end
+       buttons are ignored while the job's pane is on the alternate screen.
+       The client-chrome footer is a reserved row outside the pane, so a
+       full-screen program never shares it and needed no change. Still open:
+       the long-term client-chrome row with `--why` and the job id in a new
+       codec.
   2. Done: points 8-14 walked through and accepted by the user on
      2026-09-29/30. Job square tooltips now share the 450 ms dwell
      (`df8cf902`), installed and user-confirmed. Original walkthrough:
@@ -860,13 +953,19 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   reset on target change, pending dismissal tests; full check and release
   passed, installed and accepted. Consulted DeepSeek only at the user's
   request because Astra was near its usage limit.
-- [ ] Regression (2026-09-29): closing a tab asks whether to close the
+- [x] Regression (2026-09-29): closing a tab asks whether to close the
   space, and cancelling leaves an odd highlight on the space. Probably
   the tab is the space's last one, so the close becomes a space close
   (`request_tab_close` opens the workspace confirmation when no other tab
   is left), and the cancelled confirmation leaves the space selected or
   highlighted. Reproduce, check whether it predates the vertical tabs, and
   consult (GPT-6 Astra, DeepSeek) on what closing the last tab should do.
+  - Cause found and fixed 2026-10-01 (committed, not installed): Esc on a
+    close confirmation always set navigate mode and highlighted the focused
+    space, even when the confirmation came from closing a tab in the
+    terminal. Now Esc on a tab or pane close just closes the dialog; a
+    workspace close still returns to navigate mode. Mouse cancel already left
+    the mode alone. Test: `last_tab_close_confirmation_can_be_cancelled`.
 - [x] Disable upstream binary update notifications in fork builds
   (reported 2026-09-29, confirmed 2026-09-30). The fork is installed with
   `scripts/herdr_live.sh`; upstream `herdr update` would replace it.
@@ -1154,7 +1253,8 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
        redundant).
     Shared: `no change` dims the highlight and sends nothing; Esc or a drop
     outside restores the order and may flash `cancelled`.
-  - Proposal 1 done 2026-10-01 (committed; `just check` passes; the
+  - Proposal 1 done 2026-10-01 and confirmed by the user on the installed
+    build `45cadf68` ("działa ok") (committed; `just check` passes; the
     flaky `federated_client_starts_without_local…` failed once and passed on
     rerun): the dragged block is drawn at its landing slot with the drag
     background and accent text, the `▸`/`▾` markers are gone, the header says
@@ -1482,7 +1582,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     (hash and subject) in a tooltip, and both builds when the client's
     differs (`server <line> · client <hash>`). Still open: the modal and
     the build metadata it needs.
-- [ ] Reopen the last closed tab, `prefix+u` ("undo close", configurable).
+- [x] Reopen the last closed tab, `prefix+u` ("undo close", configurable). (v1 done, see the last bullet)
   - Closing a tab kills its processes, so this recreates the tab rather
     than undoing the close: same place in the space, name, pane layout,
     working directories, and agents resumed through the existing session
@@ -1499,7 +1599,19 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Alternative to weigh (mine, not consulted): keep a closed tab's
     processes alive for a few seconds with an "undo" toast, which restores
     them exactly.
-- [ ] Which tab gets focus after closing the active one: should it be the
+  - Consulted DeepSeek, Opus 5.5, GPT sol 6.1 and Gemini high 2026-10-01 on
+    a client-local v1: record only a close the server accepted, top-level
+    tabs without jobs, a custom label only, at most 10, not persisted; skip
+    entries whose space is gone; use an entry up when sent; document that
+    other clients' closes and process exits are not covered; server-owned
+    history later. Done and committed (not installed): `keys.reopen_tab`
+    (default `prefix+u`) opens a new tab in the same space with the focused
+    pane's directory and the tab's own name, then moves it after the tab
+    that stood before it when that one is still there. A refused create
+    keeps the entry. New file `src/client/shell/closed_tabs.rs`; no protocol
+    change. Not done: a server-owned history, closes by other clients or
+    exits, restoring splits or agents, a live check.
+- [x] Which tab gets focus after closing the active one (done 2026-10-01; the user said to decide, so see the last bullet): should it be the
   next one (right) instead of the previous one (left), or should that be
   configurable? Today `Workspace::close_tab` focuses the previous tab (the
   new last one when the last tab closes).
@@ -1512,6 +1624,30 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Chrome and Firefox go right because their tabs are flat. Both: tmux
     returns to the previously used window, VS Code to the recently used
     editor (Astra, not verified).
+  - Consulted again 2026-10-01 (DeepSeek, Opus 5.5, GPT sol 6.1, Gemini high):
+    all four say closing the active child tab goes to its parent, always.
+    Done and committed (not installed): `Workspace::tab_number_to_focus_
+    after_close` returns the parent for any child, so closing a middle or
+    last job no longer lands on a sibling job. Top-level direction: DeepSeek
+    and Gemini want "next top-level, else previous" (Chrome); Opus and GPT
+    want to keep "previous, else next" because a closed tab's own children
+    follow it in the list. Split 2:2, so unchanged; it is the user's call.
+    All four: closing or exiting an inactive tab never moves focus (true
+    today); closing a parent closes its children first and the focus goes to
+    a surviving top-level tab.
+  - Decided by me 2026-10-01 ("rób jak uważasz", the user may change it):
+    `ui.focus_after_tab_close = "next" | "previous"`, default `next`
+    (committed, not installed): the user asked in this item whether the next
+    tab (right) should win, the consulted models split 2:2, and both sides
+    allowed this one option. `next` takes the next top-level tab (skipping
+    the closed tab's own jobs), else the previous; `previous` the reverse. A
+    closed child always returns to its parent. The choice is process-wide
+    (`workspace::set_focus_next_after_close`, set at server start and on
+    config reload); unit tests keep `previous`. A `last_used` mode waits for
+    a tab history.
+    `cross_area_detach_and_reattach_preserves_state` failed once in a full
+    `just check` ("workspace with matching label should exist") and passed
+    twice alone and on rerun: another flaky integration test.
   - Both: no speculative option matrix; if added,
     `focus_after_tab_close = "previous" | "next"`, and `"last_used"` only
     once there is an MRU history of tabs. Child to parent should be
@@ -1760,6 +1896,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     them upstream instead.
 - [ ] Refresh the README's "Fork changes" so it says how the fork differs
   now, with a small looping animation under each change.
+  - Text part done 2026-10-01 (committed): the README now lists tab-line
+    drag, the spaces filter, the animated glyphs (the hourglass is gone), the
+    fork build's refusal of upstream updates and the `pi-title` plugin; the
+    demo scripts say `consult` instead of `oracle` (the plugin was renamed;
+    `record.sh` linked a `plugins/oracle` that no longer exists). Still
+    open: the looping clips (animated WebP pilot), which need a recording
+    session in a real terminal and browser.
   - Audit first (vertical tabs, the disclosure triangle and
     `show_agents_panel` are in the README since 2026-09-28);
     `scripts/fork_demo/README.md` still
@@ -2189,3 +2332,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   `ask_gemini.sh`, `ask_deepseek.py`). Decide whether it is deliberate (the
   verb an agent runs vs. the feature name) or should be unified, and on
   which name; consult the agents (DeepSeek, GPT-6 Astra) before renaming.
+
+- [ ] The flaky `federated_client_starts_without_local_and_survives_its_restart`
+  fails more often now (2026-10-01): three full `just check` runs in a row
+  at about 07:00 failed it ("recovered Local must be selectable", after
+  about 25 s) while the machine had a load average of 18-31 (Chrome helpers
+  at 100% CPU), and it passed on all 8 runs of the file or the test alone
+  (about 15 s). Everything else passed (3836 tests, lint, docs). Likely a
+  timing limit under load rather than a regression, but unproven: rerun on a
+  quiet machine, and consider a longer wait or a deterministic wait in the
+  test.

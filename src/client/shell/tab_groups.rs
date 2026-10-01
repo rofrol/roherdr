@@ -155,7 +155,7 @@ pub(super) fn parent_entry_label(
 
 pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
     match status? {
-        TabStatus::Running => Some("⧖"),
+        TabStatus::Running => Some(crate::ui::motion::job_glyph()),
         TabStatus::Succeeded => Some("✓"),
         // Not `✗`: next to a tab label it reads as a close button.
         TabStatus::Failed => Some("!"),
@@ -163,7 +163,7 @@ pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
     }
 }
 
-/// Counts of the children's statuses, e.g. `⧖ 1 !2 ✓3`; empty without children.
+/// Counts of the children's statuses, e.g. `◑ 1 !2 ✓3`; empty without children.
 /// Children without a status are counted as `•N`.
 pub(super) fn children_summary(children: &[&ClientShellTab]) -> String {
     children_summary_segments(children)
@@ -185,7 +185,7 @@ pub(super) fn children_summary_segments(
             .count()
     };
     [
-        ("⧖", Some(TabStatus::Running)),
+        (crate::ui::motion::job_glyph(), Some(TabStatus::Running)),
         ("!", Some(TabStatus::Failed)),
         ("✓", Some(TabStatus::Succeeded)),
         ("•", None),
@@ -193,9 +193,9 @@ pub(super) fn children_summary_segments(
     .into_iter()
     .map(|(icon, status)| (icon, status, count(status)))
     .filter(|(_, _, count)| *count > 0)
-    // `⧖` is as tall as a digit and runs into it without a space.
-    .map(|(icon, status, count)| match icon {
-        "⧖" => (status, format!("{icon} {count}")),
+    // The running icon is as tall as a digit and runs into it without a space.
+    .map(|(icon, status, count)| match status {
+        Some(TabStatus::Running) => (status, format!("{icon} {count}")),
         _ => (status, format!("{icon}{count}")),
     })
     .collect()
