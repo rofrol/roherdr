@@ -2127,7 +2127,7 @@ fn history_rows_say_what_finished_and_in_which_space() {
 }
 
 #[test]
-fn the_notification_list_shows_the_highlighted_rows_whole_text_below() {
+fn the_notification_list_grows_to_the_right_to_show_a_long_row_whole() {
     let mut state = state_with_tabs(true);
     state.notification_log_received(Some("tab_9"));
     state.compose(106, 30).unwrap();
@@ -2146,10 +2146,7 @@ fn the_notification_list_shows_the_highlighted_rows_whole_text_below() {
                 workspace_id: Some("ws_1".into()),
                 tab_id: Some("tab_9".into()),
                 pane_id: None,
-                task: Some(
-                    "Rewrite the whole notification history so every row names its task and nothing else"
-                        .into(),
-                ),
+                task: Some("Rewrite the history so each row names its task and more".into()),
                 request: None,
                 repeats: Some(2),
             }],
@@ -2157,9 +2154,16 @@ fn the_notification_list_shows_the_highlighted_rows_whole_text_below() {
     );
     let frame = state.compose(106, 30).unwrap();
     let text = frame_rows(&frame).join("\n");
-    // The row is cut to one line; the footer carries the tail.
-    assert!(text.contains("nothing else"), "{text}");
+    // The box grew to fit the row: whole, with no ellipsis and no footer.
+    assert!(text.contains("task and more"), "{text}");
     assert!(text.contains("×2"), "{text}");
+    let row = text
+        .lines()
+        .find(|line| line.contains("task and more"))
+        .unwrap_or_default();
+    assert!(!row.contains('…'), "{row}");
+    // No detail footer: a rule between the rows and a repeat of the row.
+    assert_eq!(text.matches("task and more").count(), 1, "{text}");
 }
 
 fn header_agent(

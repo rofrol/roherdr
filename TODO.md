@@ -47,6 +47,22 @@
   panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
   investigated. Done: nothing.
 
+- [x] Dropdown without the preview at the bottom (user, 2026-10-01: "can we do
+  without that preview below? maybe the bubble could grow to the right as with
+  tab names?"). Consulted DeepSeek and GPT (agree: size to the longest row,
+  stable while the highlight moves, left edge under the button and shifted left
+  when the right edge is short, ellipsis for what still does not fit, no
+  footer).
+  - Done 2026-10-01: the header lists (history, working, asking, bookmarks) are
+    as wide as their longest row (at least 56 columns, at most the screen less 2
+    and 140) and the footer with the repeated row is gone; the box moves left
+    when the right edge is short. Test: `the_notification_list_grows_to_the_
+    right_to_show_a_long_row_whole`.
+  - Not done: a row longer than the screen still gets an ellipsis (GPT: a
+    tooltip or detail action for the full label; DeepSeek: wrap the highlighted
+    row); the width follows the rows, so a refresh that brings a longer row
+    changes it.
+
 - [x] A jump into a collapsed space shows nothing (user, 2026-10-01, screenshot:
   he clicked a task with a `?` in the asking list; its space `~` was collapsed
   (`►`), so the tab focused but stayed hidden; "it should have expanded"). Third
