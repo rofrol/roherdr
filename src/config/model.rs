@@ -203,6 +203,10 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Option<Option<KeyModif
 pub struct ToastConfig {
     pub delivery: ToastDelivery,
     pub delay_seconds: u64,
+    /// Whether a finished turn (the agent asks nothing) also plays a sound and
+    /// shows a toast or system notification. Off: it only adds a quiet row to
+    /// the notification list and the unread dot.
+    pub alert_on_finished: bool,
     pub herdr: HerdrToastConfig,
     pub clipboard: ClipboardToastConfig,
 }
@@ -1322,7 +1326,8 @@ impl Default for ToastConfig {
     fn default() -> Self {
         Self {
             delivery: ToastDelivery::Off,
-            delay_seconds: 1,
+            delay_seconds: 3,
+            alert_on_finished: false,
             herdr: HerdrToastConfig::default(),
             clipboard: ClipboardToastConfig::default(),
         }
@@ -1357,6 +1362,7 @@ impl<'de> Deserialize<'de> for ToastConfig {
             delivery: Option<ToastDelivery>,
             enabled: Option<bool>,
             delay_seconds: Option<u64>,
+            alert_on_finished: Option<bool>,
             herdr: HerdrToastConfig,
             clipboard: ClipboardToastConfig,
         }
@@ -1377,6 +1383,7 @@ impl<'de> Deserialize<'de> for ToastConfig {
         Ok(Self {
             delivery,
             delay_seconds,
+            alert_on_finished: raw.alert_on_finished.unwrap_or(default.alert_on_finished),
             herdr: raw.herdr,
             clipboard: raw.clipboard,
         })
@@ -1975,7 +1982,9 @@ position = "top-center"
     fn toast_config_defaults_preserve_existing_behavior_with_delay() {
         let config = Config::default();
         assert_eq!(config.ui.toast.delivery, ToastDelivery::Off);
-        assert_eq!(config.ui.toast.delay_seconds, 1);
+        // The fork waits 3 s to see that the agent does not carry on by itself
+        // (upstream's default is 1 s).
+        assert_eq!(config.ui.toast.delay_seconds, 3);
         assert_eq!(
             config.ui.toast.herdr.position,
             ToastHerdrPosition::BottomRight

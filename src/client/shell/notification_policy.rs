@@ -133,6 +133,13 @@ impl ClientShellState {
                 self.promote_queued_notification(now);
             }
         }
+        // A finished turn asks nothing: by default it only leaves a quiet row
+        // in the history list (the server records it) and the unread dot, with
+        // no sound, toast or system notification.
+        if event.kind == SemanticNotificationKind::Finished && !self.config.toast_alert_on_finished
+        {
+            return (Vec::new(), cleared_visible);
+        }
         // Completion evidence is advisory. A Finished effect is valid only while the
         // client-projected pane remains Done, even when delivery is immediate.
         let validate_state = delay > 0 || event.kind == SemanticNotificationKind::Finished;

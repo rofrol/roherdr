@@ -805,10 +805,7 @@ impl ClientShellState {
                 let rows = self
                     .notification_log_rows()
                     .map(|entry| {
-                        let text = match entry.body.as_deref() {
-                            Some(body) => format!("{} · {body}", entry.title),
-                            None => entry.title.clone(),
-                        };
+                        let text = self.notification_row_text(entry);
                         (
                             super::notification_log::notification_time(entry.unix_ms, now, offset),
                             text,

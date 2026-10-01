@@ -52,6 +52,35 @@ impl HeadlessServer {
         else {
             return false;
         };
+        let Some(agent_label) = agent_label.or(previous_agent_label) else {
+            return false;
+        };
+        // With a delay the notification goes out later, once the delay has run
+        // out and the pane is still in this state (see
+        // `forward_agent_notification_delivery`): a burst of changes that the
+        // agent undoes within the delay reaches no client and no history.
+        if self.app.state.toast_config.delay_seconds != 0 {
+            return false;
+        }
+        self.send_semantic_agent_notification(
+            ws_idx,
+            pane_id,
+            kind,
+            agent_label.to_owned(),
+            known_agent,
+        )
+    }
+
+    /// The semantic notification for a client shell, which also enters the
+    /// history list.
+    pub(super) fn send_semantic_agent_notification(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        kind: crate::app::state::ToastKind,
+        agent_label: String,
+        known_agent: Option<crate::detect::Agent>,
+    ) -> bool {
         let Some(workspace) = self.app.state.workspaces.get(ws_idx) else {
             return false;
         };
@@ -62,9 +91,6 @@ impl HeadlessServer {
             return false;
         };
         let Some(public_pane_id) = self.app.public_pane_id(ws_idx, pane_id) else {
-            return false;
-        };
-        let Some(agent_label) = agent_label.or(previous_agent_label) else {
             return false;
         };
         let (semantic_kind, event_text, sound) = match kind {
@@ -177,6 +203,30 @@ impl HeadlessServer {
         &mut self,
         delivery: &crate::app::state::AgentNotificationDelivery,
     ) {
+        // The delayed counterpart of `forward_semantic_agent_transition`: the
+        // delay ran out with the pane still in the state, so tell the client
+        // shells (and the history).
+        if let Some(ws_idx) = self
+            .app
+            .state
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == delivery.workspace_id)
+        {
+            self.send_semantic_agent_notification(
+                ws_idx,
+                delivery.pane_id,
+                delivery.kind,
+                delivery.agent_label.clone(),
+                delivery.known_agent,
+            );
+        }
+        // A quiet finished turn stops at the history row recorded above.
+        if delivery.kind == crate::app::state::ToastKind::Finished
+            && !self.app.state.toast_config.alert_on_finished
+        {
+            return;
+        }
         if let Some(sound) = delivery.sound {
             self.send_notify_to_foreground_client(
                 protocol::NotifyKind::Sound,
@@ -803,6 +853,26 @@ impl HeadlessServer {
             .map_or(0, |elapsed| {
                 elapsed.as_millis().min(u128::from(u64::MAX)) as u64
             });
+        let task = notification
+            .pane_id
+            .as_deref()
+            .and_then(|pane_id| self.notification_task(pane_id, notification.agent.as_deref()));
+        // The pane's latest entry of the same kind is the same story told
+        // again: it gives way to this one, which counts it.
+        let mut repeats = None;
+        if let Some(pane_id) = notification.pane_id.as_deref() {
+            if let Some(at) = self
+                .notification_history
+                .iter()
+                .rposition(|record| record.pane_id.as_deref() == Some(pane_id))
+            {
+                if self.notification_history[at].kind == kind {
+                    if let Some(older) = self.notification_history.remove(at) {
+                        repeats = Some(older.repeats.unwrap_or(1).saturating_add(1));
+                    }
+                }
+            }
+        }
         if self.notification_history.len() >= NOTIFICATION_HISTORY_LEN {
             self.notification_history.pop_front();
         }
@@ -817,7 +887,65 @@ impl HeadlessServer {
                 workspace_id: notification.workspace_id.clone(),
                 tab_id: notification.tab_id.clone(),
                 pane_id: notification.pane_id.clone(),
+                task,
+                repeats,
             });
         self.next_notification_id += 1;
     }
+
+    /// The pane's task for a history row: its terminal title now, when that
+    /// says something.
+    fn notification_task(&self, public_pane_id: &str, agent: Option<&str>) -> Option<String> {
+        let (ws_idx, pane_id) = self.app.parse_pane_id(public_pane_id)?;
+        let terminal_id = self
+            .app
+            .state
+            .workspaces
+            .get(ws_idx)?
+            .terminal_id(pane_id)?;
+        let title = self
+            .app
+            .state
+            .terminals
+            .get(terminal_id)?
+            .terminal_title_stripped()?;
+        clean_notification_task(&title, agent)
+    }
+}
+
+/// One line of at most 80 characters, or none for a title that names no
+/// task: empty, a shell or agent name, or a path.
+pub(super) fn clean_notification_task(title: &str, agent: Option<&str>) -> Option<String> {
+    let line = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lower = line.to_lowercase();
+    let generic = line.is_empty()
+        || line.starts_with(['/', '~'])
+        || agent.is_some_and(|agent| lower == agent.to_lowercase())
+        || matches!(
+            lower.as_str(),
+            "zsh"
+                | "bash"
+                | "fish"
+                | "sh"
+                | "claude"
+                | "claude code"
+                | "pi"
+                | "π"
+                | "codex"
+                | "agy"
+        );
+    if generic {
+        return None;
+    }
+    Some(if line.chars().count() > 80 {
+        format!("{}…", line.chars().take(79).collect::<String>())
+    } else {
+        line
+    })
 }

@@ -1473,11 +1473,18 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Use 1/15 populated panes with and without metadata and interleaved
     baseline/candidate samples before attributing any cost to the footer.
     Optimise only if repeatable measurements justify it.
-- [ ] Push the fork's pending commits after explicit user approval.
+- [x] Push the fork's pending commits after explicit user approval. (approved and pushed 2026-10-01, see the last bullet)
   - Fetch and refresh the ahead/behind comparison first; the earlier count
     of 52 unpushed commits is stale. Review the outgoing changes, follow
     the rebase-only fork sync rules in AGENTS.md, and never merge upstream
     into master. Do not push or rewrite remote history without approval.
+  - Done 2026-10-01 ("tak na wszystko"): master was 32 commits ahead of
+    `origin/master` and `origin/master` was its ancestor, so a plain
+    fast-forward `git push origin master` was enough (no force). Upstream is
+    47 commits ahead of the fork (312 fork commits on top): not synced; the
+    rebase onto `upstream/master` is its own step with its own check. The
+    user also approved a standing rule for that rebase and force-push, now in
+    AGENTS.md (relayed by another session).
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
   ends with new commits, list them as "to review" until I acknowledge them.
   - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
@@ -2452,6 +2459,279 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   release path clears it) and the changed click path for tab lines (no
   evidence). Not fixed: the filter's Up/Down order ignores the held sort
   order (minor). DeepSeek's answer came back empty.
+
+- [ ] The notification history does not say what the agent asks (user,
+  2026-10-01, screenshot `Screenshot 2026-10-01 at 14.19.39.png`): rows read
+  `14:18 claude needs attention · email-assistant · 2 …` and `14:19 claude
+  finished · email-assistant · 2 · 3`. The `2` is the workspace's position and
+  the `3` an auto tab number, neither means anything to the user, and the task
+  and the request never appear (the 56-column panel cuts the rest).
+  - How it is built today: title `<agent> needs attention|finished`, body (the
+    context) `<workspace> · <position> · <tab label if the workspace has
+    several tabs>` (`notification_context`, `src/app/actions.rs`); the record
+    has agent, workspace/tab/pane ids, kind and time but no task. macOS system
+    notifications already use the agent's terminal title as their message.
+  - Consulted DeepSeek, Opus 5.5, GPT sol 6.1 and Gemini high 2026-10-01 (all
+    four agree): row `time ? task · request` (`14:18 ? Fix IMAP retry loop ·
+    Allow Bash: npm test`, `14:19 ✓ Fix IMAP retry loop`); add two optional
+    fields to `NotificationRecord`, `task` (the terminal title captured when
+    the notification fires, not the current one; treat `zsh`, a bare path or
+    the agent name as none) and `request` (the agent's own message with the
+    blocked state: Claude Code's notification hook message, Pi's reported
+    message), both sanitised (no escapes or control characters, one line,
+    about 80 and 160 characters) and optional so old clients ignore them
+    (frozen generation-1 contract); no screen scraping (fragile, can copy
+    secrets); drop the workspace position and auto tab numbers; keep one line
+    per row (15 rows) and show the highlighted row's full task, request,
+    agent, workspace and a meaningful tab label in a detail footer; truncate
+    the workspace first, keep the request visible; fall back to `Input
+    needed; open pane` when there is no request, never invent one.
+  - Tests: old JSON without the fields; sanitising; useless titles; 56 / 40 /
+    20 columns with CJK and emoji; every kind; `task` is a snapshot at
+    notification time; auto tab numbers hidden; a click still jumps to the
+    right pane; the 100-entry bound.
+  - Done 2026-10-01: nothing yet (scoping the change in the server first).
+
+- [ ] Too many notifications while the agent keeps working (user, 2026-10-01,
+  screenshot of the history: `14:19 claude finished` and `14:19 claude needs
+  attention` for the same pane): "what do I need this notification for, if
+  the agent keeps working anyway?" For one Claude Code pane the history shows
+  finished / needs attention / finished / needs attention x2 / finished within
+  two minutes.
+  - Cause (from the code, not reproduced): the in-app toast path waits
+    `ui.toast.delay_seconds` (default 1 s) and notifies only if the pane is
+    still in the same state (`pending_agent_notifications`), but the path that
+    feeds client shells, the history list, system notifications and sounds
+    (`forward_semantic_agent_transition`, `src/server/headless/notifications.rs`)
+    sends and records at the transition itself, with no delay and no same-state
+    check, and does not dedupe repeats.
+  - Consulted DeepSeek, Opus 5.5, GPT sol 6.1 and Gemini high 2026-10-01; they
+    agree on: one eligibility policy before every channel (history, shell,
+    system notification, sound, toast), one pending notification per pane that
+    any state change replaces and a return to `working` cancels; a settle delay
+    (needs attention 3-5 s, awaiting reply 1-2 s, idle/turn ended 10-30 s);
+    dedupe a repeated needs-attention for the pane until the user interacts or
+    the agent worked for about 5 s; suppress when the pane is visible and the
+    client focused (not merely the active tab); history keeps only delivered
+    notifications (superseded ones, if kept at all, in a separate diagnostic
+    log); name the kinds honestly: "Reply needed" (awaiting reply), "Needs
+    approval" (blocked), "Turn ended" (idle after a turn), and keep "Finished"
+    for a trustworthy end (process exit, explicit completion); positively named
+    options (`attention_delay_seconds`, `reply_delay_seconds`,
+    `idle_delay_seconds`, `notify_while_viewing`, ...); the existing
+    `ui.toast.delay_seconds` stays as an alias.
+  - Tests (fake clock, a pure `NotificationPolicy` state machine): the user's
+    14:17-14:19 sequence yields at most one notification; blocked then working
+    after 1 s yields none and no history row; a blocked state held 4 s yields
+    one; a repeat without interaction yields none; interaction rearms; awaiting
+    reply is immediate; focus and visibility suppress; panes are independent;
+    toast, shell and history get the same stream.
+  - Done 2026-10-01 (committed, not installed; `just check` passes): the
+    delay now applies to the semantic path as well: the client-shell
+    notification and the history row are sent when the delay has run out and
+    the pane is still in the same state (`forward_agent_notification_delivery`),
+    so `blocked` then `working` within the delay leaves no notification and no
+    history row. One wait for every kind, `delay_seconds`, default 3 (upstream
+    1); `delay_seconds = 0` is still instant. (A separate
+    `finished_delay_seconds` was added and removed the same day: the user did
+    not understand two numbers, and the models say to have one internal
+    stability check.) Test:
+    `a_notification_the_agent_undoes_within_the_delay_reaches_nobody_...`. Not
+    done from the list: dedupe of a repeated needs-attention until the user
+    interacts, suppression by pane visibility plus client focus (still by
+    active tab), honest kind names ("Reply needed", "Needs approval", "Turn
+    ended"), the diagnostic log.
+  - The user's question (2026-10-01): "I do not understand the 3 s / 10 s logic.
+    Is it that something needs my attention, or that something finished but
+    does not need me?" Consulted DeepSeek, Opus, GPT and Gemini: they agree on
+    a model of three words: Needs you (a permission/approval prompt, an
+    awaiting-reply question or a failure: one category, alert and keep the row
+    until answered), Done (a turn or task ended without a question: quiet,
+    history and a dot, no system notification or sound while the user is at the
+    computer), Error (immediate). A turn that ends with a question is only
+    Needs you, never a Finished/Needs-attention pair. Merge blocked and
+    awaiting-reply. One internal ~3 s stability check, not a setting (if
+    shown: "Only alert if it still waits for me after 3 seconds"). History:
+    one row per agent episode, updated in place; a "Needs me" filter on top.
+    Open decision for the user: should "finished" alert at all?
+    Related: the entry above about what the history rows say.
+
+- [ ] A sound but no notification for an approval prompt (user, 2026-10-01,
+  screenshot): a Claude Code permission prompt ("This command requires
+  approval", 1 Yes / 2 Yes and don't ask again / 3 No) appeared in the tab
+  that was displayed; the sound played, nothing was shown.
+  - Cause (client notification policy, `src/client/shell/notification_policy.rs`,
+    read in the code and confirmed by the server's history, which recorded
+    `needs_attention` for that pane at 14:43:56 and 14:44:58): with
+    `delivery = "system"` and the Herdr window focused, `herdr_toast` is
+    true, and a target tab that is the focused tab counts as "looking at it"
+    (`target_active`): neither Herdr's toast (`herdr_toast && !target_active`)
+    nor the system one (`!suppress_external`) is shown, while the needs-attention
+    sound still plays (only Finished sounds are suppressed). By design, but the
+    result is a phantom ping.
+  - Consulted DeepSeek, Opus 5.5, GPT sol 6.1 and Gemini high 2026-10-01: all
+    four say sound without a visible cue is wrong; focused tab is not focused
+    pane is not a user looking; suppress the system toast (it would cover the
+    window) but show a compact in-window cue: a Herdr toast or chip ("Claude
+    needs approval · tab/pane", click to go there) plus a persistent mark on the
+    sidebar row until answered; one alert per episode, no repeated toast or
+    chime for a repeated needs-attention. Disagreement on whether recent input
+    in that pane (15-30 s) should suppress the toast: DeepSeek, Opus and
+    Gemini yes, GPT no (input is not proof it was seen).
+  - The user's answer (2026-10-01): the toast need not appear when the tab
+    is the active one, but the notification should appear at the top of the
+    notification list (the `✉` dropdown). I tried a Herdr toast for the active
+    tab and took it out again. What the list does today: the server records
+    the `needs_attention` (14:43:56 and 14:44:58 are in `notification.list`),
+    the dropdown fetches the list when it opens and shows the newest first, but
+    the `✉` badge counts only tabs that are not shown (`notification_log_
+    received`), so a question in the displayed tab raises no count, and
+    nothing marks the row. Open: make the row stand out (an unread mark and
+    the badge count until the prompt is answered or the tab's state changes),
+    and say in the row what it is (see the next entry).
+  - Not done: the persistent row mark in the sidebar, the input-recency rule,
+    deduping repeats per episode.
+- [ ] History rows for a repeated notification from one session (user,
+  2026-10-01, screenshot: `14:42`, `14:39`, `14:38 claude finished · ~ · 7 · 4`):
+  "I cannot see WHAT this claude finished", and "shouldn't a new notification
+  from the same session clear the previous ones?"
+  - Today the client already replaces a pending, queued or visible toast of
+    the same pane when a new one arrives (`receive_notification`), but the
+    server's history list keeps every record.
+  - Consulted DeepSeek, Opus, GPT and Gemini 2026-10-01: merge, do not append:
+    key by pane; a new unread event of the same kind replaces the older unread
+    row (newest time, a counter `x3`, first time kept); a seen row stays as it
+    was and the new event starts a fresh unread row; a different kind stays
+    separate (a finished must never hide an unanswered needs-attention);
+    needs-attention that was answered is marked resolved/greyed; the unread
+    badge counts tabs with unread rows, not rows. Row text: `time mark task ·
+    agent · cwd@branch · duration x3` from a snapshot taken when the event
+    fires (terminal title, treating generic titles like `claude` as none), with
+    the fallback agent summary, then `basename(cwd)@branch`, then cwd (`~`); no
+    workspace position or auto tab number. Closed pane: keep the row, note it,
+    click opens the tab or says so. Memory only. Tests as in the two entries
+    above.
+  - The user's rule (2026-10-01): in the displayed tab, seeing the agent's
+    question, no toast is needed; but a sound from an inactive tab without a
+    list entry is wrong. Consulted again: every sound, toast or system
+    notification must have a matching list entry (one-way: an entry may exist
+    without an alert); a needs-attention in the active tab is recorded too
+    and counts as read at once (no badge); a finished in the active, focused
+    tab makes no alert and so no entry. With the delayed path the entry is
+    created exactly when the alert is delivered (`forward_agent_notification_
+    delivery`), which keeps that invariant; the installed build still records
+    at the state change.
+  - Done 2026-10-01 (committed, not installed): `NotificationRecord` has two
+    optional fields, `task` (the pane's cleaned terminal title when it fired;
+    none for a shell or agent name, a path or an empty title; one line, 80
+    characters) and `repeats`; a pane's newest entry of the same kind gives way
+    to a new one that counts it (`x3`), a different kind stays separate; rows
+    read `✓ Fix the login test · claude · herdr x3` (`?` for needs attention),
+    without the workspace position or the tab number
+    (`notification_row_text`); the generated API schema is updated. Not done:
+    the `request` field (the agent's own message), the detail footer for the
+    highlighted row, marking a row read or resolved in place, the badge rule for
+    merged rows, a closed-pane note.
+  - Done 2026-10-01 (second part): the list shows the highlighted row's whole
+    text, wrapped to at most 3 lines, under a rule below the rows
+    (`wrap_detail` in overlays.rs). Still not done: the `request` field.
+
+- [x] A close confirmation when nothing is happening (user, 2026-10-01,
+  screenshot): closing the tab "ask gemini 3.8-flash-low: Des…" asked `Close
+  tab with running work? … stops: agy idle in ask gemini …`; the job had
+  finished and the agent was idle. "Why does it ask me when nothing is going
+  on?"
+  - Cause: `close_impact::pane_work` counted a pane's agent in every state
+    (a deliberate comment: an idle agent loses a draft, background tasks and
+    its place), also in a finished job's tab.
+  - Consulted DeepSeek, Opus, GPT and Gemini 2026-10-01 (unanimous): ask only
+    when a close would lose something: a turn in progress, an approval
+    waiting, background tasks, a question the user has yet to answer, a
+    running job or program, an unknown state (to be safe); an idle or done
+    agent with none of them is not worth a question; an agent in a finished
+    job's tab is the one-shot command's leftover (it counts only if working,
+    blocked or with background tasks, and an unknown state does not count
+    there); uncommitted files survive a close, so they are no reason. They
+    also suggest a `confirm_close = work | always | never` setting (the config
+    already has `confirm_close` and `confirm_close_running`) and dialog lines
+    that name the loss instead of the tab title.
+  - Done 2026-10-01 (committed, not installed): the rules above in
+    `close_impact.rs`; an agent that is idle with `awaiting_reply` reads
+    `waiting for a reply`. Not done: the dialog wording.
+
+- [ ] "What do I do with this update?" (user, 2026-10-01, screenshot): Claude
+  Code shows `✓ Update installed · Restart to update` under its input box.
+  - What it is: Claude Code updated its own binary in the background; the
+    running session keeps the old version until it is restarted. Nothing is
+    lost by waiting (the old version runs on); restarting picks up fixes and
+    features, costs the process state (background tasks, an unsent draft) and
+    a warm prompt cache, and the conversation comes back with `claude
+    --resume <id>`.
+  - What to do now (consulted DeepSeek, Opus, GPT and Gemini 2026-10-01, all
+    agree): finish the current exchange, then, with the agent idle and the
+    input box empty, run the `restart` plugin's menu action "Restart agent in
+    this pane" (or "Restart idle agents in this workspace" for several); it
+    sends SIGTERM, waits for the shell and runs the same command line again
+    with `--resume <id>`, skipping working or blocked agents and a pane with
+    unsent text. It is not urgent.
+  - What Herdr should do (this extends the "Restart agents..." entry): detect
+    the pending update from the version, not the screen text: record `claude
+    --version` when the pane starts and compare it with the binary on disk
+    (re-check when the file's mtime or the symlink target changes); use the
+    "Update installed" text only as a hint to verify; no Claude hook reports an
+    update. Default: a quiet "update pending" mark on the pane and its sidebar
+    row plus a one-click restart and a preview/picker for a workspace; cleared
+    only after the new version is confirmed. Automatic restart of idle agents
+    is opt-in, never the default. Batches: one pane at a time, re-check
+    "idle, empty input, not focused, no key in the last ~5 s" just before each
+    SIGTERM, keep the exact argv, cwd and environment, replace conflicting
+    resume arguments, never replay a prompt, stop the batch on the first
+    failure and keep the pane, its scrollback and the session id; if resume
+    fails, never start a fresh session silently.
+  - Tests: version bump and mtime or symlink change set the mark, the same
+    version does not; busy, blocked, draft and typing panes are skipped; the
+    state changing between the check and the SIGTERM; flags survive; an
+    unknown session id is an error, not a new session; a 10-pane batch runs
+    in order and stops at the first failure.
+  - Done: nothing yet (the plugin's stage 1 exists).
+
+- [x] A finished turn is quiet by default (user, 2026-10-01, "Cicho: wiersz w
+  liście + kropka"): `claude finished` for a tab you are not looking at no
+  longer plays a sound or shows a toast or system notification; it adds the
+  quiet row to the notification list and the unread dot. New option
+  `ui.toast.alert_on_finished` (default `false`) restores the alert. A question
+  or approval (needs attention) is unaffected. Done 2026-10-01 (client drops
+  the effects in `receive_notification`; server skips its sound and toast in
+  `forward_agent_notification_delivery`; history still records it).
+
+- [ ] Compact the fork's history before the upstream rebase (user,
+  2026-10-01: "maybe compact the history so rebases are easier? we went one
+  way, then another, and then conflicts"). State: 315 fork commits (132 docs/
+  notes, 113 feat, 59 fix) on a base 47 upstream commits behind; `git
+  merge-tree` shows 14 conflicting files; the hot ones (`state.rs`, `mouse.rs`,
+  `sidebar.rs`) were rewritten by 35-44 fork commits each, upstream touched
+  them 1-2 times; a per-commit rebase would stop on the same hunks again and
+  again.
+  - Consulted DeepSeek, Opus and GPT 2026-10-01 (all agree): do not resolve
+    315 commits one by one and do not squash into one commit; compact to ~15-25
+    dependency-ordered feature commits (docs/TODO notes folded into the feature
+    or one trailing `docs: fork notes`), then rebase those on `upstream/master`
+    (each conflicting hunk is resolved once). Opus's way: `git reset --mixed
+    <merge-base>` and re-commit from the final tree with `git add -p`, so the
+    wandering (feature, change, revert) never replays; the check is that `git
+    diff <backup> HEAD` is empty before the rebase. Safety: tag the old master
+    (`archive/pre-sync-20261001`) and push the tag, `git config rerere.enabled
+    true`, push with an explicit lease `--force-with-lease=refs/heads/master:
+    <SHA of origin/master>`, tests before the push, other clones `git fetch &&
+    git reset --hard origin/master`. Cost: bisecting inside a feature is lost
+    (the archive tag keeps the old history); SHAs quoted in notes stop being on
+    master.
+  - Going forward: sync weekly and at once when upstream touches a hot file;
+    fix an existing feature with `git commit --fixup=<sha>` and `rebase -i
+    --autosquash` before each sync; send generic features upstream so the
+    permanent delta shrinks.
+  - Done: nothing yet; waiting for the user's go (it rewrites `master`, and
+    other sessions commit there).
 
 - [ ] The flaky `federated_client_starts_without_local_and_survives_its_restart`
   fails more often now (2026-10-01): three full `just check` runs in a row

@@ -1270,8 +1270,14 @@
         {
           "key": "ui.toast.delay_seconds",
           "type": "integer",
-          "default": "1",
+          "default": "3",
           "description": "Seconds to wait before sending finished or needs-input agent notifications. Herdr notifies only if the pane is still in the same state when the delay expires. 0 is instant; valid values are 0 through 3600."
+        },
+        {
+          "key": "ui.toast.alert_on_finished",
+          "type": "boolean",
+          "default": "false",
+          "description": "Also play a sound and show a toast or system notification when an agent finishes a turn without asking anything. Off: a finished turn only adds a quiet row to the notification list and the unread dot; needs-attention notifications are unaffected."
         },
         {
           "key": "ui.toast.herdr.position",
