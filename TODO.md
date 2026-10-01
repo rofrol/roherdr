@@ -40,6 +40,37 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
+  of this very session: the tab showed the idle green ring after a turn that
+  ended "Install this build, push the commits, or fix the flaky test first?").
+  Cause, verified: the `?` mark comes only from the agent running `herdr agent
+  awaiting-reply` as the last command of its turn (the hook reminder asks for
+  it); the agent in that turn did not run it. Nothing in herdr infers a
+  question. Consulted DeepSeek, Opus and GPT; they agree the explicit command
+  stays authoritative and that screen scraping is out; they differ on the
+  fallback:
+  - DeepSeek: a Claude Code `Stop` hook reads `last_assistant_message`
+    (or `transcript_path`), strips code, quotes and URLs, and when the final
+    paragraph is a direct question and nothing was reported it either marks
+    the pane itself with a high-confidence rule or, if ambiguous, blocks the
+    stop once (`stop_hook_active` false) with "if you are waiting for the user,
+    run `herdr agent awaiting-reply`".
+  - Opus: only the blocking reminder (the agent decides; no inference, no
+    model calls); a false alarm costs one short extra turn and sets no mark.
+  - GPT: the hook marks the pane itself as an inferred state (`source =
+    stop-heuristic`, with the matched evidence), conservative bilingual rules
+    (a direct request for a choice, confirmation or information, not just a
+    `?`), ambiguous means idle; no blocking, because it restarts the agent for
+    bookkeeping.
+  - Common: per-turn generation so a stale report cannot stick; clear on
+    `UserPromptSubmit`, typing, the next tool use or turn; run in shadow mode
+    first (log the would-be marks next to the real reports), then enable per
+    integration behind a flag; fixtures in English and Polish with code,
+    quotes, rhetorical questions, "let me know if", lists of options, and the
+    reported sentence as a positive case.
+  - Decision needed from the user: marking by inference (DeepSeek/GPT), the
+    blocking reminder (Opus), or both. Done: nothing yet.
+
 - [x] Bookmark rows and popups (user, 2026-10-01, three screenshots): (1) the
   bookmark list showed "1 · job-seeker" and "2 · herdr" where the sidebar says
   "Job search automation": "why a tab number or name when there is a task
