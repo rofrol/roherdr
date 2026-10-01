@@ -1649,11 +1649,11 @@ fn working_and_job_glyphs_turn_with_the_clock_and_stand_still_when_animations_ar
         frame_rows(&frame)[state.hits.space_tabs[0].0.y as usize].clone()
     };
     let first = row(&mut state);
-    assert!(first.contains("◐  agent tab"), "{first}");
+    assert!(first.contains("◐ ▌agent tab"), "{first}");
     // 160 ms later the working circle has turned once, the job's has not.
     assert!(state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(170)));
     let second = row(&mut state);
-    assert!(second.contains("◓  agent tab"), "{second}");
+    assert!(second.contains("◓ ▌agent tab"), "{second}");
     assert!(
         second.contains("◐ 1"),
         "the job loop is still on its first frame: {second}"
@@ -1664,7 +1664,7 @@ fn working_and_job_glyphs_turn_with_the_clock_and_stand_still_when_animations_ar
     state.config.animations = false;
     let still = row(&mut state);
     assert!(
-        still.contains("◐  agent tab") && still.contains("◑ 1"),
+        still.contains("◐ ▌agent tab") && still.contains("◑ 1"),
         "{still}"
     );
     assert!(!state.motion_active);
@@ -2279,4 +2279,89 @@ fn the_header_hides_indicators_for_zero_and_keeps_clear_of_the_sort_buttons() {
             "{rect:?} vs {sort_right}"
         );
     }
+}
+
+#[test]
+fn one_wheel_event_scrolls_the_spaces_list_by_one_row() {
+    let mut state = state_with_tabs(true);
+    for index in 0..60 {
+        with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
+    }
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    let body = state.hits.workspace_body;
+    assert!(state.hits.workspace_max_scroll >= 3);
+    let wheel = |state: &mut ClientShellState, kind| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column: body.x + 2,
+            row: body.y + 1,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    };
+    wheel(&mut state, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(state.workspace_scroll, 1);
+    wheel(&mut state, crossterm::event::MouseEventKind::ScrollDown);
+    wheel(&mut state, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(state.workspace_scroll, 3);
+    wheel(&mut state, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(state.workspace_scroll, 2);
+}
+
+#[test]
+fn a_space_name_row_is_a_band_and_the_focused_active_tab_has_a_bar() {
+    let mut state = state_with_tabs(true);
+    let frame = state.compose(106, 30).unwrap();
+    let palette = state.config.palette.clone();
+    let name_row = state.hits.workspaces[0].rect;
+    let cell = |x: u16, y: u16| &frame.cells[y as usize * frame.width as usize + x as usize];
+    let band = cell(name_row.x + 12, name_row.y).bg;
+    let panel = crate::protocol::color_to_u32(palette.panel_bg);
+    assert_ne!(band, panel, "the focused space's name row is a band");
+    // The focused space's band is tinted with the accent (a fifth on a
+    // light background, a quarter on a dark one).
+    let tints = [5, 4].map(|total| {
+        crate::protocol::color_to_u32(
+            crate::client::shell::render::tabs::blend(palette.accent, palette.panel_bg, 1, total)
+                .unwrap_or(palette.accent),
+        )
+    });
+    assert!(tints.contains(&band), "{band} not in {tints:?}");
+    // The branch row under the name stays on the panel background.
+    let line = state.hits.space_tabs[0].0;
+    assert_eq!(cell(line.x + 20, line.y).symbol, " ");
+    // The active tab's line starts with the accent bar in its fill.
+    let bar = frame_rows(&frame)[line.y as usize].contains('▌');
+    assert!(bar, "{:?}", frame_rows(&frame)[line.y as usize]);
+}
+
+#[test]
+fn the_working_list_includes_an_agent_that_waits_on_a_running_job() {
+    use crate::api::schema::AgentStatus::{Done, Idle, Working};
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    // The purple icon in the sidebar: an idle agent whose child tab runs.
+    let mut job = projected.tabs[0].clone();
+    job.tab_id = "job_9".into();
+    job.parent_tab_id = Some("tab_1".into());
+    job.status = Some(TabStatus::Running);
+    projected.tabs.push(job);
+    projected.agents = vec![
+        header_agent("pane_1", Idle, false, "Session import"),
+        header_agent("p2", Working, false, "Claude Code"),
+        header_agent("p3", Done, false, "finished, no job"),
+    ];
+    projected.agents[1].tab_id = "tab_2".into();
+    projected.agents[2].tab_id = "tab_3".into();
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(state.agent_indicator_counts(), (2, 0));
+    state.compose(106, 30).unwrap();
+    let working = state.hits.working_list_button;
+    left_click(&mut state, (working.x + 1, working.y));
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Session import"), "{text}");
+    assert!(text.contains("Claude Code"), "{text}");
+    assert!(!text.contains("finished, no job"), "{text}");
 }

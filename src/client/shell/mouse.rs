@@ -138,9 +138,11 @@ impl ClientShellState {
         false
     }
 
-    /// How far one wheel step moves the spaces list, which scrolls by rows.
+    /// How far one wheel event moves the spaces list, which scrolls by rows:
+    /// one row, like the agents panel. The terminal already multiplies the
+    /// events of a fast wheel or a trackpad flick.
     fn workspace_wheel_step(&self) -> usize {
-        3
+        1
     }
 
     /// A closed job's blank slot, held while the pointer is over the list:

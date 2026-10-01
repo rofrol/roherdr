@@ -2,6 +2,54 @@
 
 ## Next, in order
 
+- [x] Bug (reported 2026-10-01 16:48 through another session, screenshot
+  `~/.local/share/herdr-bug-reports/2026-10-01-working-agents-dropdown.png`):
+  three agents look like they work in the sidebar but the new `◐` list showed
+  two. The missing one had the purple icon: an agent that is idle or done
+  while a child job tab it started still runs (the "waits on a job" mark),
+  and the indicator counted only `status == Working`.
+  - Consulted GPT sol and DeepSeek (agree): the count and the list must use
+    the sidebar's own predicate, `(Working or waits-on-job) and not asking`,
+    one row per agent, a job waiter marked `waits on a job` in the row.
+  - Done 2026-10-01 (committed, not installed): `agent_is_working` uses
+    `agent_mark`, the function that draws the icon, so they cannot drift;
+    test `the_working_list_includes_an_agent_that_waits_on_a_running_job`.
+    Not done: a mauve glyph in the list rows, an audit of other
+    working-looking states (`bg` tokens, orphan jobs).
+
+- [x] Spaces are hard to tell apart and the focused tab is too faint (user,
+  2026-10-01, screenshot of the light theme: "I lose where a space starts and
+  where it ends", "the light blue highlight of the active tab is too faint").
+  Consulted DeepSeek, Opus and GPT; all three: a header band beats a rule or
+  blank row (no extra rows), the focused tab needs an accent bar plus a
+  stronger tint, not a solid fill (the job counts must stay readable).
+  - Done 2026-10-01: a space's name row is a band (the text colour over the
+    panel, a fifth on light and a sixth on dark themes; the focused space's
+    band is tinted with the accent, a fifth or a quarter); the branch row stays
+    plain; the focused active tab's fill is a third (light) or a half (dark)
+    accent instead of a sixth or a third, with an accent bar `▌` in the fill's
+    first column. Tests: `a_space_name_row_is_a_band_and_the_focused_active_
+    tab_has_a_bar`. Not done: contrast ratios checked in tests, a monochrome
+    or 256-colour fallback for the bar and band (they need RGB; other palettes
+    keep the old look), the exact shades are untested on a real screen.
+
+- [x] Wheel scrolling in the spaces list moves one row per event (user,
+  2026-10-01), like the agents panel; it was three. Consulted DeepSeek, Opus
+  and GPT (agree: one row per event, a fixed constant, no config option,
+  keyboard and scrollbar drag untouched). Done: `workspace_wheel_step` is 1;
+  test `one_wheel_event_scrolls_the_spaces_list_by_one_row`.
+
+- [ ] Scroll direction and speed per operating system (user, 2026-10-01: "is
+  scrolling in herdr (spaces, the main screen of a Claude instance, etc.)
+  natural like macOS or like Windows? It should not be configured; defaults
+  by operating system? Ask the models."). Third item to do. To investigate:
+  what herdr does with wheel events in every surface (spaces list, agents
+  panel, panes, overlays, tab bar), what the terminals send on macOS (natural
+  scrolling is applied by the OS before the terminal, so the direction is
+  already right) and on Windows and Linux, whether the step (rows per event)
+  should differ by platform, and whether a config option is needed at all.
+  Done: nothing yet.
+
 - Deferred Herdr behavior-context integrations: Pi and Claude Code are
   already implemented. The checkboxes below select future implementation
   scope, NOT completion status. All remaining agents start unchecked.

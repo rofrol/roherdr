@@ -1489,6 +1489,28 @@ pub(in crate::client::shell) fn render_workspace_rows(
         );
     }
 
+    // With vertical tabs the space's name row is a band, so a space is seen
+    // where it starts: a neutral grey, tinted with the accent for the
+    // focused space. The branch row under it stays on the panel background.
+    if vertical_tabs && grabbed.is_none() && !selected && area.height > 0 {
+        let dark = matches!(palette.panel_bg, ratatui::style::Color::Rgb(r, g, b)
+            if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) < 128_000);
+        let band = if focused {
+            super::tabs::blend(
+                palette.accent,
+                palette.panel_bg,
+                1,
+                if dark { 4 } else { 5 },
+            )
+        } else {
+            super::tabs::blend(palette.text, palette.panel_bg, 1, if dark { 6 } else { 5 })
+        };
+        if let Some(band) = band {
+            for x in area.x..area.right() {
+                buffer[(x, area.y)].set_bg(band);
+            }
+        }
+    }
     let drag_background = grabbed.and_then(|(_, background)| background);
     let background = if drag_background.is_some() {
         drag_background

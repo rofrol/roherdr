@@ -170,6 +170,17 @@ impl ClientShellState {
         agent.agent_status == crate::api::schema::AgentStatus::Blocked || agent.awaiting_reply
     }
 
+    /// Working as the sidebar shows it: the agent works, or it waits on a
+    /// job it started (the purple icon), unless it asks for the user.
+    fn agent_is_working(
+        snapshot: &crate::protocol::ClientShellSnapshot,
+        agent: &crate::protocol::ClientShellAgent,
+    ) -> bool {
+        !Self::agent_is_asking(agent)
+            && (agent.agent_status == crate::api::schema::AgentStatus::Working
+                || super::agent_mark(snapshot, agent) == super::AgentMark::WaitsOnJob)
+    }
+
     pub(super) fn agent_indicator_counts(&self) -> (usize, usize) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return (0, 0);
@@ -182,10 +193,7 @@ impl ClientShellState {
         let working = snapshot
             .agents
             .iter()
-            .filter(|agent| {
-                agent.agent_status == crate::api::schema::AgentStatus::Working
-                    && !Self::agent_is_asking(agent)
-            })
+            .filter(|agent| Self::agent_is_working(snapshot, agent))
             .count();
         (working, asking)
     }
@@ -199,10 +207,7 @@ impl ClientShellState {
             .iter()
             .filter(|agent| match view {
                 NotificationLogView::Asking => Self::agent_is_asking(agent),
-                _ => {
-                    agent.agent_status == crate::api::schema::AgentStatus::Working
-                        && !Self::agent_is_asking(agent)
-                }
+                _ => Self::agent_is_working(snapshot, agent),
             })
             .take(MAX_ROWS)
             .map(|agent| NotificationRecord {
@@ -219,13 +224,19 @@ impl ClientShellState {
                     .clone()
                     .or(agent.agent.clone())
                     .unwrap_or_default(),
-                body: (view == NotificationLogView::Asking).then(|| {
-                    if agent.agent_status == crate::api::schema::AgentStatus::Blocked {
-                        "approval".to_owned()
-                    } else {
-                        "reply".to_owned()
-                    }
-                }),
+                body: if view == NotificationLogView::Asking {
+                    Some(
+                        if agent.agent_status == crate::api::schema::AgentStatus::Blocked {
+                            "approval".to_owned()
+                        } else {
+                            "reply".to_owned()
+                        },
+                    )
+                } else if agent.agent_status != crate::api::schema::AgentStatus::Working {
+                    Some("waits on a job".to_owned())
+                } else {
+                    None
+                },
                 agent: agent.display_agent.clone().or(agent.agent.clone()),
                 workspace_id: Some(agent.workspace_id.clone()),
                 tab_id: Some(agent.tab_id.clone()),
