@@ -33,6 +33,8 @@ if not os.access(HERDR, os.X_OK):
 TOKEN_TTL_MS = 24 * 60 * 60 * 1000
 EXIT_LOST = 125
 CLOSE_OK_AFTER_S = 10
+# How often a succeeded job whose tab is focused checks whether you left it.
+FOCUSED_POLL_S = 2
 # Keeps the typed `_exec` line out of zsh's history file; the leading space
 # keeps it out of atuin. zsh imports it from the environment.
 HISTORY_IGNORE = "*herdr-job _exec *"
@@ -199,21 +201,29 @@ def close_due(meta, st):
 
 
 def close_job_tab(meta):
-    """Close a succeeded job's tab. A live handoff can leave the server
-    unreachable for a while, so retry with backoff; stop once the tab is gone
-    or no longer this job's. `reconcile_tabs` closes whatever still slips
-    through."""
-    for delay in (0, 1, 2, 4, 8, 15, 30):
+    """Close a succeeded job's tab, but not while it is the focused tab: you
+    are reading it, so it closes once you leave it. A live handoff can leave
+    the server unreachable for a while, so retry with backoff; stop once the
+    tab is gone or no longer this job's. `reconcile_tabs` closes whatever
+    still slips through."""
+    delays = iter((0, 1, 2, 4, 8, 15, 30))
+    delay = next(delays)
+    while delay is not None:
         time.sleep(delay)
         try:
             tabs = {tab["tab_id"]: tab for tab in list_tabs()}
         except (SystemExit, ValueError, KeyError):
+            delay = next(delays, None)
             continue
         owner = job_tabs(tabs).get(meta["tab_id"])
         if not owner or owner[1]["id"] != meta["id"]:
             return
+        if tabs[meta["tab_id"]].get("focused"):
+            delay = FOCUSED_POLL_S
+            continue
         if herdr_ok("tab", "close", meta["tab_id"]):
             return
+        delay = next(delays, None)
 
 
 def reconcile_tabs():
@@ -232,7 +242,8 @@ def reconcile_tabs():
             continue
         if meta.get("tab_status") and tabs[tab_id].get("status") == "running":
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
-        if close_due(meta, st):
+        # A focused tab is being read; its job's own `close_job_tab` waits.
+        if close_due(meta, st) and not tabs[tab_id].get("focused"):
             herdr_ok("tab", "close", tab_id)
 
 

@@ -963,6 +963,53 @@ impl ClientShellState {
                 self.reveal_workspace(&workspace_id);
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
+            KeybindAction::MoveSpacePrevious | KeybindAction::MoveSpaceNext => {
+                // As a drag: the sidebar's own order only (cust sort), and a
+                // space moves with its worktrees, which never move alone.
+                if !self.space_sort.allows_drag() {
+                    return None;
+                }
+                let focused = snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == focused_workspace)?;
+                let linked = |workspace: &crate::protocol::ClientShellWorkspace| {
+                    workspace
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                };
+                let source = if linked(focused) {
+                    let key = &focused.worktree.as_ref()?.key;
+                    snapshot.workspaces.iter().find(|workspace| {
+                        !linked(workspace)
+                            && workspace
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|worktree| worktree.key == *key)
+                    })?
+                } else {
+                    focused
+                };
+                let roots = snapshot
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| !linked(workspace))
+                    .map(|workspace| workspace.workspace_id.as_str())
+                    .collect::<Vec<_>>();
+                let position = roots.iter().position(|id| *id == source.workspace_id)?;
+                let before = if action == KeybindAction::MoveSpacePrevious {
+                    Some(roots.get(position.checked_sub(1)?)?.to_string())
+                } else {
+                    roots.get(position + 1)?;
+                    roots.get(position + 2).map(|id| id.to_string())
+                };
+                let source_id = source.workspace_id.clone();
+                let method = self.workspace_move_method(&source_id, before.as_deref());
+                // Keep the moved space in view once the new order arrives.
+                self.reveal_focused_workspace = true;
+                method
+            }
             KeybindAction::SwitchTab(index) => {
                 // Numbers go to main-row tabs; child tabs are reached from their parent.
                 let tabs = super::tab_groups::main_row_tabs(snapshot);

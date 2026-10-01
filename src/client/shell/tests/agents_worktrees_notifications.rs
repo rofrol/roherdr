@@ -2048,3 +2048,152 @@ fn a_dragged_space_passes_a_neighbour_at_its_middle_and_says_no_change_at_home()
     ));
     assert!(cancelled.requests.is_empty());
 }
+
+#[test]
+fn a_space_dragged_to_the_lists_bottom_row_scrolls_the_list() {
+    let mut projected = snapshot();
+    for index in 2..=12 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 14).expect("more spaces than rows");
+    assert!(state.hits.workspace_max_scroll > 0);
+    let first = state.hits.workspaces[0].rect;
+    let body = state.hits.workspace_body;
+    let mouse = |kind, row| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: first.x + 2,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        first.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        body.bottom() - 1,
+    )]);
+    let (_, _, deadline) = state.space_drag_autoscroll.expect("autoscroll armed");
+    // Nothing moves before the interval, a row each tick after it.
+    assert!(
+        !state
+            .tick_selection_autoscroll(deadline - std::time::Duration::from_millis(1))
+            .repaint
+    );
+    assert_eq!(state.workspace_scroll, 0);
+    assert!(state.tick_selection_autoscroll(deadline).repaint);
+    assert_eq!(state.workspace_scroll, 1);
+
+    // Back inside the list the scrolling stops.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        body.y + 2,
+    )]);
+    assert!(state.space_drag_autoscroll.is_none());
+}
+
+#[test]
+fn the_move_space_keys_move_the_focused_space_one_place() {
+    let mut projected = snapshot();
+    for index in 2..=3 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let moves = |state: &mut ClientShellState, action| {
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(crate::input::KeybindMatch::Action(action), &mut outcome);
+        outcome
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                ClientShellAction::Endpoint { request, .. } => {
+                    Some(format!("{:?}", request.method))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // ws_1 is first: down puts it after ws_2 (before ws_3, insert index 2
+    // in the list before the move), up does nothing.
+    let down = moves(&mut state, crate::input::KeybindAction::MoveSpaceNext);
+    assert_eq!(
+        down,
+        ["WorkspaceMove(WorkspaceMoveParams { workspace_id: \"ws_1\", insert_index: 2 })"]
+    );
+    assert!(moves(&mut state, crate::input::KeybindAction::MoveSpacePrevious).is_empty());
+
+    // Only in the sidebar's own order.
+    state.space_sort = super::super::space_sort::SpaceSort::default()
+        .clicked(super::super::space_sort::SpaceSortKey::Name);
+    assert!(moves(&mut state, crate::input::KeybindAction::MoveSpaceNext).is_empty());
+}
+
+#[test]
+fn a_sorted_list_holds_its_order_while_the_pointer_is_over_it() {
+    let mut projected = snapshot();
+    let mut second = projected.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.number = 2;
+    second.label = "workspace-2".into();
+    second.focused = false;
+    projected.workspaces.push(second);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    // Name, descending: workspace-2 first.
+    state.space_sort = super::super::space_sort::SpaceSort::default()
+        .clicked(super::super::space_sort::SpaceSortKey::Name)
+        .clicked(super::super::space_sort::SpaceSortKey::Name);
+    state.compose(106, 24).expect("sorted");
+    let order = |state: &ClientShellState| {
+        state
+            .hits
+            .workspaces
+            .iter()
+            .map(|hit| hit.workspace_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let before = order(&state);
+    let body = state.hits.workspace_body;
+    let move_to = |state: &mut ClientShellState, (column, row): (u16, u16)| {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        state.compose(106, 24).expect("frame");
+    };
+    move_to(&mut state, (body.x + 2, body.y));
+
+    // A rename would re-sort; under the pointer the order holds.
+    let mut renamed = state.snapshot.as_deref().expect("snapshot").clone();
+    renamed.workspaces[1].label = "a-first".into();
+    state.set_snapshot(Box::new(renamed));
+    state.compose(106, 24).expect("held");
+    assert_eq!(order(&state), before);
+
+    // Leaving the list applies it.
+    let pane = state.hits.panes[0].inner_rect;
+    move_to(&mut state, (pane.x + 1, pane.y));
+    state.compose(106, 24).expect("resorted");
+    assert_ne!(order(&state), before);
+}

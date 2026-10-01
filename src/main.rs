@@ -171,6 +171,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # next_tab = "prefix+n"
 # move_tab_previous = ""   # optional, e.g. "alt+shift+left" moves the tab toward the front
 # move_tab_next = ""       # optional, e.g. "alt+shift+right" moves the tab toward the back
+# move_space_previous = "" # optional, e.g. "alt+shift+up" moves the space (with its worktrees) up
+# move_space_next = ""     # optional, e.g. "alt+shift+down" moves the space down
 # switch_tab = "prefix+1..9"
 # switch_workspace = ""   # optional indexed binding, e.g. "prefix+shift+1..9"
 # close_tab = "prefix+shift+x"
@@ -344,8 +346,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # agent_panel_sort = "spaces"
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses
-# distinct static glyphs for blocked, working, done, idle, and unknown states.
-# status_indicators = "dots"
+# distinct static glyphs for blocked, working, done, idle, and unknown states;
+# "shapes" (the default) uses circles that differ by shape: ◐ working, ◉ blocked,
+# ● done, ○ idle.
+# status_indicators = "shapes"
 
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)

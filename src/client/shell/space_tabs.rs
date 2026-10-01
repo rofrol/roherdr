@@ -37,6 +37,10 @@ pub(super) struct SpaceTabLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TabSquare {
     pub(super) tab_id: String,
+    pub(super) label: String,
+    /// The tab closed while the pointer was over the sidebar: its square
+    /// keeps its slot, blank and inert, so the others do not move.
+    pub(super) gone: bool,
     pub(super) status: Option<TabStatus>,
     /// The client's focused tab: the open job.
     pub(super) focused: bool,
@@ -47,7 +51,6 @@ const SQUARE_WIDTH: u16 = 3;
 const SQUARE_GAP: u16 = 1;
 /// Squares start where the tab line's fill starts, past its state icon.
 const SQUARES_INDENT: u16 = 5;
-
 impl SpaceTabLine {
     /// Rows the line takes: its own and, while unfolded, its squares'.
     pub(super) fn height(&self, width: u16) -> u16 {
@@ -59,6 +62,22 @@ impl SpaceTabLine {
         (1 + squares).min(u16::MAX as usize) as u16
     }
 }
+
+impl SpaceTabLine {
+    /// The row, among this line's square rows, of the open job's square.
+    pub(super) fn focused_square_row(&self, width: u16) -> Option<usize> {
+        let index = self
+            .squares
+            .iter()
+            .position(|square| square.focused)
+            .filter(|_| self.unfolded)?;
+        Some(index / squares_per_row(width))
+    }
+}
+
+/// Each unfolded tab line's square order as last drawn, `(tab id, label)`
+/// by line tab id, kept while the pointer is over the sidebar.
+pub(super) type HeldSquares = std::collections::HashMap<String, Vec<(String, String)>>;
 
 /// Squares that fit on a row of a space block `width` columns wide, from the
 /// indent to one column before the right edge, as the tab fill. Callers pass
@@ -77,6 +96,7 @@ pub(super) fn space_tab_lines(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
     unfolded_squares: &HashSet<String>,
+    held_squares: &HeldSquares,
     config: &ClientShellConfig,
 ) -> Vec<SpaceTabLine> {
     if !config.spaces.tabs
@@ -106,13 +126,39 @@ pub(super) fn space_tab_lines(
                     )
                 })
                 .collect::<Vec<_>>();
-            let squares = super::tab_groups::child_tabs(snapshot, &tab.tab_id)
-                .into_iter()
-                .map(|child| TabSquare {
-                    tab_id: child.tab_id.clone(),
-                    status: child.status,
-                    focused: child.focused,
+            let live = super::tab_groups::child_tabs(snapshot, &tab.tab_id);
+            let square = |child: &ClientShellTab| TabSquare {
+                tab_id: child.tab_id.clone(),
+                label: child.label.clone(),
+                gone: false,
+                status: child.status,
+                focused: child.focused,
+            };
+            // The order the squares had while the pointer stays over the
+            // sidebar: closed tabs keep a blank slot, new ones come last.
+            let held = held_squares
+                .get(&tab.tab_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let squares = held
+                .iter()
+                .map(|(tab_id, label)| {
+                    live.iter()
+                        .find(|child| child.tab_id == *tab_id)
+                        .map(|child| square(child))
+                        .unwrap_or_else(|| TabSquare {
+                            tab_id: tab_id.clone(),
+                            label: label.clone(),
+                            gone: true,
+                            status: None,
+                            focused: false,
+                        })
                 })
+                .chain(
+                    live.iter()
+                        .filter(|child| held.iter().all(|(tab_id, _)| *tab_id != child.tab_id))
+                        .map(|child| square(child)),
+                )
                 .collect::<Vec<_>>();
             SpaceTabLine {
                 tab_id: tab.tab_id.clone(),
@@ -129,7 +175,7 @@ pub(super) fn space_tab_lines(
 
 /// The key that hides a space's tab lines, kept with the collapsed worktree
 /// groups (keyed by repository path, so they cannot clash) and saved with them.
-fn tabs_collapse_key(workspace_id: &str) -> String {
+pub(super) fn tabs_collapse_key(workspace_id: &str) -> String {
     format!("tabs:{workspace_id}")
 }
 
@@ -317,19 +363,29 @@ pub(super) struct SpaceTabHits {
     pub(super) lines: Vec<(Rect, String)>,
     pub(super) folds: Vec<(Rect, String)>,
     pub(super) squares: Vec<(Rect, String)>,
+    /// Blank slots of closed tabs; a click there does nothing.
+    pub(super) gone: Vec<Rect>,
+    /// Lines whose label is cut, with the whole label.
+    pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
+    /// The square order of each unfolded line, to hold while the pointer
+    /// stays over the sidebar.
+    pub(super) order: HeldSquares,
 }
 
 /// Draws `lines` from the top of `area`, below the space's own rows, each
 /// followed by its squares while unfolded, wrapped at `squares_width` (see
 /// [`squares_per_row`]). Each line is a tab filled from the label (see
 /// [`TabLineFills`]). The state icon stays left of the fill, on the panel
-/// background, so it keeps its colour on every line.
+/// background, so it keeps its colour on every line. While the pointer is
+/// over one of a line's squares (`hovered_square`), the line names that job
+/// in place of its label: a square shows only a glyph.
 pub(super) fn render_space_tab_lines(
     buffer: &mut Buffer,
     area: Rect,
     lines: &[SpaceTabLine],
     focused_space: bool,
     squares_width: u16,
+    hovered_square: Option<&str>,
     config: &ClientShellConfig,
 ) -> SpaceTabHits {
     let palette = &config.palette;
@@ -398,8 +454,41 @@ pub(super) fn render_space_tab_lines(
             (true, jobs) => jobs + 2,
         };
         let label_width = available.saturating_sub(if fold_width > 0 { fold_width + 1 } else { 0 });
-        let label = truncate(&line.label, label_width as usize);
-        super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
+        let hovered = hovered_square
+            .and_then(|hovered| line.squares.iter().find(|square| square.tab_id == hovered));
+        match hovered {
+            Some(square) if label_width > 2 => {
+                let glyph = super::tab_groups::status_icon(square.status).unwrap_or("•");
+                super::render::put_text(
+                    buffer,
+                    text_x,
+                    y,
+                    1,
+                    glyph,
+                    on_accent.unwrap_or_else(|| {
+                        Style::default()
+                            .fg(
+                                super::render::tabs::tab_status_color(square.status, palette)
+                                    .unwrap_or(palette.overlay0),
+                            )
+                            .add_modifier(Modifier::BOLD)
+                    }),
+                );
+                let label = truncate(&square.label, usize::from(label_width - 2));
+                super::render::put_text(buffer, text_x + 2, y, label_width - 2, &label, text_style);
+            }
+            _ => {
+                let label = truncate(&line.label, label_width as usize);
+                if label != line.label {
+                    hits.tooltips.push(super::tooltip::TooltipTarget {
+                        rect: Rect::new(text_x, y, label_width, 1),
+                        id: format!("tab:{}", line.tab_id),
+                        text: line.label.clone(),
+                    });
+                }
+                super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
+            }
+        }
         if fold_width > 0 {
             let fold_x = right.saturating_sub(fold_width);
             super::render::put_text(
@@ -430,6 +519,15 @@ pub(super) fn render_space_tab_lines(
         }
         y = y.saturating_add(1);
         if line.unfolded {
+            hits.order.insert(
+                line.tab_id.clone(),
+                line.squares
+                    .iter()
+                    .map(|square| (square.tab_id.clone(), square.label.clone()))
+                    .collect(),
+            );
+        }
+        if line.unfolded {
             let per_row = squares_per_row(squares_width);
             for row in line.squares.chunks(per_row) {
                 if y >= area.bottom() {
@@ -439,7 +537,11 @@ pub(super) fn render_space_tab_lines(
                 for square in row {
                     let rect = Rect::new(square_x, y, SQUARE_WIDTH, 1).intersection(area);
                     render_square(buffer, rect, square, &fills, palette);
-                    hits.squares.push((rect, square.tab_id.clone()));
+                    if square.gone {
+                        hits.gone.push(rect);
+                    } else {
+                        hits.squares.push((rect, square.tab_id.clone()));
+                    }
                     square_x = square_x.saturating_add(SQUARE_WIDTH + SQUARE_GAP);
                 }
                 y = y.saturating_add(1);
@@ -469,6 +571,9 @@ fn render_square(
         (false, _) => fills.inactive,
     };
     buffer.set_style(rect, Style::default().bg(bg));
+    if square.gone {
+        return;
+    }
     let glyph = super::tab_groups::status_icon(square.status).unwrap_or("•");
     let mut style = Style::default().fg(if solid {
         panel_contrast_fg(palette)
@@ -621,6 +726,7 @@ mod tests {
             &workspace,
             &HashSet::new(),
             &HashSet::new(),
+            &HeldSquares::new(),
             &config(false)
         )
         .is_empty());
@@ -629,6 +735,7 @@ mod tests {
             &workspace,
             &HashSet::new(),
             &HashSet::new(),
+            &HeldSquares::new(),
             &config(true),
         );
         assert_eq!(
@@ -674,6 +781,7 @@ mod tests {
             &workspace,
             &HashSet::new(),
             &HashSet::new(),
+            &HeldSquares::new(),
             &config(true),
         )
         .into_iter()
@@ -696,6 +804,7 @@ mod tests {
             &workspace,
             &HashSet::new(),
             &HashSet::new(),
+            &HeldSquares::new(),
             &config(true),
         );
         assert_eq!(lines.len(), 1);
@@ -719,6 +828,7 @@ mod tests {
             &workspace,
             &collapsed,
             &HashSet::new(),
+            &HeldSquares::new(),
             &config(true),
         );
         assert!(lines.is_empty());
@@ -767,6 +877,7 @@ mod tests {
                 &workspace,
                 &HashSet::new(),
                 &unfolded,
+                &HeldSquares::new(),
                 &config(true),
             )
         };

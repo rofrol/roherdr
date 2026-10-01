@@ -631,6 +631,7 @@ pub fn cleanup_registered_herdr_pids() {
 fn ensure_cleanup_hooks() {
     INIT.call_once(|| {
         let _ = cleanup_servers_with_missing_runtime_dir();
+        reap_stale_client_test_bases();
         start_global_watchdog();
 
         let _ = CLEANUP_GUARD.set(CleanupGuard);
@@ -650,6 +651,45 @@ fn ensure_cleanup_hooks() {
             libc::atexit(run_atexit_cleanup);
         }
     });
+}
+
+/// Stops the servers of and removes `/tmp/herdr-client-test-<pid>-<nanos>`
+/// bases whose test process is gone: a run killed mid-test (SIGKILL, a
+/// closed terminal) never reaches its cleanup, and without `/proc` (macOS)
+/// the orphaned server is found only through its socket. A base younger
+/// than a minute is left alone, in case its pid was just reused.
+fn reap_stale_client_test_bases() {
+    let Ok(entries) = fs::read_dir("/tmp") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("herdr-client-test-"))
+        else {
+            continue;
+        };
+        let Some(owner) = rest
+            .split('-')
+            .next()
+            .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(60));
+        if owner == std::process::id() as libc::pid_t || process_exists(owner) || !old {
+            continue;
+        }
+        let base = entry.path();
+        stop_servers_under(&base);
+        let _ = fs::remove_dir_all(&base);
+    }
 }
 
 fn pid_registry_lock() -> std::sync::MutexGuard<'static, HashSet<u32>> {

@@ -2,6 +2,9 @@ use super::*;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
+/// How often a space dragged to the list's top or bottom row scrolls the
+/// list by a row.
+const SPACE_DRAG_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(60);
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl ClientShellState {
@@ -9,6 +12,9 @@ impl ClientShellState {
     /// confirmation path as the context menu's Close.
     fn close_chrome_target_at(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) {
         if !self.config.mouse_capture {
+            return;
+        }
+        if self.on_gone_square(point) {
             return;
         }
         // A tab line lies inside its space's block but closes only its tab.
@@ -112,6 +118,20 @@ impl ClientShellState {
         false
     }
 
+    /// How far one wheel step moves the spaces list, which scrolls by rows.
+    fn workspace_wheel_step(&self) -> usize {
+        3
+    }
+
+    /// A closed job's blank slot, held while the pointer is over the list:
+    /// clicks there do nothing, not even act on the space around it.
+    fn on_gone_square(&self, point: (u16, u16)) -> bool {
+        self.hits
+            .space_tab_gone
+            .iter()
+            .any(|rect| super::contains(*rect, point))
+    }
+
     /// The tab a left click on a tab line or square focuses, or none when
     /// the click folds or unfolds the line's squares (on its triangle and
     /// counts). A square opens its tab, and the open one goes back to its
@@ -124,18 +144,28 @@ impl ClientShellState {
         };
         if let Some(tab_id) = hit(&self.hits.space_tab_folds) {
             // Tab ids can be reused: forget tabs that are gone.
-            if let Some(snapshot) = self.snapshot.as_deref() {
-                let live = snapshot
-                    .tabs
-                    .iter()
-                    .map(|tab| tab.tab_id.as_str())
-                    .collect::<HashSet<_>>();
-                self.unfolded_squares
-                    .retain(|unfolded| live.contains(unfolded.as_str()));
+            let live = self
+                .snapshot
+                .as_deref()
+                .map(|snapshot| {
+                    snapshot
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.tab_id.clone())
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
+            let unfolded = self
+                .unfolded_squares
+                .entry(self.active_endpoint_id.clone())
+                .or_default();
+            unfolded.retain(|key| live.contains(key));
+            if !unfolded.remove(&tab_id) {
+                unfolded.insert(tab_id);
             }
-            if !self.unfolded_squares.remove(&tab_id) {
-                self.unfolded_squares.insert(tab_id);
-            }
+            return Some(None);
+        }
+        if self.on_gone_square(point) {
             return Some(None);
         }
         if let Some(square) = hit(&self.hits.space_tab_squares) {
@@ -490,11 +520,96 @@ impl ClientShellState {
         self.selection_repaint_deadline.is_none()
     }
 
+    /// While a space is dragged on the list's top or bottom row (or past
+    /// it), the list scrolls a row at a time, so the space can be dropped
+    /// anywhere; elsewhere it stops.
+    fn update_space_drag_autoscroll(&mut self, point: (u16, u16)) {
+        let body = self.hits.workspace_body;
+        let direction = if body.height < 2 || self.hits.workspace_layout.is_empty() {
+            0
+        } else if point.1 <= body.y {
+            -1
+        } else if point.1 >= body.bottom().saturating_sub(1) && point.1 <= body.bottom() {
+            1
+        } else {
+            0
+        };
+        if direction == 0 {
+            self.space_drag_autoscroll = None;
+            return;
+        }
+        if self
+            .space_drag_autoscroll
+            .is_none_or(|(current, _, _)| current != direction)
+        {
+            self.space_drag_autoscroll = Some((
+                direction,
+                point,
+                std::time::Instant::now() + SPACE_DRAG_AUTOSCROLL_INTERVAL,
+            ));
+        } else if let Some((_, last, _)) = self.space_drag_autoscroll.as_mut() {
+            *last = point;
+        }
+    }
+
+    /// One step of [`Self::update_space_drag_autoscroll`]: scrolls a row and
+    /// retargets the drop with the pointer where it was.
+    fn tick_space_drag_autoscroll(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some((direction, point, deadline)) = self.space_drag_autoscroll else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        let Some(ClientChromeDrag::Workspace {
+            source_workspace_id,
+            grab_offset,
+            ..
+        }) = self.chrome_drag.as_ref()
+        else {
+            self.space_drag_autoscroll = None;
+            return;
+        };
+        let (source, grab_offset) = (source_workspace_id.clone(), *grab_offset);
+        let next = if direction < 0 {
+            self.workspace_scroll.saturating_sub(1)
+        } else {
+            self.workspace_scroll
+                .saturating_add(1)
+                .min(self.hits.workspace_max_scroll)
+        };
+        if next == self.workspace_scroll {
+            self.space_drag_autoscroll = None;
+            return;
+        }
+        self.workspace_scroll = next;
+        // The drawn layout moves with the list until the next frame.
+        for layout in &mut self.hits.workspace_layout {
+            layout.top -= i32::from(direction);
+            layout.bottom -= i32::from(direction);
+        }
+        let target = self.workspace_drop_target_at(point, &source, grab_offset);
+        if let Some(ClientChromeDrag::Workspace {
+            target: current, ..
+        }) = self.chrome_drag.as_mut()
+        {
+            *current = target;
+        }
+        self.space_drag_autoscroll = Some((direction, point, now + SPACE_DRAG_AUTOSCROLL_INTERVAL));
+        outcome.repaint = true;
+    }
+
     pub(crate) fn tick_selection_autoscroll(
         &mut self,
         now: std::time::Instant,
     ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
+        self.tick_space_drag_autoscroll(now, &mut outcome);
+        self.tick_tooltip(now, &mut outcome);
         if self
             .selection_repaint_deadline
             .is_some_and(|deadline| now >= deadline)
@@ -672,36 +787,58 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
-    /// Top-level blocks of this endpoint's spaces as drawn: (id, top, bottom)
-    /// per space with its indented worktrees.
-    fn workspace_blocks(&self) -> Vec<(String, u16, u16)> {
-        let mut blocks = Vec::<(String, u16, u16)>::new();
+    fn group_toggle_hit_is_main_space(&self, hit: &super::state::ClientWorkspaceHit) -> bool {
         let snapshot = self.snapshot.as_deref();
-        for hit in self
-            .hits
-            .workspaces
-            .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
-            // A group's toggle row belongs to the group's main space only.
-            .filter(|hit| {
-                hit.group_toggle.as_ref().is_none_or(|(_, key)| {
-                    snapshot.is_none_or(|snapshot| {
-                        snapshot
-                            .workspaces
-                            .iter()
-                            .find(|workspace| {
-                                workspace.worktree.as_ref().is_some_and(|worktree| {
-                                    worktree.key == *key && !worktree.is_linked_worktree
-                                })
-                            })
-                            .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
+        hit.group_toggle.as_ref().is_none_or(|(_, key)| {
+            snapshot.is_none_or(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace.worktree.as_ref().is_some_and(|worktree| {
+                            worktree.key == *key && !worktree.is_linked_worktree
+                        })
                     })
-                })
+                    .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
             })
-        {
-            match blocks.last_mut() {
-                Some(block) if hit.indented => block.2 = hit.rect.bottom(),
-                _ => blocks.push((hit.workspace_id.clone(), hit.rect.y, hit.rect.bottom())),
+        })
+    }
+
+    /// Top-level blocks of this endpoint's spaces: (id, top, bottom) in
+    /// screen rows per space with its indented worktrees. The local sidebar
+    /// scrolls by rows and gives every space, also those scrolled out of
+    /// view (rows above the screen are negative); the multi-machine sidebar
+    /// gives the drawn ones.
+    fn workspace_blocks(&self) -> Vec<(String, i32, i32)> {
+        let mut blocks = Vec::<(String, i32, i32)>::new();
+        let mut push = |id: &str, indented: bool, top: i32, bottom: i32| match blocks.last_mut() {
+            Some(block) if indented => block.2 = bottom,
+            _ => blocks.push((id.to_owned(), top, bottom)),
+        };
+        if self.hits.workspace_layout.is_empty() {
+            for hit in self
+                .hits
+                .workspaces
+                .iter()
+                .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
+                // A group's toggle row belongs to the group's main space only.
+                .filter(|hit| self.group_toggle_hit_is_main_space(hit))
+            {
+                push(
+                    &hit.workspace_id,
+                    hit.indented,
+                    i32::from(hit.rect.y),
+                    i32::from(hit.rect.bottom()),
+                );
+            }
+        } else {
+            for layout in &self.hits.workspace_layout {
+                push(
+                    &layout.workspace_id,
+                    layout.indented,
+                    layout.top,
+                    layout.bottom,
+                );
             }
         }
         blocks
@@ -738,10 +875,10 @@ impl ClientShellState {
         // Blocks after the dragged one move up into its place, gap included.
         let shift = blocks
             .get(source + 1)
-            .map_or(0, |next| next.1.saturating_sub(blocks[source].1));
-        let compact_top = |index: usize, top: u16| {
+            .map_or(0, |next| next.1 - blocks[source].1);
+        let compact_top = |index: usize, top: i32| {
             if index > source {
-                top.saturating_sub(shift)
+                top - shift
             } else {
                 top
             }
@@ -756,13 +893,11 @@ impl ClientShellState {
             .iter()
             .enumerate()
             .filter(|(index, _)| *index != source)
-            .map(|(index, (_, top, bottom))| {
-                compact_top(index, *top).saturating_add(bottom.saturating_sub(*top))
-            })
+            .map(|(index, (_, top, bottom))| compact_top(index, *top) + (bottom - top))
             .max()
             .unwrap_or(blocks[source].1);
         slots.push((None, end));
-        let top = point.1.saturating_sub(grab_offset);
+        let top = i32::from(point.1) - i32::from(grab_offset);
         slots
             .into_iter()
             .enumerate()
@@ -770,7 +905,7 @@ impl ClientShellState {
             .map(|(_, (before, _))| before)
     }
 
-    fn workspace_move_method(
+    pub(super) fn workspace_move_method(
         &self,
         source_workspace_id: &str,
         before_workspace_id: Option<&str>,
@@ -867,8 +1002,16 @@ impl ClientShellState {
     /// Hit-test order determines which overlapping control receives the event;
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        let over_spaces = !self.sidebar_collapsed
+            && super::contains(self.hits.workspace_body, (mouse.column, mouse.row));
+        if self.pointer_over_spaces != over_spaces {
+            self.pointer_over_spaces = over_spaces;
+            // Leaving lets closed jobs' blank slots go.
+            outcome.repaint |= !self.hits.space_tab_gone.is_empty();
+        }
         self.update_link_hover(mouse, outcome);
         self.update_workspace_hover(mouse, outcome);
+        self.update_tooltip(mouse, outcome);
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -1416,6 +1559,7 @@ impl ClientShellState {
                     {
                         *current = target;
                     }
+                    self.update_space_drag_autoscroll(point);
                     outcome.repaint = true;
                     return;
                 }
@@ -1444,7 +1588,9 @@ impl ClientShellState {
                         .workspace_blocks()
                         .iter()
                         .find(|(id, ..)| *id == source_workspace_id)
-                        .map_or(0, |(_, top, _)| start_row.saturating_sub(*top));
+                        .map_or(0, |(_, top, _)| {
+                            (i32::from(start_row) - top).clamp(0, i32::from(u16::MAX)) as u16
+                        });
                     if check.is_ok() {
                         if let Some(target) =
                             self.workspace_drop_target_at(point, &source_workspace_id, grab_offset)
@@ -1455,6 +1601,7 @@ impl ClientShellState {
                                 grab_offset,
                             });
                             outcome.repaint = true;
+                            self.update_space_drag_autoscroll(point);
                         }
                     }
                 }
@@ -2067,6 +2214,9 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                if self.on_gone_square(point) {
+                    return;
+                }
                 if let Some(tab_id) = self.space_tab_at(point) {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -2146,7 +2296,9 @@ impl ClientShellState {
                 }
             }
             MouseEventKind::ScrollUp if super::contains(self.hits.workspace_body, point) => {
-                let next = self.workspace_scroll.saturating_sub(1);
+                let next = self
+                    .workspace_scroll
+                    .saturating_sub(self.workspace_wheel_step());
                 if next != self.workspace_scroll {
                     self.workspace_scroll = next;
                     outcome.repaint = true;
@@ -2155,7 +2307,7 @@ impl ClientShellState {
             MouseEventKind::ScrollDown if super::contains(self.hits.workspace_body, point) => {
                 let next = self
                     .workspace_scroll
-                    .saturating_add(1)
+                    .saturating_add(self.workspace_wheel_step())
                     .min(self.hits.workspace_max_scroll);
                 if next != self.workspace_scroll {
                     self.workspace_scroll = next;
@@ -2337,6 +2489,35 @@ impl ClientShellState {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     outcome.repaint = true;
                     self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                // The `+` on a space's name line opens a tab in that space.
+                let new_tab = self
+                    .hits
+                    .space_new_tab
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| workspace_id.clone());
+                if let Some(workspace_id) = new_tab {
+                    // A collapsed space shows the new tab.
+                    if self
+                        .collapsed_groups
+                        .remove(&super::space_tabs::tabs_collapse_key(&workspace_id))
+                    {
+                        self.persist_chrome_preferences(outcome);
+                    }
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabCreate(
+                            crate::api::schema::TabCreateParams {
+                                workspace_id: Some(workspace_id),
+                                cwd: None,
+                                focus: true,
+                                label: None,
+                                env: Default::default(),
+                            },
+                        ),
+                        outcome,
+                    );
                     return;
                 }
                 // A tab line or square under a space acts on its tab, not

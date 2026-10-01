@@ -240,6 +240,28 @@ pub(in crate::client::shell) fn split_build_row(area: Rect, row: Option<BuildRow
 /// sidebar's own divider.
 const BUILD_ROW_RIGHT_RESERVE: u16 = 3;
 
+/// The build row's tooltip: the whole commit line, and the client's build
+/// when it differs from the server's.
+pub(in crate::client::shell) fn build_row_tooltip(
+    area: Rect,
+    row: BuildRow,
+) -> super::tooltip::TooltipTarget {
+    let text = match row.differing_client {
+        Some(client) => format!("server {} · client {client}", row.commit),
+        None => row.commit.to_owned(),
+    };
+    super::tooltip::TooltipTarget {
+        rect: Rect::new(
+            area.x,
+            area.y,
+            area.width.saturating_sub(BUILD_ROW_RIGHT_RESERVE),
+            area.height.min(1),
+        ),
+        id: "build".to_owned(),
+        text,
+    }
+}
+
 pub(in crate::client::shell) fn render_build_row(
     buffer: &mut Buffer,
     area: Rect,
@@ -310,6 +332,10 @@ pub(crate) fn render_sidebar(
         state.collapsed_groups,
         state.space_sort,
     );
+    if let Some(held) = state.held_space_order {
+        entries = super::space_sort::held_entries(snapshot, entries, held);
+    }
+    hits.space_order = super::space_sort::root_ids(snapshot, &entries);
     // While a space is dragged the list shows where it would land, and the
     // header says so in words. With the pointer outside the list the order
     // stays, the block stays lifted and the header says a release cancels.
@@ -388,6 +414,7 @@ pub(crate) fn render_sidebar(
                             workspace,
                             state.collapsed_groups,
                             state.unfolded_squares,
+                            state.held_squares,
                             config,
                         );
                         let rows = workspace_rows(
@@ -433,41 +460,93 @@ pub(crate) fn render_sidebar(
         squares_width = body.width - 1;
         row_heights = measure(squares_width);
     }
-    let mut metrics = super::scroll::list_scroll_metrics(
-        &row_heights,
-        &gaps,
-        body.height,
-        *state.workspace_scroll,
-    );
+    // The list scrolls by rows, so a space taller than the list (a tab with
+    // many job squares) can be scrolled through; `workspace_scroll` is the
+    // first content row shown.
+    let tops = entries
+        .iter()
+        .enumerate()
+        .scan(0usize, |top, (index, _)| {
+            let this = *top;
+            *top += usize::from(row_heights[index]) + usize::from(gaps[index]);
+            Some(this)
+        })
+        .collect::<Vec<_>>();
+    let content_rows = tops
+        .last()
+        .zip(row_heights.last())
+        .map_or(0, |(top, height)| top + usize::from(*height));
+    let viewport = usize::from(body.height);
+    let max_scroll = content_rows.saturating_sub(viewport);
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
         if let Some(target) = entries
             .iter()
             .position(|entry| snapshot.workspaces[entry.index].focused)
         {
-            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-                target,
-            );
-            metrics = super::scroll::list_scroll_metrics(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-            );
+            // The name row and the focused tab line (or its open square);
+            // when both do not fit, the deeper one.
+            let top = tops[target];
+            let depth = snapshot
+                .workspaces
+                .get(entries[target].index)
+                .map_or(0, |workspace| {
+                    focus_depth(
+                        snapshot,
+                        workspace,
+                        &entries[target],
+                        state,
+                        squares_width,
+                        config,
+                    )
+                });
+            let bottom = top + usize::from(depth);
+            let top = if bottom - top >= viewport {
+                bottom
+            } else {
+                top
+            };
+            *state.workspace_scroll =
+                super::scroll::rows_start_to_reveal(*state.workspace_scroll, viewport, top, bottom);
         }
     }
-    hits.workspace_max_scroll = metrics.max_offset_from_bottom;
+    *state.workspace_scroll = (*state.workspace_scroll).min(max_scroll);
+    let metrics = crate::pane::ScrollMetrics {
+        offset_from_bottom: max_scroll - *state.workspace_scroll,
+        max_offset_from_bottom: max_scroll,
+        viewport_rows: viewport.min(content_rows),
+    };
+    hits.workspace_max_scroll = max_scroll;
     hits.workspace_scroll_metrics = Some(metrics);
-    *state.workspace_scroll = metrics
-        .max_offset_from_bottom
-        .saturating_sub(metrics.offset_from_bottom);
-    let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
+    let scroll = *state.workspace_scroll;
+    let show_scrollbar = max_scroll > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
-    let mut y = body.y;
-    for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+    // Where every space is, in screen rows, drawn or not: space drag and drop
+    // and revealing a space work from it.
+    let screen_row = |row: usize| i32::from(body.y) + row as i32 - scroll as i32;
+    hits.workspace_layout = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let workspace = snapshot.workspaces.get(entry.index)?;
+            Some(WorkspaceLayout {
+                workspace_id: workspace.workspace_id.clone(),
+                indented: entry.indented,
+                top: screen_row(tops[index]),
+                bottom: screen_row(tops[index] + usize::from(row_heights[index])),
+            })
+        })
+        .collect();
+    let mut scratch = None::<Buffer>;
+    for (entry_position, entry) in entries.iter().enumerate() {
+        let top = tops[entry_position];
+        let row_height = row_heights[entry_position];
+        let block_end = top + usize::from(row_height);
+        if block_end <= scroll || row_height == 0 {
+            continue;
+        }
+        if top >= scroll + viewport {
+            break;
+        }
         let Some(workspace) = snapshot.workspaces.get(entry.index) else {
             continue;
         };
@@ -477,6 +556,7 @@ pub(crate) fn render_sidebar(
             workspace,
             state.collapsed_groups,
             state.unfolded_squares,
+            state.held_squares,
             config,
         );
         let tab_jobs = super::space_tabs::space_row_tab_jobs(
@@ -487,15 +567,30 @@ pub(crate) fn render_sidebar(
         );
         let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
         let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
-        let row_height = row_heights
-            .get(entry_position)
-            .copied()
-            .unwrap_or(own_rows)
-            .min(body.height);
-        if y.saturating_add(row_height) > body.bottom() {
-            break;
-        }
-        let rect = Rect::new(body.x, y, content_width, row_height);
+        // Rows of the block above the list's top, and where it starts.
+        let cut = scroll.saturating_sub(top);
+        let y = body.y + (top + cut - scroll) as u16;
+        let shown = (usize::from(row_height) - cut).min(usize::from(body.bottom() - y)) as u16;
+        let visible = Rect::new(body.x, y, content_width, shown);
+        // A block cut at either edge is drawn whole off screen, then its
+        // visible rows are copied.
+        let partial = cut > 0 || shown < row_height;
+        let mut block_hits = ShellHitMap::default();
+        let target: &mut Buffer = if partial {
+            let area = Rect::new(body.x, 0, content_width, row_height);
+            let scratch = scratch.get_or_insert_with(|| Buffer::empty(area));
+            scratch.resize(area);
+            scratch.reset();
+            super::render::render_sidebar_background(scratch, area, palette);
+            scratch
+        } else {
+            &mut *buffer
+        };
+        let rect = if partial {
+            Rect::new(body.x, 0, content_width, row_height)
+        } else {
+            visible
+        };
         let selected = state.selected_workspace_id.is_some_and(|target| {
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
@@ -516,19 +611,19 @@ pub(crate) fn render_sidebar(
         let drag_bg = Some(palette.drag_bg)
             .filter(|bg| (dragged || pressed) && *bg != ratatui::style::Color::Reset);
         if let Some(bg) = drag_bg {
-            buffer.set_style(rect, Style::default().bg(bg));
+            target.set_style(rect, Style::default().bg(bg));
         } else if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+            target.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if workspace.focused && !config.spaces.tabs {
             // With vertical tabs only the tab lines have a background.
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+            target.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
         let icon = aggregate_icon(snapshot, status, config.status_indicators, |agent| {
             displayed_workspaces(snapshot, workspace, state.collapsed_groups)
                 .any(|shown| shown.workspace_id == agent.workspace_id)
         });
         render_workspace_rows(
-            buffer,
+            target,
             rect,
             status,
             icon,
@@ -544,12 +639,14 @@ pub(crate) fn render_sidebar(
         );
         if let Some(color) = grab_color {
             // A grip at the name line's right edge, left of the group
-            // chevron, in the spacer column the name never reaches.
+            // chevron (with vertical tabs, left of the new-tab `+`), in the
+            // spacer column the name never reaches.
             let hovered = state.hovered_workspace_id == Some(workspace.workspace_id.as_str());
-            if (dragged || pressed || hovered) && rect.width >= 4 {
+            if (dragged || pressed || hovered) && rect.width >= 6 {
                 put_text(
-                    buffer,
-                    rect.right().saturating_sub(2),
+                    target,
+                    rect.right()
+                        .saturating_sub(if config.spaces.tabs { 3 } else { 2 }),
                     rect.y,
                     1,
                     "⋮",
@@ -557,8 +654,23 @@ pub(crate) fn render_sidebar(
                 );
             }
         }
+        if config.spaces.tabs && config.mouse_capture && rect.width >= 6 {
+            // A new tab in this space, whichever space is focused.
+            put_text(
+                target,
+                rect.right().saturating_sub(1),
+                rect.y,
+                1,
+                "+",
+                Style::default().fg(palette.overlay1),
+            );
+            block_hits.space_new_tab.push((
+                Rect::new(rect.right().saturating_sub(2), rect.y, 2, 1),
+                workspace.workspace_id.clone(),
+            ));
+        }
         let tab_hits = super::space_tabs::render_space_tab_lines(
-            buffer,
+            target,
             Rect::new(
                 rect.x,
                 rect.y.saturating_add(own_rows),
@@ -568,14 +680,18 @@ pub(crate) fn render_sidebar(
             &tab_lines,
             workspace.focused,
             squares_width,
+            state.hovered_square,
             config,
         );
-        hits.space_tabs.extend(tab_hits.lines);
-        hits.space_tab_folds.extend(tab_hits.folds);
-        hits.space_tab_squares.extend(tab_hits.squares);
+        block_hits.space_tabs.extend(tab_hits.lines);
+        block_hits.space_tab_folds.extend(tab_hits.folds);
+        block_hits.space_tab_squares.extend(tab_hits.squares);
+        block_hits.space_tab_gone.extend(tab_hits.gone);
+        block_hits.tooltips.extend(tab_hits.tooltips);
+        block_hits.space_tab_square_order.extend(tab_hits.order);
         let group_toggle = if config.spaces.tabs {
             super::space_tabs::render_space_disclosure(
-                buffer,
+                target,
                 rect,
                 snapshot,
                 entry,
@@ -585,7 +701,7 @@ pub(crate) fn render_sidebar(
             )
         } else {
             render_parent_group_toggle(
-                buffer,
+                target,
                 rect,
                 snapshot,
                 entry.index,
@@ -593,17 +709,24 @@ pub(crate) fn render_sidebar(
                 palette,
             )
         };
-        hits.workspaces.push(WorkspaceHit {
+        block_hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
             workspace_id: workspace.workspace_id.clone(),
             indented: entry.indented,
             group_toggle,
         });
-        let gap = entries
-            .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
-        y = y.saturating_add(row_height + gap);
+        if partial {
+            if let Some(scratch) = scratch.as_ref() {
+                for row in 0..shown {
+                    for x in visible.left()..visible.right() {
+                        buffer[(x, y + row)] = scratch[(x, cut as u16 + row)].clone();
+                    }
+                }
+            }
+            block_hits.shift_space_block(i32::from(y) - cut as i32, visible);
+        }
+        hits.merge_space_block(block_hits);
     }
 
     if show_scrollbar {
@@ -695,6 +818,7 @@ pub(crate) fn render_sidebar(
 
     if let Some(build) = build {
         render_build_row(buffer, build_area, build, palette);
+        hits.tooltips.push(build_row_tooltip(build_area, build));
     }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
@@ -1093,6 +1217,10 @@ pub(in crate::client::shell) fn workspace_rows(
         .collect()
 }
 
+/// Columns the name line of a space leaves at its right with vertical tabs:
+/// a gap, the drag grip, a gap and the new-tab `+`.
+const NAME_LINE_ACTIONS_WIDTH: u16 = 4;
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -1114,6 +1242,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // name for `render_space_disclosure`, and give a focused space no
     // background; only its tab lines have one.
     let vertical_tabs = config.spaces.tabs;
+    // Columns left free at the right: the grip's; with vertical tabs the
+    // name line also ends in a new-tab `+`, a column apart from the grip.
+    let reserved = |row_index: usize| {
+        if vertical_tabs && row_index == 0 {
+            NAME_LINE_ACTIONS_WIDTH
+        } else {
+            2
+        }
+    };
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -1174,10 +1311,19 @@ pub(in crate::client::shell) fn render_workspace_rows(
             secondary_style,
             Style::default().fg(palette.overlay1),
             palette,
-            area.right().saturating_sub(2).saturating_sub(x) as usize,
+            area.right()
+                .saturating_sub(reserved(row_index))
+                .saturating_sub(x) as usize,
         );
         Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
+            Rect::new(
+                x,
+                y,
+                area.right()
+                    .saturating_sub(reserved(row_index))
+                    .saturating_sub(x),
+                1,
+            ),
             buffer,
         );
     }
@@ -1199,4 +1345,49 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
+}
+
+/// Rows from a space's name row down to its focused tab line, or to the
+/// open job's square under it.
+fn focus_depth(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    entry: &WorkspaceEntry,
+    state: &ShellRenderState<'_>,
+    squares_width: u16,
+    config: &ClientShellConfig,
+) -> u16 {
+    let tab_lines = super::space_tabs::space_tab_lines(
+        snapshot,
+        workspace,
+        state.collapsed_groups,
+        state.unfolded_squares,
+        state.held_squares,
+        config,
+    );
+    let own_rows = workspace_rows(
+        workspace,
+        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+        super::space_tabs::space_row_tab_jobs(
+            snapshot,
+            workspace,
+            state.collapsed_groups,
+            &tab_lines,
+        ),
+        entry.indented,
+        &config.spaces,
+    )
+    .len()
+    .max(1);
+    let mut depth = own_rows;
+    for line in &tab_lines {
+        if line.active {
+            depth += line
+                .focused_square_row(squares_width)
+                .map_or(0, |row| row + 1);
+            return depth.min(usize::from(u16::MAX)) as u16;
+        }
+        depth += usize::from(line.height(squares_width));
+    }
+    0
 }

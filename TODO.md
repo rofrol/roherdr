@@ -17,6 +17,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Agent states are circles that differ by shape, not only colour (now
     working, blocked and done are all `●`): `◐` working, `◉` blocked (as on
     mobile already), `●` done and unseen, `○` idle; colours stay.
+    Done 2026-09-29: a `shapes` indicator style, the fork's default
+    (settings > indicators offers dots, symbols, shapes); a waiting-on-job
+    mark is `◷` there, as in symbols. Consulted (GPT-6 Astra, DeepSeek):
+    both chose a new style over changing `dots`; both warned `◉` and `●`
+    blur at small font sizes (DeepSeek: use the symbols' `×` for blocked);
+    kept `◉` as decided, the colour differs too.
     Priority lists agents, not spaces (a space-sorted list buries several
     urgent agents), with the space on the second line; spaces without
     agents collapse into "other spaces" at the bottom. Freeze the order
@@ -119,9 +125,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     DeepSeek): both preferred keeping "spaces" with a dropdown and an agent
     list for priority; overruled. `ui.sidebar.show_agents_panel = false`
     hides the old panel (kept in code for cheap rebases). Still open: the
-    attention counts (`◉1 ●1`) have no place in the header now; prio does
-    not freeze the order while the pointer is over the list; the
+    attention counts (`◉1 ●1`) have no place in the header now; the
     multi-machine sidebar.
+  - Done 2026-09-28: a sorted list (name or prio) holds its order while the
+    pointer is over it: the order drawn last stays, new spaces come last,
+    closed ones drop out, and leaving the list (or the window losing
+    focus) applies the live order; keyboard navigation follows the held
+    order. The sort header is outside the list, so clicking it re-sorts at
+    once. Consulted (GPT-6 Astra, DeepSeek): both wanted a true freeze
+    (no re-sort on real state changes either) and keyboard order to match;
+    Astra wanted name frozen too (chosen), DeepSeek prio only.
   - Missing (screenshot 2026-09-28): a sort button for the agents listed
     under each space, like the one for spaces. Their order still comes from
     the hidden agents panel's `agent_panel_sort` (config only, no UI).
@@ -180,9 +193,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     collapses its child spaces and tabs together, replacing its right-edge
     chevron. Consulted (GPT-6 Astra, DeepSeek): both chose `▼`/`►` (not
     `▶`, which has an emoji form) and a dim colour; Astra merged the
-    parent's two collapses, DeepSeek wanted them separate. Still open:
-    hiding the main tab row with the child row taking the top, and a `+`
-    as the last thing on the space's name line for a new tab.
+    parent's two collapses, DeepSeek wanted them separate. Hiding the tab
+    rows is done (job squares, below).
+  - Done 2026-09-29: a dim `+` at the right end of every space's name line
+    (2-column hit) opens and focuses a new tab in that space, whichever
+    space is focused, and expands a collapsed space; the drag grip moved a
+    column left, with a blank column between them, so the name line keeps
+    four columns free. Consulted (GPT-6 Astra, DeepSeek): Astra wanted it
+    always visible (chosen: a space that is not focused needs it most),
+    DeepSeek on hover only and apart from the grip (the gap column).
   - Done 2026-09-28: only the tab lines have a background, in the tab
     bar's colours, from the tab indent to one column before the right
     edge: inactive `surface0`, the focused space's active tab accent-filled
@@ -234,10 +253,8 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     program that clears the screen, as the footer could. Both: unfolded
     state client-local, not in the saved collapsed set; measure the square
     rows once for layout and drawing, and again with the scrollbar column
-    when the list overflows. Still open: the hover name on the sidebar's
-    bottom line, keeping squares in place while the pointer is over the
-    sidebar, no auto-close while a job is open, squares in the
-    multi-machine sidebar, scrolling within a block taller than the list.
+    when the list overflows. The follow-ups (hover name, held slots,
+    multi-machine squares) are done below.
   - Changed 2026-09-28 (mockup updated, same link): a disclosure triangle
     right before the counts, `► ⧖ 1 !1` (`▼` unfolded, dim grey, inside
     the fill), folds and unfolds the squares; its hit runs from the
@@ -252,6 +269,48 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     space's triangle), no auto-unfold of failed jobs (it moves rows under
     the pointer). Succeeded-only: Astra the triangle alone (chosen),
     DeepSeek nothing.
+  - Done 2026-09-28: a succeeded job's tab does not close while it is the
+    focused tab (herdr's `focused`, the tab shown); herdr-job checks every
+    2 s and closes it once you leave it.
+  - Done 2026-09-28: hovering a square names its job (glyph and label) in
+    place of its tab line's label, the nearest stable row. A cap of three
+    square rows with a `+N` slot was tried and removed the same night at
+    my request: every square shows, and the list scrolls to them.
+  - Done 2026-09-28: the local spaces list scrolls by rows, not whole
+    spaces, so a space taller than the list scrolls through to its last
+    square; the wheel moves three rows. A space cut at the list's top or
+    bottom is drawn off screen and its visible rows copied (only those
+    one or two spaces per frame); its hits are moved and clipped. Every
+    space's row span, drawn or not, goes into the hit map, so space drag
+    and drop and revealing a space work with a space scrolled half out.
+    Revealing the focused space shows its name row and its active tab line
+    (or the open job's square), and only the deeper one when both do not
+    fit. Consulted (GPT-6 Astra, DeepSeek): both wanted row scrolling and
+    a renderer that takes a row offset instead of an off-screen copy;
+    chose the copy for the one or two cut spaces, as the renderers draw
+    into a rect. The multi-machine sidebar scrolls by rows too (done the
+    same night), so both use one unit. Still open: row offsets jump when
+    squares above fold or close (DeepSeek: anchor on the space and its
+    row); space drag and drop there still works from the drawn spaces. Consulted
+    (GPT-6 Astra, DeepSeek): Astra chose the sidebar's footer for the name,
+    DeepSeek the tab line (chosen: next to the pointer, no chrome hidden).
+    For a space taller than the list, Astra wanted the list to scroll by
+    rows instead of whole spaces, DeepSeek the cap now and row scrolling
+    later (chosen: row scrolling touches drag and drop, reveal and the
+    scrollbar); the cap was then dropped for row scrolling (below).
+  - Done 2026-09-28: while the pointer is over the spaces list, a job tab
+    that closes (a success after 10 s, a close elsewhere) leaves a blank,
+    inert slot, so the other squares do not move under the pointer; new
+    jobs come last; leaving the list (or the window losing focus) closes
+    the gaps. The order is the one drawn last frame, not a snapshot taken
+    when the pointer enters (DeepSeek: no enter edge to miss). A blank slot
+    takes no click, so a middle-click there cannot fall through to closing
+    the space (Astra). A tab line that closes still moves the rest.
+  - Done 2026-09-28: the multi-machine sidebar shows squares for the
+    active machine's tab lines, which now take clicks like the local
+    sidebar's (focus, fold, squares); another machine's lines stay
+    folded and select its space. The unfolded tabs are kept per machine.
+    Both consults: active machine only, keyed by machine.
   - Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): both called the squares
     fine but removing the rows risky (no navigation with the sidebar
     hidden, keyboard). Both wanted a per-tab number in the square (`1⧖`,
@@ -295,9 +354,17 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `no change · Esc`, and Esc cancels. The target is the landing slot
     nearest the block's top (grabbed row kept) in the list without the
     dragged block, so it does not flicker. Still open: the row-by-row
-    slide animation, auto-scroll near the edges, keyboard reorder, the
-    priority-view rule, and the local sidebar only (with remote endpoints
-    the aggregate sidebar keeps the old look).
+    slide animation, the priority-view rule, and the local sidebar only
+    (with remote endpoints the aggregate sidebar keeps the old look).
+  - Done 2026-09-28: auto-scroll. A space dragged onto the list's top or
+    bottom row (or past it) scrolls the list a row every 60 ms, retargeting
+    the drop with the pointer where it is, and stops back inside the list;
+    local sidebar only (it scrolls by rows).
+  - Done 2026-09-28: keyboard reorder. `keys.move_space_previous` and
+    `keys.move_space_next` (unset by default, e.g. `alt+shift+up/down`)
+    move the focused space one place in the sidebar's own order, with its
+    worktrees (a focused worktree moves its parent's family); only in cust
+    sort, like dragging; no wrap at either end; the list then reveals it.
   - Drag starts only from the space's name line after a small threshold, so
     clicks, chevrons and agent/job rows keep working; a click is suppressed
     after a drag. Esc cancels. Time-based auto-scroll near the list edges.
@@ -604,6 +671,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     the only way to see the full text, since tmux and some terminals drop
     plain motion events (mode 1003); the rename dialog already shows it.
     Sanitize control characters in tooltip text.
+  - Done 2026-09-29: the layer (`src/client/shell/tooltip.rs`: 450 ms
+    dwell, drawn last on the target's row and shifted left to stay on
+    screen, no hits, gone on a key, a click, a scroll, a drag, an overlay,
+    when its target is not drawn, and after 10 s), used by the sidebar's
+    vertical tab lines whose label is cut. Still open: the horizontal tab
+    rows (shown only without vertical tabs).
 - [ ] Build line (bottom left of the sidebar): hover shows the full commit
   message, click opens a modal with the full commit info (full hash,
   subject, body, author, date, dirty flag, version and channel), scrollable,
@@ -619,6 +692,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `build_commit` stays as is); an old server shows "details unavailable",
     never the client's data in its place. Astra: the tooltip shows the
     subject only, the body belongs in the modal.
+  - Done 2026-09-29: hovering the build line shows its whole commit line
+    (hash and subject) in a tooltip, and both builds when the client's
+    differs (`server <line> · client <hash>`). Still open: the modal and
+    the build metadata it needs.
 - [ ] Reopen the last closed tab, `prefix+u` ("undo close", configurable).
   - Closing a tab kills its processes, so this recreates the tab rather
     than undoing the close: same place in the space, name, pane layout,
@@ -839,7 +916,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     redesign. Astra: together with the consolidation, not waiting for the
     redesign. Astra's, I think: a generated legend follows the redesign
     for free, and it helps now, while the glyphs are most confusing.
-- [ ] Analyse whether all tests are needed.
+- [x] Analyse whether all tests are needed.
   - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): optimise for
     confidence and upkeep, not the test count. First find the slow, flaky
     and often-rewritten tests and those the rules forbid (freezing CLI
@@ -866,6 +943,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       tests (`src/integration/tests.rs`) into one table-driven test; the
       same macOS and Linux `scrollback_editor_argv_*` test into one unix
       test.
+  - Status 2026-09-29: the duplicates and the codex rule pin went on
+    2026-09-28 (746cb3f6); the federated test is bounded (15 s waits).
+    Not doing the merges or the manifest reload speed-up: those are
+    upstream's tests and code, so rewriting them here only makes every
+    rebase onto upstream conflict; the platform `scrollback_editor_argv`
+    tests stay in their platform files by the repository's rule. Suggest
+    them upstream instead.
 - [ ] Refresh the README's "Fork changes" so it says how the fork differs
   now, with a small looping animation under each change.
   - Audit first (vertical tabs, the disclosure triangle and
@@ -1180,7 +1264,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Deferred: sessions already survive server restarts with 48 snapshots;
     recipes only help on a new machine or a fresh checkout. Build it when I
     notice rebuilding the same layout by hand.
-- [ ] `tests/client_mode.rs` can leak a `herdr server`: on 2026-09-28 a
+- [x] `tests/client_mode.rs` can leak a `herdr server`: on 2026-09-28 a
   server from `/tmp/herdr-client-test-52393-…` (started 15:43) was still
   running at 17:30, orphaned (ppid 1) with its `sh` child, while the test
   process (52393) and the bridge in `bridge-pid` were gone; the test dir was
@@ -1189,6 +1273,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   does not run on SIGKILL), survives. Fix: tear down the server too (kill
   the process group or read the runtime dir's server pid), and have the next
   test run reap stale `/tmp/herdr-client-test-*` whose owner pid is dead.
+  Also flaky: `federated_client_starts_without_local_and_survives_its_restart`
+  failed once in `just check` on 2026-09-28 ("remote reconnect 2 must
+  restore visible input", 12.8 s) and passed alone and on the rerun.
+  - Done 2026-09-29: a test process now reaps `/tmp/herdr-client-test-*`
+    bases whose test process (the pid in the name) is gone and that are
+    over a minute old: it asks their servers to stop through their sockets
+    and removes the dirs (157 stale dirs went on the first run). Normal
+    runs already stopped servers through `cleanup_test_base`. The flaky
+    wait for input after a reconnect is 15 s, like the screen wait before
+    it (it failed twice at 8 s under a full parallel run).
 - [ ] Explain the consult/ask naming mismatch: the plugin (`plugins/consult`,
   `local.consult`) and the stats skill (`consult-stats`, `consult.py`) say
   "consult", but the scripts inside the skills say "ask" (`ask_gpt.sh`,

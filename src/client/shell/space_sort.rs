@@ -106,6 +106,44 @@ pub(super) fn render_sort_header(
     hits
 }
 
+/// `entries` in the order `held` gives their spaces (root ids, as last
+/// drawn), so a sorted list does not move while the pointer is over it;
+/// spaces `held` does not know come last, in their own order. A space moves
+/// with its indented worktrees.
+pub(super) fn held_entries(
+    snapshot: &ClientShellSnapshot,
+    entries: Vec<WorkspaceEntry>,
+    held: &[String],
+) -> Vec<WorkspaceEntry> {
+    let mut families: Vec<Vec<WorkspaceEntry>> = Vec::new();
+    for entry in entries {
+        match families.last_mut() {
+            Some(family) if entry.indented => family.push(entry),
+            _ => families.push(vec![entry]),
+        }
+    }
+    let rank = |family: &[WorkspaceEntry]| {
+        snapshot
+            .workspaces
+            .get(family[0].index)
+            .and_then(|workspace| held.iter().position(|id| *id == workspace.workspace_id))
+            .unwrap_or(usize::MAX)
+    };
+    // Stable, so spaces `held` does not know keep their sorted order.
+    families.sort_by_key(|family| rank(family));
+    families.into_iter().flatten().collect()
+}
+
+/// The root space ids of `entries`, in order: what [`held_entries`] holds.
+pub(super) fn root_ids(snapshot: &ClientShellSnapshot, entries: &[WorkspaceEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| !entry.indented)
+        .filter_map(|entry| snapshot.workspaces.get(entry.index))
+        .map(|workspace| workspace.workspace_id.clone())
+        .collect()
+}
+
 /// `entries` in `sort`'s order. A space moves together with its indented
 /// worktrees; ties keep the manual order.
 pub(super) fn sorted_entries(
