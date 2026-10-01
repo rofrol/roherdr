@@ -27,7 +27,8 @@ pub(super) struct SpaceTabLine {
     pub(super) label: String,
     /// The space's active tab is this one or nested under it.
     pub(super) active: bool,
-    /// Running and failed counts of the tab and its nested tabs, e.g. `⧖ 1 !1`.
+    /// Running, failed and succeeded counts of the tab and its nested tabs,
+    /// e.g. `⧖ 1 !1 ✓2`.
     pub(super) jobs: Vec<(Option<TabStatus>, String)>,
     /// The nested tabs, in tab order, drawn as squares while unfolded.
     pub(super) squares: Vec<TabSquare>,
@@ -53,9 +54,11 @@ const SQUARE_GAP: u16 = 1;
 const SQUARES_INDENT: u16 = 5;
 impl SpaceTabLine {
     /// Rows the line takes: its own and, while unfolded, its squares'.
+    /// Unfolded squares are followed by an empty row, so they do not run
+    /// into the next tab line.
     pub(super) fn height(&self, width: u16) -> u16 {
         let squares = if self.unfolded {
-            self.squares.len().div_ceil(squares_per_row(width))
+            self.squares.len().div_ceil(squares_per_row(width)) + 1
         } else {
             0
         };
@@ -80,11 +83,11 @@ impl SpaceTabLine {
 pub(super) type HeldSquares = std::collections::HashMap<String, Vec<(String, String)>>;
 
 /// Squares that fit on a row of a space block `width` columns wide, from the
-/// indent to one column before the right edge, as the tab fill. Callers pass
+/// indent to the right edge, as the tab fill. Callers pass
 /// the same width to [`SpaceTabLine::height`] and
 /// [`render_space_tab_lines`], so the rows laid out are the rows drawn.
 fn squares_per_row(width: u16) -> usize {
-    let room = width.saturating_sub(SQUARES_INDENT + 1) + SQUARE_GAP;
+    let room = width.saturating_sub(SQUARES_INDENT) + SQUARE_GAP;
     usize::from((room / (SQUARE_WIDTH + SQUARE_GAP)).max(1))
 }
 
@@ -119,10 +122,12 @@ pub(super) fn space_tab_lines(
                     candidate.tab_id == tab.tab_id
                         || candidate.parent_tab_id.as_deref() == Some(tab.tab_id.as_str())
                 })
+                // Succeeded jobs count too: one kept open (`--keep`) would
+                // otherwise leave the line with a bare triangle.
                 .filter(|candidate| {
                     matches!(
                         candidate.status,
-                        Some(TabStatus::Running | TabStatus::Failed)
+                        Some(TabStatus::Running | TabStatus::Failed | TabStatus::Succeeded)
                     )
                 })
                 .collect::<Vec<_>>();
@@ -386,6 +391,9 @@ pub(super) fn render_space_tab_lines(
     focused_space: bool,
     squares_width: u16,
     hovered_square: Option<&str>,
+    // Columns right of `area` the tab fill continues into: the scrollbar's,
+    // whose thin glyph then sits on the fill instead of a white gap.
+    fill_past: u16,
     config: &ClientShellConfig,
 ) -> SpaceTabHits {
     let palette = &config.palette;
@@ -393,7 +401,8 @@ pub(super) fn render_space_tab_lines(
     let x = area.x.saturating_add(3);
     // A column of the panel background between the icon and the fill.
     let fill_x = x.saturating_add(2);
-    let fill_right = area.right().saturating_sub(1);
+    // To the right edge, level with the `+` on the space name lines.
+    let fill_right = area.right();
     // One column of padding inside the fill on each side.
     let text_x = fill_x.saturating_add(1);
     let right = fill_right.saturating_sub(1);
@@ -421,7 +430,13 @@ pub(super) fn render_space_tab_lines(
             (false, ..) => (fills.inactive, Style::default().fg(palette.overlay1)),
         };
         buffer.set_style(
-            Rect::new(fill_x, y, fill_right.saturating_sub(fill_x), 1),
+            Rect::new(
+                fill_x,
+                y,
+                fill_right.saturating_add(fill_past).saturating_sub(fill_x),
+                1,
+            )
+            .intersection(buffer.area),
             Style::default().bg(bg),
         );
         // On the solid accent the job colours can vanish, so they take the
@@ -454,41 +469,17 @@ pub(super) fn render_space_tab_lines(
             (true, jobs) => jobs + 2,
         };
         let label_width = available.saturating_sub(if fold_width > 0 { fold_width + 1 } else { 0 });
-        let hovered = hovered_square
-            .and_then(|hovered| line.squares.iter().find(|square| square.tab_id == hovered));
-        match hovered {
-            Some(square) if label_width > 2 => {
-                let glyph = super::tab_groups::status_icon(square.status).unwrap_or("•");
-                super::render::put_text(
-                    buffer,
-                    text_x,
-                    y,
-                    1,
-                    glyph,
-                    on_accent.unwrap_or_else(|| {
-                        Style::default()
-                            .fg(
-                                super::render::tabs::tab_status_color(square.status, palette)
-                                    .unwrap_or(palette.overlay0),
-                            )
-                            .add_modifier(Modifier::BOLD)
-                    }),
-                );
-                let label = truncate(&square.label, usize::from(label_width - 2));
-                super::render::put_text(buffer, text_x + 2, y, label_width - 2, &label, text_style);
-            }
-            _ => {
-                let label = truncate(&line.label, label_width as usize);
-                if label != line.label {
-                    hits.tooltips.push(super::tooltip::TooltipTarget {
-                        rect: Rect::new(text_x, y, label_width, 1),
-                        id: format!("tab:{}", line.tab_id),
-                        text: line.label.clone(),
-                    });
-                }
-                super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
-            }
+        let label = truncate(&line.label, label_width as usize);
+        if label != line.label {
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(text_x, y, label_width, 1),
+                id: format!("tab:{}", line.tab_id),
+                text: line.label.clone(),
+                // The line's own fill, active or not: only its width grows.
+                bg: Some(bg),
+            });
         }
+        super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
         if fold_width > 0 {
             let fold_x = right.saturating_sub(fold_width);
             super::render::put_text(
@@ -542,13 +533,38 @@ pub(super) fn render_space_tab_lines(
                     } else {
                         hits.squares.push((rect, square.tab_id.clone()));
                     }
+                    // The hovered square's job is named in a tooltip right
+                    // of it. The tooltip takes no hits, so moving onto a
+                    // square it covers names that one instead.
+                    // It has the square's fill, so the two read as one;
+                    // the square already shows the state.
+                    if hovered_square == Some(square.tab_id.as_str()) && !square.gone {
+                        hits.tooltips.push(super::tooltip::TooltipTarget {
+                            rect,
+                            id: super::tooltip::square_tooltip_id(&square.tab_id),
+                            text: square.label.clone(),
+                            bg: Some(square_fill(square, &fills, palette)),
+                        });
+                    }
                     square_x = square_x.saturating_add(SQUARE_WIDTH + SQUARE_GAP);
                 }
                 y = y.saturating_add(1);
             }
+            // The empty row after the squares.
+            y = y.saturating_add(1);
         }
     }
     hits
+}
+
+/// A square's fill: the inactive tab fill, or the active tab's tint while
+/// its job is open.
+fn square_fill(square: &TabSquare, fills: &TabLineFills, palette: &Palette) -> Color {
+    match (square.focused, fills.focused_active) {
+        (true, Some(tint)) => tint,
+        (true, None) => palette.accent,
+        (false, _) => fills.inactive,
+    }
 }
 
 /// A nested tab's square: its status glyph in the status colour on the
@@ -565,11 +581,7 @@ fn render_square(
         return;
     }
     let solid = square.focused && fills.focused_active.is_none();
-    let bg = match (square.focused, fills.focused_active) {
-        (true, Some(tint)) => tint,
-        (true, None) => palette.accent,
-        (false, _) => fills.inactive,
-    };
+    let bg = square_fill(square, fills, palette);
     buffer.set_style(rect, Style::default().bg(bg));
     if square.gone {
         return;
@@ -711,7 +723,6 @@ mod tests {
             tab("tab_1", None, None),
             tab("job_1", Some("tab_1"), Some(TabStatus::Running)),
             tab("job_2", Some("tab_1"), Some(TabStatus::Failed)),
-            // Finished jobs are not counted on the line.
             tab("job_3", Some("tab_1"), Some(TabStatus::Succeeded)),
             tab("tab_2", None, None),
             tab("elsewhere", None, None),
@@ -750,6 +761,7 @@ mod tests {
                     vec![
                         (Some(TabStatus::Running), "⧖ 1".to_owned()),
                         (Some(TabStatus::Failed), "!1".to_owned()),
+                        (Some(TabStatus::Succeeded), "✓1".to_owned()),
                     ]
                 ),
                 ("tab_2", false, Vec::new()),
@@ -889,10 +901,11 @@ mod tests {
         let unfolded = lines(&["tab_1", "tab_2"]);
         assert!(!unfolded[1].unfolded);
         assert_eq!(unfolded[1].height(26), 1);
-        // 26 columns hold (26 - 4 + 1) / 4 = 5 squares a row.
+        // 26 columns hold (26 - 5 + 1) / 4 = 5 squares a row; the line, its
+        // square rows and an empty row after them.
         assert_eq!(squares_per_row(26), 5);
-        assert_eq!(unfolded[0].height(26), 3);
-        assert_eq!(unfolded[0].height(40), 2);
+        assert_eq!(unfolded[0].height(26), 4);
+        assert_eq!(unfolded[0].height(40), 3);
         // Too narrow for one square still lays one per row.
         assert_eq!(squares_per_row(2), 1);
     }

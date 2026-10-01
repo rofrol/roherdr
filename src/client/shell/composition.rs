@@ -487,7 +487,7 @@ impl ClientShellState {
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
         self.render_link_hover(&mut frame, &mut occlusion);
-        if self.tooltip.as_ref().is_some_and(|tip| tip.shown) {
+        if self.tooltip_visible() {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
             if let Some(rect) = self.render_tooltip(&mut composed) {

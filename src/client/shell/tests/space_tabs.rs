@@ -62,9 +62,13 @@ fn spaces_list_their_tabs_without_nested_jobs_when_enabled() {
     let rows = frame_rows(&frame);
     let sidebar = |row: &String| row.chars().take(28).collect::<String>();
     let line = state.hits.space_tabs[0].0.y as usize;
-    // The label is cut before the triangle and counts.
-    assert!(sidebar(&rows[line]).contains("agent t…"), "{}", rows[line]);
-    assert!(sidebar(&rows[line]).contains("► ⧖ 1 !1"), "{}", rows[line]);
+    // The label is cut first; the counts include the succeeded job.
+    assert!(sidebar(&rows[line]).contains("agent…"), "{}", rows[line]);
+    assert!(
+        sidebar(&rows[line]).contains("► ⧖ 1 !1 ✓1"),
+        "{}",
+        rows[line]
+    );
     assert!(
         rows.iter().all(|row| !sidebar(row).contains("job job_")),
         "nested job tabs get no line: {rows:?}"
@@ -276,7 +280,7 @@ fn vertical_tabs_hide_both_tab_rows() {
 }
 
 #[test]
-fn the_job_headers_ends_go_back_and_close() {
+fn the_job_footers_ends_go_back_and_close() {
     let mut state = state_with_tabs(true);
     state.config.confirm_close = false;
     // A failed job closes at once; a running one would ask first.
@@ -303,12 +307,13 @@ fn the_job_headers_ends_go_back_and_close() {
     state.set_pane_surface(wide);
     state.compose(106, 30).unwrap();
     let pane = state.hits.panes[0].inner_rect;
+    let footer_y = pane.bottom() - 1;
 
     assert!(focuses(
-        &left_click(&mut state, (pane.x + 1, pane.y)),
+        &left_click(&mut state, (pane.x + 1, footer_y)),
         "tab_1"
     ));
-    let outcome = left_click(&mut state, (pane.right() - 2, pane.y));
+    let outcome = left_click(&mut state, (pane.right() - 2, footer_y));
     assert!(
         outcome.actions.iter().any(|action| matches!(action,
             ClientShellAction::Endpoint { request, .. }
@@ -317,13 +322,13 @@ fn the_job_headers_ends_go_back_and_close() {
         "{:?}",
         outcome.actions
     );
-    // Below the header row, or in its middle, clicks reach the pane.
+    // The old header row and the footer's middle pass clicks to the pane.
     assert!(!focuses(
-        &left_click(&mut state, (pane.x + 1, pane.y + 1)),
+        &left_click(&mut state, (pane.x + 1, pane.y)),
         "tab_1"
     ));
     assert!(!focuses(
-        &left_click(&mut state, (pane.x + 10, pane.y)),
+        &left_click(&mut state, (pane.x + 10, footer_y)),
         "tab_1"
     ));
 }
@@ -365,7 +370,7 @@ fn only_the_focused_spaces_active_tab_line_is_blue() {
         buffer[(rect.x + column, rect.y)].clone()
     };
     let (rect, _) = state.hits.space_tabs[0];
-    let last = rect.width - 3;
+    let last = rect.width - 2;
 
     // The focused space's active tab is accent-tinted, the other tab a
     // lighter grey, and neither fill reaches the state icon, which keeps
@@ -400,7 +405,7 @@ fn an_idle_tab_with_a_running_job_shows_the_waiting_mark() {
     with_job(&mut state, "job_1", TabStatus::Running);
     let mauve = state.config.palette.mauve;
     // The shapes style (the default) marks it with a clock.
-    assert_eq!(tab_icon_color(&mut state), ("◷".to_owned(), mauve));
+    assert_eq!(tab_icon_color(&mut state), ("⧖".to_owned(), mauve));
 
     // A finished job, or a working agent, keeps the usual status.
     let mut state = state_with_tabs(true);
@@ -435,12 +440,12 @@ fn a_tab_with_an_agent_awaiting_a_reply_shows_a_question_mark_in_the_tab_bar() {
 }
 
 #[test]
-fn the_symbols_style_uses_a_clock_for_waiting() {
+fn the_symbols_style_uses_an_hourglass_for_waiting() {
     let mut state = state_with_tabs(true);
     state.config.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
     set_agent_status(&mut state, AgentStatus::Done, false);
     with_job(&mut state, "job_1", TabStatus::Running);
-    assert_eq!(tab_icon_color(&mut state).0, "◷");
+    assert_eq!(tab_icon_color(&mut state).0, "⧖");
 }
 
 #[test]
@@ -585,12 +590,14 @@ fn middle_and_right_click_on_a_tab_line_target_the_tab_not_its_space() {
 }
 
 #[test]
-fn hovering_a_square_names_its_job_on_its_tab_line() {
+fn resting_on_a_square_names_its_job_right_of_it_after_dwell() {
     let mut state = state_with_tabs(true);
     with_job(&mut state, "job_1", TabStatus::Failed);
+    with_job(&mut state, "job_2", TabStatus::Running);
     click_fold(&mut state);
     state.compose(106, 30).unwrap();
-    let (square, _) = state.hits.space_tab_squares[0];
+    let (first, _) = state.hits.space_tab_squares[0];
+    let (second, _) = state.hits.space_tab_squares[1];
     let (line, _) = state.hits.space_tabs[0];
     let hover = |state: &mut ClientShellState, (column, row): (u16, u16)| {
         state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
@@ -599,18 +606,98 @@ fn hovering_a_square_names_its_job_on_its_tab_line() {
             row,
             modifiers: KeyModifiers::empty(),
         })]);
+        state.compose(106, 30).unwrap();
+        if let Some(deadline) = state.tooltip_deadline() {
+            assert!(!state.tooltip_visible(), "new target starts a fresh dwell");
+            state.tick_selection_autoscroll(deadline - std::time::Duration::from_millis(1));
+            assert!(!state.tooltip_visible(), "not before 450 ms");
+            state.tick_selection_autoscroll(deadline);
+            assert!(state.tooltip_visible(), "shown at 450 ms");
+        }
         let frame = state.compose(106, 30).unwrap();
-        frame_rows(&frame)[line.y as usize]
-            .chars()
-            .take(26)
-            .collect::<String>()
+        let rows = frame_rows(&frame);
+        let from = |x: u16, y: u16| {
+            rows[y as usize]
+                .chars()
+                .skip(x as usize)
+                .collect::<String>()
+        };
+        (from(first.right(), first.y), from(line.x, line.y))
     };
 
-    let text = hover(&mut state, (square.x + 1, square.y));
-    assert!(text.contains("! job job_1"), "{text:?}");
-    // Off the square the label comes back.
-    let text = hover(&mut state, (square.x + 1, square.y + 2));
-    assert!(text.contains("agent t"), "{text:?}");
+    // After the dwell, right of the square; the tab line keeps its label.
+    let (row, tab_line) = hover(&mut state, (first.x + 1, first.y));
+    assert!(row.starts_with("job job_1 "), "{row:?}");
+    assert!(tab_line.contains("agent tab"), "{tab_line:?}");
+    // The tooltip covers the next square but takes no hover: moving there
+    // names that job.
+    let (row, _) = hover(&mut state, (second.x + 1, second.y));
+    assert!(!row.contains("job_1"), "{row:?}");
+    let frame = state.compose(106, 30).unwrap();
+    let second_row = frame_rows(&frame)[second.y as usize]
+        .chars()
+        .skip(second.right() as usize)
+        .collect::<String>();
+    assert!(second_row.starts_with("job job_2 "), "{second_row:?}");
+    // In the square's fill, so the two read as one.
+    let buffer = frame.to_ratatui_buffer().expect("buffer");
+    assert_eq!(
+        buffer[(second.right(), second.y)].bg,
+        buffer[(second.x, second.y)].bg
+    );
+    // Off the squares it goes.
+    let (row, _) = hover(&mut state, (first.x + 1, first.y + 3));
+    assert!(!row.contains("job job_"), "{row:?}");
+}
+
+#[test]
+fn pending_job_tooltips_are_cancelled_by_input_and_target_removal() {
+    for dismiss in ["key", "click", "scroll", "removed"] {
+        let mut state = state_with_tabs(true);
+        with_job(&mut state, "job_1", TabStatus::Running);
+        click_fold(&mut state);
+        state.compose(106, 30).unwrap();
+        let (square, _) = state.hits.space_tab_squares[0];
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: square.x + 1,
+            row: square.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        state.compose(106, 30).unwrap();
+        let deadline = state.tooltip_deadline().expect("pending dwell");
+        assert!(!state.tooltip_visible());
+        match dismiss {
+            "key" => {
+                state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(
+                    crate::input::TerminalKey::new(
+                        crossterm::event::KeyCode::Char('x'),
+                        KeyModifiers::empty(),
+                    ),
+                )]);
+            }
+            "click" | "scroll" => {
+                state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+                    kind: if dismiss == "click" {
+                        crossterm::event::MouseEventKind::Down(MouseButton::Left)
+                    } else {
+                        crossterm::event::MouseEventKind::ScrollDown
+                    },
+                    column: square.x + 1,
+                    row: square.y,
+                    modifiers: KeyModifiers::empty(),
+                })]);
+            }
+            "removed" => state.hits.tooltips.clear(),
+            _ => unreachable!(),
+        }
+        state.tick_selection_autoscroll(deadline);
+        assert!(
+            !state.tooltip_visible(),
+            "{dismiss} cancels pending tooltip"
+        );
+        assert!(state.tooltip_deadline().is_none(), "{dismiss} clears timer");
+    }
 }
 
 #[test]
@@ -892,4 +979,115 @@ fn the_notification_history_lists_and_opens_past_notifications() {
                 if target.workspace_id == "ws_1"))));
     assert!(state.overlay.is_none());
     assert_eq!(state.notification_log_button(), Some(0));
+}
+
+#[test]
+fn a_new_focused_tab_low_in_a_tall_space_scrolls_into_view() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for index in 2..=30 {
+        let mut tab = projected.tabs[0].clone();
+        tab.tab_id = format!("tab_{index}");
+        tab.label = format!("tab {index}");
+        tab.focused = false;
+        projected.tabs.push(tab);
+    }
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    assert_eq!(state.workspace_scroll, 0);
+    // A tab is created at the end and focused.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut new_tab = projected.tabs[0].clone();
+    new_tab.tab_id = "tab_new".into();
+    new_tab.label = "new tab".into();
+    projected.tabs.push(new_tab);
+    for tab in &mut projected.tabs {
+        tab.focused = tab.tab_id == "tab_new";
+    }
+    projected.focused_tab_id = Some("tab_new".into());
+    projected.workspaces[0].active_tab_id = "tab_new".into();
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let body = state.hits.workspace_body;
+    let (line, _) = state
+        .hits
+        .space_tabs
+        .iter()
+        .find(|(_, tab_id)| tab_id == "tab_new")
+        .cloned()
+        .expect("the new tab's line is drawn");
+    assert!(line.y >= body.y && line.bottom() <= body.bottom());
+}
+
+#[test]
+fn the_tab_menu_closes_its_jobs_by_state_from_chips() {
+    let mut state = state_with_tabs(true);
+    state.config.confirm_close = false;
+    with_job(&mut state, "job_run", TabStatus::Running);
+    with_job(&mut state, "job_fail", TabStatus::Failed);
+    with_job(&mut state, "job_ok", TabStatus::Succeeded);
+    let closes = |outcome: &ClientShellInput| {
+        outcome
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                ClientShellAction::Endpoint { request, .. } => match &request.method {
+                    crate::api::schema::Method::TabClose(target) => Some(target.tab_id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let open_menu = |state: &mut ClientShellState| {
+        state.compose(106, 30).unwrap();
+        let (line, _) = state.hits.space_tabs[0];
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: line.x + 6,
+            row: line.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        let frame = state.compose(106, 30).unwrap();
+        (frame_rows(&frame), state.hits.context_menu_rows.clone())
+    };
+    let chip = |rows: &[String], hits: &[(Rect, usize)], text: &str| {
+        hits.iter()
+            .find(|(rect, _)| {
+                rows[rect.y as usize]
+                    .chars()
+                    .skip(rect.x as usize)
+                    .take(rect.width as usize)
+                    .collect::<String>()
+                    .contains(text)
+            })
+            .map(|(rect, _)| *rect)
+            .expect(text)
+    };
+
+    let (rows, hits) = open_menu(&mut state);
+    let chips_row = chip(&rows, &hits, "!1").y as usize;
+    assert!(
+        rows[chips_row].contains("Close jobs:  ⧖ 1   !1   ✓1 "),
+        "{}",
+        rows[chips_row]
+    );
+    // A finished state closes at once, only its own jobs.
+    let failed = chip(&rows, &hits, "!1");
+    assert_eq!(
+        closes(&left_click(&mut state, (failed.x + 1, failed.y))),
+        ["job_fail"]
+    );
+
+    // Running jobs ask first, then close only them, not the tab.
+    let (rows, hits) = open_menu(&mut state);
+    let running = chip(&rows, &hits, "⧖ 1");
+    assert!(closes(&left_click(&mut state, (running.x + 1, running.y))).is_empty());
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ConfirmClose(ref confirm)) if confirm.title == "Stop 1 running job?"
+    ));
+    let mut outcome = ClientShellInput::default();
+    state.accept_close_confirmation(&mut outcome);
+    assert_eq!(closes(&outcome), ["job_run"]);
 }

@@ -389,7 +389,8 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
     ));
     let frame = state.compose(106, 24).expect("live drag preview");
     let rows = frame_rows(&frame);
-    assert!(rows[0].contains("client-shell → end"), "{}", rows[0]);
+    // The header keeps its sort buttons; the list shows the landing place.
+    assert!(rows[0].contains("manual"), "{}", rows[0]);
     // The preview draws the dragged space last, its grip at the right edge.
     let dragged = state
         .hits
@@ -845,7 +846,7 @@ fn a_space_shows_it_can_be_dragged_on_hover_press_and_outside_the_list() {
         ),
     ]);
     assert!(state.chrome_drag.is_none());
-    assert!(row(&mut state, 0).contains("sort by cust to reorder"));
+    assert!(row(&mut state, 0).contains("use manual to reorder"));
 }
 
 #[test]
@@ -2023,7 +2024,7 @@ fn a_dragged_space_passes_a_neighbour_at_its_middle_and_says_no_change_at_home()
     )]);
     assert_eq!(target(&state), Some(Some("ws_2".into())));
     let frame = state.compose(106, 24).expect("no-change preview");
-    assert!(frame_rows(&frame)[0].contains("no change"));
+    assert!(frame_rows(&frame)[0].contains("manual"));
 
     // Down by the second space's height: the block has passed it.
     state.handle_raw_events(vec![mouse(
@@ -2032,7 +2033,7 @@ fn a_dragged_space_passes_a_neighbour_at_its_middle_and_says_no_change_at_home()
     )]);
     assert_eq!(target(&state), Some(Some("ws_3".into())));
     let frame = state.compose(106, 24).expect("moved preview");
-    assert!(frame_rows(&frame)[0].contains("client-shell → before"));
+    assert!(frame_rows(&frame)[0].contains("manual"));
 
     // Esc cancels: nothing moves, and the pane does not get the key.
     let cancelled = state.handle_input_bytes(b"\x1b");

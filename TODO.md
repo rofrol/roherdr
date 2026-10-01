@@ -2,6 +2,53 @@
 
 ## Next, in order
 
+- [ ] Handoff 2026-09-29 (from the Claude session; its limit ran out). Read
+  AGENTS.md first: consult GPT-6 Astra + DeepSeek on design choices,
+  `herdr-job` for anything over a minute, `just check` before committing,
+  commit each stage, build release and ask before `scripts/herdr_live.sh
+  install` (it disconnects clients).
+  1. Do now (decided by me): move herdr-job's status line back from the
+     job pane's first row to its last row. Why: the header set a scroll
+     region 2..N, and lines scrolled off a region whose top is not row 1
+     never reach the scrollback, so job output cannot be scrolled up. The
+     footer (region 1..N-1) keeps scrollback. Keep the same content
+     (` ← `, state, name, `--why`, origin, job id, ` × `): in
+     `plugins/job/herdr-job` turn `Header` back into a footer on the last
+     row; in `src/client/shell/mouse.rs` `job_header_click` match the
+     pane's last row instead of its first; update
+     `the_job_headers_ends_go_back_and_close` and plugins/job/README.md.
+     Test live: a job printing 200 lines must scroll back to line 1.
+     Then add a TODO: long term, herdr draws the line as client chrome in
+     a reserved row (DeepSeek), which needs `--why`/job id in a new codec;
+     a click on the footer's ends while a full-screen program (vim, less)
+     runs in the job would close it (DeepSeek's warning), so consider
+     skipping the click mapping on the alternate screen.
+     - [ ] Long term: draw the job status as client chrome in a reserved
+       row; expose `--why` and job id through a new codec (DeepSeek).
+       Consider skipping footer-end click mappings on the alternate screen:
+       a full-screen program such as vim or less could otherwise be closed
+       by a click intended for its own bottom row.
+  2. Walk through with me the rest of what was done on 2026-09-28/29
+     (points 1-7 confirmed): 8 a sorted spaces list (name/prio) holds its
+     order while the pointer is over it; 9 the `shapes` indicator style
+     (default: `◐` working, `◉` blocked, `●` done, `○` idle, `◷`→`⧖`
+     waiting on a job); 10 the `+` on a space's name line opens a tab
+     there; 11 tooltips: cut tab label (450 ms) and the build line; 12 the
+     spaces list keeps its top row on the same space when squares above
+     fold; 13 with `ui.toast.delivery = "system"` and the window focused,
+     herdr's own toast shows instead; 14 the notification history `✉N`
+     at the right of the spaces header. Show each, ask "ok?", fix what I
+     reject (with a terminal demo in Python when it is about looks).
+  3. Open items added on 2026-09-29, below in this file: the job square
+     tooltip delay (same 450 ms as tab labels; consult first), the
+     regression "closing a tab asks to close the space, cancelling leaves
+     an odd highlight" (my screenshots were the wrong ones; ask me to
+     reproduce), the upstream "update ready" badge in fork builds, the
+     flaky `federated_client_starts_without_local_and_survives_its_restart`
+     under a full `just check`, a per-job menu on a square (open, close).
+     Terminal demos from that session: scratchpad scripts are gone; write
+     new ones as needed (run them with `herdr-job run --keep`).
+
 Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
 
 - [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
@@ -19,7 +66,9 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     mobile already), `●` done and unseen, `○` idle; colours stay.
     Done 2026-09-29: a `shapes` indicator style, the fork's default
     (settings > indicators offers dots, symbols, shapes); a waiting-on-job
-    mark is `◷` there, as in symbols. Consulted (GPT-6 Astra, DeepSeek):
+    mark is `⧖` there, as in symbols (was `◷` until 2026-09-29: at a small
+    font it read as a moon, close to `◐` working; GPT-6 Astra and DeepSeek
+    both picked `⧖`, the job line's running mark). Consulted (GPT-6 Astra, DeepSeek):
     both chose a new style over changing `dots`; both warned `◉` and `●`
     blur at small font sizes (DeepSeek: use the symbols' `×` for blocked);
     kept `◉` as decided, the colour differs too.
@@ -269,6 +318,43 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     space's triangle), no auto-unfold of failed jobs (it moves rows under
     the pointer). Succeeded-only: Astra the triangle alone (chosen),
     DeepSeek nothing.
+  - Changed 2026-09-29 at my request: the tab lines' fill (and the square
+    rows) reach the right edge, level with the space name line's `+`,
+    instead of stopping a column short.
+  - 2026-09-29: the square glyphs keep the theme's own status colours.
+    Compared in a terminal demo against darkening them to 3:1, 3.5:1 and
+    4.5:1, mixing toward the text colour, more saturation, a darker tint
+    and an accent frame (consulted GPT-6 Astra and DeepSeek: both chose
+    darkening to 3:1); I chose the original colours.
+  - Bug (2026-09-29, screenshot): a tab whose only job succeeded (kept
+    open with `--keep`) shows the `▼` triangle but no count, since the
+    summary counts only running and failed jobs; it should count succeeded
+    ones too (`✓1`). Fixed the same day: the line counts `⧖ !` and `✓`.
+  - Changed 2026-09-29 at my request, after a terminal demo of five
+    placements: a hovered square's job is named at once in a tooltip on
+    the square's row, right of the square, instead of in place of the tab
+    line's label (cut at ~12 columns). It takes no hover, so moving onto a
+    square it covers names that job; leaving the squares hides it.
+    Consulted (GPT-6 Astra, DeepSeek): both wanted it past the sidebar's
+    edge so it covers no square, and no label swap; Astra with the 450 ms
+    dwell, DeepSeek at once (chosen). The tooltip then lost the glyph (the
+    square shows the state) and took the square's fill, so the two read as
+    one.
+  - Changed 2026-09-29 at my request: a tooltip's text starts where its
+    target's text does (its padding column sits left of the target), a
+    cut tab label's tooltip keeps the line's own fill (tint, grey), and a
+    tab line's fill runs under the scrollbar, whose thin `▕` otherwise left
+    a white gap after it.
+  - Changed 2026-09-29 at my request, after a terminal demo of seven ways:
+    unfolded squares are followed by an empty row, so they do not run into
+    the next tab line. Consulted (GPT-6 Astra, DeepSeek): Astra wanted the
+    squares indented under the label, DeepSeek the parent's fill behind
+    them (both to spend no row); I chose the empty row.
+  - Bug (2026-09-29): the `new` button at the bottom creates a space and
+    scrolls the list to it, but a new tab (`+` or the new-tab key) in a
+    space low in the list does not scroll to the new tab line. Fixed the
+    same day: a change of the focused tab, not only of the focused space,
+    reveals it in the list.
   - Done 2026-09-28: a succeeded job's tab does not close while it is the
     focused tab (herdr's `focused`, the tab shown); herdr-job checks every
     2 s and closes it once you leave it.
@@ -323,6 +409,30 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     pointer (a middle-click could stop the wrong job). DeepSeek wanted the
     footer dropped (chosen); Astra wanted the top line and footer to split
     the fields.
+- [ ] A `claude` consult skill in `plugins/consult/skills/`, like `gpt` and
+  `deepseek`, so pi (and other agents) can ask Claude Opus 5.5 for a second
+  opinion: `ask_claude.sh` running `claude -p --model claude-opus-5-5`
+  (billed to the Claude subscription, so it shares Claude Code's usage
+  limit), in its own herdr-job tab, logged to consult-stats; linked into
+  `~/.pi/agent/skills/` by `plugins/consult/install-skills` (2026-09-29).
+- [ ] The job square's tooltip should appear after the same dwell as the
+  cut tab label's (450 ms), not at once (2026-09-29, my request; consult
+  GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
+  a square has no text).
+- [ ] Regression (2026-09-29): closing a tab asks whether to close the
+  space, and cancelling leaves an odd highlight on the space. Probably
+  the tab is the space's last one, so the close becomes a space close
+  (`request_tab_close` opens the workspace confirmation when no other tab
+  is left), and the cancelled confirmation leaves the space selected or
+  highlighted. Reproduce, check whether it predates the vertical tabs, and
+  consult (GPT-6 Astra, DeepSeek) on what closing the last tab should do.
+- [ ] The fork shows upstream's "update ready" badge (`●` before `menu`,
+  2026-09-29): the updater checks herdrdev's release channel, but this
+  build is the fork, installed with `scripts/herdr_live.sh`, and
+  `herdr update` would replace it with upstream's binary. Decide: turn the
+  update check off in fork builds (a build-time flag), point it at the
+  fork's own releases, or say "upstream <version>" and never offer to
+  install it.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -362,6 +472,45 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     bottom row (or past it) scrolls the list a row every 60 ms, retargeting
     the drop with the pointer where it is, and stops back inside the list;
     local sidebar only (it scrolls by rows).
+  - Changed 2026-09-29 at my request: while a space is dragged the header
+    keeps its sort buttons; the `→ before …`, `→ end` and `no change`
+    hints went (the live reorder shows where it lands). Left:
+    `release cancels · Esc` outside the list and a refusal's reason. The
+    own order's button is `manual`, not `cust`, and the header's buttons
+    are one column apart, so `manual name ↑ prio ↓` leaves room for `✉N`.
+    Consulted (GPT-6 Astra, DeepSeek): both said to keep only those
+    exceptional hints; Astra chose `manual` (chosen), DeepSeek `custom`.
+  - Done 2026-09-29: right-click anywhere on a tab line (its summary
+    too) opens the tab menu with a `Close jobs:` row of chips, as the line
+    counts them, `⧖ 2  !1  ✓3`: a chip closes that state's job tabs (the
+    statuses when clicked, not when the menu opened); `⧖` asks first
+    ("Stop 2 running jobs?", naming them) and keeps the tab; chips appear
+    only for states with jobs. Keyboard moves through the chips as items.
+    Consulted (GPT-6 Astra, DeepSeek): both wanted one tab menu, no menu of
+    its own on the summary, and "close finished jobs"; Astra also a
+    confirmed "stop all", DeepSeek no stopping at all. I asked for
+    succeeded, failed and running separately, as chips on one row. Still
+    open: a per-job menu on a square (open, close).
+  - Next (screenshot 2026-09-29): a collapsed space does not show that it
+    is the focused one (the only focus mark is its active tab's fill, and
+    the tabs are hidden). A collapsed space is one line: no branch line,
+    its git status moves onto the name line without the branch name
+    (`► herdr ↑2 ⧖ 1 !3`), and the focused collapsed space's name line
+    gets the focused active tab's solid accent fill (same span as a tab
+    line). Consulted (GPT-6 Astra, DeepSeek): both: fill only the focused
+    collapsed space, no tint or grey on the others (nearly every space has
+    an active tab, so a tint says nothing, and grey reads as a tab); give
+    the collapsed line its own configurable token list (default
+    `workspace, git_status, tab_jobs`) instead of merging arbitrary row-2
+    tokens; the triangle, `+`, grip and job counts need readable colours on
+    the accent (as the tab line's `on_accent`); hover must differ from the
+    focus fill; a collapsed worktree parent whose child space is focused
+    gets the fill but needs a "focus inside" cue, and its git status must
+    not pass off one child's as the group's. They differ on order: Astra
+    git status before the job counts (as asked, chosen), DeepSeek jobs
+    first; both truncate the name first, then drop the git status, never
+    the job counts. DeepSeek also wanted the branch kept for worktree
+    children (rejected: their names already tell them apart).
   - Done 2026-09-28: keyboard reorder. `keys.move_space_previous` and
     `keys.move_space_next` (unset by default, e.g. `alt+shift+up/down`)
     move the focused space one place in the sidebar's own order, with its
@@ -453,6 +602,41 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Then, also at my request: one colour, accent blue, while pressed and
     while dragged (mauve read as a git branch; a darker grey and a darker
     blue were tried and dropped).
+- [ ] Dragging tabs in the spaces list does not work (2026-09-29): pressing
+  a tab line and moving starts no drag. Only the top tab bar reorders tabs
+  (`tab_press` comes from `hits.tabs`, the bar), with a thin insertion
+  marker, and only in the focused space. It should work like dragging a
+  space: the tab line moves live in the list to where it would land, with
+  the same accent bar, `drag_bg`, Esc, `release cancels · Esc` outside and
+  auto-scroll.
+  - Drag unit: the tab line with its unfolded job squares and its child
+    tabs (not draggable themselves, their order follows the parent: no
+    grip, no drop slot between a parent and its child). The agent rows are
+    per space (sorted by `tab`/`prio`), so they stay put.
+  - Within its own space only; the drop index counts main tabs, not rows,
+    and a no-op drop sends nothing. Moving a tab to another space is a
+    separate feature (ownership, worktree path, machine). Tabs of a space
+    that is not focused too, so the client's `valid_drop` must stop
+    requiring the focused space; pressing such a tab does not focus it
+    until release without a drag.
+  - Consulted (GPT-6 Astra, DeepSeek, 2026-09-29), both: the whole block,
+    not the label alone; cross-space out of scope, but visible: leaving
+    the source space shows `release cancels · Esc`, never clamps to its
+    first or last slot; while dragging hold the geometry (agent prio sort,
+    folding, closing job tabs leave blank slots as they already do under
+    the pointer), state glyphs and counts may update; cancel if the tab
+    vanishes; the fold triangle, squares and middle-click never start a
+    drag; test a short tab dragged past a tall unfolded one both ways.
+    DeepSeek also: a 3-cell threshold, since one cell eats clicks.
+    Rejected: a tab line is one row high, so moving a tab one line would
+    first need a detour. Decided instead: the drag starts after one row of
+    vertical movement, and sideways movement alone never starts it (a
+    vertical list reorders nothing sideways; a click's jitter is a column,
+    rarely a whole row); the same for dragging spaces. DeepSeek also:
+    auto-scroll clamped to the source space's rows, a look different from a space drag so it does not
+    read as the space moving, and a target space id in the move API now.
+    Astra: the top bar may keep its marker for now, but the same order,
+    cancel and child-tab rules.
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
@@ -734,6 +918,28 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Alternative to weigh (mine, not consulted): keep a closed tab's
     processes alive for a few seconds with an "undo" toast, which restores
     them exactly.
+- [ ] Which tab gets focus after closing the active one: should it be the
+  next one (right) instead of the previous one (left), or should that be
+  configurable? Today `Workspace::close_tab` focuses the previous tab (the
+  new last one when the last tab closes).
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-29), who disagree.
+    Astra: default to "next, else previous" (Chrome, Firefox), but a
+    closed child tab should return to its parent. DeepSeek: keep
+    "previous", because parent/child ordering makes it structurally
+    right: closing a parent's first child lands on the parent, and "next"
+    after closing a parent would land on its (now orphaned) child.
+    Chrome and Firefox go right because their tabs are flat. Both: tmux
+    returns to the previously used window, VS Code to the recently used
+    editor (Astra, not verified).
+  - Both: no speculative option matrix; if added,
+    `focus_after_tab_close = "previous" | "next"`, and `"last_used"` only
+    once there is an MRU history of tabs. Child to parent should be
+    unconditional, not a config value. Today it only holds for the first
+    child: closing a later child lands on its previous sibling.
+  - Edge cases: closing a non-active tab keeps the same tab focused (it
+    does today); a tab closing because its process exited, or a
+    background job tab, must never move focus unless it was the active
+    tab; another client's space only gets its stored active tab fixed.
 - [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in
   the tab bar and stay at its start, before the unpinned tabs, like
   pinned tabs in Chrome or Firefox.
@@ -1041,6 +1247,30 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     closes the tab.
   - Verify on Linux: plain Ctrl+T/W still reach the shell inside herdr.
 
+- [ ] Raise the default sidebar width: it now carries spaces with branch
+  and git status, agents with their task, job lines and tab lines, and
+  truncates a lot at 26 columns. Plan: `sidebar_width` 26 → 32,
+  `sidebar_max_width` 36 → 44 (so dragging can go wider), min stays 18.
+  - Consulted GPT-6 Astra and DeepSeek, 2026-09-29: both chose a fixed 32
+    (DeepSeek: max 40, min 20). Not a percentage of the terminal width
+    (a resize would silently reflow the agent panes) and no auto-sizing
+    from content (every rename, checkout or status change would move the
+    dividers and rewrap agent output; at most a one-shot "fit to content"
+    action that stores a dragged width). Budget: two 80-column agent panes
+    next to a 32-column sidebar need at least 192 columns.
+  - Only clients without a dragged width get the new default: the
+    preferences file stores the width only after a drag
+    (`sidebar_width_manual`), so a dragged 26 stays 26.
+  - Narrow terminals: the mobile layout starts at 64 columns
+    (`DEFAULT_MOBILE_WIDTH_THRESHOLD`), so a 70-column terminal would keep
+    only 38 for panes. Consider capping the default at a share of the
+    terminal (e.g. a third) below ~120 columns, without touching a
+    dragged width.
+  - Fix the stale `src/main.rs` config comment saying the width is
+    "auto-scaled based on workspace names"; nothing scales it. Update the
+    defaults in `src/config/model.rs`, the doc comments and the sample
+    config together.
+
 ## Deferred
 
 - [ ] Consult stats: pair the coordinator with Opus at a lower effort
@@ -1297,6 +1527,11 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   Also flaky: `federated_client_starts_without_local_and_survives_its_restart`
   failed once in `just check` on 2026-09-28 ("remote reconnect 2 must
   restore visible input", 12.8 s) and passed alone and on the rerun.
+  It failed again on 2026-09-29 at "recovered Local must be selectable"
+  (tests/client_mode.rs:1207), once in three full `just check` runs, and
+  passes alone; the same assertion failed every other run while the
+  client fetched `notification.list` in the background (fixed), so check
+  whether something else still races the row click under load.
   - Done 2026-09-29: a test process now reaps `/tmp/herdr-client-test-*`
     bases whose test process (the pid in the name) is gone and that are
     over a minute old: it asks their servers to stop through their sockets

@@ -1128,6 +1128,7 @@ impl ClientShellState {
                     tab_id: tab_id.to_owned(),
                     workspace,
                     children: Vec::new(),
+                    children_only: false,
                 }),
                 pane_target: None,
                 title: "Close tab with running work?".to_owned(),
@@ -1228,6 +1229,7 @@ impl ClientShellState {
                     tab_id: tab_id.to_owned(),
                     workspace,
                     children,
+                    children_only: false,
                 }),
                 pane_target: None,
                 title: "Close tab and its child tabs?".to_owned(),
@@ -1240,6 +1242,62 @@ impl ClientShellState {
         ));
         outcome.repaint = true;
         true
+    }
+
+    /// Asks before stopping a tab's running jobs, naming them; closing their
+    /// tabs stops them. The tab itself stays.
+    pub(super) fn confirm_stop_running_jobs(
+        &mut self,
+        tab_id: &str,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let running = super::tab_groups::child_tabs(snapshot, tab_id)
+            .into_iter()
+            .filter(|child| child.status == Some(crate::api::schema::TabStatus::Running))
+            .collect::<Vec<_>>();
+        if running.is_empty() {
+            return;
+        }
+        let names = running
+            .iter()
+            .map(|child| child.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let children = running
+            .iter()
+            .map(|child| child.tab_id.clone())
+            .collect::<Vec<_>>();
+        let Some(target) = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id) else {
+            return;
+        };
+        let (label, workspace_id) = (target.label.clone(), target.workspace_id.clone());
+        let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
+        else {
+            return;
+        };
+        let count = children.len();
+        self.overlay = Some(ClientShellOverlay::ConfirmClose(
+            ClientConfirmCloseOverlay {
+                workspace_id,
+                tab_target: Some(ClientTabCloseConfirmation {
+                    tab_id: tab_id.to_owned(),
+                    workspace,
+                    children,
+                    children_only: true,
+                }),
+                pane_target: None,
+                title: format!(
+                    "Stop {count} running {}?",
+                    if count == 1 { "job" } else { "jobs" }
+                ),
+                detail: format!("{label}: {names}"),
+                running: None,
+            },
+        ));
+        outcome.repaint = true;
     }
 
     pub(super) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
@@ -1279,6 +1337,7 @@ impl ClientShellState {
                 );
                 return;
             }
+            let children_only = target.children_only;
             for child in target.children {
                 self.push_endpoint_method(
                     crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
@@ -1286,6 +1345,9 @@ impl ClientShellState {
                     }),
                     outcome,
                 );
+            }
+            if children_only {
+                return;
             }
             crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
                 tab_id: target.tab_id,
@@ -1356,6 +1418,7 @@ impl ClientShellState {
                 tab_id,
                 workspace,
                 children: Vec::new(),
+                children_only: false,
             })
         } else {
             None

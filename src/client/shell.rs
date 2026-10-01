@@ -272,7 +272,7 @@ fn aggregate_icon(
 
 /// `status_icon`, or the mark: `?` for a question in both styles; for a
 /// running job a filled dot in the Dots style (easy to spot in a long list),
-/// `◷` in the Symbols style.
+/// `⧖` in the Symbols style.
 fn agent_icon(
     status: crate::api::schema::AgentStatus,
     mark: AgentMark,
@@ -285,7 +285,7 @@ fn agent_icon(
             AgentMark::WaitsOnJob,
             crate::config::StatusIndicatorStyle::Symbols
             | crate::config::StatusIndicatorStyle::Shapes,
-        ) => "◷",
+        ) => "⧖",
         (AgentMark::None, style) => status_icon(status, style),
     }
 }
