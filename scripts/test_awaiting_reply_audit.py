@@ -123,5 +123,110 @@ class Wilson(unittest.TestCase):
         self.assertEqual(audit.wilson(0, 0), (0.0, 0.0))
 
 
+HOOK = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "src",
+    "integration",
+    "assets",
+    "claude",
+    "herdr-agent-state.sh",
+)
+
+
+def hook_source():
+    with open(HOOK, encoding="utf-8") as handle:
+        text = handle.read()
+    start = text.index('if [ "$action" = "stop-check" ]')
+    start = text.index("<<'PY'\n", start) + len("<<'PY'\n")
+    return text[start : text.index("\nPY\n", start)]
+
+
+class StopHook(unittest.TestCase):
+    """The Claude Stop hook asks once for a final question that was not reported."""
+
+    def test_its_question_heuristic_equals_the_audits(self):
+        source = hook_source()
+        main = source.index("try:\n    with open(os.environ[")
+        namespace = {}
+        exec(source[:main], namespace)  # noqa: S102 - the repository's own script
+        for message in [
+            "Done.\n\nShould I push the commits?",
+            "Wypchnąć commity?",
+            "Finished.\n\nAnything else?",
+            "```\nwhy?\n```\n\nFixed.",
+            "> quoted?\n\nFinished.",
+            "Let me know which option you prefer, A or B?",
+            "Done. All tests pass.",
+        ]:
+            self.assertEqual(
+                namespace["looks_like_question"](message),
+                audit.looks_like_question(message),
+                message,
+            )
+
+    def run_hook(self, entries, **fields):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = os.path.join(directory, "t.jsonl")
+            with open(transcript, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(json.dumps(e) for e in entries) + "\n")
+            payload = {"hook_event_name": "Stop", "transcript_path": transcript}
+            payload.update(fields)
+            env = dict(
+                os.environ,
+                HERDR_ENV="1",
+                HERDR_PANE_ID="p1",
+                XDG_STATE_HOME=os.path.join(directory, "state"),
+            )
+            env.pop("CURSOR_VERSION", None)
+            result = subprocess.run(
+                ["sh", HOOK, "stop-check"],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            return result.stdout.strip()
+
+    def test_blocks_once_for_an_unreported_question(self):
+        entries = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant",
+                                              "content": [text("Done.\n\nPush the commits?")]}},
+        ]
+        output = self.run_hook(entries)
+        self.assertEqual(json.loads(output)["decision"], "block")
+        # The second stop of the same turn is left alone.
+        self.assertEqual(self.run_hook(entries, stop_hook_active=True), "")
+
+    def test_a_reported_question_and_a_statement_pass(self):
+        reported = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                bash("herdr agent awaiting-reply"), text("Push the commits?")]}},
+        ]
+        self.assertEqual(self.run_hook(reported), "")
+        statement = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant",
+                                              "content": [text("All done, tests pass.")]}},
+        ]
+        self.assertEqual(self.run_hook(statement), "")
+
+    def test_a_report_from_an_earlier_turn_does_not_count(self):
+        entries = [
+            {"type": "user", "message": {"role": "user", "content": "first"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                bash("herdr agent awaiting-reply"), text("Which one?")]}},
+            {"type": "user", "message": {"role": "user", "content": "second"}},
+            {"type": "assistant", "message": {"role": "assistant",
+                                              "content": [text("Want me to push?")]}},
+        ]
+        self.assertEqual(json.loads(self.run_hook(entries))["decision"], "block")
+
+
 if __name__ == "__main__":
     unittest.main()

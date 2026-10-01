@@ -486,7 +486,7 @@ pub(crate) fn render_sidebar(
                     // each side than its label.
                     let style = if state.open_list == Some(view) {
                         let pill = Rect::new(x.saturating_sub(1), workspace_area.y, width + 2, 1);
-                        open_button_style(buffer, pill, palette)
+                        open_button_style(buffer, pill, style, palette)
                     } else {
                         style
                     };
@@ -1459,14 +1459,17 @@ fn render_notification_log_button(
         return Rect::default();
     }
     let rect = Rect::new(area.right().saturating_sub(width + 1), area.y, width + 1, 1);
-    let style = if open {
-        open_button_style(buffer, rect, palette)
-    } else if unread > 0 {
+    let style = if unread > 0 {
         Style::default()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.overlay1)
+    };
+    let style = if open {
+        open_button_style(buffer, rect, style, palette)
+    } else {
+        style
     };
     put_text(
         buffer,
@@ -1479,15 +1482,27 @@ fn render_notification_log_button(
     rect
 }
 
-/// Fills `pill` with the accent and returns the contrasting text style: a
-/// header button whose list is open.
-fn open_button_style(buffer: &mut Buffer, pill: Rect, palette: &Palette) -> Style {
-    let style = Style::default()
-        .fg(super::panel_contrast_fg(palette))
-        .bg(palette.accent)
-        .add_modifier(Modifier::BOLD);
-    buffer.set_style(pill.intersection(buffer.area), style);
-    style
+/// Fills `pill` with a light accent tint (a sixth of the accent on light
+/// themes, a quarter on dark ones) and returns `style` made bold on it: a
+/// header button whose list is open keeps its own colour. Without an RGB
+/// palette the pill is solid accent with contrasting text.
+fn open_button_style(buffer: &mut Buffer, pill: Rect, style: Style, palette: &Palette) -> Style {
+    let dark = matches!(palette.panel_bg, ratatui::style::Color::Rgb(r, g, b)
+        if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) < 128_000);
+    let open = match super::render::tabs::blend(
+        palette.accent,
+        palette.panel_bg,
+        1,
+        if dark { 4 } else { 6 },
+    ) {
+        Some(tint) => style.bg(tint).add_modifier(Modifier::BOLD),
+        None => Style::default()
+            .fg(super::panel_contrast_fg(palette))
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD),
+    };
+    buffer.set_style(pill.intersection(buffer.area), open);
+    open
 }
 
 /// Columns the name line of a space leaves at its right with vertical tabs:

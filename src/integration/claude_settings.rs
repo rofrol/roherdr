@@ -25,6 +25,9 @@ const AWAITING_REPLY_PERMISSION: &str = "Bash(herdr agent awaiting-reply)";
 /// The hook action that repeats the awaiting-reply instruction on every prompt.
 const REMINDER_ACTION: &str = "reminder";
 const REMINDER_EVENT: &str = "UserPromptSubmit";
+/// The hook action that asks the agent once to report a final question it did not report.
+const STOP_CHECK_ACTION: &str = "stop-check";
+const STOP_CHECK_EVENT: &str = "Stop";
 
 struct HookRemoval {
     event: &'static str,
@@ -190,6 +193,30 @@ pub(crate) fn add_awaiting_reply_reminder(
     settings_path: &Path,
     hook_path: &Path,
 ) -> io::Result<String> {
+    let with_reminder = add_event_hook(
+        content,
+        settings_path,
+        hook_path,
+        REMINDER_EVENT,
+        REMINDER_ACTION,
+    )?;
+    add_event_hook(
+        &with_reminder,
+        settings_path,
+        hook_path,
+        STOP_CHECK_EVENT,
+        STOP_CHECK_ACTION,
+    )
+}
+
+/// Adds one command hook of herdr's script to `event`, keeping the other hooks of the event.
+fn add_event_hook(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+    event: &str,
+    action: &str,
+) -> io::Result<String> {
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
     let hooks = ensure_hooks_object(
@@ -198,8 +225,8 @@ pub(crate) fn add_awaiting_reply_reminder(
         "claude settings",
         "claude settings hooks",
     )?;
-    let command = hook_command(hook_path, Some(REMINDER_ACTION));
-    ensure_command_hook(hooks, REMINDER_EVENT, command.clone(), 10, None)?;
+    let command = hook_command(hook_path, Some(action));
+    ensure_command_hook(hooks, event, command.clone(), 10, None)?;
     if desired == original {
         return Ok(content.to_string());
     }
@@ -234,14 +261,14 @@ pub(crate) fn add_awaiting_reply_reminder(
             .object_value()
             .ok_or_else(|| settings_error("hooks"))?,
     };
-    let entries = match hooks.get(REMINDER_EVENT) {
+    let entries = match hooks.get(event) {
         Some(property) => property
             .array_value()
-            .ok_or_else(|| settings_error("hooks.UserPromptSubmit"))?,
+            .ok_or_else(|| settings_error(&format!("hooks.{event}")))?,
         None => hooks
-            .append(REMINDER_EVENT, CstInputValue::Array(Vec::new()))
+            .append(event, CstInputValue::Array(Vec::new()))
             .array_value()
-            .ok_or_else(|| settings_error("hooks.UserPromptSubmit"))?,
+            .ok_or_else(|| settings_error(&format!("hooks.{event}")))?,
     };
     entries.append(json!({
         hooks: [{
@@ -259,8 +286,31 @@ pub(crate) fn remove_awaiting_reply_reminder(
     settings_path: &Path,
     hook_path: &Path,
 ) -> io::Result<String> {
+    let without_reminder = remove_event_hook(
+        content,
+        settings_path,
+        hook_path,
+        REMINDER_EVENT,
+        REMINDER_ACTION,
+    )?;
+    remove_event_hook(
+        &without_reminder,
+        settings_path,
+        hook_path,
+        STOP_CHECK_EVENT,
+        STOP_CHECK_ACTION,
+    )
+}
+
+fn remove_event_hook(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+    event: &str,
+    action: &str,
+) -> io::Result<String> {
     let mut desired = parse_value(content, settings_path)?;
-    let commands = hook_command_variants(hook_path, Some(REMINDER_ACTION));
+    let commands = hook_command_variants(hook_path, Some(action));
     let Some(hooks) = hooks_object_if_present(
         &mut desired,
         settings_path,
@@ -270,7 +320,7 @@ pub(crate) fn remove_awaiting_reply_reminder(
     else {
         return Ok(content.to_string());
     };
-    if !remove_value_event_commands(hooks, REMINDER_EVENT, &commands, None)? {
+    if !remove_value_event_commands(hooks, event, &commands, None)? {
         return Ok(content.to_string());
     }
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
@@ -285,7 +335,7 @@ pub(crate) fn remove_awaiting_reply_reminder(
         .and_then(|object| object.get("hooks"))
         .and_then(|property| property.object_value())
     {
-        remove_event_commands(&hooks, REMINDER_EVENT, &commands, false, &Value::Null)?;
+        remove_event_commands(&hooks, event, &commands, false, &Value::Null)?;
     }
     verify_updated(root.to_string(), settings_path, &desired)
 }
