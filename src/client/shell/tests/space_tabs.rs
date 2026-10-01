@@ -2861,3 +2861,56 @@ fn a_new_tab_opens_the_collapsed_space_it_is_created_in() {
             if matches!(&request.method, crate::api::schema::Method::TabCreate(_)))));
     assert!(state.collapsed_groups.is_empty(), "the space opened");
 }
+
+#[test]
+fn history_times_and_icons_form_columns_whatever_their_format() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let now_ms = crate::usage::now_unix() * 1000;
+    let record =
+        |id: u64, unix_ms: u64, title: &str, tab: &str| crate::api::schema::NotificationRecord {
+            id,
+            unix_ms,
+            kind: "finished".into(),
+            title: title.into(),
+            body: None,
+            agent: None,
+            workspace_id: Some("ws_1".into()),
+            tab_id: Some(tab.into()),
+            pane_id: None,
+            task: None,
+            request: None,
+            repeats: None,
+        };
+    state.notification_log_received(Some("tab_9"));
+    state.compose(106, 30).unwrap();
+    let button = state.hits.notification_log_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    state.complete_notification_list(
+        ClientEndpointId::Local,
+        Ok(crate::api::schema::ResponseResult::NotificationList {
+            notifications: vec![
+                // Three days old: a date and a time; today: a time only; one
+                // row has a live tab (an icon), the others do not.
+                record(1, now_ms - 3 * 86_400_000, "old entry", "tab_gone"),
+                record(2, now_ms, "today entry", "tab_gone2"),
+                record(3, now_ms, "icon entry", "tab_1"),
+            ],
+        }),
+    );
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let column = |needle: &str| -> usize {
+        let row = rows
+            .iter()
+            .find(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} listed: {rows:?}"));
+        row[..row.find(needle).unwrap()].chars().count()
+    };
+    // The words start in one column (compared by the first letter of each).
+    let old = column("old entry");
+    assert_eq!(column("today entry"), old, "{rows:?}");
+    assert_eq!(column("icon entry"), old, "{rows:?}");
+    let today = rows.iter().find(|row| row.contains("today entry")).unwrap();
+    assert!(today.contains(':') && today.find("today").unwrap() > today.find(':').unwrap() + 3);
+}

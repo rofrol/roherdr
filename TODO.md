@@ -47,6 +47,20 @@
   panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
   investigated. Done: nothing.
 
+- [x] History rows were cramped and unaligned (user, 2026-10-02, screenshot: the
+  time glued to the state icon; "some rows have only a date, some date and
+  time, not one column"; yesterday's entries have date and time, today's only the
+  time). Consulted DeepSeek and GPT: GPT keeps the mixed format right-aligned,
+  DeepSeek groups by day with separators and only `HH:MM` per row.
+  - Done 2026-10-02: the lists draw one time column (right-aligned to the
+    widest time shown, so `00:22` and `Sep 29 00:05` end together), a space, one
+    icon column, a space, the text; a row with no live tab puts its own mark
+    (`✓`, `?`) in the icon column, so the words of all rows start in one
+    column. Test: `history_times_and_icons_form_columns_whatever_their_format`.
+  - Not done: day separators with times only (DeepSeek's variant, kept here if
+    the mixed format still reads badly); a fixed 12-cell time column (GPT) so the
+    text stays still when a new entry changes the widest time.
+
 - [x] No `?` although the agent "reported" (user, 2026-10-01, screenshot of a
   Haiku 4.5 session in job-seeker: the tab kept the idle ring). Diagnosis: the
   turn ended "Czekam na ITDS: Masz email od Barbary albo link do Lea

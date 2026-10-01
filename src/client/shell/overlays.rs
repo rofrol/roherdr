@@ -377,16 +377,20 @@ pub(crate) fn render_notification_log(
         .min(140)
         .max(20.min(screen.width));
     let min_width = 56.min(max_width);
+    // One column for the times (right-aligned, so `00:22` and `Sep 29 00:05`
+    // line up) and one for the state icons, the same on every row.
+    let time_width = rows
+        .iter()
+        .map(|(time, ..)| display_width(time))
+        .max()
+        .unwrap_or(0);
+    let has_icons = rows.iter().any(|(.., icon)| icon.is_some());
+    let text_offset =
+        2 + if time_width > 0 { time_width + 1 } else { 0 } + if has_icons { 2 } else { 1 };
     let widest = rows
         .iter()
-        .map(|(time, text, _, icon)| {
-            let lead = if time.is_empty() {
-                3
-            } else {
-                3 + display_width(time)
-            };
-            let lead = lead + u16::from(icon.is_some());
-            lead + display_width(&text.replace(|c: char| c.is_control(), " ")) + 1
+        .map(|(_, text, ..)| {
+            text_offset + display_width(&text.replace(|c: char| c.is_control(), " ")) + 1
         })
         .max()
         .unwrap_or(0);
@@ -459,17 +463,30 @@ pub(crate) fn render_notification_log(
         } else {
             base.fg(palette.overlay1)
         };
-        // The time, when the row has one, then the tab's state icon as its
-        // sidebar line draws it, then the text.
-        let mut text_x = row.x.saturating_add(3);
-        if !time.is_empty() {
-            put_text(buffer, row.x.saturating_add(2), row.y, 13, time, time_style);
-            text_x = row.x.saturating_add(3 + display_width(time));
+        // The time (right-aligned in its column), then the tab's state icon as
+        // its sidebar line draws it, then the text, each with a space between.
+        let mut column = row.x.saturating_add(2);
+        if time_width > 0 {
+            let pad = time_width.saturating_sub(display_width(time));
+            put_text(
+                buffer,
+                column.saturating_add(pad),
+                row.y,
+                time_width,
+                time,
+                time_style,
+            );
+            column = column.saturating_add(time_width + 1);
         }
-        if let Some((glyph, color)) = icon {
-            let style = if solid { base } else { base.fg(*color) };
-            put_text(buffer, text_x.saturating_sub(1), row.y, 1, glyph, style);
-            text_x = text_x.saturating_add(1);
+        // A row with no live tab starts its text (with its own mark) in the
+        // icon column, so the words line up with the rows that have an icon.
+        let mut text_x = column;
+        if has_icons {
+            if let Some((glyph, color)) = icon {
+                let style = if solid { base } else { base.fg(*color) };
+                put_text(buffer, column, row.y, 1, glyph, style);
+                text_x = column.saturating_add(2);
+            }
         }
         let text = crate::ui::truncate_end(
             &text.replace(|character: char| character.is_control(), " "),
