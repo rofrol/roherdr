@@ -2733,6 +2733,36 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Done: nothing yet; waiting for the user's go (it rewrites `master`, and
     other sessions commit there).
 
+- [ ] Live "working" and "asking" indicators next to the notification button
+  (user, 2026-10-01: "at the top next to the notification icon add a working
+  icon and a count; I can click and a list opens. Same for those that ask.
+  Do it next."). Consulted DeepSeek, Opus and GPT (all agree on the core):
+  - Header, right to left: `✉n` (unchanged), `?n` (needs you), `◐n` (working,
+    the existing animated half circle); counts derived from the snapshot the
+    client already has, no background request; keep the sort/filter buttons,
+    shorten the "Spaces" title first, then hide the working count.
+    Open question between the models: hide a zero count (Opus, DeepSeek dims)
+    or keep it dimmed for stable hit targets (GPT, DeepSeek).
+  - Counts: distinct `pane_id`; asking = `Blocked || awaiting_reply`; working =
+    `Working` and not asking (attention wins); herdr-job tabs are not agents,
+    so they stay out (maybe a separate indicator later); the focused pane
+    counts (looking at it is not an answer) but shows dimmed in the list.
+  - Dropdown (one at a time, like the envelope list): one row per agent, task
+    (terminal title) first, then `space / tab · agent`; an asking row says
+    approval or reply; sorted by time in the state only when a reliable
+    timestamp exists (else workspace/tab/pane order); about 8-10 rows, then
+    scroll; the highlighted row shows its whole text below; Enter or click
+    jumps to the pane's tab; Esc or an outside click closes.
+  - Relation to others: the envelope is history, these are the live queues, so
+    an overlap is fine; opening them does not mark notifications read; the
+    hidden Agents panel stays the full inventory.
+  - Tests: counts from snapshot fixtures (0, 1, many, Blocked plus awaiting
+    on one pane counted once), layout at 32 and 44 columns, a row vanishing
+    live while the list is open (highlight follows the pane id), jump target,
+    no request sent.
+  - Done: nothing yet; queued behind the fork history compaction and the
+    upstream rebase.
+
 - [ ] The flaky `federated_client_starts_without_local_and_survives_its_restart`
   fails more often now (2026-10-01): three full `just check` runs in a row
   at about 07:00 failed it ("recovered Local must be selectable", after
