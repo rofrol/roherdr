@@ -27,6 +27,11 @@ pub(crate) struct HandoffRuntimeState {
     pub terminal_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_history_ansi: Option<String>,
+    /// Contents and cursor state of the alternate screen when it is active, so
+    /// the new server shows a full-screen program without waiting for it to
+    /// redraw. Absent from older senders and from oversized screens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate_screen_ansi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<crate::terminal::state::HandoffAgentState>,
 }

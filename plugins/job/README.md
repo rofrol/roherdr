@@ -154,12 +154,26 @@ tasks (from the hook payload's `background_tasks`) as a `$bg` token:
 "SubagentStop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}]
 ```
 
+## Claude session peer name: `herdr-peer-token`
+
+A Claude Code `SessionStart`/`Stop` hook that reports the name other Claude
+sessions use to message this one (`herdr-ef`, from
+`~/.claude/sessions/<pid>.json`) as the `$peer` token, so you can tell which
+pane a cross-session message came from. `Stop` refreshes it and picks up a
+later `/rename`.
+
+```json
+"SessionStart": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-peer-token", "timeout": 10}]}],
+"Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-peer-token", "timeout": 10}]}]
+```
+
 ## Setup
 
 ```sh
 herdr plugin link ~/personal_projects/herdr/plugins/job   # or: herdr plugin install rofrol/herdr/plugins/job
 ln -s ~/personal_projects/herdr/plugins/job/herdr-job ~/.local/bin/
 ln -s ~/personal_projects/herdr/plugins/job/herdr-bg-badge ~/.local/bin/
+ln -s ~/personal_projects/herdr/plugins/job/herdr-peer-token ~/.local/bin/
 ```
 
 Show the tokens in the sidebar (`~/.config/herdr/config.toml`):
@@ -168,7 +182,7 @@ Show the tokens in the sidebar (`~/.config/herdr/config.toml`):
 [ui.sidebar.agents]
 rows = [
   ["state_icon", "machine", "workspace", "tab"],
-  ["agent", "$jobs", "$bg"],
+  ["agent", "$peer", "$jobs", "$bg"],
 ]
 ```
 

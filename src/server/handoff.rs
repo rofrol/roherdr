@@ -29,6 +29,10 @@ const OWNED_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 const FDS_PER_MESSAGE: usize = 64;
 #[cfg(unix)]
 pub(crate) const MAX_REPLAY_BYTES_PER_PANE: usize = 8 * 1024;
+// A full-screen program's screen with styling is typically tens of KiB; the
+// manifest is read a byte at a time, so larger screens use the redraw nudge.
+#[cfg(unix)]
+pub(crate) const MAX_ALTERNATE_SCREEN_BYTES_PER_PANE: usize = 64 * 1024;
 #[cfg(unix)]
 pub(crate) const COMMIT_TIMEOUT: Duration = READY_TIMEOUT;
 

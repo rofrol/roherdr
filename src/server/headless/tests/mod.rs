@@ -196,6 +196,42 @@ fn default_headless_size_is_effective_without_clients() {
     assert_eq!(server.effective_size, server.headless_size);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn imported_panes_keep_their_size_until_a_client_attaches() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    server.pending_handoff_repaint_nudge = true;
+
+    server.render_and_stream();
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        (23, 80)
+    );
+
+    let (control, _) = connect_test_shell(&mut server, 7, 68, 17);
+    let _ = control.recv().expect("client snapshot");
+    server.render_and_stream();
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        (17, 67)
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn fresh_panes_take_the_default_size_without_clients() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+
+    server.render_and_stream();
+    assert_ne!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        (23, 80)
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     let event_hub = api::EventHub::default();

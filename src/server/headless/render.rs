@@ -426,7 +426,8 @@ impl HeadlessServer {
         if render_targets.is_empty() {
             let (cols, rows) = self.effective_size;
             let area = Rect::new(0, 0, cols, rows);
-            let resize_panes = self.app.state.view.pane_infos.is_empty();
+            let resize_panes =
+                self.app.state.view.pane_infos.is_empty() && !self.keeps_imported_pane_sizes();
             if resize_panes {
                 crate::ui::compute_view_with_runtime_registry(
                     &mut self.app.state,

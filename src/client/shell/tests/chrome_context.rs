@@ -710,3 +710,137 @@ fn middle_click_does_not_close_behind_an_overlay() {
         crate::api::schema::Method::WorkspaceClose(_) | crate::api::schema::Method::TabClose(_)
     )));
 }
+
+#[test]
+fn tab_bar_shows_each_tabs_agent_state_like_the_sidebar() {
+    let mut snapshot = snapshot();
+    snapshot
+        .tabs
+        .extend([(2, AgentStatus::Blocked), (3, AgentStatus::Unknown)].map(
+            |(number, agent_status)| ClientShellTab {
+                tab_id: format!("tab_{number}"),
+                workspace_id: "ws_1".into(),
+                number,
+                label: number.to_string(),
+                custom_label: false,
+                zoomed: false,
+                focused: false,
+                agent_status,
+                parent_tab_id: None,
+                status: None,
+            },
+        ));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(120, 20).expect("tab bar");
+    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
+    let tab_text = |tab_id: &str| {
+        let (rect, _) = state
+            .hits
+            .tabs
+            .iter()
+            .find(|(_, id)| id == tab_id)
+            .expect("tab hit");
+        (rect.x..rect.right())
+            .map(|x| buffer[(x, rect.y)].symbol().to_string())
+            .collect::<String>()
+    };
+    let blocked = status_icon(AgentStatus::Blocked, state.config.status_indicators);
+    let idle = status_icon(AgentStatus::Idle, state.config.status_indicators);
+
+    assert!(tab_text("tab_1").contains(&format!("{idle} 1")));
+    assert!(tab_text("tab_2").contains(&format!("{blocked} 2")));
+    assert_eq!(tab_text("tab_3").trim(), "3");
+    let (rect, _) = state
+        .hits
+        .tabs
+        .iter()
+        .find(|(_, id)| id == "tab_2")
+        .expect("tab 2");
+    let icon = (rect.x..rect.right())
+        .map(|x| &buffer[(x, rect.y)])
+        .find(|cell| cell.symbol() == blocked)
+        .expect("blocked icon");
+    assert_eq!(
+        icon.fg,
+        status_color(AgentStatus::Blocked, &state.config.palette)
+    );
+}
+
+#[test]
+fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
+    let mut snapshot = snapshot();
+    snapshot.tabs.extend(
+        [(2, false), (3, true), (4, false)].map(|(number, custom_label)| ClientShellTab {
+            tab_id: format!("tab_{number}"),
+            workspace_id: "ws_1".into(),
+            number,
+            label: if custom_label {
+                "mine".into()
+            } else {
+                number.to_string()
+            },
+            custom_label,
+            zoomed: false,
+            focused: false,
+            agent_status: AgentStatus::Idle,
+            parent_tab_id: None,
+            status: None,
+        }),
+    );
+    let agent = |pane: &str, tab: &str, title: Option<&str>, focused: bool| ClientShellAgent {
+        pane_id: pane.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: tab.into(),
+        name: None,
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: title.map(|title| format!("✳ {title}")),
+        terminal_title_stripped: title.map(str::to_string),
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused,
+    };
+    snapshot.agents = vec![
+        agent("p1", "tab_1", Some("Fix login"), true),
+        agent("p2a", "tab_2", Some("Background"), false),
+        agent("p2b", "tab_2", Some("Consult stats analiza potrzeb"), true),
+        agent("p3", "tab_3", Some("Ignored"), true),
+        agent("p4", "tab_4", None, true),
+    ];
+    let mut config = Config::default();
+    config.ui.tab_label = crate::config::TabLabelConfig::Title;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(160, 20).expect("tab bar");
+    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
+    let tab = |tab_id: &str| {
+        let (rect, _) = *state
+            .hits
+            .tabs
+            .iter()
+            .find(|(_, id)| id == tab_id)
+            .expect("tab hit");
+        let text = (rect.x..rect.right())
+            .map(|x| buffer[(x, rect.y)].symbol().to_string())
+            .collect::<String>();
+        (rect.width, text)
+    };
+
+    let (short_width, short) = tab("tab_1");
+    let (long_width, long) = tab("tab_2");
+    assert!(short.contains("Fix login"), "{short}");
+    assert!(
+        long.contains("Consult stats a…"),
+        "focused agent wins: {long}"
+    );
+    assert_eq!(short_width, long_width, "titles take a fixed width");
+    assert!(tab("tab_3").1.contains("mine"), "user names win");
+    assert!(!tab("tab_3").1.contains("Ignored"));
+    assert_eq!(tab("tab_4").1.split_whitespace().last(), Some("4"));
+}

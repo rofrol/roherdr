@@ -292,6 +292,7 @@ impl HeadlessServer {
             return;
         }
         self.pending_handoff_repaint_nudge = false;
+        info!("nudging pane redraws after handoff");
         self.app
             .terminal_runtimes
             .nudge_child_redraw_after_handoff();
@@ -299,6 +300,21 @@ impl HeadlessServer {
 
     #[cfg(not(unix))]
     pub(super) fn nudge_handoff_panes_on_first_client_attach(&mut self) {}
+
+    /// Panes imported by a handoff keep the sizes the previous server gave
+    /// them until a client attaches. Resizing them to the default geometry in
+    /// between would discard the restored screens and make every full-screen
+    /// program redraw twice, first for the default size and then for the
+    /// client's.
+    #[cfg(unix)]
+    pub(super) fn keeps_imported_pane_sizes(&self) -> bool {
+        self.pending_handoff_repaint_nudge
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn keeps_imported_pane_sizes(&self) -> bool {
+        false
+    }
     /// Initiates graceful shutdown.
     pub(super) fn initiate_shutdown(&mut self) {
         if self.shutting_down {

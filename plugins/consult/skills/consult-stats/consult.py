@@ -6,7 +6,7 @@
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
   consult.py self (--round R | --calls ID,ID) [--model M] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
-  consult.py stats [--days N] [--pairs]
+  consult.py stats [--days N] [--pairs] [--all]
   consult.py recent [-n N]
 
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
@@ -149,24 +149,42 @@ def cmd_stats(a):
                 s["findings"] += r["findings"]
                 s["accepted"] += r["accepted"]
             s["unique"] += r.get("unique") or 0
+    if not a.all:  # high effort is disabled in ask_gpt.sh; its rows are history
+        rows = {k: s for k, s in rows.items() if "@high" not in k}
     if not rows:
         print("No data.")
         return
-    hdr = (f'{"skill/model":34} {"calls":>5} {"err":>4} {"avg s":>6} {"rated":>5} {"score":>6} {"acc/find":>9} '
-           f'{"unique":>6} {"out/call":>8}')
+    extra = a.all or a.pairs
+    hdr = f'{"skill/model":34} {"uniq/call":>9} {"wrong":>5} {"rated":>7} {"err":>4}'
+    if extra:
+        hdr += f' {"score":>6} {"acc/find":>9} {"unique":>6} {"avg s":>6} {"out/call":>8}'
     print(hdr + "\n" + "-" * len(hdr))
-    for k, s in sorted(rows.items(), key=lambda kv: -(kv[1]["score"] / kv[1]["rated"] if kv[1]["rated"] else -1)):
-        avg = f'{s["secs"] / s["ok"]:.0f}' if s["ok"] else "-"
-        score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
-        acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
-        out = ktok(s["out"] / s["used"]) if s["used"] else "-"
-        print(f'{k:34} {int(s["calls"]):5} {int(s["errors"]):4} {avg:>6} {int(s["rated"]):5} {score:>6} {acc:>9} '
-              f'{int(s["unique"]):6} {out:>8}')
-    print("\nscore: useful=1, partial=0.5, useless=0 (average of rated calls); "
-          "unique: accepted findings nobody else (Claude, other models) had — depends on who else was asked;\n"
-          "out/call: mean output tokens incl. reasoning, over ok calls with usage (older calls have none).")
+    # Anecdotal rows (under 5 rated calls) go last, so a lucky 2/2 does not top the table.
+    for k, s in sorted(rows.items(), key=lambda kv: (kv[1]["rated"] < 5,
+                                                     -(kv[1]["unique"] / kv[1]["rated"] if kv[1]["rated"] else -1),
+                                                     -kv[1]["rated"])):
+        uniq = f'{s["unique"] / s["rated"]:.2f}' if s["rated"] else "-"
+        wrong = f'{1 - s["accepted"] / s["findings"]:.0%}' if s["findings"] else "-"
+        rated = f'{int(s["rated"])}/{int(s["calls"])}'
+        err = f'{s["errors"] / s["calls"]:.0%}'
+        line = f'{k:34} {uniq:>9} {wrong:>5} {rated:>7} {err:>4}'
+        if extra:
+            avg = f'{s["secs"] / s["ok"]:.0f}' if s["ok"] else "-"
+            score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
+            acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
+            out = ktok(s["out"] / s["used"]) if s["used"] else "-"
+            line += f' {score:>6} {acc:>9} {int(s["unique"]):6} {avg:>6} {out:>8}'
+        print(line)
+    print("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
+          "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
+          "over rated calls; rated: rated/all calls, unrated ones are left out; err: calls that failed (no answer), not wrong answers.\n"
+          "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.")
+    if extra:
+        print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.")
     if a.pairs:
         print_pairs(calls, ratings)
+    if not a.all:
+        return
     selves = defaultdict(lambda: defaultdict(float))
     for rd in rounds.values():
         if rd["ts"] < since:
@@ -282,6 +300,7 @@ def main():
     c.add_argument("--note", default="")
     s = sub.add_parser("stats"); s.add_argument("--days", type=int)
     s.add_argument("--pairs", action="store_true", help="token efficiency and paired within-round comparisons")
+    s.add_argument("--all", action="store_true", help="all columns, @high history and the coordinator table")
     n = sub.add_parser("recent"); n.add_argument("-n", type=int, default=20)
     a = p.parse_args()
     {"log": cmd_log, "new-round": cmd_new_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,

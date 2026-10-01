@@ -33,9 +33,13 @@ Guidelines:
 - GPT has no context of this conversation: include the goal, relevant code and constraints in the prompt.
 - Sending code sends it to OpenAI's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
-- Data collection for consult-stats: whenever you consult GPT, ask **astra, sol and terra in parallel** with the same
-  prompt and default effort (unless the user named one model), compare them, and rate each call separately — `--unique` counts
-  what the other two (and Claude) missed. Luna only on request.
+- Data collection for consult-stats: whenever you consult GPT, ask **astra (default effort) and luna with `-e medium` in
+  parallel** with the same prompt (unless the user named models), compare them, and rate each call separately —
+  `--unique` counts what the other (and Claude, and any other vendor in the round) missed. Sol and terra only on
+  request: over ~12 paired rounds neither ever scored above astra. This is a paired trial started 2026-09-26: luna@medium
+  looked as good as astra at half the latency, but mostly in rounds with fewer competitors. After ~30 paired rounds,
+  check `consult.py stats --pairs`; if luna@medium is not clearly behind astra on unique findings, make it the default
+  and drop astra from routine rounds.
 - If the user asks for "GPT and DeepSeek", run both in parallel and compare.
 - On a usage-limit error, tell the user (Plus limits) and don't call GPT again in this session (no retries, no other GPT model); in a multi-model round go on with the others.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):

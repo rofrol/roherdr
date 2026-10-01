@@ -188,6 +188,13 @@ pub const MOUSE_FORMAT_SGR_PIXELS: ffi::GhosttyMouseFormat =
     ffi::GhosttyMouseFormat_GHOSTTY_MOUSE_FORMAT_SGR_PIXELS;
 
 pub const MODE_APPLICATION_CURSOR_KEYS: u16 = 1;
+#[cfg(unix)]
+pub const MODE_AUTOWRAP: u16 = 7;
+#[cfg(unix)]
+pub const MODE_CURSOR_VISIBLE: u16 = 25;
+/// IRM is an ANSI mode, marked by the high bit (`ghostty_mode_new` in modes.h).
+#[cfg(unix)]
+pub const MODE_INSERT: u16 = 4 | 0x8000;
 pub const MODE_FOCUS_EVENT: u16 = 1004;
 pub const MODE_MOUSE_UTF8: u16 = 1005;
 pub const MODE_MOUSE_SGR: u16 = 1006;
@@ -1642,6 +1649,59 @@ impl Terminal {
         self.format_selection(&selection, format, unwrap, trim)
     }
 
+    /// Formats the whole viewport as VT, followed by the scrolling region,
+    /// cursor position, pen style, hyperlink, protection and character sets.
+    /// Written into an empty terminal of the same size, it reproduces both
+    /// what a full-screen program drew and the state it assumes when it
+    /// later redraws only the cells that changed.
+    #[cfg(unix)]
+    pub fn read_ansi_viewport_with_screen_state(&self) -> Result<String, Error> {
+        let rows = self.rows()?;
+        let cols = self.cols()?;
+        if rows == 0 || cols == 0 {
+            return Ok(String::new());
+        }
+        let mut start = ffi::GhosttyGridRef {
+            size: mem::size_of::<ffi::GhosttyGridRef>(),
+            ..Default::default()
+        };
+        let mut end = ffi::GhosttyGridRef {
+            size: mem::size_of::<ffi::GhosttyGridRef>(),
+            ..Default::default()
+        };
+        unsafe {
+            ffi::ghostty_terminal_grid_ref(self.raw, ghostty_viewport_point(0, 0), &mut start)
+                .into_result()?;
+            ffi::ghostty_terminal_grid_ref(
+                self.raw,
+                ghostty_viewport_point(cols - 1, u32::from(rows - 1)),
+                &mut end,
+            )
+            .into_result()?;
+        }
+        let selection = ffi::GhosttySelection {
+            size: mem::size_of::<ffi::GhosttySelection>(),
+            start,
+            end,
+            rectangle: false,
+        };
+        let extra = ffi::GhosttyFormatterTerminalExtra {
+            size: mem::size_of::<ffi::GhosttyFormatterTerminalExtra>(),
+            scrolling_region: true,
+            screen: ffi::GhosttyFormatterScreenExtra {
+                size: mem::size_of::<ffi::GhosttyFormatterScreenExtra>(),
+                cursor: true,
+                style: true,
+                hyperlink: true,
+                protection: true,
+                charsets: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.format_selection_with_extra(&selection, FormatterFormat::Vt, false, false, extra)
+    }
+
     fn format_selection(
         &self,
         selection: &ffi::GhosttySelection,
@@ -1649,20 +1709,32 @@ impl Terminal {
         unwrap: bool,
         trim: bool,
     ) -> Result<String, Error> {
+        let extra = ffi::GhosttyFormatterTerminalExtra {
+            size: mem::size_of::<ffi::GhosttyFormatterTerminalExtra>(),
+            screen: ffi::GhosttyFormatterScreenExtra {
+                size: mem::size_of::<ffi::GhosttyFormatterScreenExtra>(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.format_selection_with_extra(selection, format, unwrap, trim, extra)
+    }
+
+    fn format_selection_with_extra(
+        &self,
+        selection: &ffi::GhosttySelection,
+        format: FormatterFormat,
+        unwrap: bool,
+        trim: bool,
+        extra: ffi::GhosttyFormatterTerminalExtra,
+    ) -> Result<String, Error> {
         let mut formatter: ffi::GhosttyFormatter = ptr::null_mut();
         let options = ffi::GhosttyFormatterTerminalOptions {
             size: mem::size_of::<ffi::GhosttyFormatterTerminalOptions>(),
             emit: format.as_raw(),
             unwrap,
             trim,
-            extra: ffi::GhosttyFormatterTerminalExtra {
-                size: mem::size_of::<ffi::GhosttyFormatterTerminalExtra>(),
-                screen: ffi::GhosttyFormatterScreenExtra {
-                    size: mem::size_of::<ffi::GhosttyFormatterScreenExtra>(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+            extra,
             selection,
         };
         unsafe {

@@ -463,6 +463,11 @@ impl PaneTerminal {
         self.ghostty.alternate_screen_active()
     }
 
+    #[cfg(unix)]
+    pub fn handoff_alternate_screen_ansi(&self) -> Option<String> {
+        self.ghostty.handoff_alternate_screen_ansi()
+    }
+
     pub fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
         self.ghostty.wheel_routing()
     }
@@ -1580,6 +1585,46 @@ impl GhosttyPaneTerminal {
         if let Ok(mut key_encoder) = self.key_encoder.lock() {
             configure_key_encoder(&mut key_encoder, &core.terminal);
         }
+    }
+
+    /// The alternate screen as bytes that rebuild it in a fresh terminal of the
+    /// same size: contents, then the scrolling region, cursor, pen and modes a
+    /// full-screen program relies on when it redraws only changed cells.
+    /// Origin mode is left out because setting it moves the cursor, and an
+    /// open synchronized-output block is not reopened.
+    #[cfg(unix)]
+    pub fn handoff_alternate_screen_ansi(&self) -> Option<String> {
+        let core = self.core.lock().ok()?;
+        if core.terminal.active_screen().ok()? != crate::ghostty::ActiveScreen::Alternate {
+            return None;
+        }
+        let screen = core.terminal.read_ansi_viewport_with_screen_state().ok()?;
+        let mode = |mode: u16| core.terminal.mode_get(mode).ok();
+        let mut ansi = String::from("\x1b[r\x1b[0m\x1b[H");
+        ansi.push_str(&screen);
+        if mode(crate::ghostty::MODE_INSERT) == Some(true) {
+            ansi.push_str("\x1b[4h");
+        }
+        if mode(crate::ghostty::MODE_AUTOWRAP) == Some(false) {
+            ansi.push_str("\x1b[?7l");
+        }
+        if mode(crate::ghostty::MODE_CURSOR_VISIBLE) == Some(false) {
+            ansi.push_str("\x1b[?25l");
+        }
+        Some(ansi)
+    }
+
+    /// Writes [`Self::handoff_alternate_screen_ansi`] output into this terminal,
+    /// which must already be on its alternate screen.
+    #[cfg(unix)]
+    pub fn seed_alternate_screen_ansi(&self, ansi: &str) {
+        let Ok(mut core) = self.core.lock() else {
+            return;
+        };
+        if core.terminal.active_screen().ok() != Some(crate::ghostty::ActiveScreen::Alternate) {
+            return;
+        }
+        core.terminal.write(ansi.as_bytes());
     }
 
     #[cfg(unix)]
@@ -5964,6 +6009,60 @@ mod tests {
         assert!(ansi.contains("red"));
         assert!(ansi.contains("plain"));
         assert!(ansi.contains("\x1b["));
+    }
+
+    #[cfg(unix)]
+    fn test_pane_terminal(cols: u16, rows: u16, bytes: &[u8]) -> GhosttyPaneTerminal {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(cols, rows, 100).unwrap();
+        terminal.write(bytes);
+        GhosttyPaneTerminal::new(terminal, tx).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_alternate_screen_rebuilds_screen_for_partial_redraws() {
+        // A full-screen program draws, then leaves the cursor, pen and cursor
+        // visibility where its next partial redraw expects them.
+        let source = test_pane_terminal(
+            30,
+            6,
+            b"shell prompt\r\n\x1b[?1049h\x1b[H\x1b[44m top bar \x1b[0m\r\n\
+              \x1b[1mbold\x1b[0m row\r\nplain row\x1b[2;5r\x1b[5;8H\x1b[31m\x1b[?25l",
+        );
+        let ansi = source.handoff_alternate_screen_ansi().unwrap();
+
+        let target = test_pane_terminal(30, 6, b"\x1b[?1049h");
+        target.seed_alternate_screen_ansi(&ansi);
+
+        // The same partial redraw lands identically on both terminals.
+        for pane in [&source, &target] {
+            let mut core = pane.core.lock().unwrap();
+            core.terminal.write(b"diff\x1b[3;1Hnext");
+        }
+        assert_eq!(target.visible_ansi(), source.visible_ansi());
+        assert_eq!(target.cursor_state(), source.cursor_state());
+        assert!(!target.cursor_state().unwrap().visible);
+        assert!(target.alternate_screen_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_alternate_screen_is_absent_on_primary_screen() {
+        let pane = test_pane_terminal(30, 6, b"shell prompt");
+        assert!(pane.handoff_alternate_screen_ansi().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_alternate_screen_is_not_seeded_onto_primary_screen() {
+        let source = test_pane_terminal(30, 6, b"\x1b[?1049hfull screen");
+        let ansi = source.handoff_alternate_screen_ansi().unwrap();
+
+        let target = test_pane_terminal(30, 6, b"prompt");
+        target.seed_alternate_screen_ansi(&ansi);
+
+        assert!(!target.visible_text().contains("full screen"));
     }
 
     #[test]

@@ -2296,8 +2296,18 @@ impl PaneRuntime {
             input_state: self.input_state(),
             terminal_title: self.terminal_title(),
             initial_history_ansi: None,
+            alternate_screen_ansi: self.handoff_alternate_screen_ansi(),
             agent_state: None,
         }
+    }
+
+    #[cfg(unix)]
+    fn handoff_alternate_screen_ansi(&self) -> Option<String> {
+        let ansi = self.terminal.handoff_alternate_screen_ansi()?;
+        // Cut short, the bytes would leave the cursor and pen wrong for the
+        // program's next partial redraw, so an oversized screen is dropped and
+        // the pane falls back to the post-handoff redraw nudge.
+        (ansi.len() <= crate::server::handoff::MAX_ALTERNATE_SCREEN_BYTES_PER_PANE).then_some(ansi)
     }
 
     #[cfg(unix)]
@@ -2507,6 +2517,7 @@ impl PaneRuntime {
             input_state,
             terminal_title,
             initial_history_ansi,
+            alternate_screen_ansi,
             agent_state: _,
         } = state;
         let pane_id = PaneId::from_raw(pane_id);
@@ -2539,6 +2550,14 @@ impl PaneRuntime {
         }
         if let Some(ansi) = initial_history_ansi.as_deref() {
             pane_terminal.seed_history_ansi(ansi);
+        }
+        if let Some(ansi) = alternate_screen_ansi.as_deref() {
+            pane_terminal.seed_alternate_screen_ansi(ansi);
+            debug!(
+                pane = pane_id.raw(),
+                bytes = ansi.len(),
+                "restored alternate screen from handoff"
+            );
         }
         let terminal = Arc::new(PaneTerminal::new(pane_terminal));
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());

@@ -698,6 +698,10 @@ fn restore_tab(
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
+                    // The runtime is seeded with the handed-off title, but the state
+                    // only syncs it when the pane prints a new one; agents such as
+                    // Claude Code set it once per task, so copy it now.
+                    let _ = terminal.set_terminal_title(runtime.terminal_title());
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
@@ -2017,6 +2021,8 @@ mod tests {
                 .unwrap();
             let mut state = runtime.handoff_runtime_state(pane_id.raw());
             state.agent_state = terminals.values().next().unwrap().handoff_agent_state();
+            // Agents set the title once per task, so it must survive without new output.
+            state.terminal_title = Some("✳ Handed-off task".into());
             let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
             let mut imports = HashMap::from([(
                 pane_id.raw(),
@@ -2040,6 +2046,10 @@ mod tests {
             drop(runtimes);
             let terminal = restored_terminals.values_mut().next().unwrap();
             assert_eq!(terminal.state, state_before_handoff);
+            assert_eq!(
+                terminal.terminal_title_stripped().as_deref(),
+                Some("Handed-off task")
+            );
             terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
             assert_eq!(
                 terminal.state, state_before_handoff,
