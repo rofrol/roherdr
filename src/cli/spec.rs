@@ -404,6 +404,11 @@ fn agent_command() -> Command {
         )
         .subcommand(id_command("focus", "target", "Focus an agent"))
         .subcommand(
+            Command::new("awaiting-reply")
+                .about("Report that this agent ends its turn by asking the user something")
+                .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)")),
+        )
+        .subcommand(
             Command::new("wait")
                 .about("Wait until an agent reaches one of the requested states")
                 .override_usage("herdr agent wait <TARGET> [OPTIONS]")

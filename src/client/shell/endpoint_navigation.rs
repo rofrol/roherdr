@@ -11,23 +11,72 @@ impl ClientShellState {
             .map(|hit| hit.workspace_id.clone())
     }
 
-    pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
-        press.endpoint_id == self.active_endpoint_id
-            && self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_id == press.workspace_id)
-                })
-                .is_some_and(|workspace| {
-                    !workspace
-                        .worktree
+    /// Tracks the draggable space under the pointer, so its name line shows
+    /// a grip. Only plain moves hover; a press, drag or release clears it.
+    pub(super) fn update_workspace_hover(
+        &mut self,
+        mouse: crossterm::event::MouseEvent,
+        outcome: &mut ClientShellInput,
+    ) {
+        let point = (mouse.column, mouse.row);
+        let hovered = (mouse.kind == crossterm::event::MouseEventKind::Moved
+            && self.overlay.is_none()
+            && !self
+                .hits
+                .space_agents
+                .iter()
+                .any(|(rect, _)| super::contains(*rect, point)))
+        .then(|| {
+            self.hits.workspaces.iter().find(|hit| {
+                super::contains(hit.rect, point)
+                    && hit
+                        .group_toggle
                         .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
-                })
+                        .is_none_or(|(toggle, _)| !super::contains(*toggle, point))
+            })
+        })
+        .flatten()
+        .filter(|hit| {
+            self.endpoint_workspace_drag_check(&hit.endpoint_id, &hit.workspace_id)
+                .is_ok()
+        })
+        .map(|hit| hit.workspace_id.clone());
+        if self.hovered_workspace_id != hovered {
+            self.hovered_workspace_id = hovered;
+            outcome.repaint = true;
+        }
+    }
+
+    /// Whether the space can be dragged, or why not; `Err(None)` when it is
+    /// unknown.
+    pub(super) fn endpoint_workspace_drag_check(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        workspace_id: &str,
+    ) -> Result<(), Option<WorkspaceDragRefusal>> {
+        let workspace = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == workspace_id)
+            })
+            .ok_or(None)?;
+        if workspace
+            .worktree
+            .as_ref()
+            .is_some_and(|worktree| worktree.is_linked_worktree)
+        {
+            Err(Some(WorkspaceDragRefusal::LinkedWorktree))
+        } else if *endpoint_id != self.active_endpoint_id {
+            Err(Some(WorkspaceDragRefusal::Remote))
+        } else if !self.space_sort.allows_drag() {
+            Err(Some(WorkspaceDragRefusal::Sort))
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) fn finish_endpoint_workspace_press(

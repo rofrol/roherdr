@@ -1,7 +1,6 @@
-//! What a close would stop: tabs marked running (e.g. herdr-job), agents
-//! that are working or waiting for an answer, and programs a pane's shell
-//! started, e.g. a build or `lazygit`, as Ghostty asks. The TUI asks before
-//! a close that stops any of them.
+//! What a close would stop: tabs marked running (e.g. herdr-job), live
+//! agents, and programs a pane's shell started, e.g. a build or `lazygit`, as
+//! Ghostty asks. The TUI asks before a close that stops any of them.
 
 use crate::api::schema::{AgentStatus, TabStatus};
 use crate::protocol::{ClientShellPane, ClientShellSnapshot, ClientShellTab};
@@ -105,17 +104,27 @@ fn pane_work(
         .iter()
         .find(|agent| agent.pane_id == pane.pane_id)
     {
-        // An idle or finished agent can be resumed; only interrupted work is lost.
+        // Even an idle agent counts: resuming it later does not bring back
+        // an unsent draft, its background tasks or its place in the layout.
         let name = agent
             .display_agent
             .as_deref()
             .or(agent.agent.as_deref())
             .unwrap_or("agent");
-        return match agent.agent_status {
-            AgentStatus::Working => Some(format!("{name} working in {}", tab.label)),
-            AgentStatus::Blocked => Some(format!("{name} waiting in {}", tab.label)),
-            _ => None,
+        let state = match agent.agent_status {
+            AgentStatus::Working => "working",
+            AgentStatus::Blocked => "waiting",
+            AgentStatus::Done => "done",
+            AgentStatus::Idle => "idle",
+            AgentStatus::Unknown => "open",
         };
+        // The `$bg` token (`2 bg`) counts its background tasks, which die with it.
+        let background = agent
+            .tokens
+            .iter()
+            .find(|(key, value)| key == "bg" && !value.trim().is_empty())
+            .map_or_else(String::new, |(_, value)| format!(" · {}", value.trim()));
+        return Some(format!("{name} {state} in {}{background}", tab.label));
     }
     if finished {
         return None;
@@ -181,6 +190,7 @@ mod tests {
             terminal_title_stripped: None,
             agent_status: status,
             state_change_seq: 0,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
@@ -188,10 +198,26 @@ mod tests {
     }
 
     #[test]
-    fn idle_shells_and_idle_agents_are_not_running_work() {
+    fn idle_shells_are_not_running_work() {
+        assert!(tabs_running_work(&snapshot(), &["t1", "t2"]).is_empty());
+    }
+
+    #[test]
+    fn idle_and_done_agents_are_running_work_with_their_background_tasks() {
         let mut snapshot = snapshot();
         snapshot.agents.push(agent("p2", "t2", AgentStatus::Idle));
-        assert!(tabs_running_work(&snapshot, &["t1", "t2"]).is_empty());
+        assert_eq!(
+            tabs_running_work(&snapshot, &["t2"]),
+            vec!["claude idle in claude".to_owned()]
+        );
+        snapshot.agents[0].agent_status = AgentStatus::Done;
+        snapshot.agents[0]
+            .tokens
+            .push(("bg".to_owned(), "2 bg".to_owned()));
+        assert_eq!(
+            tabs_running_work(&snapshot, &["t2"]),
+            vec!["claude done in claude · 2 bg".to_owned()]
+        );
     }
 
     #[test]

@@ -3066,6 +3066,18 @@
           ],
           "type": "object"
         },
+        "PaneReportAwaitingReplyParams": {
+          "description": "The agent in the pane ends its current turn by asking the user something: a question or a\ndecision the user must make. Shown until the agent starts working again.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneReportMetadataParams": {
           "properties": {
             "agent": {
@@ -6149,6 +6161,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.report_awaiting_reply",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportAwaitingReplyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_metadata",
               "type": "string"
             },
@@ -6761,6 +6789,10 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "awaiting_reply": {
+              "description": "The agent's last turn ended by asking the user something (reported through\n`pane.report_awaiting_reply`), and it has not started working again since.",
+              "type": "boolean"
             },
             "completion_seq": {
               "description": "The current idle transition completed work, independently of who has viewed it.",

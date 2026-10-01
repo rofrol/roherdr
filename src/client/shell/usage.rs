@@ -193,6 +193,27 @@ pub(super) fn split_usage_footer(detail_area: Rect, report: Option<&UsageReport>
     (agents, footer)
 }
 
+/// Without the agents panel: the spaces over the whole height, less the usage
+/// footer at the bottom (empty when there is no report or no room).
+pub(super) fn split_spaces_and_footer(
+    sections: Rect,
+    report: Option<&UsageReport>,
+) -> (Rect, Rect) {
+    let content = Rect::new(
+        sections.x,
+        sections.y,
+        sections.width.saturating_sub(1),
+        sections.height,
+    );
+    let height = report
+        .map(footer_height)
+        .filter(|height| *height > 1 && content.height >= height + AGENTS_MIN_HEIGHT)
+        .unwrap_or(0);
+    let spaces = Rect::new(content.x, content.y, content.width, content.height - height);
+    let footer = Rect::new(content.x, spaces.bottom(), content.width, height);
+    (spaces, footer)
+}
+
 /// Separator row plus one row per provider.
 fn footer_height(report: &UsageReport) -> u16 {
     u16::try_from(report.providers.len())

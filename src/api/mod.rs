@@ -69,6 +69,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneRename(_)
             | Method::PaneReportAgent(_)
             | Method::PaneReportAgentSession(_)
+            | Method::PaneReportAwaitingReply(_)
             | Method::PaneReportMetadata(_)
             | Method::PaneClearAgentAuthority(_)
             | Method::PaneReleaseAgent(_)

@@ -13,6 +13,7 @@ use super::*;
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
+    pub(super) mark: AgentMark,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
 }
@@ -284,10 +285,17 @@ pub(super) fn agent_row(
         .cloned()
         .collect::<HashMap<_, _>>();
     let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    let state_text = labels
-        .get(status_text(agent.agent_status))
-        .map(String::as_str)
-        .unwrap_or_else(|| sidebar_status_text(agent.agent_status));
+    let mark = agent_mark(snapshot, agent);
+    let state_text = if mark == AgentMark::AwaitsReply {
+        "awaiting reply"
+    } else if mark == AgentMark::WaitsOnJob {
+        "waiting on job"
+    } else {
+        labels
+            .get(status_text(agent.agent_status))
+            .map(String::as_str)
+            .unwrap_or_else(|| sidebar_status_text(agent.agent_status))
+    };
     let canonical_agent = agent
         .agent
         .as_deref()
@@ -313,6 +321,7 @@ pub(super) fn agent_row(
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
+        mark,
         focused: agent.focused,
         rows,
     })
@@ -339,11 +348,12 @@ pub(super) fn render_agent_row(
             .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD)
     };
-    let status_style = Style::default().fg(status_color(row.status, palette));
+    let color = agent_color(row.status, row.mark, palette);
+    let status_style = Style::default().fg(color);
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
-        status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
+        agent_icon(row.status, row.mark, config.status_indicators),
+        Style::default().fg(color),
     );
     let rows = if row.rows.is_empty() {
         vec![vec![crate::ui::ResolvedToken {

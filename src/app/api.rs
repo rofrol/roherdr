@@ -1209,6 +1209,9 @@ impl App {
             Method::PaneReportAgentSession(params) => {
                 return self.handle_pane_report_agent_session(request.id, params);
             }
+            Method::PaneReportAwaitingReply(params) => {
+                return self.handle_pane_report_awaiting_reply(request.id, params);
+            }
             Method::PaneReportMetadata(params) => {
                 return self.handle_pane_report_metadata(request.id, params);
             }
@@ -1675,47 +1678,52 @@ mod tests {
 
     #[tokio::test]
     async fn agent_explain_evaluates_with_server_manifest_cache() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &crate::config::Config::default(),
-            crate::app::AppPolicy::TEST,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Codex);
-        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(
-            80,
-            24,
-            b"press enter to confirm or esc to cancel",
-        );
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        let target = app.public_pane_id(0, pane_id).unwrap();
+        use crate::detect::manifest::tests::{
+            local_manifest, with_manifest_dirs, write_local_codex,
+        };
 
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "agent_explain".into(),
-            method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
-                target,
-            }),
+        // Codex is only a registry key here; a synthetic override supplies the rule.
+        let response = with_manifest_dirs("api-agent-explain", || {
+            write_local_codex(&local_manifest("blocked", "synthetic-blocker-marker"));
+            let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut app = App::new(
+                &crate::config::Config::default(),
+                crate::app::AppPolicy::TEST,
+                None,
+                api_rx,
+                crate::api::EventHub::default(),
+            );
+            app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain")];
+            app.state.ensure_test_terminals();
+            let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+            let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(Agent::Codex);
+            let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                80,
+                24,
+                b"synthetic-blocker-marker",
+            );
+            app.terminal_runtimes.insert(terminal_id, runtime);
+            let target = app.public_pane_id(0, pane_id).unwrap();
+
+            app.handle_api_request(crate::api::schema::Request {
+                id: "agent_explain".into(),
+                method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
+                    target,
+                }),
+            })
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
         assert_eq!(response["result"]["type"], "agent_explain");
         assert_eq!(response["result"]["explain"]["state"], "blocked");
-        assert_eq!(
-            response["result"]["explain"]["matched_rule"]["id"],
-            "live_strong_blocker"
-        );
+        assert_eq!(response["result"]["explain"]["matched_rule"]["id"], "test");
     }
 
     #[tokio::test]

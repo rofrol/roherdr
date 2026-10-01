@@ -5,13 +5,15 @@ description: Consult DeepSeek (external LLM) for a second opinion — use when t
 
 # Consulting DeepSeek
 
+Commands below use `$D` for this skill's directory, the one holding this `SKILL.md` (Claude Code shows it as "Base directory for this skill", pi lists the skill's location); set it first, e.g. `D=~/.claude/skills/deepseek` or `D=~/.pi/agent/skills/deepseek`. `consult-stats` is always installed next to it, as `"$D/../consult-stats"`.
+
 Run the helper script (stdlib Python, no deps):
 
 ```bash
-~/.claude/skills/deepseek/ask_deepseek.py "question"                  # deepseek-flash = DeepSeek V4.1 (default)
-~/.claude/skills/deepseek/ask_deepseek.py -m deepseek-v4-pro "q"     # older V4-Pro-0813, only if asked
-~/.claude/skills/deepseek/ask_deepseek.py -f src/foo.py "Find bugs in this file"
-git diff | ~/.claude/skills/deepseek/ask_deepseek.py -f - "Review this diff"   # stdin only via -f -
+"$D"/ask_deepseek.py "question"                  # deepseek-flash = DeepSeek V4.1 (default)
+"$D"/ask_deepseek.py -m deepseek-v4-pro "q"     # older V4-Pro-0813, only if asked
+"$D"/ask_deepseek.py -f src/foo.py "Find bugs in this file"
+git diff | "$D"/ask_deepseek.py -f - "Review this diff"   # stdin only via -f -
 ```
 
 Options: `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-s SYSTEM_PROMPT`, `--show-reasoning`, `-t SECONDS` (hard limit on the whole request, default 420), env `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_TIMEOUT`.
@@ -24,12 +26,14 @@ Guidelines:
 - Sending code sends it to DeepSeek's servers (China). Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
-  `~/.claude/skills/consult-stats/consult.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
+  `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- Every consultation is a round: start the command with `export CONSULT_ROUND=$(~/.claude/skills/consult-stats/consult.py new-round)`
+- Every consultation is a round: start the command with `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)`
   and launch all models for that question in the same Bash call, so their calls share the round id
   (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).
 
 API key: `.deepseek.key` in `~/.pi/agent/auth.json` (shared with pi) — never put the key in a tracked file.
+`deepseek-flash` is an alias that moves to newer models; streamed chunks only echo it, so the script looks up the
+serving model's name in `/models` and logs it (`--model-version`) with the chunks' `system_fingerprint`.
 Model list: `curl -s https://api.deepseek.com/models -H "Authorization: Bearer $(jq -r .deepseek.key ~/.pi/agent/auth.json)"` (names change over time).

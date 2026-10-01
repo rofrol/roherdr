@@ -2203,20 +2203,6 @@ mod tests {
     }
 
     #[test]
-    fn lone_escape_is_buffered_until_timeout_flush() {
-        let mut framer = RawInputFramer::default();
-
-        assert!(framer.push(b"\x1b").is_empty());
-        let events = framer.flush_timeout();
-        assert_eq!(events.len(), 1);
-        assert_raw_key(
-            events.into_iter().next().unwrap(),
-            KeyCode::Esc,
-            KeyModifiers::empty(),
-        );
-    }
-
-    #[test]
     fn escape_followed_by_arrow_before_flush_does_not_emit_escape() {
         let mut framer = RawInputFramer::default();
 

@@ -33,6 +33,7 @@ mod render;
 mod scroll;
 mod settings;
 mod space_agents;
+mod space_sort;
 mod state;
 mod surface_patch;
 mod tab_groups;
@@ -197,6 +198,99 @@ fn status_icon(
         (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
+    }
+}
+
+/// Whether an agent looks finished but waits on its own work: its turn
+/// ended (idle or done) while a job it started still runs. Jobs run in child
+/// tabs of the agent's tab (herdr-job), so a running child tab is that job.
+/// A TUI presentation, not an `AgentStatus`: a running job does not prove
+/// the agent waits on it, and working or blocked still win.
+fn waits_on_job(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    tab_id: &str,
+    status: crate::api::schema::AgentStatus,
+) -> bool {
+    use crate::api::schema::{AgentStatus, TabStatus};
+    matches!(status, AgentStatus::Idle | AgentStatus::Done)
+        && snapshot.tabs.iter().any(|tab| {
+            tab.parent_tab_id.as_deref() == Some(tab_id) && tab.status == Some(TabStatus::Running)
+        })
+}
+
+/// What a finished agent waits on, beyond its `AgentStatus`. A TUI presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentMark {
+    None,
+    /// A job it started still runs (see `waits_on_job`).
+    WaitsOnJob,
+    /// Its turn ended with a question for the user (`awaiting_reply`), which
+    /// wins over a running job: only the user can move it on.
+    AwaitsReply,
+}
+
+fn agent_mark(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+) -> AgentMark {
+    use crate::api::schema::AgentStatus;
+    if agent.awaiting_reply && matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done) {
+        AgentMark::AwaitsReply
+    } else if waits_on_job(snapshot, &agent.tab_id, agent.agent_status) {
+        AgentMark::WaitsOnJob
+    } else {
+        AgentMark::None
+    }
+}
+
+/// `status_icon` for a tab's or workspace's aggregate status, or `?` when that
+/// status is `Done` because one of its agents (`in_group`) awaits a reply.
+fn aggregate_icon(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    status: crate::api::schema::AgentStatus,
+    style: crate::config::StatusIndicatorStyle,
+    in_group: impl Fn(&crate::protocol::ClientShellAgent) -> bool,
+) -> &'static str {
+    use crate::api::schema::AgentStatus;
+    let awaits_reply = status == AgentStatus::Done
+        && snapshot.agents.iter().any(|agent| {
+            agent.awaiting_reply && agent.agent_status == AgentStatus::Done && in_group(agent)
+        });
+    if awaits_reply {
+        "?"
+    } else {
+        status_icon(status, style)
+    }
+}
+
+/// `status_icon`, or the mark: `?` for a question in both styles; for a
+/// running job a filled dot in the Dots style (easy to spot in a long list),
+/// `◷` in the Symbols style.
+fn agent_icon(
+    status: crate::api::schema::AgentStatus,
+    mark: AgentMark,
+    style: crate::config::StatusIndicatorStyle,
+) -> &'static str {
+    match (mark, style) {
+        (AgentMark::AwaitsReply, _) => "?",
+        (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Dots) => "●",
+        (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Symbols) => "◷",
+        (AgentMark::None, style) => status_icon(status, style),
+    }
+}
+
+/// `status_color`, or mauve while waiting on a job: yellow already means
+/// working, and blue is the accent and means finished elsewhere. A question
+/// keeps the finished colour.
+fn agent_color(
+    status: crate::api::schema::AgentStatus,
+    mark: AgentMark,
+    palette: &Palette,
+) -> ratatui::style::Color {
+    match mark {
+        AgentMark::WaitsOnJob => palette.mauve,
+        AgentMark::AwaitsReply => status_color(crate::api::schema::AgentStatus::Done, palette),
+        AgentMark::None => status_color(status, palette),
     }
 }
 

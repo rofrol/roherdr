@@ -126,7 +126,12 @@ impl ClientShellState {
                     self.collapsed_groups_for_endpoint(&endpoint.endpoint_id)
                         .unwrap_or(&empty_collapsed_groups)
                 };
-                render::workspace_entries(snapshot, collapsed_groups)
+                let entries = render::workspace_entries(snapshot, collapsed_groups);
+                if mobile && surface_available {
+                    entries
+                } else {
+                    self.sorted_for_sidebar(snapshot, entries, collapsed_groups)
+                }
             };
             for entry in entries {
                 targets.push(WorkspaceNavigationTarget {

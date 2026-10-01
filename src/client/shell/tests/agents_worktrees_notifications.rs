@@ -390,17 +390,19 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
     let frame = state.compose(106, 24).expect("live drag preview");
     let rows = frame_rows(&frame);
     assert!(rows[0].contains("client-shell → end"), "{}", rows[0]);
-    // The preview draws the dragged space last, marked with an accent bar.
+    // The preview draws the dragged space last, its grip at the right edge.
     let dragged = state
         .hits
         .workspaces
         .last()
         .expect("dragged space drawn last");
     assert_eq!(dragged.workspace_id, "ws_1");
-    assert!(
-        rows[dragged.rect.y as usize].starts_with('▌'),
-        "{}",
-        rows[dragged.rect.y as usize]
+    let grip = &frame.cells
+        [dragged.rect.y as usize * frame.width as usize + dragged.rect.right() as usize - 2];
+    assert_eq!(grip.symbol, "⋮");
+    assert_eq!(
+        grip.fg,
+        crate::protocol::color_to_u32(state.config.palette.accent)
     );
 
     let release =
@@ -578,7 +580,14 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
         })]);
     assert!(dragging_child.actions.is_empty());
     assert!(state.chrome_drag.is_none());
-
+    // The header says why instead of ignoring the drag.
+    assert!(dragging_child.repaint);
+    let frame = state.compose(106, 24).expect("refused child drag");
+    assert!(
+        frame_rows(&frame)[0].contains("moves with its parent"),
+        "{}",
+        frame_rows(&frame)[0]
+    );
     let mut projected = state.snapshot.as_deref().unwrap().clone();
     let mut duplicate = projected.workspaces[0].clone();
     duplicate.workspace_id = "ws_duplicate".into();
@@ -629,6 +638,135 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
 }
 
 #[test]
+fn a_space_shows_it_can_be_dragged_on_hover_press_and_outside_the_list() {
+    let mut projected = snapshot();
+    let mut second = projected.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.number = 2;
+    second.label = "workspace-2".into();
+    second.focused = false;
+    projected.workspaces.push(second);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("two workspaces");
+    let first = state.hits.workspaces[0].rect;
+    let second = state.hits.workspaces[1].rect;
+    let mouse = |kind, column, row| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    let row = |state: &mut ClientShellState, y: u16| {
+        let frame = state.compose(106, 24).expect("frame");
+        frame_rows(&frame)[y as usize].clone()
+    };
+    // Colour of the grip at the right edge of the space's name line.
+    let grip = |state: &mut ClientShellState, workspace_id: &str| {
+        let frame = state.compose(106, 24).expect("frame");
+        let rect = state
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| hit.workspace_id == workspace_id)
+            .expect("space drawn")
+            .rect;
+        let cell = &frame.cells[rect.y as usize * frame.width as usize + rect.right() as usize - 2];
+        (cell.symbol == "⋮").then_some(cell.fg)
+    };
+    let color = |color| Some(crate::protocol::color_to_u32(color));
+    let palette = state.config.palette.clone();
+
+    // Hovering the name line shows a grey grip at its right edge.
+    let hover = state.handle_raw_events(vec![mouse(MouseEventKind::Moved, first.x + 2, first.y)]);
+    assert!(hover.repaint);
+    assert_eq!(grip(&mut state, "ws_1"), color(palette.overlay1));
+    assert_eq!(grip(&mut state, "ws_2"), None);
+
+    // A press turns the grip accent before any move; a release in place
+    // still focuses the space.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        second.x + 2,
+        second.y,
+    )]);
+    assert_eq!(grip(&mut state, "ws_2"), color(palette.accent));
+    assert_eq!(grip(&mut state, "ws_1"), None);
+    let click = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        second.x + 2,
+        second.y,
+    )]);
+    assert!(matches!(
+        &click.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceFocus(target)
+                    if target.workspace_id == "ws_2"
+            )
+    ));
+    assert_eq!(grip(&mut state, "ws_2"), None);
+
+    // Outside the list the grip stays accent and the header says a release
+    // cancels.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        first.x + 2,
+        first.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        first.x + 2,
+        second.y,
+    )]);
+    let footer = state.hits.new_workspace;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        footer.x + 1,
+        footer.y,
+    )]);
+    assert!(matches!(
+        state.chrome_drag,
+        Some(ClientChromeDrag::Workspace { target: None, .. })
+    ));
+    assert!(row(&mut state, 0).contains("release cancels"));
+    assert_eq!(grip(&mut state, "ws_1"), color(palette.accent));
+    let released = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        footer.x + 1,
+        footer.y,
+    )]);
+    assert!(released.actions.is_empty());
+
+    // Sorted by name, a drag is refused with a hint and no grip shows.
+    state.space_sort = state
+        .space_sort
+        .clicked(super::super::space_sort::SpaceSortKey::Name);
+    state.compose(106, 24).expect("sorted by name");
+    let first = state.hits.workspaces[0].rect;
+    state.handle_raw_events(vec![mouse(MouseEventKind::Moved, first.x + 2, first.y)]);
+    assert_eq!(grip(&mut state, "ws_1"), None);
+    state.handle_raw_events(vec![
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            first.x + 2,
+            first.y,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            first.x + 2,
+            first.y + 2,
+        ),
+    ]);
+    assert!(state.chrome_drag.is_none());
+    assert!(row(&mut state, 0).contains("sort by cust to reorder"));
+}
+
+#[test]
 fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     let mut initial = snapshot();
     let mut second = initial.panes[0].clone();
@@ -648,6 +786,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Idle,
             state_change_seq: 1,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
@@ -664,6 +803,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Idle,
             state_change_seq: 2,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
@@ -738,6 +878,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             terminal_title_stripped: Some("first".into()),
             agent_status: AgentStatus::Done,
             state_change_seq: 10,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: vec![("summary".into(), "review complete".into())],
             focused: true,
@@ -754,6 +895,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             terminal_title_stripped: Some("second".into()),
             agent_status: AgentStatus::Blocked,
             state_change_seq: 20,
+            awaiting_reply: false,
             state_labels: vec![("blocked".into(), "needs input".into())],
             tokens: vec![("summary".into(), "waiting for Can".into())],
             focused: false,
@@ -877,6 +1019,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
         state_change_seq: 1,
+        awaiting_reply: false,
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
@@ -944,6 +1087,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Idle,
             state_change_seq: 1,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
@@ -960,6 +1104,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Blocked,
             state_change_seq: 2,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
@@ -976,6 +1121,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Idle,
             state_change_seq: 3,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
@@ -1050,6 +1196,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
         state_change_seq: 1,
+        awaiting_reply: false,
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
@@ -1615,6 +1762,7 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
         terminal_title_stripped: None,
         agent_status: AgentStatus::Blocked,
         state_change_seq: 1,
+        awaiting_reply: false,
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: false,

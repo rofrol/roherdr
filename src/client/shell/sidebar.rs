@@ -98,7 +98,9 @@ pub(crate) fn render_collapsed_sidebar(
             rect.x.saturating_add(2),
             rect.y,
             rect.width.saturating_sub(2),
-            status_icon(status, config.status_indicators),
+            aggregate_icon(snapshot, status, config.status_indicators, |agent| {
+                agent.workspace_id == workspace.workspace_id
+            }),
             Style::default().fg(status_color(status, palette)),
         );
         hits.workspaces.push(WorkspaceHit {
@@ -160,13 +162,14 @@ pub(crate) fn render_collapsed_sidebar(
                 palette.overlay0
             }),
         );
+        let mark = agent_mark(snapshot, agent);
         put_text(
             buffer,
             rect.x.saturating_add(2),
             rect.y,
             rect.width.saturating_sub(2),
-            status_icon(agent.agent_status, config.status_indicators),
-            Style::default().fg(status_color(agent.agent_status, palette)),
+            agent_icon(agent.agent_status, mark, config.status_indicators),
+            Style::default().fg(agent_color(agent.agent_status, mark, palette)),
         );
         hits.agents.push((rect, pane_id));
     }
@@ -293,46 +296,73 @@ pub(crate) fn render_sidebar(
     );
     let (sections, build_area) = split_build_row(area, build);
     hits.sidebar_sections = sections;
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
-    let mut entries = workspace_entries(snapshot, state.collapsed_groups);
+    let agents_panel = config.show_agents_panel;
+    let (workspace_area, detail_area) = if agents_panel {
+        hits.sidebar_section_divider =
+            crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
+        crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split)
+    } else {
+        super::usage::split_spaces_and_footer(sections, state.usage)
+    };
+    let mut entries = super::space_sort::sorted_entries(
+        snapshot,
+        workspace_entries(snapshot, state.collapsed_groups),
+        state.collapsed_groups,
+        state.space_sort,
+    );
     // While a space is dragged the list shows where it would land, and the
-    // header says so in words.
+    // header says so in words. With the pointer outside the list the order
+    // stays, the block stays lifted and the header says a release cancels.
     let drag = state
         .dragged_workspace_id
-        .zip(state.workspace_drop_before)
-        .and_then(|(source, before)| {
-            let preview = entries_with_drag(snapshot, &entries, source, before)?;
-            let hint = drag_hint(snapshot, &entries, &preview, source);
-            Some((preview, hint))
+        .and_then(|source| match state.workspace_drop_before {
+            Some(before) => {
+                let preview = entries_with_drag(snapshot, &entries, source, before)?;
+                let hint = drag_hint(snapshot, &entries, &preview, source);
+                Some((Some(preview), hint))
+            }
+            None => Some((None, "release cancels · Esc".to_owned())),
         });
-    let header = match &drag {
-        Some((_, hint)) => format!(" {hint}"),
-        None => " spaces".to_owned(),
-    };
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        &header,
-        Style::default()
-            .fg(if drag.is_some() {
-                palette.accent
-            } else {
-                palette.overlay0
-            })
-            .add_modifier(Modifier::BOLD),
-    );
+    let header_hint = drag.as_ref().map(|(_, hint)| hint.as_str()).or(state
+        .workspace_drag_refusal
+        .map(super::WorkspaceDragRefusal::hint));
+    match header_hint {
+        Some(hint) => put_text(
+            buffer,
+            workspace_area.x,
+            workspace_area.y,
+            workspace_area.width,
+            &format!(" {hint}"),
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None => {
+            let buttons = super::space_sort::render_sort_header(
+                buffer,
+                Rect::new(workspace_area.x, workspace_area.y, workspace_area.width, 1)
+                    .intersection(workspace_area),
+                state.space_sort,
+                palette,
+            );
+            if config.mouse_capture {
+                hits.space_sort_buttons = buttons;
+            }
+        }
+    }
     let mut dragged_family = HashSet::new();
     if let Some((preview, _)) = drag {
-        entries = preview;
+        if let Some(preview) = preview {
+            entries = preview;
+        }
         if let Some(source) = state.dragged_workspace_id {
             dragged_family = family_ids(snapshot, &entries, source);
         }
     }
+    let pressed_family = state
+        .pressed_workspace_id
+        .map(|pressed| family_ids(snapshot, &entries, pressed))
+        .unwrap_or_default();
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -349,23 +379,27 @@ pub(crate) fn render_sidebar(
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
-                    let rows = workspace_rows(
-                        workspace,
-                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
-                        displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups),
-                        entry.indented,
-                        &config.spaces,
-                    )
-                    .len()
-                    .max(1);
                     let agents = super::space_agents::space_agent_lines(
                         snapshot,
                         workspace,
                         state.collapsed_groups,
                         config,
+                    );
+                    let rows = workspace_rows(
+                        workspace,
+                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                        super::space_agents::space_row_tab_jobs(
+                            snapshot,
+                            workspace,
+                            state.collapsed_groups,
+                            &agents,
+                        ),
+                        entry.indented,
+                        &config.spaces,
                     )
-                    .len();
-                    (rows + agents).min(u16::MAX as usize) as u16
+                    .len()
+                    .max(1);
+                    (rows + agents.len()).min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
         })
@@ -418,15 +452,20 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let tab_jobs = displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
-        let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
         let agent_lines = super::space_agents::space_agent_lines(
             snapshot,
             workspace,
             state.collapsed_groups,
             config,
         );
+        let tab_jobs = super::space_agents::space_row_tab_jobs(
+            snapshot,
+            workspace,
+            state.collapsed_groups,
+            &agent_lines,
+        );
+        let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
+        let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
         let row_height = own_rows
             .saturating_add(agent_lines.len().min(u16::MAX as usize) as u16)
             .min(body.height);
@@ -438,35 +477,50 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = dragged_family.contains(workspace.workspace_id.as_str());
+        let pressed = pressed_family.contains(workspace.workspace_id.as_str());
+        // Grey on hover, accent while pressed or dragged; the name takes the
+        // same colour, so the block is found after it jumps.
+        let grab_color = if dragged || pressed {
+            Some(palette.accent)
+        } else if state.hovered_workspace_id == Some(workspace.workspace_id.as_str()) {
+            Some(palette.overlay1)
+        } else {
+            None
+        };
         if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if workspace.focused {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
+        let icon = aggregate_icon(snapshot, status, config.status_indicators, |agent| {
+            displayed_workspaces(snapshot, workspace, state.collapsed_groups)
+                .any(|shown| shown.workspace_id == agent.workspace_id)
+        });
         render_workspace_rows(
             buffer,
             rect,
             status,
-            config.status_indicators,
+            icon,
             entry,
             rows,
             workspace.focused,
             selected,
             state.selected_workspace_id.is_some(),
-            dragged,
+            grab_color.filter(|_| dragged || pressed),
             palette,
         );
-        if dragged {
-            // An accent bar marks the lifted block; the selection grey stays
-            // for the selection.
-            for row in rect.y..rect.bottom() {
+        if let Some(color) = grab_color {
+            // A grip at the name line's right edge, left of the group
+            // chevron, in the spacer column the name never reaches.
+            let hovered = state.hovered_workspace_id == Some(workspace.workspace_id.as_str());
+            if (dragged || pressed || hovered) && rect.width >= 4 {
                 put_text(
                     buffer,
-                    rect.x,
-                    row,
+                    rect.right().saturating_sub(2),
+                    rect.y,
                     1,
-                    "▌",
-                    Style::default().fg(palette.accent),
+                    "⋮",
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 );
             }
         }
@@ -564,7 +618,11 @@ pub(crate) fn render_sidebar(
         }
     }
 
-    let (detail_area, usage_area) = super::usage::split_usage_footer(detail_area, state.usage);
+    let (detail_area, usage_area) = if agents_panel {
+        super::usage::split_usage_footer(detail_area, state.usage)
+    } else {
+        (Rect::default(), detail_area)
+    };
     if let Some(report) = state.usage.filter(|_| !usage_area.is_empty()) {
         super::usage::render_usage_footer(
             buffer,
@@ -575,14 +633,16 @@ pub(crate) fn render_sidebar(
             hits,
         );
     }
-    super::render_agent_panel(
-        buffer,
-        detail_area,
-        snapshot,
-        config,
-        state.agent_scroll,
-        hits,
-    );
+    if agents_panel {
+        super::render_agent_panel(
+            buffer,
+            detail_area,
+            snapshot,
+            config,
+            state.agent_scroll,
+            hits,
+        );
+    }
 
     if let Some(build) = build {
         render_build_row(buffer, build_area, build, palette);
@@ -953,7 +1013,7 @@ pub(in crate::client::shell) fn workspace_rows(
         &workspace.label
     };
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    crate::ui::sidebar_space_rows(
+    let rows = crate::ui::sidebar_space_rows(
         config,
         crate::ui::SpaceTokenContext {
             workspace: label,
@@ -964,20 +1024,36 @@ pub(in crate::client::shell) fn workspace_rows(
             tokens: &token_values,
             suppress_git_details: indented,
         },
-    )
+    );
+    if !config.agents {
+        return rows;
+    }
+    // Agents listed under the space show their own states, so the space's
+    // aggregate icon is redundant. Dropped for every space, also those without
+    // agents, so the name does not shift as agents come and go.
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .filter(|token| !matches!(token.kind, crate::ui::ResolvedTokenKind::StateIcon))
+                .collect::<Vec<_>>()
+        })
+        .filter(|row| !row.is_empty())
+        .collect()
 }
 
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
     status: crate::api::schema::AgentStatus,
-    indicators: crate::config::StatusIndicatorStyle,
+    // `aggregate_icon` of `status`.
+    icon: &'static str,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     focused: bool,
     selected: bool,
     navigating: bool,
-    dragged: bool,
+    // Name colour of a pressed or dragged space.
+    grabbed: Option<ratatui::style::Color>,
     palette: &Palette,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
@@ -1011,13 +1087,13 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             x = x.saturating_add(3);
         }
-        let highlighted = focused || dragged;
+        let highlighted = focused || grabbed.is_some();
         let workspace_style = Style::default()
-            .fg(if highlighted {
+            .fg(grabbed.unwrap_or(if highlighted {
                 palette.text
             } else {
                 palette.subtext0
-            })
+            }))
             .add_modifier(if highlighted {
                 Modifier::BOLD
             } else {
@@ -1030,10 +1106,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         });
         let spans = crate::ui::resolved_token_spans(
             row,
-            (
-                status_icon(status, indicators),
-                Style::default().fg(status_color(status, palette)),
-            ),
+            (icon, Style::default().fg(status_color(status, palette))),
             Style::default().fg(status_color(status, palette)),
             workspace_style,
             secondary_style,

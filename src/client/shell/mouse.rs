@@ -750,6 +750,7 @@ impl ClientShellState {
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
+        self.update_workspace_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -1304,13 +1305,24 @@ impl ClientShellState {
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
                     let source_workspace_id = press.workspace_id.clone();
-                    let draggable = self.endpoint_workspace_is_draggable(press);
+                    let start_row = press.start_row;
+                    let check =
+                        self.endpoint_workspace_drag_check(&press.endpoint_id, &press.workspace_id);
+                    if let (Err(Some(reason)), Some(press)) = (check, self.workspace_press.as_mut())
+                    {
+                        // Say why instead of ignoring the drag.
+                        if press.refused != Some(reason) {
+                            press.refused = Some(reason);
+                            outcome.repaint = true;
+                        }
+                        return;
+                    }
                     let grab_offset = self
                         .workspace_blocks()
                         .iter()
                         .find(|(id, ..)| *id == source_workspace_id)
-                        .map_or(0, |(_, top, _)| press.start_row.saturating_sub(*top));
-                    if draggable {
+                        .map_or(0, |(_, top, _)| start_row.saturating_sub(*top));
+                    if check.is_ok() {
                         if let Some(target) =
                             self.workspace_drop_target_at(point, &source_workspace_id, grab_offset)
                         {
@@ -1964,15 +1976,8 @@ impl ClientShellState {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if self
-                    .hits
-                    .tabs
-                    .iter()
-                    .chain(&self.hits.child_tabs)
-                    .any(|(rect, _)| super::contains(*rect, point))
-                    || super::contains(self.hits.tab_scroll_left, point)
-                    || super::contains(self.hits.tab_scroll_right, point)
-                    || super::contains(self.hits.new_tab, point) =>
+                if super::contains(self.hits.tab_bar, point)
+                    || super::contains(self.hits.child_tab_bar, point) =>
             {
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -1
@@ -1980,11 +1985,7 @@ impl ClientShellState {
                     1
                 };
                 // Each row steps through its own tabs and stops at its ends.
-                let in_child_row = self
-                    .hits
-                    .child_tabs
-                    .iter()
-                    .any(|(rect, _)| super::contains(*rect, point));
+                let in_child_row = super::contains(self.hits.child_tab_bar, point);
                 let tab_id = if in_child_row {
                     self.child_row_step(delta)
                 } else {
@@ -2130,6 +2131,20 @@ impl ClientShellState {
                     self.open_usage_overlay(outcome);
                     return;
                 }
+                if let Some(key) = self
+                    .hits
+                    .space_sort_buttons
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, key)| *key)
+                {
+                    self.space_sort = self.space_sort.clicked(key);
+                    self.workspace_scroll = 0;
+                    self.reveal_focused_workspace = true;
+                    self.persist_chrome_preferences(outcome);
+                    outcome.repaint = true;
+                    return;
+                }
                 if super::contains(self.hits.agent_sort_toggle, point) {
                     let sort = match self.config.agent_panel_sort {
                         crate::config::AgentPanelSortConfig::Spaces => {
@@ -2196,20 +2211,27 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                // An agent line under a space focuses that agent, not the space.
-                let space_agent = self
+                // A line under a space focuses its agent or job tab, not the space.
+                let space_line = self
                     .hits
                     .space_agents
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, pane_id)| pane_id.clone());
-                if let Some(pane_id) = space_agent {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                            pane_id,
-                        }),
-                        outcome,
-                    );
+                    .map(|(_, target)| target.clone());
+                if let Some(target) = space_line {
+                    use super::space_agents::SpaceLineTarget;
+                    let method =
+                        match target {
+                            SpaceLineTarget::Pane(pane_id) => {
+                                crate::api::schema::Method::PaneFocus(
+                                    crate::api::schema::PaneTarget { pane_id },
+                                )
+                            }
+                            SpaceLineTarget::Tab(tab_id) => crate::api::schema::Method::TabFocus(
+                                crate::api::schema::TabTarget { tab_id },
+                            ),
+                        };
+                    self.push_endpoint_method(method, outcome);
                     return;
                 }
                 let workspace_press = self
@@ -2222,6 +2244,7 @@ impl ClientShellState {
                         workspace_id: hit.workspace_id.clone(),
                         start_column: mouse.column,
                         start_row: mouse.row,
+                        refused: None,
                     });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);

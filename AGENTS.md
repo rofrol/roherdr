@@ -351,43 +351,80 @@ To re-record the fork demo video and upload it for the README, follow
 `scripts/fork_demo/README.md`; uploading needs the Claude in Chrome tools
 (see "Uploading as an agent" there).
 
-### Trying a fix in the running Herdr
+### Naming options
 
-The installed binary on the user's PATH is the last known-good build; the
-repo build is the candidate. After a user-facing fix, build the candidate
-(over a minute, so use `herdr-job`) and do not install it:
+Name boolean options positively (`show_agents_panel = false`), not as
+negations (`hide_agents_panel = true`): a double negative is confusing to
+read. Upstream's existing negative names stay as they are.
+
+### Worktrees in the fork
+
+Work on `master` in the shared checkout by default: commits are small, other
+sessions see them at once, and the build you install must come from current
+`master` anyway (see below), so a worktree only adds a rebase and a
+cold `target/` rebuild. Use `herdr worktree create` only for long or
+exploratory work that may be abandoned, broad refactors, or when two agents
+must edit the same file. Rebase such a branch onto `master` before building
+for `scripts/herdr_live.sh install`.
+
+Before starting a code change, run `git status`. If the shared checkout
+already has uncommitted changes to code (anything that goes into the build,
+such as `src/`, `build.rs`, `Cargo.toml`, `Cargo.lock`; not `TODO.md` or other
+notes) that are not yours, ask the user whether to work in a worktree instead,
+because those changes would end up in your build and your commit.
+
+### Installing a fix into the running Herdr
+
+After a user-facing fix passes its tests, build it on top of current
+`master` before committing (over a minute, so use `herdr-job`), then ask the
+user before installing it, because the install disconnects their attached
+clients. Commit once the user has tried the installed build, so a fix that
+does not work never lands on `master`:
 
 ```bash
 cargo build --release --locked
+scripts/herdr_live.sh install
 ```
 
-The user tries it with `scripts/herdr_live.sh`:
+Ask with `AskUserQuestion`, putting "Install now (Recommended)" first so
+Enter confirms it, and "Not now" second. If the user is on the phone app,
+where multiple-choice prompts may not work, ask in plain text. Run
+`install` only after a yes; on "Not now", report that the build is ready and
+that they can install it later with `scripts/herdr_live.sh install` or by
+asking you.
 
-- `test` records the build's hash and live-hands the session off to
-  `target/release/herdr`; the user runs it from a plain terminal (it refuses
-  inside a Herdr pane, whose client the handoff closes), which then attaches
-  with that binary, since the TUI client runs the fix too.
-- `back` hands the session back to the installed binary when the candidate is
-  bad.
-- `keep` installs the tested build: it refuses if `target/release/herdr`
-  changed since `test`, renames a copy over `~/.cargo/bin/herdr`, and hands the
-  session off to it, so the server no longer runs from `target/`.
+Right before building, check that `git status` lists only your changes and
+save `git diff HEAD` to your scratchpad. After the build and again before
+`install`, check that `HEAD` has no new commits touching the build inputs and
+that the diff is unchanged; otherwise rebuild. Such a build is labelled
+`<HEAD>-dirty`. Commit your files by explicit path (`git commit -- <paths>`),
+never with `-a`.
 
-When the user says the candidate works, commit the fix; the user then runs
-`scripts/herdr_live.sh keep` or asks you to. Do not rebuild
-between the test and `keep`. If the installed binary is package-managed
-(Homebrew, Nix, system directories; check `ps -axo command | grep '[h]erdr
-server'` and `command -v herdr`), ask before replacing it.
+`install` copies `target/release/herdr` to a staging file, backs up the
+installed `~/.cargo/bin/herdr` to `~/.cache/herdr/installed/` (the last 5 are
+kept), renames the build over it and live-hands the running server off to it.
+Every pane, including yours, keeps running, but attached clients disconnect:
+tell the user to run `herdr` to reattach. If the handoff fails, the script
+restores the previous binary and the server keeps running it.
 
-Other agent sessions often commit to `master` at the same time. `keep`
-installs exactly the tested binary, so build the candidate from current
-`master` with your fix on top, not from a worktree or branch based on an older
-`master`; otherwise `keep` silently drops their commits from the installed
-binary. Another session's candidate may be sitting in the main checkout's
-`target/`: ask that session before rebuilding there, and test and keep one
-candidate that contains both fixes.
+Backups are named `<install time>_<commit>_<commit subject>` after the build
+they hold (read from the hidden `herdr --build-commit`);
+`scripts/herdr_live.sh list` shows them and the installed build.
+
+When the user says the build is broken, run `scripts/herdr_live.sh rollback`
+first, then fix forward or revert. `rollback` restores the most recent backup
+and removes it, so repeating it goes one build further back. Run both commands
+from your pane; from a plain terminal the script also reattaches.
+
+Other agent sessions often commit to `master` at the same time. Build from
+current `master` with your fix on top, not from a worktree or branch based on
+an older `master`, or the install silently drops their commits. Another
+session may be building in the shared `target/` at the same time; the script
+installs one build at a time, and the later install contains both fixes only
+when it was built after both commits. If the installed binary is
+package-managed (Homebrew, Nix, system directories; check `ps -axo command |
+grep '[h]erdr server'` and `command -v herdr`), ask before replacing it.
 
 Never install Herdr any other way: no symlink to `target/release/herdr`, no
-`cargo install`, and no shell aliases for these steps. The installed binary
-must stay the last build the user confirmed, and only `scripts/herdr_live.sh`
-replaces it.
+`cargo install`, and no shell aliases. Only `scripts/herdr_live.sh` replaces
+the installed binary, so a rollback always has a backup.

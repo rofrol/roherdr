@@ -17,7 +17,7 @@ contains = ["{contains}"]
     )
 }
 
-fn local_manifest(state: &str, contains: &str) -> String {
+pub(crate) fn local_manifest(state: &str, contains: &str) -> String {
     format!(
         r#"
 id = "codex"
@@ -40,7 +40,7 @@ id = "codex"
     )
 }
 
-fn with_manifest_dirs<T>(name: &str, f: impl FnOnce() -> T) -> T {
+pub(crate) fn with_manifest_dirs<T>(name: &str, f: impl FnOnce() -> T) -> T {
     let _guard = crate::config::test_config_env_lock().lock().unwrap();
     let old_config = std::env::var_os("XDG_CONFIG_HOME");
     let old_state = std::env::var_os("XDG_STATE_HOME");
@@ -81,7 +81,7 @@ fn write_remote_codex_without_reload(content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-fn write_local_codex(content: &str) {
+pub(crate) fn write_local_codex(content: &str) {
     let path = override_path(Agent::Codex).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();

@@ -2,7 +2,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 param([string]$Action = "")
 
@@ -21,6 +21,20 @@ $propertyNames = @($payload.PSObject.Properties.Name)
 if ((Test-Path Env:CURSOR_VERSION) -or $propertyNames -ccontains "cursor_version") { exit 0 }
 if (-not ($propertyNames -ccontains "hook_event_name") -or $payload.hook_event_name -isnot [string] -or $payload.hook_event_name -cne "SessionStart") { exit 0 }
 if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
+
+# Ask the agent to report a turn that ends with a question, so herdr keeps its pane marked
+# until the user answers. HERDR_AWAITING_REPLY_INSTRUCTIONS=0 turns the instruction off.
+if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
+    $context = "You run inside a Herdr pane. When you end a turn by asking the user something " +
+        "they must answer or decide (a question, a choice between options, a " +
+        "confirmation before you proceed), run the shell command " +
+        "``herdr agent awaiting-reply`` right before your final message, so Herdr keeps " +
+        "your pane marked until the user replies. Run it at most once per turn and " +
+        "ignore its failure. Do not run it when you simply finished and ask nothing, " +
+        "or for courtesy offers such as asking whether anything else is needed."
+    @{ hookSpecificOutput = @{ hookEventName = "SessionStart"; additionalContext = $context } } |
+        ConvertTo-Json -Compress -Depth 3 | Write-Output
+}
 
 $sessionId = $payload.session_id
 if ([string]::IsNullOrWhiteSpace($sessionId)) { exit 0 }

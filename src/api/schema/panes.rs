@@ -397,6 +397,13 @@ pub struct PaneReportAgentSessionParams {
     pub resume_argv: Option<Vec<String>>,
 }
 
+/// The agent in the pane ends its current turn by asking the user something: a question or a
+/// decision the user must make. Shown until the agent starts working again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportAwaitingReplyParams {
+    pub pane_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReportMetadataParams {
     pub pane_id: String,

@@ -18,6 +18,10 @@ use super::config_edit::{
 // `new`/`load`; filter before it starts an unnecessary hook process.
 const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 
+/// Lets Claude run the one command the SessionStart instruction asks for without a permission
+/// prompt, which would turn the pane blocked while it reports a question.
+const AWAITING_REPLY_PERMISSION: &str = "Bash(herdr agent awaiting-reply)";
+
 struct HookRemoval {
     event: &'static str,
     actions: &'static [&'static str],
@@ -61,6 +65,118 @@ const HOOK_REMOVALS: &[HookRemoval] = &[
         actions: &["release"],
     },
 ];
+
+pub(crate) fn allow_awaiting_reply_command(
+    content: &str,
+    settings_path: &Path,
+) -> io::Result<String> {
+    let mut desired = parse_value(content, settings_path)?;
+    let allowed = desired
+        .pointer("/permissions/allow")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| rules.iter().any(|rule| rule == AWAITING_REPLY_PERMISSION));
+    if allowed {
+        return Ok(content.to_string());
+    }
+    let settings_error = |what: &str| {
+        io::Error::other(format!(
+            "claude settings {what} at {} must be a JSON {}",
+            settings_path.display(),
+            if what == "permissions.allow" {
+                "array"
+            } else {
+                "object"
+            }
+        ))
+    };
+    let permissions = desired
+        .as_object_mut()
+        .ok_or_else(|| settings_error("root"))?
+        .entry("permissions")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| settings_error("permissions"))?;
+    permissions
+        .entry("allow")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| settings_error("permissions.allow"))?
+        .push(Value::String(AWAITING_REPLY_PERMISSION.into()));
+
+    let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
+        io::Error::other(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    let root_object = root
+        .value()
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| settings_error("root"))?;
+    let permissions = match root_object.get("permissions") {
+        Some(property) => property
+            .object_value()
+            .ok_or_else(|| settings_error("permissions"))?,
+        None => root_object
+            .append("permissions", CstInputValue::Object(Vec::new()))
+            .object_value()
+            .ok_or_else(|| settings_error("permissions"))?,
+    };
+    let allow = match permissions.get("allow") {
+        Some(property) => property
+            .array_value()
+            .ok_or_else(|| settings_error("permissions.allow"))?,
+        None => permissions
+            .append("allow", CstInputValue::Array(Vec::new()))
+            .array_value()
+            .ok_or_else(|| settings_error("permissions.allow"))?,
+    };
+    allow.append(json!(AWAITING_REPLY_PERMISSION));
+    verify_updated(root.to_string(), settings_path, &desired)
+}
+
+/// Removes only herdr's rule; an emptied `allow` or `permissions` the rule created stays as an
+/// empty container, which Claude treats as no rules.
+pub(crate) fn remove_awaiting_reply_permission(
+    content: &str,
+    settings_path: &Path,
+) -> io::Result<String> {
+    let mut desired = parse_value(content, settings_path)?;
+    let Some(rules) = desired
+        .pointer_mut("/permissions/allow")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(content.to_string());
+    };
+    let before = rules.len();
+    rules.retain(|rule| rule != AWAITING_REPLY_PERMISSION);
+    if rules.len() == before {
+        return Ok(content.to_string());
+    }
+    let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
+        io::Error::other(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    if let Some(allow) = root
+        .value()
+        .and_then(|value| value.as_object())
+        .and_then(|object| object.get("permissions"))
+        .and_then(|property| property.object_value())
+        .and_then(|permissions| permissions.get("allow"))
+        .and_then(|property| property.array_value())
+    {
+        for rule in allow.elements() {
+            if rule.to_serde_value().as_ref().and_then(Value::as_str)
+                == Some(AWAITING_REPLY_PERMISSION)
+            {
+                rule.remove();
+            }
+        }
+    }
+    verify_updated(root.to_string(), settings_path, &desired)
+}
 
 pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> io::Result<String> {
     let original = parse_value(content, settings_path)?;

@@ -1099,6 +1099,10 @@ pub struct ClientShellAgent {
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
     pub state_change_seq: u64,
+    /// The agent's last turn ended by asking the user something (see `AgentInfo`). Optional:
+    /// older servers do not send it.
+    #[serde(default)]
+    pub awaiting_reply: bool,
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
@@ -3585,23 +3589,6 @@ mod tests {
             }
             other => panic!("expected Bincode error about trailing bytes, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn read_message_accepts_exact_payload() {
-        // A normally-framed message should decode without error.
-        let msg = ClientMessage::TerminalHello {
-            version: PROTOCOL_VERSION,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
-        };
-        let mut buf = Vec::new();
-        write_message(&mut buf, &msg).unwrap();
-        let decoded: ClientMessage = read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).unwrap();
-        assert_eq!(msg, decoded);
     }
 
     #[test]

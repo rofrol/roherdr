@@ -182,6 +182,7 @@ pub(super) fn snapshot_with_completions(
                 terminal_title_stripped: agent.terminal_title_stripped,
                 agent_status: agent.agent_status,
                 state_change_seq: agent.state_change_seq,
+                awaiting_reply: agent.awaiting_reply,
                 state_labels,
                 tokens,
                 focused,

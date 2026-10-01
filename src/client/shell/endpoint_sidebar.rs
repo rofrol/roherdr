@@ -177,7 +177,12 @@ pub(super) fn render_collapsed(
                 rect.x.saturating_add(number_width),
                 rect.y,
                 rect.width.saturating_sub(number_width),
-                status_icon(workspace.agent_status, config.status_indicators),
+                aggregate_icon(
+                    snapshot,
+                    workspace.agent_status,
+                    config.status_indicators,
+                    |agent| agent.workspace_id == workspace.workspace_id,
+                ),
                 Style::default()
                     .fg(if stale {
                         palette.overlay0
@@ -320,6 +325,12 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(entry.index)?;
+                        let agents = super::space_agents::space_agent_lines(
+                            snapshot,
+                            workspace,
+                            collapsed_groups,
+                            config,
+                        );
                         let rows = super::sidebar::workspace_rows(
                             workspace,
                             super::sidebar::displayed_workspace_status(
@@ -327,24 +338,18 @@ pub(super) fn render_expanded(
                                 workspace,
                                 collapsed_groups,
                             ),
-                            super::sidebar::displayed_workspace_tab_jobs(
+                            super::space_agents::space_row_tab_jobs(
                                 snapshot,
                                 workspace,
                                 collapsed_groups,
+                                &agents,
                             ),
                             entry.indented,
                             &config.spaces,
                         )
                         .len()
                         .max(1);
-                        let agents = super::space_agents::space_agent_lines(
-                            snapshot,
-                            workspace,
-                            collapsed_groups,
-                            config,
-                        )
-                        .len();
-                        Some((rows + agents).min(u16::MAX as usize) as u16)
+                        Some((rows + agents.len()).min(u16::MAX as usize) as u16)
                     })
                     .unwrap_or(1)
             }
@@ -463,10 +468,17 @@ pub(super) fn render_expanded(
                     workspace,
                     collapsed_groups,
                 );
-                let tab_jobs = super::sidebar::displayed_workspace_tab_jobs(
+                let agent_lines = super::space_agents::space_agent_lines(
                     snapshot,
                     workspace,
                     collapsed_groups,
+                    config,
+                );
+                let tab_jobs = super::space_agents::space_row_tab_jobs(
+                    snapshot,
+                    workspace,
+                    collapsed_groups,
+                    &agent_lines,
                 );
                 let tokens = super::sidebar::workspace_rows(
                     workspace,
@@ -476,12 +488,6 @@ pub(super) fn render_expanded(
                     &config.spaces,
                 );
                 let own_rows = tokens.len().max(1).min(u16::MAX as usize) as u16;
-                let agent_lines = super::space_agents::space_agent_lines(
-                    snapshot,
-                    workspace,
-                    collapsed_groups,
-                    config,
-                );
                 let height = own_rows
                     .saturating_add(agent_lines.len().min(u16::MAX as usize) as u16)
                     .min(body.height);
@@ -499,17 +505,21 @@ pub(super) fn render_expanded(
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
+                let icon = aggregate_icon(snapshot, status, config.status_indicators, |agent| {
+                    super::sidebar::displayed_workspaces(snapshot, workspace, collapsed_groups)
+                        .any(|shown| shown.workspace_id == agent.workspace_id)
+                });
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
                     status,
-                    config.status_indicators,
+                    icon,
                     entry,
                     tokens,
                     endpoint_active && workspace.focused,
                     selected,
                     state.selected_workspace_id.is_some(),
-                    false,
+                    None,
                     palette,
                 );
                 // Clicking another endpoint's agent line selects its space;

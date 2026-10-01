@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 set -eu
 
@@ -56,6 +56,24 @@ if hook_event_name != "SessionStart":
 is_subagent = bool(hook_input.get("agent_id"))
 if is_subagent:
     raise SystemExit(0)
+
+# Ask the agent to report a turn that ends with a question, so herdr keeps its pane marked
+# until the user answers. HERDR_AWAITING_REPLY_INSTRUCTIONS=0 turns the instruction off.
+if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": (
+                "You run inside a Herdr pane. When you end a turn by asking the user something "
+                "they must answer or decide (a question, a choice between options, a "
+                "confirmation before you proceed), run the shell command "
+                "`herdr agent awaiting-reply` right before your final message, so Herdr keeps "
+                "your pane marked until the user replies. Run it at most once per turn and "
+                "ignore its failure. Do not run it when you simply finished and ask nothing, "
+                "or for courtesy offers such as asking whether anything else is needed."
+            ),
+        }
+    }))
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 report_seq = time.time_ns()
 session_id = hook_input.get("session_id")
