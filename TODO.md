@@ -237,8 +237,9 @@
     (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
     typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
     an `agent_end` extension that does the same.
-  - Done 2026-10-01 (V2 for Claude Code; committed, not installed into
-    `~/.claude` until `herdr integration install claude` runs): a `Stop` hook
+  - Done 2026-10-01 (V2 for Claude Code; installed into `~/.claude` the same day with
+    `herdr integration install claude`, committed in the dotfiles repo; sessions
+    started before that keep their old hooks until restarted): a `Stop` hook
     (`herdr-agent-state.sh stop-check`, added and removed with the reminder in
     `claude_settings.rs`): when the final message's last paragraph looks like a
     question for the user (the audit's bilingual heuristic, a parity test keeps
