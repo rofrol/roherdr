@@ -406,30 +406,54 @@ pub(crate) fn render_sidebar(
                 .notification_log_button
                 .filter(|_| config.mouse_capture)
             {
-                hits.notification_log_button =
-                    render_notification_log_button(buffer, workspace_area, unread, palette);
+                hits.notification_log_button = render_notification_log_button(
+                    buffer,
+                    workspace_area,
+                    unread,
+                    state.open_list == Some(super::notification_log::NotificationLogView::History),
+                    palette,
+                );
                 right = hits.notification_log_button.x;
             }
             if config.mouse_capture {
                 let (working, asking) = state.agent_counts;
+                // The colours of the tab lines: the question mark's, the
+                // working yellow; the star is neutral (mauve means waiting on
+                // a job, yellow means work).
                 let asking_style = Style::default()
-                    .fg(palette.accent)
+                    .fg(super::agent_color(
+                        crate::api::schema::AgentStatus::Done,
+                        super::AgentMark::AwaitsReply,
+                        palette,
+                    ))
                     .add_modifier(Modifier::BOLD);
-                let working_style = Style::default().fg(palette.overlay1);
-                let bookmark_style = Style::default().fg(palette.mauve);
-                for (count, glyph, style, slot) in [
-                    (asking, "?", asking_style, &mut hits.asking_list_button),
+                let working_style = Style::default().fg(super::status_color(
+                    crate::api::schema::AgentStatus::Working,
+                    palette,
+                ));
+                let bookmark_style = Style::default().fg(palette.subtext0);
+                use super::notification_log::NotificationLogView as View;
+                for (count, glyph, style, slot, view) in [
+                    (
+                        asking,
+                        "?",
+                        asking_style,
+                        &mut hits.asking_list_button,
+                        View::Asking,
+                    ),
                     (
                         working,
                         crate::ui::motion::working_glyph(),
                         working_style,
                         &mut hits.working_list_button,
+                        View::Working,
                     ),
                     (
                         state.bookmark_count,
                         "★",
                         bookmark_style,
                         &mut hits.bookmarks_list_button,
+                        View::Bookmarks,
                     ),
                 ] {
                     if count == 0 {
@@ -441,6 +465,14 @@ pub(crate) fn render_sidebar(
                         continue;
                     }
                     let x = right - width - 1;
+                    // An open list's button is a filled pill, one cell wider on
+                    // each side than its label.
+                    let style = if state.open_list == Some(view) {
+                        let pill = Rect::new(x.saturating_sub(1), workspace_area.y, width + 2, 1);
+                        open_button_style(buffer, pill, palette)
+                    } else {
+                        style
+                    };
                     put_text(buffer, x, workspace_area.y, width, &label, style);
                     *slot = Rect::new(x, workspace_area.y, width + 1, 1);
                     right = x.saturating_sub(1);
@@ -641,6 +673,49 @@ pub(crate) fn render_sidebar(
             };
             *state.workspace_scroll =
                 super::scroll::rows_start_to_reveal(*state.workspace_scroll, viewport, top, bottom);
+        }
+    }
+    // A tab line just unfolded: show it with its squares and the empty row
+    // after them, moving as little as possible; a block taller than the list
+    // puts the line at the top.
+    if let Some(tab_id) = state
+        .reveal_unfolded_tab
+        .take()
+        .filter(|_| !body.is_empty())
+    {
+        let found = snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .and_then(|tab| {
+                entries.iter().position(|entry| {
+                    snapshot.workspaces[entry.index].workspace_id == tab.workspace_id
+                })
+            })
+            .and_then(|target| {
+                let workspace = snapshot.workspaces.get(entries[target].index)?;
+                let (offset, height) = tab_line_extent(
+                    snapshot,
+                    workspace,
+                    &entries[target],
+                    state,
+                    squares_width,
+                    config,
+                    &tab_id,
+                )?;
+                Some((tops[target] + offset, usize::from(height)))
+            });
+        if let Some((top, height)) = found {
+            *state.workspace_scroll = if height >= viewport {
+                top
+            } else {
+                super::scroll::rows_start_to_reveal(
+                    *state.workspace_scroll,
+                    viewport,
+                    top,
+                    top + height - 1,
+                )
+            };
         }
     }
     *state.workspace_scroll = (*state.workspace_scroll).min(max_scroll);
@@ -1355,6 +1430,7 @@ fn render_notification_log_button(
     buffer: &mut Buffer,
     area: Rect,
     unread: usize,
+    open: bool,
     palette: &Palette,
 ) -> Rect {
     let label = if unread > 0 {
@@ -1367,7 +1443,9 @@ fn render_notification_log_button(
         return Rect::default();
     }
     let rect = Rect::new(area.right().saturating_sub(width + 1), area.y, width + 1, 1);
-    let style = if unread > 0 {
+    let style = if open {
+        open_button_style(buffer, rect, palette)
+    } else if unread > 0 {
         Style::default()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD)
@@ -1383,6 +1461,17 @@ fn render_notification_log_button(
         style,
     );
     rect
+}
+
+/// Fills `pill` with the accent and returns the contrasting text style: a
+/// header button whose list is open.
+fn open_button_style(buffer: &mut Buffer, pill: Rect, palette: &Palette) -> Style {
+    let style = Style::default()
+        .fg(super::panel_contrast_fg(palette))
+        .bg(palette.accent)
+        .add_modifier(Modifier::BOLD);
+    buffer.set_style(pill.intersection(buffer.area), style);
+    style
 }
 
 /// Columns the name line of a space leaves at its right with vertical tabs:
@@ -1526,6 +1615,55 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
+}
+
+/// Where a tab line is inside its space: the rows above it (the space's own
+/// rows and the lines before it) and its height with squares.
+fn tab_line_extent(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    entry: &WorkspaceEntry,
+    state: &ShellRenderState<'_>,
+    squares_width: u16,
+    config: &ClientShellConfig,
+    tab_id: &str,
+) -> Option<(usize, u16)> {
+    let tab_lines = super::space_tabs::space_tab_lines_filtered(
+        snapshot,
+        workspace,
+        state.collapsed_groups,
+        state.unfolded_squares,
+        state.held_squares,
+        state
+            .space_filter
+            .as_ref()
+            .and_then(|filter| filter.view.as_ref()),
+        config,
+    );
+    let own_rows = workspace_rows(
+        workspace,
+        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+        super::space_tabs::space_row_tab_jobs(
+            snapshot,
+            workspace,
+            state.collapsed_groups,
+            &tab_lines,
+        ),
+        entry.indented,
+        &config.spaces,
+    )
+    .len()
+    .max(1);
+    let squares_width = squares_width.saturating_sub(super::space_tabs::tab_indent(entry.indented));
+    let mut offset = own_rows;
+    for line in &tab_lines {
+        let height = line.height(squares_width);
+        if line.tab_id == tab_id {
+            return Some((offset, height));
+        }
+        offset += usize::from(height);
+    }
+    None
 }
 
 /// Rows from a space's name row down to its focused tab line, or to the

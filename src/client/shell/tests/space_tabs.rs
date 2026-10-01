@@ -2290,6 +2290,9 @@ fn one_wheel_event_scrolls_the_spaces_list_by_one_row() {
     }
     click_fold(&mut state);
     state.compose(106, 30).unwrap();
+    // Unfolding scrolled to the squares; start the wheel from the top.
+    state.workspace_scroll = 0;
+    state.compose(106, 30).unwrap();
     let body = state.hits.workspace_body;
     assert!(state.hits.workspace_max_scroll >= 3);
     let wheel = |state: &mut ClientShellState, kind| {
@@ -2455,7 +2458,9 @@ fn bookmarked_tabs_are_listed_in_the_order_of_the_spaces_and_removed_from_the_li
         .position(|row| row.contains("other tab"))
         .expect("other tab listed");
     assert!(first < second, "spaces order: {first} {second}");
-    assert!(rows[first].contains('★'), "{:?}", rows[first]);
+    // The tab's state icon replaces the star in front of the name.
+    assert!(!rows[first].contains('★'), "{:?}", rows[first]);
+    assert!(rows[first].contains('◐'), "{:?}", rows[first]);
 
     // A row jumps to its tab.
     let row = state.hits.notification_log_rows[1].0;
@@ -2577,4 +2582,74 @@ fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
     let name_row = state.hits.context_menu_rows[1].0;
     left_click(&mut state, (name_row.x + 2, name_row.y));
     assert!(state.space_sort.name_descending);
+}
+
+#[test]
+fn the_button_of_an_open_list_is_filled_with_the_accent() {
+    use crate::api::schema::AgentStatus::{Blocked, Working};
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![
+        header_agent("p1", Working, false, "a"),
+        header_agent("p2", Blocked, false, "b"),
+    ];
+    projected.tabs[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    let accent = crate::protocol::color_to_u32(state.config.palette.accent);
+    let bg = |state: &mut ClientShellState, rect: Rect| {
+        let frame = state.compose(106, 30).unwrap();
+        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 1].bg
+    };
+    state.compose(106, 30).unwrap();
+    let buttons = [
+        state.hits.working_list_button,
+        state.hits.asking_list_button,
+        state.hits.bookmarks_list_button,
+        state.hits.notification_log_button,
+    ];
+    for (index, button) in buttons.into_iter().enumerate() {
+        assert_ne!(bg(&mut state, button), accent, "closed {index}");
+        left_click(&mut state, (button.x + 1, button.y));
+        assert_eq!(bg(&mut state, button), accent, "open {index}");
+        // Only the open one is filled.
+        for (other, rect) in buttons.into_iter().enumerate() {
+            if other != index {
+                assert_ne!(
+                    bg(&mut state, rect),
+                    accent,
+                    "{other} while {index} is open"
+                );
+            }
+        }
+        // The same button closes it.
+        left_click(&mut state, (button.x + 1, button.y));
+        assert_ne!(bg(&mut state, button), accent, "closed again {index}");
+    }
+}
+
+#[test]
+fn unfolding_a_tab_line_near_the_bottom_scrolls_its_squares_into_view() {
+    let mut state = state_with_tabs(true);
+    for index in 0..24 {
+        with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
+    }
+    // A short list: the unfolded line's squares do not fit below it.
+    state.compose(106, 14).unwrap();
+    state.workspace_scroll = 0;
+    state.compose(106, 14).unwrap();
+    assert!(state.hits.space_tab_squares.is_empty());
+    let (rect, _) = state.hits.space_tab_folds[0];
+    left_click(&mut state, (rect.x, rect.y));
+    state.compose(106, 14).unwrap();
+    let body = state.hits.workspace_body;
+    assert!(
+        state
+            .hits
+            .space_tab_squares
+            .iter()
+            .any(|(rect, _)| rect.y >= body.y && rect.bottom() <= body.bottom()),
+        "squares in view after the unfold: {:?} in {body:?}",
+        state.hits.space_tab_squares
+    );
 }

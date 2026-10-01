@@ -64,6 +64,7 @@ impl ClientShellState {
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
         let bookmark_count = self.bookmark_count();
+        let open_list = self.open_notification_list();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -90,6 +91,7 @@ impl ClientShellState {
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
+            reveal_unfolded_tab: &mut self.reveal_unfolded_tab,
             reveal_focused_tab: &mut self.reveal_focused_tab,
             sidebar_collapsed: false,
             sidebar_section_split: self.sidebar_section_split,
@@ -112,6 +114,7 @@ impl ClientShellState {
             notification_log_button,
             agent_counts,
             bookmark_count,
+            open_list,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -287,6 +290,7 @@ impl ClientShellState {
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
         let bookmark_count = self.bookmark_count();
+        let open_list = self.open_notification_list();
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
             .space_filter
@@ -342,6 +346,7 @@ impl ClientShellState {
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
+                reveal_unfolded_tab: &mut self.reveal_unfolded_tab,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
                 sidebar_collapsed: self.sidebar_collapsed,
                 sidebar_section_split: self.sidebar_section_split,
@@ -365,6 +370,7 @@ impl ClientShellState {
                 notification_log_button,
                 agent_counts,
                 bookmark_count,
+                open_list,
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -810,17 +816,25 @@ impl ClientShellState {
             } else if let ClientShellOverlay::NotificationLog(log) = overlay {
                 let now = crate::usage::now_unix();
                 let offset = super::usage::local_utc_offset_secs();
-                let rows = self
-                    .notification_log_rows()
+                let entries = self.notification_log_rows();
+                let icons = self.notification_row_icons(&entries);
+                let rows = entries
                     .iter()
-                    .map(|entry| {
-                        let text = self.notification_row_text(entry);
+                    .zip(icons)
+                    .map(|(entry, icon)| {
+                        let mut text = self.notification_row_text(entry);
+                        // The tab's state icon replaces the mark in the text.
+                        if icon.is_some() {
+                            if let Some((_, rest)) = text.split_once(' ') {
+                                text = rest.to_owned();
+                            }
+                        }
                         let time = if entry.unix_ms == 0 {
                             String::new()
                         } else {
                             super::notification_log::notification_time(entry.unix_ms, now, offset)
                         };
-                        (time, text, self.notification_is_unread(entry))
+                        (time, text, self.notification_is_unread(entry), icon)
                     })
                     .collect::<Vec<_>>();
                 let anchor = match log.view {

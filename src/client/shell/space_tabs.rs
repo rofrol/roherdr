@@ -370,6 +370,24 @@ fn tab_state(
     Some((status, mark))
 }
 
+/// The state icon of a tab line and its colour, as the sidebar draws it: the
+/// agent's state (with the question or job mark), or the program mark of a
+/// tab without an agent.
+pub(super) fn tab_state_icon(
+    snapshot: &ClientShellSnapshot,
+    tab: &ClientShellTab,
+    config: &ClientShellConfig,
+) -> (&'static str, Color) {
+    let palette = &config.palette;
+    match tab_state(snapshot, tab) {
+        Some((status, mark)) => (
+            agent_icon(status, mark, config.status_indicators),
+            agent_color(status, mark, palette),
+        ),
+        None => (PROGRAM_ICON, palette.overlay0),
+    }
+}
+
 fn stands_for_a_group(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,

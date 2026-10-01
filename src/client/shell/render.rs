@@ -252,6 +252,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,
     pub(super) reveal_focused_workspace: &'a mut bool,
+    pub(super) reveal_unfolded_tab: &'a mut Option<String>,
     pub(super) reveal_focused_tab: &'a mut bool,
     pub(super) sidebar_collapsed: bool,
     pub(super) sidebar_section_split: f32,
@@ -283,6 +284,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) agent_counts: (usize, usize),
     /// Bookmarked tabs, for the `★` button.
     pub(super) bookmark_count: usize,
+    /// The header button whose list is open, to draw it filled.
+    pub(super) open_list: Option<super::notification_log::NotificationLogView>,
 }
 
 pub(super) fn render_shell(

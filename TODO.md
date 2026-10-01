@@ -18,6 +18,40 @@
   out; checking `⇅` and `★` when the terminal draws ambiguous-width glyphs
   double.
 
+- [x] Header lists follow the tab look (user, 2026-10-01, several messages):
+  (1) the lists need the tab's state like the sidebar tab lines; (2) the
+  bookmark list needs a right-click menu with "Remove from bookmarks"; (3) the
+  history rows too show the tab's state; (4) "when I click bookmarks the
+  background of ★4 should change to show it is open; and then the stars before
+  the tab names can go; do the same for the others"; (5) "the colours must match
+  the ones in the spaces". Consulted DeepSeek, Opus and GPT.
+  - Done 2026-10-01: a row whose tab still exists shows the tab's state icon
+    in its colour and animation (`space_tabs::tab_state_icon`: the agent state
+    with the question or job mark, or the program mark) instead of the mark in
+    the text (`★ ? ◐ ✓`); the history rows keep their time before it; rows
+    whose tab is gone keep the mark. A right click on any list row opens that
+    tab's menu (it has "Remove from bookmarks"). The button of an open list is
+    a filled accent pill (one cell of padding each side, bold contrasting text),
+    only one at a time; clicking it again closes it. Colours: `◐` the working
+    yellow, `?` the question colour of the tab lines, `★` neutral (mauve means
+    waiting on a job), `✉` the accent. Tests: `the_button_of_an_open_list_is_
+    filled_with_the_accent`.
+  - Not done: a hover tint, a dim zero instead of hiding, splitting `◐` into
+    working and job-waiting counts (the models say do not mix colours in one
+    count).
+
+- [x] Unfolding a tab line's squares near the bottom shows nothing (user,
+  2026-10-01: "I click and the jobs list does not unfold"; later "maybe I could
+  before, but I had to scroll the spaces, like with a new tab"). The squares
+  were below the visible rows. Consulted DeepSeek and GPT (agree): after an
+  unfold scroll the least that shows the line, its squares and the empty row
+  after them; a block taller than the list puts the line at the top; folding
+  does not scroll; keyboard unfolds do the same. Done: a click on the triangle
+  sets `reveal_unfolded_tab`, and the next render scrolls to
+  `tab_line_extent`; test `unfolding_a_tab_line_near_the_bottom_scrolls_its_
+  squares_into_view`. Not done: the multi-machine sidebar, and unfolding by
+  keyboard (none exists).
+
 - [x] Regression (user, 2026-10-01: "I was able to close a tab with a Claude
   session inside without confirmation"): my earlier change (no question for an
   idle agent with nothing pending) also let an idle interactive Claude session
