@@ -2704,7 +2704,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   the effects in `receive_notification`; server skips its sound and toast in
   `forward_agent_notification_delivery`; history still records it).
 
-- [ ] Compact the fork's history before the upstream rebase (user,
+- [x] Compact the fork's history before the upstream rebase (user,
   2026-10-01: "maybe compact the history so rebases are easier? we went one
   way, then another, and then conflicts"). State: 315 fork commits (132 docs/
   notes, 113 feat, 59 fix) on a base 47 upstream commits behind; `git
@@ -2730,8 +2730,28 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     fix an existing feature with `git commit --fixup=<sha>` and `rebase -i
     --autosquash` before each sync; send generic features upstream so the
     permanent delta shrinks.
-  - Done: nothing yet; waiting for the user's go (it rewrites `master`, and
-    other sessions commit there).
+  - Done 2026-10-01 (the user said yes): 315 commits became 19 chronological
+    blocks (each block's tree is exactly its last original commit's tree, made
+    with `git commit-tree`) plus one fix commit; rebased on `upstream/master`
+    (47 commits, 0.9.3): 8 of 19 steps conflicted, 14 files, all resolved
+    (upstream's Windows actionable notifications beside the fork's click
+    targets, `close_group` for worktree groups, `resume_argv`, the
+    libghostty-vt crate split in `build.rs`). `just check` is green,
+    including the Windows lint. `master` is now 21 commits on `upstream/master`
+    and was force-pushed with an explicit lease (old origin SHA 90c99b85).
+    Safety nets: tags `archive/pre-sync-20261001` (pushed) and
+    `backup/master-before-compaction` (local) hold the old history.
+  - Open (user asked, "19 chronological points, not functional?"; consulted
+    DeepSeek, Opus and GPT, all agree): chronological blocks do not bisect
+    well (an intermediate block may not compile) and cannot be sent upstream
+    one feature at a time; functional commits are better for that but need
+    hunk surgery because `state.rs`, `mouse.rs` and `sidebar.rs` are shared by
+    most features. Recommendation: keep this result; when a feature goes
+    upstream, extract it then (branch from `upstream/master`, `git diff
+    upstream/master master -- <files> | git apply`, `git add -p`, check with
+    `git rebase --exec 'cargo check --all-targets'`); at the next sync split
+    the self-contained parts (plugins/, scripts/, docs, config options) into
+    functional commits and leave the entangled core as blocks. Not done.
 
 - [ ] Live "working" and "asking" indicators next to the notification button
   (user, 2026-10-01: "at the top next to the notification icon add a working
