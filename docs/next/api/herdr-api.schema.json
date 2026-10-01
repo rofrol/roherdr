@@ -8170,7 +8170,23 @@
                 "null"
               ]
             },
+            "repeats": {
+              "description": "How many notifications of this kind the pane sent in a row, this one\nstanding for all of them (a repeat replaces the older entry). Absent:\none.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "description": "What the agent was working on when this fired: its terminal title,\ncleaned and cut to one line. Absent when the pane had no meaningful\ntitle (a bare shell or program name, a path).",
               "type": [
                 "string",
                 "null"

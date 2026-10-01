@@ -332,10 +332,48 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_turn_is_quiet_unless_alerts_on_finished_are_on() {
+        let event = |kind| SemanticNotification {
+            kind,
+            title: "agent event".into(),
+            body: None,
+            sound: Some(SemanticNotificationSound::Done),
+            agent: Some("agent".into()),
+            workspace_id: Some("ws_1".into()),
+            tab_id: Some("background-tab".into()),
+            pane_id: Some("pane_1".into()),
+            position: None,
+        };
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.toast_delivery = crate::config::ToastDelivery::Terminal;
+        config.toast_delay_seconds = 0;
+        assert!(!config.toast_alert_on_finished, "quiet by default");
+        let mut state = ClientShellState::new(config);
+        let now = std::time::Instant::now();
+        // A question still alerts.
+        let (effects, _) = state.receive_notification(
+            &ClientEndpointId::Local,
+            event(SemanticNotificationKind::NeedsAttention),
+            now,
+        );
+        assert!(!effects.is_empty());
+        // A finished turn makes no sound or toast, only the history entry the
+        // server records.
+        let (effects, _) = state.receive_notification(
+            &ClientEndpointId::Local,
+            event(SemanticNotificationKind::Finished),
+            now,
+        );
+        assert!(effects.is_empty());
+        assert!(state.pending_notifications.is_empty());
+    }
+
+    #[test]
     fn finished_hint_waits_for_the_projected_completion_snapshot() {
         let mut config = ClientShellConfig::from_config(&Config::default());
         config.toast_delivery = crate::config::ToastDelivery::Terminal;
         config.toast_delay_seconds = 0;
+        config.toast_alert_on_finished = true;
         let mut state = ClientShellState::new(config);
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {

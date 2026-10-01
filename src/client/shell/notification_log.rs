@@ -132,6 +132,46 @@ impl ClientShellState {
         self.notification_log.entries.iter().rev().take(MAX_ROWS)
     }
 
+    /// One history row: `✓ Fix the login test · claude · herdr ×3`. The task is
+    /// the pane's title when the notification fired; without one the row says
+    /// what happened (`✓ claude finished · herdr`). The workspace is named by
+    /// its label, never by its position, and the tab by nothing: the auto
+    /// number says nothing. Other kinds keep their title and body.
+    pub(super) fn notification_row_text(&self, entry: &NotificationRecord) -> String {
+        let mark = match entry.kind.as_str() {
+            "needs_attention" => "?",
+            "finished" => "✓",
+            _ => {
+                return match entry.body.as_deref() {
+                    Some(body) => format!("{} · {body}", entry.title),
+                    None => entry.title.clone(),
+                }
+            }
+        };
+        let workspace = entry.workspace_id.as_deref().and_then(|id| {
+            self.snapshot
+                .as_deref()?
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == id)
+                .map(|workspace| workspace.label.clone())
+        });
+        let mut parts = Vec::new();
+        match (entry.task.as_deref(), entry.agent.as_deref()) {
+            (Some(task), agent) => {
+                parts.push(format!("{mark} {task}"));
+                parts.extend(agent.map(str::to_owned));
+            }
+            (None, _) => parts.push(format!("{mark} {}", entry.title)),
+        }
+        parts.extend(workspace);
+        let mut text = parts.join(" · ");
+        if let Some(repeats) = entry.repeats.filter(|repeats| *repeats > 1) {
+            text.push_str(&format!(" ×{repeats}"));
+        }
+        text
+    }
+
     /// Whether an entry's tab still has notifications not seen.
     pub(super) fn notification_is_unread(&self, entry: &NotificationRecord) -> bool {
         entry

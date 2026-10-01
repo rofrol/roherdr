@@ -373,6 +373,23 @@ git push --force-with-lease origin master
 Do not create merge commits from `upstream/master`. Keep the fork's own commits
 linear on top of upstream.
 
+Standing approval (the user, 2026-10-01), valid until the user announces the
+fork publicly: rebasing `master` onto `upstream/master` and force-pushing it
+is approved. Whether the fork has been announced is the user's decision; do not
+infer it from forks, pull requests or collaborators. Rules for that push:
+
+- Push only `refs/heads/master`, with `--force-with-lease=refs/heads/master:<the
+  SHA you reviewed>`; never `--all`, `--mirror`, other branches or a bare
+  `--force`. If the lease fails, stop and review what changed.
+- Never move or delete release tags. Fetch upstream's tags into a namespace
+  (`git fetch upstream --no-tags '+refs/tags/*:refs/tags/upstream/*'`) so the
+  fork's own `v*` tags never collide with them.
+- After a rebase the old release tags are no longer ancestors of `master`:
+  `git describe` will not see them, so compare changelogs by commit subject or
+  `git range-diff`, not `git log tag..master`.
+- A fast-forward push of new fork commits needs no force; use plain
+  `git push origin master` then.
+
 Everything scripts, tools and plugins print (errors, warnings, usage, stderr
 notices) is in English, even when the conversation with the user is in another
 language.

@@ -48,6 +48,16 @@ pub struct NotificationRecord {
     pub tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// What the agent was working on when this fired: its terminal title,
+    /// cleaned and cut to one line. Absent when the pane had no meaningful
+    /// title (a bare shell or program name, a path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// How many notifications of this kind the pane sent in a row, this one
+    /// standing for all of them (a repeat replaces the older entry). Absent:
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeats: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

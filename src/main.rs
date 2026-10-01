@@ -400,7 +400,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # terminal = ask the outer terminal to show a desktop notification
 # system = ask the OS notification service directly
 # delivery = "off"
-# delay_seconds = 1
+# Seconds to wait, then notify only if the agent is still in the same state
+# (it often carries on by itself). 0 notifies at once.
+# delay_seconds = 3
+# Alert (sound, toast) when an agent just finishes a turn and asks nothing.
+# Off: only a quiet row in the notification list and the unread dot.
+# alert_on_finished = false
 
 [ui.toast.herdr]
 # position = "bottom-right"

@@ -362,8 +362,23 @@ pub(crate) fn render_notification_log(
     let width = 56
         .min(screen.width.saturating_sub(button.x))
         .max(20.min(screen.width));
+    // The highlighted row's whole text, wrapped, under a rule: the rows cut it
+    // to one line.
+    let detail = rows
+        .get(highlighted)
+        .map(|(time, text, _)| format!("{time}  {}", text.replace(|c: char| c.is_control(), " ")));
+    let detail_lines = detail
+        .as_deref()
+        .map(|text| wrap_detail(text, usize::from(width.saturating_sub(4))))
+        .unwrap_or_default();
+    let footer = if detail_lines.is_empty() {
+        0
+    } else {
+        detail_lines.len() as u16 + 1
+    };
     let height = (rows.len().max(1) as u16)
         .saturating_add(2)
+        .saturating_add(footer)
         .min(screen.height.saturating_sub(button.bottom()).max(3));
     let x = button.x.min(screen.right().saturating_sub(width));
     let rect = Rect::new(x, button.bottom(), width, height).intersection(screen);
@@ -428,11 +443,61 @@ pub(crate) fn render_notification_log(
         );
         hits.push((row, index));
     }
+    if footer > 0 {
+        let rule_y = inner.y.saturating_add(rows.len() as u16);
+        if rule_y.saturating_add(footer) <= inner.bottom() {
+            let dim = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+            put_text(
+                buffer,
+                inner.x,
+                rule_y,
+                inner.width,
+                &"─".repeat(usize::from(inner.width)),
+                dim,
+            );
+            for (offset, line) in detail_lines.iter().enumerate() {
+                put_text(
+                    buffer,
+                    inner.x.saturating_add(1),
+                    rule_y.saturating_add(1 + offset as u16),
+                    inner.width.saturating_sub(1),
+                    line,
+                    Style::default().fg(palette.text).bg(palette.panel_bg),
+                );
+            }
+        }
+    }
     Some(OverlayRender {
         area: rect,
         menu_rows: hits,
         ..OverlayRender::default()
     })
+}
+
+/// `text` wrapped at word boundaries to `width` columns, at most 3 lines (the
+/// last one cut with `…`).
+fn wrap_detail(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let word = crate::ui::truncate_end(word, width);
+        match lines.last_mut() {
+            Some(line)
+                if display_width(line) as usize + 1 + display_width(&word) as usize <= width =>
+            {
+                line.push(' ');
+                line.push_str(&word);
+            }
+            _ => lines.push(word),
+        }
+    }
+    if lines.len() > 3 {
+        lines.truncate(3);
+        if let Some(last) = lines.last_mut() {
+            *last = crate::ui::truncate_end(&format!("{last} …"), width);
+        }
+    }
+    lines
 }
 
 /// The job status a context menu item closes, when it is one of the
