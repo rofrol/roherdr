@@ -2783,6 +2783,48 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Done: nothing yet; queued behind the fork history compaction and the
     upstream rebase.
 
+- [ ] Rebuild the fork's history as functional commits (user, 2026-10-01:
+  "add a functional split of the git history to the todo"). Today `master` is
+  19 chronological block commits plus fixes on `upstream/master`; the 315
+  original commits are in the tag `archive/pre-sync-20261001`. Consulted
+  DeepSeek, Opus and GPT; the plan they agree on:
+  - Freeze: tag the compacted tip `final`, record `base` (the upstream commit
+    under the blocks, `git merge-base HEAD upstream/master` at that time),
+    rebuild on a disposable branch from `base`, never on newer upstream.
+  - Inventory: `git diff --name-status base final`; labels from the archive
+    subjects (`git log --format=%s archive/...`), co-change clusters from
+    `git log --name-only`; an LLM proposes a feature for each hunk of the hot
+    files (`state.rs`, `mouse.rs`, `sidebar.rs`, 35-44 commits each), a human
+    reviews every assignment; order the features topologically (a symbol's
+    definer comes first; merge cycles).
+  - Manifest `split/features.toml`: feature, deps, exclusive path globs, hunk
+    markers (function or struct regexes), archive SHAs. A script
+    (`split/split.py`) parses `git diff -U0 base final`, assigns every hunk,
+    emits `NN-feature.patch`, and fails on an unassigned or doubly assigned
+    hunk or a failing `git apply --check`.
+  - Mechanics: `git switch -c functional base`; per feature `git checkout
+    final -- <exclusive files>` (handle deletions), `git apply --cached` for
+    the shared hunks (or `git add -p` with final content in the worktree),
+    commit; hand-fix hunks that compile only with a later feature. The other
+    way, `git rebase -i` over the original 315, works only if most commits are
+    feature-pure: trial once with `rerere` on and drop it when more than ~10%
+    of the picks conflict in the hot files (expected here).
+  - Verify: `git diff --exit-code final HEAD` empty; `git rebase --exec
+    'cargo check --all-targets' base`; `just windows-lint` per commit if
+    affordable; `just check` at the tip; test each snapshot in a clean
+    worktree (unstaged final content hides missing dependencies).
+  - Effort and stopping rule: estimates range from 1-2 days (Opus) to 40-80
+    hours (DeepSeek) to 3-10 days (GPT). Timebox two days, reassess after two
+    hard features, stop when more than ~15 hunks need rewriting to compile or
+    the effort exceeds the value; fallback: extract a single feature on demand
+    when it goes upstream (branch from `upstream/master`, take its files and
+    hunks from `final`, `git add -p`).
+  - Afterwards: one commit per feature, fixes as `git commit --fixup=<sha>`
+    and `rebase -i --autosquash` before a sync, weekly `git rebase
+    upstream/master` with `rerere` on, tag before every rewrite, keep the
+    manifest as the feature index.
+  - Done: nothing yet (recommended: not before a feature goes upstream).
+
 - [ ] The flaky `federated_client_starts_without_local_and_survives_its_restart`
   fails more often now (2026-10-01): three full `just check` runs in a row
   at about 07:00 failed it ("recovered Local must be selectable", after
