@@ -80,7 +80,9 @@ pub(crate) fn render_client_overlay(
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
         ClientShellOverlay::Usage(v) => render_usage_overlay(b, v, p),
-        ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
+        ClientShellOverlay::ContextMenu(_)
+        | ClientShellOverlay::GlobalMenu(_)
+        | ClientShellOverlay::NotificationLog(_) => None,
     }
 }
 
@@ -343,6 +345,92 @@ pub(crate) fn render_global_menu(
     Some(OverlayRender {
         area: rect,
         menu_rows: rows,
+        ..OverlayRender::default()
+    })
+}
+
+/// The notification history dropdown under its button, over the panes:
+/// `HH:MM` and the text per row, newest first, unread ones marked `•`.
+pub(crate) fn render_notification_log(
+    buffer: &mut Buffer,
+    button: Rect,
+    highlighted: usize,
+    rows: &[(String, String, bool)],
+    palette: &Palette,
+) -> Option<OverlayRender> {
+    let screen = buffer.area;
+    let width = 56
+        .min(screen.width.saturating_sub(button.x))
+        .max(20.min(screen.width));
+    let height = (rows.len().max(1) as u16)
+        .saturating_add(2)
+        .min(screen.height.saturating_sub(button.bottom()).max(3));
+    let x = button.x.min(screen.right().saturating_sub(width));
+    let rect = Rect::new(x, button.bottom(), width, height).intersection(screen);
+    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
+    let mut hits = Vec::new();
+    if rows.is_empty() {
+        put_text(
+            buffer,
+            inner.x.saturating_add(1),
+            inner.y,
+            inner.width.saturating_sub(1),
+            "no notifications yet",
+            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+        );
+    }
+    for (index, (time, text, unread)) in rows.iter().enumerate() {
+        let row_y = inner.y.saturating_add(index as u16);
+        if row_y >= inner.bottom() {
+            break;
+        }
+        let row = Rect::new(inner.x, row_y, inner.width, 1);
+        let selected = index == highlighted;
+        let base = if selected {
+            Style::default()
+                .fg(panel_contrast_fg(palette))
+                .bg(palette.accent)
+        } else {
+            Style::default().fg(palette.text).bg(palette.panel_bg)
+        };
+        buffer.set_style(row, base);
+        let mark = if *unread { "•" } else { " " };
+        put_text(
+            buffer,
+            row.x,
+            row.y,
+            1,
+            mark,
+            if selected {
+                base
+            } else {
+                base.fg(palette.accent).add_modifier(Modifier::BOLD)
+            },
+        );
+        let time_style = if selected {
+            base
+        } else {
+            base.fg(palette.overlay1)
+        };
+        put_text(buffer, row.x.saturating_add(2), row.y, 13, time, time_style);
+        let text_x = row.x.saturating_add(3 + display_width(time));
+        let text = crate::ui::truncate_end(
+            &text.replace(|character: char| character.is_control(), " "),
+            usize::from(row.right().saturating_sub(text_x)),
+        );
+        put_text(
+            buffer,
+            text_x,
+            row.y,
+            row.right().saturating_sub(text_x),
+            &text,
+            base,
+        );
+        hits.push((row, index));
+    }
+    Some(OverlayRender {
+        area: rect,
+        menu_rows: hits,
         ..OverlayRender::default()
     })
 }

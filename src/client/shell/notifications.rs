@@ -418,6 +418,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_focused_window_gets_herdrs_toast_instead_of_the_system_one() {
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.toast_delivery = crate::config::ToastDelivery::System;
+        let mut state = ClientShellState::new(config);
+        state.set_snapshot(Box::new(super::super::tests::snapshot()));
+        state.outer_focused = Some(true);
+        let event = SemanticNotification {
+            kind: SemanticNotificationKind::Custom,
+            title: "✓ Build b18".into(),
+            body: None,
+            sound: None,
+            agent: None,
+            workspace_id: Some("ws_9".into()),
+            tab_id: Some("tab_9".into()),
+            pane_id: Some("job_pane".into()),
+            position: None,
+        };
+        let (effects, repaint) = state.receive_notification(
+            &ClientEndpointId::Local,
+            event.clone(),
+            std::time::Instant::now(),
+        );
+        assert!(effects.is_empty());
+        assert!(repaint);
+        assert!(state.visible_notification.is_some());
+
+        // Unfocused (or unknown), the system toast shows.
+        let mut state = ClientShellState::new({
+            let mut config = ClientShellConfig::from_config(&Config::default());
+            config.toast_delivery = crate::config::ToastDelivery::System;
+            config
+        });
+        state.set_snapshot(Box::new(super::super::tests::snapshot()));
+        state.outer_focused = Some(false);
+        let (effects, _) =
+            state.receive_notification(&ClientEndpointId::Local, event, std::time::Instant::now());
+        assert!(matches!(
+            effects.as_slice(),
+            [ClientShellNotificationEffect::System { .. }]
+        ));
+    }
+
     fn system_toast_effect(terminal_title: Option<&str>) -> Vec<ClientShellNotificationEffect> {
         let mut config = ClientShellConfig::from_config(&Config::default());
         config.toast_delivery = crate::config::ToastDelivery::System;

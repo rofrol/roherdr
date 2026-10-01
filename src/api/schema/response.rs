@@ -208,6 +208,9 @@ pub enum ResponseResult {
     UsageRead {
         usage: super::usage::UsageReport,
     },
+    NotificationList {
+        notifications: Vec<super::NotificationRecord>,
+    },
     IntegrationInstall {
         target: IntegrationTarget,
         details: IntegrationInstallResult,

@@ -786,3 +786,38 @@ impl HeadlessServer {
         (had_event, changed)
     }
 }
+
+/// How many notifications `notification.list` keeps.
+const NOTIFICATION_HISTORY_LEN: usize = 100;
+
+impl HeadlessServer {
+    pub(super) fn record_notification(&mut self, notification: &protocol::SemanticNotification) {
+        let kind = match notification.kind {
+            protocol::SemanticNotificationKind::NeedsAttention => "needs_attention",
+            protocol::SemanticNotificationKind::Finished => "finished",
+            protocol::SemanticNotificationKind::UpdateInstalled => "update_installed",
+            protocol::SemanticNotificationKind::Custom => "custom",
+        };
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                elapsed.as_millis().min(u128::from(u64::MAX)) as u64
+            });
+        if self.notification_history.len() >= NOTIFICATION_HISTORY_LEN {
+            self.notification_history.pop_front();
+        }
+        self.notification_history
+            .push_back(api::schema::NotificationRecord {
+                id: self.next_notification_id,
+                unix_ms,
+                kind: kind.to_owned(),
+                title: notification.title.clone(),
+                body: notification.body.clone(),
+                agent: notification.agent.clone(),
+                workspace_id: notification.workspace_id.clone(),
+                tab_id: notification.tab_id.clone(),
+                pane_id: notification.pane_id.clone(),
+            });
+        self.next_notification_id += 1;
+    }
+}

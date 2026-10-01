@@ -697,6 +697,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneWaitForOutput(_) => "pane.wait_for_output",
         Method::IntegrationList(_) => "integration.list",
         Method::UsageRead(_) => "usage.read",
+        Method::NotificationList(_) => "notification.list",
         Method::IntegrationInstall(_) => "integration.install",
         Method::IntegrationUninstall(_) => "integration.uninstall",
         Method::PluginLink(_) => "plugin.link",

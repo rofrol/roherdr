@@ -25,6 +25,31 @@ pub(super) fn metadata_token_values_schema(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct EmptyParams {}
 
+/// A notification the server sent its clients, as `notification.list`
+/// returns it: the server keeps the last 100 in memory, newest last, and
+/// loses them on restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NotificationRecord {
+    /// Increases with every notification of this server run.
+    pub id: u64,
+    /// When the server sent it, in milliseconds since the Unix epoch.
+    pub unix_ms: u64,
+    /// `needs_attention`, `finished`, `update_installed` or `custom`; other
+    /// values may come later.
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceTarget {
     pub workspace_id: String,

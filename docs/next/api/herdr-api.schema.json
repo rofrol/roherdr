@@ -6337,6 +6337,22 @@
         {
           "properties": {
             "method": {
+              "const": "notification.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "integration.install",
               "type": "string"
             },
@@ -8006,6 +8022,67 @@
               "type": "object"
             }
           ]
+        },
+        "NotificationRecord": {
+          "description": "A notification the server sent its clients, as `notification.list`\nreturns it: the server keeps the last 100 in memory, newest last, and\nloses them on restart.",
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "Increases with every notification of this server run.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "description": "`needs_attention`, `finished`, `update_installed` or `custom`; other\nvalues may come later.",
+              "type": "string"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "unix_ms": {
+              "description": "When the server sent it, in milliseconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "unix_ms",
+            "kind",
+            "title"
+          ],
+          "type": "object"
         },
         "NotificationShowReason": {
           "enum": [
@@ -10366,6 +10443,25 @@
               "required": [
                 "type",
                 "usage"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "notifications": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/NotificationRecord"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "notification_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "notifications"
               ],
               "type": "object"
             },

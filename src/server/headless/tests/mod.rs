@@ -113,6 +113,8 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         next_client_id: 1,
         foreground_client_id: None,
         tab_geometry_controllers: HashMap::new(),
+        notification_history: std::collections::VecDeque::new(),
+        next_notification_id: 1,
         popup_owner_tab_id: None,
         client_shell_boot_id: "test-boot".into(),
         sent_window_title: None,
@@ -8112,4 +8114,56 @@ async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
     );
     assert!(!server.app.state.terminals[&terminal_id].awaiting_reply());
     shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn notification_list_returns_the_last_notifications_newest_last() {
+    let mut server = test_headless_server();
+    let notification = |title: &str| protocol::SemanticNotification {
+        kind: protocol::SemanticNotificationKind::Custom,
+        title: title.into(),
+        body: None,
+        sound: None,
+        agent: None,
+        workspace_id: None,
+        tab_id: Some("w1:t2".into()),
+        pane_id: None,
+        position: None,
+    };
+    // No client is attached: the history keeps them anyway, and only the
+    // last 100.
+    for index in 0..105 {
+        server.send_to_client_shells(ServerMessage::SemanticNotification(notification(&format!(
+            "n{index}"
+        ))));
+    }
+    let list = |server: &mut HeadlessServer| {
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: "list".into(),
+                method: api::schema::Method::NotificationList(Default::default()),
+            },
+            respond_to,
+            response_write_complete: None,
+        });
+        let response = response_rx
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap();
+        match serde_json::from_str::<api::schema::SuccessResponse>(&response)
+            .unwrap()
+            .result
+        {
+            api::schema::ResponseResult::NotificationList { notifications } => notifications,
+            other => panic!("expected a notification list, got {other:?}"),
+        }
+    };
+    let notifications = list(&mut server);
+    assert_eq!(notifications.len(), 100);
+    assert_eq!(notifications[0].title, "n5");
+    assert_eq!(notifications[99].title, "n104");
+    assert_eq!(notifications[99].id, 105);
+    assert_eq!(notifications[99].kind, "custom");
+    assert_eq!(notifications[99].tab_id.as_deref(), Some("w1:t2"));
+    assert!(notifications[0].unix_ms <= notifications[99].unix_ms);
 }

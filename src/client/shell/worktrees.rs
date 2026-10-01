@@ -532,6 +532,7 @@ impl ClientShellState {
                 | PendingEndpointKind::PopupCommand
                 | PendingEndpointKind::ReloadConfig
                 | PendingEndpointKind::UsageRead { .. }
+                | PendingEndpointKind::NotificationList { .. }
                 | PendingEndpointKind::IntegrationList
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::SelectionCopy

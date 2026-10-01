@@ -102,6 +102,9 @@ impl ClientShellState {
         event: SemanticNotification,
         now: std::time::Instant,
     ) -> (Vec<ClientShellNotificationEffect>, bool) {
+        if endpoint_id == &self.active_endpoint_id {
+            self.notification_log_received(event.tab_id.as_deref());
+        }
         let delay = if event.kind == SemanticNotificationKind::Custom {
             0
         } else {
@@ -208,9 +211,18 @@ impl ClientShellState {
                 }
             }
 
+            // While the herdr window has focus, herdr's own toast shows
+            // instead of the system one: the system toast would cover the
+            // window being looked at. A terminal that does not report focus
+            // keeps the system toast.
+            let herdr_toast = match self.config.toast_delivery {
+                crate::config::ToastDelivery::Herdr => true,
+                crate::config::ToastDelivery::System => self.outer_focused == Some(true),
+                _ => false,
+            };
             match self.config.toast_delivery {
                 crate::config::ToastDelivery::Off => {}
-                crate::config::ToastDelivery::Herdr if !target_active => {
+                _ if herdr_toast && !target_active => {
                     self.queue_visible_notification(
                         ClientVisibleNotification {
                             endpoint_id: pending.endpoint_id,
@@ -221,7 +233,7 @@ impl ClientShellState {
                     );
                     repaint = true;
                 }
-                crate::config::ToastDelivery::Herdr => {}
+                _ if herdr_toast => {}
                 crate::config::ToastDelivery::Terminal if !suppress_external => {
                     effects.push(ClientShellNotificationEffect::Terminal {
                         title: pending.event.title,
@@ -232,7 +244,9 @@ impl ClientShellState {
                     effects
                         .push(self.system_notification_effect(&pending.endpoint_id, pending.event));
                 }
-                crate::config::ToastDelivery::Terminal | crate::config::ToastDelivery::System => {}
+                crate::config::ToastDelivery::Herdr
+                | crate::config::ToastDelivery::Terminal
+                | crate::config::ToastDelivery::System => {}
             }
         }
         (effects, repaint)

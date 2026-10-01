@@ -1761,6 +1761,36 @@ impl ClientShellState {
                 return;
             }
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
+            let row_hit = self
+                .hits
+                .notification_log_rows
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .copied();
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let (Some((_, index)), Some(ClientShellOverlay::NotificationLog(log))) =
+                        (row_hit, self.overlay.as_mut())
+                    {
+                        log.highlighted = index;
+                        outcome.repaint = true;
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some((_, index)) = row_hit {
+                        self.activate_notification_log_row(index, outcome);
+                    } else {
+                        // Also the button: it closes what it opened.
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    }
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             let row_hit = self
                 .hits
@@ -2446,6 +2476,11 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.global_launcher, point) {
                     self.toggle_global_menu();
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.notification_log_button, point) {
+                    self.toggle_notification_log(outcome);
                     outcome.repaint = true;
                     return;
                 }
