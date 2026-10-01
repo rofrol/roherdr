@@ -636,7 +636,16 @@ pub(crate) fn render_context_menu(
             plain
         };
         buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, &item.label, style);
+        // One column of padding each side: the text does not touch the border
+        // (the width reserves two spare columns for it).
+        put_text(
+            buffer,
+            row.x.saturating_add(1),
+            row.y,
+            row.width.saturating_sub(1),
+            &item.label,
+            style,
+        );
         rows.push((row, index));
         row_y = row_y.saturating_add(1);
     }
