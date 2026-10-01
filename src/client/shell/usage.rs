@@ -138,7 +138,7 @@ impl ClientShellState {
     }
 }
 
-fn local_utc_offset_secs() -> i64 {
+pub(super) fn local_utc_offset_secs() -> i64 {
     let Some(local) = crate::platform::local_datetime() else {
         return 0;
     };

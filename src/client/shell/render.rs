@@ -9,7 +9,9 @@ pub(in crate::client::shell) mod tabs;
 
 pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel};
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
-pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
+pub(super) use overlays::{
+    render_client_overlay, render_context_menu, render_global_menu, render_notification_log,
+};
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
 pub(super) use tabs::{render_child_tab_bar, render_tab_bar, tab_bar_status_width};
 
@@ -244,6 +246,9 @@ pub(super) struct ShellRenderState<'a> {
     /// drawn, kept until the pointer leaves.
     pub(super) held_space_order: Option<&'a [String]>,
     pub(super) workspace_scroll: &'a mut usize,
+    /// Where the local spaces list's first shown row was, see
+    /// [`super::state::ScrollAnchor`].
+    pub(super) workspace_scroll_anchor: &'a mut Option<super::state::ScrollAnchor>,
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,
     pub(super) reveal_focused_workspace: &'a mut bool,
@@ -266,6 +271,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) workspace_drag_refusal: Option<super::WorkspaceDragRefusal>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,
     pub(super) space_sort: super::space_sort::SpaceSort,
+    /// The notification history button's unread count, or none to hide it.
+    pub(super) notification_log_button: Option<usize>,
 }
 
 pub(super) fn render_shell(

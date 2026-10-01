@@ -203,6 +203,9 @@ pub struct HeadlessServer {
     foreground_client_id: Option<u64>,
     /// Ephemeral shell connection controlling PTY geometry for each stable tab id.
     tab_geometry_controllers: HashMap<String, u64>,
+    /// The last notifications sent to client shells, for `notification.list`.
+    notification_history: std::collections::VecDeque<api::schema::NotificationRecord>,
+    next_notification_id: u64,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
@@ -352,6 +355,8 @@ impl HeadlessServer {
             next_client_id: 1,
             foreground_client_id: None,
             tab_geometry_controllers: HashMap::new(),
+            notification_history: std::collections::VecDeque::new(),
+            next_notification_id: 1,
             popup_owner_tab_id: None,
             client_shell_boot_id: format!(
                 "{}-{}",
@@ -1602,8 +1607,13 @@ impl HeadlessServer {
         }
     }
 
-    /// Sends an ephemeral semantic event to every connected client-rendered shell.
+    /// Sends an ephemeral semantic event to every connected client-rendered
+    /// shell. A notification also goes into the history, sent or not, so one
+    /// sent while no client was attached is still listed.
     fn send_to_client_shells(&mut self, msg: ServerMessage) -> bool {
+        if let ServerMessage::SemanticNotification(notification) = &msg {
+            self.record_notification(notification);
+        }
         let serialized = match Self::frame_server_message(&msg) {
             Ok(framed) => framed,
             Err(err) => {
@@ -2941,6 +2951,17 @@ impl HeadlessServer {
             return true;
         }
 
+        if let api::schema::Method::NotificationList(_) = &msg.request.method {
+            let response = serde_json::to_string(&api::schema::SuccessResponse {
+                id: msg.request.id.clone(),
+                result: api::schema::ResponseResult::NotificationList {
+                    notifications: self.notification_history.iter().cloned().collect(),
+                },
+            })
+            .unwrap_or_else(|_| "{}".to_string());
+            let _ = msg.respond_to.send(response);
+            return true;
+        }
         if let api::schema::Method::NotificationShow(params) = &msg.request.method {
             let response =
                 self.handle_notification_show_api(msg.request.id.clone(), params.clone(), None);

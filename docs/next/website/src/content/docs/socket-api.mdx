@@ -97,7 +97,7 @@ Raw socket method names use dot notation:
 | Area | Methods |
 | --- | --- |
 | Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
-| Notification | `notification.show`, `notification.show_for_pane` |
+| Notification | `notification.show`, `notification.show_for_pane`, `notification.list` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
@@ -332,6 +332,16 @@ Possible reasons are `shown`, `disabled`, `rate_limited`, `no_foreground_client`
 
 ```json
 {"id":"req_notify_pane","method":"notification.show_for_pane","params":{"pane_id":"w1:p4","title":"✓ Build","body":"test the new app set","sound":"done"}}
+```
+
+`notification.list` returns the notifications the server sent its clients, the last 100, oldest first, kept in memory until the server restarts. Each has an `id` that grows within a server run, `unix_ms`, `kind` (`needs_attention`, `finished`, `update_installed` or `custom`; treat others as custom), `title`, and optional `body`, `agent`, `workspace_id`, `tab_id` and `pane_id`.
+
+```json
+{"id":"req_list","method":"notification.list","params":{}}
+```
+
+```json
+{"id":"req_list","result":{"type":"notification_list","notifications":[{"id":7,"unix_ms":1790640000000,"kind":"finished","title":"claude finished","agent":"claude","workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p4"}]}}
 ```
 
 Click actions exist only where the desktop notifier supports them: on macOS through `terminal-notifier`, and for the local Herdr server.

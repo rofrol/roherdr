@@ -791,3 +791,105 @@ fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
     )]);
     assert!(!shown(&mut state));
 }
+
+#[test]
+fn the_spaces_list_keeps_its_top_space_when_squares_above_fold() {
+    let mut state = state_with_tabs(true);
+    for index in 0..40 {
+        with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
+    }
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for index in 2..=12 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.label = format!("space-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    state.set_snapshot(Box::new(projected));
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    // Scroll ws_2's name row to the top.
+    let body = state.hits.workspace_body;
+    let ws_2 = state
+        .hits
+        .workspace_layout
+        .iter()
+        .find(|layout| layout.workspace_id == "ws_2")
+        .expect("ws_2")
+        .top;
+    state.workspace_scroll += (ws_2 - i32::from(body.y)) as usize;
+    state.compose(106, 30).unwrap();
+    let top_space = |state: &ClientShellState| {
+        state
+            .hits
+            .workspace_layout
+            .iter()
+            .find(|layout| layout.top == i32::from(body.y))
+            .map(|layout| layout.workspace_id.clone())
+    };
+    assert_eq!(top_space(&state).as_deref(), Some("ws_2"));
+
+    // ws_1's squares fold (all its jobs close): ws_2 stays at the top.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.parent_tab_id.is_none());
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    assert_eq!(top_space(&state).as_deref(), Some("ws_2"));
+}
+
+#[test]
+fn the_notification_history_lists_and_opens_past_notifications() {
+    let mut state = state_with_tabs(true);
+    let entry = |id: u64, title: &str, tab: &str| crate::api::schema::NotificationRecord {
+        id,
+        unix_ms: 1_790_633_100_000,
+        kind: "finished".into(),
+        title: title.into(),
+        body: None,
+        agent: None,
+        workspace_id: Some("ws_1".into()),
+        tab_id: Some(tab.into()),
+        pane_id: None,
+    };
+    // The shown tab's notification is read at once, another tab's counts.
+    state.notification_log_received(Some("tab_1"));
+    state.notification_log_received(Some("tab_9"));
+    let frame = state.compose(106, 30).unwrap();
+    let button = state.hits.notification_log_button;
+    let header = frame_rows(&frame)[button.y as usize].clone();
+    assert!(header.contains("✉1"), "{header:?}");
+
+    // Opening it fetches the list; nothing is fetched before.
+    let outcome = left_click(&mut state, (button.x + 1, button.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::NotificationList(_)))));
+    state.complete_notification_list(
+        ClientEndpointId::Local,
+        Ok(crate::api::schema::ResponseResult::NotificationList {
+            notifications: vec![
+                entry(1, "on this tab", "tab_1"),
+                entry(2, "elsewhere", "tab_9"),
+            ],
+        }),
+    );
+    let frame = state.compose(106, 30).unwrap();
+    let rows = state.hits.notification_log_rows.clone();
+    assert_eq!(rows.len(), 2);
+    // Newest first, unread marked.
+    let first = frame_rows(&frame)[rows[0].0.y as usize].clone();
+    assert!(
+        first.contains("• ") && first.contains("elsewhere"),
+        "{first:?}"
+    );
+
+    // Its tab is gone, so the space opens; the entry is read.
+    let outcome = left_click(&mut state, (rows[0].0.x + 3, rows[0].0.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_1"))));
+    assert!(state.overlay.is_none());
+    assert_eq!(state.notification_log_button(), Some(0));
+}

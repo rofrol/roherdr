@@ -374,6 +374,13 @@ pub(crate) fn render_sidebar(
             if config.mouse_capture {
                 hits.space_sort_buttons = buttons;
             }
+            if let Some(unread) = state
+                .notification_log_button
+                .filter(|_| config.mouse_capture)
+            {
+                hits.notification_log_button =
+                    render_notification_log_button(buffer, workspace_area, unread, palette);
+            }
         }
     }
     let mut dragged_family = HashSet::new();
@@ -478,6 +485,25 @@ pub(crate) fn render_sidebar(
         .map_or(0, |(top, height)| top + usize::from(*height));
     let viewport = usize::from(body.height);
     let max_scroll = content_rows.saturating_sub(viewport);
+    // Keep the first row shown on the same space when rows above it come or
+    // go (squares folding or closing), unless the list was scrolled since.
+    if let Some(anchor) = state
+        .workspace_scroll_anchor
+        .as_ref()
+        .filter(|anchor| anchor.scroll == *state.workspace_scroll)
+    {
+        if let Some(index) = entries.iter().position(|entry| {
+            snapshot
+                .workspaces
+                .get(entry.index)
+                .is_some_and(|workspace| workspace.workspace_id == anchor.workspace_id)
+        }) {
+            let inner = anchor
+                .row
+                .min(usize::from(row_heights[index]).saturating_sub(1));
+            *state.workspace_scroll = tops[index] + inner;
+        }
+    }
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
         if let Some(target) = entries
             .iter()
@@ -518,6 +544,19 @@ pub(crate) fn render_sidebar(
     hits.workspace_max_scroll = max_scroll;
     hits.workspace_scroll_metrics = Some(metrics);
     let scroll = *state.workspace_scroll;
+    *state.workspace_scroll_anchor = tops
+        .iter()
+        .zip(&row_heights)
+        .zip(&entries)
+        .find(|((top, height), _)| **top + usize::from(**height) > scroll)
+        .and_then(|((top, _), entry)| {
+            Some(ScrollAnchor {
+                workspace_id: snapshot.workspaces.get(entry.index)?.workspace_id.clone(),
+                row: scroll.saturating_sub(*top),
+                scroll,
+            })
+        })
+        .filter(|_| scroll > 0);
     let show_scrollbar = max_scroll > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     // Where every space is, in screen rows, drawn or not: space drag and drop
@@ -1215,6 +1254,42 @@ pub(in crate::client::shell) fn workspace_rows(
         })
         .filter(|row| !row.is_empty())
         .collect()
+}
+
+/// The notification history button at the right end of the spaces header:
+/// `✉` and the unread count, accent while there are unread ones.
+fn render_notification_log_button(
+    buffer: &mut Buffer,
+    area: Rect,
+    unread: usize,
+    palette: &Palette,
+) -> Rect {
+    let label = if unread > 0 {
+        format!("✉{}", unread.min(99))
+    } else {
+        "✉".to_owned()
+    };
+    let width = display_width(&label).saturating_add(1);
+    if area.width < width + 8 || area.height == 0 {
+        return Rect::default();
+    }
+    let rect = Rect::new(area.right().saturating_sub(width + 1), area.y, width + 1, 1);
+    let style = if unread > 0 {
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.overlay1)
+    };
+    put_text(
+        buffer,
+        rect.x.saturating_add(1),
+        rect.y,
+        width,
+        &label,
+        style,
+    );
+    rect
 }
 
 /// Columns the name line of a space leaves at its right with vertical tabs:

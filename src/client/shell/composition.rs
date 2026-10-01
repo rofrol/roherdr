@@ -61,6 +61,7 @@ impl ClientShellState {
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
+        let notification_log_button = self.notification_log_button();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -83,6 +84,7 @@ impl ClientShellState {
                 &NO_HELD_SQUARES
             },
             workspace_scroll: &mut self.workspace_scroll,
+            workspace_scroll_anchor: &mut self.workspace_scroll_anchor,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
@@ -103,6 +105,7 @@ impl ClientShellState {
             hovered_square: None,
             workspace_drag_refusal: None,
             space_sort: self.space_sort,
+            notification_log_button,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -249,6 +252,7 @@ impl ClientShellState {
             .as_deref()
             .filter(|_| self.workspace_press.is_none() && self.chrome_drag.is_none())
             .filter(|_| self.space_sort.allows_drag());
+        let notification_log_button = self.notification_log_button();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -277,6 +281,7 @@ impl ClientShellState {
                     &NO_HELD_SQUARES
                 },
                 workspace_scroll: &mut self.workspace_scroll,
+                workspace_scroll_anchor: &mut self.workspace_scroll_anchor,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
@@ -297,6 +302,7 @@ impl ClientShellState {
                 hovered_square: self.hovered_square.as_deref(),
                 workspace_drag_refusal,
                 space_sort: self.space_sort,
+                notification_log_button,
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -734,6 +740,33 @@ impl ClientShellState {
                     render::render_context_menu(&mut composed, menu, &self.config.palette)?;
                 occlusion.cover(rendered.area);
                 self.hits.context_menu_rows = rendered.menu_rows;
+                None
+            } else if let ClientShellOverlay::NotificationLog(log) = overlay {
+                let now = crate::usage::now_unix();
+                let offset = super::usage::local_utc_offset_secs();
+                let rows = self
+                    .notification_log_rows()
+                    .map(|entry| {
+                        let text = match entry.body.as_deref() {
+                            Some(body) => format!("{} · {body}", entry.title),
+                            None => entry.title.clone(),
+                        };
+                        (
+                            super::notification_log::notification_time(entry.unix_ms, now, offset),
+                            text,
+                            self.notification_is_unread(entry),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let rendered = render::render_notification_log(
+                    &mut composed,
+                    self.hits.notification_log_button,
+                    log.highlighted,
+                    &rows,
+                    &self.config.palette,
+                )?;
+                occlusion.cover(rendered.area);
+                self.hits.notification_log_rows = rendered.menu_rows;
                 None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(

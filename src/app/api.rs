@@ -1013,6 +1013,16 @@ impl App {
             Method::NotificationShow(params) => {
                 return self.handle_notification_show(request.id, params);
             }
+            // The history lives in the headless server, which answers first.
+            Method::NotificationList(_) => {
+                return serde_json::to_string(&crate::api::schema::SuccessResponse {
+                    id: request.id,
+                    result: crate::api::schema::ResponseResult::NotificationList {
+                        notifications: Vec::new(),
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string());
+            }
             Method::NotificationShowForPane(params) => {
                 // The in-app toast has no click action; the pane only has to exist.
                 if self.parse_pane_id(&params.pane_id).is_none() {

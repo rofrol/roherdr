@@ -235,6 +235,8 @@ pub enum Method {
     IntegrationList(EmptyParams),
     #[serde(rename = "usage.read")]
     UsageRead(UsageReadParams),
+    #[serde(rename = "notification.list")]
+    NotificationList(EmptyParams),
     #[serde(rename = "integration.install")]
     IntegrationInstall(IntegrationInstallParams),
     #[serde(rename = "integration.uninstall")]

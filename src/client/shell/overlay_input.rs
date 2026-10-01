@@ -581,6 +581,32 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
+            match key.code {
+                KeyCode::Esc => {
+                    self.overlay = None;
+                    outcome.repaint = true;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.move_notification_log_selection(-1);
+                    outcome.repaint = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.move_notification_log_selection(1);
+                    outcome.repaint = true;
+                }
+                KeyCode::Enter => {
+                    let highlighted = match self.overlay.as_ref() {
+                        Some(ClientShellOverlay::NotificationLog(log)) => log.highlighted,
+                        _ => return,
+                    };
+                    self.activate_notification_log_row(highlighted, outcome);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             match key.code {
                 KeyCode::Esc => {

@@ -520,6 +520,9 @@ impl ClientShellState {
         if let PendingEndpointKind::UsageRead { endpoint_id } = pending.kind {
             return self.complete_usage_read(endpoint_id, result);
         }
+        if let PendingEndpointKind::NotificationList { endpoint_id } = pending.kind {
+            return self.complete_notification_list(endpoint_id, result);
+        }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
                 boot_id: boot_id.to_owned(),

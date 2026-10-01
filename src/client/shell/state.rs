@@ -152,6 +152,9 @@ pub(super) struct ShellHitMap {
     pub(super) usage_footer: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
+    /// The notification history button at the right of the spaces header.
+    pub(super) notification_log_button: Rect,
+    pub(super) notification_log_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
@@ -307,6 +310,16 @@ pub(super) struct WorkspaceHit {
     pub(super) group_toggle: Option<(Rect, String)>,
 }
 
+/// The space and its row at the top of the local spaces list, with the
+/// scroll offset that showed it: the next frame keeps that row at the top
+/// when rows above it come or go, as long as the offset was not changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ScrollAnchor {
+    pub(super) workspace_id: String,
+    pub(super) row: usize,
+    pub(super) scroll: usize,
+}
+
 /// Where a space of the local sidebar is, in screen rows, whether it is
 /// drawn or scrolled out of the list: `top` may be above the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,6 +438,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeRemove,
     ContextMenu,
     GlobalMenu,
+    NotificationLog,
     Settings,
     Usage,
 }
@@ -734,6 +748,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeRemove(ClientWorktreeRemoveOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
+    NotificationLog(super::notification_log::ClientNotificationLogOverlay),
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
 }
@@ -753,6 +768,7 @@ impl ClientShellOverlay {
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
+            Self::NotificationLog(_) => ClientShellOverlayKind::NotificationLog,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
         }
@@ -770,6 +786,9 @@ pub(super) enum PendingEndpointKind {
     PopupCommand,
     ReloadConfig,
     UsageRead {
+        endpoint_id: ClientEndpointId,
+    },
+    NotificationList {
         endpoint_id: ClientEndpointId,
     },
     IntegrationList,
@@ -1064,6 +1083,7 @@ pub(crate) struct ClientShellState {
     /// over the list so a re-sort cannot move a space under it.
     pub(super) held_space_order: Vec<String>,
     pub(super) workspace_scroll: usize,
+    pub(super) workspace_scroll_anchor: Option<ScrollAnchor>,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
     pub(super) tab_scroll: usize,
@@ -1121,6 +1141,7 @@ pub(crate) struct ClientShellState {
     pub(super) copy_feedback: Option<crate::app::state::CopyFeedback>,
     pub(super) copy_feedback_deadline: Option<std::time::Instant>,
     pub(super) usage: super::usage::ClientUsageState,
+    pub(super) notification_log: super::notification_log::NotificationLog,
     pub(super) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
     pub(super) popup_pending: bool,
@@ -1255,6 +1276,7 @@ impl ClientShellState {
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
             workspace_scroll: 0,
+            workspace_scroll_anchor: None,
             agent_scroll: 0,
             pending_agent_reveal: None,
             tab_scroll: 0,
@@ -1304,6 +1326,7 @@ impl ClientShellState {
             copy_feedback: None,
             copy_feedback_deadline: None,
             usage: super::usage::ClientUsageState::default(),
+            notification_log: Default::default(),
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
             popup_pending: false,
@@ -1848,6 +1871,7 @@ impl ClientShellState {
         }
         self.snapshot = Some(snapshot);
         self.remember_focused_group_tab();
+        self.mark_focused_tab_notifications_read();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
