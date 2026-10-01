@@ -1,340 +1,492 @@
-"""Drive a real herdr client in a PTY and render the fork demo frames.
+"""Record the fork demo from a real Ghostty window driven by real input.
 
-Called by record.sh, which prepares an isolated server and session first.
-Writes numbered PNG frames and an ffmpeg concat list with their durations.
+Called by record.sh, which prepares an isolated herdr server and session first.
+Opens a Ghostty window in the top-right corner of the screen that runs
+proxy.py (the herdr client plus a parsed copy of its screen), moves and clicks
+the real mouse there with Quartz events, captures that part of the screen with
+ffmpeg, and adds a caption bar afterwards.
 """
 
 import argparse
-import fcntl
 import json
 import os
-import pty
-import select
-import struct
+import re
+import socket
 import subprocess
-import termios
 import time
-import unicodedata
 
-import pyte
-from PIL import ImageDraw, ImageFont, Image
+import AppKit
+import Quartz
+from PIL import Image, ImageDraw, ImageFont
 
-COLS, ROWS = 104, 30
-CH = 21
-PAD = 14
-CAPTION_H = 40
-DEFAULT_FG = (56, 58, 66)
-DEFAULT_BG = (250, 250, 250)
-NAMED = {
-    "black": (56, 58, 66), "red": (228, 86, 73), "green": (80, 161, 79),
-    "brown": (193, 132, 1), "yellow": (193, 132, 1), "blue": (64, 120, 242),
-    "magenta": (166, 38, 164), "cyan": (1, 132, 188), "white": (160, 161, 167),
-}
-BOX = "─│┌┐└┘├┤┬┴┼"
+WINDOW_TITLE = "herdr demo"
+PADDING = 8
+CAPTION_H = 80
+CAPTION_BG = (40, 44, 52)
+KEY_RETURN, KEY_ESCAPE = 36, 53
 
 
-def load_font(size, weight=None):
-    """JetBrains Mono when installed (variable weight), otherwise Menlo."""
+def caption_font():
     path = os.environ.get("HERDR_DEMO_FONT") or os.path.expanduser(
         "~/Library/Fonts/JetBrainsMono[wght].ttf"
     )
     if os.path.exists(path):
-        font = ImageFont.truetype(path, size)
-        if weight:
-            try:
-                font.set_variation_by_axes([weight])
-            except (OSError, ValueError):
-                pass
-        return font
-    return ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", size, index=1 if weight else 0)
-
-
-FONT = load_font(15)
-BOLD = load_font(15, 700)
-CAPTION = load_font(16, 600)
-SMALL = load_font(12)
-SMALL_BOLD = load_font(12, 700)
-CW = round(FONT.getlength("M"))
-EMOJI_PATH = "/System/Library/Fonts/Apple Color Emoji.ttc"
-EMOJI_CACHE = {}
-
-
-def emoji(char):
-    """A wide glyph such as `⏳` from Apple Color Emoji, sized to two cells;
-    the text fonts have no glyph for it."""
-    if char not in EMOJI_CACHE:
-        tile = None
-        if os.path.exists(EMOJI_PATH):
-            # Apple Color Emoji only has fixed bitmap sizes; 32 is one of them.
-            font = ImageFont.truetype(EMOJI_PATH, 32)
-            tile = Image.new("RGBA", (48, 48))
-            ImageDraw.Draw(tile).text((0, 0), char, font=font, embedded_color=True)
-            tile = tile.crop(tile.getbbox())
-            tile.thumbnail((2 * CW, CH - 2))
-        EMOJI_CACHE[char] = tile
-    return EMOJI_CACHE[char]
-
-
-def color(value, default):
-    if value in ("default", None):
-        return default
-    if len(value) == 6:
+        font = ImageFont.truetype(path, 30)
         try:
-            return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-        except ValueError:
+            font.set_variation_by_axes([600])
+        except (OSError, ValueError):
             pass
-    return NAMED.get(value.replace("bright", ""), default)
+        return font
+    return ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 30)
 
 
-class Screen(pyte.Screen):
-    # pyte rejects some private DSR/DA queries; the demo does not need replies.
-    def report_device_status(self, *args, **kwargs):
-        pass
-
-    def report_device_attributes(self, *args, **kwargs):
-        pass
-
-
-def render(screen, caption=""):
-    width = COLS * CW + 2 * PAD
-    img = Image.new("RGB", (width, ROWS * CH + 2 * PAD + CAPTION_H), DEFAULT_BG)
-    draw = ImageDraw.Draw(img)
-    for y in range(ROWS):
-        row = screen.buffer[y]
-        for x in range(COLS):
-            ch = row[x]
-            fg = color(ch.fg, DEFAULT_FG)
-            bg = color(ch.bg, DEFAULT_BG)
-            if ch.reverse:
-                fg, bg = bg, fg
-            px, py = PAD + x * CW, PAD + y * CH
-            if bg != DEFAULT_BG:
-                draw.rectangle([px, py, px + CW - 1, py + CH - 1], fill=bg)
-            if not ch.data.strip():
-                continue
-            if ch.data in BOX:
-                # Draw box lines so borders connect regardless of font metrics.
-                mx, my = px + CW // 2, py + CH // 2
-                left, right = (px, my, mx, my), (mx, my, px + CW, my)
-                up, down = (mx, py, mx, my), (mx, my, mx, py + CH)
-                parts = {
-                    "─": [left, right], "│": [up, down], "┌": [right, down],
-                    "┐": [left, down], "└": [up, right], "┘": [up, left],
-                    "├": [up, down, right], "┤": [up, down, left],
-                    "┬": [left, right, down], "┴": [left, right, up],
-                    "┼": [left, right, up, down],
-                }[ch.data]
-                for line in parts:
-                    draw.line(line, fill=fg, width=1)
-            elif ch.data in "█░":
-                fill = fg if ch.data == "█" else tuple((a + b * 2) // 3 for a, b in zip(fg, bg))
-                draw.rectangle([px, py + 4, px + CW - 1, py + CH - 5], fill=fill)
-            elif unicodedata.east_asian_width(ch.data[0]) == "W" and emoji(ch.data):
-                tile = emoji(ch.data)
-                img.paste(tile, (px + (2 * CW - tile.width) // 2, py + (CH - tile.height) // 2), tile)
-            else:
-                draw.text((px, py + 2), ch.data, font=BOLD if ch.bold else FONT, fill=fg)
-    top = ROWS * CH + 2 * PAD
-    draw.rectangle([0, top, width, top + CAPTION_H], fill=(40, 44, 52))
-    if caption:
-        text_w = draw.textlength(caption, font=CAPTION)
-        draw.text(((width - text_w) / 2, top + 10), caption, font=CAPTION, fill=(250, 250, 250))
-    return img
+def ghostty_config(path, x, command):
+    with open(path, "w") as config:
+        config.write(
+            "\n".join(
+                [
+                    "theme = Atom One Light",
+                    "font-size = 14",
+                    "window-width = 104",
+                    "window-height = 30",
+                    f"window-padding-x = {PADDING}",
+                    f"window-padding-y = {PADDING}",
+                    "window-padding-balance = false",
+                    f"window-position-x = {x}",
+                    "window-position-y = 0",
+                    # In the config, not `-e`: Ghostty asks before running a
+                    # command it was given on the command line through `open`.
+                    "command = direct:" + " ".join(command),
+                    "macos-titlebar-style = hidden",
+                    f"title = {WINDOW_TITLE}",
+                    "confirm-close-surface = false",
+                    "quit-after-last-window-closed = true",
+                    "window-save-state = never",
+                    "mouse-hide-while-typing = false",
+                    "",
+                ]
+            )
+        )
 
 
-def highlight(img, cell_y, cell_x, cells):
-    """Outline a run of cells, e.g. a counter a pointer would cover."""
-    draw = ImageDraw.Draw(img)
-    x, y = PAD + cell_x * CW, PAD + cell_y * CH
-    draw.rounded_rectangle([x - 4, y - 1, x + cells * CW + 3, y + CH], radius=5,
-                           outline=(64, 120, 242), width=2)
-    return img
+def screen_device():
+    """The avfoundation index of the main screen."""
+    listing = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True,
+    ).stderr
+    found = re.search(r"\[(\d+)\] Capture screen 0", listing)
+    if not found:
+        raise SystemExit("no screen capture device:\n" + listing)
+    return found.group(1)
 
 
-def pointer(img, cell_y, cell_x, label=None):
-    draw = ImageDraw.Draw(img)
-    tx, ty = PAD + cell_x * CW + CW // 2, PAD + cell_y * CH + CH // 2
-    arrow = [(tx, ty), (tx, ty + 18), (tx + 5, ty + 13), (tx + 9, ty + 21),
-             (tx + 12, ty + 19), (tx + 8, ty + 12), (tx + 14, ty + 12)]
-    draw.polygon(arrow, fill=(20, 20, 20), outline=(255, 255, 255))
-    if label:
-        w = draw.textlength(label, font=SMALL_BOLD) + 12
-        box = [tx + 16, ty + 16, tx + 16 + w, ty + 34]
-        draw.rounded_rectangle(box, radius=5, fill=(64, 120, 242))
-        draw.text((box[0] + 6, box[1] + 2), label, font=SMALL_BOLD, fill=(255, 255, 255))
-    return img
+def windows(owner):
+    info = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+    )
+    return [w for w in info if w.get("kCGWindowOwnerName") == owner]
 
 
-NOTE_W, NOTE_H = 330, 74
-
-
-def notification(img, title, subtitle, body):
-    """Illustrate the macOS banner, which is drawn outside the terminal."""
-    draw = ImageDraw.Draw(img)
-    x1 = img.width - PAD - NOTE_W - 6
-    y1 = PAD + 30
-    draw.rounded_rectangle([x1 + 2, y1 + 3, x1 + NOTE_W + 2, y1 + NOTE_H + 3], radius=12, fill=(210, 210, 214))
-    draw.rounded_rectangle([x1, y1, x1 + NOTE_W, y1 + NOTE_H], radius=12, fill=(236, 236, 240), outline=(200, 200, 206))
-    draw.rounded_rectangle([x1 + 12, y1 + 14, x1 + 44, y1 + 46], radius=8, fill=(40, 44, 52))
-    draw.text((x1 + 18, y1 + 20), ">_", font=SMALL_BOLD, fill=(250, 250, 250))
-    draw.text((x1 + 56, y1 + 10), title, font=SMALL_BOLD, fill=(30, 30, 30))
-    draw.text((x1 + 56, y1 + 28), subtitle, font=SMALL, fill=(60, 60, 60))
-    draw.text((x1 + 56, y1 + 46), body, font=SMALL, fill=(60, 60, 60))
-    return x1 + NOTE_W // 2, y1 + NOTE_H // 2
+def post_mouse(kind, point, button=Quartz.kCGMouseButtonLeft):
+    event = Quartz.CGEventCreateMouseEvent(None, kind, point, button)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
 class Recorder:
-    def __init__(self, herdr, socket_path, out_dir):
-        self.herdr = herdr
-        self.socket_path = socket_path
-        self.out_dir = out_dir
-        self.frames = []
-        env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
-        env.update(HERDR_SOCKET_PATH=socket_path, TERM="xterm-256color", COLORTERM="truecolor")
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            os.execve(herdr, [herdr], env)
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        self.screen = Screen(COLS, ROWS)
-        self.stream = pyte.ByteStream(self.screen)
+    def __init__(self, args):
+        self.args = args
+        self.captions = []
+        self.overlays = []
+        self.capture = None
+        self.t0 = None
+        self.scale = AppKit.NSScreen.mainScreen().backingScaleFactor()
+
+    # --- the herdr CLI and the client's screen -------------------------------
 
     def cli(self, *args):
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
-        env["HERDR_SOCKET_PATH"] = self.socket_path
-        done = subprocess.run([self.herdr, *args], env=env, capture_output=True, check=True)
+        env["HERDR_SOCKET_PATH"] = self.args.socket
+        done = subprocess.run([self.args.herdr, *args], env=env, capture_output=True, check=True)
         return json.loads(done.stdout or "null")
 
-    def pump(self, seconds):
+    def screen(self):
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.connect(self.args.control)
+            conn.sendall(b"screen\n")
+            return json.loads(conn.makefile().readline())
+
+    @property
+    def display(self):
+        return self.screen()["display"]
+
+    def find(self, predicate, seconds=5):
         end = time.time() + seconds
-        while time.time() < end:
-            ready, _, _ = select.select([self.fd], [], [], 0.05)
-            if ready:
-                try:
-                    self.stream.feed(os.read(self.fd, 65536))
-                except OSError:
-                    return
+        while True:
+            display = self.display
+            for y, line in enumerate(display):
+                found = predicate(y, line)
+                if found is not None:
+                    return found
+            if time.time() > end:
+                raise SystemExit("demo target not found; screen:\n" + "\n".join(display))
+            time.sleep(0.2)
 
     def wait_for_usage(self, seconds):
         """Wait until no usage footer row is still loading (agy /quota is slow)."""
         end = time.time() + seconds
         while time.time() < end:
-            rows = [line[:24] for line in self.screen.display]
+            rows = [line[:24] for line in self.display]
             if any(r.startswith(" AN ") for r in rows) and not any("…" in r for r in rows):
                 return
-            self.pump(1.0)
+            time.sleep(1)
 
-    def add(self, img, hold_ms):
-        name = f"frame-{len(self.frames):02d}.png"
-        img.save(os.path.join(self.out_dir, name))
-        self.frames.append((name, hold_ms))
+    # --- the Ghostty window ---------------------------------------------------
 
-    def shot(self, caption, hold_ms):
-        self.add(render(self.screen, caption), hold_ms)
+    def launch(self):
+        """Open the window at the top-left to learn its width, then again in
+        the top-right corner, where macOS shows notification banners."""
+        self.open_window(0)
+        width = self.window()["kCGWindowBounds"]["Width"]
+        self.close()
+        while self.window() or os.path.exists(self.args.control):
+            if os.path.exists(self.args.control) and not self.window():
+                os.unlink(self.args.control)
+            time.sleep(0.2)
+        screen_width = AppKit.NSScreen.mainScreen().frame().size.width
+        self.open_window(int(screen_width - width))
 
-    def mouse(self, y, x, button):
-        """Press and release an SGR mouse button (0 left, 1 middle) at a cell."""
-        os.write(self.fd, f"\x1b[<{button};{x + 1};{y + 1}M".encode())
-        self.pump(0.05)
-        os.write(self.fd, f"\x1b[<{button};{x + 1};{y + 1}m".encode())
+    def open_window(self, x):
+        config = os.path.join(self.args.work, "ghostty.conf")
+        proxy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy.py")
+        # A Ghostty started by `open` has launchd's environment: pass on PATH
+        # (for terminal-notifier) and the demo's config and state directories.
+        # Ghostty splits `command` on spaces, so PATH entries with one are left out.
+        path = ":".join(d for d in os.environ["PATH"].split(":") if " " not in d)
+        env = [f"PATH={path}"] + [
+            f"{name}={os.environ[name]}" for name in ("XDG_CONFIG_HOME", "XDG_STATE_HOME")
+        ]
+        ghostty_config(config, x, [
+            "/usr/bin/env", *env, self.args.python, proxy, "--herdr", self.args.herdr, "--socket", self.args.socket,
+            "--control", self.args.control, "--vt-lib", self.args.vt_lib,
+        ])
+        subprocess.run(
+            ["open", "-na", "Ghostty", "--args", "--config-default-files=false",
+             f"--config-file={config}"],
+            check=True,
+        )
+        end = time.time() + 60
+        while not (os.path.exists(self.args.control) and self.window()):
+            if time.time() > end:
+                if self.window():
+                    self.pid = self.window()["kCGWindowOwnerPID"]
+                raise SystemExit(
+                    f"the demo Ghostty window did not open (control socket: "
+                    f"{os.path.exists(self.args.control)}, Ghostty windows: "
+                    f"{[w.get('kCGWindowName') for w in windows('Ghostty')]})"
+                )
+            time.sleep(0.2)
+        time.sleep(1)
+        bounds = self.window()["kCGWindowBounds"]
+        self.pid = self.window()["kCGWindowOwnerPID"]
+        self.origin = (bounds["X"], bounds["Y"])
+        self.size = (bounds["Width"], bounds["Height"])
+        geometry = self.screen()
+        self.cell = (
+            geometry["xpixel"] // geometry["cols"] / self.scale,
+            geometry["ypixel"] // geometry["rows"] / self.scale,
+        )
+        self.activate()
 
-    def key(self, data):
-        os.write(self.fd, data)
+    def window(self):
+        found = [w for w in windows("Ghostty") if w.get("kCGWindowName") == WINDOW_TITLE]
+        return found[0] if found else None
 
-    def find(self, predicate):
-        for y, line in enumerate(self.screen.display):
-            found = predicate(y, line)
-            if found is not None:
-                return found
-        raise SystemExit("demo target not found; screen:\n" + "\n".join(self.screen.display))
+    def activate(self):
+        app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(self.pid)
+        app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+        time.sleep(0.3)
 
-    def confirm_if_asked(self, caption):
-        if any("confirm" in line for line in self.screen.display):
-            self.shot(caption, 1300)
-            self.key(b"\r")
-            self.pump(1.0)
+    def close(self):
+        if self.pid:
+            try:
+                os.kill(self.pid, 15)
+            except ProcessLookupError:
+                pass
 
-    def finish(self):
-        os.kill(self.pid, 9)
-        # ffmpeg's concat demuxer ignores the last duration, so repeat the final frame.
-        with open(os.path.join(self.out_dir, "frames.txt"), "w") as listing:
-            for name, hold_ms in self.frames:
-                listing.write(f"file '{name}'\nduration {hold_ms / 1000}\n")
-            listing.write(f"file '{self.frames[-1][0]}'\n")
+    # --- real input -----------------------------------------------------------
+
+    def point(self, cell_y, cell_x):
+        return (
+            self.origin[0] + PADDING + (cell_x + 0.5) * self.cell[0],
+            self.origin[1] + PADDING + (cell_y + 0.5) * self.cell[1],
+        )
+
+    def move(self, target, seconds=0.5):
+        """Glide the pointer to a screen point, the way a hand would."""
+        start = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        steps = max(1, int(seconds * 60))
+        for i in range(1, steps + 1):
+            t = i / steps
+            t = t * t * (3 - 2 * t)
+            post_mouse(Quartz.kCGEventMouseMoved,
+                       (start.x + (target[0] - start.x) * t, start.y + (target[1] - start.y) * t))
+            time.sleep(seconds / steps)
+
+    def move_to(self, cell_y, cell_x, seconds=0.5):
+        self.move(self.point(cell_y, cell_x), seconds)
+
+    def click(self, middle=False):
+        where = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        if middle:
+            post_mouse(Quartz.kCGEventOtherMouseDown, where, Quartz.kCGMouseButtonCenter)
+            time.sleep(0.06)
+            post_mouse(Quartz.kCGEventOtherMouseUp, where, Quartz.kCGMouseButtonCenter)
+        else:
+            post_mouse(Quartz.kCGEventLeftMouseDown, where)
+            time.sleep(0.06)
+            post_mouse(Quartz.kCGEventLeftMouseUp, where)
+
+    def key(self, code):
+        for down in (True, False):
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateKeyboardEvent(None, code, down))
+            time.sleep(0.03)
+
+    def confirm_if_asked(self):
+        time.sleep(0.8)
+        if any("confirm" in line for line in self.display):
+            time.sleep(1.2)
+            self.key(KEY_RETURN)
+
+    # --- capture and captions -------------------------------------------------
+
+    def start_capture(self):
+        s = self.scale
+        x, y = int(self.origin[0] * s) // 2 * 2, int(self.origin[1] * s) // 2 * 2
+        w, h = int(self.size[0] * s) // 2 * 2, int(self.size[1] * s) // 2 * 2
+        self.raw = os.path.join(self.args.work, "raw.mov")
+        self.capture = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation",
+             "-use_wallclock_as_timestamps", "1",
+             "-capture_cursor", "1", "-capture_mouse_clicks", "1", "-framerate", "30",
+             "-pixel_format", "bgr0", "-i", f"{screen_device()}:none",
+             "-vf", f"crop={w}:{h}:{x}:{y}", "-c:v", "h264_videotoolbox", "-b:v", "24M",
+             "-copyts", "-fps_mode", "vfr", self.raw],
+            stdin=subprocess.PIPE,
+        )
+        # avfoundation needs a moment before the first frame arrives.
+        time.sleep(1.5)
+
+    def caption(self, text):
+        """Show `text` from now on; times are wall clock, matched to the
+        capture's wall-clock timestamps in encode()."""
+        now = time.time()
+        if self.captions:
+            self.captions[-1][1] = now
+        self.captions.append([now, None, text])
+
+    def card_center(self):
+        """Screen point at the middle of the drawn notification card."""
+        width_px = int(self.size[0] * self.scale) // 2 * 2
+        cx = width_px - NOTE_MARGIN - NOTE_W / 2
+        cy = NOTE_MARGIN + NOTE_H / 2
+        return (self.origin[0] + cx / self.scale, self.origin[1] + cy / self.scale)
+
+    def stop_capture(self):
+        self.captions[-1][1] = time.time()
+        time.sleep(0.5)
+        self.capture.communicate(b"q")
+
+    def capture_start(self):
+        """Wall-clock time of the first captured frame (kept by -copyts)."""
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "csv=p=0", self.raw],
+            capture_output=True, text=True, check=True,
+        )
+        return float(probe.stdout.strip())
+
+    def encode(self, out):
+        """Add a caption bar below the capture and encode the final MP4."""
+        width = int(self.size[0] * self.scale) // 2 * 2
+        t0 = self.capture_start()
+        font = caption_font()
+        inputs, overlays = [], []
+        chain = f"[0:v]setpts=PTS-STARTPTS,pad=iw:ih+{CAPTION_H}:0:0:color=#{bytes(CAPTION_BG).hex()}[v0]"
+        for i, (start, end, text) in enumerate(self.captions):
+            png = os.path.join(self.args.work, f"caption-{i:02d}.png")
+            img = Image.new("RGBA", (width, CAPTION_H), CAPTION_BG + (255,))
+            draw = ImageDraw.Draw(img)
+            text_w = draw.textlength(text, font=font)
+            draw.text(((width - text_w) / 2, 20), text, font=font, fill=(250, 250, 250))
+            img.save(png)
+            inputs += ["-i", png]
+            overlays.append(
+                f"[v{i}][{i + 1}:v]overlay=0:H-{CAPTION_H}"
+                f":enable='between(t,{start - t0:.2f},{end - t0:.2f})'[v{i + 1}]"
+            )
+        last = len(self.captions)
+        for j, (start, end, card) in enumerate(self.overlays):
+            png = os.path.join(self.args.work, f"card-{j:02d}.png")
+            card.save(png)
+            inputs += ["-i", png]
+            overlays.append(
+                f"[v{last}][{last + 1}:v]overlay={width - NOTE_MARGIN - NOTE_W}:{NOTE_MARGIN}"
+                f":enable='between(t,{start - t0:.2f},{end - t0:.2f})'[v{last + 1}]"
+            )
+            last += 1
+        graph = ";".join([chain, *overlays])
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", self.raw, *inputs,
+             "-filter_complex", graph, "-map", f"[v{last}]",
+             "-r", "30", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out],
+            check=True,
+        )
+
+
+NOTE_W, NOTE_H, NOTE_MARGIN = 660, 148, 24
+
+
+def notification_card(title, subtitle, body):
+    """The macOS banner, drawn onto the video: macOS hides notifications while
+    the screen is recorded. Sizes are in capture pixels (2x)."""
+    card = Image.new("RGBA", (NOTE_W + 8, NOTE_H + 10), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(card)
+    draw.rounded_rectangle([4, 6, NOTE_W + 4, NOTE_H + 6], radius=26, fill=(0, 0, 0, 40))
+    draw.rounded_rectangle([0, 0, NOTE_W, NOTE_H], radius=26, fill=(238, 238, 242, 255),
+                           outline=(205, 205, 210, 255), width=2)
+    draw.rounded_rectangle([26, 32, 90, 96], radius=16, fill=(40, 44, 52, 255))
+    small, bold = note_fonts()
+    draw.text((38, 44), ">_", font=bold, fill=(250, 250, 250))
+    draw.text((112, 20), title, font=bold, fill=(30, 30, 30))
+    draw.text((112, 56), subtitle, font=small, fill=(60, 60, 60))
+    draw.text((112, 92), body, font=small, fill=(60, 60, 60))
+    return card
+
+
+def note_fonts():
+    path = "/System/Library/Fonts/SFNS.ttf"
+    if not os.path.exists(path):
+        return caption_font(), caption_font()
+    small = ImageFont.truetype(path, 26)
+    bold = ImageFont.truetype(path, 26)
+    try:
+        bold.set_variation_by_axes([700])
+    except (OSError, ValueError, AttributeError):
+        pass
+    return small, bold
+
+
+def scenes(rec, args):
+    rec.caption("herdr fork: usage widget, middle-click close, notifications, job tabs, oracle stats")
+    time.sleep(2.4)
+
+    rec.caption("Click the usage footer to see limits and reset times")
+    # Any provider row with numbers: one that failed to load shows `!` instead.
+    fy, fx = rec.find(lambda y, line: (y, 5) if line[:4] in (" AN ", " OA ", " GO ") and "%" in line[:24] else None)
+    rec.move_to(fy, fx)
+    time.sleep(0.4)
+    rec.click()
+    time.sleep(3.4)
+    rec.key(KEY_ESCAPE)
+    time.sleep(0.8)
+
+    rec.caption("Middle-click a tab to close it")
+    ty, tx = rec.find(lambda y, line: (y, line.index("logs") + 1) if y == 0 and "logs" in line else None)
+    rec.move_to(ty, tx)
+    time.sleep(0.5)
+    rec.click(middle=True)
+    rec.confirm_if_asked()
+    time.sleep(1.6)
+
+    rec.caption("Middle-click a space to close it")
+    sy, sx = rec.find(lambda y, line: (y, line.index("notes") + 1) if "notes" in line[:24] else None)
+    rec.move_to(sy, sx)
+    time.sleep(0.5)
+    rec.click(middle=True)
+    rec.confirm_if_asked()
+    time.sleep(1.6)
+
+    rec.caption("An agent finishes in another tab and macOS shows a notification")
+    rec.cli("pane", "report-agent", "--source", "demo", "--agent", "claude", "--state", "idle", args.agent_pane)
+    time.sleep(1.0)
+    shown = time.time()
+    time.sleep(2.2)
+    rec.caption("Click it to jump straight to that agent's tab")
+    rec.move(rec.card_center(), 0.7)
+    time.sleep(0.6)
+    # The card is drawn, so there is nothing to click: run what a click on the
+    # real banner runs. A real click here would land on herdr's tab bar.
+    rec.cli("agent", "focus", args.agent_pane)
+    rec.overlays.append((shown, time.time(), notification_card(
+        "claude finished", "herdr · agent", "Fix the login bug")))
+    time.sleep(0.4)
+    rec.move_to(14, 70, 0.5)
+    time.sleep(2.4)
+
+    # herdr-job does this for a long command: a child tab of the agent's tab
+    # whose status says how the job is going.
+    rec.caption("A long job runs in a child tab; the space row counts it while the agent is idle")
+    for label, status in (("build", "running"), ("tests", "failed")):
+        tab = rec.cli("tab", "create", "--workspace", args.workspace, "--label", label, "--no-focus")
+        tab_id = tab["result"]["tab"]["tab_id"]
+        rec.cli("tab", "parent", tab_id, args.agent_tab)
+        rec.cli("tab", "status", tab_id, status)
+        time.sleep(2.2)
+    jy, jx = rec.find(lambda y, line: (y, line.index("⧖")) if "herdr" in line[:24] and "⧖" in line[:24] else None)
+    # Point at the counter from below: the arrow would cover it otherwise.
+    rec.move_to(jy + 1, jx)
+    time.sleep(2.8)
+
+    rec.caption("The herdr menu opens oracle stats: which second-opinion models helped")
+    my, mx = rec.find(lambda y, line: (y, line.index("menu") + 1) if "menu" in line[:26] else None)
+    rec.move_to(my, mx)
+    time.sleep(0.4)
+    rec.click()
+    oy, ox = rec.find(lambda y, line: (y, line.index("oracle stats") + 2) if "oracle stats" in line else None)
+    rec.move_to(oy, ox)
+    time.sleep(0.4)
+    rec.click()
+    time.sleep(4.2)
+    rec.caption("The background dims behind the popup; a click outside closes it")
+    rec.move_to(1, 3, 0.7)
+    time.sleep(0.8)
+    rec.click()
+    time.sleep(1.8)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--herdr", required=True)
     parser.add_argument("--socket", required=True)
-    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--work", required=True)
+    parser.add_argument("--vt-lib", required=True, help="libghostty-vt shared library")
+    parser.add_argument("--python", required=True, help="python for proxy.py inside Ghostty")
     parser.add_argument("--agent-pane", required=True)
     parser.add_argument("--agent-tab", required=True)
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    args.control = os.path.join(args.work, "control.sock")
 
-    rec = Recorder(args.herdr, args.socket, args.out_dir)
-    rec.pump(6)
-    rec.wait_for_usage(90)
-    rec.shot("herdr fork: usage widget, middle-click close, notifications, job tabs", 2200)
-
-    cap = "Click the usage footer to see limits and reset times"
-    fy, fx = rec.find(lambda y, line: (y, 1) if line.startswith(" AN ") and "%" in line[:24] else None)
-    rec.add(pointer(render(rec.screen, cap), fy, fx + 4), 1100)
-    rec.mouse(fy, fx, 0)
-    rec.pump(1.5)
-    rec.shot(cap, 3200)
-    rec.key(b"\x1b")
-    rec.pump(0.8)
-
-    cap = "Middle-click a tab to close it"
-    ty, tx = rec.find(lambda y, line: (y, line.index("logs") + 1) if y == 0 and "logs" in line else None)
-    rec.add(pointer(render(rec.screen, cap), ty, tx, "middle click"), 1400)
-    rec.mouse(ty, tx, 1)
-    rec.pump(1.0)
-    rec.confirm_if_asked(cap)
-    rec.shot(cap, 1500)
-
-    cap = "Middle-click a space to close it"
-    sy, sx = rec.find(lambda y, line: (y, line.index("notes") + 1) if "notes" in line[:24] else None)
-    rec.add(pointer(render(rec.screen, cap), sy, sx, "middle click"), 1400)
-    rec.mouse(sy, sx, 1)
-    rec.pump(1.0)
-    rec.confirm_if_asked(cap)
-    rec.shot(cap, 1500)
-
-    cap = "An agent finishes in another tab and macOS shows a notification"
-    rec.cli("pane", "report-agent", "--source", "demo", "--agent", "claude", "--state", "idle", args.agent_pane)
-    rec.pump(1.5)
-    img = render(rec.screen, cap)
-    notification(img, "claude finished", "herdr · agent", "Fix the login bug")
-    rec.add(img, 2200)
-    cap = "Click it to jump straight to that agent's tab"
-    img = render(rec.screen, cap)
-    nx, ny = notification(img, "claude finished", "herdr · agent", "Fix the login bug")
-    rec.add(pointer(img, (ny - PAD) // CH, (nx - PAD) // CW), 1300)
-    # A notification click runs exactly this against the session socket.
-    rec.cli("agent", "focus", args.agent_pane)
-    rec.pump(1.5)
-    rec.shot(cap, 3200)
-
-    # herdr-job does this for a long command: a child tab of the agent's tab
-    # whose status says how the job is going.
-    cap = "A long job runs in a child tab; the space row counts it while the agent is idle"
-    for label, status in (("build", "running"), ("tests", "failed")):
-        tab = rec.cli("tab", "create", "--workspace", args.workspace, "--label", label, "--no-focus")
-        tab_id = tab["result"]["tab"]["tab_id"]
-        rec.cli("tab", "parent", tab_id, args.agent_tab)
-        rec.cli("tab", "status", tab_id, status)
-        rec.pump(1.0)
-        rec.shot(cap, 2400)
-    jy, jx, cells = rec.find(
-        # `display` joins a wide glyph's two cells into one character.
-        lambda y, line: (y, line.index("⏳"), line.index("!", line.index("⏳")) + 3 - line.index("⏳"))
-        if "herdr" in line[:24] and "⏳" in line[:24] else None
-    )
-    rec.add(highlight(render(rec.screen, cap), jy, jx, cells), 3000)
-    rec.finish()
-    print(f"recorded {len(rec.frames)} frames")
+    rec = Recorder(args)
+    rec.pid = None
+    try:
+        rec.launch()
+        rec.wait_for_usage(90)
+        # macOS does not repaint a window that was covered; give it a moment
+        # in front before the capture starts.
+        rec.activate()
+        time.sleep(2)
+        rec.move_to(12, 60, 0.3)
+        rec.start_capture()
+        scenes(rec, args)
+        rec.stop_capture()
+    finally:
+        if rec.capture and rec.capture.poll() is None:
+            rec.capture.communicate(b"q")
+        rec.close()
+    rec.encode(args.out)
+    print(f"wrote {args.out}")
 
 
 if __name__ == "__main__":

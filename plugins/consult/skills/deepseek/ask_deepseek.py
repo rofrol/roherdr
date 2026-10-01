@@ -9,8 +9,8 @@ import argparse, json, os, signal, subprocess, sys, time, urllib.request, urllib
 from pathlib import Path
 
 AUTH_FILE = Path.home() / ".pi/agent/auth.json"
-ORACLE_DIR = Path(__file__).resolve().parent.parent / "oracle-stats"  # the skills live side by side
-ORACLE = ORACLE_DIR / "oracle.py"
+CONSULT_DIR = Path(__file__).resolve().parent.parent / "consult-stats"  # the skills live side by side
+CONSULT = CONSULT_DIR / "consult.py"
 
 class Deadline(Exception):
     pass
@@ -19,10 +19,10 @@ def get_key():
     try:
         return json.loads(AUTH_FILE.read_text())["deepseek"]["key"]
     except (OSError, ValueError, KeyError) as e:
-        sys.exit(f"Brak klucza deepseek w {AUTH_FILE}: {e!r}")
+        sys.exit(f"No deepseek key in {AUTH_FILE}: {e!r}")
 
 def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None):
-    """Record the call for oracle-stats; never let logging fail the consultation."""
+    """Record the call for consult-stats; never let logging fail the consultation."""
     args = []
     if usage:  # normalized: input includes cache hits, output includes reasoning
         norm = {"input": usage.get("prompt_tokens"), "cached": usage.get("prompt_cache_hit_tokens"),
@@ -30,7 +30,7 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None):
                 "reasoning": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")}
         args = ["--usage", json.dumps(norm), "--usage-raw", json.dumps(usage)]
     try:
-        subprocess.run([str(ORACLE), "log", "--skill", "deepseek", "--model", model, "--status", status,
+        subprocess.run([str(CONSULT), "log", "--skill", "deepseek", "--model", model, "--status", status,
                         "--seconds", str(int(seconds)), "--prompt-chars", str(prompt_chars),
                         "--answer-chars", str(answer_chars), *args], timeout=10)
     except (OSError, subprocess.SubprocessError):
@@ -39,9 +39,9 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None):
 def run_in_herdr_job(model):
     """Re-run in its own herdr-job tab, so the user can watch it (see in_herdr_job.sh)."""
     import shutil
-    if os.environ.get("ORACLE_IN_JOB") or not os.environ.get("HERDR_SOCKET_PATH") or not shutil.which("herdr-job"):
+    if os.environ.get("CONSULT_IN_JOB") or not os.environ.get("HERDR_SOCKET_PATH") or not shutil.which("herdr-job"):
         return
-    wrap = ORACLE_DIR / "in_herdr_job.sh"
+    wrap = CONSULT_DIR / "in_herdr_job.sh"
     label = "deepseek " + model.removeprefix("deepseek-")  # the model shows in the tab name
     os.execv(str(wrap), [str(wrap), label, str(Path(__file__).resolve()), *sys.argv[1:]])
 
@@ -70,13 +70,13 @@ def main():
     prompt = " ".join(a.prompt)
     # stdin only via -f -: a background job can inherit an open stdin that never sends EOF.
     for f in a.file:
-        if f == "-" and os.environ.get("ORACLE_STDIN"):  # saved by in_herdr_job.sh
-            text = Path(os.environ["ORACLE_STDIN"]).read_text(errors="replace")
+        if f == "-" and os.environ.get("CONSULT_STDIN"):  # saved by in_herdr_job.sh
+            text = Path(os.environ["CONSULT_STDIN"]).read_text(errors="replace")
         else:
             text = sys.stdin.read() if f == "-" else Path(f).read_text(errors="replace")
         prompt += f"\n\n--- {'stdin' if f == '-' else f} ---\n{text}"
     if not prompt.strip():
-        sys.exit("Pusty prompt")
+        sys.exit("Empty prompt")
 
     body = {"model": a.model, "stream": True, "stream_options": {"include_usage": True}, "messages": [
         {"role": "system", "content": a.system},

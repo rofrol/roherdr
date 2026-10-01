@@ -33,14 +33,18 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
 - **Job tabs from the [job plugin](plugins/job/README.md).** Each
   `herdr-job` job gets a child tab of the tab that started it. While a
   workspace has child tabs, a second row under the tab bar lists the active
-  tab's own content and its jobs (`claude  ⏳ tests  ! build`), and the parent
-  tab shows a summary such as `⏳1 !2 ✓3`. The space's sidebar row counts
-  its running and failed tabs (`○ repo ⏳1`, the `tab_jobs` token), so
+  tab's own content and its jobs (`claude  ⧖ tests  ! build`), and the parent
+  tab shows a summary such as `⧖ 1 !2 ✓3`. The space's sidebar row counts
+  its running and failed tabs (`○ repo ⧖ 1`, the `tab_jobs` token), so
   background work stays visible while the agent is idle, and the agent that
-  started the jobs shows their counts (`2⏳ 1✗ 1✓`, the `$jobs` token).
+  started the jobs shows their counts (`2⧖ 1✗ 1✓`, the `$jobs` token).
   Closing a parent tab asks first and closes its jobs too. Child tabs and
   statuses are ordinary API (`herdr tab parent`, `herdr tab status`), usable
   by any script.
+- **Consult stats in the herdr menu.** The sidebar's `menu` has an
+  **consult stats** item that opens the [consult plugin](plugins/consult/README.md)'s
+  stats popup; a click outside closes it. Plugin popups also dim the
+  background behind them, like herdr's own dialogs.
 - **Middle click closes tabs and workspaces.** Middle-click a tab or a
   workspace in the sidebar to close it, with the same confirmation as the
   context menu's Close. Pane apps with mouse reporting still get middle clicks
@@ -65,7 +69,7 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
 
 - [**job**](plugins/job/README.md): `herdr-job run --name "Build" -- make`
   runs a long command in its own unfocused tab (live output one click away)
-  and shows `⏳ Build`, then `✓`/`✗ <code>`, in the sidebar of the pane that
+  and shows `⧖ Build`, then `✓`/`✗ <code>`, in the sidebar of the pane that
   started it; `herdr-job wait <id>` follows the log and exits with the
   command's code. It keeps state in files, so it works for any agent (Claude
   Code, pi, ...) or by hand. Also has `herdr-bg-badge`, a Claude Code hook
@@ -73,6 +77,9 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
 - [**relaunch**](plugins/relaunch/README.md): reruns the programs panes were
   running (lazygit, editors, ...) after a server restart or reboot; herdr
   itself brings them back as empty shells.
+- [**consult**](plugins/consult/README.md): `gpt`, `gemini` and `deepseek`
+  skills that let a coding agent ask another model for a second opinion, and
+  `consult-stats`, which logs every call and rates which models helped.
 
 The demo video below is recorded with `scripts/fork_demo/record.sh`; see
 [scripts/fork_demo/README.md](scripts/fork_demo/README.md) to re-record it.
@@ -111,7 +118,7 @@ herdr
 
 ---
 
-https://github.com/user-attachments/assets/af7d3889-cb5b-4fbf-986c-e9751884a48c
+https://github.com/user-attachments/assets/ac3b1146-2a78-43b2-9e53-b5b9434e4940
 
 **the runtime your coding agents live on.**
 

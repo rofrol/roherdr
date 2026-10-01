@@ -569,6 +569,15 @@ impl ClientShellState {
             {
                 occlusion.start_popup(geometry.outer);
                 let mut composed = frame.to_ratatui_buffer()?;
+                // The popup is modal: dim what it covers, like the client's own modals,
+                // so it does not blend into panes that share its default background.
+                let area = composed.area;
+                for y in area.y..area.bottom() {
+                    for x in area.x..area.right() {
+                        let cell = &mut composed[(x, y)];
+                        cell.set_style(cell.style().add_modifier(ratatui::style::Modifier::DIM));
+                    }
+                }
                 let block = ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
                     .border_style(ratatui::style::Style::default().fg(self.config.palette.accent))

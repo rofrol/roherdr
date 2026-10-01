@@ -479,26 +479,25 @@ impl ClientShellState {
 
     /// Wheel scrolling over the tab bar stops at the first and last tab
     /// instead of wrapping like the previous/next tab keybindings.
-    fn focused_tab_can_step(&self, delta: isize) -> bool {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return false;
-        };
-        let (Some(workspace_id), Some(tab_id)) = (
-            snapshot.focused_workspace_id.as_deref(),
-            snapshot.focused_tab_id.as_deref(),
-        ) else {
-            return false;
-        };
-        let tabs = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == workspace_id)
-            .collect::<Vec<_>>();
-        let Some(current) = tabs.iter().position(|tab| tab.tab_id == tab_id) else {
-            return false;
-        };
-        let next = current as isize + delta;
-        next >= 0 && (next as usize) < tabs.len()
+    /// The main-row tab `delta` steps from the active one; `None` past either
+    /// end, so the wheel stops there. Children are skipped: they have their
+    /// own row.
+    fn main_row_step(&self, delta: isize) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        let active = super::tab_groups::active_main_tab_id(snapshot)?;
+        let tabs = super::tab_groups::main_row_tabs(snapshot);
+        let current = tabs.iter().position(|tab| tab.tab_id == active)?;
+        let next = current.checked_add_signed(delta)?;
+        tabs.get(next).map(|tab| tab.tab_id.clone())
+    }
+
+    /// The second-row entry `delta` steps from the focused one; `None` past
+    /// either end, so the wheel stops there instead of leaving the group.
+    fn child_row_step(&self, delta: isize) -> Option<String> {
+        let entries = super::tab_groups::active_row_entries(self.snapshot.as_deref()?);
+        let current = entries.iter().position(|tab| tab.focused)?;
+        let next = current.checked_add_signed(delta)?;
+        entries.get(next).map(|tab| tab.tab_id.clone())
     }
 
     /// Insert position among the main-row tabs (see `tab_groups::flat_insert_index`).
@@ -986,6 +985,14 @@ impl ClientShellState {
                     }
                     MouseEventKind::Up(_) | MouseEventKind::Drag(_) | MouseEventKind::Moved => {}
                 }
+            } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && !super::contains(hit.rect, point)
+                && self.dismissable_popup_id.as_deref() == Some(hit.pane_id.as_str())
+            {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::PopupClose(Default::default()),
+                    outcome,
+                );
             }
             return;
         }
@@ -1916,7 +1923,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
             }
-            MouseEventKind::ScrollUp
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if self
                     .hits
                     .tabs
@@ -1927,29 +1934,27 @@ impl ClientShellState {
                     || super::contains(self.hits.tab_scroll_right, point)
                     || super::contains(self.hits.new_tab, point) =>
             {
-                if self.focused_tab_can_step(-1) {
-                    self.record_binding(
-                        crate::input::KeybindMatch::Action(
-                            crate::input::KeybindAction::PreviousTab,
-                        ),
-                        outcome,
-                    );
-                }
-            }
-            MouseEventKind::ScrollDown
-                if self
+                let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                    -1
+                } else {
+                    1
+                };
+                // Each row steps through its own tabs and stops at its ends.
+                let in_child_row = self
                     .hits
-                    .tabs
+                    .child_tabs
                     .iter()
-                    .chain(&self.hits.child_tabs)
-                    .any(|(rect, _)| super::contains(*rect, point))
-                    || super::contains(self.hits.tab_scroll_left, point)
-                    || super::contains(self.hits.tab_scroll_right, point)
-                    || super::contains(self.hits.new_tab, point) =>
-            {
-                if self.focused_tab_can_step(1) {
-                    self.record_binding(
-                        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
+                    .any(|(rect, _)| super::contains(*rect, point));
+                let tab_id = if in_child_row {
+                    self.child_row_step(delta)
+                } else {
+                    self.main_row_step(delta)
+                };
+                if let Some(tab_id) = tab_id {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                            tab_id,
+                        }),
                         outcome,
                     );
                 }

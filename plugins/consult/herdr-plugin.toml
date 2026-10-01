@@ -1,5 +1,5 @@
-id = "local.oracle"
-name = "Oracle"
+id = "local.consult"
+name = "Consult"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
 description = "Second-opinion skills (GPT, Gemini, DeepSeek) for coding agents, with usage and usefulness stats"
@@ -8,23 +8,23 @@ platforms = ["macos", "linux"]
 # less keeps long tables readable; q closes the popup.
 [[panes]]
 id = "stats"
-title = "Oracle stats"
+title = "Consult stats"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["sh", "-c", "skills/oracle-stats/oracle.py stats --pairs 2>&1 | less -RS"]
+command = ["sh", "-c", "skills/consult-stats/consult.py stats --pairs 2>&1 | less -RS"]
 
 [[panes]]
 id = "recent"
-title = "Oracle: recent calls"
+title = "Consult: recent calls"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["sh", "-c", "skills/oracle-stats/oracle.py recent -n 40 2>&1 | less -RS"]
+command = ["sh", "-c", "skills/consult-stats/consult.py recent -n 40 2>&1 | less -RS"]
 
 [[panes]]
 id = "install-skills"
-title = "Oracle: install skills"
+title = "Consult: install skills"
 placement = "popup"
 width = "80%"
 height = 20

@@ -134,19 +134,17 @@ fn space_rows_count_running_and_failed_tabs_and_collapsed_parents_sum_the_group(
                     .clone()
             })
             .collect::<String>()
-            // `⏳` is two cells wide; the frame shows its second cell as a space.
-            .replace("⏳ ", "⏳")
     };
 
     let frame = state.compose(106, 20).expect("expanded group");
-    assert!(!row_text(&state, &frame, 0).contains('⏳'));
+    assert!(!row_text(&state, &frame, 0).contains('⧖'));
     let child_row = row_text(&state, &frame, 1);
-    assert!(child_row.contains("⏳1 !1"), "{child_row}");
+    assert!(child_row.contains("⧖ 1 !1"), "{child_row}");
 
     state.collapsed_groups.insert("repo".into());
     let frame = state.compose(106, 20).expect("collapsed group");
     let parent_row = row_text(&state, &frame, 0);
-    assert!(parent_row.contains("⏳1 !1"), "{parent_row}");
+    assert!(parent_row.contains("⧖ 1 !1"), "{parent_row}");
 }
 
 #[test]

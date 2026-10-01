@@ -241,6 +241,7 @@ impl ClientShellState {
                 if action == crate::protocol::ClientShellCommandAction::Popup {
                     self.popup_pending = true;
                     self.popup_pending_deadline = None;
+                    self.popup_pending_dismissable = false;
                     if !self.push_endpoint_method_with_kind(
                         crate::api::schema::Method::CommandInvoke(params),
                         PendingEndpointKind::PopupCommand,
@@ -617,6 +618,7 @@ impl ClientShellState {
                     Err(_) => {
                         self.popup_pending = false;
                         self.popup_pending_deadline = None;
+                        self.popup_pending_dismissable = false;
                         (true, Vec::new())
                     }
                 };

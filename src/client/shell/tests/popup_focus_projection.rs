@@ -200,6 +200,18 @@ fn client_composes_popup_terminal_content_inside_client_owned_chrome() {
         .join("\n");
     assert!(text.contains("popup tit"));
     assert!(text.contains("popup-liv"));
+    let cell_modifier = |x: u16, y: u16| {
+        frame
+            .to_ratatui_buffer()
+            .expect("popup buffer")
+            .cell((x, y))
+            .expect("cell")
+            .modifier
+    };
+    assert!(cell_modifier(0, 0).contains(ratatui::style::Modifier::DIM));
+    assert!(!cell_modifier(popup.rect.x, popup.rect.y).contains(ratatui::style::Modifier::DIM));
+    assert!(!cell_modifier(popup.inner_rect.x, popup.inner_rect.y)
+        .contains(ratatui::style::Modifier::DIM));
     assert_eq!(
         frame.cursor.as_ref().map(|cursor| (cursor.x, cursor.y)),
         Some((popup.inner_rect.x + 2, popup.inner_rect.y + 1))
@@ -1241,4 +1253,55 @@ fn retained_surface_patch_rejects_stale_base_without_mutating_surface() {
     });
     assert!(matches!(outcome, ClientPaneSurfacePatchOutcome::Rejected));
     assert_eq!(state.pane_surface, before);
+}
+
+#[test]
+fn click_outside_closes_only_the_consult_stats_popup() {
+    let click = |x: u16, y: u16| {
+        vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::empty(),
+        })]
+    };
+    let closes_popup = |actions: &[ClientShellAction]| {
+        actions.iter().any(|action| {
+            matches!(
+                action,
+                ClientShellAction::Endpoint { request, .. }
+                    if matches!(request.method, crate::api::schema::Method::PopupClose(_))
+            )
+        })
+    };
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface_with_popup());
+    state.compose(106, 20).expect("custom popup frame");
+    let outside = state.hits.popup.as_ref().expect("popup hit").rect;
+    let custom = state.handle_raw_events(click(outside.x.saturating_sub(2), outside.y));
+    assert!(!closes_popup(&custom.actions));
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
+        highlighted: 3,
+    }));
+    state.handle_input_bytes(b"\r");
+    assert!(state.popup_pending);
+    state.set_pane_surface(surface_with_popup());
+    state.compose(106, 20).expect("stats popup frame");
+    let popup = state.hits.popup.clone().expect("popup hit");
+    let inside = state.handle_raw_events(click(popup.inner_rect.x, popup.inner_rect.y));
+    assert!(!closes_popup(&inside.actions));
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: popup.inner_rect.x,
+        row: popup.inner_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let outside = state.handle_raw_events(click(popup.rect.x.saturating_sub(2), popup.rect.y));
+    assert!(closes_popup(&outside.actions));
 }
