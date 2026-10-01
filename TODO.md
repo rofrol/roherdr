@@ -88,6 +88,18 @@
     tab_has_a_bar`. Not done: contrast ratios checked in tests, a monochrome
     or 256-colour fallback for the bar and band (they need RGB; other palettes
     keep the old look), the exact shades are untested on a real screen.
+  - Revised 2026-10-01 after two more complaints with screenshots ("this grey
+    is too dark, mark the boundary differently", "why does the background not
+    reach the right edge", and the same stripe on a nested worktree space):
+    the grey band is gone. Consulted DeepSeek, Opus and GPT again; Opus and
+    GPT: (b) a bar in the name row's first column, no fill (DeepSeek preferred
+    a very light accent-tinted band). Now: `▍` in the first column of a
+    top-level space's name row, the accent for the focused space and the text
+    colour half mixed into the panel for the others; the name is bold in the
+    text colour (vertical tabs only); a nested worktree space keeps its tree
+    connector and gets no bar. The tab lines keep their fills, so the filled
+    rows are the tabs. The earlier right-edge problem is moot (no fill). Not
+    done: checking `▍` in Ghostty/iTerm/Kitty with line spacing above 1.
 
 - [x] Wheel scrolling in the spaces list moves one row per event (user,
   2026-10-01), like the agents panel; it was three. Consulted DeepSeek, Opus
