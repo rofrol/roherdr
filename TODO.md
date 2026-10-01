@@ -2,6 +2,62 @@
 
 ## Next, in order
 
+- [ ] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to
+  bookmarks. It shows at the top, left of the `◓2`. The order in that list is
+  the order of the spaces. Do it next."). Consulted DeepSeek, Opus and GPT;
+  they agree on the core:
+  - Storage: a flag on the tab in the server (`bookmarked`, optional in the
+    snapshot and `tab.list`, absent means false), persisted with the session,
+    shared by all clients; a closed tab or a deleted space takes its bookmark
+    with it, a moved tab keeps it and the list re-sorts, reordering spaces
+    reorders the list (computed live from the tree, nothing stored).
+  - API (project rule: shared facts go through the server): idempotent
+    `tab.bookmark {tab_id, enabled}`, CLI `herdr tab bookmark|unbookmark`,
+    a change event for all clients.
+  - Header button: `★N` in the accent colour left of the other indicators
+    (`★2 ◓1 ?1 ✉3`); the models differ on an empty state (hide, or a dim `☆`
+    clickable with a hint "Right-click a tab, Add to bookmarks"); at 32
+    columns drop the count first, then the button; the live agent indicators
+    keep priority.
+  - Dropdown (the notification list's): rows ordered by space, then tab; the
+    agent state icon, the tab title and the space name (DeepSeek and Opus group
+    by space with dim headers, GPT keeps it flat to save height); the current
+    tab highlighted; a click jumps and closes; a trailing `×` removes (middle
+    click as a shortcut only).
+  - Entry points: the context menu of a tab line and of a tab-bar tab
+    ("Add to bookmarks" / "Remove from bookmarks", by state), a keybinding
+    that toggles the focused tab; job tabs only when they are real tabs.
+  - Tests: persistence over a restart, an old snapshot without the field, two
+    clients, close, move, space delete and reorder, order, jump, remove,
+    32-column degradation, empty state, CLI.
+  - Done: nothing yet.
+
+- [ ] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
+  instance has a list of things it will do from its todo, and I do not see it").
+  Claude Code keeps it as TodoWrite (and newer TaskCreate/TaskUpdate), Pi and
+  Codex have plans; each shows it only in its own pane. Consulted DeepSeek, Opus
+  and GPT (agree on the approach):
+  - Source: structured events only, never screen scraping (the detection rule
+    is evidence-based): a Claude Code `PostToolUse` hook matching `TodoWrite`
+    (`tool_input.todos` is the whole list each time; the task tools are deltas
+    to fold in), a Pi extension that reports on every change, Codex's
+    `update_plan` through its hook or, as an opt-in fallback, transcript
+    tailing (private format, privacy and rotation costs). No evidence means
+    unknown, not zero tasks. Verify the payloads with recorded fixtures first.
+  - API (neutral, optional): `pane.report_plan {pane_id, items|null}` with a
+    full replacement list, `pending|in_progress|completed`, and an optional
+    `plan` on the agent info (absent unknown, empty cleared); limits of 50-100
+    items, 200-512 characters each, 8-64 KiB per report; strip control and ANSI
+    sequences, newlines become spaces; clear on a new session, `/clear` and
+    agent exit; GPT adds `session_id` and a `revision` to reject stale reports.
+  - Presentation: a quiet `3/7` token in the agent row (hidden when unknown or
+    empty, dim when complete), the in-progress item in the focused pane's
+    detail line, a keyboard-reachable dropdown of the items with `✓ ▸ ·` only
+    on request; no full list in the sidebar.
+  - Rollout: API and validation tests, the Claude hook with a recorded
+    payload, the token and footer, the Pi extension, the dropdown, Codex.
+  - Done: nothing yet.
+
 - [x] Bug (reported 2026-10-01 16:48 through another session, screenshot
   `~/.local/share/herdr-bug-reports/2026-10-01-working-agents-dropdown.png`):
   three agents look like they work in the sidebar but the new `◐` list showed
