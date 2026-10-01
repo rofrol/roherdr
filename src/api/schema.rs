@@ -123,6 +123,8 @@ pub enum Method {
     TabSetParent(TabSetParentParams),
     #[serde(rename = "tab.set_status")]
     TabSetStatus(TabSetStatusParams),
+    #[serde(rename = "tab.bookmark")]
+    TabBookmark(TabBookmarkParams),
     #[serde(rename = "tab.set_job_metadata")]
     TabSetJobMetadata(TabSetJobMetadataParams),
     #[serde(rename = "agent.list")]

@@ -43,6 +43,8 @@ pub struct Tab {
     /// see `Workspace::tab_parent_index`.
     pub parent: Option<usize>,
     pub status: Option<crate::api::schema::TabStatus>,
+    /// Pinned by the user to the bookmarks list; shared by every client.
+    pub bookmarked: bool,
     pub job: Option<crate::api::schema::TabJobMetadata>,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -190,6 +192,7 @@ impl Tab {
                 number,
                 parent: None,
                 status: None,
+                bookmarked: false,
                 job: None,
                 root_pane: root_id,
                 layout,
@@ -456,6 +459,7 @@ impl Tab {
             number,
             parent: None,
             status: None,
+            bookmarked: false,
             job: None,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

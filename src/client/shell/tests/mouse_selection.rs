@@ -1096,6 +1096,7 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
 fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
     let mut snapshot = snapshot();
     snapshot.tabs.push(ClientShellTab {
+        bookmarked: false,
         tab_id: "tab_2".into(),
         workspace_id: "ws_1".into(),
         number: 2,

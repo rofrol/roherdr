@@ -138,6 +138,7 @@ pub(super) fn snapshot_with_completions(
                 agent_status: tab.agent_status,
                 parent_tab_id: tab.parent_tab_id,
                 status: tab.status,
+                bookmarked: tab.bookmarked,
                 program: state
                     .terminal_id(state.layout.focused())
                     .and_then(|terminal_id| app.state.terminals.get(terminal_id))

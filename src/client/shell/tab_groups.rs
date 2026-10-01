@@ -246,6 +246,7 @@ mod tests {
         focused: bool,
     ) -> ClientShellTab {
         ClientShellTab {
+            bookmarked: false,
             tab_id: id.into(),
             workspace_id: "w".into(),
             number: 1,

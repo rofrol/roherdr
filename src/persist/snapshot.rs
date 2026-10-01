@@ -99,6 +99,8 @@ pub struct TabSnapshot {
     pub parent_tab_number: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::api::schema::TabStatus>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bookmarked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<crate::api::schema::TabJobMetadata>,
 }
@@ -163,6 +165,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
     fn from(snap: LegacyWorkspaceSnapshot) -> Self {
         let identity_cwd = legacy_identity_cwd(&snap);
         let tab = TabSnapshot {
+            bookmarked: false,
             custom_name: None,
             layout: snap.layout,
             panes: snap.panes,
@@ -410,6 +413,7 @@ fn capture_tab(
         root_pane: Some(tab.root_pane.raw()),
         parent_tab_number: tab.parent,
         status: tab.status,
+        bookmarked: tab.bookmarked,
         job: tab.job.clone(),
     }
 }
@@ -746,6 +750,7 @@ mod tests {
                 public_tab_numbers: vec![1],
                 next_public_tab_number: 2,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -1480,6 +1485,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    bookmarked: false,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

@@ -41,6 +41,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "product_announcement.dismiss",
     "release_notes.dismiss",
     "server.reload_config",
+    "tab.bookmark",
     "tab.close",
     "tab.create",
     "tab.focus",
@@ -313,6 +314,10 @@ mod tests {
         assert_eq!(
             actual.remove("popup.close").as_deref(),
             Some("776d774a3cfd2da2ce9d937ac58549e6022f0c265832c67c7dd9bf300955d304")
+        );
+        assert_eq!(
+            actual.remove("tab.bookmark").as_deref(),
+            Some("568d72e7e9fed90cee8a77b70bf55c708677a45970c3ab9a34157a9a0df2da32")
         );
         assert_eq!(
             actual.remove("tab.set_job_metadata").as_deref(),

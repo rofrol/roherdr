@@ -1,8 +1,10 @@
 //! What a close would stop: tabs marked running (e.g. herdr-job), agents that
 //! are working, waiting for approval or a reply, or have background tasks, and
 //! programs a pane's shell started, e.g. a build or `lazygit`, as Ghostty
-//! asks. The TUI asks before a close that stops any of them; an idle agent
-//! with nothing pending is not worth a question.
+//! asks. The TUI asks before a close that stops any of them. An agent
+//! session in a normal tab counts in every state, also idle; the leftover
+//! agent of a finished job's tab counts only while it works or has
+//! background tasks.
 
 use crate::api::schema::{AgentStatus, TabStatus};
 use crate::protocol::{ClientShellPane, ClientShellSnapshot, ClientShellTab};
@@ -117,12 +119,13 @@ fn pane_work(
             .iter()
             .find(|(key, value)| key == "bg" && !value.trim().is_empty())
             .map(|(_, value)| value.trim());
-        // What a close would lose: a turn in progress, a request waiting for
-        // approval, background tasks, or a question the user has yet to answer.
-        // An agent that is idle with none of them keeps nothing a resume does
-        // not bring back, and in a finished job's tab it is the one-shot
-        // command's leftover. An unknown state is asked about, to be safe,
-        // except in a finished job's tab.
+        // An interactive agent session in a normal tab is always asked about,
+        // also while idle: closing ends the live process and loses its
+        // unsent input, queued context and scrollback, and a resume brings
+        // back only the saved conversation. (Once an idle agent was left
+        // out, and a Claude session closed without a word.) The exception is
+        // a finished job's tab, where the agent is the one-shot command's
+        // leftover: only a live turn or background tasks count there.
         let live = matches!(
             agent.agent_status,
             AgentStatus::Working | AgentStatus::Blocked
@@ -135,14 +138,7 @@ fn pane_work(
             AgentStatus::Idle => "idle",
             AgentStatus::Unknown => "open",
         };
-        let counts = if finished {
-            live || background.is_some()
-        } else {
-            live || background.is_some()
-                || agent.awaiting_reply
-                || agent.agent_status == AgentStatus::Unknown
-        };
-        if !counts {
+        if finished && !(live || background.is_some()) {
             return None;
         }
         let background = background.map_or_else(String::new, |tasks| format!(" · {tasks}"));
@@ -171,6 +167,7 @@ mod tests {
 
     fn tab(tab_id: &str, label: &str, status: Option<TabStatus>) -> ClientShellTab {
         ClientShellTab {
+            bookmarked: false,
             tab_id: tab_id.into(),
             workspace_id: "w1".into(),
             number: 1,
@@ -225,12 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_or_done_agent_is_work_only_with_background_tasks_or_a_question() {
+    fn an_idle_agent_session_in_a_normal_tab_is_still_asked_about() {
         let mut snapshot = snapshot();
         snapshot.agents.push(agent("p2", "t2", AgentStatus::Idle));
-        assert!(tabs_running_work(&snapshot, &["t2"]).is_empty());
+        assert_eq!(
+            tabs_running_work(&snapshot, &["t2"]),
+            vec!["claude idle in claude".to_owned()]
+        );
         snapshot.agents[0].agent_status = AgentStatus::Done;
-        assert!(tabs_running_work(&snapshot, &["t2"]).is_empty());
+        assert_eq!(
+            tabs_running_work(&snapshot, &["t2"]),
+            vec!["claude done in claude".to_owned()]
+        );
         snapshot.agents[0]
             .tokens
             .push(("bg".to_owned(), "2 bg".to_owned()));
@@ -244,14 +247,8 @@ mod tests {
             tabs_running_work(&snapshot, &["t2"]),
             vec!["claude waiting for a reply in claude".to_owned()]
         );
-    }
-
-    #[test]
-    fn an_agent_in_an_unknown_state_is_asked_about_to_be_safe() {
-        let mut snapshot = snapshot();
-        snapshot
-            .agents
-            .push(agent("p2", "t2", AgentStatus::Unknown));
+        snapshot.agents[0].agent_status = AgentStatus::Unknown;
+        snapshot.agents[0].awaiting_reply = false;
         assert_eq!(
             tabs_running_work(&snapshot, &["t2"]),
             vec!["claude open in claude".to_owned()]

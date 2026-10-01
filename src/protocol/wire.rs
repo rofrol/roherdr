@@ -1062,6 +1062,10 @@ pub struct ClientShellTab {
     pub parent_tab_id: Option<String>,
     #[serde(default)]
     pub status: Option<crate::api::schema::TabStatus>,
+    /// The user bookmarked the tab (`tab.bookmark`); older servers do not
+    /// send it.
+    #[serde(default)]
+    pub bookmarked: bool,
     /// What runs in the tab's focused pane: its label, agent, the current
     /// program's terminal title, or the program name.
     #[serde(default)]
@@ -2855,6 +2859,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],
             tabs: vec![ClientShellTab {
+                bookmarked: false,
                 tab_id: "w1:t1".into(),
                 workspace_id: "w1".into(),
                 number: 1,

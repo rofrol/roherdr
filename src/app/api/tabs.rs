@@ -366,6 +366,32 @@ impl App {
         encode_success(id, ResponseResult::TabInfo { tab })
     }
 
+    pub(super) fn handle_tab_bookmark(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabBookmarkParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        if tab.bookmarked != params.bookmarked {
+            tab.bookmarked = params.bookmarked;
+            self.schedule_session_save();
+        }
+        match self.tab_info(ws_idx, tab_idx) {
+            Some(tab) => encode_success(id, ResponseResult::TabInfo { tab }),
+            None => tab_not_found(id, &params.tab_id),
+        }
+    }
+
     pub(super) fn handle_tab_set_job_metadata(
         &mut self,
         id: String,
@@ -667,6 +693,67 @@ mod tests {
         let response = app.handle_tab_close("req".into(), TabTarget { tab_id: parent });
         assert!(!response.contains("error"), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn api_tab_bookmark_sets_and_clears_the_flag_and_survives_a_snapshot() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("b"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+
+        let bookmark = |app: &mut App, bookmarked| {
+            let response = app.handle_tab_bookmark(
+                "req".into(),
+                crate::api::schema::TabBookmarkParams {
+                    tab_id: tab_id.clone(),
+                    bookmarked,
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabInfo { tab } = success.result else {
+                panic!("unexpected response: {response}");
+            };
+            tab.bookmarked
+        };
+        assert!(bookmark(&mut app, true));
+        // Repeating it changes nothing.
+        assert!(bookmark(&mut app, true));
+        assert_eq!(
+            app.tab_list_info(0)
+                .into_iter()
+                .map(|tab| tab.bookmarked)
+                .collect::<Vec<_>>(),
+            [false, true]
+        );
+        // It is persisted with the session.
+        let captured = crate::persist::capture(
+            &app.state.workspaces,
+            &app.state.terminals,
+            &app.terminal_runtimes,
+            app.state.active,
+            app.state.selected,
+        );
+        assert!(captured.workspaces[0].tabs[1].bookmarked);
+        assert!(!captured.workspaces[0].tabs[0].bookmarked);
+        assert!(!bookmark(&mut app, false));
+        let response = app.handle_tab_bookmark(
+            "req".into(),
+            crate::api::schema::TabBookmarkParams {
+                tab_id: "no_such_tab".into(),
+                bookmarked: true,
+            },
+        );
+        assert!(response.contains("tab_not_found"), "{response}");
     }
 
     #[test]

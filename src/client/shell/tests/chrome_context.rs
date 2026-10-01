@@ -4,6 +4,7 @@ use super::*;
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {
+        bookmarked: false,
         tab_id: format!("tab_{number}"),
         workspace_id: "ws_1".into(),
         number,
@@ -53,6 +54,7 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
 fn tab_bar_wheel_stops_at_the_first_and_last_tab() {
     let mut snapshot = snapshot();
     snapshot.tabs.push(ClientShellTab {
+        bookmarked: false,
         tab_id: "tab_2".into(),
         workspace_id: "ws_1".into(),
         number: 2,
@@ -139,6 +141,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .iter()
         .enumerate()
         .map(|(index, label)| ClientShellTab {
+            bookmarked: false,
             tab_id: format!("tab_{}", index + 1),
             workspace_id: "ws_1".into(),
             number: index + 1,
@@ -643,6 +646,7 @@ fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Meth
 fn snapshot_with_second_tab() -> ClientShellSnapshot {
     let mut snapshot = snapshot();
     snapshot.tabs.push(ClientShellTab {
+        bookmarked: false,
         tab_id: "tab_2".into(),
         workspace_id: "ws_1".into(),
         number: 2,
@@ -741,6 +745,7 @@ fn tab_bar_shows_each_tabs_agent_state_like_the_sidebar() {
         .tabs
         .extend([(2, AgentStatus::Blocked), (3, AgentStatus::Unknown)].map(
             |(number, agent_status)| ClientShellTab {
+                bookmarked: false,
                 tab_id: format!("tab_{number}"),
                 workspace_id: "ws_1".into(),
                 number,
@@ -800,6 +805,7 @@ fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
         .extend(
             [(2, false), (3, true), (4, false), (5, false)].map(|(number, custom_label)| {
                 ClientShellTab {
+                    bookmarked: false,
                     tab_id: format!("tab_{number}"),
                     workspace_id: "ws_1".into(),
                     number,
