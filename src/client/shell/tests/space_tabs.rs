@@ -2653,3 +2653,51 @@ fn unfolding_a_tab_line_near_the_bottom_scrolls_its_squares_into_view() {
         state.hits.space_tab_squares
     );
 }
+
+#[test]
+fn a_bookmark_row_shows_the_tabs_task_and_its_right_click_menu_only_removes_it() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    state.config.tab_label = crate::config::TabLabelConfig::Title;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].bookmarked = true;
+    projected.tabs[0].custom_label = false;
+    projected.tabs[0].label = "2".into();
+    projected.agents = vec![header_agent(
+        "pane_1",
+        crate::api::schema::AgentStatus::Idle,
+        false,
+        "Job search automation",
+    )];
+    projected.agents[0].tab_id = "tab_1".into();
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let button = state.hits.bookmarks_list_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Job search automation"), "{text}");
+
+    let row = state.hits.notification_log_rows[0].0;
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        column: row.x + 3,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+        panic!("a menu opens");
+    };
+    assert_eq!(menu.y, row.y, "the menu starts at the clicked row");
+    let labels = menu
+        .items()
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["Remove from bookmarks"]);
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
+                if params.tab_id == "tab_1" && !params.bookmarked))));
+}

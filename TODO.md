@@ -40,6 +40,26 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [x] Bookmark rows and popups (user, 2026-10-01, three screenshots): (1) the
+  bookmark list showed "1 · job-seeker" and "2 · herdr" where the sidebar says
+  "Job search automation": "why a tab number or name when there is a task
+  name"; (2) a right click on a bookmark row closed the list and left a full tab
+  menu hanging, one line low; (3) "why is there this offset?" (the dropdown's
+  left edge sat one column right of the pill). Consulted DeepSeek and GPT.
+  - Done 2026-10-01: a bookmark row uses exactly the sidebar tab line's label
+    (`sidebar_tab_label`: the given name, else the task, else the program, else
+    the number) and appends the space name only when it differs from the label
+    (the models want the space kept for ambiguous names such as two `zsh`, or
+    group headers); the right-click menu of a bookmark row has one item,
+    "Remove from bookmarks", with its top border at the clicked row (DeepSeek
+    preferred the first item there, GPT the corner at the pointer, as the other
+    menus do); the working, asking and bookmark buttons now report the pill
+    (label and one cell each side) as their rect, so the dropdown's left edge
+    meets the pill's. Test: `a_bookmark_row_shows_the_tabs_task_and_its_right_
+    click_menu_only_removes_it`.
+  - Not done: space group headers in the bookmark list; reopening the list
+    after a removal from its menu (the list closes).
+
 - [x] Unfolding a tab line's squares near the bottom shows nothing (user,
   2026-10-01: "I click and the jobs list does not unfold"; later "maybe I could
   before, but I had to scroll the spaces, like with a new tab"). The squares

@@ -755,6 +755,8 @@ pub(super) enum ClientContextMenuTarget {
     },
     /// The spaces list's sort choice, opened from the header button.
     SortSpaces(super::space_sort::SpaceSort),
+    /// A row of the bookmarks list: only removing the bookmark.
+    Bookmark { tab_id: String },
     Pane {
         pane_id: String,
         workspace_id: String,

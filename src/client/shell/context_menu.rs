@@ -89,6 +89,9 @@ impl ClientContextMenuOverlay {
                 items.push(item("Close", Action::Close));
                 items
             }
+            ClientContextMenuTarget::Bookmark { .. } => {
+                vec![item("Remove from bookmarks", Action::ToggleBookmark)]
+            }
             ClientContextMenuTarget::SortSpaces(sort) => sort
                 .menu_items()
                 .into_iter()
@@ -161,6 +164,16 @@ impl ClientShellState {
                 close_group,
                 collapsed,
             },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    /// The menu of a bookmarks list row: one item, at the pointer.
+    pub(super) fn open_bookmark_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Bookmark { tab_id },
             x,
             y,
             highlighted: 0,
@@ -285,6 +298,17 @@ impl ClientShellState {
                 workspace_id,
                 ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
+            ClientContextMenuTarget::Bookmark { tab_id } => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::TabBookmark(
+                        crate::api::schema::TabBookmarkParams {
+                            tab_id,
+                            bookmarked: false,
+                        },
+                    ),
+                    outcome,
+                );
+            }
             ClientContextMenuTarget::SortSpaces(_) => {
                 if let ClientContextMenuAction::SortSpaces(key) = action {
                     self.space_sort = self.space_sort.clicked(key);

@@ -2041,7 +2041,13 @@ impl ClientShellState {
                             .nth(index)
                             .and_then(|row| row.tab_id)
                         {
-                            self.open_tab_context_menu(tab_id, point.0, point.1);
+                            if self.notification_log_view()
+                                == super::notification_log::NotificationLogView::Bookmarks
+                            {
+                                self.open_bookmark_context_menu(tab_id, point.0, point.1);
+                            } else {
+                                self.open_tab_context_menu(tab_id, point.0, point.1);
+                            }
                             outcome.repaint = true;
                         }
                     }
