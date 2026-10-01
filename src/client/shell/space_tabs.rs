@@ -409,12 +409,14 @@ impl TabLineFills {
         use super::render::tabs::blend;
         let dark = is_dark(palette.panel_bg);
         Self {
-            // A dark background needs more accent for the tint to show.
+            // A third of the accent on a light background, half on a dark one:
+            // the tint must stand out among the greys (a sixth was too
+            // faint), and the job counts keep their colours on it.
             focused_active: blend(
                 palette.accent,
                 palette.panel_bg,
                 1,
-                if dark == Some(true) { 3 } else { 6 },
+                if dark == Some(true) { 2 } else { 3 },
             ),
             // On dark themes surface1 is brighter than the tint and would
             // draw the eye from it.
@@ -565,6 +567,18 @@ pub(super) fn render_space_tab_lines(
             None => (PROGRAM_ICON, Style::default().fg(palette.overlay0)),
         };
         super::render::put_text(buffer, x, y, 1, icon, icon_style);
+        // The focused space's active tab also has an accent bar in the
+        // fill's first column, so it is found by shape, not only by colour.
+        if line.active && focused_space && fills.focused_active.is_some() && !lifted {
+            super::render::put_text(
+                buffer,
+                fill_x,
+                y,
+                1,
+                "▌",
+                Style::default().fg(palette.accent).bg(bg),
+            );
+        }
         // A tab with nested tabs ends in a disclosure triangle and their
         // counts, `► ⧖ 1 !1`, which fold and unfold its squares. They keep
         // their room; the label is cut first, then the counts.
