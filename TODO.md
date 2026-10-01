@@ -47,6 +47,30 @@
   panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
   investigated. Done: nothing.
 
+- [x] No `?` although the agent "reported" (user, 2026-10-01, screenshot of a
+  Haiku 4.5 session in job-seeker: the tab kept the idle ring). Diagnosis: the
+  turn ended "Czekam na ITDS: Masz email od Barbary albo link do Lea
+  screening?" and then a last paragraph that was the text `herdr agent
+  awaiting-reply`, printed in the message and never run as a Bash call (so no
+  report). The session also started before the Stop hook existed. Consulted
+  DeepSeek and GPT (agree): small models take a command-like string for content;
+  say "call the Bash tool", forbid writing it, give an example; the Stop hook
+  should catch a final paragraph that is only the command; do not execute text
+  scraped from a message (injection, masks the bug).
+  - Done 2026-10-01: the Stop check treats a final paragraph equal to the
+    command (also in backticks, a fence or after `$ `) as a missed report and
+    blocks once with "you wrote the command in your message instead of running
+    it; call the Bash tool with it"; the instruction in the SessionStart
+    context, the per-prompt reminder (Claude, `.sh` and `.ps1`) and the Pi
+    extension now says "call the Bash tool with `herdr agent awaiting-reply`
+    (never write the command in your reply)"; the audit counts `printed` turns.
+    Tests in `scripts/test_awaiting_reply_audit.py` (parity of the detector,
+    block once, passes when run). Needs `herdr integration install claude` to
+    reach `~/.claude`, and a restart of the sessions.
+  - Not done: a usage-example line in the instruction; prevalence of the
+    printed command by model (rerun the audit on new transcripts); the Pi side
+    of the Stop check.
+
 - [x] Dropdown without the preview at the bottom (user, 2026-10-01: "can we do
   without that preview below? maybe the bubble could grow to the right as with
   tab names?"). Consulted DeepSeek and GPT (agree: size to the longest row,

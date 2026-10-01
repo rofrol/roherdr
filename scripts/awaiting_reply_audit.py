@@ -73,6 +73,15 @@ def looks_like_question(text):
     return "?" in last and bool(ASK_PHRASES.search(last))
 
 
+def printed_command(text):
+    """The final paragraph is the command written out, not run."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return False
+    last = re.sub(r"^\$\s*", "", paragraphs[-1].replace("`", "").strip()).strip()
+    return last == COMMAND
+
+
 def is_report(command):
     return command.strip() == COMMAND
 
@@ -225,11 +234,13 @@ def audit(paths, since=""):
         for turn in turns:
             if since and turn.started < since:
                 continue
-            question = looks_like_question(turn.final_text)
+            printed = printed_command(turn.final_text)
+            question = looks_like_question(turn.final_text) or printed
             reported = turn.reported()
             s = stats[turn.model]
             s["turns"] += 1
             s["question_like"] += question
+            s["printed_command"] += printed and not reported
             s["reported"] += reported
             s["reported_last"] += turn.reported_last()
             if question and not reported:
@@ -271,7 +282,7 @@ def main(argv=None):
         lo, hi = wilson(s["missed"], q)
         print(
             "%-40s turns=%-4d question_like=%-3d reported=%-3d missed=%-3d "
-            "(%.0f%%, 95%% CI %.0f-%.0f%%) false_report=%-3d order_violation=%d"
+            "(%.0f%%, 95%% CI %.0f-%.0f%%) false_report=%-3d order_violation=%-3d printed=%d"
             % (
                 model,
                 s["turns"],
@@ -283,6 +294,7 @@ def main(argv=None):
                 100 * hi,
                 s["false_report"],
                 s["order_violation"],
+                s["printed_command"],
             )
         )
         for tail in misses[model][: args.examples]:

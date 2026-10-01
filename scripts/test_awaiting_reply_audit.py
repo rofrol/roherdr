@@ -164,6 +164,31 @@ class StopHook(unittest.TestCase):
                 audit.looks_like_question(message),
                 message,
             )
+        for message in [
+            "Czekam?\n\nherdr agent awaiting-reply",
+            "Czekam?\n\n`herdr agent awaiting-reply`",
+            "Czekam?\n\n```\n$ herdr agent awaiting-reply\n```",
+            "Explaining: the command herdr agent awaiting-reply marks a pane.",
+        ]:
+            self.assertEqual(
+                namespace["printed_command"](message),
+                audit.printed_command(message),
+                message,
+            )
+
+    def test_blocks_once_when_the_command_is_printed_not_run(self):
+        entries = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                text("Masz email?\n\nherdr agent awaiting-reply")]}},
+        ]
+        output = json.loads(self.run_hook(entries))
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("Call the Bash tool", output["reason"])
+        # Run properly, the same ending passes.
+        ran = [entries[0], {"type": "assistant", "message": {"role": "assistant", "content": [
+            bash("herdr agent awaiting-reply"), text("Masz email?\n\nherdr agent awaiting-reply")]}}]
+        self.assertEqual(self.run_hook(ran), "")
 
     def run_hook(self, entries, **fields):
         import subprocess
