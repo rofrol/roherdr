@@ -10,6 +10,7 @@ pub(crate) fn render_tab_bar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    stale: bool,
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
@@ -25,10 +26,14 @@ pub(crate) fn render_tab_bar(
         .map(|tab| {
             let summary =
                 tab_groups::children_summary(&tab_groups::child_tabs(snapshot, &tab.tab_id));
+            let label = match tab_state_icon(tab, config) {
+                Some(icon) => format!("{icon} {}", tab_label(tab, snapshot, config)),
+                None => tab_label(tab, snapshot, config),
+            };
             if summary.is_empty() {
-                tab_label(tab)
+                label
             } else {
-                format!("{} {summary}", tab_label(tab))
+                format!("{label} {summary}")
             }
         })
         .collect::<Vec<_>>();
@@ -114,9 +119,11 @@ pub(crate) fn render_tab_bar(
         // Full accent marks what is on screen. A parent whose children fill the
         // second row is only tinted there, like a folder tab opening into it,
         // so the bar never shows two accent blocks.
+        let accent_filled = Some(tab.tab_id.as_str()) == active_tab_id
+            && tab_groups::child_tabs(snapshot, &tab.tab_id).is_empty();
         let style = if Some(tab.tab_id.as_str()) != active_tab_id {
             Style::default().fg(palette.overlay1).bg(palette.surface0)
-        } else if tab_groups::child_tabs(snapshot, &tab.tab_id).is_empty() {
+        } else if accent_filled {
             Style::default()
                 .fg(panel_contrast_fg(palette))
                 .bg(palette.accent)
@@ -136,6 +143,26 @@ pub(crate) fn render_tab_bar(
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        // Color the agent state like the sidebar does, except on the accent
+        // fill, where the palette's state colors can vanish. A disconnected
+        // endpoint's state is stale, so it is dimmed like in the sidebar.
+        if let Some(icon) = tab_state_icon(tab, config) {
+            let fg = if stale {
+                Some(palette.overlay0)
+            } else {
+                (!accent_filled).then(|| status_color(tab.agent_status, palette))
+            };
+            if let (Some(fg), true) = (fg, left < rect.width) {
+                put_text(
+                    buffer,
+                    rect.x + left,
+                    rect.y,
+                    rect.width - left,
+                    icon,
+                    style.fg(fg),
+                );
+            }
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);
@@ -263,8 +290,8 @@ pub(crate) fn render_child_tab_bar(
                 return format!("◆ {}", tab_groups::parent_entry_label(snapshot, tab));
             }
             match tab_groups::status_icon(tab.status) {
-                Some(icon) => format!("{icon} {}", tab_label(tab)),
-                None => tab_label(tab),
+                Some(icon) => format!("{icon} {}", tab_label(tab, snapshot, config)),
+                None => tab_label(tab, snapshot, config),
             }
         })
         .collect::<Vec<_>>();
@@ -521,12 +548,62 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
-fn tab_label(tab: &ClientShellTab) -> String {
+/// The tab's agent state in the sidebar's indicator style; none for tabs
+/// without a detected agent.
+fn tab_state_icon(tab: &ClientShellTab, config: &ClientShellConfig) -> Option<&'static str> {
+    (tab.agent_status != crate::api::schema::AgentStatus::Unknown)
+        .then(|| status_icon(tab.agent_status, config.status_indicators))
+}
+
+/// Task titles are model-written sentences; a fixed width keeps the tab bar
+/// from shifting every time an agent retitles itself.
+const TAB_TITLE_WIDTH: usize = 16;
+
+fn tab_label(
+    tab: &ClientShellTab,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+) -> String {
+    let label = match agent_task_title(tab, snapshot, config) {
+        Some(title) => {
+            let title = crate::ui::truncate_end(title, TAB_TITLE_WIDTH);
+            let pad = TAB_TITLE_WIDTH.saturating_sub(display_width(&title) as usize);
+            format!("{title}{:pad$}", "")
+        }
+        None => tab.label.clone(),
+    };
     if tab.zoomed {
-        format!("{} Z", tab.label)
+        format!("{label} Z")
     } else {
-        tab.label.clone()
+        label
     }
+}
+
+/// With `ui.tab_label = "title"`, an unnamed tab shows the terminal title of
+/// its focused agent (else its first one); names given by the user win.
+fn agent_task_title<'a>(
+    tab: &ClientShellTab,
+    snapshot: &'a ClientShellSnapshot,
+    config: &ClientShellConfig,
+) -> Option<&'a str> {
+    if config.tab_label != crate::config::TabLabelConfig::Title || tab.custom_label {
+        return None;
+    }
+    let mut agents = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id);
+    let first = agents.next()?;
+    let agent = if first.focused {
+        first
+    } else {
+        agents.find(|agent| agent.focused).unwrap_or(first)
+    };
+    agent
+        .terminal_title_stripped
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
 }
 
 #[cfg(test)]

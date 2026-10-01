@@ -1070,6 +1070,16 @@
           ]
         },
         {
+          "key": "ui.tab_label",
+          "type": "enum",
+          "default": "\"number\"",
+          "description": "Show an unnamed tab's number, or the task title its agent sets as the terminal title.",
+          "values": [
+            "number",
+            "title"
+          ]
+        },
+        {
           "key": "ui.tab_bar_right",
           "type": "array",
           "default": "[]",

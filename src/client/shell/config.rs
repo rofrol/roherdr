@@ -120,6 +120,7 @@ impl ClientShellConfig {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             mobile_width_threshold: config.ui.mobile_width_threshold,
             tab_bar_position: config.ui.tab_bar_position,
+            tab_label: config.ui.tab_label,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
@@ -347,6 +348,7 @@ impl ClientShellConfig {
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.mobile_width_threshold = ui.mobile_width_threshold;
                 self.tab_bar_position = ui.tab_bar_position;
+                self.tab_label = ui.tab_label;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
@@ -484,6 +486,7 @@ mod tests {
         let mut next = Config::default();
         next.ui.sidebar_width = 31;
         next.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+        next.ui.tab_label = crate::config::TabLabelConfig::Title;
         next.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
         next.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
         next.ui.sidebar.agents = toml::from_str("rows = [[{ token = 'machine', rules = [{ equals = 'Local', bold = true }] }]]\nrow_gap = 2").unwrap();
@@ -494,6 +497,7 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(shell.sidebar_width, 31);
         assert_eq!(shell.tab_bar_position, TabBarPositionConfig::Bottom);
+        assert_eq!(shell.tab_label, crate::config::TabLabelConfig::Title);
         assert_eq!(
             shell.agent_panel_sort,
             crate::config::AgentPanelSortConfig::Priority

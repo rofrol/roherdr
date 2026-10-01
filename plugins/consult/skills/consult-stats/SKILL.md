@@ -13,7 +13,8 @@ O=~/.claude/skills/consult-stats/consult.py
 $O rate <id> useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note "..."]
 $O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models
 $O self --round <round> --model <your model id> --findings N --accepted N --refuted N --unique N --missed N [--note "..."]
-$O stats [--days 30]     # per skill/model + per coordinator (Claude): rounds, accepted/findings, refuted, unique, missed, recall
+$O stats [--days 30]     # per skill/model: unique per rated call, wrong (rejected findings), rated/calls, err
+$O stats --all           # + score, acc/find, speed, tokens, @high history, per coordinator (Claude) table
 $O stats --pairs         # + token efficiency (acc/1M output tokens) and paired within-round token ratios (e.g. sol vs astra)
 $O recent [-n 20]        # latest calls with their ids and ratings (find unrated ones)
 ```
