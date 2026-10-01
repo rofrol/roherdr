@@ -207,6 +207,13 @@ fn background_update_check_enabled(background_updates: bool, check_enabled: bool
     auto_updates_enabled(background_updates) && check_enabled
 }
 
+/// The background check for a new Herdr binary. Agent manifest updates are a
+/// separate check and keep running in a fork build.
+pub(crate) fn version_check_enabled(background_updates: bool, check_enabled: bool) -> bool {
+    background_update_check_enabled(background_updates, check_enabled)
+        && !crate::build_info::upstream_updates_disabled()
+}
+
 fn load_plugin_registry(
     persist_plugin_registry: bool,
     leases: &mut crate::plugin_installations::Leases,
@@ -488,9 +495,11 @@ impl App {
         );
 
         let latest_release_notes = crate::release_notes::load_latest();
+        // A fork build ignores a restored upstream release; the saved notes
+        // stay available to read.
         let update_available = latest_release_notes
             .as_ref()
-            .filter(|notes| notes.preview)
+            .filter(|notes| notes.preview && !crate::build_info::upstream_updates_disabled())
             .map(|notes| notes.version.clone());
         let latest_release_notes_available = latest_release_notes.is_some();
         let update_install_command = crate::update::update_install_command().to_string();
@@ -608,7 +617,7 @@ impl App {
         // and in debug/test builds so local development never mutates the
         // running binary out from under spawned test processes.
         let version_check_enabled =
-            background_update_check_enabled(policy.background_updates, config.update.version_check);
+            version_check_enabled(policy.background_updates, config.update.version_check);
         let manifest_check_enabled = background_update_check_enabled(
             policy.background_updates,
             config.update.manifest_check,

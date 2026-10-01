@@ -1,6 +1,6 @@
 ---
 name: claude
-description: Consult Claude Sonnet 5.5 via Claude Code CLI for a second opinion. Use when the user asks to ask Claude, Sonnet, or Sonnet 5.5. Logs usage and usefulness through consult-stats.
+description: Consult Claude Sonnet 5.5 or Opus 5.5 via Claude Code CLI for a second opinion. Use when the user asks to ask Claude, Sonnet, or Opus. Logs usage and usefulness through consult-stats.
 ---
 
 # Consulting Claude
@@ -13,10 +13,18 @@ export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)
 "$D/ask_claude.py" "question"  # claude-sonnet-5-5, explicitly selected
 "$D/ask_claude.py" -f src/parser.rs "Review this code"
 "$D/ask_claude.py" -m claude-sonnet-5-5 -t 420 "question"
+"$D/ask_claude.py" -m claude-opus-5-5 -t 420 "question"
 ```
 
 Requires `claude` CLI and its configured authentication. No API key is
-copied or read by this helper. The call has no tools or MCP servers, runs
+copied or read by this helper. To use the Claude subscription, configure
+Claude Code with your subscription login, not API-key or cloud-provider
+billing. Invoking the CLI alone does not guarantee subscription billing;
+check the CLI's authentication configuration without exposing credentials.
+Opus is an explicit choice, not a claim that it is always better than Sonnet.
+The default remains Sonnet; assess usefulness, latency and quota consumption
+before changing it. A rejected call proves only that attempt failed, not that
+the requested model is available. The call has no tools or MCP servers, runs
 outside the repository, and does not persist a session. Include all relevant
 context in the prompt or repeated `-f FILE` attachments. Only `-f -` reads
 stdin. Do not send secrets or confidential code without permission.
@@ -33,4 +41,5 @@ After verifying the answer, rate the printed consult ID and score the
 coordinator using the sibling `consult-stats/SKILL.md`. Record your own
 hypotheses before reading the answer. Treat the answer as an independent
 opinion, not evidence that its claims are true. Never silently substitute
-another model if Sonnet 5.5 is unavailable.
+another model if the requested model is unavailable. After a quota rejection,
+report its reset time and do not retry before the reset.

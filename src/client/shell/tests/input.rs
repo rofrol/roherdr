@@ -174,7 +174,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
 
 #[test]
 fn client_shell_graphics_follow_final_shell_origin_and_local_overlay_visibility() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(config_with_sidebar_width(26));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     let key = crate::protocol::SurfaceGraphicsAssetKey {

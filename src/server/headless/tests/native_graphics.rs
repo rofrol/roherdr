@@ -929,6 +929,26 @@ async fn quiet_native_producer_geometry_retirement_schedules_full_inline_recover
     }
 }
 
+fn native_file_render_profile_scenarios(
+    source_cloning_implemented: bool,
+) -> impl Iterator<Item = (bool, bool)> {
+    [(false, false), (true, false), (true, true)]
+        .into_iter()
+        .filter(move |(_, source_retention)| !source_retention || source_cloning_implemented)
+}
+
+#[test]
+fn native_file_profile_preserves_non_source_modes_when_cloning_is_unimplemented() {
+    assert_eq!(
+        native_file_render_profile_scenarios(false).collect::<Vec<_>>(),
+        [(false, false), (true, false)]
+    );
+    assert_eq!(
+        native_file_render_profile_scenarios(true).collect::<Vec<_>>(),
+        [(false, false), (true, false), (true, true)]
+    );
+}
+
 #[tokio::test]
 #[ignore = "manual native-file retained-render scaling profile; one image, 1/15 populated panes"]
 async fn native_file_render_scale_profile() {
@@ -939,8 +959,16 @@ async fn native_file_render_scale_profile() {
     const SAMPLES: usize = 35;
     const IMAGE_WIDTH: u32 = 800;
     const IMAGE_HEIGHT: u32 = 480;
+    let source_cloning_implemented = crate::platform::NATIVE_IMAGE_SOURCE_CLONING_IMPLEMENTED;
     for count in [1, 15] {
-        for (native, source_retention) in [(false, false), (true, false), (true, true)] {
+        if !source_cloning_implemented {
+            println!(
+                "native_file_render_scale native_files=true source_retention=true populated_panes={count} status=unsupported reason=source_cloning_not_implemented_on_platform"
+            );
+        }
+        for (native, source_retention) in
+            native_file_render_profile_scenarios(source_cloning_implemented)
+        {
             let (mut server, _control, _render, root) =
                 retained_test_server_with_control(b"populated root terminal\r\n");
             if source_retention {

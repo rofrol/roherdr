@@ -202,6 +202,8 @@ herdr tab status <tab_id> running|succeeded|failed|none
 
 A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
+Closing an active tab focuses the previous tab at the same level, or the next one if there is no previous sibling. Closing an only child returns to its parent. Closing a main tab does not jump into another tab's nested jobs. Closing an inactive tab leaves the active tab unchanged.
+
 With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab from a keybinding or the tab menu. Ordinary CLI/API tab closes remain immediate.
 
 With `ui.confirm_close_running` enabled (the default), the TUI also asks before closing a tab, pane or workspace that has running work: a tab marked running with `tab status`, any agent still running in it (working, waiting for an answer, idle or done), or a program the pane's shell started, such as a build or `lazygit`. Resuming an agent later does not bring back an unsent draft or its background tasks, so idle agents count too. The dialog names what the close would stop, e.g. `claude idle in herdr · 2 bg`. This works independently of `ui.confirm_close`, and CLI/API closes remain immediate.

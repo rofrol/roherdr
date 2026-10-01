@@ -658,19 +658,49 @@ impl Workspace {
         Ok((self.tabs.len() - 1, terminal, runtime))
     }
 
+    /// Select before removal, while sibling/parent relationships still exist.
+    /// Public tab numbers survive index shifts and are never reused.
+    fn tab_number_to_focus_after_close(&self, idx: usize) -> Option<usize> {
+        if idx != self.active_tab {
+            return self.active_tab().map(|tab| tab.number);
+        }
+        let parent = self.tab_parent_index(idx);
+        let sibling = (0..idx)
+            .rev()
+            .find(|&candidate| self.tab_parent_index(candidate) == parent)
+            .or_else(|| {
+                (idx + 1..self.tabs.len())
+                    .find(|&candidate| self.tab_parent_index(candidate) == parent)
+            });
+        let next = sibling.or(parent).or_else(|| {
+            // Direct state callers can close a lone parent and leave its
+            // children top-level. The API closes children before the parent.
+            (0..self.tabs.len()).find(|&candidate| candidate != idx)
+        })?;
+        self.tabs.get(next).map(|tab| tab.number)
+    }
+
     pub fn close_tab(&mut self, idx: usize) -> bool {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;
         }
+        let Some(focused_number) = self.tab_number_to_focus_after_close(idx) else {
+            return false;
+        };
         let tab = self.tabs.remove(idx);
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
+        // Removing a parent cannot reorder survivors, but its children must
+        // not retain stale links (including for raw-parent state consumers).
+        for survivor in &mut self.tabs {
+            if survivor.parent == Some(tab.number) {
+                survivor.parent = None;
+            }
         }
+        let focused_idx = self.tab_index_by_number(focused_number);
+        debug_assert!(focused_idx.is_some(), "the chosen tab must survive closing");
+        self.active_tab = focused_idx.unwrap_or(0);
         true
     }
 
@@ -1829,6 +1859,72 @@ mod tests {
         assert_eq!(names(&ws), ["1", "a2", "a1", "b"]);
     }
 
+    /// Every drop slot of a sidebar tab line, with and without child tabs
+    /// under the dragged tab and under the ones it passes: the tab lands
+    /// before the top-level tab at the slot, as the client computes the flat
+    /// index (the n-th parentless tab, else the end).
+    #[test]
+    fn every_drop_slot_of_a_top_level_tab_lands_where_asked() {
+        // Child counts under top-level tabs a, b, c, d.
+        for children in [
+            [0, 0, 0, 0],
+            [2, 0, 0, 0],
+            [0, 2, 0, 1],
+            [1, 1, 1, 1],
+            [0, 0, 0, 3],
+        ] {
+            let names_of = ["a", "b", "c", "d"];
+            for source in 0..4 {
+                for slot in 0..=4usize {
+                    let mut ws = Workspace::test_new("test");
+                    ws.tabs[0].custom_name = Some("a".into());
+                    for name in &names_of[1..] {
+                        ws.test_add_tab(Some(name));
+                    }
+                    for (top, count) in children.iter().enumerate() {
+                        for n in 0..*count {
+                            let child = ws.test_add_tab(Some(&format!("{}{n}", names_of[top])));
+                            let parent = ws
+                                .tabs
+                                .iter()
+                                .position(|tab| tab.custom_name.as_deref() == Some(names_of[top]))
+                                .unwrap();
+                            ws.set_tab_parent(child, Some(parent)).unwrap();
+                        }
+                    }
+                    let flat_source = ws
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.custom_name.as_deref() == Some(names_of[source]))
+                        .unwrap();
+                    let flat_insert = ws
+                        .tabs
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| ws.tab_parent_index(*index).is_none())
+                        .nth(slot)
+                        .map_or(ws.tabs.len(), |(index, _)| index);
+                    ws.move_tab(flat_source, flat_insert);
+                    let tops = ws
+                        .tabs
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| ws.tab_parent_index(*index).is_none())
+                        .map(|(_, tab)| tab.custom_name.clone().unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    let mut expected = names_of.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+                    let moved = expected.remove(source);
+                    expected.insert(if slot > source { slot - 1 } else { slot }, moved);
+                    assert_eq!(
+                        tops, expected,
+                        "children {children:?}, source {source}, slot {slot}"
+                    );
+                    ws.assert_invariants_for_test();
+                }
+            }
+        }
+    }
+
     #[test]
     fn nesting_is_one_level_deep() {
         let mut ws = Workspace::test_new("test");
@@ -1847,6 +1943,150 @@ mod tests {
         assert!(ws.set_tab_parent(2, Some(2)).is_err());
         ws.set_tab_parent(1, None).unwrap();
         assert_eq!(ws.tab_parent_index(1), None);
+    }
+
+    #[test]
+    fn closing_tabs_selects_same_level_neighbors_and_preserves_inactive_focus() {
+        // Parent indices, active index, closed index, expected survivor's original index.
+        type CloseCase<'a> = (&'a str, &'a [Option<usize>], usize, usize, usize);
+        let cases: &[CloseCase<'_>] = &[
+            (
+                "last main after jobs",
+                &[None, Some(0), Some(0), None],
+                3,
+                3,
+                0,
+            ),
+            (
+                "middle main after jobs",
+                &[None, Some(0), None, None],
+                2,
+                2,
+                0,
+            ),
+            (
+                "first main skips its children",
+                &[None, Some(0), None],
+                0,
+                0,
+                2,
+            ),
+            ("first flat tab", &[None, None], 0, 0, 1),
+            (
+                "previous child",
+                &[None, Some(0), Some(0), Some(0)],
+                2,
+                2,
+                1,
+            ),
+            (
+                "first child prefers sibling",
+                &[None, Some(0), Some(0)],
+                1,
+                1,
+                2,
+            ),
+            (
+                "only child returns to parent",
+                &[None, Some(0), None],
+                1,
+                1,
+                0,
+            ),
+            (
+                "child skips other group",
+                &[None, Some(0), None, Some(2)],
+                3,
+                3,
+                2,
+            ),
+            (
+                "lone parent promotes first child",
+                &[None, Some(0), Some(0)],
+                0,
+                0,
+                1,
+            ),
+            (
+                "inactive parent preserves child",
+                &[None, Some(0), Some(0), None],
+                2,
+                0,
+                2,
+            ),
+            (
+                "inactive before active",
+                &[None, Some(0), None, Some(2)],
+                3,
+                0,
+                3,
+            ),
+            ("inactive after active", &[None, Some(0), None], 0, 2, 0),
+            (
+                "inactive sibling before child",
+                &[None, Some(0), Some(0)],
+                2,
+                1,
+                2,
+            ),
+            (
+                "inactive sibling after child",
+                &[None, Some(0), Some(0)],
+                1,
+                2,
+                1,
+            ),
+        ];
+        for &(name, parents, active, closed, expected) in cases {
+            let mut ws = Workspace::test_new(name);
+            for _ in 1..parents.len() {
+                ws.test_add_tab(None);
+            }
+            for (idx, &parent) in parents.iter().enumerate() {
+                if parent.is_some() {
+                    ws.set_tab_parent(idx, parent).unwrap();
+                }
+            }
+            let expected_root = ws.tabs[expected].root_pane;
+            let closed_root = ws.tabs[closed].root_pane;
+            let surviving_numbers = ws
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != closed)
+                .map(|(_, tab)| tab.number)
+                .collect::<Vec<_>>();
+            ws.switch_tab(active);
+
+            assert!(ws.close_tab(closed), "{name}");
+
+            assert_eq!(ws.tabs[ws.active_tab].root_pane, expected_root, "{name}");
+            assert_eq!(
+                ws.tabs.iter().map(|tab| tab.number).collect::<Vec<_>>(),
+                surviving_numbers,
+                "{name}: surviving order changed"
+            );
+            assert_eq!(ws.public_pane_number(closed_root), None, "{name}");
+            for idx in 0..ws.tabs.len() {
+                assert_eq!(
+                    ws.tabs[idx].parent.is_some(),
+                    ws.tab_parent_index(idx).is_some(),
+                    "{name}: orphaned parent link"
+                );
+            }
+            ws.assert_invariants_for_test();
+        }
+    }
+
+    #[test]
+    fn closing_invalid_or_last_tab_preserves_state() {
+        let mut ws = Workspace::test_new("test");
+        let root = ws.tabs[0].root_pane;
+        assert!(!ws.close_tab(0));
+        assert!(!ws.close_tab(usize::MAX));
+        assert_eq!(ws.tabs[ws.active_tab].root_pane, root);
+        assert_eq!(ws.tabs.len(), 1);
+        ws.assert_invariants_for_test();
     }
 
     #[test]

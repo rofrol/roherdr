@@ -2107,6 +2107,13 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    if crate::build_info::upstream_updates_disabled() {
+        return Err(
+            "self-update is disabled in this fork build: upstream releases would replace it; \
+             rebuild and install with scripts/herdr_live.sh"
+                .into(),
+        );
+    }
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {

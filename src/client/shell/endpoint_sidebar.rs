@@ -370,10 +370,15 @@ pub(super) fn render_expanded(
                         )
                         .len()
                         .max(1);
-                        let tab_rows = tab_lines
-                            .iter()
-                            .map(|line| usize::from(line.height(squares_width)))
-                            .sum::<usize>();
+                        let tab_rows =
+                            tab_lines
+                                .iter()
+                                .map(|line| {
+                                    usize::from(line.height(squares_width.saturating_sub(
+                                        super::space_tabs::tab_indent(entry.indented),
+                                    )))
+                                })
+                                .sum::<usize>();
                         Some((rows + tab_rows).min(u16::MAX as usize) as u16)
                     })
                     .unwrap_or(1)
@@ -598,9 +603,11 @@ pub(super) fn render_expanded(
                     ),
                     &tab_lines,
                     endpoint_active && workspace.focused,
-                    squares_width,
+                    squares_width.saturating_sub(super::space_tabs::tab_indent(entry.indented)),
                     state.hovered_square.filter(|_| endpoint_active),
                     u16::from(show_scrollbar),
+                    super::space_tabs::tab_indent(entry.indented),
+                    state.tab_line_drag.filter(|_| endpoint_active),
                     config,
                 );
                 // Only the active machine's tab lines and squares take clicks:

@@ -30,6 +30,15 @@ class ExecutorFooterTests(unittest.TestCase):
             payload = json.loads(call.call_args.args[3])
             self.assertEqual(payload, {k: v for k, v in meta.items() if k != "tab_id"})
 
+    def test_job_started_from_a_job_tab_nests_under_its_top_level_parent(self):
+        top = JOB["top_level_tab"]
+        reply = lambda tab: json.dumps({"result": {"tab": tab}})
+        for tab, expected in ({"tab_id": "w:t1"}, "w:t1"), ({"tab_id": "w:t2", "parent_tab_id": "w:t1"}, "w:t1"):
+            with patch.dict(top.__globals__, {"herdr": Mock(return_value=reply(tab))}):
+                self.assertEqual(top("w:t2" if "parent_tab_id" in tab else "w:t1"), expected)
+        with patch.dict(top.__globals__, {"herdr": Mock(side_effect=SystemExit("gone"))}):
+            self.assertEqual(top("w:t9"), "w:t9")
+
     def test_registration_sanitizes_display_text_without_changing_job_identity(self):
         register = JOB["register_job_metadata"]
         meta = {"id": "probe", "name": "Build\n雪\x1b", "why": "check\noutput\tready",

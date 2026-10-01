@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    let config = config_with_sidebar_width(26);
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -2197,4 +2197,62 @@ fn a_sorted_list_holds_its_order_while_the_pointer_is_over_it() {
     move_to(&mut state, (pane.x + 1, pane.y));
     state.compose(106, 24).expect("resorted");
     assert_ne!(order(&state), before);
+}
+
+#[test]
+fn worktree_tab_lines_are_indented_under_the_worktree_name() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.spaces.tabs = true;
+    let mut state = ClientShellState::new(config);
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut child = snapshot.workspaces[0].clone();
+    child.workspace_id = "ws_2".into();
+    child.active_tab_id = "tab_ws2".into();
+    child.number = 2;
+    child.label = "repo-feature".into();
+    child.branch = Some("worktree/feature".into());
+    child.focused = false;
+    child.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    snapshot.workspaces.push(child);
+    snapshot.tabs[0].label = "parent-tab".into();
+    snapshot.tabs[0].custom_label = true;
+    let mut child_tab = snapshot.tabs[0].clone();
+    child_tab.tab_id = "tab_ws2".into();
+    child_tab.workspace_id = "ws_2".into();
+    child_tab.label = "child-tab".into();
+    child_tab.focused = false;
+    snapshot.tabs.push(child_tab);
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let column = |needle: &str| {
+        (0..frame.height)
+            .find_map(|row| {
+                let start = usize::from(row) * usize::from(frame.width);
+                let text = frame.cells[start..start + usize::from(frame.width)]
+                    .iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>();
+                text.find(needle).map(|byte| text[..byte].chars().count())
+            })
+            .unwrap_or_else(|| panic!("{needle} is drawn"))
+    };
+    assert_eq!(column("child-tab"), column("parent-tab") + 5);
+    // The gutter in front of the indented line still selects its tab.
+    let (rect, _) = state
+        .hits
+        .space_tabs
+        .iter()
+        .find(|(_, tab_id)| tab_id == "tab_ws2")
+        .expect("child tab hit");
+    assert!(usize::from(rect.x) < column("child-tab"));
 }
