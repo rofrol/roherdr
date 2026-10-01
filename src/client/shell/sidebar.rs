@@ -381,6 +381,9 @@ pub(crate) fn render_sidebar(
                 .fg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         ),
+        // While the filter is open its bar takes this row (drawn below, once
+        // the match count is known); the sort button and indicators wait.
+        None if state.space_filter.is_some() => {}
         None => {
             let buttons = super::space_sort::render_sort_header(
                 buffer,
@@ -395,12 +398,26 @@ pub(crate) fn render_sidebar(
             // The indicators sit right of the sort buttons, right to left: the
             // history button, then the agents asking, then the agents working;
             // one that does not fit is left out.
-            let limit = hits
+            let mut limit = hits
                 .space_sort_buttons
                 .iter()
                 .map(|(rect, _)| rect.right())
                 .max()
                 .unwrap_or(workspace_area.x);
+            // The filter button follows the sort button: a magnifier, no key
+            // hint (the key only works with the sidebar focused).
+            if config.mouse_capture && limit + 3 <= workspace_area.right() {
+                put_text(
+                    buffer,
+                    limit + 1,
+                    workspace_area.y,
+                    1,
+                    "⌕",
+                    Style::default().fg(palette.overlay1),
+                );
+                hits.space_filter_button = Rect::new(limit, workspace_area.y, 3, 1);
+                limit += 2;
+            }
             let mut right = workspace_area.right();
             if let Some(unread) = state
                 .notification_log_button
@@ -494,16 +511,11 @@ pub(crate) fn render_sidebar(
         .pressed_workspace_id
         .map(|pressed| family_ids(snapshot, &entries, pressed))
         .unwrap_or_default();
-    // The filter bar takes the row under the header.
-    let header_rows = WORKSPACE_HEADER_ROWS + u16::from(state.space_filter.is_some());
+    // The filter bar takes the header row.
+    let header_rows = WORKSPACE_HEADER_ROWS;
     if let Some(filter) = state.space_filter.as_ref() {
-        let bar = Rect::new(
-            workspace_area.x,
-            workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-            workspace_area.width,
-            1,
-        )
-        .intersection(workspace_area);
+        let bar = Rect::new(workspace_area.x, workspace_area.y, workspace_area.width, 1)
+            .intersection(workspace_area);
         let (bar, close) = super::space_filter::render_filter_bar(
             buffer,
             bar,
@@ -840,7 +852,7 @@ pub(crate) fn render_sidebar(
             .filter(|bg| (dragged || pressed) && *bg != ratatui::style::Color::Reset);
         if let Some(bg) = drag_bg {
             target.set_style(rect, Style::default().bg(bg));
-        } else if selected {
+        } else if selected && state.space_filter.is_none() {
             target.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if workspace.focused && !config.spaces.tabs {
             // With vertical tabs only the tab lines have a background.
@@ -858,7 +870,7 @@ pub(crate) fn render_sidebar(
             entry,
             rows,
             workspace.focused,
-            selected,
+            selected && state.space_filter.is_none(),
             state.selected_workspace_id.is_some(),
             grab_color
                 .filter(|_| dragged || pressed)
@@ -919,6 +931,21 @@ pub(crate) fn render_sidebar(
                 .map(|filter| filter.query),
             config,
         );
+        // The filter's cursor is a bar down the whole block, not a fill.
+        if selected && state.space_filter.is_some() {
+            for row in rect.y..rect.bottom() {
+                put_text(
+                    target,
+                    rect.x,
+                    row,
+                    1,
+                    "▍",
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+        }
         block_hits.space_tabs.extend(tab_hits.lines);
         block_hits.space_tab_folds.extend(tab_hits.folds);
         block_hits.space_tab_squares.extend(tab_hits.squares);
@@ -989,18 +1016,6 @@ pub(crate) fn render_sidebar(
         );
         let attention = super::super::global_menu::global_menu_attention(snapshot);
         let launcher_width = if attention { 8 } else { 6 }.min(workspace_area.width);
-        // `/ filter` between `new` and `menu`, when it fits.
-        hits.space_filter_button = super::space_filter::render_filter_button(
-            buffer,
-            Rect::new(
-                workspace_area.x.saturating_add(5),
-                footer_y,
-                workspace_area.width.saturating_sub(5 + launcher_width),
-                1,
-            ),
-            state.space_filter.is_some(),
-            palette,
-        );
         hits.global_launcher = Rect::new(
             workspace_area.right().saturating_sub(launcher_width),
             footer_y,
@@ -1561,29 +1576,49 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             palette.overlay0
         });
-        let spans = crate::ui::resolved_token_spans(
-            row,
-            (icon, Style::default().fg(status_color(status, palette))),
-            Style::default().fg(status_color(status, palette)),
-            workspace_style,
-            secondary_style,
-            Style::default().fg(palette.overlay1),
-            palette,
-            area.right()
-                .saturating_sub(reserved(row_index))
-                .saturating_sub(x) as usize,
-        );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(
-                x,
-                y,
-                area.right()
-                    .saturating_sub(reserved(row_index))
-                    .saturating_sub(x),
-                1,
-            ),
-            buffer,
-        );
+        // The job summary (`◐ 2 !2`) is right-aligned, just left of the
+        // actions at the row's end; the name is cut first, never the counts.
+        let is_jobs = |token: &crate::ui::ResolvedToken| {
+            matches!(token.kind, crate::ui::ResolvedTokenKind::TabJobs { .. })
+        };
+        let (jobs, rest): (Vec<_>, Vec<_>) = row.iter().cloned().partition(is_jobs);
+        let right_edge = area.right().saturating_sub(reserved(row_index));
+        let style_for = |tokens: &[crate::ui::ResolvedToken], width: usize| {
+            crate::ui::resolved_token_spans(
+                tokens,
+                (icon, Style::default().fg(status_color(status, palette))),
+                Style::default().fg(status_color(status, palette)),
+                workspace_style,
+                secondary_style,
+                Style::default().fg(palette.overlay1),
+                palette,
+                width,
+            )
+        };
+        let jobs_spans = style_for(&jobs, usize::from(right_edge.saturating_sub(x)));
+        let jobs_width = jobs_spans
+            .iter()
+            .map(|span| display_width(&span.content))
+            .sum::<u16>();
+        let jobs_x = if jobs_width > 0 {
+            right_edge.saturating_sub(jobs_width).max(x)
+        } else {
+            right_edge
+        };
+        let name_end = if jobs_width > 0 {
+            jobs_x.saturating_sub(1).max(x)
+        } else {
+            right_edge
+        };
+        let spans = style_for(&rest, usize::from(name_end.saturating_sub(x)));
+        Paragraph::new(Line::from(spans))
+            .render(Rect::new(x, y, name_end.saturating_sub(x), 1), buffer);
+        if jobs_width > 0 {
+            Paragraph::new(Line::from(jobs_spans)).render(
+                Rect::new(jobs_x, y, right_edge.saturating_sub(jobs_x), 1),
+                buffer,
+            );
+        }
     }
 
     // With vertical tabs a space starts where its name row has a bar in the

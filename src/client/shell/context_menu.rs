@@ -170,16 +170,6 @@ impl ClientShellState {
         }));
     }
 
-    /// The menu of a bookmarks list row: one item, at the pointer.
-    pub(super) fn open_bookmark_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
-        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Bookmark { tab_id },
-            x,
-            y,
-            highlighted: 0,
-        }));
-    }
-
     /// Opens the sort choice under the header button at `(x, y)`.
     pub(super) fn open_space_sort_menu(&mut self, x: u16, y: u16) {
         let sort = self.space_sort;

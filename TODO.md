@@ -40,6 +40,52 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [x] Three polish items (user, 2026-10-01, screenshots; consulted DeepSeek,
+  Opus and GPT):
+  (1) "the job summaries on a space row (`◐ 2 !2`) should be right-aligned":
+  Done: on a space's name row the summary sits just left of the `+`, a column
+  down the sidebar; the name is cut first, never the counts (test `the_job_
+  summary_on_a_space_row_is_right_aligned`).
+  (2) "the dropdown still vanishes and the remove popup stays": Done: the
+  bookmark row's menu is now part of the list overlay (`log.menu`): it opens
+  over the list, its top border on the clicked row; Esc, any key or a click
+  elsewhere closes only the menu; Enter or a click on the item removes the
+  bookmark and the list stays open (the row goes when the snapshot returns).
+  Not done: keeping the highlight on the neighbour row after the removal,
+  Shift+F10 for the keyboard (Delete or `x` already remove directly).
+  (3) "why is the icon white when the row is highlighted, not its own colour?":
+  the solid accent fill forced white; DeepSeek and GPT: do not recolour state
+  icons when selected. Done: the highlighted row of the dropdown lists is a
+  light accent tint (a sixth on light, a quarter on dark themes) with an accent
+  bar `▌` in the first column and normal text, so every icon keeps its colour
+  and animation; without an RGB palette the solid fill stays. The menus
+  (context, sort) keep the solid highlight, they have no icons. Not done: a
+  darker/lighter shade for an icon whose hue is too close to the tint (the
+  models' contrast rule), the unread dot is hidden on the highlighted row.
+
+- [x] The spaces filter (user, 2026-10-01, with a screenshot): (1) "why is there
+  a `/` before `filter`: when I click in the spaces panel to focus it and press
+  `/`, it types into the agent's command line"; (2) "I click filter at the
+  bottom and the input appears at the top: move the whole control to the very
+  top"; (3) "it highlights strangely when I start typing" (the arrow-selected
+  space had a pale blue fill over its whole block). Consulted DeepSeek, Opus and
+  GPT.
+  - Done 2026-10-01: the bottom `/ filter` button is gone; a `⌕` button follows
+    the sort button in the header (no slash, so it does not promise a key);
+    while the filter is open its bar (`/ query`, the `shown/total` count, `×`)
+    takes the header row itself, the sort button and indicators wait, and the
+    list does not move down by a row; the space the arrows chose has an accent
+    bar (`▍`) down its whole block instead of the pale fill. Test: `the_filter_
+    lives_in_the_header_row_and_its_cursor_is_a_bar_not_a_fill`.
+  - Not done (the models' further proposals): the default key is `prefix+/`
+    (`filter_spaces`), so a bare `/` goes to the agent by design; `/` opening the filter when the
+    spaces panel has keyboard focus (a sidebar-scoped binding; today a click in
+    the panel focuses the pane, so `/` reaches the agent; needs a sidebar
+    focus mode and Esc returning to the pane); dimming tab lines that do not
+    match; showing the matching hidden field (the path or branch) as a dim line;
+    `no spaces match "x"` with the count in the error colour for zero matches;
+    two-stage Esc (clear, then close).
+
 - [ ] A silent job looks the same as a stuck one (user, 2026-10-01, screenshot of
   the job "rescue builder VM": the pane shows only `$ ./builder-vm.sh` and a
   cursor, the running icon turns; "is anything executing here?"). Checked: yes.
