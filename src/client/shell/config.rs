@@ -425,8 +425,11 @@ impl ClientShellConfig {
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
-        let show_tab_bar =
-            rows > 1 && (child_tab_row || !(self.hide_tab_bar_when_single_tab && tab_count == 1));
+        // Vertical tabs list the tabs in the sidebar and their nested tabs
+        // as squares, so neither tab row is drawn.
+        let show_tab_bar = !self.spaces.tabs
+            && rows > 1
+            && (child_tab_row || !(self.hide_tab_bar_when_single_tab && tab_count == 1));
         let tab_height = u16::from(show_tab_bar);
         let child_height = u16::from(show_tab_bar && child_tab_row && rows > 2);
         let bars = tab_height + child_height;

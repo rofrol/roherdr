@@ -22,6 +22,10 @@ const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 /// prompt, which would turn the pane blocked while it reports a question.
 const AWAITING_REPLY_PERMISSION: &str = "Bash(herdr agent awaiting-reply)";
 
+/// The hook action that repeats the awaiting-reply instruction on every prompt.
+const REMINDER_ACTION: &str = "reminder";
+const REMINDER_EVENT: &str = "UserPromptSubmit";
+
 struct HookRemoval {
     event: &'static str,
     actions: &'static [&'static str],
@@ -174,6 +178,114 @@ pub(crate) fn remove_awaiting_reply_permission(
                 rule.remove();
             }
         }
+    }
+    verify_updated(root.to_string(), settings_path, &desired)
+}
+
+/// Adds the `UserPromptSubmit` hook that repeats the awaiting-reply instruction on every prompt,
+/// since the `SessionStart` context sits far back in a long session. Kept apart from `install`,
+/// like the permission rule, so the `SessionStart` hook stays the only canonical one.
+pub(crate) fn add_awaiting_reply_reminder(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+) -> io::Result<String> {
+    let original = parse_value(content, settings_path)?;
+    let mut desired = original.clone();
+    let hooks = ensure_hooks_object(
+        &mut desired,
+        settings_path,
+        "claude settings",
+        "claude settings hooks",
+    )?;
+    let command = hook_command(hook_path, Some(REMINDER_ACTION));
+    ensure_command_hook(hooks, REMINDER_EVENT, command.clone(), 10, None)?;
+    if desired == original {
+        return Ok(content.to_string());
+    }
+
+    let settings_error = |what: &str| {
+        io::Error::other(format!(
+            "claude settings {what} at {} must be a JSON {}",
+            settings_path.display(),
+            if what == "root" || what == "hooks" {
+                "object"
+            } else {
+                "array"
+            }
+        ))
+    };
+    let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
+        io::Error::other(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    let root_object = root
+        .value()
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| settings_error("root"))?;
+    let hooks = match root_object.get("hooks") {
+        Some(property) => property
+            .object_value()
+            .ok_or_else(|| settings_error("hooks"))?,
+        None => root_object
+            .append("hooks", CstInputValue::Object(Vec::new()))
+            .object_value()
+            .ok_or_else(|| settings_error("hooks"))?,
+    };
+    let entries = match hooks.get(REMINDER_EVENT) {
+        Some(property) => property
+            .array_value()
+            .ok_or_else(|| settings_error("hooks.UserPromptSubmit"))?,
+        None => hooks
+            .append(REMINDER_EVENT, CstInputValue::Array(Vec::new()))
+            .array_value()
+            .ok_or_else(|| settings_error("hooks.UserPromptSubmit"))?,
+    };
+    entries.append(json!({
+        hooks: [{
+            "type": "command",
+            command: command,
+            timeout: 10u64,
+        }],
+    }));
+    verify_updated(root.to_string(), settings_path, &desired)
+}
+
+/// Removes only herdr's reminder hook, leaving other `UserPromptSubmit` hooks as they are.
+pub(crate) fn remove_awaiting_reply_reminder(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+) -> io::Result<String> {
+    let mut desired = parse_value(content, settings_path)?;
+    let commands = hook_command_variants(hook_path, Some(REMINDER_ACTION));
+    let Some(hooks) = hooks_object_if_present(
+        &mut desired,
+        settings_path,
+        "claude settings",
+        "claude settings hooks",
+    )?
+    else {
+        return Ok(content.to_string());
+    };
+    if !remove_value_event_commands(hooks, REMINDER_EVENT, &commands, None)? {
+        return Ok(content.to_string());
+    }
+    let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
+        io::Error::other(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    if let Some(hooks) = root
+        .value()
+        .and_then(|value| value.as_object())
+        .and_then(|object| object.get("hooks"))
+        .and_then(|property| property.object_value())
+    {
+        remove_event_commands(&hooks, REMINDER_EVENT, &commands, false, &Value::Null)?;
     }
     verify_updated(root.to_string(), settings_path, &desired)
 }
@@ -949,6 +1061,43 @@ mod tests {
             .contains("                {  \"type\" : \"command\", \"command\" : \"echo keep\"  }"));
         assert!(updated.starts_with("{\n    \"before\" : \"\\u0061\","));
         assert!(updated.ends_with("    \"after\" : 1e+02\n}\n\n"));
+    }
+
+    #[test]
+    fn the_reminder_hook_is_added_once_and_removed_alone() {
+        let (settings_path, hook_path) = paths();
+        let input = "{\n  \"hooks\": {\n    \"UserPromptSubmit\": [{\"hooks\":[{\"type\":\"command\",\"command\":\"echo keep\"}]}]\n  }\n}\n";
+        let added = add_awaiting_reply_reminder(input, settings_path, hook_path).unwrap();
+        assert_eq!(
+            add_awaiting_reply_reminder(&added, settings_path, hook_path).unwrap(),
+            added
+        );
+        let settings: Value = serde_json::from_str(&added).unwrap();
+        let entries = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[1]["hooks"][0]["command"],
+            hook_command(hook_path, Some("reminder"))
+        );
+        assert!(entries[1].get("matcher").is_none());
+        // Installing the SessionStart hook leaves the reminder alone.
+        let installed = install(&added, settings_path, hook_path).unwrap();
+        assert!(installed
+            .contains(&serde_json::to_string(&hook_command(hook_path, Some("reminder"))).unwrap()));
+
+        let removed = remove_awaiting_reply_reminder(&added, settings_path, hook_path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&removed).unwrap(),
+            serde_json::from_str::<Value>(input).unwrap()
+        );
+        assert_eq!(
+            remove_awaiting_reply_reminder(&removed, settings_path, hook_path).unwrap(),
+            removed
+        );
+        let empty = add_awaiting_reply_reminder("{}", settings_path, hook_path).unwrap();
+        let removed = remove_awaiting_reply_reminder(&empty, settings_path, hook_path).unwrap();
+        let settings: Value = serde_json::from_str(&removed).unwrap();
+        assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     }
 
     #[test]

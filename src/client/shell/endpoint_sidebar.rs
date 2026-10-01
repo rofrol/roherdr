@@ -329,6 +329,7 @@ pub(super) fn render_expanded(
                             snapshot,
                             workspace,
                             collapsed_groups,
+                            &HashSet::new(),
                             config,
                         );
                         let rows = super::sidebar::workspace_rows(
@@ -472,6 +473,7 @@ pub(super) fn render_expanded(
                     snapshot,
                     workspace,
                     collapsed_groups,
+                    &HashSet::new(),
                     config,
                 );
                 let tab_jobs = super::space_tabs::space_row_tab_jobs(
@@ -534,6 +536,8 @@ pub(super) fn render_expanded(
                     ),
                     &tab_lines,
                     endpoint_active && workspace.focused,
+                    // No line is unfolded here, so no squares wrap.
+                    nested.width,
                     config,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {

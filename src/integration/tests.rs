@@ -970,7 +970,7 @@ fn install_claude_writes_hook_and_updates_settings() {
         .as_str()
         .unwrap()
         .contains(" session"));
-    assert!(settings["hooks"].get("UserPromptSubmit").is_none());
+    assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
@@ -981,6 +981,15 @@ fn install_claude_writes_hook_and_updates_settings() {
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
+}
+
+/// Install leaves herdr only its awaiting-reply reminder on `UserPromptSubmit`.
+fn assert_only_the_reminder_prompt_hook(settings: &Value) {
+    let entries = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"].as_str().unwrap().ends_with(" reminder"));
 }
 
 #[test]
@@ -1001,6 +1010,18 @@ fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
         settings["permissions"]["allow"],
         serde_json::json!(["Bash(herdr agent awaiting-reply)"])
     );
+    let reminder = hook_command(&installed.hook_path, Some("reminder"));
+    assert_eq!(
+        settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+        reminder.as_str()
+    );
+    assert_eq!(
+        settings["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let mut edited = settings.clone();
     edited["permissions"]["allow"]
@@ -1015,6 +1036,7 @@ fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
         settings["permissions"]["allow"],
         serde_json::json!(["Read"])
     );
+    assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert_eq!(settings["model"], "opus");
 
     std::env::remove_var("HOME");
@@ -1060,7 +1082,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
         settings["hooks"]["SessionStart"].as_array().unwrap().len(),
         1
     );
-    assert!(settings["hooks"].get("UserPromptSubmit").is_none());
+    assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
@@ -1142,7 +1164,7 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
         settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"],
         "echo keep-session-end"
     );
-    assert!(settings["hooks"].get("UserPromptSubmit").is_none());
+    assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
 

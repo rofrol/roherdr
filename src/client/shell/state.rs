@@ -102,6 +102,11 @@ pub(super) struct ShellHitMap {
     pub(super) agents: Vec<(Rect, String)>,
     /// Tab lines under a space (`ui.sidebar.spaces.tabs`), with their tab ids.
     pub(super) space_tabs: Vec<(Rect, String)>,
+    /// Disclosure triangles and counts at the end of tab lines, with the
+    /// tab whose squares they fold.
+    pub(super) space_tab_folds: Vec<(Rect, String)>,
+    /// Squares of nested tabs under an unfolded tab line, with their tab.
+    pub(super) space_tab_squares: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -962,6 +967,9 @@ pub(crate) struct ClientShellState {
     pub(super) last_group_tabs: HashMap<(ClientEndpointId, String), String>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
+    /// Local tabs whose nested tabs are unfolded as squares under their tab
+    /// line; folded by default and not saved.
+    pub(super) unfolded_squares: HashSet<String>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1144,6 +1152,7 @@ impl ClientShellState {
             last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
+            unfolded_squares: HashSet::new(),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,

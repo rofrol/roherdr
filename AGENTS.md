@@ -151,6 +151,11 @@ use this configuration automatically. To use another SDK, set
 Setup accepts `--accept-license` for explicit noninteractive license acceptance;
 normal checks never download the SDK. Native Windows builds auto-detect their
 installed SDK. Native Linux/macOS builds do not need the Windows SDK.
+On macOS, Zig also applies the Windows libc file to the host tools that
+libghostty-vt builds (Zig issue #22559; `ZIG_LIBC` behaves the same as
+`--libc`) and then looks for libSystem under the SDK directory. As a temporary
+workaround `just windows-lint` links `~/.local/share/herdr/windows-cross/usr/lib`
+to the macOS SDK's `usr/lib`; `scripts/windows_cross.py` says when to remove it.
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 

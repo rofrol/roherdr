@@ -372,38 +372,48 @@ pub(crate) fn render_sidebar(
             .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
     );
     hits.workspace_body = body;
-    let row_heights = entries
-        .iter()
-        .map(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .map(|workspace| {
-                    let tab_lines = super::space_tabs::space_tab_lines(
-                        snapshot,
-                        workspace,
-                        state.collapsed_groups,
-                        config,
-                    );
-                    let rows = workspace_rows(
-                        workspace,
-                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
-                        super::space_tabs::space_row_tab_jobs(
+    // Unfolded squares wrap at the block's width, which loses a column to the
+    // scrollbar when the list overflows: measure without it first, and again
+    // with it if it is needed (narrower only adds rows, so that settles it).
+    let measure = |squares_width: u16| -> Vec<u16> {
+        entries
+            .iter()
+            .map(|entry| {
+                snapshot
+                    .workspaces
+                    .get(entry.index)
+                    .map(|workspace| {
+                        let tab_lines = super::space_tabs::space_tab_lines(
                             snapshot,
                             workspace,
                             state.collapsed_groups,
-                            &tab_lines,
-                        ),
-                        entry.indented,
-                        &config.spaces,
-                    )
-                    .len()
-                    .max(1);
-                    (rows + tab_lines.len()).min(u16::MAX as usize) as u16
-                })
-                .unwrap_or(1)
-        })
-        .collect::<Vec<_>>();
+                            state.unfolded_squares,
+                            config,
+                        );
+                        let rows = workspace_rows(
+                            workspace,
+                            displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                            super::space_tabs::space_row_tab_jobs(
+                                snapshot,
+                                workspace,
+                                state.collapsed_groups,
+                                &tab_lines,
+                            ),
+                            entry.indented,
+                            &config.spaces,
+                        )
+                        .len()
+                        .max(1);
+                        let tab_rows = tab_lines
+                            .iter()
+                            .map(|line| usize::from(line.height(squares_width)))
+                            .sum::<usize>();
+                        (rows + tab_rows).min(u16::MAX as usize) as u16
+                    })
+                    .unwrap_or(1)
+            })
+            .collect::<Vec<_>>()
+    };
     let gaps = entries
         .iter()
         .enumerate()
@@ -413,6 +423,16 @@ pub(crate) fn render_sidebar(
                 .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
         })
         .collect::<Vec<_>>();
+    let mut squares_width = body.width;
+    let mut row_heights = measure(squares_width);
+    let total = row_heights
+        .iter()
+        .chain(&gaps)
+        .fold(0u16, |sum, rows| sum.saturating_add(*rows));
+    if total > body.height && body.width > 1 {
+        squares_width = body.width - 1;
+        row_heights = measure(squares_width);
+    }
     let mut metrics = super::scroll::list_scroll_metrics(
         &row_heights,
         &gaps,
@@ -452,8 +472,13 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let tab_lines =
-            super::space_tabs::space_tab_lines(snapshot, workspace, state.collapsed_groups, config);
+        let tab_lines = super::space_tabs::space_tab_lines(
+            snapshot,
+            workspace,
+            state.collapsed_groups,
+            state.unfolded_squares,
+            config,
+        );
         let tab_jobs = super::space_tabs::space_row_tab_jobs(
             snapshot,
             workspace,
@@ -462,8 +487,10 @@ pub(crate) fn render_sidebar(
         );
         let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
         let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
-        let row_height = own_rows
-            .saturating_add(tab_lines.len().min(u16::MAX as usize) as u16)
+        let row_height = row_heights
+            .get(entry_position)
+            .copied()
+            .unwrap_or(own_rows)
             .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -530,19 +557,22 @@ pub(crate) fn render_sidebar(
                 );
             }
         }
-        hits.space_tabs
-            .extend(super::space_tabs::render_space_tab_lines(
-                buffer,
-                Rect::new(
-                    rect.x,
-                    rect.y.saturating_add(own_rows),
-                    rect.width,
-                    rect.height.saturating_sub(own_rows),
-                ),
-                &tab_lines,
-                workspace.focused,
-                config,
-            ));
+        let tab_hits = super::space_tabs::render_space_tab_lines(
+            buffer,
+            Rect::new(
+                rect.x,
+                rect.y.saturating_add(own_rows),
+                rect.width,
+                rect.height.saturating_sub(own_rows),
+            ),
+            &tab_lines,
+            workspace.focused,
+            squares_width,
+            config,
+        );
+        hits.space_tabs.extend(tab_hits.lines);
+        hits.space_tab_folds.extend(tab_hits.folds);
+        hits.space_tab_squares.extend(tab_hits.squares);
         let group_toggle = if config.spaces.tabs {
             super::space_tabs::render_space_disclosure(
                 buffer,

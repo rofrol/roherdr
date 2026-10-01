@@ -183,6 +183,85 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     parent's two collapses, DeepSeek wanted them separate. Still open:
     hiding the main tab row with the child row taking the top, and a `+`
     as the last thing on the space's name line for a new tab.
+  - Done 2026-09-28: only the tab lines have a background, in the tab
+    bar's colours, from the tab indent to one column before the right
+    edge: inactive `surface0`, the focused space's active tab accent-filled
+    (icon and counts in its text colour), other spaces' active tab the
+    accent tint; the focused space lost its grey block. Tabs without an
+    agent show `❏` (U+274F), job counts are right-aligned. Chosen from
+    mockups and real-terminal demos; tried and rejected gaps between tabs
+    (terminal cells fill the whole row; an underline in the background
+    colour or an empty row were the options). Consulted (GPT-6 Astra,
+    DeepSeek): both chose `surface0` (text contrast 4.66:1), preferred no
+    icon for agentless tabs, then `▣` (Astra) or `❏` (DeepSeek). Open
+    from the consults: white on accent `#4078F2` is 3.9:1; on the accent
+    fill working, done and waiting all show a white `●`.
+  - Decided 2026-09-28 (mockup
+    https://claude.ai/artifact/8Bu831GPSzW7F5kfoQ1U3W): job squares replace
+    the horizontal tab rows. Both rows go (main and child); a tab's job tabs
+    (its child tabs) show as squares on the lines under its vertical tab,
+    in start order, wrapping, 3 columns each (` ⧖ `, glyph in the state
+    colour on `surface0`, bold `!` and `✓`) with a 1-column gap. The open
+    job's square gets the accent tint (the parent tab's tint), glyph keeps
+    its state colour; its parent tab line is tinted too. Click a square to
+    open its job, click the open square again to go back to the parent tab.
+    Middle-click closes; a running job asks first (`Stop and close` /
+    Cancel). The `⧖1 !1` counts stay at the end of the tab line, and on
+    the space row when the space is collapsed. The squares are folded by default: clicking
+    an inactive tab only opens it; clicking the tab you are on unfolds its
+    squares, clicking it again folds them (the counts stay); with a job
+    open, clicking the parent tab goes back to the agent. Hovering a
+    square names it (and a failed job's exit code) on the sidebar's bottom
+    line. A succeeded square closes after 10 s, never while it is open or
+    while the pointer is over the sidebar, so squares never shift under the
+    mouse. No drag and drop. With the sidebar hidden there is no job
+    navigation for now: show the sidebar to switch.
+  - Over the open job one top line: ` ← `, the state glyph, the job name,
+    `--why`, the agent and space that started it and the job id (cut from
+    the right when narrow), and ` × ` at the right end. herdr-job's pinned
+    footer goes (the top line holds all of it).
+  - Done 2026-09-28: the squares (folded by default, client-local, not
+    saved), both tab rows hidden with `spaces.tabs`, square clicks and
+    middle-click close, and the top line. herdr-job draws the top line
+    itself as a pinned first row (a scroll region, as the footer was), and
+    herdr only turns clicks on its first and last three columns into back
+    and close, for a focused tab with a parent and a status. Consulted
+    (GPT-6 Astra, DeepSeek) on where the line lives: Astra wanted a
+    herdr-drawn row reserved while the workspace has nested tabs, with
+    `--why` and the job id sent to clients (a new codec: generation-1
+    codecs are frozen); DeepSeek wanted herdr-job's own row (no resize, no
+    protocol change). Chose DeepSeek's: a pane-owned row can be wiped by a
+    program that clears the screen, as the footer could. Both: unfolded
+    state client-local, not in the saved collapsed set; measure the square
+    rows once for layout and drawing, and again with the scrollbar column
+    when the list overflows. Still open: the hover name on the sidebar's
+    bottom line, keeping squares in place while the pointer is over the
+    sidebar, no auto-close while a job is open, squares in the
+    multi-machine sidebar, scrolling within a block taller than the list.
+  - Changed 2026-09-28 (mockup updated, same link): a disclosure triangle
+    right before the counts, `► ⧖ 1 !1` (`▼` unfolded, dim grey, inside
+    the fill), folds and unfolds the squares; its hit runs from the
+    triangle to the fill's end. The rest of the line always opens the tab
+    itself, also from one of its jobs, never the job its group had open
+    last. A tab with only succeeded jobs shows the triangle alone; the
+    label is cut first, then the counts, the triangle last. Squares start
+    where the fill starts (column 5), not under the state icon. Consulted
+    (GPT-6 Astra, DeepSeek): both preferred this to clicking the active tab
+    (one meaning per target), the triangle on the right inside the fill
+    (the icon column stays the agent's state, and it cannot pass for the
+    space's triangle), no auto-unfold of failed jobs (it moves rows under
+    the pointer). Succeeded-only: Astra the triangle alone (chosen),
+    DeepSeek nothing.
+  - Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): both called the squares
+    fine but removing the rows risky (no navigation with the sidebar
+    hidden, keyboard). Both wanted a per-tab number in the square (`1⧖`,
+    for `Alt-1…9`); I chose the glyph only. Both found "click the open
+    square again goes back" surprising; kept because I asked for it, with
+    `←` in the top line as a visible way back. Both: no drag and drop,
+    keep counts on a collapsed space, never reflow squares under the
+    pointer (a middle-click could stop the wrong job). DeepSeek wanted the
+    footer dropped (chosen); Astra wanted the top line and footer to split
+    the fields.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -628,9 +707,8 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Decided (user, 2026-09-28): the explicit `herdr agent awaiting-reply`
     command (cleanest engineering-wise), with the permission rule added
     by the consented Claude integration install. Done: server flag
-    `awaiting_reply` (a report during the turn shows at its end; cleared by
-    the next working state, a turn ending without a report, exit or session
-    change), `pane.report_awaiting_reply`, the TUI keeps the agent `Done`
+    `awaiting_reply` (see the 2026-09-28 rework below for when it clears),
+    `pane.report_awaiting_reply`, the TUI keeps the agent `Done`
     while it is set, Claude integration v11 injects the instruction
     (`HERDR_AWAITING_REPLY_INSTRUCTIONS=0` leaves it out). Tried live with
     Claude Haiku 4.5 (Claude Code 2.1.283): it ran the command without a
@@ -638,6 +716,37 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Done (2026-09-28): its own glyph, `?` in the finished colour in both
     indicator styles, winning over the waiting-on-job mark; the state text
     reads "awaiting reply".
+  - Done (2026-09-28, consulted GPT-6 Astra and DeepSeek): a wrong `?`
+    appeared because Claude reported and then asked with `AskUserQuestion`,
+    which the user answers inside the same turn; the report surfaced when
+    the turn ended ten minutes later. Now the report holds until someone
+    types into the pane (client keys, text, paste; `pane.send_*`,
+    `agent.prompt`, `agent.send_keys`; not clicks, scrolling or focus),
+    entering Blocked drops it, and exit or a session change clears it.
+    `awaiting_reply` is derived as report && idle, so working hides it
+    without using it up and a mid-turn idle flicker no longer loses it. The
+    hook asks for the report only as the last command before a plain-text
+    question, never for `AskUserQuestion`. No time windows: the user
+    rejected them as race-prone.
+- [x] Claude sometimes forgets `herdr agent awaiting-reply` (2026-09-28):
+  Opus ended a long turn (build, install) with "commit after you check;
+  let me know how it looks" and did not report, so no `?` appeared. The
+  instruction came only from `SessionStart`, far back in the context, and
+  the request had no question mark.
+  - Consulted models (GPT-6 Astra, DeepSeek): first re-inject a short
+    reminder every prompt (`UserPromptSubmit`), and define the case
+    operationally: the agent needs the user's answer or decision to
+    continue the work. A Stop hook that blocks the stop when the last
+    message looks like a question would not have caught this miss (no
+    `?`), and a phrase list broad enough to catch it also fires on
+    courtesy offers, costing a whole extra turn.
+  - Done: the `SessionStart` instruction uses that definition with this
+    case as an example; integration v11 adds a `UserPromptSubmit` hook
+    (`herdr-agent-state.sh reminder`) that prints a short reminder, managed
+    apart from the canonical `SessionStart` hook like the permission rule.
+  - Next, only if misses continue: a narrow Stop-hook backstop (terminal
+    `?` or an imperative aimed at the user, and no mark set; ask herdr for
+    the mark rather than parsing the transcript), one block at most.
 - [ ] Awaiting reply for agents other than Claude, the same way as their
   integrations (user, 2026-09-28): each integration that can add session
   context (a session-start hook, an extension, a plugin) injects the same
@@ -784,29 +893,48 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     history; if that grows, move them to an orphan `assets` branch.
   - Risk: seven loops at once are distracting and ignore reduced-motion;
     if it looks busy, use a static frame per bullet linking to its clip.
-- [ ] Close herdr tabs with Cmd+W.
+- [x] Close herdr panes with Cmd+W, as Ghostty closes splits: the last
+  pane closes its tab, the last tab its space.
   - Conflict: Ghostty binds Cmd+W to `close_surface` and handles its own
-    keybinds before the program sees the key, so herdr never receives it.
-    Ghostty has no per-foreground-program binding. `unconsumed:` still runs
-    `close_surface` (it only also forwards the key) and `performable:` is
-    always true for `close_surface`, so neither routes Cmd+W to herdr.
-    Today Cmd+W in a herdr window only closes the herdr client (after
-    Ghostty's confirmation); the server and agents keep running.
-  - Plan (consulted GPT-6 Astra and DeepSeek, 2026-09-28): in Ghostty,
-    `keybind = cmd+w=unbind` as already done for Cmd+1..9 (herdr gets
-    `super+w` via the kitty keyboard protocol), move `close_surface` to
-    `cmd+shift+w`, and in herdr bind `close_tab = "cmd+w"`. Cost: Cmd+W no
-    longer closes plain Ghostty tabs/splits. Fallback if that hurts: leave
-    Cmd+W to Ghostty and bind `close_tab = "cmd+shift+w"`. Don't use
-    `cmd+w=csi:...`: plain shells would get the escape sequence as input.
-  - First verify that Ghostty delivers `super+w` to herdr after the unbind
-    (`herdr` parses it, `format_key_combo` shows `cmd+w`).
-  - Safety: tabs hold running agents; `confirm_close_running` already asks
-    before closing a tab with running work; check it covers Cmd+W and that
-    Cancel is the default. Both models suggested Cmd+W close the focused
-    pane (closing the tab with its last pane), as Ghostty does with
-    splits; decide tab vs pane before binding. Reopening a closed tab can't
-    bring back killed processes, so a confirmation matters more than undo.
+    keybinds before the program sees the key, and has no per-foreground
+    program binding. `unconsumed:` still runs `close_surface` (it only also
+    forwards the key) and `performable:` is always true for it, so neither
+    routes Cmd+W to herdr (consulted GPT-6 Astra and DeepSeek, 2026-09-28).
+  - Set up 2026-09-28: dotfiles Ghostty config has `cmd+w=unbind` (like
+    Cmd+1..9); herdr config has `[keys] close_pane = "cmd+w"`. The
+    `cmd+ctrl+w=close_surface` fallback was dropped on 2026-09-28 (the
+    user's choice), so Ghostty splits have no close key; Cmd+Opt+W still
+    closes a Ghostty tab. Don't use `cmd+w=csi:...`: plain shells would
+    get the escape sequence as input.
+  - Verify after reloading Ghostty: Cmd+W reaches herdr as `super+w` and
+    closes the focused pane; `confirm_close_running` asks before closing a
+    pane or tab with a working agent or job, with Cancel as the default.
+    Reopening can't bring back killed processes, so the confirmation
+    matters more than undo.
+- [ ] Open a herdr tab with Cmd+T (macOS), as Cmd+W closes panes.
+  - Set up 2026-09-28: dotfiles Ghostty config has `cmd+t=unbind`, with no
+    replacement key (the user's choice); herdr config has
+    `[keys] new_tab = ["prefix+c", "cmd+t"]` (prefix+c kept for SSH and
+    terminals without super key reporting). Consulted GPT-6 Astra and
+    DeepSeek: no objections.
+  - Verify after reloading Ghostty: Cmd+T opens a herdr tab in the current
+    space; File > New Tab still opens a Ghostty tab;
+    Cmd+Shift+T is still Ghostty's undo, not a herdr tab.
+  - Linux: Ctrl+Shift+T opens a tab and Ctrl+Shift+W closes a pane, the
+    keys Ghostty uses there; plain Ctrl+T/W stay shell keys (fzf file
+    picker, transpose-chars, backward-kill-word). herdr's kitty keyboard
+    flags keep Ctrl+Shift+T apart from Ctrl+T. The dotfiles config is
+    shared and herdr has no per-OS keys, so herdr takes Ctrl+Shift+T/W on
+    macOS too, and Cmd+T/W on Linux. Ghostty: `ctrl+shift+t/w=unbind`,
+    with no replacement keys (the user's choice). Consulted GPT-6
+    Astra and DeepSeek, 2026-09-28: no blockers. Costs: Ghostty loses
+    Ctrl+Shift+T/W outside herdr (a plain shell may get them as ^T/^W),
+    and programs inside herdr never see them.
+  - Checked in Ghostty v1.3.1 `src/config/Config.zig` (non-Darwin
+    defaults): `ctrl+shift+t=new_tab`; `ctrl+shift+w` is put twice,
+    `close_surface` then `close_tab:this`, and the later put wins, so it
+    closes the tab.
+  - Verify on Linux: plain Ctrl+T/W still reach the shell inside herdr.
 
 ## Deferred
 
@@ -1052,6 +1180,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Deferred: sessions already survive server restarts with 48 snapshots;
     recipes only help on a new machine or a fresh checkout. Build it when I
     notice rebuilding the same layout by hand.
+- [ ] `tests/client_mode.rs` can leak a `herdr server`: on 2026-09-28 a
+  server from `/tmp/herdr-client-test-52393-…` (started 15:43) was still
+  running at 17:30, orphaned (ppid 1) with its `sh` child, while the test
+  process (52393) and the bridge in `bridge-pid` were gone; the test dir was
+  left in `/tmp` too. `SpawnedHerdr::drop` kills only the client child, so a
+  server the client spawned, or any process after an interrupted run (Drop
+  does not run on SIGKILL), survives. Fix: tear down the server too (kill
+  the process group or read the runtime dir's server pid), and have the next
+  test run reap stale `/tmp/herdr-client-test-*` whose owner pid is dead.
 - [ ] Explain the consult/ask naming mismatch: the plugin (`plugins/consult`,
   `local.consult`) and the stats skill (`consult-stats`, `consult.py`) say
   "consult", but the scripts inside the skills say "ask" (`ask_gpt.sh`,
