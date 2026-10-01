@@ -40,6 +40,40 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [ ] A silent job looks the same as a stuck one (user, 2026-10-01, screenshot of
+  the job "rescue builder VM": the pane shows only `$ ./builder-vm.sh` and a
+  cursor, the running icon turns; "is anything executing here?"). Checked: yes.
+  `herdr-job` (pid 10823) runs `./builder-vm.sh`, which started a
+  `qemu-system-aarch64` (pid 10862, 1h48m old, 60% CPU, 138 CPU-minutes,
+  `-display none`), so the pane has no output by design and the icon is
+  honest, but nothing in herdr says so. Consulted DeepSeek, Opus and GPT; they
+  agree on the design:
+  - Honest evidence only, never a progress or health verdict: elapsed time;
+    time since the last output byte (`quiet 1h48m`, from job start before any
+    output); the busiest child by name (`qemu-system-aarch64`); CPU as the
+    delta of the process tree's CPU time over a window (100% is one core),
+    labelled "CPU", never "progress" (a hung loop burns CPU, a healthy
+    network wait uses none); process state (stopped or zombie is a real
+    signal). Heartbeats only if the command opts in.
+  - Where: the job footer, `running 1h48m · quiet 1h48m · qemu 60% CPU`; the
+    tab-line and job-square tooltips with a few processes; `herdr-job list
+    --details` for pid, start, tree, CPU window, sample age. The tab bar
+    stays as is.
+  - Icon: after about 2-5 minutes without output the spinner becomes a static
+    ring labelled `quiet`, still the running colour; it turns again on the first
+    output byte; no "hung" verdict (Opus adds `quiet · idle` after 5 minutes at
+    about 0% CPU).
+  - Where it runs: the server, or herdr-job itself, samples only running jobs
+    (every 5-10 s, adaptive; macOS `proc_listchildpids`/`proc_pidinfo`, Linux
+    `/proc`; the tree capped at 64 processes; a process is a pid plus its start
+    time against pid reuse) and pushes changed rounded values as events; the
+    client reads the cache and never polls; per-pane rendering allocates
+    nothing.
+  - Tests: a silent `sleep 1000`, a busy loop, an idle wait, a QEMU-like child
+    with no display, output resuming, exit states, `kill -STOP`, pid reuse,
+    stale samples, 50 jobs within the budget, an idle client sending nothing.
+  - Done: nothing yet.
+
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").
