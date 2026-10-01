@@ -2309,28 +2309,25 @@ fn one_wheel_event_scrolls_the_spaces_list_by_one_row() {
 }
 
 #[test]
-fn a_space_name_row_is_a_band_and_the_focused_active_tab_has_a_bar() {
+fn a_space_name_row_starts_with_a_bar_and_the_focused_active_tab_has_one() {
     let mut state = state_with_tabs(true);
     let frame = state.compose(106, 30).unwrap();
     let palette = state.config.palette.clone();
     let name_row = state.hits.workspaces[0].rect;
     let cell = |x: u16, y: u16| &frame.cells[y as usize * frame.width as usize + x as usize];
-    let band = cell(name_row.x + 12, name_row.y).bg;
-    let panel = crate::protocol::color_to_u32(palette.panel_bg);
-    assert_ne!(band, panel, "the focused space's name row is a band");
-    // The focused space's band is tinted with the accent (a fifth on a
-    // light background, a quarter on a dark one).
-    let tints = [5, 4].map(|total| {
-        crate::protocol::color_to_u32(
-            crate::client::shell::render::tabs::blend(palette.accent, palette.panel_bg, 1, total)
-                .unwrap_or(palette.accent),
-        )
-    });
-    assert!(tints.contains(&band), "{band} not in {tints:?}");
-    // The branch row under the name stays on the panel background.
-    let line = state.hits.space_tabs[0].0;
-    assert_eq!(cell(line.x + 20, line.y).symbol, " ");
+    // The focused space's name row has the accent bar in its first column
+    // and no fill.
+    let bar = cell(name_row.x, name_row.y);
+    assert_eq!(bar.symbol, "▍");
+    assert_eq!(bar.fg, crate::protocol::color_to_u32(palette.accent));
+    // No fill: the name row's background is the panel's, like the cell next
+    // to the bar.
+    assert_eq!(
+        cell(name_row.x + 12, name_row.y).bg,
+        cell(name_row.x + 1, name_row.y).bg
+    );
     // The active tab's line starts with the accent bar in its fill.
+    let line = state.hits.space_tabs[0].0;
     let bar = frame_rows(&frame)[line.y as usize].contains('▌');
     assert!(bar, "{:?}", frame_rows(&frame)[line.y as usize]);
 }

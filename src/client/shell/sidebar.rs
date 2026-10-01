@@ -1449,12 +1449,12 @@ pub(in crate::client::shell) fn render_workspace_rows(
         let highlighted = focused || grabbed.is_some();
         let grabbed = grabbed.map(|(name, _)| name);
         let workspace_style = Style::default()
-            .fg(grabbed.unwrap_or(if highlighted {
+            .fg(grabbed.unwrap_or(if highlighted || vertical_tabs {
                 palette.text
             } else {
                 palette.subtext0
             }))
-            .add_modifier(if highlighted {
+            .add_modifier(if highlighted || vertical_tabs {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
@@ -1489,27 +1489,18 @@ pub(in crate::client::shell) fn render_workspace_rows(
         );
     }
 
-    // With vertical tabs the space's name row is a band, so a space is seen
-    // where it starts: a neutral grey, tinted with the accent for the
-    // focused space. The branch row under it stays on the panel background.
-    if vertical_tabs && grabbed.is_none() && !selected && area.height > 0 {
-        let dark = matches!(palette.panel_bg, ratatui::style::Color::Rgb(r, g, b)
-            if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) < 128_000);
-        let band = if focused {
-            super::tabs::blend(
-                palette.accent,
-                palette.panel_bg,
-                1,
-                if dark { 4 } else { 5 },
-            )
+    // With vertical tabs a space starts where its name row has a bar in the
+    // first column: the accent for the focused space, a muted tone for the
+    // others. The name is bold. No fill, so it cannot be mistaken for a tab
+    // line (the tab lines are the filled ones). A nested worktree space has
+    // its tree connector instead.
+    if vertical_tabs && grabbed.is_none() && !entry.indented && area.height > 0 {
+        let color = if focused {
+            palette.accent
         } else {
-            super::tabs::blend(palette.text, palette.panel_bg, 1, if dark { 6 } else { 5 })
+            super::tabs::blend(palette.text, palette.panel_bg, 1, 2).unwrap_or(palette.overlay1)
         };
-        if let Some(band) = band {
-            for x in area.x..area.right() {
-                buffer[(x, area.y)].set_bg(band);
-            }
-        }
+        put_text(buffer, area.x, area.y, 1, "▍", Style::default().fg(color));
     }
     let drag_background = grabbed.and_then(|(_, background)| background);
     let background = if drag_background.is_some() {
