@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# Link the consult skills into an agent's skill directory (default ~/.claude/skills), so they are
-# updated with this checkout. Safe to re-run: existing links to these skills are left alone,
-# anything else under the same name is reported and kept.
-# Usage: install-skills [DIR]
+# Link the consult skills into the agents' skill directories, so they are updated with this checkout:
+# ~/.claude/skills (Claude Code) and ~/.pi/agent/skills (pi). Safe to re-run: existing links to these skills are
+# left alone, anything else under the same name is reported and kept.
+# All skills go into each directory together: the scripts find consult-stats as their sibling.
+# pi keeps the first skill of a name it finds and only warns, so a copy of one of these skills in another
+# directory pi reads (~/.agents/skills) would shadow the linked one; that is reported as an error too.
+# Usage: install-skills [DIR...]
 set -euo pipefail
 src="$(cd "$(dirname "$(realpath "$0")")/skills" && pwd)"
-dest=${1:-$HOME/.claude/skills}
-mkdir -p "$dest"
+if [ $# -gt 0 ]; then dests=("$@"); else dests=("$HOME/.claude/skills" "$HOME/.pi/agent/skills"); fi
+pi_also_reads=("$HOME/.agents/skills")
 rc=0
-for skill in "$src"/*/; do
-  name=$(basename "$skill"); skill=${skill%/}; target="$dest/$name"
-  if [ -L "$target" ] && [ "$(realpath "$target")" = "$(realpath "$skill")" ]; then
-    echo "ok       $target"
-  elif [ -e "$target" ] || [ -L "$target" ]; then
-    echo "skipped  $target exists and is not a link to $skill; move it away and re-run" >&2; rc=1
-  else
-    ln -s "$skill" "$target"; echo "linked   $target -> $skill"
-  fi
+for dest in "${dests[@]}"; do
+  mkdir -p "$dest"
+  for skill in "$src"/*/; do
+    name=$(basename "$skill"); skill=${skill%/}; target="$dest/$name"
+    if [ -L "$target" ] && [ "$(realpath "$target")" = "$(realpath "$skill")" ]; then
+      echo "ok       $target"
+    elif [ -e "$target" ] || [ -L "$target" ]; then
+      echo "skipped  $target exists and is not a link to $skill; move it away and re-run" >&2; rc=1
+    else
+      ln -s "$skill" "$target"; echo "linked   $target -> $skill"
+    fi
+  done
+done
+for other in "${pi_also_reads[@]}"; do
+  for skill in "$src"/*/; do
+    name=$(basename "$skill"); shadow="$other/$name"
+    if { [ -e "$shadow" ] || [ -L "$shadow" ]; } && [ "$(realpath "$shadow" 2>/dev/null)" != "$(realpath "${skill%/}")" ]; then
+      echo "conflict $shadow: pi also reads $other and may use it instead of the linked $name; move it away" >&2; rc=1
+    fi
+  done
 done
 exit $rc

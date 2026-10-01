@@ -165,7 +165,7 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("spaces"));
+    assert!(text.contains("cust  name"));
     assert!(text.contains("client-shell"));
     assert!(text.contains("main"));
     assert!(text.contains("LIVE"));
@@ -961,6 +961,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
             terminal_title_stripped: None,
             agent_status: AgentStatus::Idle,
             state_change_seq: index,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,

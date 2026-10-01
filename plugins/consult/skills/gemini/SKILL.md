@@ -5,6 +5,8 @@ description: Consult Google Gemini (Gemini 3.8 Flash) via Antigravity CLI (agy) 
 
 # Consulting Gemini
 
+Commands below use `$D` for this skill's directory, the one holding this `SKILL.md` (Claude Code shows it as "Base directory for this skill", pi lists the skill's location); set it first, e.g. `D=~/.claude/skills/gemini` or `D=~/.pi/agent/skills/gemini`. `consult-stats` is always installed next to it, as `"$D/../consult-stats"`.
+
 Goes through Antigravity CLI (`agy -p`, headless), billed to the user's Google AI subscription — not the API.
 Uses agy's own login (`~/.gemini/antigravity-cli/`). Gemini CLI (`gemini`) no longer serves AI Pro/Ultra accounts; don't use it.
 
@@ -13,11 +15,11 @@ Only **gemini-3.8-flash-{high,medium,low}** is used (check with `agy models`; wh
 quota, had only `view_file` in agy, and scored lowest in consult-stats — the script refuses `-m pro`.
 
 ```bash
-~/.claude/skills/gemini/ask_gemini.sh "question"                   # gemini-3.8-flash-high (default)
-~/.claude/skills/gemini/ask_gemini.sh -e low "q"                   # effort: low|medium|high
-~/.claude/skills/gemini/ask_gemini.sh -f src/foo.py "Find bugs in this file"
-git diff | ~/.claude/skills/gemini/ask_gemini.sh -f - "Review this diff"   # stdin only via -f -
-~/.claude/skills/gemini/ask_gemini.sh -r "Review ... (see Code review below)"  # run in the current git repo
+"$D"/ask_gemini.sh "question"                   # gemini-3.8-flash-high (default)
+"$D"/ask_gemini.sh -e low "q"                   # effort: low|medium|high
+"$D"/ask_gemini.sh -f src/foo.py "Find bugs in this file"
+git diff | "$D"/ask_gemini.sh -f - "Review this diff"   # stdin only via -f -
+"$D"/ask_gemini.sh -r "Review ... (see Code review below)"  # run in the current git repo
 ```
 
 Options: `-m flash|<full id>`, `-e low|medium|high`, `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GEMINI_MODEL`.
@@ -52,10 +54,10 @@ Guidelines:
   and don't retry or swap models; in a multi-model round go on with the others and tell the user Gemini was
   skipped (and until when). The same for any other quota/usage-limit error.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
-  `~/.claude/skills/consult-stats/consult.py rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
+  `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- Every consultation is a round: start the command with `export CONSULT_ROUND=$(~/.claude/skills/consult-stats/consult.py new-round)`
+- Every consultation is a round: start the command with `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)`
   and launch all models for that question in the same Bash call, so their calls share the round id
   (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).
 
@@ -64,7 +66,7 @@ Guidelines:
 For reviewing changes in a repo use `-r` plus the diff on stdin, so the reviewer can check callers and tests itself:
 
 ```bash
-git diff <base>...HEAD | ~/.claude/skills/gemini/ask_gemini.sh -r -f - "$(cat <<'EOF'
+git diff <base>...HEAD | "$D"/ask_gemini.sh -r -f - "$(cat <<'EOF'
 Independently review this change (diff below) for actionable correctness, security and regression bugs.
 Intent / acceptance criteria: ...
 Constraints: ...

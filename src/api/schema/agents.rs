@@ -218,6 +218,10 @@ pub struct AgentInfo {
     pub interactive_ready: bool,
     #[serde(default)]
     pub state_change_seq: u64,
+    /// The agent's last turn ended by asking the user something (reported through
+    /// `pane.report_awaiting_reply`), and it has not started working again since.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub awaiting_reply: bool,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,

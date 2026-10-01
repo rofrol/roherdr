@@ -21,14 +21,25 @@ def get_key():
     except (OSError, ValueError, KeyError) as e:
         sys.exit(f"No deepseek key in {AUTH_FILE}: {e!r}")
 
-def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None):
+def model_version(model, base_url):
+    """The model an alias serves right now, e.g. deepseek-flash -> DeepSeek-V4.1-Flash. Streamed chunks only echo
+    the alias, so ask /models; empty when that fails (the call is still logged, under its alias)."""
+    req = urllib.request.Request(base_url + "/models", headers={"Authorization": f"Bearer {get_key()}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            models = json.load(r).get("data") or []
+    except (OSError, ValueError):
+        return ""
+    return next((m.get("name") or "" for m in models if m.get("id") == model), "")
+
+def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, version="", fingerprint=""):
     """Record the call for consult-stats; never let logging fail the consultation."""
-    args = []
+    args = [*(["--model-version", version] if version else []), *(["--fingerprint", fingerprint] if fingerprint else [])]
     if usage:  # normalized: input includes cache hits, output includes reasoning
         norm = {"input": usage.get("prompt_tokens"), "cached": usage.get("prompt_cache_hit_tokens"),
                 "output": usage.get("completion_tokens"),
                 "reasoning": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")}
-        args = ["--usage", json.dumps(norm), "--usage-raw", json.dumps(usage)]
+        args += ["--usage", json.dumps(norm), "--usage-raw", json.dumps(usage)]
     try:
         subprocess.run([str(CONSULT), "log", "--skill", "deepseek", "--model", model, "--status", status,
                         "--seconds", str(int(seconds)), "--prompt-chars", str(prompt_chars),
@@ -78,11 +89,12 @@ def main():
     if not prompt.strip():
         sys.exit("Empty prompt")
 
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     body = {"model": a.model, "stream": True, "stream_options": {"include_usage": True}, "messages": [
         {"role": "system", "content": a.system},
         {"role": "user", "content": prompt}]}
     req = urllib.request.Request(
-        os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com") + "/chat/completions",
+        base_url + "/chat/completions",
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {get_key()}", "Content-Type": "application/json",
                  "Accept": "text/event-stream"})
@@ -93,7 +105,7 @@ def main():
     signal.alarm(a.timeout)  # hard cap, fires even while blocked in a read
 
     start = time.monotonic()
-    reasoning, content, finish, usage = [], [], None, None
+    reasoning, content, finish, usage, fingerprint = [], [], None, None, ""
     live = live_output()
     try:
         with urllib.request.urlopen(req, timeout=min(120, a.timeout)) as r:
@@ -105,6 +117,7 @@ def main():
                 if data == "[DONE]":
                     break
                 chunk = json.loads(data)
+                fingerprint = chunk.get("system_fingerprint") or fingerprint
                 usage = chunk.get("usage") or usage  # the last chunk carries it, with empty choices
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
@@ -119,7 +132,7 @@ def main():
     except Deadline:
         finish = "deadline"
     except urllib.error.HTTPError as e:
-        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0)
+        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, version=model_version(a.model, base_url))
         sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')}")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         finish = f"error: {e}"
@@ -131,7 +144,7 @@ def main():
         live.write("\n\n--- answer ---\n")
         live.close()
     log_call(a.model, "ok" if finish in ("stop", None) else "error", time.monotonic() - start, len(prompt), len(answer),
-             usage)
+             usage, model_version(a.model, base_url), fingerprint)
     if a.show_reasoning and reasoning:
         print("=== reasoning ===\n" + "".join(reasoning) + "\n=== answer ===")
     print(answer)

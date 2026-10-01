@@ -163,6 +163,9 @@ impl EndpointAgentPresentation {
 
     fn projected_status(&self, agent: &ClientShellAgent) -> AgentStatus {
         match agent.agent_status {
+            // An agent that ended its turn with a question stays marked until it works
+            // again, however long its pane has been on screen.
+            AgentStatus::Idle | AgentStatus::Done if agent.awaiting_reply => AgentStatus::Done,
             AgentStatus::Idle | AgentStatus::Done => {
                 if self.seen(agent) {
                     AgentStatus::Idle
@@ -220,6 +223,7 @@ mod tests {
             terminal_title_stripped: None,
             agent_status: status,
             state_change_seq: sequence,
+            awaiting_reply: false,
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
@@ -474,5 +478,17 @@ mod tests {
         assert!(!presentation.acknowledge_surface(&mut completed, &surface(1), Some(true)));
         assert!(!presentation.acknowledge_surface(&mut completed, &surface(2), Some(false)));
         assert_eq!(completed.agents[0].agent_status, AgentStatus::Done);
+    }
+
+    #[test]
+    fn awaiting_reply_stays_done_after_being_seen() {
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut snapshot = snapshot(AgentStatus::Idle, 4, 1);
+        snapshot.agents[0].awaiting_reply = true;
+
+        presentation.project_snapshot(&mut snapshot);
+
+        assert!(presentation.seen(&snapshot.agents[0]));
+        assert_eq!(snapshot.agents[0].agent_status, AgentStatus::Done);
     }
 }

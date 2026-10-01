@@ -4,82 +4,6 @@
 
 Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
 
-- [x] Bug: a herdr-job child tab keeps ⧖ running after the job finished. The
-  try-roguix job "Publish Roguix packages and channel" wrote exit 0 at 18:14,
-  but its tab stayed running; the final `herdr tab status ... succeeded` is a
-  single call with `check=False`, and the server was being live-handed-off
-  repeatedly at that time.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): the wrapper
-    already writes `exit` first; retry the status call with bounded backoff
-    until it succeeds, and reconcile afterwards: `herdr-job` (e.g. on `list`,
-    `wait` or a sweep) re-applies succeeded/failed to tabs still marked
-    running whose job has an `exit` file. Never infer success merely from a
-    missing process. Key updates by job id so a stale one cannot win.
-  - Done 2026-09-26: `_exec` retries the final status for about a minute
-    (a timeout no longer crashes it), and `run`, `wait`, `list`, `clean` and
-    the `tab.closed` hook reconcile tabs still marked running. Tab ids are
-    reused, so the newest job of a tab decides, and only while the tab keeps
-    its label. No sweep on server start: herdr has no such plugin event.
-- [x] Confirm before closing a tab or pane with running work. Closing a
-  single job child tab (or a pane) now kills its job with no question; only a
-  parent tab with children and the last tab of a workspace ask first.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): ask when
-    the close would kill a live foreground process (the server already tracks
-    it, see `foreground_program_name` in `src/pane.rs`) or the tab is marked
-    `running`; tab status alone misses unwrapped builds and agents mid-turn,
-    and a stale ⧖ (see the job status bug above) makes the dialog lie. Word it
-    "marked running", not "closing stops it", unless liveness is verified.
-  - One shared close-impact check for every path: mouse, keybind, close pane
-    (also a non-last pane), close tab, parent tab and its subtree, workspace
-    and worktree group, quit. One dialog per operation listing the running
-    tabs it would kill (workspace close counts only panes now), Cancel by
-    default. Re-check the impact when confirming; the snapshot can be stale.
-    Detach does not ask.
-  - Ideally the server computes the impact. API closes stay unconfirmed, but
-    consider a guard for agents (reject closing running work without
-    `force`), since an agent can close the wrong tab.
-  - Its own setting beside `confirm_close`, so turning off the other
-    confirmations keeps this one. Undo or "keep the job running" only once
-    jobs outlive their tab; a delayed kill is not a real undo.
-  - Done 2026-09-26, client-side for now: `ui.confirm_close_running` asks
-    before a close that stops a tab marked running, a working or blocked
-    agent, or a program the shell started (like Ghostty; idle agents and
-    finished job tabs close at once). The server sends each pane's
-    `running_program`. Still open: the API `force` guard and computing the
-    impact on the server.
-- [x] Clicking a top-level tab that has child tabs should open the most
-  recently active tab of that group, not the first one.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): remember
-    the last selection per group, the parent itself included, in the per-client
-    location state (one client's navigation must not move another's). Fall back
-    to the parent when there is no history or the remembered child was closed.
-    Keep a way to select the parent directly (its entry in the second row).
-  - Done 2026-09-26: the client remembers each group's last focused tab per
-    endpoint; a main-row click, the tab number keys and the main-row wheel
-    return there. The parent's entry in the second row selects the parent.
-- [x] The consult stats should show the coordinator's actual model and
-  reasoning effort (now Opus 5.5 at `medium`; self entries are logged just as
-  `claude`), and add Opus at a lower effort as a participant to compare.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): snapshot
-    the resolved model id, effort and its source per self entry
-    (`CLAUDE_EFFORT` is set by Claude Code, but it is a hint); record
-    `unknown`, never a guessed default, and the CLI version.
-  - The self entry is not a fair peer (full context, repo access, rates
-    itself): show it separately as a baseline. To measure effort, pair
-    `claude -p --model <same id> --effort low` with a fresh-context call at
-    the coordinator's effort, same prompt; "fresh" must also exclude project
-    instructions and tools. It uses the same subscription, so it can starve
-    the coordinator: log failures, never drop them.
-  - Pilot 10 rounds, conclude after about 20-30 paired rounds. Rate blind
-    where practical (same-family bias), and "unique" only relative to that
-    round's roster.
-  - Record the metadata now; the paired effort experiment is deferred (its
-    own research project, and it uses the subscription quota).
-  - Done 2026-09-26 (metadata only): `consult.py self` records the model id
-    (`--model`, else `unknown`), the effort (`--effort`, else
-    `$CLAUDE_EFFORT`, else `unknown`) with its source, and the Claude Code
-    version; the coordinator table groups by `model@effort`. The effort
-    experiment moved to Deferred.
 - [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
   to the right of the "spaces" header (like the agents panel's
   grouped/priority). Grouped: `<space> <git branch> <git status>`, then per
@@ -160,6 +84,77 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     herdr-job counts from the `$jobs` token; clicking an agent or job line
     focuses that agent (local endpoint only). Still to do in stage 1: the
     new state circle shapes, unowned jobs, the chevron.
+  - 2026-09-28: with `spaces.agents` the space row drops its own aggregate
+    state icon (redundant next to the agents' icons), for every space, also
+    those without agents, so the name does not shift as agents come and go;
+    the name starts where the icon was. Consulted (GPT-6 Astra, DeepSeek):
+    Astra proposed this; DeepSeek proposed keeping the icon on spaces without
+    visible agents and reserving the column for the chevron. When the
+    chevron lands it takes the name's place in front of it.
+  - 2026-09-28: the job line under an agent counts the tabs nested under its
+    tab by their status (`⧖ 1 !1 ✓2`), not herdr-job's `$jobs` pane token,
+    which expires and goes with its pane; a tab with several agents shows
+    them under the first. The space's `tab_jobs` leaves those tabs out, so
+    each job shows in one place and the space row keeps only jobs without a
+    listed agent (its pane closed, filtered out, a status set by hand).
+    Consulted (GPT-6 Astra, DeepSeek) on dropping `tab_jobs` with agents
+    listed: both said no while the two counts come from different sources
+    (a failed job showed only as the space's `!1`); hide it only for jobs
+    shown under an agent, matched by tab id, never by subtracting counts.
+  - 2026-09-28: the remaining jobs (no listed agent) moved from the space row
+    to an `other jobs ⧖ 1 !1` line below the agents: they matter less than
+    the agents' own. Consulted (GPT-6 Astra, DeepSeek), both agreed on:
+    `other jobs`, not `unowned` (the owner may just not be listed); label at
+    the agents' icon column, dimmed, counts coloured; running and failed
+    only; a click focuses the first failed tab, else the first running; a
+    space without listed agents keeps the counts on its row. When the
+    chevron collapses a space's agents, its counts go back to the space row.
+  - 2026-09-28: tasks fall back to the agent's terminal title (was always
+    `claude · no task`). Decided by me instead of the header toggle above:
+    the "spaces" title is now `cust  name ↑  prio ↓`, sorting the spaces
+    themselves (cust = manual order, the only mode that drags; prio = most
+    urgent agent in the space); clicking the active button flips its
+    direction; a client preference, keyboard navigation follows it; the
+    multi-machine sidebar keeps the manual order. Consulted (GPT-6 Astra,
+    DeepSeek): both preferred keeping "spaces" with a dropdown and an agent
+    list for priority; overruled. `ui.sidebar.show_agents_panel = false`
+    hides the old panel (kept in code for cheap rebases). Still open: the
+    attention counts (`◉1 ●1`) have no place in the header now; prio does
+    not freeze the order while the pointer is over the list; the
+    multi-machine sidebar.
+  - Missing (screenshot 2026-09-28): a sort button for the agents listed
+    under each space, like the one for spaces. Their order still comes from
+    the hidden agents panel's `agent_panel_sort` (config only, no UI).
+    Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): Astra proposed one global
+    second row under the spaces header, `agents  tab  prio`, shown only with
+    `spaces.agents`; DeepSeek proposed no new control, with agents following
+    the space sort key. Decided: the second row (it is what I asked for, and
+    urgent spaces first with agents in tab order is a valid combination).
+    Two modes, no direction toggle: `tab` (tab bar order; never reorders the
+    tabs) and `prio` (blocked > done-unseen > working > idle, ties by tab
+    order, not by the latest state change, which reshuffles on every
+    change). Freeze the order while the pointer is over the list and apply
+    it on leave; take the clicked agent from mouse-down, so a re-sort cannot
+    make the release hit another row; keep the selection by pane id. A
+    client preference like the spaces sort; `agent_panel_sort` only seeds it
+    when no preference is saved.
+  - Colour the agent rows under a space like the tabs: blue for the agent
+    selected in its space, grey for the others. Today only the globally
+    focused agent's task is `text`, the rest `subtext0`, barely different.
+    Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): both: selected means the
+    focused pane of the space's active tab (other agents split into that tab
+    stay grey; none is blue when that pane runs no agent); blue is accent
+    foreground, bold, on the task text only, grey is `overlay1`; no accent
+    background (it fights the grey selected-space row and hides the state
+    colours in ~28 columns); the state icon keeps its colour and the jobs
+    line stays secondary. They differ on background spaces: Astra shows
+    their selected agent blue too, which matches the request ("selected in
+    its space") but needs a new optional per-agent flag from the server
+    (`focused` is global; generation-1 codecs are frozen, so a compatible
+    extension, falling back to `focused` on older servers); DeepSeek shows
+    blue only in the current space, derivable from `focused` with no
+    protocol change. Decided: every space shows its selected agent blue
+    (Astra's), not only the current one.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -203,6 +198,60 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Keyboard reorder (move space up/down, whole family); none exists now.
   - The move is sent by ids (`move X before Y`); if another client changed
     the order or the anchor vanished, cancel with a notice.
+- [ ] The space's name line gives no feedback that it can be dragged
+  (2026-09-28). Now: pressing it changes nothing until the pointer moves;
+  in prio/name sort, on a remote endpoint or on a linked worktree the drag
+  is silently ignored; when the pointer leaves the list (header, "new space"
+  button, another endpoint's rows) the target becomes None and every drag
+  visual disappears although the drag is still active (release there
+  cancels).
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), in this order:
+  - Keep the drag visible outside the list: separate "drag active" from
+    "valid drop target"; keep the accent bar on the source (the order may
+    snap back) and put `release cancels · Esc` in the header. An active
+    drag that looks idle reads as "the drag died". Astra ranked this first.
+  - Explain refused drags in the header slot instead of doing nothing:
+    `sort by cust to reorder`, `worktree moves with its space`, and a
+    reason for remote spaces. Only after the pointer passes the threshold
+    (DeepSeek wanted it on press; Astra: not on a plain click). Never
+    switch the sort automatically.
+  - Press feedback on a draggable name line only: a subtle pressed look
+    (underline or the dim bar), not the full lifted look, which stays for
+    a real drag past the threshold; releasing in place still selects. Not
+    a raised background alone: invisible in 16-colour and `NO_COLOR`
+    themes; glyph and position, never colour alone.
+  - A grip glyph on the name line in cust sort, right-aligned (column 0
+    belongs to the `▌` bar), a simple tested glyph rather than `⠿`; the
+    name truncates, it never shifts. Hover works here (herdr enables mouse
+    mode 1003), but DeepSeek suggests a persistent dim grip instead of
+    hover-only, since tmux and some terminals drop plain motion. The grip
+    must match the hit test: only the name line starts a drag.
+  - Last, optional: OSC 22 pointer shapes (grab / grabbing /
+    not-allowed) in terminals that support it; it must be reset on every
+    exit path (drop, Esc, release outside, focus loss, quit, panic), and a
+    stuck cursor is worse than none.
+  - Done 2026-09-28 in the local sidebar: outside the list the block keeps
+    its accent bar and the header says `release cancels · Esc`; a refused
+    drag says `sort by cust to reorder` or `moves with its parent` (the
+    remote reason exists but the multi-endpoint sidebar does not show it
+    yet); a press on a draggable space draws a dim bar before any move; a
+    grip `⋮` shows in the first column of the hovered draggable space.
+    Hover-only after all: a grip on every row is noise, and the first
+    column costs no width. Still open: OSC 22, and all of this in the
+    multi-endpoint sidebar.
+  - Changed the same day at my request: no bars. The grip `⋮` sits at the
+    name line's right edge (the spacer column left of the group chevron):
+    grey on hover; on press the grip and the name turn accent; while
+    dragged, mauve and bold, also outside the list. Consulted models (GPT-6
+    Astra, DeepSeek): both read "its colour" as the grip's, and both said
+    to recolour the name text too, since a one-cell cue is lost when the
+    list reorders live; never a new row background (selection and focus
+    own those). DeepSeek warned that `⋮▾` side by side invites toggling
+    the group by mistake; the chevron's hit cell stays separate, so watch
+    for that.
+    Then, also at my request: one colour, accent blue, while pressed and
+    while dragged (mauve read as a git branch; a darker grey and a darker
+    blue were tried and dropped).
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
@@ -298,66 +347,362 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `MOONSHOT_API_KEY` or `kimi` in the auth file) and `usage.kimi_host`
     (`api.moonshot.cn` bills in CNY). Endpoint checked (401 without a key);
     not tried with a real key, since there is none on this Mac.
-- [ ] Agent status shows a green/teal circle while the agent waits on its
-  herdr-job: its turn ended, so herdr detects it as idle/done, and it reads
-  as "agent finished". Use a different symbol for "waiting on a running job".
-  - Consulted models (GPT-6 Astra, GPT-6 Luna, DeepSeek, 2026-09-26; Gemini
-    hit its weekly quota): all three recommend `◌` (dotted circle), in both
-    the Dots and Symbols styles; Astra and Luna in yellow ("still in
-    progress"), DeepSeek in blue, which no other state uses. `◔` is too close
-    to `◐` (working); `⌛` is double-width in many fonts.
-  - Decided 2026-09-26, after a second round (GPT-6 Astra, GPT-6 Luna,
-    DeepSeek): a filled `●` in mauve in the Dots style, `◷` in mauve in the
-    Symbols style. A filled dot is easier to spot in a long list than `◌`,
-    and yellow already means working. Not blue (Luna's and DeepSeek's pick):
-    blue is the accent, it means finished in the mobile view and in
-    notifications, and it is close to teal (done). Check mauve's contrast on
-    light themes. Yellow `◌` is the fallback.
-  - A TUI presentation override, not a new `AgentStatus`: apply it only when
-    the detected status is idle or done and the pane has running jobs; working
-    and blocked still win. A running job does not prove the agent waits on
-    it, so do not add a `Waiting` status to the frozen API enum.
-  - Derive it from a structured server fact (e.g. a running-jobs count in pane
-    metadata), not by parsing the rendered `$jobs` token text.
-- [ ] Make the consult skills (`plugins/consult`: gpt, gemini, deepseek,
-  consult-stats) work in pi too, not only in Claude Code. pi 0.87.1
-  implements the Agent Skills spec and reads `~/.pi/agent/skills/` (also
-  `~/.agents/skills/`), but every `SKILL.md` hardcodes
-  `~/.claude/skills/...` paths, and `consult.py self` logs the coordinator as
-  `claude` by default. The scripts already find their siblings through
-  `realpath "$0"`, so only the instructions and the logging need changes.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-26; Gemini hit its
-    weekly quota): `install-skills` links into both `~/.claude/skills` and
-    `~/.pi/agent/skills`, not `~/.agents/skills` (not verified that Claude
-    Code reads it). Refuse when the same skill name is already visible to pi
-    from another directory: pi keeps the first one found and only warns, so
-    a stale copy would shadow updates.
-  - `SKILL.md` commands use the skill's own directory (pi tells the model
-    where a skill lives), with quoting; `consult-stats` stays a sibling of
-    the others, as an installer invariant. No `~/.local/bin` wrappers.
-  - Log the coordinator's agent (`claude-code`, `pi`) and its model id
-    separately, `unknown` when not known, never a guessed default. Spike
-    first: does pi expose its model to the bash tool (env, session file)?
-    Otherwise the skill tells the coordinator to pass `--model`. Overlaps
-    the coordinator-metadata item above; do them together.
-  - Descriptions must route: pi's own `oracle` skill (pi-fabric reviewer)
-    also reads as "second opinion"; reword the descriptions so the model can
-    tell them apart, drop "Claude" from them. Keep `oracle` separate for now.
-  - Out of scope: the Claude-only `herdr-bg-badge` hook and
-    `herdr-peer-token` (`~/.claude/sessions`).
-  - Verify in a live pi session: every skill, a round with ratings and
-    `self`, an unrelated cwd, inside and outside herdr; then check Claude
-    Code still works.
+  - Noted 2026-09-28: the footer still has no row for an OpenAI API key
+    (platform, pay-as-you-go); only Codex's ChatGPT limits show.
+- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
+  ends with new commits, list them as "to review" until I acknowledge them.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
+    popup, no new core state. Uncommitted changes in the shared checkout
+    cannot be attributed to one agent (neither HEAD nor file mtimes tell who
+    changed what), so the unit is the commit.
+  - At turn start record the session id and HEAD; at turn end find new
+    commits carrying `Claude-Session: <id>`. Enqueue only when there are
+    commits, not on every finished turn. Viewing the pane clears "done" as
+    today; only an explicit acknowledgement clears "to review".
+  - Show each commit's own patch (delta or lazygit), never
+    `git diff first^..last`: with other agents committing to master the range
+    includes their commits. Leftover uncommitted files get one line:
+    "N uncommitted (unattributed)".
+  - Sidebar token like `review 3c / 5f`; on the phone one item at a time
+    with next/previous, no side-by-side diffs.
+  - Open questions: the trailer is per session, not per turn, and only
+    Claude adds it; Codex and pi need an equivalent (or hook-reported
+    commits). Prototype a plain commit list first: maybe lazygit in a popup
+    is already enough.
+
+- [ ] Run the Windows checks for fork commits. Nobody does today: the
+  Windows SDK for `just windows-lint` is not set up on the Mac (no `xwin`),
+  so `just check` fails there and agents run narrower checks, and the fork
+  has never had a GitHub Actions run although `ci.yml` has a
+  `windows-latest` job (`just check` in pwsh plus the ConPTY smoke test).
+  - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
+    (the user accepts Microsoft's SDK license), and prove a full
+    `just check` passes before the fork section of CLAUDE.md requires it.
+    Cross-clippy only catches compile and lint errors in `cfg(windows)`
+    code; it runs no Windows tests.
+  - CI: activate Actions in the fork's Actions tab and verify that a push
+    to `master` really starts a CI run. Native Windows CI is the only
+    runtime check (tests, ConPTY, paths), and shared TUI code can break
+    there without touching `cfg` code.
+  - Before activating, disable the workflows that would fail or misfire on
+    the fork with `gh workflow disable` (UI state, so no rebase conflicts
+    with upstream): `label-next-release-issues.yml` and
+    `website-deploy.yml` have no `github.repository == 'herdrdev/herdr'`
+    gate and need upstream secrets. `preview`, `release` and `pr-gate` are
+    gated; the rest are PR- or path-triggered. After each upstream rebase,
+    check for new workflows.
+  - Ownership: the agent that pushes a commit watches that SHA's run
+    (`herdr-job run -- gh run watch <id> --exit-status`) and fixes a red
+    run before pushing more.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both say local
+    cross-lint is necessary but not sufficient; Astra added verifying the
+    activation and the per-SHA ownership, DeepSeek the post-rebase workflow
+    check and that a fresh machine without the SDK fails `just check`.
+- [ ] Notifications button above "spaces": clicking it opens a dropdown of
+  past notifications with the time each arrived; clicking an entry
+  navigates like clicking the toast. Today there is no history: a toast
+  (5-12 s, queue of 8, same-pane replacement) is gone once it expires.
+  - The button shows how many notifications I have not clicked whose tab I
+    have not visited since; visiting the tab (or clicking the entry) clears
+    them.
+  - While the herdr window is focused, do not send the system (OS) toast;
+    show herdr's own toast instead. Today `System` delivery is suppressed
+    only when the target is the active tab and the window is focused
+    (`suppress_external` in `tick_notifications`, from `outer_focused`,
+    which is `None` when the terminal does not report focus).
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), both: worth it as
+    a plain event log, not a notification centre. History is a shared
+    runtime fact: a server-side ring buffer per endpoint (about 100
+    entries, in memory, lost on server restart) recorded when the server
+    emits a notification, so events while detached and toasts suppressed
+    for the active tab or dropped as stale are kept. A new advertised
+    `notification.list` method returning a stable id and server timestamp
+    per entry (the frozen `SemanticNotification` has neither); refetch on
+    each live notification; hide the button when the method is missing.
+    Do not reuse the toast's same-pane replacement; collapse only identical
+    repeats (with a count) and rate-limit script floods later.
+  - Both: absolute `HH:MM`, with the date for older days. Label entries as
+    past events ("asked for attention"), not current state: the agents list
+    owns the current state. Click reuses the toast path with the system
+    toast's pane -> tab -> workspace fallback; if nothing survives, keep the
+    entry and say "target no longer exists"; an offline machine reports "X
+    is unavailable"; never pick another pane that now sits in the same
+    place.
+  - Both advised skipping an unread count in v1 because "opened the
+    dropdown" does not mean "read". The unvisited-tab rule above answers
+    that; keep it client-side (per client, last-seen id), so one client
+    does not clear another's count.
+  - Pitfalls: keyboard access (a key to open, arrows/j/k, Enter, Esc); a
+    narrow sidebar clips a dropdown, so maybe an overlay; freeze the list
+    while the pointer is over it so new entries do not move the click
+    target; script bodies stay in history longer than in a toast.
+- [ ] Child tab row styled like the main row. Now the main row has separate
+  tabs (`surface1` background, a 1-column `panel_bg` gap between them),
+  while the child row is one continuous accent-tint band with plain text
+  entries split by `│` (`render_child_tab_bar` in
+  `src/client/shell/tabs.rs`), so it looks like a different widget.
+  - Decided (2026-09-28, after mockups): copy the main row exactly. Drop
+    the band: the row background and the 1-column gaps are `panel_bg`;
+    each unfocused child is drawn like an inactive main tab (`surface1`
+    background, `overlay1` text, same padding); drop the `│` dividers. The
+    focused child stays the only full-accent block, and the tinted parent
+    above plus the `◆` entry keep the link between the rows.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28) both preferred
+    keeping the band behind the tabs, so the row stays visibly tied to the
+    tinted parent; I chose full consistency with the main row instead. Both
+    rejected tabs in a stronger accent tint: they read as "half selected"
+    and weaken the red/yellow status icons.
+  - Pitfalls: truncate labels before status icons; the whole tab including
+    padding is the hit target, gaps are not; red/yellow icons must stay
+    readable on `surface1` in both light and dark themes.
+- [ ] Tooltips: hovering a tab shows its full text. There is no tooltip
+  system yet, so build one small client-side layer first (presentation
+  state, no protocol change): target id, anchor rect, lines; ~400-500 ms
+  dwell, not restarted by motion within the same target; drawn last,
+  clamped to the screen, display-width aware, never intercepting clicks;
+  hidden on key, click, scroll, drag, modal, resize, target removal, and
+  after a maximum time (a lost leave event must not leave it stuck).
+  - Tabs, both the main and the child row: only when the label is
+    actually truncated.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): hover must not be
+    the only way to see the full text, since tmux and some terminals drop
+    plain motion events (mode 1003); the rename dialog already shows it.
+    Sanitize control characters in tooltip text.
+- [ ] Build line (bottom left of the sidebar): hover shows the full commit
+  message, click opens a modal with the full commit info (full hash,
+  subject, body, author, date, dirty flag, version and channel), scrollable,
+  Esc closes.
+  - The data does not exist yet: `HERDR_GIT_COMMIT_LINE` holds only
+    `<short hash> <subject>`. Embed structured commit metadata at build
+    time (handle builds without git); never ask the git repo of the
+    current space, which is another project.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): the client and
+    the server builds can differ after a live handoff, so the modal shows
+    both, labelled "server" and "client", and marks a mismatch. Server
+    details come from a new advertised build-info method (the snapshot's
+    `build_commit` stays as is); an old server shows "details unavailable",
+    never the client's data in its place. Astra: the tooltip shows the
+    subject only, the body belongs in the modal.
+- [ ] Reopen the last closed tab, `prefix+u` ("undo close", configurable).
+  - Closing a tab kills its processes, so this recreates the tab rather
+    than undoing the close: same place in the space, name, pane layout,
+    working directories, and agents resumed through the existing session
+    resume (`src/agent_resume.rs`, as after a restart); plain shells start
+    fresh, never replaying their commands.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): a bounded,
+    server-owned history of explicitly closed tabs per space, exposed
+    through a new advertised method, not in routine snapshots; pane closes
+    are left out at first; an entry stays in the history if restoring it
+    fails. Define missing directories, a deleted space, partial failures
+    and two clients reopening at once. Not `ctrl+shift+t`: terminals often
+    take it, and legacy key encoding cannot tell it from `ctrl+t`;
+    `prefix+shift+t` is rename.
+  - Alternative to weigh (mine, not consulted): keep a closed tab's
+    processes alive for a few seconds with an "undo" toast, which restores
+    them exactly.
+- [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in
+  the tab bar and stay at its start, before the unpinned tabs, like
+  pinned tabs in Chrome or Firefox.
+- [ ] Pin a space, like a pinned tab: a pin icon on the space row, and
+  pinned spaces stay at the top of the spaces list. Consulted (GPT-6 Astra,
+  DeepSeek, 2026-09-28), both agreed on:
+  - Pinned first in every sort mode (cust, name, prio); the sort and its
+    direction apply inside each tier. If it only worked in cust it would
+    duplicate the manual order. Maybe a separator line between the tiers,
+    so `name ↑` honestly sorts only the unpinned ones (DeepSeek).
+  - A 1-cell narrow glyph (ASCII `*` or `▪`), not 📌 (double width, emoji)
+    and no nerd-font requirement; in a fixed leading column, so names do
+    not shift when a space gets pinned.
+  - Server-owned session state (like the manual order), in the JSON API;
+    the sort mode stays client-only. Pins affect every client. In the
+    multi-machine sidebar pins apply per server.
+  - Pin/Unpin in the space's context menu, plus a keybinding; no drag to
+    pin. The icon is only an indicator (1 cell is a poor click target).
+  - Worktree families are pinned whole; a child's menu says "Pin family".
+    Drag in cust moves within a tier (Astra: refuse crossing the boundary;
+    DeepSeek: dragging out unpins); unpinning keeps the underlying manual
+    order. Pinned spaces never go into `other spaces (N)`.
+  - Cost to weigh: in prio an idle pinned space sits above an unpinned
+    blocked one; urgent unpinned agents need another cue (the header
+    attention counts, still without a place).
+- [x] An agent that finished and waits for me shows a blue dot (`Done`,
+  unseen), but it turns green (`Idle`) as soon as I open its tab, before I
+  answer: `mark_active_tab_seen` sets `pane.seen` when the tab becomes
+  active. Should it stay blue until I reply?
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): "unseen" and
+    "awaiting my reply" are two different facts; keeping blue until typing
+    would silently change what blue means, and a finished agent does not
+    always need an answer. Keep `seen` for toasts and sounds; if a reply
+    marker is wanted, make it a separate per-pane flag (server state, since
+    it is a runtime fact), cleared by a submitted message (Enter on
+    non-empty input), not by any byte reaching the PTY (arrows, `ctrl+c`,
+    scrolling), and dismissable by hand. No "focused for N seconds" timer.
+    Decide whether it survives a restart. Astra: clear "unseen" on the pane
+    being visible, not merely its tab being active.
+  - Tried and rejected (2026-09-28): keeping every `Done` until Enter in the
+    pane. An agent that only waits for the next task must not look like it
+    needs a decision. Reverted, never committed; the diff is not kept.
+  - Refined goal (user): mark only a turn that ended by asking me something
+    (a question in plain text); a plain finish still clears on view. Menus
+    and permission prompts are already `Blocked` (red) until answered.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28, two rounds):
+    - An orthogonal, optional server-side flag ("awaiting reply"), not a
+      new state: viewing clears `Done` but not the flag. Priority: blocked >
+      working > awaiting reply > done > idle. Its own glyph (e.g. `?`).
+    - A trailing `?` in the final message is only a hint: courtesy
+      questions ("Anything else?") are false positives, "Please confirm
+      before I proceed" or "Choose A or B." are misses.
+    - Better (user's idea): the agent reports it itself. Herdr injects an
+      instruction (Claude: `additionalContext` from the SessionStart hook
+      herdr already installs), opt-in, visible, never written into repo
+      instruction files. Report through a strict marker at the end of the
+      final message, parsed by the Stop hook from `last_assistant_message`
+      (verified in Claude Code docs), rather than a `herdr` CLI call: a
+      Bash call may hit a permission prompt and turn the pane red while
+      reporting (DeepSeek: then ship an allowlist entry).
+    - Scope reports to the session and turn so a late report cannot
+      revive a cleared flag; ignore subagent `Stop`. Clear on the next
+      user prompt (Claude `UserPromptSubmit` hook), the next turn start,
+      a turn ending without a report, session reset; never on view. Do not
+      fall back silently to the `?` heuristic; other agents only through
+      tested adapters. Store no question text at first.
+    - Rule change needed: agent detection is screen-evidence based; this
+      adds structured, turn-scoped hook events as a source.
+  - Decided (user, 2026-09-28): the explicit `herdr agent awaiting-reply`
+    command (cleanest engineering-wise), with the permission rule added
+    by the consented Claude integration install. Done: server flag
+    `awaiting_reply` (a report during the turn shows at its end; cleared by
+    the next working state, a turn ending without a report, exit or session
+    change), `pane.report_awaiting_reply`, the TUI keeps the agent `Done`
+    while it is set, Claude integration v11 injects the instruction
+    (`HERDR_AWAITING_REPLY_INSTRUCTIONS=0` leaves it out). Tried live with
+    Claude Haiku 4.5 (Claude Code 2.1.283): it ran the command without a
+    prompt, but wrote the question twice, before and after the command.
+  - Later: its own glyph (`?`) with the symbols audit below; adapters for
+    other agents; untested Windows hook (`herdr-agent-state.ps1`).
+- [x] Consult stats log DeepSeek under the alias it was called with
+  (`deepseek-flash`, now V4.1), so when the alias moves to a new model the
+  stats of both merge and we cannot tell which was which.
+  - The streamed chunks carry `model` and `system_fingerprint`, which
+    `ask_deepseek.py` ignores.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): log the requested
+    alias, the reported model and the fingerprint (additive fields, older
+    entries keep working), and let stats group by either; first check what
+    the API really returns, since the reported name may itself be an alias.
+    Do not backfill old entries as V4.1 by date unless DeepSeek's changelog
+    gives the exact cutover; otherwise mark them `unknown`. Check GPT
+    (Codex) and Gemini separately: what metadata they expose differs.
+  - Done (2026-09-28): the chunks' `model` only echoes the alias; `/models`
+    names the serving model (`DeepSeek-V4.1-Flash`). `ask_deepseek.py` logs
+    it as `model_version`, with the fingerprint; stats group by it (older
+    calls stay under the alias, version unknown), `stats --by-alias` merges.
+    GPT and Gemini are called with explicit model ids.
+- [ ] Audit whether colours and symbols are consistent across the UI
+  (sidebar, mobile layout, tabs, toasts, job statuses `⧖ ✓ !`, state dots).
+  - Plan: an inventory (glyph or colour, meaning, where used), then
+    conflicts (one colour with two meanings, one meaning with two glyphs),
+    then a single mapping in code.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): fold it into the
+    planned state-shape redesign above; one colour meaning different things
+    in different contexts is not automatically a conflict. Check it without
+    colour (colour-blind users, monochrome), in light and dark themes and
+    narrow layouts. Generate the legend from the code, not by hand, or it
+    drifts.
+  - Audit (2026-09-28), conflicts by severity:
+    1. `Done` is teal in `status_color` (`src/client/shell.rs`) but blue in
+       the mobile summary (`mobile.rs`) and finished toasts
+       (`notifications.rs`); in most themes blue equals `accent`.
+    2. The default Dots style draws working, blocked, done and
+       waiting-on-job all as `●`: colour alone tells them apart.
+    3. Blocked has three glyphs: `●` (Dots), `×` (Symbols), `◉` (mobile);
+       other red problems use `!`.
+    4. `◐` is both agent working and endpoint connecting, both yellow.
+    5. Green is both agent idle and job succeeded; `✓` is also agent done
+       (Symbols style, teal).
+    6. Theme collisions: in `Palette::terminal()` mauve equals overlay0
+       (waiting-on-job looks unknown) and peach equals yellow; in Dracula
+       blue equals teal.
+    7. Mauve means waiting-on-job, focused branch, resize mode and help keys.
+    8. Unknown reads "unknown" in `status_text` but "idle" in the agent
+       sidebar and mobile.
+  - Duplicated mappings: status text (`shell.rs`, `agent_sidebar.rs`,
+    `mobile.rs`), glyph and colour overrides in `mobile.rs`, job glyphs and
+    colours in `tab_groups.rs`, `tabs.rs` and `ui/sidebar.rs`, toast colours
+    twice in `notifications.rs`. Model to follow:
+    `endpoint_status_presentation` (`endpoints.rs`) returns glyph, label
+    and colour together. Next: one `status_style` module per domain (agent,
+    job, endpoint, notification) and semantic palette roles, decided
+    together with the state-shape redesign.
+- [ ] A legend explaining the UI's dots and symbols (agent state dots,
+  job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
+  states, sort buttons, the grip, footer provider codes). Nothing in the UI
+  explains them today. Ties in with the colour and symbol audit above: the
+  legend should come from the same glyph/label/colour mapping.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), both: a full
+    modal (the sidebar's 28 columns cannot hold explanations), opened by a
+    `?` button in the sidebar header, plus a menu entry and a prefix
+    keybinding; never a bare `?`, which belongs to the agent's terminal.
+    Hover tooltips come later as a supplement, never the only way (tmux
+    drops motion, no keyboard access, and five glyphs cannot be compared
+    at once). No first-run hint (gone before it is needed).
+  - Content per domain (agent, job, git, endpoint, controls, usage):
+    glyph, label, one-line meaning and a swatch in the theme's actually
+    rendered colour, never a colour name ("yellow" lies when a theme
+    collapses peach into yellow). Explain the counts by example (`!2` two
+    failed jobs, `↑4` four commits ahead); Astra: define what `±7` counts
+    (files or lines) and never describe planned glyphs as current.
+  - Generated from the per-domain `status_style` mapping of the audit above
+    (glyph, label, colour, explanation), with a test that every state
+    variant has an entry, so a new state cannot ship unexplained. Unknown
+    states from older remote servers show as "unknown status".
+  - DeepSeek: an "on screen now" filter at the top of the modal; a warning
+    when the theme gives two states the same colour. Both: a legend exposes
+    colour-only meaning (Dots draws four states as `●`) but does not fix
+    it; the shape redesign must.
+  - Order: they differ. DeepSeek: after the consolidation and the shape
+    redesign. Astra: together with the consolidation, not waiting for the
+    redesign. Astra's, I think: a generated legend follows the redesign
+    for free, and it helps now, while the glyphs are most confusing.
+- [ ] Analyse whether all tests are needed.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): optimise for
+    confidence and upkeep, not the test count. First find the slow, flaky
+    and often-rewritten tests and those the rules forbid (freezing CLI
+    agents' screen detection rules). Tests covering the same lines are not
+    automatically duplicates: compare what they assert, and check suspects
+    with a targeted mutation. Remove a test of implementation details only
+    when a higher-level test is shown to cover it, in small batches, never
+    one bulk prune. Some UI strings are contracts; keep frozen protocol
+    fixtures.
+  - Analysis (2026-09-28): 4070 tests in 283 files; 3741 run on macOS in
+    about 29 s, all pass, no flaky ones seen. Nearly all are needed.
+    - Exact duplicates to delete: `read_message_accepts_exact_payload`
+      (`src/protocol/wire.rs`, same as `framing_small_message_roundtrip`)
+      and `lone_escape_is_buffered_until_timeout_flush`
+      (`src/raw_input.rs`, same as `flushes_lone_escape_after_timeout`).
+    - Breaks the detection rule: `agent_explain_evaluates_with_server_manifest_cache`
+      (`src/app/api.rs`) asserts Codex's bundled rule id
+      `live_strong_blocker`; rewrite it with a synthetic override manifest.
+    - Speed: `client_mode::federated_client_starts_without_local_and_survives_its_restart`
+      alone takes 16.6 s and sets the wall-clock time; the
+      `detect::manifest*` tests take about 1 s each because they reload
+      all bundled manifests 2-4 times per test.
+    - Merge, not delete: the 13 `install_*_errors_when_config_dir_missing`
+      tests (`src/integration/tests.rs`) into one table-driven test; the
+      same macOS and Linux `scrollback_editor_argv_*` test into one unix
+      test.
 
 ## Deferred
 
 - [ ] Consult stats: pair the coordinator with Opus at a lower effort
   (`claude -p --model <same id> --effort low`, fresh context without project
-  instructions or tools) to measure what effort buys; see the done
-  coordinator item above for the method (pilot 10 rounds, conclude after
-  20-30, blind ratings where practical, log failures).
-- [ ] herdr > menu > settings > usage: checkboxes choosing which providers the
-  usage footer shows. Also token-based usage?
+  instructions or tools) to measure what effort buys.
+  - Method (consulted 2026-09-26): same prompt against a fresh-context call
+    at the coordinator's effort; the self entry is only a baseline (full
+    context, rates itself). Pilot 10 rounds, conclude after 20-30, rate blind
+    where practical, "unique" only relative to that round's roster. It uses
+    the same subscription, so log failures, never drop them.
+- [ ] Usage modal (click the footer) / settings: checkboxes choosing which
+  providers the usage footer shows. Also token-based usage?
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): the
     checkboxes, yes. Tokens answer a different question ("what did this
     cost?") than the footer ("can I keep going?"): if ever, a separate usage
@@ -366,6 +711,39 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     need; split input, output and cache, and label estimates.
   - Deferred (consulted 2026-09-26): premature with few providers; built-in
     settings widgets are enough, no plugin settings framework needed.
+  - Revised 2026-09-28: put the checkboxes in the usage modal that opens when
+    I click the footer, not in settings. Also show usage of my other
+    workspaces: I have extra workspaces in OpenAI (platform projects) and
+    Anthropic (Console workspaces). Maybe per API key too.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): three different
+    things, keep them apart: footer visibility, subscription allowance, API
+    spend.
+    - Checkboxes mean "show in footer", not "poll": hiding a row must not
+      stop polling (`[usage].<provider>` stays the poll switch). It is TUI
+      presentation state: persist it on the client side, never in
+      `usage.read`. The modal keeps listing hidden rows so they can be turned
+      back on, and tells apart hidden, polling off, no credentials and
+      refresh failed.
+    - Workspaces only through the admin APIs (`sk-ant-admin…`, `sk-admin…`),
+      and those give spend and tokens, never a remaining balance or budget:
+      Anthropic `GET /v1/organizations/cost_report` (group by `workspace_id`)
+      and `usage_report/messages` (by `workspace_id`, `api_key_id`, `model`);
+      OpenAI `GET /v1/organization/costs` (by `project_id`, `line_item`) and
+      `usage/completions` (by `project_id`, `api_key_id`, `model`). Verify
+      against the docs before building; neither model could fetch them.
+    - Per API key: tokens only; cost per key would be an estimate from
+      prices (cache, batch, price changes). Cut for now.
+    - Workspace spend goes in a separate "API spend" section of the modal
+      (month to date, currency, scope, when observed), never as footer rows:
+      the footer stays a compact allowance strip. Label it "Anthropic API
+      spend", distinct from the Claude subscription row. Cost reports lag by
+      hours: own slow refresh, not the allowance poller.
+    - Admin keys read org-wide billing: opt-in, own env var or auth file
+      entry, server side only, never in API responses, logs or the shared
+      `usage-cache.json`.
+    - Order: footer checkboxes in the modal; then API spend per workspace
+      (ties in with the OpenAI API row above); per-key usage only on real
+      need.
 - [ ] herdr > menu > settings > consults: an "enabled" checkbox column per
   model (which models get consulted), and next to it the consult stats
   columns. Then drop the separate "consult stats" menu item.
@@ -376,30 +754,184 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     no consult-specific code in core. Keep latency/tokens from crushing the
     checkbox and model name (a detail view per model).
   - Deferred: one consumer does not justify a plugin settings framework yet.
-- [ ] Publish the consult stats (`consult.py stats`) through a separate
-  project, `consultstats` (its own repo, e.g. `~/personal_projects/consultstats/`).
-  Nothing about where it is published belongs in this repo or in that
-  project's code: the host, path and deploy command come from its config
-  (e.g. an ignored `.env`), so anyone can publish their own stats anywhere.
-  Mine will go to `consultstats.frolow.dev`.
-  - Name (DeepSeek, GPT-6 Luna, 2026-09-26): not `llmstats` (JEV, a System 1
-    model, and other non-LLM systems come later), not `skilloraclestats`
-    (long, and "oracle" reads as the company).
-  - Split: this plugin only gets an export (e.g. `consult.py export`) that
-    writes the allowlisted aggregates as JSON; `consultstats` turns that JSON
-    into a static site and deploys it. The raw log
-    (`~/.local/state/consult/log.jsonl`) never leaves the machine.
-  - Consulted models (DeepSeek, GPT-6 Luna, 2026-09-26): a static site built
-    locally, deployed by rsync of the output only. For my frolow.dev: like
-    `frolow.dev/deploy.sh`, subdomain like `matchalove.frolow.dev` (Porkbun A
-    record, nginx `conf.d`, `certbot --nginx`); that setup lives in my
-    frolow.dev repo, not in `consultstats`.
-  - Export from an allowlist of aggregates only: no prompts, answers, notes,
-    cwd, round ids or exact timestamps (weekly/monthly at most); hide groups
-    with few calls. A test on a fake log checks that forbidden fields never
-    reach the output.
-  - Honest presentation: `n` next to every rate, confidence intervals
-    (Wilson), "preliminary" below ~5 rated calls, a note on bias (self-chosen
-    tasks, non-blind ratings, `unique` depends on who else was asked).
-    accepted/findings is an acceptance rate, not recall; check the name.
-  - Update manually first (export, review the diff, deploy); launchd later.
+- [ ] herdr > menu > settings: the consult skills (gpt, gemini, deepseek,
+  consult-stats) get their own settings section, like Integrations (agent
+  hooks) but a separate item: per agent (Claude Code, pi) whether the skills
+  are installed, with an install button. Today only the "Consult: install
+  skills" popup runs `plugins/consult/install-skills`.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both advise against
+    a core section for now (one plugin, four coupled skills); the missing
+    value is status, not placement. Start in the plugin: the popup shows the
+    state per agent and installs or repairs.
+  - If it goes into core, make it generic, not consult-specific: plugins
+    declare skills in `herdr-plugin.toml`, the server advertises new methods
+    (`skill.list`, `skill.install`), and agents are data-driven strings;
+    never new `IntegrationTarget` variants (frozen enum). Installing is not
+    enabling: per-model checkboxes and stats stay on the consults page above.
+  - One row per bundle × agent (the four skills go together: the scripts find
+    `consult-stats` as a sibling), expandable to skills. States: linked,
+    missing, broken link, conflict (a real directory at the destination),
+    mixed; warnings: possibly shadowed by `~/.agents/skills`, plugin
+    installed as a copy (links into it break on update). Install/repair
+    never overwrites foreign files; uninstall (later) removes only links
+    that point into the plugin. Agents without a skills directory are
+    "unsupported", not "missing".
+  - The server writes into its own host's home: with remote endpoints show
+    which host is affected. Windows symlinks need their own handling.
+  - Smallest stage: read-only status plus bundle install/repair in the
+    popup; a settings entry, if any, only opens that popup.
+- [ ] A "consult models" checkbox in herdr's bottom bar (on/off), or instead
+  checkboxes next to the models to consult (GPT Astra, DeepSeek, Gemini), so
+  I choose in the UI whether and whom agents consult, instead of the rule in
+  the agent's memory ("before design decisions consult GPT Astra +
+  DeepSeek").
+  - Open: how the state reaches a running agent (a state file the consult
+    skills read, plus a hook such as Claude's `UserPromptSubmit` injecting
+    "consult: on, models: astra, deepseek" so the agent knows before it
+    decides); scope (global, per workspace or per agent pane); core footer
+    or the consult plugin (plugins cannot draw widgets today). Overlaps the
+    per-model "enabled" column on the deferred settings > consults page.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both agree. A
+    checkbox promises more control than herdr has: it cannot force a
+    running agent to consult, and "off" must beat the rule in the agent's
+    memory. Per workspace (consult policy follows the project; global leaks
+    into unrelated work, per pane gets lost when panes restart). One toggle
+    first, the model list in the same state file; per-model checkboxes mix
+    "whether" with "whom" (fallbacks, missing keys). In the consult plugin
+    (menu action plus popup), not the core footer, which would give one
+    plugin privileged UI. Delivery: a workspace state file as the source
+    of truth, a prompt hook injecting `[herdr consult policy] enabled=…
+    models=…` every turn, and the consult scripts re-reading it before
+    sending, so "off" is enforced, not advisory. pi has no such hook: say
+    so. Astra: label it "Auto-consult" and decide whether my explicit
+    "consult X" bypasses off; show which providers get the code.
+  - Smallest stage: that state file, a plugin menu toggle, the Claude hook
+    and the dispatch-time check, logging policy against actual consults.
+    Kill it if agents ignore it; a footer checkbox only if I flip it often.
+  - Inject every turn, only for questions, or only on change? Consulted
+    models (GPT-6 Astra, DeepSeek, 2026-09-28), both: not only for
+    questions (the hook sees my prompt, not the agent's decision point;
+    "implement X" hits design choices mid-turn, a classifier adds latency
+    and misses). Not every turn either (repetition primes over-consulting).
+    Inject at session start (startup, resume, clear, compact) and on
+    `UserPromptSubmit` only when the policy's generation counter differs
+    from the one last injected into that session (per session, not per
+    workspace; a `PreCompact` dirty flag forces reinjection). Inject even
+    when the policy matches the default, and replace the memory rule with
+    "follow the herdr consult policy", so there is one source of truth.
+    The scripts re-check the state file right before sending; a missing or
+    broken file means "auto off" with a clear reason, not a silent "on".
+    Subagents may never see the line: the script prints the policy on its
+    first call. Explicit "consult X" bypasses auto-off and the model list
+    (a separate hard "no external consult" switch, if ever needed, would
+    not be bypassed); scripts take an `--explicit` flag, logged. Astra: one
+    shared dispatch layer for all consult scripts instead of a brittle Bash
+    `PreToolUse` matcher.
+  - Idea: when a checked model's limit is exhausted, grey its checkbox out
+    and leave it out of the injected policy, so the agent does not try it.
+    herdr already has the signals in the usage footer (`usage.read`, cached
+    in `usage-cache.json`): Codex rate-limit windows, DeepSeek balance
+    (`is_available`), Gemini weekly quotas from `agy -p /quota`.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both: an
+    availability hint, not a hard gate yet. A false "exhausted" silently
+    drops a working model for hours, which is worse than one failed call;
+    unknown means available. Keep the checkbox as my intent and show
+    availability as a separate badge with the reason, when it was observed
+    and the reset hint; a checked-but-grey box reads as "on but not on".
+    Never gate GPT on `usage.read`: the footer reads Codex's own ChatGPT
+    login, the gpt skill uses pi's `openai-codex` token, possibly another
+    account. Better signal: the consult scripts' own classified failures
+    (provider, model, credential hash, hard quota vs rate limit vs auth vs
+    outage, timestamp) logged by consult-stats. DeepSeek `is_available =
+    false` is trustworthy for a hard zero; Gemini's quota only when `agy`
+    uses the same account and the group covers the model. Reset times are
+    hints ("try again tomorrow" cleared in two hours): at reset go back to
+    "unknown", allow one try, re-block with a bounded TTL; a "retry now"
+    action.
+  - Stages: classify and log failures in consult-stats; show the badge; the
+    scripts fail fast only on a same-credential hard quota failure within
+    the TTL (unless I ask explicitly); drop models from the hook only if the
+    data shows agents wasting turns on exhausted ones.
+  - Sort the model checkboxes by the consult-stats ranking (`consult.py
+    stats`: accepted unique findings per rated call, e.g. DeepSeek 1.57,
+    Astra 1.56, Gemini 0.57 on 2026-09-28), with the number next to each
+    model; models under 5 rated calls go last, as in `stats`. The ranking
+    depends on which models were asked together, so it is a hint, not a
+    verdict. Do not reorder while the pointer is over the list (as in the
+    agents' `prio` sort).
+- [ ] Shared checkout awareness: agents in one checkout do not know about
+  each other. On 2026-09-28 another session started editing `src/` minutes
+  after this one checked `git status`; only commits by explicit path kept
+  the two fixes apart. The policy ("ask whether to use a worktree when the
+  checkout has code changes that are not yours") stays in `AGENTS.md`;
+  herdr would add the facts only it knows and, when the checkout is shared
+  or has code changes, tell the agent to ask me whether to create a
+  worktree before it edits code (never create one on its own).
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), both: herdr gives
+    facts, the repo gives the rule (what counts as code vs notes, whether
+    to ask, warn or require a worktree). Never claim whose changes they
+    are: after resume, `/clear` or compaction an agent can take its own
+    edits for foreign ones, so say "ownership unknown".
+  - Timing: a line at session start only when the checkout is already
+    shared or has code changes (it goes stale in minutes); the real check
+    before the session's first file edit (`PreToolUse` on `Edit`/`Write`,
+    fresh state); not every prompt (noise). DeepSeek: optionally warn at
+    commit when it includes files this session did not edit.
+  - Limits: advisory, not a lock. Edit hooks miss shell edits (`sed`,
+    scripts); hookless agents only get the CLI. Separate from the
+    auto-consult injection above, which refreshes on a policy generation,
+    not on checkout state. A worktree per agent is the real isolation but
+    costs a cold `target/`.
+  - Smallest stage, in the fork (plugin, opt-in), not upstream by default:
+    `herdr checkout status` (other agent panes in the same git root and
+    worktree, uncommitted code files, when observed), then the first-edit
+    hook, e.g. "2 other agents share this checkout (panes 3, 7); 4
+    uncommitted code files, ownership unknown. Ask the user whether to
+    create a worktree before editing code."
+  - Idea: a herdr setting for the worktree policy. Consulted models (GPT-6
+    Astra, DeepSeek, 2026-09-28), both:
+    - Per repo, keyed by the common git dir so linked worktrees share it;
+      a global value only as the default; not per workspace (a UI
+      grouping, not a checkout). Modes: `shared` (default), `ask`,
+      `always` (a new worktree per new agent session). Not "never ask": it
+      names the prompt, not where the agent works. DeepSeek: if the
+      setting contradicts `AGENTS.md`, herdr says it overrides the repo
+      rule, never silently.
+    - `ask` triggers on another live agent in the same checkout OR
+      uncommitted changes (tracked, staged or untracked; do not classify
+      code vs notes). The 2026-09-28 race began from a clean `git status`,
+      so "has changes" alone misses it.
+    - herdr asks in its TUI and creates the worktree before the agent
+      starts (pane cwd = worktree); an agent that moves itself later
+      leaves its session and relative paths in the old checkout. The hook
+      text then carries only facts. Serialize herdr's occupancy check so
+      two launches cannot race.
+    - `always` costs a cold `target/` per worktree: a shared
+      `CARGO_TARGET_DIR` contends on cargo's lock and rebuilds on
+      differing flags, sccache skips linking. Every fix must land on
+      current `master` before `scripts/herdr_live.sh install`; never merge
+      or install automatically.
+  - Missed by both: herdr usually does not launch the agent (I type
+    `claude` in a shell pane; herdr detects it after it starts) and cannot
+    move a running agent's cwd. A launch-time prompt only works when herdr
+    starts the agent (pane command, relaunch, `herdr worktree create`).
+    Otherwise: a notification when a second agent is detected in the same
+    checkout ("agent in pane 3 shares this checkout") with an action that
+    creates a worktree and restarts the agent there, plus the first-edit
+    hook as the fallback.
+  - Stages: `herdr checkout status` without any setting; then a per-repo
+    `shared`/`ask` setting (launch prompt, detection notification);
+    `always` only once branch naming, resuming a session in its worktree
+    and cleanup of finished worktrees are reliable. The setting makes me
+    choose between instant visibility on `master` and isolation; it does
+    not reconcile them.
+- [ ] Workspace recipes (tmuxp-like): a TOML file under
+  `~/.config/herdr/recipes/` naming a root, panes, splits and commands.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin built on
+    the `dev-layout-bootstrap` example (`ogulcancelik/herdr-plugin-examples`),
+    not core. Apply reconciles: create missing panes, leave running
+    processes and hand-made panes alone, re-apply is a no-op, removal only
+    with an explicit `--prune` (panes may hold uncommitted agent work).
+  - Deferred: sessions already survive server restarts with 48 snapshots;
+    recipes only help on a new machine or a fresh checkout. Build it when I
+    notice rebuilding the same layout by hand.

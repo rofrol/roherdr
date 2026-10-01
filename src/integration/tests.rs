@@ -958,7 +958,10 @@ fn install_claude_writes_hook_and_updates_settings() {
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
     );
     assert_eq!(hook_content, CLAUDE_HOOK_ASSET);
-    assert!(settings["permissions"]["allow"].is_array());
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["Read", "Bash(herdr agent awaiting-reply)"])
+    );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["matcher"],
         "^(startup|resume|clear|compact|fork)$"
@@ -975,6 +978,44 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(claude_dir.join("settings.json"), r#"{"model": "opus"}"#).unwrap();
+    std::env::set_var("HOME", &home);
+
+    install_claude().unwrap();
+    let installed = install_claude().unwrap();
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["Bash(herdr agent awaiting-reply)"])
+    );
+
+    let mut edited = settings.clone();
+    edited["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(Value::String("Read".into()));
+    fs::write(&installed.settings_path, edited.to_string()).unwrap();
+    uninstall_claude().unwrap();
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["Read"])
+    );
+    assert_eq!(settings["model"], "opus");
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
@@ -1132,7 +1173,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.expected_version, 11);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1141,7 +1182,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(10));
+    assert_eq!(status.installed_version, Some(11));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1171,7 +1212,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 10);
+    assert_eq!(claude.expected_version, 11);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");

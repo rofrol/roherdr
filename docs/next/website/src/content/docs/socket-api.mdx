@@ -103,7 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.set_parent`, `tab.set_status` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -694,6 +694,8 @@ Session-only official integrations report native session references with `pane.r
   }
 }
 ```
+
+An agent that ends its turn by asking the user something (a question, a choice, a confirmation) reports it with `pane.report_awaiting_reply` (`{"pane_id": "w1:p1"}`), usually through `herdr agent awaiting-reply`. A report during the turn shows when the turn ends; a report while the agent is idle shows at once. `agent.get` and `agent.list` then return `"awaiting_reply": true` until the agent starts working again, a turn ends without a new report, or the agent exits or changes session. Viewing the pane does not clear it, and the TUI keeps the agent's Done mark until then.
 
 Both methods accept an optional `resume_argv` array with the command that resumes the reporter's current session after a Herdr server restart. Its first element must be a plain command name, not a path. It allows at most 64 elements and 8 KiB in total, and no element may contain an apostrophe or control character; invalid values fail with `invalid_resume_argv` and the report is not applied. A custom agent must hold the pane through `pane.report_agent` before it can attach a command; otherwise the request fails with `resume_not_accepted`. Herdr keeps the command only while the same `source` and `agent` hold the pane, and it takes precedence over Herdr's built-in resume command for that agent. Older Herdr versions ignore the field.
 

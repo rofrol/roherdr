@@ -409,6 +409,13 @@ fn the_wheel_steps_through_its_own_row_and_stops_at_the_ends() {
     state.compose(106, 24).unwrap();
     let child_row = state.hits.child_tabs[0].0;
     let main_row = state.hits.tabs[0].0;
+    let child_bar = state.hits.child_tab_bar;
+    let child_gap = Rect::new(child_bar.right() - 1, child_bar.y, 1, 1);
+    assert!(state
+        .hits
+        .child_tabs
+        .iter()
+        .all(|(rect, _)| rect.right() <= child_gap.x));
     let mut wheel = |rect: Rect, kind| {
         let outcome =
             state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
@@ -443,6 +450,11 @@ fn the_wheel_steps_through_its_own_row_and_stops_at_the_ends() {
     assert!(
         wheel(main_row, MouseEventKind::ScrollUp).is_empty(),
         "the parent is the first main tab"
+    );
+    assert_eq!(
+        wheel(child_gap, MouseEventKind::ScrollUp),
+        ["tab_2"],
+        "the empty end of the child row steps its own row"
     );
 }
 
@@ -545,6 +557,7 @@ fn busy_agent(pane_id: &str, status: AgentStatus) -> ClientShellAgent {
         terminal_title_stripped: None,
         agent_status: status,
         state_change_seq: 0,
+        awaiting_reply: false,
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
@@ -577,11 +590,15 @@ fn closing_a_pane_with_a_waiting_agent_asks_first() {
     assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
     assert!(state.overlay.is_none());
 
-    // An idle agent can be resumed, so it closes at once.
+    // An idle agent asks too: resuming it would lose its draft and background tasks.
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.agents[0].agent_status = AgentStatus::Idle;
     state.set_snapshot(Box::new(projected));
-    assert_eq!(pane_closes(&close_focused_pane(&mut state)), ["pane_1"]);
+    assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.running.as_deref() == Some("claude idle in 1")));
+    assert_eq!(pane_closes(&state.handle_input_bytes(b"\r")), ["pane_1"]);
 }
 
 #[test]

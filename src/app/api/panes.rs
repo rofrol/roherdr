@@ -10,11 +10,11 @@ use crate::api::schema::{
     PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
-    PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneReportAwaitingReplyParams, PaneReportMetadataParams, PaneResizeParams, PaneResizeReason,
+    PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams,
+    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
+    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+    PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -1867,6 +1867,37 @@ impl App {
             self.emit_pane_updated(ws_idx, pane_id);
         }
 
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_pane_report_awaiting_reply(
+        &mut self,
+        id: String,
+        params: PaneReportAwaitingReplyParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(terminal_id) = self.state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .map(|pane| pane.attached_terminal_id.clone())
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let changed = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .is_some_and(|terminal| {
+                let changed = terminal.report_awaiting_reply();
+                if changed {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
+                changed
+            });
+        if changed {
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
         encode_success(id, ResponseResult::Ok {})
     }
 

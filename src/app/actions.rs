@@ -1773,6 +1773,13 @@ impl AppState {
         let change = mutation.effective_state_change.or(unchanged_change)?;
         let suppress_completion = force_suppress_completion
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
+        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+            if agent_released || completion_reset {
+                terminal.clear_awaiting_reply();
+            } else if change.previous_state != change.state {
+                terminal.advance_awaiting_reply(change.state);
+            }
+        }
         if change.previous_state != change.state {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
@@ -3319,6 +3326,42 @@ mod tests {
         assert!(terminal.last_agent_completion_seq.is_none());
         assert!(app.workspaces[1].panes[&pane_id].seen);
         assert!(!app.pending_agent_notifications.contains_key(&pane_id));
+    }
+
+    #[test]
+    fn awaiting_reply_report_shows_when_the_turn_ends_and_clears_on_the_next_turn() {
+        let mut app = app_with_workspaces(&["agent"]);
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let change = |app: &mut AppState, state: AgentState| {
+            app.handle_app_event(AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Claude),
+                state,
+                visible_blocker: false,
+                visible_working: state == AgentState::Working,
+                process_exited: false,
+                observed_at: Instant::now(),
+            });
+        };
+        let awaiting = |app: &AppState| app.terminals[&terminal_id].awaiting_reply;
+
+        change(&mut app, AgentState::Working);
+        assert!(!app
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .report_awaiting_reply());
+        assert!(!awaiting(&app), "a report waits for the turn to end");
+        change(&mut app, AgentState::Idle);
+        assert!(awaiting(&app));
+
+        change(&mut app, AgentState::Working);
+        assert!(!awaiting(&app), "the next turn clears it");
+        change(&mut app, AgentState::Idle);
+        assert!(!awaiting(&app), "a turn without a report shows nothing");
     }
 
     #[test]

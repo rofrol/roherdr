@@ -2,11 +2,12 @@
 """Log consultations (gpt, gemini, deepseek skills), rate them after triage, show stats per model.
 
   consult.py log --skill S --model M --status ok|error [--effort E] [--mode M] [--seconds N] [--prompt-chars N]
-                [--answer-chars N] [--usage JSON] [--usage-raw JSON]      (round id from $CONSULT_ROUND)
+                [--answer-chars N] [--usage JSON] [--usage-raw JSON]
+                [--model-version V] [--fingerprint F]                      (round id from $CONSULT_ROUND)
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
   consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
-  consult.py stats [--days N] [--pairs] [--all]
+  consult.py stats [--days N] [--pairs] [--all] [--by-alias]
   consult.py recent [-n N]
 
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
@@ -26,6 +27,13 @@ def append(rec):
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def by_version(calls):
+    """Name calls by the model version the provider reported, when known: an alias like `deepseek-flash` moves to newer
+    models over time, and merging them would mix two models' stats. Calls logged before versions were recorded keep
+    their alias (version unknown); `stats --by-alias` merges everything under the alias instead."""
+    return {i: {**c, "model": c.get("model_version") or c["model"]} for i, c in calls.items()}
 
 
 def load():
@@ -68,6 +76,9 @@ def cmd_log(a):
            "prompt_chars": a.prompt_chars, "answer_chars": a.answer_chars, "cwd": os.getcwd()}
     if os.environ.get("CONSULT_ROUND"):
         rec["round"] = os.environ["CONSULT_ROUND"]
+    for key, val in (("model_version", a.model_version), ("fingerprint", a.fingerprint)):
+        if val:
+            rec[key] = val
     for key, raw in (("usage", a.usage), ("usage_raw", a.usage_raw)):
         try:
             val = json.loads(raw) if raw else None
@@ -106,25 +117,40 @@ def cmd_rate(a):
 
 
 def coordinator(a):
-    """The coordinator's model id, reasoning effort (and where it came from) and CLI version, as known when the
-    entry is logged. Anything not known is `unknown`, never a guessed default."""
-    if a.effort:
-        effort, source = a.effort, "flag"
-    elif os.environ.get("CLAUDE_EFFORT"):
-        # Claude Code sets it for its Bash tool; a hint of the session's effort, not proof.
-        effort, source = os.environ["CLAUDE_EFFORT"], "CLAUDE_EFFORT"
+    """Which agent coordinates (claude-code, pi), its model id and reasoning effort (each with where it came from)
+    and CLI version, as known when the entry is logged. pi exposes its model and effort to its bash tool; Claude Code
+    only its effort, so there the model comes from --model. Anything not known is `unknown`, never a guessed default."""
+    env = os.environ
+    if env.get("CLAUDECODE"):
+        agent = "claude-code"
+    elif env.get("PI_MODEL") or env.get("PI_SESSION_ID"):
+        agent = "pi"
     else:
-        effort, source = "unknown", "unknown"
-    execpath = os.environ.get("CLAUDE_CODE_EXECPATH")  # e.g. ~/.local/share/claude/versions/2.1.283
-    cli = f"claude-code {Path(execpath).name}" if execpath else "unknown"
-    return {"model": a.model or "unknown", "effort": effort, "effort_source": source, "cli": cli}
+        agent = "unknown"
+
+    def pick(flag, *names):
+        if flag:
+            return flag, "flag"
+        for name in names:
+            if env.get(name):
+                return env[name], name
+        return "unknown", "unknown"
+
+    model, model_source = pick(a.model, "PI_MODEL")
+    effort, effort_source = pick(a.effort, "CLAUDE_EFFORT", "PI_REASONING_LEVEL")
+    execpath = env.get("CLAUDE_CODE_EXECPATH")  # e.g. ~/.local/share/claude/versions/2.1.283
+    cli = f"claude-code {Path(execpath).name}" if execpath else agent
+    return {"agent": agent, "model": model, "model_source": model_source, "effort": effort,
+            "effort_source": effort_source, "cli": cli}
 
 
 def coordinator_label(rd):
-    """model@effort; entries from before 2026-09-26 have only a family name like `claude`."""
+    """agent/model@effort; entries from before 2026-09-27 have no agent, older ones only a family name like `claude`."""
     model = rd.get("model") or "claude"
     effort = rd.get("effort")
-    return f"{model}@{effort}" if effort and effort != "unknown" else model
+    agent = rd.get("agent")
+    label = f"{agent}/{model}" if agent and agent != "unknown" else model
+    return f"{label}@{effort}" if effort and effort != "unknown" else label
 
 
 def cmd_self(a):
@@ -151,6 +177,8 @@ def cmd_stats(a):
     calls, ratings, rounds = load()
     since = time.time() - a.days * 86400 if a.days else 0
     calls = {i: c for i, c in calls.items() if c["ts"] >= since}
+    if not a.by_alias:
+        calls = by_version(calls)
     rows = defaultdict(lambda: defaultdict(float))
     for c in calls.values():
         s = rows[label(c)]
@@ -200,7 +228,9 @@ def cmd_stats(a):
     print("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
           "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
           "over rated calls; rated: rated/all calls, unrated ones are left out; err: calls that failed (no answer), not wrong answers.\n"
-          "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.")
+          "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.\n"
+          "Models are named by the version the provider reported; a row named by an alias (deepseek/deepseek-flash) holds calls\n"
+          "logged before versions were recorded, of unknown version. --by-alias merges them.")
     if extra:
         print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.")
     if a.pairs:
@@ -284,6 +314,7 @@ def print_pairs(calls, ratings):
 
 def cmd_recent(a):
     calls, ratings, rounds = load()
+    calls = by_version(calls)
     for c in sorted(calls.values(), key=lambda c: c["ts"])[-a.n:]:
         r = ratings.get(c["id"])
         rated = f'{r["verdict"]} {r.get("accepted") or 0}/{r.get("findings") or 0} u{r.get("unique") or 0}' if r else "unrated"
@@ -307,6 +338,8 @@ def main():
         l.add_argument(k, type=int)
     l.add_argument("--usage", default="", help='normalized JSON: {"input","cached","output","reasoning"}')
     l.add_argument("--usage-raw", default="", help="the provider's usage object, kept for later")
+    l.add_argument("--model-version", default="", help="the model the provider says serves --model (when it is an alias)")
+    l.add_argument("--fingerprint", default="", help="the provider's backend fingerprint (e.g. system_fingerprint)")
     sub.add_parser("new-round")
     r = sub.add_parser("rate")
     r.add_argument("id"); r.add_argument("verdict", choices=list(VERDICTS))
@@ -316,14 +349,15 @@ def main():
     c = sub.add_parser("self")
     g = c.add_mutually_exclusive_group(required=True)
     g.add_argument("--calls"); g.add_argument("--round")
-    c.add_argument("--model", help="your exact model id, e.g. claude-opus-5-5 (unknown when left out)")
-    c.add_argument("--effort", help="your reasoning effort (default: $CLAUDE_EFFORT, else unknown)")
+    c.add_argument("--model", help="your exact model id, e.g. claude-opus-5-5 (default: $PI_MODEL, else unknown)")
+    c.add_argument("--effort", help="your reasoning effort (default: $CLAUDE_EFFORT or $PI_REASONING_LEVEL, else unknown)")
     for k in ("--findings", "--accepted", "--refuted", "--unique", "--missed"):
         c.add_argument(k, type=int)
     c.add_argument("--note", default="")
     s = sub.add_parser("stats"); s.add_argument("--days", type=int)
     s.add_argument("--pairs", action="store_true", help="token efficiency and paired within-round comparisons")
     s.add_argument("--all", action="store_true", help="all columns, @high history and the coordinator table")
+    s.add_argument("--by-alias", action="store_true", help="group by the requested model, merging its versions")
     n = sub.add_parser("recent"); n.add_argument("-n", type=int, default=20)
     a = p.parse_args()
     {"log": cmd_log, "new-round": cmd_new_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,

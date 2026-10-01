@@ -23,6 +23,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) tab_label: crate::config::TabLabelConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
+    pub(super) show_agents_panel: bool,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
@@ -99,14 +100,16 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
-    /// Agent and job lines under a space (`ui.sidebar.spaces.agents`), by pane.
-    pub(super) space_agents: Vec<(Rect, String)>,
+    /// Agent and job lines under a space (`ui.sidebar.spaces.agents`).
+    pub(super) space_agents: Vec<(Rect, super::space_agents::SpaceLineTarget)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
+    /// The `cust`, `name` and `prio` buttons in the spaces header.
+    pub(super) space_sort_buttons: Vec<(Rect, super::space_sort::SpaceSortKey)>,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     /// Rows the spaces and detail sections split between them; dragging the
@@ -117,6 +120,10 @@ pub(super) struct ShellHitMap {
     pub(super) new_tab: Rect,
     pub(super) tab_scroll_left: Rect,
     pub(super) tab_scroll_right: Rect,
+    /// The whole main tab row and child tab row: the wheel steps through
+    /// their tabs anywhere on them, gaps and status included.
+    pub(super) tab_bar: Rect,
+    pub(super) child_tab_bar: Rect,
     pub(super) mobile_switch: Rect,
     pub(super) mobile_close: Rect,
     pub(super) mobile_targets: Vec<(Rect, ClientMobileTarget)>,
@@ -188,6 +195,30 @@ pub(super) struct ClientWorkspacePress {
     pub(super) workspace_id: String,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
+    /// Set once the pointer moved but the space cannot be dragged; the
+    /// sidebar header says why.
+    pub(super) refused: Option<WorkspaceDragRefusal>,
+}
+
+/// Why a space cannot be dragged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WorkspaceDragRefusal {
+    /// Only the custom order can be rearranged.
+    Sort,
+    /// A linked worktree moves with its parent space.
+    LinkedWorktree,
+    /// Spaces of another endpoint are not reordered from here.
+    Remote,
+}
+
+impl WorkspaceDragRefusal {
+    pub(super) fn hint(self) -> &'static str {
+        match self {
+            Self::Sort => "sort by cust to reorder",
+            Self::LinkedWorktree => "moves with its parent",
+            Self::Remote => "can't reorder here",
+        }
+    }
 }
 
 pub(super) struct ClientTabPress {
@@ -916,9 +947,14 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) agent_panel_sort_manual: bool,
+    /// How the spaces list is sorted; a client preference.
+    pub(super) space_sort: super::space_sort::SpaceSort,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
+    /// Space of the active endpoint under the pointer that can be dragged,
+    /// so its name line shows a grip.
+    pub(super) hovered_workspace_id: Option<String>,
     pub(super) tab_press: Option<ClientTabPress>,
     /// Last focused tab of each tab group, by endpoint and the group's
     /// top-level tab. Kept by this client, so one client's navigation never
@@ -1099,9 +1135,11 @@ impl ClientShellState {
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
+            space_sort: preferences.space_sort.unwrap_or_default(),
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
+            hovered_workspace_id: None,
             tab_press: None,
             last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
@@ -1244,12 +1282,29 @@ impl ClientShellState {
         if self.mobile_layout_active() {
             render::workspace_entries(snapshot, &empty_collapsed_groups)
         } else {
-            render::workspace_entries(
+            let collapsed_groups = self
+                .collapsed_groups_for_endpoint(&self.active_endpoint_id)
+                .unwrap_or(&empty_collapsed_groups);
+            self.sorted_for_sidebar(
                 snapshot,
-                self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups),
+                render::workspace_entries(snapshot, collapsed_groups),
+                collapsed_groups,
             )
         }
+    }
+
+    /// `entries` in the order the sidebar shows them: the sort applies to the
+    /// single-machine sidebar; the multi-machine one keeps the manual order.
+    pub(super) fn sorted_for_sidebar(
+        &self,
+        snapshot: &ClientShellSnapshot,
+        entries: Vec<WorkspaceEntry>,
+        collapsed_groups: &HashSet<String>,
+    ) -> Vec<WorkspaceEntry> {
+        if self.endpoints.len() > 1 {
+            return entries;
+        }
+        super::space_sort::sorted_entries(snapshot, entries, collapsed_groups, self.space_sort)
     }
 
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
@@ -1300,6 +1355,7 @@ impl ClientShellState {
         self.popup_terminal_id = None;
         self.chrome_drag = None;
         self.workspace_press = None;
+        self.hovered_workspace_id = None;
         self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;

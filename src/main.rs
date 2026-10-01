@@ -737,6 +737,16 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    // Hidden: scripts/herdr_live.sh names installed-build backups after it.
+    if args.get(1).map(String::as_str) == Some("--build-commit") {
+        platform::begin_cli_output();
+        match crate::build_info::commit_line() {
+            Some(line) => println!("{line}"),
+            None => std::process::exit(1),
+        }
+        return Ok(());
+    }
+
     if args.iter().any(|a| a == "--default-config") {
         platform::begin_cli_output();
         print!("{DEFAULT_CONFIG}");

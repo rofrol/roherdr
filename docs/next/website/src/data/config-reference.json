@@ -1022,7 +1022,7 @@
           "key": "ui.confirm_close_running",
           "type": "boolean",
           "default": "true",
-          "description": "Ask before closing a tab, pane or workspace with running work: a tab marked running, a working or blocked agent, or a program the shell started. Independent of `ui.confirm_close`."
+          "description": "Ask before closing a tab, pane or workspace with running work: a tab marked running, any running agent (idle included), or a program the shell started. Independent of `ui.confirm_close`."
         },
         {
           "key": "ui.prompt_new_tab_name",
@@ -1161,6 +1161,12 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
+          "key": "ui.sidebar.show_agents_panel",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the Agents panel. Set to false to give its height to the Spaces list. Meant for use with ui.sidebar.spaces.agents, which lists each Space's agents under it."
+        },
+        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
@@ -1170,7 +1176,7 @@
           "key": "ui.sidebar.spaces.agents",
           "type": "boolean",
           "default": "false",
-          "description": "Experimental. List each Space's agents under it: a line with the agent's state and task, and a line with its herdr-job counts when it has jobs."
+          "description": "Experimental. List each Space's agents under it: a line with the agent's state and task, and a line with the counts of the job tabs nested under the agent's tab (running, failed, succeeded) when it has any. Running and failed jobs listed under no agent, such as those whose agent pane closed, follow as an other jobs line, which replaces the Space's tab_jobs while the Space lists agents."
         },
         {
           "key": "ui.sidebar.spaces.rows",

@@ -468,7 +468,10 @@ pub struct SpacesSidebarConfig {
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
     /// List each space's agents under it, with their jobs. Experimental: the
-    /// first step of folding the agents panel into spaces. Default: false.
+    /// first step of folding the agents panel into spaces. Hides the spaces'
+    /// own `state_icon`, which the listed agents make redundant, and moves
+    /// `tab_jobs` of a space with agents to an `other jobs` line below them,
+    /// counting only jobs no agent lists. Default: false.
     pub agents: bool,
 }
 
@@ -489,11 +492,24 @@ impl Default for SpacesSidebarConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    /// Show the agents panel; false gives its height to the spaces list, for
+    /// use with `spaces.agents`. Default: true.
+    pub show_agents_panel: bool,
+}
+
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self {
+            agents: AgentsSidebarConfig::default(),
+            spaces: SpacesSidebarConfig::default(),
+            show_agents_panel: true,
+        }
+    }
 }
 
 #[cfg(test)]

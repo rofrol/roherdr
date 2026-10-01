@@ -23,6 +23,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "prompt" => agent_prompt(&args[1..]),
         "rename" => agent_rename(&args[1..]),
         "focus" => agent_focus(&args[1..]),
+        "awaiting-reply" => agent_awaiting_reply(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
@@ -483,6 +484,26 @@ fn agent_focus(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+/// Run by the agent itself right before it ends a turn with a question for the user.
+fn agent_awaiting_reply(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent awaiting-reply [--pane PANE_ID]";
+    let pane_id = match args {
+        [] => super::target::caller_pane_id(),
+        [flag, pane] if flag == "--pane" => Some(pane.clone()),
+        _ => {
+            eprintln!("{USAGE}");
+            return Ok(2);
+        }
+    };
+    let Some(pane_id) = pane_id else {
+        eprintln!("herdr agent awaiting-reply: no --pane given and HERDR_PANE_ID is not set");
+        return Ok(2);
+    };
+    super::send_ok_request(Method::PaneReportAwaitingReply(
+        crate::api::schema::PaneReportAwaitingReplyParams { pane_id },
+    ))
+}
+
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
@@ -938,6 +959,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
+    eprintln!("  herdr agent awaiting-reply [--pane PANE_ID]");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(

@@ -166,6 +166,12 @@ pub struct TerminalState {
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     pub last_agent_completion_seq: Option<u64>,
+    /// The agent reported during its current turn that the turn ends by asking the user
+    /// something; shown as `awaiting_reply` once the turn ends.
+    awaiting_reply_reported: bool,
+    /// The agent's last turn ended by asking the user something, and the user has not
+    /// answered yet (the agent has not started working again).
+    pub awaiting_reply: bool,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
@@ -210,6 +216,8 @@ impl TerminalState {
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             last_agent_completion_seq: None,
+            awaiting_reply_reported: false,
+            awaiting_reply: false,
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
@@ -2138,6 +2146,39 @@ impl TerminalState {
                     .then(|| self.detected_agent.map(crate::detect::agent_label))
                     .flatten()
             })
+    }
+
+    /// Records the agent's report that it is ending its turn with a question for the user.
+    /// A report during the turn waits for the turn to end; a report while the agent is not
+    /// working shows at once. Returns whether `awaiting_reply` changed.
+    pub fn report_awaiting_reply(&mut self) -> bool {
+        match self.state {
+            AgentState::Working | AgentState::Blocked => {
+                self.awaiting_reply_reported = true;
+                false
+            }
+            AgentState::Idle => !std::mem::replace(&mut self.awaiting_reply, true),
+            AgentState::Unknown => false,
+        }
+    }
+
+    /// Moves the awaiting-reply report along an agent state transition: a turn that ends
+    /// shows its report (or clears an older one), a new turn clears the shown one.
+    pub fn advance_awaiting_reply(&mut self, state: AgentState) {
+        match state {
+            AgentState::Working => self.awaiting_reply = false,
+            AgentState::Blocked => {}
+            AgentState::Idle => {
+                self.awaiting_reply = std::mem::take(&mut self.awaiting_reply_reported);
+            }
+            AgentState::Unknown => self.clear_awaiting_reply(),
+        }
+    }
+
+    /// Forgets any awaiting-reply report, e.g. when the agent exits or its session changes.
+    pub fn clear_awaiting_reply(&mut self) {
+        self.awaiting_reply_reported = false;
+        self.awaiting_reply = false;
     }
 
     pub fn effective_known_agent(&self) -> Option<Agent> {

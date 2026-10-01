@@ -59,6 +59,8 @@ impl ClientShellState {
             agent_panel_sort: self
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
+            space_sort: (self.space_sort != super::space_sort::SpaceSort::default())
+                .then_some(self.space_sort),
             collapsed_groups,
             remote_collapsed_groups,
         };
@@ -123,6 +125,7 @@ impl ClientShellConfig {
             tab_label: config.ui.tab_label,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             spaces: config.ui.sidebar.spaces.clone(),
+            show_agents_panel: config.ui.sidebar.show_agents_panel,
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
@@ -352,6 +355,7 @@ impl ClientShellConfig {
                 self.tab_label = ui.tab_label;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
                 self.spaces = ui.sidebar.spaces.clone();
+                self.show_agents_panel = ui.sidebar.show_agents_panel;
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;

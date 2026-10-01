@@ -238,7 +238,7 @@ def reconcile_tabs():
 
 def update_owner_token(owner_pane):
     """Summarise the owner's jobs that still have a tab into its `$jobs`
-    sidebar token as counts, e.g. `2⧖ 1✗ 1✓`: the agents panel cannot
+    sidebar token as counts, e.g. `⧖ 2 !1 ✓1`: the agents panel cannot
     scroll, so a list of names would push other agents out of view. A closed
     tab drops its job from the counts (the `tab.closed` hook recounts)."""
     if not owner_pane:
@@ -253,8 +253,10 @@ def update_owner_token(owner_pane):
             continue
         st, _ = status(path, meta)
         counts["failed" if st == "lost" else st] += 1
-    marks = (("running", "⧖"), ("failed", "✗"), ("ok", "✓"))
-    parts = [f"{counts[key]}{mark}" for key, mark in marks if counts[key]]
+    # The icons and order of herdr's own job counts (tab bar, space row):
+    # `!`, not `✗`, and `⧖` spaced from its digit, which it runs into.
+    marks = (("running", "⧖ "), ("failed", "!"), ("ok", "✓"))
+    parts = [f"{mark}{counts[key]}" for key, mark in marks if counts[key]]
     cmd = ["pane", "report-metadata", owner_pane, "--source", "herdr-job"]
     if parts:
         cmd += ["--token", f"jobs={' '.join(parts)}", "--ttl-ms", str(TOKEN_TTL_MS)]

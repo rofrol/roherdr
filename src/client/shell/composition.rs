@@ -78,6 +78,10 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_before: None,
+            pressed_workspace_id: None,
+            hovered_workspace_id: None,
+            workspace_drag_refusal: None,
+            space_sort: self.space_sort,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -206,6 +210,24 @@ impl ClientShellState {
             ),
             _ => (None, None),
         };
+        // Before a drag starts the pressed space shows it can be lifted, or the
+        // header says why it cannot; a hovered one shows a grip.
+        let pressed_workspace = self
+            .workspace_press
+            .as_ref()
+            .filter(|_| self.chrome_drag.is_none());
+        let workspace_drag_refusal = pressed_workspace.and_then(|press| press.refused);
+        let pressed_workspace_id = pressed_workspace
+            .filter(|press| {
+                self.endpoint_workspace_drag_check(&press.endpoint_id, &press.workspace_id)
+                    .is_ok()
+            })
+            .map(|press| press.workspace_id.as_str());
+        let hovered_workspace_id = self
+            .hovered_workspace_id
+            .as_deref()
+            .filter(|_| self.workspace_press.is_none() && self.chrome_drag.is_none())
+            .filter(|_| self.space_sort.allows_drag());
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -236,6 +258,10 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_before,
+                pressed_workspace_id,
+                hovered_workspace_id,
+                workspace_drag_refusal,
+                space_sort: self.space_sort,
             },
         );
         self.hits.panes = surface
@@ -337,6 +363,7 @@ impl ClientShellState {
         };
         if mode_bar == Some(layout.tab_bar) {
             self.hits.tabs.clear();
+            self.hits.tab_bar = Rect::default();
             self.hits.new_tab = Rect::default();
             self.hits.tab_scroll_left = Rect::default();
             self.hits.tab_scroll_right = Rect::default();

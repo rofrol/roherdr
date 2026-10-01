@@ -18,12 +18,19 @@ own [herdr-job](../job/README.md) tab, so you can watch it.
 
 ```sh
 herdr plugin link ~/personal_projects/herdr/plugins/consult
-~/personal_projects/herdr/plugins/consult/install-skills   # links into ~/.claude/skills
+~/personal_projects/herdr/plugins/consult/install-skills   # links for Claude Code and pi
 ```
 
-`install-skills [DIR]` symlinks each skill into `DIR` (default
-`~/.claude/skills`), so the skills follow this checkout. It never overwrites
-an existing directory of the same name. Link the plugin rather than
+`install-skills [DIR...]` symlinks every skill into each `DIR` (default
+`~/.claude/skills` for Claude Code and `~/.pi/agent/skills` for pi), so the
+skills follow this checkout. The skills go in together: the scripts find
+`consult-stats` as their sibling. It never overwrites an existing directory
+of the same name, and it reports a same-named skill in `~/.agents/skills`,
+which pi also reads and might use instead. The `SKILL.md` commands use the
+skill's own directory, so they work from either agent. `consult.py self`
+logs which agent coordinated (`claude-code`, `pi`); pi gives its model and
+effort (`$PI_MODEL`, `$PI_REASONING_LEVEL`), Claude Code only its effort, so
+there the skill asks for `--model`. Link the plugin rather than
 `herdr plugin install` it: an installed plugin is a copy, and links into it
 break when it is updated.
 

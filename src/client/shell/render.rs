@@ -5,7 +5,7 @@ mod overlays;
 #[path = "../shell/sidebar.rs"]
 pub(in crate::client::shell) mod sidebar;
 #[path = "../shell/tabs.rs"]
-mod tabs;
+pub(in crate::client::shell) mod tabs;
 
 pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel};
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
@@ -249,7 +249,14 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) dragged_workspace_id: Option<&'a str>,
     /// While a space is dragged: where it would land, `Some(None)` for the end.
     pub(super) workspace_drop_before: Option<Option<&'a str>>,
+    /// Pressed space that a move would lift, before the drag starts.
+    pub(super) pressed_workspace_id: Option<&'a str>,
+    /// Space under the pointer that can be dragged.
+    pub(super) hovered_workspace_id: Option<&'a str>,
+    /// Why the pressed space cannot be dragged, once the pointer moved.
+    pub(super) workspace_drag_refusal: Option<super::WorkspaceDragRefusal>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,
+    pub(super) space_sort: super::space_sort::SpaceSort,
 }
 
 pub(super) fn render_shell(
