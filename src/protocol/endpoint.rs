@@ -39,6 +39,24 @@ pub struct EndpointAgentCompletions {
     pub completions: std::collections::BTreeMap<String, u64>,
 }
 
+/// Optional JSON companion; never added to the frozen snapshot codec.
+pub const JOB_METADATA_KIND: &str = "endpoint.job-metadata.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointJobMetadata {
+    pub boot_id: String,
+    pub revision: u64,
+    pub tab_id: Option<String>,
+    pub job: Option<crate::api::schema::TabJobMetadata>,
+}
+
+pub fn job_metadata_message(projection: &EndpointJobMetadata) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: JOB_METADATA_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
+}
+
 fn default_true() -> bool {
     true
 }

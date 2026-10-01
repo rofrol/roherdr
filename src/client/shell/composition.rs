@@ -380,6 +380,10 @@ impl ClientShellState {
         if !self.config.mouse_capture {
             self.hits.pane_splits.clear();
         }
+        self.hits.job_footer = layout.job_footer;
+        if !layout.job_footer.is_empty() {
+            super::job_footer::render(self, &mut buffer, layout.job_footer);
+        }
         let mode_bar_area = if layout.mobile_header.is_empty()
             && self.config.tab_bar_position == TabBarPositionConfig::Bottom
             && !layout.tab_bar.is_empty()

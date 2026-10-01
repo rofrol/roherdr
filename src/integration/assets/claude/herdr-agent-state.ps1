@@ -38,6 +38,7 @@ if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
 
 # Ask the agent to report a turn that ends with a question, so herdr keeps its pane marked
 # until the user answers. HERDR_AWAITING_REPLY_INSTRUCTIONS=0 turns the instruction off.
+$contexts = @()
 if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
     $context = "You run inside a Herdr pane. When you end a turn needing the user's answer " +
         "or decision before you can continue the work, run the shell command " +
@@ -52,7 +53,22 @@ if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
         "it at most once per turn and ignore its failure. Do not run it when you " +
         "simply finished and ask nothing, or for courtesy offers such as asking " +
         "whether anything else is needed."
-    @{ hookSpecificOutput = @{ hookEventName = "SessionStart"; additionalContext = $context } } |
+    $contexts += $context
+}
+
+if ($env:HERDR_AGENT_CONTEXT -ne "0") {
+    $contexts += @'
+[Herdr behavior context v1]
+You are running in a Herdr pane. Herdr shows actual runtime activity, not promises.
+- When authorized work has an executable next step, perform it instead of ending your turn with only a promise to continue.
+- Only say work is running or queued when it has actually started and that claim is still accurate. This includes work started in an earlier turn.
+- If you cannot start the next step, state what was not started and why. Ask explicitly when you need approval, a decision, credentials, or information.
+- Report idle or finished truthfully. Do not fake activity, override an explicit stop, loop indefinitely, or start extra paid/model calls without authorization.
+- User and repository instructions, approval requirements, and safety rules take precedence. This guidance is not permission to bypass them.
+'@
+}
+if ($contexts.Count -gt 0) {
+    @{ hookSpecificOutput = @{ hookEventName = "SessionStart"; additionalContext = ($contexts -join "`n`n") } } |
         ConvertTo-Json -Compress -Depth 3 | Write-Output
 }
 

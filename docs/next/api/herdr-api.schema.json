@@ -1043,6 +1043,16 @@
             "focused": {
               "type": "boolean"
             },
+            "job": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabJobMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "label": {
               "type": "string"
             },
@@ -1087,6 +1097,40 @@
             "focused",
             "pane_count",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "TabJobMetadata": {
+          "description": "Runtime facts supplied by a job runner; presentation belongs to clients.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "owner_pane": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "why": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "origin"
           ],
           "type": "object"
         },
@@ -4384,6 +4428,40 @@
           },
           "type": "object"
         },
+        "TabJobMetadata": {
+          "description": "Runtime facts supplied by a job runner; presentation belongs to clients.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "owner_pane": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "why": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "origin"
+          ],
+          "type": "object"
+        },
         "TabListParams": {
           "properties": {
             "workspace_id": {
@@ -4424,6 +4502,28 @@
           "required": [
             "tab_id",
             "label"
+          ],
+          "type": "object"
+        },
+        "TabSetJobMetadataParams": {
+          "properties": {
+            "job": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabJobMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Null clears a previous job registration."
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
           ],
           "type": "object"
         },
@@ -5430,6 +5530,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_job_metadata",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetJobMetadataParams"
             }
           },
           "required": [
@@ -10979,6 +11095,16 @@
             "focused": {
               "type": "boolean"
             },
+            "job": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabJobMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "label": {
               "type": "string"
             },
@@ -11023,6 +11149,40 @@
             "focused",
             "pane_count",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "TabJobMetadata": {
+          "description": "Runtime facts supplied by a job runner; presentation belongs to clients.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "owner_pane": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "why": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "origin"
           ],
           "type": "object"
         },

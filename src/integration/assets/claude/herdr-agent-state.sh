@@ -72,11 +72,9 @@ if is_subagent:
 
 # Ask the agent to report a turn that ends with a question, so herdr keeps its pane marked
 # until the user answers. HERDR_AWAITING_REPLY_INSTRUCTIONS=0 turns the instruction off.
+contexts = []
 if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": (
+    contexts.append(
                 "You run inside a Herdr pane. When you end a turn needing the user's answer "
                 "or decision before you can continue the work, run the shell command "
                 "`herdr agent awaiting-reply` on its own, as the last command of the turn, "
@@ -90,9 +88,19 @@ if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
                 "it at most once per turn and ignore its failure. Do not run it when you "
                 "simply finished and ask nothing, or for courtesy offers such as asking "
                 "whether anything else is needed."
-            ),
-        }
-    }))
+    )
+if os.environ.get("HERDR_AGENT_CONTEXT", "1") != "0":
+    contexts.append("""[Herdr behavior context v1]
+You are running in a Herdr pane. Herdr shows actual runtime activity, not promises.
+- When authorized work has an executable next step, perform it instead of ending your turn with only a promise to continue.
+- Only say work is running or queued when it has actually started and that claim is still accurate. This includes work started in an earlier turn.
+- If you cannot start the next step, state what was not started and why. Ask explicitly when you need approval, a decision, credentials, or information.
+- Report idle or finished truthfully. Do not fake activity, override an explicit stop, loop indefinitely, or start extra paid/model calls without authorization.
+- User and repository instructions, approval requirements, and safety rules take precedence. This guidance is not permission to bypass them.""")
+if contexts:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "SessionStart", "additionalContext": "\n\n".join(contexts)
+    }}))
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 report_seq = time.time_ns()
 session_id = hook_input.get("session_id")

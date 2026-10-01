@@ -22,6 +22,8 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    pub(super) job_metadata: Option<(Option<u64>, crate::protocol::endpoint::EndpointJobMetadata)>,
+    pending_job_metadata: Option<(Option<u64>, crate::protocol::endpoint::EndpointJobMetadata)>,
 }
 
 pub(super) struct MachineHit {
@@ -88,6 +90,9 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                job_metadata: previous.and_then(|endpoint| endpoint.job_metadata.clone()),
+                pending_job_metadata: previous
+                    .and_then(|endpoint| endpoint.pending_job_metadata.clone()),
             });
         }
 
@@ -130,6 +135,8 @@ impl ClientShellState {
             endpoint.methods = None;
             endpoint.agent_recency.clear();
             endpoint.agent_presentation = Default::default();
+            endpoint.job_metadata = None;
+            endpoint.pending_job_metadata = None;
             endpoint.agent_view_projection = None;
             endpoint.pending_agent_view_projection = None;
             endpoint.agent_view_projection_supported = false;
@@ -320,6 +327,58 @@ impl ClientShellState {
             .snapshot
             .as_deref()
             .map(|snapshot| (snapshot.boot_id.as_str(), snapshot.revision))
+    }
+
+    pub(crate) fn set_endpoint_job_metadata(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        projection: crate::protocol::endpoint::EndpointJobMetadata,
+    ) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|e| &e.endpoint_id == endpoint_id)
+        {
+            if endpoint
+                .snapshot_generation
+                .is_some_and(|current| current > generation)
+            {
+                return;
+            }
+            if endpoint
+                .pending_job_metadata
+                .as_ref()
+                .or(endpoint.job_metadata.as_ref())
+                .is_some_and(|(received, current)| {
+                    *received == Some(generation)
+                        && current.boot_id == projection.boot_id
+                        && current.revision >= projection.revision
+                })
+            {
+                return;
+            }
+            // Keep the current coherent companion until its replacement snapshot
+            // is installed: previous_size must still reflect the old footer.
+            endpoint.pending_job_metadata = Some((Some(generation), projection));
+        }
+    }
+
+    pub(super) fn active_job_metadata(&self) -> Option<&crate::api::schema::TabJobMetadata> {
+        let snapshot = self.snapshot.as_deref()?;
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|e| e.endpoint_id == self.active_endpoint_id)?;
+        let (generation, projection) = endpoint.job_metadata.as_ref()?;
+        if *generation != endpoint.snapshot_generation
+            || projection.boot_id != snapshot.boot_id
+            || projection.revision != snapshot.revision
+            || projection.tab_id != snapshot.focused_tab_id
+        {
+            return None;
+        }
+        projection.job.as_ref()
     }
 
     pub(crate) fn set_endpoint_agent_completions(
@@ -622,6 +681,20 @@ impl ClientShellState {
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
+        let matches_job =
+            |(received, job): &(Option<u64>, crate::protocol::endpoint::EndpointJobMetadata)| {
+                *received == generation
+                    && endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                        job.boot_id == snapshot.boot_id
+                            && job.revision == snapshot.revision
+                            && job.tab_id == snapshot.focused_tab_id
+                    })
+            };
+        endpoint.job_metadata = endpoint
+            .pending_job_metadata
+            .take()
+            .filter(matches_job)
+            .or_else(|| endpoint.job_metadata.take().filter(matches_job));
         let pending_matches =
             endpoint
                 .pending_agent_view_projection
@@ -742,5 +815,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        job_metadata: None,
+        pending_job_metadata: None,
     }
 }

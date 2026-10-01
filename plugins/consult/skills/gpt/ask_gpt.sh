@@ -5,7 +5,7 @@
 set -euo pipefail
 consult_dir="$(dirname "$(realpath "$0")")/../consult-stats"  # the skills live side by side, wherever they are linked from
 orig=("$@")  # for the herdr-job re-run, once the model is known
-model="${GPT_MODEL:-astra}"; effort=""; files=(); repo=""
+model="${GPT_MODEL:-sol}"; effort=""; files=(); repo=""
 while getopts "m:e:f:r" o; do
   case $o in m) model=$OPTARG;; e) effort=$OPTARG;; f) files+=("$OPTARG");; r) repo=1;; *) exit 2;; esac
 done
@@ -15,7 +15,11 @@ case $effort in high|xhigh) echo "Effort $effort is disabled; use the default, l
 if [ -z "${CONSULT_IN_JOB:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && command -v herdr-job >/dev/null; then
   exec "$consult_dir"/in_herdr_job.sh "gpt $model/${effort:-default}" "$0" ${orig[@]+"${orig[@]}"}  # watch it in its own herdr tab
 fi
-case $model in astra|sol|luna) model="gpt-6-$model";; terra) model=gpt-5.6-terra;; esac  # no GPT-6 Terra yet
+case $model in
+  astra|luna) model="gpt-6-$model";;  # gpt-6-astra, gpt-6-luna
+  sol) model=gpt-6.1-sol;;            # newest Sol; the older gpt-6-sol needs its full id
+  terra) model=gpt-5.6-terra;;        # no GPT-6 Terra yet
+esac
 
 prompt="$*"
 # stdin only via -f -: a background job can inherit an open stdin that never sends EOF.

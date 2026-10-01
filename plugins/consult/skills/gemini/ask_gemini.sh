@@ -16,25 +16,28 @@ case $model in
   flash) model="gemini-3.8-flash-$effort";;
   pro|gemini-*-pro-*) echo "Gemini Pro is disabled; use Flash" >&2; exit 2;;
 esac
-# Exhausted weekly quota: refuse up front (exit 3), without a request or a herdr tab. The reset time is remembered,
-# so until then not even `agy -p /quota` (~3 s) runs. ISO UTC timestamps compare as strings.
+# Refuse a doomed Gemini call up front, without opening a terminal tab: probe the
+# weekly quota (~3 s) and block only on a verified 0%. An unreadable probe tries
+# the call anyway, because a false block costs hours (the provider resets the
+# weekly window early, which a remembered "exhausted until" timestamp misses) and
+# a wasted attempt costs one tab.
 if [ -z "${CONSULT_IN_JOB:-}" ]; then
-  quota_file=~/.local/state/consult/gemini-quota-reset; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  reset=$(cat "$quota_file" 2>/dev/null) || reset=""
-  if [[ -z $reset || ! $reset > $now ]]; then
-    reset=""
-    # "Gemini Models<TAB>Weekly Limit Remaining<TAB>0%<TAB>2026-10-01T00:06:12Z"; if /quota fails, don't block.
-    line=$(timeout 30 agy -p /quota 2>/dev/null | grep '^Gemini Models') || true
-    IFS=$'\t' read -r _ _ left until <<<"$line" || true
-    if [ "${left:-}" = 0% ] && [[ ${until:-} > $now ]]; then
-      reset=$until; mkdir -p "${quota_file%/*}"; printf '%s\n' "$reset" >"$quota_file"
+  # agy reports what is LEFT; the widget and the messages speak what is USED, so
+  # convert here and compare numbers, never the printed percentage.
+  line=$(timeout 10 agy -p /quota 2>/dev/null |
+    awk -F'\t' '$1 == "Gemini Models" && $2 ~ /Weekly Limit Remaining/ { print $3 "\t" $4; exit }') || line=""
+  IFS=$'\t' read -r left reset <<<"$line" || true
+  remaining=${left%\%}
+  if [[ $remaining =~ ^[0-9]+$ ]]; then
+    consumed=$((100 - remaining))
+    if [[ $consumed -ge 100 && $reset > $(date -u +%Y-%m-%dT%H:%M:%SZ) ]]; then
+      echo "Gemini weekly quota exhausted (100% used) until $reset (UTC); do not call Gemini until then" >&2; exit 3
     fi
-  fi
-  if [ -n "$reset" ]; then
-    echo "Gemini quota exhausted until $reset (UTC); do not call Gemini until then" >&2; exit 3
+  else
+    echo "warning: could not read the Gemini quota from agy; trying the call anyway" >&2
   fi
 fi
-if [ -z "${CONSULT_IN_JOB:-}" ] &&[ -n "${HERDR_SOCKET_PATH:-}" ] && command -v herdr-job >/dev/null; then
+if [ -z "${CONSULT_IN_JOB:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && command -v herdr-job >/dev/null; then
   exec "$consult_dir"/in_herdr_job.sh "gemini ${model#gemini-}" "$0" ${orig[@]+"${orig[@]}"}  # watch it in its own herdr tab
 fi
 

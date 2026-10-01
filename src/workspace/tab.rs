@@ -43,6 +43,7 @@ pub struct Tab {
     /// see `Workspace::tab_parent_index`.
     pub parent: Option<usize>,
     pub status: Option<crate::api::schema::TabStatus>,
+    pub job: Option<crate::api::schema::TabJobMetadata>,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
@@ -189,6 +190,7 @@ impl Tab {
                 number,
                 parent: None,
                 status: None,
+                job: None,
                 root_pane: root_id,
                 layout,
                 panes,
@@ -454,6 +456,7 @@ impl Tab {
             number,
             parent: None,
             status: None,
+            job: None,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,

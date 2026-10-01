@@ -1138,6 +1138,9 @@ impl App {
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
             Method::TabSetParent(params) => return self.handle_tab_set_parent(request.id, params),
             Method::TabSetStatus(params) => return self.handle_tab_set_status(request.id, params),
+            Method::TabSetJobMetadata(params) => {
+                return self.handle_tab_set_job_metadata(request.id, params);
+            }
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),

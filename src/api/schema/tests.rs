@@ -822,6 +822,7 @@ fn worktree_request_and_response_round_trip() {
                 }),
             },
             tab: TabInfo {
+                job: None,
                 tab_id: "w_1:1".into(),
                 workspace_id: "w_1".into(),
                 number: 1,
@@ -1253,6 +1254,7 @@ fn create_response_round_trips_with_root_pane() {
         id: "req_2".into(),
         result: ResponseResult::TabCreated {
             tab: TabInfo {
+                job: None,
                 tab_id: "w_1:2".into(),
                 workspace_id: "w_1".into(),
                 number: 2,

@@ -3,6 +3,24 @@ use ratatui::layout::Rect;
 use crate::app;
 use crate::protocol::{self, FrameData};
 
+pub(super) fn job_metadata(
+    app: &app::App,
+    snapshot: &protocol::ClientShellSnapshot,
+) -> protocol::endpoint::EndpointJobMetadata {
+    let job = snapshot
+        .focused_tab_id
+        .as_deref()
+        .and_then(|id| app.parse_tab_id(id))
+        .and_then(|(ws, tab)| app.state.workspaces.get(ws)?.tabs.get(tab))
+        .and_then(|tab| tab.job.clone());
+    protocol::endpoint::EndpointJobMetadata {
+        boot_id: snapshot.boot_id.clone(),
+        revision: snapshot.revision,
+        tab_id: snapshot.focused_tab_id.clone(),
+        job,
+    }
+}
+
 #[cfg(test)]
 pub(super) fn snapshot(
     app: &app::App,

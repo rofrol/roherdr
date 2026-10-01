@@ -46,6 +46,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.focus",
     "tab.move",
     "tab.rename",
+    "tab.set_job_metadata",
     "usage.read",
     "workspace.close",
     "workspace.create",
@@ -312,6 +313,10 @@ mod tests {
         assert_eq!(
             actual.remove("popup.close").as_deref(),
             Some("776d774a3cfd2da2ce9d937ac58549e6022f0c265832c67c7dd9bf300955d304")
+        );
+        assert_eq!(
+            actual.remove("tab.set_job_metadata").as_deref(),
+            Some("e3dc32ecde73fad8b157285ecfd53bf0a9a99ad7b2932afc44d6cd56c437c422")
         );
         assert_eq!(
             actual.remove("usage.read").as_deref(),

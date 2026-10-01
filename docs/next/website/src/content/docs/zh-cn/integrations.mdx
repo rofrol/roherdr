@@ -85,6 +85,8 @@ Herdr 把内置扩展写入:
 
 如果设置了 `PI_CODING_AGENT_DIR`,Herdr 会改为写入 `$PI_CODING_AGENT_DIR/extensions/herdr-agent-state.ts`。如果 Pi agent 目录已经存在,Herdr 会创建 extensions 目录。卸载只删除那个扩展文件。
 
+Pi 集成还会在交互式智能体提示中加入一段简短、可替换的 Herdr 行为上下文。在任何仓库中都适用，包括在 Herdr 窗格里手动启动 `pi`。它要求智能体执行已获授权的下一步，而不是只承诺继续，准确报告实际活动，并明确请求必要的决定或批准。它不会强制继续，也不会改变状态上报。在 Herdr 之外和无界面模式中不会添加任何内容。启动 Pi 前设置 `HERDR_AGENT_CONTEXT=0` 可仅禁用这段指导。重新安装更新后的集成，再重启 Pi 或执行 `/reload`；无需修改项目或全局 `AGENTS.md`。
+
 ## OMP
 
 安装 OMP 集成:
@@ -116,6 +118,8 @@ herdr integration install claude
 Claude 集成 v10 仅匹配文档列出的 `SessionStart` 来源: `startup`、`resume`、`clear`、`compact` 和 `fork`。这会阻止 Grok 的 `new` 和 `load` 事件启动导入的 Herdr Claude 钩子,而不会禁用其他 Claude 兼容钩子。升级后请重新安装 Claude 集成,以迁移原有的通配匹配规则。Claude 新增来源值时需要更新集成。
 
 Herdr 默认使用 `~/.claude`,设置了 `CLAUDE_CONFIG_DIR` 时使用后者。Claude 配置目录必须已经存在。安装会写入 `hooks/herdr-agent-state.sh`,并向 `settings.json` 添加 Herdr 钩子条目。卸载会移除匹配的钩子条目并删除钩子脚本。
+
+同一个 `SessionStart` 钩子还会提供 Pi 部分所述的 Herdr 行为上下文，包括恢复会话和压缩之后。在任何仓库中以及在 Herdr 内手动启动的 Claude 会话中都适用；不会强制继续或伪造状态。启动 Claude 前设置 `HERDR_AGENT_CONTEXT=0`，可独立于 `HERDR_AWAITING_REPLY_INSTRUCTIONS` 禁用这段指导。两段指导共用一个 JSON 上下文响应。无需修改 `AGENTS.md`；重新安装更新后的 Claude 集成，再启动或恢复会话即可加载。
 
 ## Codex
 

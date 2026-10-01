@@ -2,12 +2,205 @@
 
 ## Next, in order
 
+- Deferred Herdr behavior-context integrations: Pi and Claude Code are
+  already implemented. The checkboxes below select future implementation
+  scope, NOT completion status. All remaining agents start unchecked.
+  Do not implement any of them until the user checks its box or explicitly
+  requests that agent. Verify native context hooks first; support manual
+  starts in arbitrary repositories without `AGENTS.md` edits. Preserve
+  user hooks, truthful status reporting, opt-out and bounded/idempotent
+  resume/compaction handling; no forced continuation or terminal injection.
+  Test installed adapters inside/outside Herdr and document API limitations.
+  - [ ] Codex (`codex`)
+  - [ ] Gemini CLI (`gemini`)
+  - [ ] Cursor Agent CLI (`cursor`)
+  - [ ] Devin CLI (`devin`)
+  - [ ] Antigravity CLI (`agy`)
+  - [ ] Cline (`cline`)
+  - [ ] Oh My Pi (`omp`)
+  - [ ] MastraCode (`mastracode`)
+  - [ ] OpenCode (`opencode`)
+  - [ ] GitHub Copilot CLI (`copilot`)
+  - [ ] Kimi Code CLI (`kimi`)
+  - [ ] Kiro (`kiro`)
+  - [ ] Droid (`droid`)
+  - [ ] Amp (`amp`)
+  - [ ] Grok CLI (`grok`)
+  - [ ] Hermes Agent (`hermes`)
+  - [ ] Kilo Code CLI (`kilo`)
+  - [ ] Qoder CLI (`qodercli`)
+  - [ ] Qwen Code (`qwen`)
+  - [ ] Letta Code (`letta`)
+  - [ ] Maki (`maki`)
+  - [ ] Muse (`muse`)
+
+- [ ] Regression (reported 2026-09-30 16:05): closing a tab moved focus to
+  the last herdr-job tab instead of a tab at the same nesting level.
+  Hypothesis before the consult: `Workspace::close_tab` (`src/workspace.rs`)
+  keeps the closed tab's flat index when the closed tab is the active one
+  (`active_tab` stays, clamped to the new last tab), and
+  `normalize_tab_groups` keeps each parent's children right after it, so
+  that slot can hold a nested child. In `[agent, job₁…jobₙ, last main
+  tab]` the last main tab's index is `n+1`; once it is removed
+  `active_tab` clamps to `n`, the last job tab. herdr-job nests every job
+  tab under the pane's tab (`herdr tab parent` in `plugins/job/herdr-job`),
+  and `parse_tab_id` maps a tab id to its flat index, so the close uses
+  that index. Closing a parent tab at index 0 focuses its first promoted
+  job tab the same way (recorded hypothesis corrected by the consult: at a
+  later index the flat-previous is the previous main tab's last child, so
+  the landing tab differs, but it is still a nested child; the server
+  refuses to close a tab that still has children, so that path is
+  unreachable from a client — see the reproduction below). Rule to decide:
+  the nearest tab at the same level (previous sibling, else the
+  next one, else the row's parent) instead of the flat index. Consider
+  `Alt-1…9` numbering, the sidebar's squares, and spaces whose only tabs
+  are job tabs. Reproduced, not implemented.
+  - Reproduced 2026-09-30 16:10 in a throwaway session
+    (`herdr-throwaway-repro`, herdr 0.9.1, no agent tokens): tabs
+    `[A, job1, job2, mainB]`, both jobs nested under A with
+    `herdr tab parent`, `mainB` focused. `herdr tab close mainB` focused
+    `job2`, the last job tab. Second layout `[X, x1, A]`, `x1` nested
+    under X, `A` focused at index 2: closing `A` focused `x1`, a child of
+    the previous main tab, not a tab at A's own level. Closing a tab that
+    still has children is refused by the server (`tab_has_children`,
+    `src/app/api/tabs.rs:233`) and the TUI closes a parent's children
+    first (`request_parent_tab_close`), so the parent-promotion variant
+    cannot be reached through the API; only `Workspace::close_tab` called
+    directly, as `closing_a_parent_leaves_its_children_top_level` does,
+    leaves that state. Session stopped, deleted, outer pane closed, no
+    artifacts left.
+  - Consulted Claude Sonnet 5.5 2026-09-30 at the user's request (consult
+    id `fe6e9760`): the clamp explains the report only if the closed tab
+    was the active one after a job group; the reproduction above confirms
+    it. It corrected the recorded hypothesis: a parent closed at index 0
+    moves focus to its first promoted job tab, but at a later index the
+    flat-previous is the previous main tab's last child (checked in
+    `close_tab`, still a nested child; that parent case is unreachable
+    through the API, see the reproduction above). Recommended rule,
+    server-side in
+    `Workspace::close_tab`: focus changes only when the closed tab was
+    active; a main tab without children -> previous main tab, else the next
+    main tab, never a child; a child -> previous sibling, else the next
+    sibling, else its parent; a parent -> compute the successor before its
+    children are promoted and pick the previous main tab, else the next
+    main tab, else the first promoted child (its only sensible choice as a
+    lone parent). Choose the successor by identity (root pane), as
+    `normalize_tab_groups` already remaps the active tab, instead of index
+    arithmetic. Tests it asks for: the reported regression (last main tab
+    after a job group), a parent closed at a later index, a parent at index
+    0 (lone parent -> first promoted child), a child (siblings, then its
+    parent), an inactive tab closed before/after/inside the active group,
+    the workspace's last tab (`close_tab` returns false and the space close
+    handles it), `Alt-1…9` after a close, the sidebar's squares following
+    the newly active tab, and persistence of the active tab and the groups.
+    Settled in the repo already: `tab.number` is monotonic and never reused
+    (`tab_public_numbers_are_stable_and_not_reused_after_close`), so a
+    dead parent link cannot adopt a new tab and `tab_parent_index` already
+    treats such a child as top-level; the client sends no `tab.focus` of
+    its own after a close in the paths checked. It did not run anything.
+
+- [ ] Add easily accessible advisor checkboxes in Herdr so it injects
+  `Consult with <selected agents>` into coding-agent requests. Let the user
+  select advisors (for example DeepSeek) and disable the instruction easily.
+  Consulted DeepSeek 2026-09-30: start with a per-pane/session picker opened
+  from a visible `Advisors` control, showing the selected advisors. Inject
+  only on an explicit user send, preserve the user's text, preview the added
+  instruction and avoid duplicates; do not trigger background consultations.
+  Verify each CLI's supported injection path; use a visible, copyable prefix
+  rather than silent PTY keystrokes when safe injection is unavailable.
+  Decide scope, persistence, timing (every prompt or first turn), advisor
+  identity/invocation and multi-client ownership before implementation.
+  Make remote-provider privacy and cost implications explicit. These are
+  recommendations, not an approved UI design or implementation.
+
+- [ ] Update automatic terminal/tab titles to reflect current activity, as
+  in other terminals (screenshot, 2026-09-30 02:14). The selected sidebar
+  tab says `env` while its pane runs `brew update` / `brew upgrade --formula`.
+  Investigate the source of `env` and title precedence before assigning a
+  cause: launch label, shell-emitted OSC 0/2, explicit name, or stale state.
+  Consulted DeepSeek 2026-09-30: honor shell-provided titles first; do not
+  assume every terminal infers foreground commands. Preserve explicit user
+  names. Consider a foreground-command fallback only when reliable and no
+  meaningful emitted title is available; launch wrappers must not remain
+  the automatic label when a better source exists. Verify command-to-prompt
+  restoration, consecutive commands, empty OSC titles, explicit names and
+  shells with/without title emission. Sanitize and bound title text; avoid
+  flicker, output-driven churn and per-render process-tree polling. Check
+  many-pane idle overhead if fallback detection is added. No root cause
+  verified and no implementation approved yet.
+
+- [ ] Explore a subtle animated indicator while an agent instance is working,
+  instead of a static status glyph (screenshots, 2026-09-30 01:09). The
+  screenshots show the half-filled working circle `◐`; the user described
+  a possible hourglass replacement and has not chosen a design yet. Consult
+  DeepSeek and show terminal demos before deciding: slow circle rotation,
+  a compact spinner, or retaining the static indicator. Keep blocked,
+  idle and done distinguishable and static; motion must not imply actual
+  progress. Keep cell width, row alignment and hit rectangles stable. Animate
+  only visible active indicators in the client, with no background endpoint
+  requests or additional server/PTY work; support disabling motion with a
+  positively named option if implemented. No implementation approved yet.
+  Consulted DeepSeek 2026-09-30: keep static `◐` as the default for now;
+  demo opt-in motion on only the focused/selected working row before
+  considering broader animation. Compare a slow normal/dim color pulse
+  (1 second per state) with circle rotation `◐ ◓ ◑ ◒` (500 ms per frame).
+  A pulse avoids glyph-width changes but needs theme/contrast checks;
+  rotation requires font and one-cell-width verification. Avoid a busy
+  compact spinner by default. Stop animation immediately on blocked,
+  idle or done, and pause it when hidden/unfocused or motion is disabled.
+  Verify one shared timer, no ticks without visible animated indicators,
+  unchanged mouse targets and idle CPU behavior. Demo both variants before
+  choosing; this is a recommendation, not a decision to implement.
+  - User follow-up: consider replacing the hourglass with a two-frame
+    vertical circle `◒/◓` or horizontal circle `◐/◑`. Clarify whether this
+    targets the waiting-on-job hourglass or the working indicator; keep
+    those states distinguishable. DeepSeek recommends demoing `◐/◑` first,
+    alongside four-frame rotation `◐ ◓ ◑ ◒`: two-frame alternation may
+    look like blinking rather than rotation. Its suggested 250-400 ms per
+    frame is only a prototype starting point, not a measured result.
+    Verify font rendering, baseline and cell width (including CJK), and
+    retain a static fallback when motion is disabled. No variant chosen.
+
+- [ ] Indent vertical tab rows under nested worktree spaces (screenshot,
+  2026-09-30 00:49). The `Job client footer` worktree header is indented,
+  but its `zsh` tab aligns with the parent space's `pi - herdr` tab and
+  appears to be a sibling rather than a child. Propagate the worktree
+  depth consistently to tab rows, fills, job squares, tooltip anchors and
+  hit rectangles; keep top-level spaces unchanged. Verify narrow widths,
+  folding and list-scroll anchoring. Consulted DeepSeek 2026-09-30:
+  confirmed that `entry.indented` reaches the worktree header but not tab-row
+  geometry. Suggested one shared 5-column offset for child worktree tab
+  rows, applied to measurement, render and focus reveal; subtract it from
+  available width without moving the right edge. Shift fills, square/fold
+  hits and tooltip anchors together. Test wrap boundaries with/without the
+  scrollbar, narrow widths, partial rows and scroll anchoring. Decide gutter
+  click behavior explicitly; do not create zero-width tooltip targets.
+
+- [ ] Pi does not change its title to the task name as Claude CLI does:
+  concurrent sidebar entries remain `π - herdr` (screenshot, 2026-09-29
+  23:56). Investigate Pi's emitted terminal titles (OSC 0/2), available
+  task/session metadata, and Herdr's title precedence before assigning a
+  root cause. Consulted DeepSeek on 2026-09-29: use a manual OSC title
+  probe to distinguish missing title emission from missing consumption;
+  Claude may use a separate metadata integration. Prefer meaningful title
+  or metadata updates at the source, not conversation-text scraping.
+  Preserve explicit user names and avoid per-token title churn. Verify
+  that two Pi sessions with different tasks have distinct labels, unknown
+  tasks retain a fallback, and Claude's labels remain unchanged.
+
+- [ ] Consider adding a subtle gradient in the empty space between the job
+  indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
+  Show several visual variants in the terminal before choosing one; generate
+  the demos with Python, as Claude did previously.
+
 - [ ] Handoff 2026-09-29 (from the Claude session; its limit ran out). Read
   AGENTS.md first: consult GPT-6 Astra + DeepSeek on design choices,
   `herdr-job` for anything over a minute, `just check` before committing,
   commit each stage, build release and ask before `scripts/herdr_live.sh
   install` (it disconnects clients).
-  1. Do now (decided by me): move herdr-job's status line back from the
+  1. Done and user-confirmed 2026-09-30 (`d6fee21c`): restored the footer,
+     verified live scrolling to line 1 of 200, and fixed narrow-width and
+     growing-pane footer regressions. Original scope: move the line from the
      job pane's first row to its last row. Why: the header set a scroll
      region 2..N, and lines scrolled off a region whose top is not row 1
      never reach the scrollback, so job output cannot be scrolled up. The
@@ -28,7 +221,10 @@
        Consider skipping footer-end click mappings on the alternate screen:
        a full-screen program such as vim or less could otherwise be closed
        by a click intended for its own bottom row.
-  2. Walk through with me the rest of what was done on 2026-09-28/29
+  2. Done: points 8-14 walked through and accepted by the user on
+     2026-09-29/30. Job square tooltips now share the 450 ms dwell
+     (`df8cf902`), installed and user-confirmed. Original walkthrough:
+     the rest of what was done on 2026-09-28/29
      (points 1-7 confirmed): 8 a sorted spaces list (name/prio) holds its
      order while the pointer is over it; 9 the `shapes` indicator style
      (default: `◐` working, `◉` blocked, `●` done, `○` idle, `◷`→`⧖`
@@ -415,10 +611,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   (billed to the Claude subscription, so it shares Claude Code's usage
   limit), in its own herdr-job tab, logged to consult-stats; linked into
   `~/.pi/agent/skills/` by `plugins/consult/install-skills` (2026-09-29).
-- [ ] The job square's tooltip should appear after the same dwell as the
+- [x] The job square's tooltip should appear after the same dwell as the
   cut tab label's (450 ms), not at once (2026-09-29, my request; consult
   GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
-  a square has no text).
+  a square has no text). Done 2026-09-30 (`df8cf902`): shared dwell,
+  reset on target change, pending dismissal tests; full check and release
+  passed, installed and accepted. Consulted DeepSeek only at the user's
+  request because Astra was near its usage limit.
 - [ ] Regression (2026-09-29): closing a tab asks whether to close the
   space, and cancelling leaves an odd highlight on the space. Probably
   the tab is the space's last one, so the close becomes a space close
@@ -426,13 +625,30 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   is left), and the cancelled confirmation leaves the space selected or
   highlighted. Reproduce, check whether it predates the vertical tabs, and
   consult (GPT-6 Astra, DeepSeek) on what closing the last tab should do.
-- [ ] The fork shows upstream's "update ready" badge (`●` before `menu`,
-  2026-09-29): the updater checks herdrdev's release channel, but this
-  build is the fork, installed with `scripts/herdr_live.sh`, and
-  `herdr update` would replace it with upstream's binary. Decide: turn the
-  update check off in fork builds (a build-time flag), point it at the
-  fork's own releases, or say "upstream <version>" and never offer to
-  install it.
+- [ ] Disable upstream binary update notifications in fork builds
+  (reported 2026-09-29, confirmed 2026-09-30). The fork is installed with
+  `scripts/herdr_live.sh`; upstream `herdr update` would replace it.
+  Screenshot `Screenshot 2026-09-30 at 12.58.09.png` shows "Herdr v0.9.3
+  available" in notification history; clicking it produces no useful action.
+  - Use an explicit fork build policy to disable upstream binary checks,
+    update toasts and badges, and reject explicit upstream self-update with
+    a clear explanation. Preserve upstream behavior in non-fork builds;
+    a fork-owned release channel is out of scope.
+  - Suppress stale upstream availability restored from pending release
+    notes, and handle existing upstream update history entries without
+    offering installation. Do not indiscriminately delete release notes or
+    unrelated notifications, or disable agent-manifest updates.
+  - Fix targetless notification-history activation separately: show the
+    full title/body using existing UI patterns instead of silently closing.
+    Never execute commands or install from notification text; preserve
+    pane/tab/space focus for entries with live targets and the existing
+    unavailable-target notice for stale targets.
+  - Verify fresh and restored fork startup, explicit updater rejection,
+    targetless mouse/keyboard activation, and normal agent-entry focus.
+    Keep frozen generation-1 endpoint codecs unchanged.
+  - Consulted DeepSeek 2026-09-30: agreed on fork-specific suppression,
+    explicit updater protection, stale-state handling and informational
+    activation. This remains unimplemented; no build or install performed.
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
   much like the selected row, so two grey blocks are on screen; the drop
@@ -1281,6 +1497,40 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     context, rates itself). Pilot 10 rounds, conclude after 20-30, rate blind
     where practical, "unique" only relative to that round's roster. It uses
     the same subscription, so log failures, never drop them.
+- [ ] Usage widget: include minutes in reset countdowns (e.g. `2h 15m`,
+  `45m`, `<1m`), not just whole hours. For weekly limits above 24h, show
+  days plus remaining hours (`34h` → `1d 10h`), not just whole days.
+  - Consulted DeepSeek 2026-10-01: share the footer/modal countdown policy:
+    >=24h days + hours, >=1h hours + minutes, >=1m minutes, positive <1m
+    `<1m`, expired `now`. Floor units and omit zero secondary units;
+    `24h 30m` therefore shows `1d`. Check footer width and boundary tests
+    (23h 59m, 24h, 34h, 48h). Presentation only; no provider/API changes.
+  Also show how many redeemable quota resets are available, their types /
+  scope, and when each expires; keep these separate from automatic limit
+  renewals. Show a compact count in the footer and details in the usage modal.
+  - User example: ChatGPT Plus shows `Full reset (Weekly + 5 hr)` and
+    `Expires October 5` at https://chatgpt.com/settings/usage?tab=overview.
+    This is a user observation, not a verified entitlement for every Plus
+    account; do not invent the expiration year, time or timezone.
+  - Consulted DeepSeek: unknown or unavailable reset data is not zero;
+    count only available grants, not used or expired ones. Keep the footer
+    and modal consistent, indicate stale data, and show an exact expiration
+    with timezone when the source provides it.
+  - First verify an authenticated, supported source for grant data; retrieval
+    remains blocked until then. Do not invent endpoints or scrape browser
+    credentials. Read-only display: redeeming a reset is out of scope.
+  - Also distinguish subscription allowance from paid overage / usage
+    credits. User example from Anthropic: `Turn on usage credits to keep
+    using Claude if you hit a plan limit.` Settings page:
+    https://claude.ai/new#settings/usage. Clearly indicate in the footer
+    and usage modal when current usage is billed to credits rather than
+    included in the subscription, with balance / spend when available.
+    Distinguish credits disabled, enabled as a fallback, and actually in
+    use; enabling credits alone does not prove paid usage. Require verified
+    data for the same account; otherwise show unknown, never infer billing
+    solely from an exhausted plan limit. Keep subscription overage separate
+    from Anthropic Console API billing. Display only; do not enable credits
+    or change billing settings.
 - [ ] Usage modal (click the footer) / settings: checkboxes choosing which
   providers the usage footer shows. Also token-based usage?
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): the

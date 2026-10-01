@@ -85,6 +85,8 @@ Herdr はバンドルされた拡張を次の場所に書き込みます:
 
 `PI_CODING_AGENT_DIR` が設定されている場合は、代わりに `$PI_CODING_AGENT_DIR/extensions/herdr-agent-state.ts` に書き込みます。Pi の agent ディレクトリが存在する場合、Herdr は extensions ディレクトリを作成します。アンインストールはその拡張ファイルだけを削除します。
 
+Pi インテグレーションは、対話型エージェントのプロンプトに短い置換可能な Herdr 行動コンテキストも追加します。Herdr のペインで手動で `pi` を起動した場合も、すべてのリポジトリで適用されます。続行を約束するだけでなく承認済みの次の手順を実行し、実際の活動を報告し、必要な判断や承認を明示的に求めるよう案内します。続行を強制せず、状態報告も変更しません。Herdr 外とヘッドレスモードでは何も追加しません。この案内だけを無効にするには、Pi 起動前に `HERDR_AGENT_CONTEXT=0` を設定します。更新されたインテグレーションを再インストールし、Pi を再起動するか `/reload` を実行してください。プロジェクトやグローバルの `AGENTS.md` を変更する必要はありません。
+
 ## OMP
 
 OMP インテグレーションをインストールします:
@@ -116,6 +118,8 @@ herdr integration install claude
 Claude 統合 v10 は、文書化された `SessionStart` の source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に Claude 統合を再インストールして、従来のワイルドカードマッチャーを移行してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
 
 Herdr はデフォルトで `~/.claude` を使い、`CLAUDE_CONFIG_DIR` が設定されていればそちらを使います。Claude の設定ディレクトリはあらかじめ存在している必要があります。インストールは `hooks/herdr-agent-state.sh` を書き込み、`settings.json` に Herdr のフックエントリを追加します。アンインストールは一致するフックエントリを削除し、フックスクリプトを削除します。
+
+同じ `SessionStart` フックは、Pi の説明にある Herdr 行動コンテキストも、再開時や圧縮後を含めて提供します。どのリポジトリでも、Herdr 内で手動起動した Claude セッションでも動作します。続行を強制したり状態を偽ったりはしません。Claude 起動前に `HERDR_AGENT_CONTEXT=0` を設定すると、`HERDR_AWAITING_REPLY_INSTRUCTIONS` とは独立してこの案内を無効にできます。両方の案内は単一の JSON コンテキスト応答にまとめられます。`AGENTS.md` の変更は不要です。更新した Claude インテグレーションを再インストールし、セッションを開始または再開してください。
 
 ## Codex
 

@@ -1,6 +1,6 @@
 ---
 name: gpt
-description: Consult OpenAI GPT (GPT-6 Astra/Sol/Luna, GPT-5.6 Terra) via Codex CLI + ChatGPT subscription for a second opinion — use when the user asks to "ask/consult GPT", "zapytaj GPT/Astrę/Sol/Terrę/Lunę", or wants an independent review of a plan, bug hypothesis, design or code snippet from OpenAI. Sends a prompt you write straight to GPT and logs the call for consult-stats; not the pi-fabric `oracle` reviewer.
+description: Consult OpenAI GPT (GPT-6.1 Sol, GPT-6 Astra/Luna, GPT-5.6 Terra) via Codex CLI + ChatGPT subscription for a second opinion — use when the user asks to "ask/consult GPT", "zapytaj GPT/Astrę/Sol/Terrę/Lunę", or wants an independent review of a plan, bug hypothesis, design or code snippet from OpenAI. Sends a prompt you write straight to GPT and logs the call for consult-stats; not the pi-fabric `oracle` reviewer.
 ---
 
 # Consulting GPT
@@ -11,19 +11,20 @@ Goes through Codex CLI (`codex exec`), billed to the user's ChatGPT Plus subscri
 Credentials come from pi: `openai-codex` in `~/.pi/agent/auth.json` (token via `pi auth print-bearer-token`, which refreshes it).
 ~/.codex (config.toml, auth.json) is not used — the script runs with `--ignore-user-config` and a temporary `CODEX_HOME`.
 
-Models available on ChatGPT (as of 2026-09-25): `astra`/`sol`/`luna` = **gpt-6-***; `terra` = **gpt-5.6-terra**
-(no GPT-6 Terra yet). Check with `jq -r '.models[].slug' ~/.codex/models_cache.json`; when gpt-6-terra appears there,
-update the `case` in ask_gpt.sh.
+Models available on ChatGPT (as of 2026-09-30): `sol` = **gpt-6.1-sol**, `astra` = **gpt-6-astra**,
+`luna` = **gpt-6-luna**; `terra` = **gpt-5.6-terra** (no GPT-6 Terra yet); the older `gpt-6-sol` needs its full id.
+Check with `jq -r '.models[].slug' ~/.codex/models_cache.json`; when a new slug appears there, update the `case` in ask_gpt.sh.
 
 ```bash
-"$D"/ask_gpt.sh "question"                  # astra = gpt-6-astra (default)
-"$D"/ask_gpt.sh -m sol "q"                  # gpt-6-sol; also terra (gpt-5.6-terra), luna (gpt-6-luna, fast)
+"$D"/ask_gpt.sh "question"                  # sol = gpt-6.1-sol (default)
+"$D"/ask_gpt.sh -m astra "q"                # gpt-6-astra; also terra (gpt-5.6-terra), luna (gpt-6-luna, fast);
+                                            # the older sol as -m gpt-6-sol
 "$D"/ask_gpt.sh -f src/foo.py "Find bugs in this file"
 git diff | "$D"/ask_gpt.sh -f - "Review this diff"   # stdin only via -f -
 "$D"/ask_gpt.sh -r "Review ... (see Code review below)"  # run in the current git repo, read-only
 ```
 
-Options: `-m astra|sol|terra|luna|<full id>`, `-e low|medium` (reasoning effort; high/xhigh are disabled by the user's decision (2026-09-26): ~3× the time and 4–7× the output tokens without more unique findings — the script refuses them), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
+Options: `-m sol|astra|luna|terra|<full id>` (default `sol` = gpt-6.1-sol), `-e low|medium` (reasoning effort; high/xhigh are disabled by the user's decision (2026-09-26): ~3× the time and 4–7× the output tokens without more unique findings — the script refuses them), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
 Codex runs ephemeral, in a read-only sandbox. By default it runs in an empty temp dir and sees only what you put in the prompt.
 With `-r` it runs at the top of the current git repo (refuses `$HOME`), so it can read files, callers, tests and git history itself;
 everything in that checkout it reads (including untracked files like `.env`) goes to OpenAI.
@@ -35,13 +36,17 @@ Guidelines:
 - GPT has no context of this conversation: include the goal, relevant code and constraints in the prompt.
 - Sending code sends it to OpenAI's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
-- Default consultation set (decided 2026-09-27 by the user after the astra/luna trial): **astra (default effort) plus
-  DeepSeek** in parallel (unless the user named models). The paired trial ended with luna@medium clearly behind astra:
-  1.43 vs 0.58 accepted unique findings per rated call and 22% vs 35% rejected findings (astra 69, luna@medium 33
-  rated calls); DeepSeek had the most unique findings (1.57) and is cheap. Don't ask luna routinely: it adds an answer
-  to read (Claude tokens) for little new. Use luna with `-e medium` only as a fallback when an astra call fails or hits
-  the Plus limit. Sol and terra only on request: over ~12 paired rounds neither ever scored above astra. Rate each
-  call separately; `--unique` counts what the others (and Claude) missed.
+- Default consultation set (revised 2026-09-30 by the user: **sol 6.1 (default effort) plus DeepSeek** in parallel,
+  unless the user named models; **astra is off by default for now, available on request**). The 2026-09-27 astra/luna
+  trial is still the only paired evidence: luna@medium was clearly behind astra (0.58 vs 1.43 accepted unique findings
+  per rated call and 22% vs 35% rejected findings; astra 69, luna@medium 33 rated calls), and gpt-6-sol never beat
+  astra over ~12 paired rounds. **gpt-6.1-sol is new and unevaluated**, so rate its calls and revisit this default.
+  Don't ask luna routinely: it adds an answer to read (Claude tokens) for little new. Use luna with `-e medium` only
+  as a fallback when a sol call fails or hits the Plus limit. Terra only on request. Rate each call separately;
+  `--unique` counts what the others (and Claude) missed.
+- Never consult the model you are running on: that is a self-consultation, not a second opinion. Check your own model
+  first (`$PI_MODEL`, or the model id you were given) and drop it from the pair. When the acting model is DeepSeek,
+  the pair is **sol + Claude Sonnet** (Gemini is the alternative); when it is Claude, ask sol + DeepSeek.
 - If the user asks for "GPT and DeepSeek", run both in parallel and compare.
 - On a usage-limit error, tell the user (Plus limits) and don't retry in that round (no other GPT model either); in a multi-model round go on with the others. The reported reset time is not reliable (on 2026-09-26 a limit said "try again tomorrow" and cleared within two hours), so try GPT once again at the next consultation in the session; after a second limit error in a row, skip it for the rest of the session.
 - After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):

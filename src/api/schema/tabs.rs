@@ -65,8 +65,29 @@ pub struct TabSetStatusParams {
     pub status: Option<TabStatus>,
 }
 
+/// Runtime facts supplied by a job runner; presentation belongs to clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabJobMetadata {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub why: Option<String>,
+    pub origin: String,
+    #[serde(default)]
+    pub owner_pane: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetJobMetadataParams {
+    pub tab_id: String,
+    /// Null clears a previous job registration.
+    pub job: Option<TabJobMetadata>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<TabJobMetadata>,
     pub tab_id: String,
     pub workspace_id: String,
     pub number: usize,

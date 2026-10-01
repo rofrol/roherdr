@@ -333,6 +333,169 @@ fn the_job_footers_ends_go_back_and_close() {
     ));
 }
 
+#[test]
+fn client_job_footer_reserves_chrome_across_resize_and_rejects_stale_metadata() {
+    let mut state = state_with_tabs(true);
+    state.config.confirm_close = false;
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    focus_tab(&mut state, "job_1");
+    let snapshot = state.snapshot.as_deref().unwrap();
+    let projection = crate::protocol::endpoint::EndpointJobMetadata {
+        boot_id: snapshot.boot_id.clone(),
+        revision: snapshot.revision,
+        tab_id: snapshot.focused_tab_id.clone(),
+        job: Some(crate::api::schema::TabJobMetadata {
+            id: "probe".into(),
+            name: "Build probe".into(),
+            why: Some("resize check".into()),
+            origin: "agent".into(),
+            owner_pane: None,
+        }),
+    };
+    state.endpoints[0].job_metadata = Some((None, projection.clone()));
+    for (cols, rows) in [(106, 30), (80, 20), (40, 12), (106, 30)] {
+        let layout = state.layout(cols, rows);
+        let base = state.config.layout(
+            cols,
+            rows,
+            state.sidebar_collapsed,
+            state.focused_tab_count(),
+            state.sidebar_width,
+            true,
+        );
+        assert_eq!(layout.pane_surface.height + 1, base.pane_surface.height);
+        assert_eq!(layout.pane_surface.bottom(), layout.job_footer.y);
+        assert_eq!(
+            state.surface_size(cols, rows).rows,
+            layout.pane_surface.height
+        );
+        let frame = state.compose(cols, rows).unwrap();
+        let buffer = frame.to_ratatui_buffer().unwrap();
+        assert_eq!(
+            buffer[(layout.job_footer.x + 1, layout.job_footer.y)].symbol(),
+            "←"
+        );
+        assert!(focuses(
+            &left_click(&mut state, (layout.job_footer.x + 1, layout.job_footer.y)),
+            "tab_1"
+        ));
+        let outcome = left_click(
+            &mut state,
+            (layout.job_footer.right() - 2, layout.job_footer.y),
+        );
+        assert!(outcome.actions.iter().any(|action| matches!(action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(&request.method, crate::api::schema::Method::TabClose(target)
+                    if target.tab_id == "job_1"))));
+    }
+    state.endpoints[0].job_metadata.as_mut().unwrap().1.revision += 1;
+    assert!(state.active_job_metadata().is_none());
+    assert!(state.layout(106, 30).job_footer.is_empty());
+    state.endpoints[0].job_metadata = Some((None, projection));
+    assert!(state.layout(4, 3).job_footer.is_empty());
+}
+
+#[test]
+fn job_footer_uses_text_foreground_in_light_and_dark_themes() {
+    for palette in [Palette::catppuccin_latte(), Palette::catppuccin()] {
+        let mut state = state_with_tabs(true);
+        state.config.palette = palette.clone();
+        with_job(&mut state, "job_1", TabStatus::Running);
+        focus_tab(&mut state, "job_1");
+        let snapshot = state.snapshot.as_deref().unwrap();
+        state.endpoints[0].job_metadata = Some((
+            None,
+            crate::protocol::endpoint::EndpointJobMetadata {
+                boot_id: snapshot.boot_id.clone(),
+                revision: snapshot.revision,
+                tab_id: snapshot.focused_tab_id.clone(),
+                job: Some(crate::api::schema::TabJobMetadata {
+                    id: "contrast-probe".into(),
+                    name: "Build".into(),
+                    why: Some("verify contrast".into()),
+                    origin: "agent".into(),
+                    owner_pane: None,
+                }),
+            },
+        ));
+        for (cols, rows) in [(106, 30), (40, 12)] {
+            let area = state.layout(cols, rows).job_footer;
+            assert!(!area.is_empty());
+            let buffer = state
+                .compose(cols, rows)
+                .unwrap()
+                .to_ratatui_buffer()
+                .unwrap();
+            assert_eq!(buffer[(area.x + 1, area.y)].symbol(), "←");
+            assert_eq!(buffer[(area.right() - 2, area.y)].symbol(), "×");
+            for x in area.x..area.right() {
+                let cell = &buffer[(x, area.y)];
+                assert_eq!(cell.fg, palette.text, "footer column {x}");
+                assert_eq!(cell.bg, palette.sidebar_bg, "footer column {x}");
+                assert_ne!(cell.fg, palette.surface_dim);
+            }
+        }
+    }
+}
+
+#[test]
+fn job_footer_generation_is_applied_atomically_with_snapshot_for_resize() {
+    let mut state = state_with_tabs(true);
+    let endpoint = ClientEndpointId::Local;
+    let mut snapshot = state.snapshot.as_deref().unwrap().clone();
+    snapshot.revision = 10;
+    state.set_endpoint_snapshot_for_generation(&endpoint, 4, Box::new(snapshot.clone()));
+    let full = state.surface_size(106, 30);
+    let mut projection = crate::protocol::endpoint::EndpointJobMetadata {
+        boot_id: snapshot.boot_id.clone(),
+        revision: 11,
+        tab_id: snapshot.focused_tab_id.clone(),
+        job: Some(crate::api::schema::TabJobMetadata {
+            id: "probe".into(),
+            name: "Build".into(),
+            why: None,
+            origin: "agent".into(),
+            owner_pane: None,
+        }),
+    };
+    state.set_endpoint_job_metadata(&endpoint, 4, projection.clone());
+    assert_eq!(state.surface_size(106, 30), full);
+    snapshot.revision = 11;
+    state.set_endpoint_snapshot_for_generation(&endpoint, 4, Box::new(snapshot.clone()));
+    assert!(state.active_job_metadata().is_some());
+    let reduced = state.surface_size(106, 30);
+    assert_eq!(reduced.rows + 1, full.rows);
+    projection.revision = 12;
+    state.set_endpoint_job_metadata(&endpoint, 4, projection.clone());
+    // Receiving the next companion must not temporarily remove the current footer.
+    assert_eq!(state.surface_size(106, 30), reduced);
+    snapshot.revision = 12;
+    state.set_endpoint_snapshot_for_generation(&endpoint, 4, Box::new(snapshot.clone()));
+    assert_eq!(state.surface_size(106, 30), reduced);
+    projection.revision = 13;
+    projection.job = None;
+    state.set_endpoint_job_metadata(&endpoint, 4, projection.clone());
+    assert_eq!(state.surface_size(106, 30), reduced);
+    snapshot.revision = 13;
+    state.set_endpoint_snapshot_for_generation(&endpoint, 4, Box::new(snapshot.clone()));
+    assert_eq!(state.surface_size(106, 30), full);
+    // Stale generation cannot replace a new generation's same-boot projection.
+    projection.revision = 1;
+    projection.job = Some(crate::api::schema::TabJobMetadata {
+        id: "new".into(),
+        name: "Reconnected".into(),
+        why: None,
+        origin: "agent".into(),
+        owner_pane: None,
+    });
+    state.set_endpoint_job_metadata(&endpoint, 5, projection.clone());
+    snapshot.revision = 1;
+    state.set_endpoint_snapshot_for_generation(&endpoint, 5, Box::new(snapshot));
+    projection.job = None;
+    state.set_endpoint_job_metadata(&endpoint, 4, projection);
+    assert_eq!(state.active_job_metadata().unwrap().id, "new");
+}
+
 /// The state icon of the first tab line and its colour.
 fn tab_icon_color(state: &mut ClientShellState) -> (String, ratatui::style::Color) {
     let (symbol, fg, _) = tab_cell(state, 3);

@@ -22,6 +22,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "close" => tab_close(&args[1..]),
         "parent" => tab_parent(&args[1..]),
         "status" => tab_status(&args[1..]),
+        "job-metadata" => tab_job_metadata(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
             Ok(0)
@@ -327,8 +328,30 @@ fn tab_status(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn tab_job_metadata(args: &[String]) -> std::io::Result<i32> {
+    let (Some(raw_tab_id), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
+        eprintln!("usage: herdr tab job-metadata <tab_id> <JSON|null>");
+        return Ok(2);
+    };
+    let job = match serde_json::from_str(value) {
+        Ok(job) => job,
+        Err(error) => {
+            eprintln!("invalid job metadata JSON: {error}");
+            return Ok(2);
+        }
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:job-metadata".into(),
+        method: Method::TabSetJobMetadata(crate::api::schema::TabSetJobMetadataParams {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+            job,
+        }),
+    })?)
+}
+
 fn print_tab_help() {
     eprintln!("herdr tab commands:");
+    eprintln!("  herdr tab job-metadata <tab_id> <JSON|null>");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
     eprintln!(
         "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
