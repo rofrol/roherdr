@@ -250,7 +250,7 @@
   - Left for later: highlighting matches in space names and AND tokens, the multi-machine sidebar (it ignores the
     filter), the mobile layout, and a live check.
 
-- [ ] Compact Pi activity rows with click-through to herdr-job details.
+- [ ] Compact Pi activity rows with click-through to herdr-job details. (implemented and merged 2026-10-01, opt-in, not activated: see the last bullet)
   - User request and screenshot, 2026-10-01:
     `/Users/romanfrolow/Screenshots/Screenshot 2026-10-01 at 01.12.20.png`.
     The main Pi transcript should show successive short status rows, each
@@ -285,6 +285,40 @@
     tool-call/job mappings, not an assumed universal one-to-one relationship.
     Gemini low was rejected for exhausted capacity (reported reset 0s);
     no retry was made and no answer is attributed to that attempt.
+  - Merged to `master` 2026-10-01 as `430f8b13` (rebased, fast-forward; the
+    `task/pi-job-activity` branch and its worktree stay until you have tried
+    it): `plugins/job/pi/` is an opt-in Pi extension (README there), with its
+    tests in `just pi-activity-test` (part of `just check`) against a mocked
+    Pi, plus a smoke run against the installed Pi SDK. It is NOT linked into
+    Pi: try it with `pi -e ./plugins/job/pi/index.ts`, or link the
+    directory into `~/.pi/agent/extensions/herdr-activity` and `/reload`.
+    Not verified in a live Pi session: `/activity` navigation and the
+    detail-viewer job.
+  - Tried live 2026-10-01 in a Pi tab (deepseek-flash): rows, the turning
+    half circle and the finished `✓` work. A plain click on a row did nothing
+    (regular Pi gets no mouse reports). Fixed the same day: a row with a job
+    now ends in `open job (ctrl+click)`, an OSC 8 link `herdr-job://<id>`
+    handled by a Herdr plugin link handler in `plugins/job/herdr-plugin.toml`
+    (`herdr-job open --from-click`; strict id check, only `tab focus`, refuses
+    gone or reused tabs). Verified end to end through `pane.link.activate` on
+    the demo pane (`handled: true`, the job tab got focus); the physical
+    Ctrl+click on macOS is not verified. Consulted DeepSeek, Opus, GPT and
+    Gemini: all chose the link; a plain-click handler in Herdr itself
+    (a `herdr-tab:` scheme resolved in `pane.link.activate`) is the later
+    option. Linked into `~/.pi/agent/extensions/herdr-activity` and the
+    built-in `codemode` switched off in `~/.pi/agent/settings.json`
+    (`-builtin:codemode`; the extension now registers `codemode` even outside
+    Herdr, so it is not lost there).
+  - Follow-up from the user's first try (2026-10-01): (1) only the tail
+    `open job (ctrl+click)` was clickable: the whole row is the link now
+    (checked at the badge, the middle and the tail; past the end is not);
+    (2) after the jump the sidebar did not show where you are: focusing a job
+    now unfolds its parent's squares once per focus change
+    (`unfold_focused_job`; folding by hand sticks); (3) a delay between click
+    and focus: `herdr-job open` scanned all 1209 stored jobs (0.2-0.35 s) and
+    now asks `tab get` for the one tab and checks its job id (0.1 s); from the
+    API call to the focus change measured 0.12-0.25 s. The physical
+    Ctrl+click on macOS is still the user's to confirm.
 - [ ] Add easily accessible advisor checkboxes in Herdr so it injects
   `Consult with <selected agents>` into coding-agent requests. Let the user
   select advisors (for example DeepSeek) and disable the instruction easily.
@@ -1768,7 +1802,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Next, only if misses continue: a narrow Stop-hook backstop (terminal
     `?` or an imperative aimed at the user, and no mark set; ask herdr for
     the mark rather than parsing the transcript), one block at most.
-- [ ] Awaiting reply for agents other than Claude, the same way as their
+- [ ] Awaiting reply for agents other than Claude (pi done 2026-10-01; the rest open), the same way as their
   integrations (user, 2026-09-28): each integration that can add session
   context (a session-start hook, an extension, a plugin) injects the same
   instruction, and where the agent has a command allowlist the install
@@ -1777,6 +1811,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   cursor, devin, droid, grok, hermes, kilo, kimi, letta, mastracode, omp,
   opencode, pi, qodercli, qwen. Check per agent what it offers; bump each
   changed integration's version once; try each live.
+  - Pi done 2026-10-01 (committed; linked into `~/.pi/agent/extensions/` by
+    `plugins/pi-title/install`, active after `/reload` or a new session):
+    `pi-awaiting-reply.ts` adds the instruction as a named system-prompt
+    section in Herdr's TUI mode, since Pi has no command allowlist to edit and
+    the managed `herdr-agent-state.ts` is overwritten on reinstall (an
+    integration-version bump would also drift from upstream's numbering).
+    Not verified in a live Pi session. The other integrations (antigravity,
+    codex, copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
+    mastracode, omp, opencode, qodercli, qwen) are untouched: each needs its
+    own live check, which I cannot do here.
 - [x] Consult stats log DeepSeek under the alias it was called with
   (`deepseek-flash`, now V4.1), so when the alias moves to a new model the
   stats of both merge and we cannot tell which was which.

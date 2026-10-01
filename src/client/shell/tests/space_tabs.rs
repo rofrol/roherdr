@@ -192,10 +192,12 @@ fn clicking_a_tab_line_always_opens_the_tab_itself() {
     // From the open job, back to the tab.
     focus_tab(&mut state, "job_1");
     assert!(focuses(&click_tab_line(&mut state), "tab_1"));
-    // On the tab itself it stays there and folds nothing.
+    // On the tab itself it stays there and folds nothing: the click leaves
+    // the unfolded squares as focusing the job had set them.
     focus_tab(&mut state, "tab_1");
+    let before = state.unfolded_squares.clone();
     assert!(focuses(&click_tab_line(&mut state), "tab_1"));
-    assert!(state.unfolded_squares.is_empty());
+    assert_eq!(state.unfolded_squares, before);
 }
 
 #[test]
@@ -1948,4 +1950,38 @@ fn reopening_skips_a_vanished_space_keeps_ten_and_reuses_nothing_twice() {
         panic!("expected a tab create");
     };
     assert_eq!(params.label.as_deref(), Some("t10"));
+}
+
+#[test]
+fn focusing_a_job_unfolds_its_parents_squares_once() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Running);
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_tab_squares.is_empty(), "folded by default");
+    // Focus moves to the job (a click on a job link, say): the squares show.
+    focus_tab(&mut state, "job_1");
+    state.compose(106, 30).unwrap();
+    assert_eq!(
+        state
+            .hits
+            .space_tab_squares
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["job_1"]
+    );
+    // Folded by hand while the job stays focused: a fresh snapshot with the
+    // same focus does not open them again.
+    state
+        .unfolded_squares
+        .get_mut(&ClientEndpointId::Local)
+        .expect("unfolded")
+        .clear();
+    focus_tab(&mut state, "job_1");
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_tab_squares.is_empty());
+    // Focusing the parent itself leaves them as they are.
+    focus_tab(&mut state, "tab_1");
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_tab_squares.is_empty());
 }

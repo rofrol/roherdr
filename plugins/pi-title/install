@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# Link the Pi title extension into Pi's extension directory, so it is updated with this checkout.
-# Safe to re-run: an existing link to this file is left alone, anything else under the same name is reported and kept.
+# Link the Pi extensions of this directory into Pi's extension directory, so they are updated with this checkout.
+# Safe to re-run: an existing link to a file here is left alone, anything else under the same name is reported and kept.
 # Usage: install [DIR]   (default ~/.pi/agent/extensions)
 set -euo pipefail
-src="$(cd "$(dirname "$(realpath "$0")")" && pwd)/pi-title.ts"
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 dest="${1:-$HOME/.pi/agent/extensions}"
-target="$dest/herdr-pi-title.ts"
 mkdir -p "$dest"
-if [ -L "$target" ] && [ "$(realpath "$target")" = "$(realpath "$src")" ]; then
-  echo "ok       $target"
-elif [ -e "$target" ] || [ -L "$target" ]; then
-  echo "skipped  $target exists and is not a link to $src; move it away and re-run" >&2
-  exit 1
-else
-  ln -s "$src" "$target"
-  echo "linked   $target -> $src"
-fi
+rc=0
+# Installed name: herdr-<file>, e.g. herdr-pi-title.ts.
+for src in "$here"/pi-title.ts "$here"/pi-awaiting-reply.ts; do
+  target="$dest/herdr-$(basename "$src")"
+  if [ -L "$target" ] && [ "$(realpath "$target")" = "$(realpath "$src")" ]; then
+    echo "ok       $target"
+  elif [ -e "$target" ] || [ -L "$target" ]; then
+    echo "skipped  $target exists and is not a link to $src; move it away and re-run" >&2
+    rc=1
+  else
+    ln -s "$src" "$target"
+    echo "linked   $target -> $src"
+  fi
+done
+exit $rc

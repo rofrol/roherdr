@@ -17,3 +17,16 @@ command = ["sh", "-c", "./herdr-job list; printf '\\nEnter closes. '; read -r _"
 [[events]]
 on = "tab.closed"
 command = ["./herdr-job", "_tab-closed"]
+
+# Ctrl+click on a `herdr-job://<id>` link (the Pi activity extension prints one
+# on a job's row) focuses that job's tab.
+[[actions]]
+id = "open-job"
+title = "Open job"
+command = ["./herdr-job", "open", "--from-click"]
+
+[[link_handlers]]
+id = "job"
+title = "Open job"
+pattern = "^herdr-job://[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$"
+action = "open-job"

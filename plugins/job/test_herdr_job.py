@@ -187,3 +187,63 @@ class FooterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class OpenJobTests(unittest.TestCase):
+    JOB = "20261001-124548-1827"
+
+    def run_open(self, args, env_url=None, tab=None, meta=None, exists=True):
+        cmd_open = JOB["cmd_open"]
+        focused = []
+        base = Path(tempfile.mkdtemp())
+        path = base / self.JOB
+        if exists:
+            path.mkdir()
+        def herdr(*a, **k):
+            if a[:2] == ("tab", "get"):
+                if tab is None:
+                    return json.dumps({"result": {"tab": {"job": {"id": self.JOB}}}})
+                return tab
+            focused.append(a)
+            return "{}"
+
+        patches = {
+            "job_dir": lambda job_id: base / job_id,
+            "read_meta": lambda _path: meta or {"tab_id": "w:t5"},
+            "herdr": herdr,
+        }
+        env = {"HERDR_PLUGIN_CLICKED_URL": env_url} if env_url is not None else {}
+        with patch.dict(cmd_open.__globals__, patches), patch.dict(os.environ, env):
+            try:
+                cmd_open(args)
+                return focused, None
+            except SystemExit as error:
+                return focused, str(error)
+
+    def test_a_job_link_focuses_the_jobs_tab(self):
+        args = SimpleNamespace(from_click=True, id=None)
+        focused, error = self.run_open(args, f"herdr-job://{self.JOB}")
+        self.assertEqual((focused, error), ([("tab", "focus", "w:t5")], None))
+        focused, error = self.run_open(SimpleNamespace(from_click=False, id=self.JOB))
+        self.assertEqual(focused, [("tab", "focus", "w:t5")])
+
+    def test_anything_but_a_well_formed_job_link_is_refused(self):
+        args = SimpleNamespace(from_click=True, id=None)
+        for url in ("", "https://example.com", f"herdr-job://{self.JOB}/x", f"herdr-job://{self.JOB}?a=1",
+                    "herdr-job://../../etc", f"herdr-job:{self.JOB}"):
+            focused, error = self.run_open(args, url)
+            self.assertEqual(focused, [], url)
+            self.assertIn("not a job link", error or "", url)
+
+    def test_a_missing_job_or_a_gone_or_reused_tab_focuses_nothing(self):
+        args = SimpleNamespace(from_click=False, id=self.JOB)
+        focused, error = self.run_open(args, exists=False)
+        self.assertEqual(focused, [])
+        self.assertIn("no such job", error)
+        # The tab is gone (no answer), or another job holds its id now.
+        for answer in ("", json.dumps({"result": {"tab": {"job": {"id": "20260101-000000-abcd"}}}}),
+                       json.dumps({"result": {"tab": {}}})):
+            focused, error = self.run_open(args, tab=answer)
+            self.assertEqual(focused, [], answer)
+            self.assertIn("is gone", error, answer)

@@ -1953,7 +1953,12 @@ impl ClientShellState {
                 Some(_) => {}
             }
         }
+        let previous_focus = self
+            .snapshot
+            .as_deref()
+            .and_then(|previous| previous.focused_tab_id.clone());
         self.snapshot = Some(snapshot);
+        self.unfold_focused_job(previous_focus.as_deref());
         self.remember_focused_group_tab();
         self.mark_focused_tab_notifications_read();
         self.reconcile_pending_workspace_highlight();

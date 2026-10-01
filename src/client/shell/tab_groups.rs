@@ -7,6 +7,33 @@ use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab};
 
 impl super::ClientShellState {
+    /// Unfolds a parent's job squares when focus lands on one of its jobs
+    /// (a click on a job link, say), so the sidebar shows where you are.
+    /// Only a change of focus does it, so folding the squares by hand sticks.
+    pub(super) fn unfold_focused_job(&mut self, previous_focus: Option<&str>) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let Some(focused) = snapshot.focused_tab_id.as_deref() else {
+            return;
+        };
+        if previous_focus == Some(focused) {
+            return;
+        }
+        let Some(parent) = snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == focused)
+            .and_then(|tab| tab.parent_tab_id.clone())
+        else {
+            return;
+        };
+        self.unfolded_squares
+            .entry(self.active_endpoint_id.clone())
+            .or_default()
+            .insert(parent);
+    }
+
     /// Records the focused tab as its group's last one, so selecting the
     /// group from the main row returns there. The group of a child is its
     /// parent; a top-level tab is its own group.
