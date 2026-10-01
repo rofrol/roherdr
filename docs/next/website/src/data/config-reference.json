@@ -758,6 +758,18 @@
           "description": "Move the active tab one position toward the back. Unset by default."
         },
         {
+          "key": "keys.move_space_previous",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the focused space (with its worktrees) one place up in the sidebar's own order. Unset by default."
+        },
+        {
+          "key": "keys.move_space_next",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the focused space one place down. Unset by default."
+        },
+        {
           "key": "keys.switch_tab",
           "type": "keybinding",
           "default": "\"prefix+1..9\"",
@@ -1153,11 +1165,12 @@
         {
           "key": "ui.status_indicators",
           "type": "enum",
-          "default": "\"dots\"",
-          "description": "Choose compact color dots or distinct static symbols for agent states.",
+          "default": "\"shapes\"",
+          "description": "Choose compact color dots, distinct static symbols, or circles that differ by shape (◐ working, ◉ blocked, ● done, ○ idle) for agent states.",
           "values": [
             "dots",
-            "symbols"
+            "symbols",
+            "shapes"
           ]
         },
         {

@@ -90,6 +90,9 @@ pub(super) enum ClientMobileTarget {
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     pub(super) workspaces: Vec<WorkspaceHit>,
+    /// Every space of the local sidebar in screen rows, see
+    /// [`WorkspaceLayout`]; empty for the multi-machine sidebar.
+    pub(super) workspace_layout: Vec<WorkspaceLayout>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -102,11 +105,23 @@ pub(super) struct ShellHitMap {
     pub(super) agents: Vec<(Rect, String)>,
     /// Tab lines under a space (`ui.sidebar.spaces.tabs`), with their tab ids.
     pub(super) space_tabs: Vec<(Rect, String)>,
+    /// The `+` at the end of a space's name line, with the space it adds a
+    /// tab to.
+    pub(super) space_new_tab: Vec<(Rect, String)>,
+    /// Drawn targets whose text is cut, for tooltips.
+    pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// Disclosure triangles and counts at the end of tab lines, with the
     /// tab whose squares they fold.
     pub(super) space_tab_folds: Vec<(Rect, String)>,
     /// Squares of nested tabs under an unfolded tab line, with their tab.
     pub(super) space_tab_squares: Vec<(Rect, String)>,
+    /// Blank slots of job tabs that closed while the pointer was over the
+    /// sidebar.
+    pub(super) space_tab_gone: Vec<Rect>,
+    /// The spaces' root order drawn, taken into `held_space_order`.
+    pub(super) space_order: Vec<String>,
+    /// The square order drawn, taken into `held_squares` after each frame.
+    pub(super) space_tab_square_order: super::space_tabs::HeldSquares,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -290,6 +305,73 @@ pub(super) struct WorkspaceHit {
     pub(super) workspace_id: String,
     pub(super) indented: bool,
     pub(super) group_toggle: Option<(Rect, String)>,
+}
+
+/// Where a space of the local sidebar is, in screen rows, whether it is
+/// drawn or scrolled out of the list: `top` may be above the screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceLayout {
+    pub(super) workspace_id: String,
+    pub(super) indented: bool,
+    pub(super) top: i32,
+    pub(super) bottom: i32,
+}
+
+/// Moves a hit rect drawn at row 0 of a space block's scratch buffer to the
+/// screen (`dy` rows down) and clips it to the block's visible part.
+fn shift_rect(rect: Rect, dy: i32, visible: Rect) -> Option<Rect> {
+    let y = i32::from(rect.y) + dy;
+    let top = y.max(i32::from(visible.y));
+    let bottom = (y + i32::from(rect.height)).min(i32::from(visible.bottom()));
+    (bottom > top).then(|| Rect::new(rect.x, top as u16, rect.width, (bottom - top) as u16))
+}
+
+impl ShellHitMap {
+    /// Moves the hits of a space block drawn off screen to where its visible
+    /// rows were copied, dropping those that are not shown.
+    pub(super) fn shift_space_block(&mut self, dy: i32, visible: Rect) {
+        let shift_all = |hits: &mut Vec<(Rect, String)>| {
+            *hits = std::mem::take(hits)
+                .into_iter()
+                .filter_map(|(rect, id)| Some((shift_rect(rect, dy, visible)?, id)))
+                .collect();
+        };
+        shift_all(&mut self.space_tabs);
+        shift_all(&mut self.space_new_tab);
+        self.tooltips = std::mem::take(&mut self.tooltips)
+            .into_iter()
+            .filter_map(|mut target| {
+                target.rect = shift_rect(target.rect, dy, visible)?;
+                Some(target)
+            })
+            .collect();
+        shift_all(&mut self.space_tab_folds);
+        shift_all(&mut self.space_tab_squares);
+        self.space_tab_gone = std::mem::take(&mut self.space_tab_gone)
+            .into_iter()
+            .filter_map(|rect| shift_rect(rect, dy, visible))
+            .collect();
+        for hit in &mut self.workspaces {
+            hit.rect = shift_rect(hit.rect, dy, visible).unwrap_or_default();
+            hit.group_toggle = hit
+                .group_toggle
+                .take()
+                .and_then(|(rect, key)| Some((shift_rect(rect, dy, visible)?, key)));
+        }
+    }
+
+    /// Adds a space block's hits.
+    pub(super) fn merge_space_block(&mut self, block: ShellHitMap) {
+        self.workspaces.extend(block.workspaces);
+        self.space_tabs.extend(block.space_tabs);
+        self.space_new_tab.extend(block.space_new_tab);
+        self.tooltips.extend(block.tooltips);
+        self.space_tab_folds.extend(block.space_tab_folds);
+        self.space_tab_squares.extend(block.space_tab_squares);
+        self.space_tab_gone.extend(block.space_tab_gone);
+        self.space_tab_square_order
+            .extend(block.space_tab_square_order);
+    }
 }
 
 #[derive(Debug)]
@@ -960,6 +1042,9 @@ pub(crate) struct ClientShellState {
     /// Space of the active endpoint under the pointer that can be dragged,
     /// so its name line shows a grip.
     pub(super) hovered_workspace_id: Option<String>,
+    /// Nested tab whose square under a tab line is under the pointer.
+    pub(super) hovered_square: Option<String>,
+    pub(super) tooltip: Option<super::tooltip::Tooltip>,
     pub(super) tab_press: Option<ClientTabPress>,
     /// Last focused tab of each tab group, by endpoint and the group's
     /// top-level tab. Kept by this client, so one client's navigation never
@@ -967,9 +1052,17 @@ pub(crate) struct ClientShellState {
     pub(super) last_group_tabs: HashMap<(ClientEndpointId, String), String>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
-    /// Local tabs whose nested tabs are unfolded as squares under their tab
-    /// line; folded by default and not saved.
-    pub(super) unfolded_squares: HashSet<String>,
+    /// Tabs whose nested tabs are unfolded as squares under their tab line,
+    /// by endpoint; folded by default and not saved.
+    pub(super) unfolded_squares: HashMap<ClientEndpointId, HashSet<String>>,
+    /// The squares' order as last drawn; held while the pointer is over the
+    /// spaces list, so a job tab that closes leaves a blank slot instead of
+    /// moving the others.
+    pub(super) held_squares: super::space_tabs::HeldSquares,
+    pub(super) pointer_over_spaces: bool,
+    /// The sorted spaces' order as last drawn, held while the pointer is
+    /// over the list so a re-sort cannot move a space under it.
+    pub(super) held_space_order: Vec<String>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1010,6 +1103,9 @@ pub(crate) struct ClientShellState {
     pub(super) last_pane_click: Option<ClientPaneClick>,
     pub(super) selection_autoscroll: Option<ClientSelectionAutoscroll>,
     pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
+    /// A dragged space at the list's edge: direction (-1 up, 1 down), the
+    /// pointer, and when the list scrolls next.
+    pub(super) space_drag_autoscroll: Option<(i8, (u16, u16), std::time::Instant)>,
     pub(super) selection_highlight_clear_deadline: Option<std::time::Instant>,
     pub(super) word_selection_gesture: Option<ClientWordSelection>,
     pub(super) word_selection_generation: u64,
@@ -1148,11 +1244,16 @@ impl ClientShellState {
             chrome_drag: None,
             workspace_press: None,
             hovered_workspace_id: None,
+            hovered_square: None,
+            tooltip: None,
             tab_press: None,
             last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
-            unfolded_squares: HashSet::new(),
+            unfolded_squares: HashMap::new(),
+            held_squares: HashMap::new(),
+            pointer_over_spaces: false,
+            held_space_order: Vec::new(),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1187,6 +1288,7 @@ impl ClientShellState {
             last_pane_click: None,
             selection_autoscroll: None,
             selection_autoscroll_deadline: None,
+            space_drag_autoscroll: None,
             selection_highlight_clear_deadline: None,
             word_selection_gesture: None,
             word_selection_generation: 0,
@@ -1313,7 +1415,20 @@ impl ClientShellState {
         if self.endpoints.len() > 1 {
             return entries;
         }
-        super::space_sort::sorted_entries(snapshot, entries, collapsed_groups, self.space_sort)
+        let sorted =
+            super::space_sort::sorted_entries(snapshot, entries, collapsed_groups, self.space_sort);
+        match self.held_space_order() {
+            Some(held) => super::space_sort::held_entries(snapshot, sorted, held),
+            None => sorted,
+        }
+    }
+
+    /// The order a sorted list holds while the pointer is over it.
+    pub(super) fn held_space_order(&self) -> Option<&[String]> {
+        (self.pointer_over_spaces
+            && !self.space_sort.allows_drag()
+            && !self.held_space_order.is_empty())
+        .then_some(self.held_space_order.as_slice())
     }
 
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
@@ -1330,8 +1445,28 @@ impl ClientShellState {
                 .iter()
                 .position(|entry| snapshot.workspaces[entry.index].workspace_id == workspace_id)
         });
-        if let Some(target) = target {
-            self.workspace_scroll = target.min(self.hits.workspace_max_scroll);
+        // The local sidebar scrolls by rows: bring the space's name row in.
+        if let Some(layout) = self
+            .hits
+            .workspace_layout
+            .iter()
+            .find(|layout| layout.workspace_id == workspace_id)
+        {
+            let body = self.hits.workspace_body;
+            let row = (layout.top - i32::from(body.y) + self.workspace_scroll as i32).max(0);
+            self.workspace_scroll = super::scroll::rows_start_to_reveal(
+                self.workspace_scroll,
+                usize::from(body.height),
+                row as usize,
+                row as usize,
+            )
+            .min(self.hits.workspace_max_scroll);
+            return;
+        }
+        // The multi-machine sidebar knows no rows here: it reveals the space
+        // once the focus arrives.
+        if target.is_some() {
+            self.reveal_focused_workspace = true;
         }
     }
 
@@ -1365,6 +1500,7 @@ impl ClientShellState {
         self.chrome_drag = None;
         self.workspace_press = None;
         self.hovered_workspace_id = None;
+        self.hovered_square = None;
         self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
@@ -2017,6 +2153,8 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.space_drag_autoscroll.map(|(_, _, deadline)| deadline))
+            .chain(self.tooltip_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

@@ -38,6 +38,7 @@ mod state;
 mod surface_patch;
 mod tab_groups;
 mod text_editor;
+mod tooltip;
 mod usage;
 mod word_selection;
 mod worktrees;
@@ -198,6 +199,11 @@ fn status_icon(
         (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
+        (StatusIndicatorStyle::Shapes, AgentStatus::Working) => "◐",
+        (StatusIndicatorStyle::Shapes, AgentStatus::Blocked) => "◉",
+        (StatusIndicatorStyle::Shapes, AgentStatus::Done) => "●",
+        (StatusIndicatorStyle::Shapes, AgentStatus::Idle) => "○",
+        (StatusIndicatorStyle::Shapes, AgentStatus::Unknown) => "·",
     }
 }
 
@@ -274,7 +280,11 @@ fn agent_icon(
     match (mark, style) {
         (AgentMark::AwaitsReply, _) => "?",
         (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Dots) => "●",
-        (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Symbols) => "◷",
+        (
+            AgentMark::WaitsOnJob,
+            crate::config::StatusIndicatorStyle::Symbols
+            | crate::config::StatusIndicatorStyle::Shapes,
+        ) => "◷",
         (AgentMark::None, style) => status_icon(status, style),
     }
 }

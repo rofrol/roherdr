@@ -949,4 +949,15 @@ fn build_row_shows_the_endpoint_commit_and_flags_a_different_client() {
     let client_hash = client.split(' ').next().expect("hash");
     assert!(last_row.contains("0badc0de ≠ cli"), "{last_row:?}");
     assert!(last_row.contains(&client_hash[..4]), "{last_row:?}");
+    // Its tooltip names both builds in full.
+    let tooltip = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id == "build")
+        .expect("build tooltip");
+    assert_eq!(
+        tooltip.text,
+        format!("server 0badc0de fix: old server · client {client_hash}")
+    );
 }

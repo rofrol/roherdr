@@ -237,7 +237,12 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) collapsed_groups: &'a HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     /// Local tabs whose nested tabs are unfolded as squares.
+    /// The active endpoint's tabs whose squares are unfolded.
     pub(super) unfolded_squares: &'a HashSet<String>,
+    pub(super) held_squares: &'a super::space_tabs::HeldSquares,
+    /// While the pointer is over a sorted list: its spaces' order as last
+    /// drawn, kept until the pointer leaves.
+    pub(super) held_space_order: Option<&'a [String]>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,
@@ -255,6 +260,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) pressed_workspace_id: Option<&'a str>,
     /// Space under the pointer that can be dragged.
     pub(super) hovered_workspace_id: Option<&'a str>,
+    /// Nested tab whose square is under the pointer; its tab line names it.
+    pub(super) hovered_square: Option<&'a str>,
     /// Why the pressed space cannot be dragged, once the pointer moved.
     pub(super) workspace_drag_refusal: Option<super::WorkspaceDragRefusal>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,

@@ -22,7 +22,8 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   `1 ⧖ 1 !2 ✓3`. herdr draws the icons from the tab's status
   (`herdr tab status`), set to running, then succeeded or failed; failure
   is `!` because `✗` next to a tab label reads as a close button. After
-  success the tab closes itself 10 s later (`--keep` leaves it open); after
+  success the tab closes itself 10 s later, or once you leave it if it is
+  the focused tab then (`--keep` leaves it open); after
   a failure it stays open with the output. Closing the parent tab asks first
   and closes its jobs too. herdr builds without child tabs get a top-level
   tab labelled

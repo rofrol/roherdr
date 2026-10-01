@@ -399,7 +399,8 @@ fn an_idle_tab_with_a_running_job_shows_the_waiting_mark() {
     set_agent_status(&mut state, AgentStatus::Idle, false);
     with_job(&mut state, "job_1", TabStatus::Running);
     let mauve = state.config.palette.mauve;
-    assert_eq!(tab_icon_color(&mut state), ("●".to_owned(), mauve));
+    // The shapes style (the default) marks it with a clock.
+    assert_eq!(tab_icon_color(&mut state), ("◷".to_owned(), mauve));
 
     // A finished job, or a working agent, keeps the usual status.
     let mut state = state_with_tabs(true);
@@ -581,4 +582,212 @@ fn middle_and_right_click_on_a_tab_line_target_the_tab_not_its_space() {
             ..
         })) if workspace_id == "ws_1"
     ));
+}
+
+#[test]
+fn hovering_a_square_names_its_job_on_its_tab_line() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    let (square, _) = state.hits.space_tab_squares[0];
+    let (line, _) = state.hits.space_tabs[0];
+    let hover = |state: &mut ClientShellState, (column, row): (u16, u16)| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        let frame = state.compose(106, 30).unwrap();
+        frame_rows(&frame)[line.y as usize]
+            .chars()
+            .take(26)
+            .collect::<String>()
+    };
+
+    let text = hover(&mut state, (square.x + 1, square.y));
+    assert!(text.contains("! job job_1"), "{text:?}");
+    // Off the square the label comes back.
+    let text = hover(&mut state, (square.x + 1, square.y + 2));
+    assert!(text.contains("agent t"), "{text:?}");
+}
+
+#[test]
+fn a_closed_jobs_square_keeps_its_slot_while_the_pointer_is_over_the_list() {
+    let mut state = state_with_tabs(true);
+    state.config.confirm_close = false;
+    with_job(&mut state, "job_1", TabStatus::Succeeded);
+    with_job(&mut state, "job_2", TabStatus::Running);
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    let (first, _) = state.hits.space_tab_squares[0];
+    let (second, _) = state.hits.space_tab_squares[1];
+    let move_to = |state: &mut ClientShellState, (column, row): (u16, u16)| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        state.compose(106, 30).unwrap();
+    };
+    move_to(&mut state, (first.x + 1, first.y));
+
+    // job_1 closes itself under the pointer.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.tab_id != "job_1");
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    assert_eq!(state.hits.space_tab_gone, [first]);
+    assert_eq!(state.hits.space_tab_squares, [(second, "job_2".to_owned())]);
+
+    // Its blank slot takes no click, not even the space's middle-click close.
+    let outcome =
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle),
+            column: first.x + 1,
+            row: first.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+    assert!(state.overlay.is_none());
+    assert!(!focuses(
+        &left_click(&mut state, (first.x + 1, first.y)),
+        "tab_1"
+    ));
+
+    // Leaving the list lets the others close up.
+    let pane = state.hits.panes[0].inner_rect;
+    move_to(&mut state, (pane.x, pane.y));
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_tab_gone.is_empty());
+    assert_eq!(state.hits.space_tab_squares, [(first, "job_2".to_owned())]);
+}
+
+#[test]
+fn the_spaces_list_scrolls_by_rows_to_the_last_square_of_a_tall_space() {
+    let mut state = state_with_tabs(true);
+    for index in 0..60 {
+        with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
+    }
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    let body = state.hits.workspace_body;
+    let max = state.hits.workspace_max_scroll;
+    assert!(max > 0, "twelve square rows do not fit");
+
+    // Wheel to the bottom: the space's top rows scroll away, its last
+    // squares show and take clicks.
+    for _ in 0..max {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: body.x + 2,
+            row: body.y + 1,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    }
+    assert_eq!(state.workspace_scroll, max);
+    let frame = state.compose(106, 30).unwrap();
+    let last = state
+        .hits
+        .space_tab_squares
+        .iter()
+        .find(|(_, tab_id)| tab_id == "job_59")
+        .map(|(rect, _)| *rect)
+        .expect("the last square is drawn");
+    assert!(last.bottom() <= body.bottom());
+    let row = frame_rows(&frame)[last.y as usize]
+        .chars()
+        .collect::<Vec<_>>();
+    assert_eq!(row[last.x as usize + 1], '⧖');
+    assert!(focuses(
+        &left_click(&mut state, (last.x + 1, last.y)),
+        "job_59"
+    ));
+    // The space's name row is above the list, so it has no hit in view,
+    // but the space still knows where it is.
+    let space = state.hits.workspaces[0].rect;
+    assert!(space.y >= body.y, "{space:?}");
+    assert!(state.hits.workspace_layout[0].top < i32::from(body.y));
+}
+
+#[test]
+fn revealing_the_focused_space_brings_its_open_job_square_in() {
+    let mut state = state_with_tabs(true);
+    for index in 0..60 {
+        with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
+    }
+    click_fold(&mut state);
+    focus_tab(&mut state, "job_59");
+    state.workspace_scroll = 0;
+    state.reveal_focused_workspace = true;
+    state.compose(106, 30).unwrap();
+    let body = state.hits.workspace_body;
+    let open = state
+        .hits
+        .space_tab_squares
+        .iter()
+        .find(|(_, tab_id)| tab_id == "job_59")
+        .map(|(rect, _)| *rect)
+        .expect("the open square is revealed");
+    assert!(open.y >= body.y && open.bottom() <= body.bottom());
+}
+
+#[test]
+fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
+    let mut state = state_with_tabs(true);
+    let frame = state.compose(106, 30).unwrap();
+    let space = state.hits.workspaces[0].rect;
+    let (plus, workspace_id) = state.hits.space_new_tab[0].clone();
+    assert_eq!(workspace_id, "ws_1");
+    assert_eq!(plus.y, space.y);
+    let row = frame_rows(&frame)[plus.y as usize]
+        .chars()
+        .collect::<Vec<_>>();
+    assert_eq!(row[plus.x as usize + 1], '+');
+
+    let outcome = left_click(&mut state, (plus.x + 1, plus.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabCreate(params)
+                if params.workspace_id.as_deref() == Some("ws_1") && params.focus))));
+    // Not a press on the space, which would start a drag or select it.
+    assert!(state.workspace_press.is_none());
+}
+
+#[test]
+fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].label = "a tab label much longer than the sidebar".into();
+    projected.tabs[0].custom_label = true;
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let target = state.hits.tooltips[0].clone();
+    assert_eq!(target.text, "a tab label much longer than the sidebar");
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: target.rect.x + 1,
+        row: target.rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let shown = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        frame_rows(&frame)[target.rect.y as usize].contains("longer than the sidebar")
+    };
+    assert!(!shown(&mut state), "not before the dwell");
+    let now = std::time::Instant::now();
+    assert!(
+        state
+            .tick_selection_autoscroll(now + std::time::Duration::from_millis(500))
+            .repaint
+    );
+    assert!(shown(&mut state));
+
+    // A key hides it.
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(
+        crate::input::TerminalKey::new(crossterm::event::KeyCode::Char('x'), KeyModifiers::empty()),
+    )]);
+    assert!(!shown(&mut state));
 }

@@ -111,9 +111,12 @@ enum LegacyAgentPanelScopeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusIndicatorStyle {
-    #[default]
     Dots,
     Symbols,
+    /// Circles that differ by shape, not only colour: `◐` working, `◉`
+    /// blocked, `●` done, `○` idle. The fork's default.
+    #[default]
+    Shapes,
 }
 
 impl StatusIndicatorStyle {
@@ -121,6 +124,7 @@ impl StatusIndicatorStyle {
         match self {
             Self::Dots => "dots",
             Self::Symbols => "symbols",
+            Self::Shapes => "shapes",
         }
     }
 }
@@ -400,6 +404,11 @@ pub struct KeysConfig {
     pub move_tab_previous: BindingConfig,
     /// Move the active tab one position toward the back. Unset by default.
     pub move_tab_next: BindingConfig,
+    /// Move the focused space (with its worktrees) one place up in the
+    /// sidebar's own order. Unset by default.
+    pub move_space_previous: BindingConfig,
+    /// Move the focused space one place down. Unset by default.
+    pub move_space_next: BindingConfig,
     /// Switch to tab 1-9. Default: "prefix+1..9".
     pub switch_tab: BindingConfig,
     /// Switch to workspace 1-9 from prefix mode. Unset by default.
@@ -537,6 +546,10 @@ pub(crate) struct KeysConfigOverlay {
     move_tab_previous: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     move_tab_next: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    move_space_previous: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    move_space_next: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     switch_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -676,6 +689,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(next_tab);
         apply_field!(move_tab_previous);
         apply_field!(move_tab_next);
+        apply_field!(move_space_previous);
+        apply_field!(move_space_next);
         apply_field!(switch_tab);
         apply_field!(switch_workspace);
         apply_field!(close_tab);
@@ -781,6 +796,8 @@ impl KeysConfig {
         copy_effective_action_field!(next_tab, keybinds.next_tab);
         copy_effective_action_field!(move_tab_previous, keybinds.move_tab_previous);
         copy_effective_action_field!(move_tab_next, keybinds.move_tab_next);
+        copy_effective_action_field!(move_space_previous, keybinds.move_space_previous);
+        copy_effective_action_field!(move_space_next, keybinds.move_space_next);
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
         copy_effective_indexed_field!(switch_workspace, keybinds.switch_workspace);
         copy_effective_action_field!(close_tab, keybinds.close_tab);
@@ -1012,7 +1029,8 @@ pub struct UiConfig {
     /// Retired setting that Herdr wrote before the workspace filter was removed.
     #[serde(rename = "agent_panel_scope")]
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
-    /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
+    /// Agent status indicator style. Saved values are "dots", "symbols" or
+    /// "shapes". Default: "shapes".
     pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
@@ -1168,6 +1186,8 @@ impl Default for KeysConfig {
             next_tab: BindingConfig::one("prefix+n"),
             move_tab_previous: BindingConfig::empty(),
             move_tab_next: BindingConfig::empty(),
+            move_space_previous: BindingConfig::empty(),
+            move_space_next: BindingConfig::empty(),
             switch_tab: BindingConfig::one("prefix+1..9"),
             switch_workspace: BindingConfig::empty(),
             close_tab: BindingConfig::one("prefix+shift+x"),
@@ -1243,7 +1263,7 @@ impl Default for UiConfig {
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
-            status_indicators: StatusIndicatorStyle::Dots,
+            status_indicators: StatusIndicatorStyle::Shapes,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1494,10 +1514,10 @@ agent_panel_scope = "current"
     }
 
     #[test]
-    fn status_indicator_style_defaults_to_dots_and_parses_symbols() {
+    fn status_indicator_style_defaults_to_shapes_and_parses_symbols() {
         assert_eq!(
             Config::default().ui.status_indicators,
-            StatusIndicatorStyle::Dots
+            StatusIndicatorStyle::Shapes
         );
 
         let config: Config = toml::from_str(

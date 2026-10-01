@@ -19,6 +19,13 @@ fn restore_mode_bar(
     }
 }
 
+static NO_UNFOLDED_SQUARES: std::sync::LazyLock<HashSet<String>> =
+    std::sync::LazyLock::new(HashSet::new);
+
+/// No held order: squares close up at once.
+static NO_HELD_SQUARES: std::sync::LazyLock<super::space_tabs::HeldSquares> =
+    std::sync::LazyLock::new(super::space_tabs::HeldSquares::new);
+
 impl ClientShellState {
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
@@ -62,7 +69,19 @@ impl ClientShellState {
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
-            unfolded_squares: &self.unfolded_squares,
+            unfolded_squares: self
+                .unfolded_squares
+                .get(&self.active_endpoint_id)
+                .unwrap_or(&NO_UNFOLDED_SQUARES),
+            held_space_order: (self.pointer_over_spaces
+                && !self.space_sort.allows_drag()
+                && !self.held_space_order.is_empty())
+            .then_some(self.held_space_order.as_slice()),
+            held_squares: if self.pointer_over_spaces {
+                &self.held_squares
+            } else {
+                &NO_HELD_SQUARES
+            },
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
@@ -81,6 +100,7 @@ impl ClientShellState {
             workspace_drop_before: None,
             pressed_workspace_id: None,
             hovered_workspace_id: None,
+            hovered_square: None,
             workspace_drag_refusal: None,
             space_sort: self.space_sort,
         };
@@ -243,7 +263,19 @@ impl ClientShellState {
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
-                unfolded_squares: &self.unfolded_squares,
+                unfolded_squares: self
+                    .unfolded_squares
+                    .get(&self.active_endpoint_id)
+                    .unwrap_or(&NO_UNFOLDED_SQUARES),
+                held_space_order: (self.pointer_over_spaces
+                    && !self.space_sort.allows_drag()
+                    && !self.held_space_order.is_empty())
+                .then_some(self.held_space_order.as_slice()),
+                held_squares: if self.pointer_over_spaces {
+                    &self.held_squares
+                } else {
+                    &NO_HELD_SQUARES
+                },
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
@@ -262,10 +294,14 @@ impl ClientShellState {
                 workspace_drop_before,
                 pressed_workspace_id,
                 hovered_workspace_id,
+                hovered_square: self.hovered_square.as_deref(),
                 workspace_drag_refusal,
                 space_sort: self.space_sort,
             },
         );
+        // The next frame holds this order while the pointer is over the list.
+        self.held_squares = std::mem::take(&mut self.hits.space_tab_square_order);
+        self.held_space_order = std::mem::take(&mut self.hits.space_order);
         self.hits.panes = surface
             .panes
             .iter()
@@ -445,6 +481,14 @@ impl ClientShellState {
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
         self.render_link_hover(&mut frame, &mut occlusion);
+        if self.tooltip.as_ref().is_some_and(|tip| tip.shown) {
+            let cursor = frame.cursor.clone();
+            let mut composed = frame.to_ratatui_buffer()?;
+            if let Some(rect) = self.render_tooltip(&mut composed) {
+                occlusion.cover(rect);
+                frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+            }
+        }
         if self.mode == ClientShellMode::Copy {
             frame.cursor = None;
             if let Some(copy_mode) = self.copy_mode.as_ref() {

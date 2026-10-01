@@ -76,6 +76,24 @@ pub(super) fn list_scroll_start_to_reveal(
     start
 }
 
+/// The first row to show so rows `top..=bottom` are in a viewport
+/// `viewport` rows tall, moving as little as possible from `start`; when
+/// they do not fit, `top` wins.
+pub(super) fn rows_start_to_reveal(
+    start: usize,
+    viewport: usize,
+    top: usize,
+    bottom: usize,
+) -> usize {
+    if viewport == 0 || top < start {
+        return top;
+    }
+    if bottom >= start + viewport {
+        return (bottom + 1 - viewport).min(top);
+    }
+    start
+}
+
 pub(super) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
@@ -102,6 +120,18 @@ pub(super) fn render_list_scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_to_reveal_move_as_little_as_possible() {
+        // Already shown: stays.
+        assert_eq!(rows_start_to_reveal(5, 10, 6, 8), 5);
+        // Above: its top comes to the first row.
+        assert_eq!(rows_start_to_reveal(5, 10, 2, 3), 2);
+        // Below: its bottom comes to the last row.
+        assert_eq!(rows_start_to_reveal(5, 10, 14, 20), 11);
+        // Taller than the viewport: the top wins.
+        assert_eq!(rows_start_to_reveal(0, 4, 10, 20), 10);
+    }
 
     #[test]
     fn list_metrics_preserve_variable_rows_and_caller_owned_gap_policy() {
