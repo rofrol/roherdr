@@ -17,7 +17,7 @@ if [ "$action" = "reminder" ]; then
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
   [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || exit 0
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), run `herdr agent awaiting-reply` on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers."}}'
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with `herdr agent awaiting-reply` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers."}}'
   exit 0
 fi
 
@@ -83,6 +83,16 @@ def looks_like_question(text):
     sentences = re.split(r"(?<=[.!?])\s+", tail)
     last = " ".join(sentences[-2:])
     return "?" in last and bool(ASK_PHRASES.search(last))
+
+
+def printed_command(text):
+    """The final paragraph is the command written out, not run (small models do this)."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return False
+    last = paragraphs[-1].replace("`", "").strip()
+    last = re.sub(r"^\$\s*", "", last).strip()
+    return last == COMMAND
 
 
 def text_of(content):
@@ -151,7 +161,8 @@ if isinstance(transcript, str) and transcript:
 if not final_text.strip():
     final_text = last_text
 
-question = looks_like_question(final_text)
+printed = printed_command(final_text)
+question = looks_like_question(final_text) or printed
 block = question and not reported
 try:
     state_dir = os.path.join(
@@ -168,6 +179,7 @@ try:
                     "question": question,
                     "reported": reported,
                     "blocked": block and mode != "shadow",
+                    "printed": printed,
                     "tail": last_paragraph(final_text)[-200:],
                 },
                 ensure_ascii=False,
@@ -176,7 +188,21 @@ try:
         )
 except OSError:
     pass
-if block and mode != "shadow":
+if block and mode != "shadow" and printed:
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": (
+                    "Herdr: you wrote `herdr agent awaiting-reply` in your message instead of "
+                    "running it. Call the Bash tool with the command `herdr agent "
+                    "awaiting-reply` now, as the only command, then stop without repeating "
+                    "your message."
+                ),
+            }
+        )
+    )
+elif block and mode != "shadow":
     print(
         json.dumps(
             {
@@ -247,7 +273,8 @@ if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
     contexts.append(
                 "You run inside a Herdr pane. When you end a turn needing the user's answer "
                 "or decision before you can continue the work, run the shell command "
-                "`herdr agent awaiting-reply` on its own, as the last command of the turn, "
+                "`herdr agent awaiting-reply` (call the Bash tool; never write the command in "
+                "your reply) on its own, as the last command of the turn, "
                 "right before your final message, so Herdr keeps your pane marked until the "
                 "user replies. This covers a plain-text question, a choice between options, a "
                 "confirmation before you proceed, and a request to check something before you "

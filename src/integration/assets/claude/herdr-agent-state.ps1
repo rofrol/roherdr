@@ -16,8 +16,8 @@ if ($Action -eq "reminder") {
     if ((Test-Path Env:CURSOR_VERSION) -or $env:HERDR_AWAITING_REPLY_INSTRUCTIONS -eq "0") { exit 0 }
     $context = "Herdr reminder: if you end this turn needing the user's answer or decision " +
         "before you can continue (a question, a choice, a confirmation, or a request to check " +
-        "something first, even without a question mark), run ``herdr agent awaiting-reply`` " +
-        "on its own as the last command of the turn, right before your final message. Not " +
+        "something first, even without a question mark), call the Bash tool with ``herdr agent " +
+        "awaiting-reply`` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not " +
         "for AskUserQuestion or courtesy offers."
     @{ hookSpecificOutput = @{ hookEventName = "UserPromptSubmit"; additionalContext = $context } } |
         ConvertTo-Json -Compress -Depth 3 | Write-Output
@@ -42,7 +42,8 @@ $contexts = @()
 if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
     $context = "You run inside a Herdr pane. When you end a turn needing the user's answer " +
         "or decision before you can continue the work, run the shell command " +
-        "``herdr agent awaiting-reply`` on its own, as the last command of the turn, " +
+        "``herdr agent awaiting-reply`` (call the Bash tool; never write the command in your " +
+        "reply) on its own, as the last command of the turn, " +
         "right before your final message, so Herdr keeps your pane marked until the " +
         "user replies. This covers a plain-text question, a choice between options, a " +
         "confirmation before you proceed, and a request to check something before you " +

@@ -11,7 +11,7 @@
 export const SECTION = "herdr_awaiting_reply";
 export const MARKER = "[Herdr awaiting-reply v1]";
 export const INSTRUCTION = `${MARKER}
-When you end a turn needing the user's answer or decision before you can continue (a plain-text question, a choice between options, a confirmation, or a request to check something first, even without a question mark), run \`herdr agent awaiting-reply\` on its own as the last command of the turn, right before your final message. Never append it to another command, never run it earlier in the turn, and run it at most once per turn. Ignore its failure. Do not run it when you simply finished and ask nothing, or for courtesy offers such as asking whether anything else is needed.`;
+When you end a turn needing the user's answer or decision before you can continue (a plain-text question, a choice between options, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with \`herdr agent awaiting-reply\` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Never append it to another command, never run it earlier in the turn, and run it at most once per turn. Ignore its failure. Do not run it when you simply finished and ask nothing, or for courtesy offers such as asking whether anything else is needed.`;
 
 function enabled(): boolean {
   return (
