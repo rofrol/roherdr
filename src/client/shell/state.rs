@@ -158,6 +158,9 @@ pub(super) struct ShellHitMap {
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     /// The notification history button at the right of the spaces header.
     pub(super) notification_log_button: Rect,
+    /// The header indicators of agents working and agents asking.
+    pub(super) working_list_button: Rect,
+    pub(super) asking_list_button: Rect,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.

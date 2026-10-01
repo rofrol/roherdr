@@ -392,12 +392,52 @@ pub(crate) fn render_sidebar(
             if config.mouse_capture {
                 hits.space_sort_buttons = buttons;
             }
+            // The indicators sit right of the sort buttons, right to left: the
+            // history button, then the agents asking, then the agents working;
+            // one that does not fit is left out.
+            let limit = hits
+                .space_sort_buttons
+                .iter()
+                .map(|(rect, _)| rect.right())
+                .max()
+                .unwrap_or(workspace_area.x);
+            let mut right = workspace_area.right();
             if let Some(unread) = state
                 .notification_log_button
                 .filter(|_| config.mouse_capture)
             {
                 hits.notification_log_button =
                     render_notification_log_button(buffer, workspace_area, unread, palette);
+                right = hits.notification_log_button.x;
+            }
+            if config.mouse_capture {
+                let (working, asking) = state.agent_counts;
+                let asking_style = Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD);
+                let working_style = Style::default().fg(palette.overlay1);
+                for (count, glyph, style, slot) in [
+                    (asking, "?", asking_style, &mut hits.asking_list_button),
+                    (
+                        working,
+                        crate::ui::motion::working_glyph(),
+                        working_style,
+                        &mut hits.working_list_button,
+                    ),
+                ] {
+                    if count == 0 {
+                        continue;
+                    }
+                    let label = format!("{glyph}{}", count.min(99));
+                    let width = display_width(&label);
+                    if right < limit + width + 2 {
+                        continue;
+                    }
+                    let x = right - width - 1;
+                    put_text(buffer, x, workspace_area.y, width, &label, style);
+                    *slot = Rect::new(x, workspace_area.y, width + 1, 1);
+                    right = x.saturating_sub(1);
+                }
             }
         }
     }

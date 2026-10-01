@@ -278,6 +278,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) space_sort: super::space_sort::SpaceSort,
     /// The notification history button's unread count, or none to hide it.
     pub(super) notification_log_button: Option<usize>,
+    /// Agents working and agents asking for the user, for the two header
+    /// indicators beside the history button.
+    pub(super) agent_counts: (usize, usize),
 }
 
 pub(super) fn render_shell(
