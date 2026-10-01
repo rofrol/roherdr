@@ -2808,3 +2808,52 @@ fn the_job_summary_on_a_space_row_is_right_aligned() {
     // Far right of the name, close to the sidebar's edge (column 40).
     assert!(glyph > name_end + 20 && glyph >= 30, "{glyph} in {row:?}");
 }
+
+#[test]
+fn a_jump_from_a_list_opens_the_collapsed_space_it_lands_in() {
+    use crate::api::schema::AgentStatus::Blocked;
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![header_agent("pane_1", Blocked, false, "Which database?")];
+    state.set_snapshot(Box::new(projected));
+    state
+        .collapsed_groups
+        .insert(super::super::space_tabs::tabs_collapse_key("ws_1"));
+    let frame = state.compose(106, 30).unwrap();
+    assert!(state.hits.space_tabs.is_empty(), "the space is collapsed");
+    assert!(frame_rows(&frame).iter().any(|row| row.contains('►')));
+
+    let button = state.hits.asking_list_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    state.compose(106, 30).unwrap();
+    let row = state.hits.notification_log_rows[0].0;
+    let outcome = left_click(&mut state, (row.x + 3, row.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(_)))));
+    // The space opened; its tab line shows.
+    assert!(state.collapsed_groups.is_empty());
+    state.compose(106, 30).unwrap();
+    assert!(!state.hits.space_tabs.is_empty(), "the tab line is listed");
+}
+
+#[test]
+fn a_new_tab_opens_the_collapsed_space_it_is_created_in() {
+    let mut state = state_with_tabs(true);
+    state.config.prompt_new_tab_name = false;
+    state
+        .collapsed_groups
+        .insert(super::super::space_tabs::tabs_collapse_key("ws_1"));
+    state.compose(106, 30).unwrap();
+    // The keybinding path.
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+        &mut outcome,
+    );
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabCreate(_)))));
+    assert!(state.collapsed_groups.is_empty(), "the space opened");
+}
