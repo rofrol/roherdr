@@ -53,6 +53,11 @@ pub struct NotificationRecord {
     /// title (a bare shell or program name, a path).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// What the agent asked or said when it needed the user: its own message
+    /// from the hook report (an approval prompt or a question), one line.
+    /// Absent when the agent reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
     /// How many notifications of this kind the pane sent in a row, this one
     /// standing for all of them (a repeat replaces the older entry). Absent:
     /// one.

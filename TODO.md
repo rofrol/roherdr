@@ -2634,7 +2634,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     merged rows, a closed-pane note.
   - Done 2026-10-01 (second part): the list shows the highlighted row's whole
     text, wrapped to at most 3 lines, under a rule below the rows
-    (`wrap_detail` in overlays.rs). Still not done: the `request` field.
+    (`wrap_detail` in overlays.rs).
+  - Done 2026-10-01 (third part): `NotificationRecord.request` (optional): for
+    a needs-attention entry the server takes the agent's own hook-report
+    message (`hook_authority.message`, the approval prompt or question),
+    cleaned to one line of at most 300 characters; the row text appends it as
+    `— "..."` and the footer shows it whole. A finished entry carries none, and
+    a pane whose agent reported no message shows no request (agents that only
+    block on screen text have none; a detection-based fallback would need the
+    screen text and is not done). Still not done: marking a row read or
+    resolved in place, the badge rule for merged rows, a closed-pane note.
 
 - [x] A close confirmation when nothing is happening (user, 2026-10-01,
   screenshot): closing the tab "ask gemini 3.8-flash-low: Des…" asked `Close

@@ -166,6 +166,9 @@ impl ClientShellState {
         }
         parts.extend(workspace);
         let mut text = parts.join(" · ");
+        if let Some(request) = entry.request.as_deref() {
+            text.push_str(&format!(" — “{request}”"));
+        }
         if let Some(repeats) = entry.repeats.filter(|repeats| *repeats > 1) {
             text.push_str(&format!(" ×{repeats}"));
         }

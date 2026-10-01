@@ -1146,6 +1146,7 @@ fn the_notification_history_lists_and_opens_past_notifications() {
         tab_id: Some(tab.into()),
         pane_id: None,
         task: None,
+        request: None,
         repeats: None,
     };
     // The shown tab's notification is read at once, another tab's counts.
@@ -2096,6 +2097,7 @@ fn history_rows_say_what_finished_and_in_which_space() {
             tab_id: Some("tab_1".into()),
             pane_id: Some("pane_1".into()),
             task: task.map(str::to_owned),
+            request: None,
             repeats,
         }
     };
@@ -2147,6 +2149,7 @@ fn the_notification_list_shows_the_highlighted_rows_whole_text_below() {
                     "Rewrite the whole notification history so every row names its task and nothing else"
                         .into(),
                 ),
+                request: None,
                 repeats: Some(2),
             }],
         }),
