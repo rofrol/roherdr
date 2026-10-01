@@ -15,8 +15,8 @@
     plugins, scripts and agents, and cheap upstream rebases) and rename only
     the repo, the display branding (README title, `--version` text, window
     titles) and the release asset names, in one small commit on top; keep
-    attribution and the licence (check `LICENSE`; GPT noted upstream may be
-    Apache-2.0, DeepSeek said AGPL: read the file), no upstream logo, domain or
+    attribution and the licence (`LICENSE` is Apache-2.0, verified; keep it and any
+    NOTICE), no upstream logo, domain or
     "official" claim, disable or repoint the self-updater. Candidates after
     "roguix" (read as ro(frol) + guix): `drovix`/`roherd`/`flockx`/`corralx`
     (Opus, recommends `drovix`: drover, herd driver), `rogux`/`frolux`/
