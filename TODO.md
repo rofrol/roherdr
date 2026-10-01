@@ -2,6 +2,49 @@
 
 ## Next, in order
 
+- [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
+  a name for the herdr fork, I already have roguix, maybe follow similar
+  conventions; make the Windows tests pass; do we build releases on GitHub
+  Actions like upstream herdr? Ask the models. Do it as item 4."). Consulted
+  DeepSeek, Opus and GPT. Facts: the fork `rofrol/herdr` has Actions enabled
+  and no runs yet; `ci.yml` has a `windows-latest` job (ConPTY smoke test);
+  `release.yml`, `preview.yml`, `distribution.yml`, `pr-gate.yml`,
+  `label-next-release-issues.yml` and `website-deploy.yml` are upstream's.
+  - Name: all three keep the binary, crate, `HERDR_*`, `~/.config/herdr`,
+    socket names, plugin ids and the `herdr` skill (compatibility with
+    plugins, scripts and agents, and cheap upstream rebases) and rename only
+    the repo, the display branding (README title, `--version` text, window
+    titles) and the release asset names, in one small commit on top; keep
+    attribution and the licence (check `LICENSE`; GPT noted upstream may be
+    Apache-2.0, DeepSeek said AGPL: read the file), no upstream logo, domain or
+    "official" claim, disable or repoint the self-updater. Candidates after
+    "roguix" (read as ro(frol) + guix): `drovix`/`roherd`/`flockx`/`corralx`
+    (Opus, recommends `drovix`: drover, herd driver), `rogux`/`frolux`/
+    `panix`/`tabrix`/`muxix` (GPT, recommends `rogux`), `herdix`/`herdux`/
+    `herdrix` (DeepSeek; closest to the mark, most confusion). Check GitHub,
+    crates.io, npm and domain availability and trademark before choosing; the
+    choice is the user's.
+  - Windows CI: run `ci.yml` on the fork (first a baseline on the upstream tag
+    to see what fails without the fork's commits, then on `master`), read
+    `gh run view <id> --log-failed`, iterate; suspects in the fork's code:
+    `std::os::unix`, Unix sockets, `chmod`, signals, `sh -c` in plugins and
+    scripts, `$HOME`, `/` in assertions, CRLF, ConPTY timing. Gate genuinely
+    Unix-only tests with `#[cfg(unix)]` and give Windows an equivalent; use
+    `#[cfg_attr(windows, ignore = "reason")]` only with a reason; keep
+    `just windows-lint` before every push.
+  - Releases: do not reuse upstream's `release.yml` (maintainer gating,
+    Homebrew, Nix, website, secrets). Disable upstream's workflows on the fork
+    (`gh workflow disable`, no diff to rebase) and add `fork-release.yml`
+    on tags like `fork-v*`: matrix `macos` aarch64 and `ubuntu` x86_64
+    (Windows optional, its zip needs the ConPTY runtime), `cargo build
+    --release --locked`, archives with checksums, one publish job with
+    `gh release create` and `contents: write`, no custom secrets. Public repos
+    get standard runners free. Test with a prerelease tag: download on the Mac,
+    `herdr --version`, checksum, a smoke run.
+  - Order: baseline CI, disable the upstream workflows, green Windows, the
+    name commit, then the release workflow and a prerelease.
+  - Done: nothing yet.
+
 - [ ] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to
   bookmarks. It shows at the top, left of the `◓2`. The order in that list is
   the order of the spaces. Do it next."). Consulted DeepSeek, Opus and GPT;
