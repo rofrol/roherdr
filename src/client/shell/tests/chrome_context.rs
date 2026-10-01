@@ -687,7 +687,7 @@ fn middle_click_closes_tab_and_workspace() {
         endpoint_methods(&outcome)[..],
         [crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
             ref workspace_id,
-            close_group: true,
+            close_group: false,
         })] if workspace_id == "ws_1"
     ));
 }

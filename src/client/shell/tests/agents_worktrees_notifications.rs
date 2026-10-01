@@ -489,7 +489,7 @@ fn duplicate_repo_parent_drag_does_not_target_its_own_move_block() {
     }
     assert!(
         matches!(state.chrome_drag.as_ref(), Some(ClientChromeDrag::Workspace {
-        target: Some((Some(workspace_id), _)), ..
+        target: Some(Some(workspace_id)), ..
     }) if workspace_id == "ws_duplicate")
     );
     let drop = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {

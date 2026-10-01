@@ -147,7 +147,6 @@ fn show_system_notification(
     })
 }
 
-
 /// How a notification click reaches the local server: this executable and
 /// the API socket this client process resolved.
 #[cfg(not(windows))]
@@ -320,9 +319,11 @@ mod tests {
         // This send must run while native delivery is still waiting.
         release.send(()).expect("client loop remained responsive");
         second.await.expect("replacement delivered after original");
+    }
+}
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, not(windows)))]
+mod click_tests {
     use super::*;
 
     fn context() -> LocalClickContext {

@@ -27,7 +27,7 @@ impl ClientShellState {
             .then(|| self.active_endpoint_workspace_at(point))
             .flatten();
         if let Some(workspace_id) = workspace_id {
-            self.request_workspace_close(workspace_id, outcome);
+            self.request_workspace_close(workspace_id, None, outcome);
             outcome.repaint = true;
             return;
         }

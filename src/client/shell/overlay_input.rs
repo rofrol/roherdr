@@ -1134,6 +1134,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
+                close_group: false,
                 tab_target: Some(ClientTabCloseConfirmation {
                     tab_id: tab_id.to_owned(),
                     workspace,
@@ -1166,6 +1167,7 @@ impl ClientShellState {
             self.overlay = Some(ClientShellOverlay::ConfirmClose(
                 ClientConfirmCloseOverlay {
                     workspace_id,
+                    close_group: false,
                     tab_target: None,
                     pane_target: Some(pane_id),
                     title: "Close pane with running work?".to_owned(),
@@ -1235,6 +1237,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
+                close_group: false,
                 tab_target: Some(ClientTabCloseConfirmation {
                     tab_id: tab_id.to_owned(),
                     workspace,
@@ -1292,6 +1295,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
+                close_group: false,
                 tab_target: Some(ClientTabCloseConfirmation {
                     tab_id: tab_id.to_owned(),
                     workspace,
