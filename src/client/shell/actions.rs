@@ -397,6 +397,13 @@ impl ClientShellState {
         if changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
+        // A new tab that takes the focus must show: open its collapsed space.
+        if let crate::api::schema::Method::TabCreate(params) = &method {
+            if params.focus {
+                let workspace_id = params.workspace_id.clone();
+                self.expand_for_jump(workspace_id.as_deref(), outcome);
+            }
+        }
         if !self.endpoint_is_online(&self.active_endpoint_id) {
             let label = self.active_endpoint_label().to_owned();
             outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));

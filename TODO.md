@@ -40,6 +40,39 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [ ] Flaky tests under load (seen 2026-10-01 while other sessions built):
+  `client_mode::federated_client_starts_without_local_and_survives_its_restart`
+  (4 of the last 8 full runs, passes alone) and once `app::api::plugins::tests::
+  plugin_pane_open_uses_plugin_root_title_env_and_target_context` ("bin path"
+  panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
+  investigated. Done: nothing.
+
+- [x] A jump into a collapsed space shows nothing (user, 2026-10-01, screenshot:
+  he clicked a task with a `?` in the asking list; its space `~` was collapsed
+  (`►`), so the tab focused but stayed hidden; "it should have expanded"). Third
+  in his queue. Consulted DeepSeek and GPT: both scroll to the tab and extend
+  the same behaviour to other focus moves; they differ on the kind of expansion:
+  GPT persistent (an explicit jump means "take me there", like a manual toggle),
+  DeepSeek transient (collapse again when focus leaves; persisting overrides a
+  deliberate collapse).
+  - Done 2026-10-01 (the persistent way, the simpler one): a click or Enter on a
+    row of any header list (asking, working, bookmarks, history) opens the
+    target's collapsed space and, for a worktree child, the collapsed group
+    above it, saves that like a manual toggle, and scrolls the list to the tab.
+    Test: `a_jump_from_a_list_opens_the_collapsed_space_it_lands_in`.
+  - Also (user, same day: "creating a new tab should expand the space too";
+    DeepSeek and GPT: persistent for tabs the user creates, none for
+    background automation): done: every `TabCreate` that takes the focus and
+    leaves the client shell (the `+`, the tab menu, the new-tab key, the rename
+    prompt for a new tab, reopening a closed tab) opens the target's collapsed
+    space and group first; tabs created by the API or an agent never pass
+    through the client shell, so they leave the collapse alone. Test: `a_new_tab_
+    opens_the_collapsed_space_it_is_created_in`.
+  - Not done: the transient variant (kept here in case the persistent one is
+    unwelcome: expand for the jump, collapse again when the focus leaves); other
+    focus moves that land in a collapsed space (keyboard navigation, a toast
+    click, `pane.focus`), where GPT wants an opt-out for background callers.
+
 - [x] The open header button lost its colour too (user, 2026-10-01: "same
   here it loses its colour", screenshot of the `◐4` pill in solid blue with white
   text). Consulted DeepSeek (outline `▐◐4▌`) and GPT (tint); chose the tint, as

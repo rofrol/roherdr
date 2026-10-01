@@ -1492,6 +1492,23 @@ impl ClientShellState {
             .is_some_and(|groups| groups.contains(key))
     }
 
+    /// Opens a collapsed group or space; whether it was collapsed.
+    pub(super) fn expand_collapsed_group(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        key: &str,
+    ) -> bool {
+        let groups = if endpoint_id.is_local() {
+            &mut self.collapsed_groups
+        } else {
+            match self.remote_collapsed_groups.get_mut(endpoint_id) {
+                Some(groups) => groups,
+                None => return false,
+            }
+        };
+        groups.remove(key)
+    }
+
     pub(super) fn toggle_collapsed_group(&mut self, endpoint_id: &ClientEndpointId, key: String) {
         let groups = if endpoint_id.is_local() {
             &mut self.collapsed_groups

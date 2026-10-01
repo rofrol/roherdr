@@ -527,6 +527,51 @@ impl ClientShellState {
         }
     }
 
+    /// A jump from a list, or a new tab, lands in a collapsed space (or one
+    /// under a collapsed worktree group): open them, so the target shows, and
+    /// scroll to it. The choice is kept, like a manual toggle.
+    pub(super) fn expand_for_jump(
+        &mut self,
+        workspace_id: Option<&str>,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(workspace_id) = workspace_id else {
+            return;
+        };
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let Some(workspace) = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+        else {
+            return;
+        };
+        let mut keys = vec![super::space_tabs::tabs_collapse_key(workspace_id)];
+        if let Some(worktree) = workspace.worktree.as_ref() {
+            // The group's parent space holds the group's collapse key.
+            for (index, candidate) in snapshot.workspaces.iter().enumerate() {
+                let is_parent = candidate
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|other| other.key == worktree.key && !other.is_linked_worktree);
+                if is_parent {
+                    keys.extend(super::sidebar::parent_group_key(snapshot, index));
+                }
+            }
+        }
+        let endpoint = self.active_endpoint_id.clone();
+        let mut changed = false;
+        for key in keys {
+            changed |= self.expand_collapsed_group(&endpoint, &key);
+        }
+        if changed {
+            self.reveal_focused_workspace = true;
+            self.persist_chrome_preferences(outcome);
+        }
+    }
+
     /// Opens the entry's pane, else its tab, else its space, like its
     /// toast; says so when none of them is left.
     pub(super) fn activate_notification_log_row(
@@ -542,6 +587,7 @@ impl ClientShellState {
         if let Some(tab_id) = entry.tab_id.as_deref() {
             self.notification_log.unread_tabs.remove(tab_id);
         }
+        self.expand_for_jump(entry.workspace_id.as_deref(), outcome);
         let method = self.snapshot.as_deref().and_then(|snapshot| {
             use crate::api::schema::{Method, PaneTarget, TabTarget, WorkspaceTarget};
             if let Some(pane_id) = entry
