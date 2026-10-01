@@ -459,7 +459,7 @@ pub(in crate::client::shell) fn accent_tint(palette: &Palette) -> ratatui::style
 }
 
 /// `parts` of `total` of `top` over `base`, when both are RGB colours.
-fn blend(
+pub(in crate::client::shell) fn blend(
     top: ratatui::style::Color,
     base: ratatui::style::Color,
     parts: u16,

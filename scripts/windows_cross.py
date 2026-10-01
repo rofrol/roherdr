@@ -47,6 +47,56 @@ def libc_path() -> Path:
     return path.resolve()
 
 
+# TEMPORARY WORKAROUND for Zig issue #22559 ("std.Build conflates libc
+# configuration for host and cross targets"). Remove this function and its call
+# in lint() once Herdr builds with a Zig that scopes `--libc` to the target, or
+# once libghostty-vt takes a target-only libc option that build.rs uses instead
+# of a global `--libc`; then also delete the `usr/lib` link from existing SDKs.
+MACOS_LIBS_LINK = "usr/lib"
+
+
+def link_macos_system_libraries(libc: Path) -> None:
+    """Lets Zig link host tools on macOS during the Windows build (temporary).
+
+    Zig applies the Windows libc file (`--libc`, and `ZIG_LIBC` alike) to every
+    compile of a `zig build`, including the host tools libghostty-vt and its
+    dependencies build and run. On macOS those link libSystem, which Zig then
+    looks for under `<SDK root>/usr/lib`, so this links that directory to the
+    macOS SDK's. Only the SDK that `just setup-windows-cross` manages is
+    touched, never one named by LIBGHOSTTY_VT_WINDOWS_LIBC, and only through
+    `just windows-lint`; a direct `cargo clippy --target ...-windows-msvc` on
+    macOS needs the link in place already.
+    """
+    if sys.platform != "darwin":
+        return
+    if libc.resolve() != (SDK_ROOT / "libc.txt").resolve():
+        return
+    link = SDK_ROOT / MACOS_LIBS_LINK
+    sdk = subprocess.run(
+        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    target = Path(sdk) / "usr/lib"
+    if not (target / "libSystem.tbd").is_file():
+        raise ValueError(f"macOS SDK has no libSystem.tbd in {target}; check `xcode-select -p`.")
+    if link.is_symlink():
+        current = Path(os.readlink(link))
+        if current == target:
+            return
+        if not str(current).endswith(".sdk/usr/lib"):
+            raise ValueError(f"{link} links to {current}, not a macOS SDK; remove it and retry.")
+    elif link.exists():
+        raise ValueError(f"{link} exists and is not a link to a macOS SDK; remove it and retry.")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    # Replace atomically, so concurrent lints never see the link missing.
+    staging = link.with_name(f".lib-{os.getpid()}")
+    staging.unlink(missing_ok=True)
+    staging.symlink_to(target)
+    os.replace(staging, link)
+
+
 def setup(accept_license: bool) -> None:
     if not shutil.which("xwin"):
         raise ValueError("Install xwin first: cargo install xwin --locked")
@@ -70,7 +120,9 @@ def setup(accept_license: bool) -> None:
 
 
 def lint() -> None:
-    env = {**os.environ, LIBC_ENV: str(libc_path()), "LIBGHOSTTY_VT_SIMD": "false"}
+    libc = libc_path()
+    link_macos_system_libraries(libc)
+    env = {**os.environ, LIBC_ENV: str(libc), "LIBGHOSTTY_VT_SIMD": "false"}
     subprocess.run(["rustup", "target", "add", TARGET], check=True)
     subprocess.run(
         # --tests also checks Windows-only test code, which Unix builds never compile.

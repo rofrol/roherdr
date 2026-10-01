@@ -11,6 +11,12 @@ impl ClientShellState {
         if !self.config.mouse_capture {
             return;
         }
+        // A tab line lies inside its space's block but closes only its tab.
+        if let Some(tab_id) = self.space_tab_at(point) {
+            self.request_tab_close(tab_id, outcome);
+            outcome.repaint = true;
+            return;
+        }
         let workspace_id = (!self.sidebar_collapsed)
             .then(|| self.active_endpoint_workspace_at(point))
             .flatten();
@@ -30,6 +36,118 @@ impl ClientShellState {
             self.request_tab_close(tab_id, outcome);
             outcome.repaint = true;
         }
+    }
+
+    /// The tab whose line or square under a space is at `point`: a line
+    /// stands for its top-level tab, a square for its nested tab.
+    fn space_tab_at(&self, point: (u16, u16)) -> Option<String> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        self.hits
+            .space_tab_squares
+            .iter()
+            .chain(&self.hits.space_tabs)
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, tab_id)| tab_id.clone())
+    }
+
+    /// With vertical tabs, a job tab's top row is its header, drawn by
+    /// herdr-job: ` ← ` in its first three columns goes back to the parent
+    /// tab and ` × ` in its last three closes the job tab (a running job asks
+    /// first). Returns whether the click was one of them.
+    fn job_header_click(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) -> bool {
+        const BUTTON_WIDTH: u16 = 3;
+        if !self.config.spaces.tabs
+            || !self.config.mouse_capture
+            || self.overlay.is_some()
+            || self.mode != ClientShellMode::Terminal
+        {
+            return false;
+        }
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let Some(job) = snapshot
+            .focused_tab_id
+            .as_deref()
+            .and_then(|id| snapshot.tabs.iter().find(|tab| tab.tab_id == id))
+            .filter(|tab| tab.status.is_some())
+        else {
+            return false;
+        };
+        let Some(parent) = job.parent_tab_id.clone() else {
+            return false;
+        };
+        let job_id = job.tab_id.clone();
+        let Some(hit) = self.hits.panes.iter().find(|hit| {
+            !hit.popup
+                && point.1 == hit.inner_rect.y
+                && super::contains(hit.inner_rect, point)
+                && snapshot
+                    .panes
+                    .iter()
+                    .any(|pane| pane.pane_id == hit.pane_id && pane.tab_id == job_id)
+        }) else {
+            return false;
+        };
+        let inner = hit.inner_rect;
+        if inner.width < BUTTON_WIDTH * 2 {
+            return false;
+        }
+        if point.0 < inner.x.saturating_add(BUTTON_WIDTH) {
+            self.push_endpoint_method(
+                crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                    tab_id: parent,
+                }),
+                outcome,
+            );
+            return true;
+        }
+        if point.0 >= inner.right().saturating_sub(BUTTON_WIDTH) {
+            self.request_tab_close(job_id, outcome);
+            outcome.repaint = true;
+            return true;
+        }
+        false
+    }
+
+    /// The tab a left click on a tab line or square focuses, or none when
+    /// the click folds or unfolds the line's squares (on its triangle and
+    /// counts). A square opens its tab, and the open one goes back to its
+    /// parent. The rest of a line always opens the tab itself.
+    fn space_tab_click(&mut self, point: (u16, u16)) -> Option<Option<String>> {
+        let hit = |hits: &[(Rect, String)]| {
+            hits.iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, tab_id)| tab_id.clone())
+        };
+        if let Some(tab_id) = hit(&self.hits.space_tab_folds) {
+            // Tab ids can be reused: forget tabs that are gone.
+            if let Some(snapshot) = self.snapshot.as_deref() {
+                let live = snapshot
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.tab_id.as_str())
+                    .collect::<HashSet<_>>();
+                self.unfolded_squares
+                    .retain(|unfolded| live.contains(unfolded.as_str()));
+            }
+            if !self.unfolded_squares.remove(&tab_id) {
+                self.unfolded_squares.insert(tab_id);
+            }
+            return Some(None);
+        }
+        if let Some(square) = hit(&self.hits.space_tab_squares) {
+            let snapshot = self.snapshot.as_deref()?;
+            let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == square)?;
+            let open = snapshot.focused_tab_id.as_deref() == Some(square.as_str());
+            return Some(Some(match tab.parent_tab_id.as_ref() {
+                Some(parent) if open => parent.clone(),
+                _ => square,
+            }));
+        }
+        hit(&self.hits.space_tabs).map(Some)
     }
 
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
@@ -898,6 +1016,11 @@ impl ClientShellState {
                 }
                 _ => {}
             }
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.job_header_click(point, outcome)
+        {
             return;
         }
         if self.url_click_consumes_until_up {
@@ -1944,6 +2067,11 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                if let Some(tab_id) = self.space_tab_at(point) {
+                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let workspace_id = (!self.sidebar_collapsed)
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();
@@ -2211,21 +2339,18 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                // A tab line under a space enters that tab's group, as the
-                // main tab row does, not the space.
-                let space_tab = self
-                    .hits
-                    .space_tabs
-                    .iter()
-                    .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, tab_id)| self.group_entry_tab(tab_id));
-                if let Some(tab_id) = space_tab {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                            tab_id,
-                        }),
-                        outcome,
-                    );
+                // A tab line or square under a space acts on its tab, not
+                // the space.
+                if let Some(target) = self.space_tab_click(point) {
+                    match target {
+                        Some(tab_id) => self.push_endpoint_method(
+                            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                                tab_id,
+                            }),
+                            outcome,
+                        ),
+                        None => outcome.repaint = true,
+                    }
                     return;
                 }
                 let workspace_press = self

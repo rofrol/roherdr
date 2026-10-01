@@ -8,6 +8,19 @@
 set -eu
 
 action="${1:-}"
+
+# Repeats the awaiting-reply instruction on every prompt, since the SessionStart context is far
+# back in a long session. Printed as is: it needs no hook input and no socket.
+if [ "$action" = "reminder" ]; then
+  cat >/dev/null 2>&1 || true
+  [ "${HERDR_ENV:-}" = "1" ] || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || exit 0
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), run `herdr agent awaiting-reply` on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers."}}'
+  exit 0
+fi
+
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
 trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
@@ -64,12 +77,14 @@ if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": (
-                "You run inside a Herdr pane. When your final message ends the turn with a "
-                "plain-text question the user must answer or decide (a question, a choice "
-                "between options, a confirmation before you proceed), run the shell command "
+                "You run inside a Herdr pane. When you end a turn needing the user's answer "
+                "or decision before you can continue the work, run the shell command "
                 "`herdr agent awaiting-reply` on its own, as the last command of the turn, "
-                "right before that message, so Herdr keeps your pane marked until the user "
-                "replies. Never append it to another command, never run it earlier in the "
+                "right before your final message, so Herdr keeps your pane marked until the "
+                "user replies. This covers a plain-text question, a choice between options, a "
+                "confirmation before you proceed, and a request to check something before you "
+                "go on (\"let me know how it looks, then I will commit\"), even without a "
+                "question mark. Never append it to another command, never run it earlier in the "
                 "turn, and never run it for AskUserQuestion or any other question tool or "
                 "prompt answered inside the turn: Herdr already shows those as blocked. Run "
                 "it at most once per turn and ignore its failure. Do not run it when you "

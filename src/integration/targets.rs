@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 use super::claude_settings::{
-    allow_awaiting_reply_command, install as install_claude_settings,
-    remove_awaiting_reply_permission, uninstall as uninstall_claude_settings,
+    add_awaiting_reply_reminder, allow_awaiting_reply_command, install as install_claude_settings,
+    remove_awaiting_reply_permission, remove_awaiting_reply_reminder,
+    uninstall as uninstall_claude_settings,
 };
 use super::command::hook_command;
 #[cfg(windows)]
@@ -145,9 +146,13 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
     } else {
         "{}".to_string()
     };
-    let updated_settings = allow_awaiting_reply_command(
-        &install_claude_settings(&existing_settings, &settings_path, &hook_path)?,
+    let updated_settings = add_awaiting_reply_reminder(
+        &allow_awaiting_reply_command(
+            &install_claude_settings(&existing_settings, &settings_path, &hook_path)?,
+            &settings_path,
+        )?,
         &settings_path,
+        &hook_path,
     )?;
     remove_legacy_bash_hook_file(&hook_path)?;
 
@@ -597,9 +602,13 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
 
     if settings_path.is_file() {
         let existing_settings = fs::read_to_string(&settings_path)?;
-        let new_settings = remove_awaiting_reply_permission(
-            &uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?,
+        let new_settings = remove_awaiting_reply_reminder(
+            &remove_awaiting_reply_permission(
+                &uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?,
+                &settings_path,
+            )?,
             &settings_path,
+            &hook_path,
         )?;
         updated_settings = new_settings != existing_settings;
         if updated_settings {

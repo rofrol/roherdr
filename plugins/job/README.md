@@ -27,10 +27,14 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   and closes its jobs too. herdr builds without child tabs get a top-level
   tab labelled
   `⧖ Build b17`, then `✓ Build b17` or `✗ Build b17`.
-- The tab's last row is a pinned footer: state, name, `--why`, which agent and
-  workspace started it, and the job id. Output scrolls above it. It has no
-  background (reverse video is a black bar on light themes); the state is
-  bold in a palette colour.
+- The tab's first row is a pinned header: ` ← `, state, name, `--why`, which
+  agent and workspace started it, the job id and ` × `. Output scrolls below
+  it, and so does the shell prompt after the job ends. With herdr's vertical
+  tabs (`ui.sidebar.spaces.tabs`) there is no tab bar, so this row is the
+  job's title: clicking ` ← ` goes back to the tab that started the job and
+  ` × ` closes the job tab (a running job asks first). It has no background
+  (reverse video is a black bar on light themes); the state is bold in a
+  palette colour.
 - The command gets `HERDR_JOB_ID` and `HERDR_JOB_TTY`, the tab's terminal. It
   runs without a controlling terminal, so `/dev/tty` fails; writing progress
   to `$HERDR_JOB_TTY` shows it in the tab but keeps it out of the log that
