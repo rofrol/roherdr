@@ -7728,6 +7728,7 @@ fn report_pane_state(
             seq: Some(seq),
             agent_session_id: None,
             agent_session_path: None,
+            resume_argv: None,
         }),
     );
 }

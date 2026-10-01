@@ -2797,16 +2797,6 @@ fn clipboard_global_bytes(format: u32, max_bytes: usize) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Show a toast; the subtitle is folded into the body and click commands are
-/// not supported.
-pub fn show_desktop_notification_with_details(
-    title: &str,
-    body: Option<&str>,
-    details: &super::DesktopNotificationDetails,
-) -> std::io::Result<bool> {
-    show_desktop_notification(title, details.flattened_body(body).as_deref())
-}
-
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
