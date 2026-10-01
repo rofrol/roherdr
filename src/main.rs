@@ -90,6 +90,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # sidebar_bg = "#181825"
 # active_row_bg = "#1e1e2e"
 # selection_bg = "#313244"
+# drag_bg = "#45475a"
 # panel_bg = "reset"
 # accent = "#f5c2e7"
 # red = "#ff6188"

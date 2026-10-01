@@ -1746,6 +1746,11 @@ impl AppState {
             if completion_reset {
                 terminal.last_agent_completion_seq = None;
             }
+            // Before any early return below: a session change without an effective state
+            // change must still drop the old session's report.
+            if (mutation.agent_released || completion_reset) && terminal.clear_awaiting_reply() {
+                terminal.revision = terminal.revision.saturating_add(1);
+            }
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;
@@ -1773,10 +1778,8 @@ impl AppState {
         let change = mutation.effective_state_change.or(unchanged_change)?;
         let suppress_completion = force_suppress_completion
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
-        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
-            if agent_released || completion_reset {
-                terminal.clear_awaiting_reply();
-            } else if change.previous_state != change.state {
+        if change.previous_state != change.state {
+            if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.advance_awaiting_reply(change.state);
             }
         }
@@ -3328,40 +3331,196 @@ mod tests {
         assert!(!app.pending_agent_notifications.contains_key(&pane_id));
     }
 
+    struct AwaitingReplyHarness {
+        app: AppState,
+        pane_id: PaneId,
+        terminal_id: crate::terminal::TerminalId,
+    }
+
+    impl AwaitingReplyHarness {
+        fn new() -> Self {
+            let app = app_with_workspaces(&["agent"]);
+            let pane_id = app.workspaces[0].tabs[0].root_pane;
+            let terminal_id = app.workspaces[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            Self {
+                app,
+                pane_id,
+                terminal_id,
+            }
+        }
+
+        fn change(&mut self, state: AgentState) {
+            self.app.handle_app_event(AppEvent::StateChanged {
+                pane_id: self.pane_id,
+                agent: Some(Agent::Claude),
+                state,
+                visible_blocker: state == AgentState::Blocked,
+                visible_working: state == AgentState::Working,
+                process_exited: false,
+                observed_at: Instant::now(),
+            });
+        }
+
+        fn report(&mut self) -> bool {
+            self.terminal().report_awaiting_reply()
+        }
+
+        fn type_input(&mut self) -> bool {
+            self.terminal().clear_awaiting_reply()
+        }
+
+        fn awaiting(&self) -> bool {
+            self.app.terminals[&self.terminal_id].awaiting_reply()
+        }
+
+        fn terminal(&mut self) -> &mut crate::terminal::TerminalState {
+            self.app.terminals.get_mut(&self.terminal_id).unwrap()
+        }
+    }
+
     #[test]
-    fn awaiting_reply_report_shows_when_the_turn_ends_and_clears_on_the_next_turn() {
+    fn awaiting_reply_report_shows_when_the_turn_ends_and_clears_when_the_user_types() {
+        let mut h = AwaitingReplyHarness::new();
+
+        h.change(AgentState::Working);
+        assert!(!h.report());
+        assert!(!h.awaiting(), "a report waits for the turn to end");
+        h.change(AgentState::Idle);
+        assert!(h.awaiting());
+
+        assert!(h.type_input());
+        assert!(!h.awaiting(), "typing into the pane answers it");
+        h.change(AgentState::Working);
+        h.change(AgentState::Idle);
+        assert!(!h.awaiting(), "a turn without a report shows nothing");
+    }
+
+    #[test]
+    fn awaiting_reply_report_while_idle_shows_at_once() {
+        let mut h = AwaitingReplyHarness::new();
+
+        h.change(AgentState::Working);
+        h.change(AgentState::Idle);
+        assert!(h.report());
+        assert!(h.awaiting());
+        assert!(!h.report(), "a repeated report changes nothing");
+    }
+
+    #[test]
+    fn awaiting_reply_survives_an_idle_flicker_in_the_middle_of_the_turn() {
+        let mut h = AwaitingReplyHarness::new();
+
+        h.change(AgentState::Working);
+        h.report();
+        h.change(AgentState::Idle);
+        h.change(AgentState::Working);
+        assert!(!h.awaiting(), "working hides it");
+        h.change(AgentState::Idle);
+        assert!(h.awaiting(), "the real end of the turn still shows it");
+    }
+
+    #[test]
+    fn awaiting_reply_stays_when_the_agent_works_on_without_a_reply() {
+        let mut h = AwaitingReplyHarness::new();
+
+        h.change(AgentState::Working);
+        h.report();
+        h.change(AgentState::Idle);
+        h.change(AgentState::Working);
+        h.change(AgentState::Idle);
+        assert!(h.awaiting(), "nobody answered the question yet");
+    }
+
+    #[test]
+    fn awaiting_reply_report_before_an_in_turn_prompt_is_dropped() {
+        let mut h = AwaitingReplyHarness::new();
+
+        // The agent reports, then asks with a question form inside the same turn.
+        h.change(AgentState::Working);
+        h.report();
+        h.change(AgentState::Blocked);
+        h.change(AgentState::Working);
+        h.change(AgentState::Idle);
+        assert!(
+            !h.awaiting(),
+            "the form answered inside the turn used it up"
+        );
+
+        h.change(AgentState::Working);
+        h.report();
+        h.change(AgentState::Blocked);
+        h.change(AgentState::Idle);
+        assert!(!h.awaiting(), "a dismissed form leaves no mark either");
+    }
+
+    #[test]
+    fn awaiting_reply_report_while_blocked_shows_when_the_turn_ends() {
+        let mut h = AwaitingReplyHarness::new();
+
+        // The report command itself waited on a permission prompt.
+        h.change(AgentState::Working);
+        h.change(AgentState::Blocked);
+        h.report();
+        h.change(AgentState::Working);
+        h.change(AgentState::Idle);
+        assert!(h.awaiting());
+    }
+
+    #[test]
+    fn awaiting_reply_is_hidden_but_kept_while_the_agent_state_is_unknown() {
+        let mut h = AwaitingReplyHarness::new();
+
+        h.change(AgentState::Working);
+        h.report();
+        h.change(AgentState::Idle);
+        h.change(AgentState::Unknown);
+        assert!(!h.awaiting());
+        h.change(AgentState::Idle);
+        assert!(h.awaiting());
+    }
+
+    #[test]
+    fn awaiting_reply_is_cleared_by_a_session_change_without_a_state_change() {
         let mut app = app_with_workspaces(&["agent"]);
         let pane_id = app.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.workspaces[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let change = |app: &mut AppState, state: AgentState| {
-            app.handle_app_event(AppEvent::StateChanged {
+        let report_session = |app: &mut AppState, seq: u64, session: &str| {
+            app.handle_app_event(AppEvent::AgentSessionReported {
                 pane_id,
-                agent: Some(Agent::Claude),
-                state,
-                visible_blocker: false,
-                visible_working: state == AgentState::Working,
-                process_exited: false,
-                observed_at: Instant::now(),
+                source: "herdr:claude".into(),
+                agent_label: "claude".into(),
+                seq: Some(seq),
+                session_ref: crate::agent_resume::AgentSessionRef::id(session),
+                session_start_source: Some(if seq == 1 { "startup" } else { "clear" }.into()),
             });
         };
-        let awaiting = |app: &AppState| app.terminals[&terminal_id].awaiting_reply;
-
-        change(&mut app, AgentState::Working);
-        assert!(!app
-            .terminals
+        report_session(&mut app, 1, "old-session");
+        app.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: Instant::now(),
+        });
+        app.workspaces[0].pane_state_mut(pane_id).unwrap().seen = true;
+        app.terminals
             .get_mut(&terminal_id)
             .unwrap()
-            .report_awaiting_reply());
-        assert!(!awaiting(&app), "a report waits for the turn to end");
-        change(&mut app, AgentState::Idle);
-        assert!(awaiting(&app));
+            .last_agent_completion_seq = None;
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .report_awaiting_reply();
+        assert!(app.terminals[&terminal_id].awaiting_reply());
 
-        change(&mut app, AgentState::Working);
-        assert!(!awaiting(&app), "the next turn clears it");
-        change(&mut app, AgentState::Idle);
-        assert!(!awaiting(&app), "a turn without a report shows nothing");
+        report_session(&mut app, 2, "new-session");
+        assert!(!app.terminals[&terminal_id].awaiting_reply());
     }
 
     #[test]

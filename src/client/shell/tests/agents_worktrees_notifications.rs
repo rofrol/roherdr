@@ -638,6 +638,88 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
 }
 
 #[test]
+fn a_pressed_or_dragged_space_gets_the_drag_background() {
+    let mut projected = snapshot();
+    let mut second = projected.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.number = 2;
+    second.label = "workspace-2".into();
+    second.focused = false;
+    projected.workspaces.push(second);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("two workspaces");
+    let first = state.hits.workspaces[0].rect;
+    let second = state.hits.workspaces[1].rect;
+    let mouse = |kind, column, row| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    // Background of the space's name line, right of the accent bar.
+    let background = |state: &mut ClientShellState, workspace_id: &str| {
+        let frame = state.compose(106, 24).expect("frame");
+        let rect = state
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| hit.workspace_id == workspace_id)
+            .expect("space drawn")
+            .rect;
+        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 2].bg
+    };
+    let palette = state.config.palette.clone();
+    let drag = crate::protocol::color_to_u32(palette.drag_bg);
+    assert_ne!(drag, crate::protocol::color_to_u32(palette.active_row_bg));
+    assert_ne!(background(&mut state, "ws_2"), drag);
+
+    // A press already shows it, like the grip's accent.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        second.x + 2,
+        second.y,
+    )]);
+    assert_eq!(background(&mut state, "ws_2"), drag);
+    assert_ne!(background(&mut state, "ws_1"), drag);
+
+    // It stays while the space is dragged.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        first.x + 2,
+        first.y,
+    )]);
+    assert_eq!(background(&mut state, "ws_2"), drag);
+    assert_ne!(background(&mut state, "ws_1"), drag);
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
+    assert_ne!(background(&mut state, "ws_2"), drag);
+
+    // The active space gets the same background while dragged.
+    state.compose(106, 24).expect("frame");
+    let first = state.hits.workspaces[0].rect;
+    let second = state.hits.workspaces[1].rect;
+    state.handle_raw_events(vec![
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            first.x + 2,
+            first.y,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            first.x + 2,
+            second.bottom().saturating_sub(1),
+        ),
+    ]);
+    assert_eq!(background(&mut state, "ws_1"), drag);
+}
+
+#[test]
 fn a_space_shows_it_can_be_dragged_on_hover_press_and_outside_the_list() {
     let mut projected = snapshot();
     let mut second = projected.workspaces[0].clone();

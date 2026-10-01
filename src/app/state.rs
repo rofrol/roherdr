@@ -43,6 +43,8 @@ pub struct Palette {
     pub active_row_bg: Color,
     /// Background for the Navigate-mode cursor row in the sidebar.
     pub selection_bg: Color,
+    /// Background for a space block while it is dragged. Reset means none.
+    pub drag_bg: Color,
     /// Subtle surface background for selected/focused items.
     pub surface0: Color,
     /// Slightly lighter surface for hover/active states.
@@ -82,6 +84,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(30, 30, 46),
             selection_bg: Color::Rgb(49, 50, 68),
+            drag_bg: Color::Rgb(69, 71, 90),
             surface0: Color::Rgb(49, 50, 68),
             surface1: Color::Rgb(69, 71, 90),
             surface_dim: Color::Rgb(30, 30, 46),
@@ -107,6 +110,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(230, 233, 239),
             selection_bg: Color::Rgb(189, 208, 245),
+            drag_bg: Color::Rgb(220, 222, 228),
             surface0: Color::Rgb(204, 208, 218),
             surface1: Color::Rgb(188, 192, 204),
             surface_dim: Color::Rgb(230, 233, 239),
@@ -132,6 +136,9 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::DarkGray,
             selection_bg: Color::Reset,
+            // A grey would match the active row's DarkGray, so the accent
+            // bar alone marks a dragged space.
+            drag_bg: Color::Reset,
             surface0: Color::Reset,
             surface1: Color::DarkGray,
             surface_dim: Color::DarkGray,
@@ -157,6 +164,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(35, 38, 54),
             selection_bg: Color::Rgb(45, 54, 80),
+            drag_bg: Color::Rgb(65, 72, 104),
             surface0: Color::Rgb(36, 40, 59),
             surface1: Color::Rgb(65, 72, 104),
             surface_dim: Color::Rgb(26, 27, 38),
@@ -182,6 +190,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(210, 211, 218),
             selection_bg: Color::Rgb(182, 202, 231),
+            drag_bg: Color::Rgb(218, 219, 224),
             surface0: Color::Rgb(196, 200, 218),
             surface1: Color::Rgb(168, 174, 203),
             surface_dim: Color::Rgb(210, 211, 218),
@@ -207,6 +216,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(55, 60, 82),
             selection_bg: Color::Rgb(70, 63, 93),
+            drag_bg: Color::Rgb(85, 90, 115),
             surface0: Color::Rgb(68, 71, 90),
             surface1: Color::Rgb(98, 114, 164),
             surface_dim: Color::Rgb(40, 42, 54),
@@ -232,6 +242,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(67, 76, 94),
             selection_bg: Color::Rgb(64, 80, 93),
+            drag_bg: Color::Rgb(80, 90, 110),
             surface0: Color::Rgb(59, 66, 82),
             surface1: Color::Rgb(67, 76, 94),
             surface_dim: Color::Rgb(46, 52, 64),
@@ -257,6 +268,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(50, 49, 48),
             selection_bg: Color::Rgb(75, 63, 39),
+            drag_bg: Color::Rgb(80, 73, 69),
             surface0: Color::Rgb(60, 56, 54),
             surface1: Color::Rgb(80, 73, 69),
             surface_dim: Color::Rgb(40, 40, 40),
@@ -282,6 +294,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(242, 229, 188),
             selection_bg: Color::Rgb(235, 219, 178),
+            drag_bg: Color::Rgb(232, 230, 222),
             surface0: Color::Rgb(235, 219, 178),
             surface1: Color::Rgb(213, 196, 161),
             surface_dim: Color::Rgb(242, 229, 188),
@@ -307,6 +320,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(49, 54, 64),
             selection_bg: Color::Rgb(51, 70, 89),
+            drag_bg: Color::Rgb(75, 80, 94),
             surface0: Color::Rgb(44, 49, 58),
             surface1: Color::Rgb(62, 68, 81),
             surface_dim: Color::Rgb(40, 44, 52),
@@ -332,6 +346,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(216, 219, 226),
             selection_bg: Color::Rgb(205, 219, 248),
+            drag_bg: Color::Rgb(238, 238, 240),
             surface0: Color::Rgb(240, 240, 241),
             surface1: Color::Rgb(229, 229, 230),
             surface_dim: Color::Rgb(245, 245, 246),
@@ -357,6 +372,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(22, 75, 87),
             selection_bg: Color::Rgb(8, 62, 85),
+            drag_bg: Color::Rgb(45, 60, 65),
             surface0: Color::Rgb(7, 54, 66),
             surface1: Color::Rgb(88, 110, 117),
             surface_dim: Color::Rgb(0, 43, 54),
@@ -382,6 +398,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(238, 232, 213),
             selection_bg: Color::Rgb(201, 220, 223),
+            drag_bg: Color::Rgb(230, 228, 220),
             surface0: Color::Rgb(238, 232, 213),
             surface1: Color::Rgb(147, 161, 161),
             surface_dim: Color::Rgb(238, 232, 213),
@@ -407,6 +424,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(54, 54, 70),
             selection_bg: Color::Rgb(50, 56, 75),
+            drag_bg: Color::Rgb(84, 84, 109),
             surface0: Color::Rgb(42, 42, 55),
             surface1: Color::Rgb(54, 54, 70),
             surface_dim: Color::Rgb(31, 31, 40),
@@ -432,6 +450,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(213, 206, 163),
             selection_bg: Color::Rgb(220, 213, 172),
+            drag_bg: Color::Rgb(228, 226, 215),
             surface0: Color::Rgb(220, 213, 172),
             surface1: Color::Rgb(201, 203, 209),
             surface_dim: Color::Rgb(213, 206, 163),
@@ -457,6 +476,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(38, 35, 58),
             selection_bg: Color::Rgb(59, 52, 75),
+            drag_bg: Color::Rgb(82, 79, 103),
             surface0: Color::Rgb(31, 29, 46),
             surface1: Color::Rgb(38, 35, 58),
             surface_dim: Color::Rgb(38, 35, 58),
@@ -482,6 +502,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(227, 217, 207),
             selection_bg: Color::Rgb(242, 233, 225),
+            drag_bg: Color::Rgb(232, 230, 232),
             surface0: Color::Rgb(242, 233, 225),
             surface1: Color::Rgb(255, 250, 243),
             surface_dim: Color::Rgb(242, 233, 225),
@@ -507,6 +528,7 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(16, 16, 16),
             selection_bg: Color::Rgb(35, 35, 35),
+            drag_bg: Color::Rgb(52, 52, 52),
             surface0: Color::Rgb(35, 35, 35),
             surface1: Color::Rgb(40, 40, 40),
             surface_dim: Color::Rgb(16, 16, 16),
@@ -566,6 +588,9 @@ impl Palette {
         }
         if let Some(c) = &custom.selection_bg {
             self.selection_bg = parse_color(c);
+        }
+        if let Some(c) = &custom.drag_bg {
+            self.drag_bg = parse_color(c);
         }
         if let Some(c) = &custom.surface0 {
             self.surface0 = parse_color(c);
@@ -628,6 +653,9 @@ impl Palette {
         }
         if let Some(c) = &custom.selection_bg {
             self.selection_bg = parse_color(c);
+        }
+        if let Some(c) = &custom.drag_bg {
+            self.drag_bg = parse_color(c);
         }
         if let Some(c) = &custom.surface0 {
             self.surface0 = parse_color(c);
@@ -1457,6 +1485,33 @@ mod tests {
                 "selection row shares the active row color for {name}"
             );
         }
+    }
+
+    #[test]
+    fn built_in_drag_backgrounds_stay_distinct_from_active_and_selection_rows() {
+        for name in crate::config::THEME_NAMES
+            .iter()
+            .copied()
+            .filter(|name| *name != "terminal")
+        {
+            let palette = Palette::from_name(name).unwrap();
+            assert_ne!(palette.drag_bg, palette.active_row_bg, "{name}");
+            assert_ne!(palette.drag_bg, palette.selection_bg, "{name}");
+            let text_contrast = contrast_ratio(palette.text, palette.drag_bg);
+            assert!(
+                text_contrast >= 3.0,
+                "dragged row text loses contrast for {name}: {text_contrast:.2}:1"
+            );
+        }
+        assert_eq!(Palette::terminal().drag_bg, Color::Reset);
+        let custom = crate::config::CustomThemeColors {
+            drag_bg: Some("#010203".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Palette::catppuccin().with_overrides(&custom).drag_bg,
+            Color::Rgb(1, 2, 3)
+        );
     }
 
     #[test]

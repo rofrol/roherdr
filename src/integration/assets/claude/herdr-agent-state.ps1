@@ -25,13 +25,17 @@ if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
 # Ask the agent to report a turn that ends with a question, so herdr keeps its pane marked
 # until the user answers. HERDR_AWAITING_REPLY_INSTRUCTIONS=0 turns the instruction off.
 if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
-    $context = "You run inside a Herdr pane. When you end a turn by asking the user something " +
-        "they must answer or decide (a question, a choice between options, a " +
-        "confirmation before you proceed), run the shell command " +
-        "``herdr agent awaiting-reply`` right before your final message, so Herdr keeps " +
-        "your pane marked until the user replies. Run it at most once per turn and " +
-        "ignore its failure. Do not run it when you simply finished and ask nothing, " +
-        "or for courtesy offers such as asking whether anything else is needed."
+    $context = "You run inside a Herdr pane. When your final message ends the turn with a " +
+        "plain-text question the user must answer or decide (a question, a choice " +
+        "between options, a confirmation before you proceed), run the shell command " +
+        "``herdr agent awaiting-reply`` on its own, as the last command of the turn, " +
+        "right before that message, so Herdr keeps your pane marked until the user " +
+        "replies. Never append it to another command, never run it earlier in the " +
+        "turn, and never run it for AskUserQuestion or any other question tool or " +
+        "prompt answered inside the turn: Herdr already shows those as blocked. Run " +
+        "it at most once per turn and ignore its failure. Do not run it when you " +
+        "simply finished and ask nothing, or for courtesy offers such as asking " +
+        "whether anything else is needed."
     @{ hookSpecificOutput = @{ hookEventName = "SessionStart"; additionalContext = $context } } |
         ConvertTo-Json -Compress -Depth 3 | Write-Output
 }

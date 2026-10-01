@@ -6791,7 +6791,7 @@
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
             "awaiting_reply": {
-              "description": "The agent's last turn ended by asking the user something (reported through\n`pane.report_awaiting_reply`), and it has not started working again since.",
+              "description": "The agent's last turn ended by asking the user something (reported through\n`pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.",
               "type": "boolean"
             },
             "completion_seq": {

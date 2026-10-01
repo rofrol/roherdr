@@ -219,7 +219,7 @@ pub struct AgentInfo {
     #[serde(default)]
     pub state_change_seq: u64,
     /// The agent's last turn ended by asking the user something (reported through
-    /// `pane.report_awaiting_reply`), and it has not started working again since.
+    /// `pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub awaiting_reply: bool,
     /// The current idle transition completed work, independently of who has viewed it.

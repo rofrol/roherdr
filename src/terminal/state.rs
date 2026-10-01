@@ -166,12 +166,9 @@ pub struct TerminalState {
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     pub last_agent_completion_seq: Option<u64>,
-    /// The agent reported during its current turn that the turn ends by asking the user
-    /// something; shown as `awaiting_reply` once the turn ends.
+    /// The agent reported that its turn ends by asking the user something, and nobody
+    /// has typed into the terminal since; shown as `awaiting_reply` while the agent idles.
     awaiting_reply_reported: bool,
-    /// The agent's last turn ended by asking the user something, and the user has not
-    /// answered yet (the agent has not started working again).
-    pub awaiting_reply: bool,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
@@ -217,7 +214,6 @@ impl TerminalState {
             last_agent_state_change_seq: None,
             last_agent_completion_seq: None,
             awaiting_reply_reported: false,
-            awaiting_reply: false,
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
@@ -2148,37 +2144,49 @@ impl TerminalState {
             })
     }
 
+    /// Whether the agent's turn ended by asking the user something and nobody has typed
+    /// into the terminal since. It only shows while the agent idles: working hides it
+    /// without losing it, so a detection flicker to idle in the middle of a turn cannot
+    /// use the report up before the turn really ends.
+    pub fn awaiting_reply(&self) -> bool {
+        self.awaiting_reply_reported && self.state == AgentState::Idle
+    }
+
+    /// Whether an awaiting-reply report is held, shown or not. Lets input handling skip
+    /// classifying input when there is nothing to clear.
+    pub fn has_awaiting_reply_report(&self) -> bool {
+        self.awaiting_reply_reported
+    }
+
     /// Records the agent's report that it is ending its turn with a question for the user.
-    /// A report during the turn waits for the turn to end; a report while the agent is not
-    /// working shows at once. Returns whether `awaiting_reply` changed.
+    /// It holds until the user types into the terminal (`clear_awaiting_reply`) or the
+    /// agent shows a prompt (`advance_awaiting_reply`). Returns whether `awaiting_reply`
+    /// changed.
     pub fn report_awaiting_reply(&mut self) -> bool {
-        match self.state {
-            AgentState::Working | AgentState::Blocked => {
-                self.awaiting_reply_reported = true;
-                false
-            }
-            AgentState::Idle => !std::mem::replace(&mut self.awaiting_reply, true),
-            AgentState::Unknown => false,
+        if self.state == AgentState::Unknown {
+            return false;
         }
+        let was_awaiting = self.awaiting_reply();
+        self.awaiting_reply_reported = true;
+        self.awaiting_reply() != was_awaiting
     }
 
-    /// Moves the awaiting-reply report along an agent state transition: a turn that ends
-    /// shows its report (or clears an older one), a new turn clears the shown one.
+    /// Applies an agent state transition to the awaiting-reply report. Entering
+    /// `Blocked` drops it: a form or permission prompt after the report means the report
+    /// was not the turn's last action (e.g. an in-turn question tool that the user
+    /// answers without the turn ending), and the pane already shows as blocked.
     pub fn advance_awaiting_reply(&mut self, state: AgentState) {
-        match state {
-            AgentState::Working => self.awaiting_reply = false,
-            AgentState::Blocked => {}
-            AgentState::Idle => {
-                self.awaiting_reply = std::mem::take(&mut self.awaiting_reply_reported);
-            }
-            AgentState::Unknown => self.clear_awaiting_reply(),
+        if state == AgentState::Blocked {
+            self.awaiting_reply_reported = false;
         }
     }
 
-    /// Forgets any awaiting-reply report, e.g. when the agent exits or its session changes.
-    pub fn clear_awaiting_reply(&mut self) {
+    /// Forgets any awaiting-reply report: the user typed into the terminal, or the agent
+    /// exited or changed session. Returns whether `awaiting_reply` changed.
+    pub fn clear_awaiting_reply(&mut self) -> bool {
+        let was_awaiting = self.awaiting_reply();
         self.awaiting_reply_reported = false;
-        self.awaiting_reply = false;
+        was_awaiting
     }
 
     pub fn effective_known_agent(&self) -> Option<Agent> {

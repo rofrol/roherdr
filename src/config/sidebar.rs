@@ -467,12 +467,12 @@ pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
-    /// List each space's agents under it, with their jobs. Experimental: the
-    /// first step of folding the agents panel into spaces. Hides the spaces'
-    /// own `state_icon`, which the listed agents make redundant, and moves
-    /// `tab_jobs` of a space with agents to an `other jobs` line below them,
-    /// counting only jobs no agent lists. Default: false.
-    pub agents: bool,
+    /// List each space's tabs under it, as vertical tabs: one line per
+    /// top-level tab with its agent state, label and the running and failed
+    /// counts of the job tabs nested under it. Experimental. Hides the spaces'
+    /// own `state_icon`, which the listed tabs make redundant; `tab_jobs` then
+    /// counts only jobs no line counts. Default: false.
+    pub tabs: bool,
 }
 
 impl Default for SpacesSidebarConfig {
@@ -487,7 +487,7 @@ impl Default for SpacesSidebarConfig {
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
-            agents: false,
+            tabs: false,
         }
     }
 }
@@ -498,7 +498,7 @@ pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
     /// Show the agents panel; false gives its height to the spaces list, for
-    /// use with `spaces.agents`. Default: true.
+    /// use with `spaces.tabs`. Default: true.
     pub show_agents_panel: bool,
 }
 

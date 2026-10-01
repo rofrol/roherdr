@@ -1940,6 +1940,63 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    /// Whether the terminal holds an awaiting-reply report, so input handling classifies
+    /// input only when typing could clear one.
+    pub(crate) fn terminal_has_awaiting_reply_report(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> bool {
+        self.state
+            .terminals
+            .get(terminal_id)
+            .is_some_and(crate::terminal::TerminalState::has_awaiting_reply_report)
+    }
+
+    /// Forgets the awaiting-reply report of `terminal_id` because someone typed into it
+    /// (a client, the API or another agent): that is the reply, or at least the user is
+    /// looking. Publishes the change when the mark was shown. Returns whether it was.
+    pub(crate) fn clear_awaiting_reply_on_input(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> bool {
+        let changed = self
+            .state
+            .terminals
+            .get_mut(terminal_id)
+            .is_some_and(|terminal| {
+                let changed = terminal.clear_awaiting_reply();
+                if changed {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
+                changed
+            });
+        if changed {
+            let pane = self
+                .state
+                .workspaces
+                .iter()
+                .enumerate()
+                .find_map(|(ws_idx, ws)| {
+                    ws.tabs.iter().find_map(|tab| {
+                        tab.panes
+                            .iter()
+                            .find(|(_, pane)| &pane.attached_terminal_id == terminal_id)
+                            .map(|(pane_id, _)| (ws_idx, *pane_id))
+                    })
+                });
+            if let Some((ws_idx, pane_id)) = pane {
+                self.emit_pane_updated(ws_idx, pane_id);
+            }
+        }
+        changed
+    }
+
+    pub(super) fn clear_awaiting_reply_on_pane_input(&mut self, ws_idx: usize, pane_id: PaneId) {
+        if let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) {
+            self.clear_awaiting_reply_on_input(&terminal_id);
+        }
+    }
+
     pub(super) fn handle_pane_send_text(
         &mut self,
         id: String,
@@ -1954,6 +2011,7 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
+        self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -1980,6 +2038,7 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
+        self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -2075,10 +2134,20 @@ impl App {
             Ok(encoded_keys) => encoded_keys,
             Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
         };
+        let mut sent_any = false;
+        let mut failure = None;
         for bytes in encoded_keys.into_iter().filter(|bytes| !bytes.is_empty()) {
             if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-                return encode_error(id, "pane_send_failed", err.to_string());
+                failure = Some(err.to_string());
+                break;
             }
+            sent_any = true;
+        }
+        if sent_any {
+            self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
+        }
+        if let Some(err) = failure {
+            return encode_error(id, "pane_send_failed", err);
         }
 
         encode_success(id, ResponseResult::Ok {})
@@ -2938,6 +3007,49 @@ mod tests {
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(rx.try_recv().unwrap(), bytes::Bytes::from_static(b"+"));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn api_pane_input_clears_an_awaiting_reply_report() {
+        let methods: [fn(String) -> crate::api::schema::Method; 3] = [
+            |pane_id| {
+                crate::api::schema::Method::PaneSendText(PaneSendTextParams {
+                    pane_id,
+                    text: "yes".into(),
+                })
+            },
+            |pane_id| {
+                crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+                    pane_id,
+                    keys: vec!["Enter".into()],
+                })
+            },
+            |pane_id| {
+                crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+                    pane_id,
+                    text: "yes".into(),
+                    keys: vec!["Enter".into()],
+                })
+            },
+        ];
+        for method in methods {
+            let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+            let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+            let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.state = AgentState::Idle;
+            assert!(terminal.report_awaiting_reply());
+
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "req".into(),
+                method: method(pane_id),
+            });
+
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            assert_eq!(success.result, ResponseResult::Ok {});
+            assert!(!app.state.terminals[&terminal_id].awaiting_reply());
+            assert!(!app.state.terminals[&terminal_id].has_awaiting_reply_report());
+        }
     }
 
     #[tokio::test]
