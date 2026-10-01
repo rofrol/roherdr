@@ -62,6 +62,7 @@ impl ClientShellState {
                     == Some(ClientEndpointStatus::Online)
         });
         let notification_log_button = self.notification_log_button();
+        let agent_counts = self.agent_indicator_counts();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -108,6 +109,7 @@ impl ClientShellState {
             workspace_drag_refusal: None,
             space_sort: self.space_sort,
             notification_log_button,
+            agent_counts,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -281,6 +283,7 @@ impl ClientShellState {
             .filter(|_| self.workspace_press.is_none() && self.chrome_drag.is_none())
             .filter(|_| self.space_sort.allows_drag());
         let notification_log_button = self.notification_log_button();
+        let agent_counts = self.agent_indicator_counts();
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
             .space_filter
@@ -357,6 +360,7 @@ impl ClientShellState {
                 workspace_drag_refusal,
                 space_sort: self.space_sort,
                 notification_log_button,
+                agent_counts,
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -804,18 +808,31 @@ impl ClientShellState {
                 let offset = super::usage::local_utc_offset_secs();
                 let rows = self
                     .notification_log_rows()
+                    .iter()
                     .map(|entry| {
                         let text = self.notification_row_text(entry);
-                        (
-                            super::notification_log::notification_time(entry.unix_ms, now, offset),
-                            text,
-                            self.notification_is_unread(entry),
-                        )
+                        let time = if entry.unix_ms == 0 {
+                            String::new()
+                        } else {
+                            super::notification_log::notification_time(entry.unix_ms, now, offset)
+                        };
+                        (time, text, self.notification_is_unread(entry))
                     })
                     .collect::<Vec<_>>();
+                let anchor = match log.view {
+                    super::notification_log::NotificationLogView::History => {
+                        self.hits.notification_log_button
+                    }
+                    super::notification_log::NotificationLogView::Working => {
+                        self.hits.working_list_button
+                    }
+                    super::notification_log::NotificationLogView::Asking => {
+                        self.hits.asking_list_button
+                    }
+                };
                 let rendered = render::render_notification_log(
                     &mut composed,
-                    self.hits.notification_log_button,
+                    anchor,
                     log.highlighted,
                     &rows,
                     &self.config.palette,

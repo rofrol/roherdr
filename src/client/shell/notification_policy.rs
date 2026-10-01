@@ -440,7 +440,7 @@ impl ClientShellState {
 const MAX_NOTIFICATION_DETAIL_CHARS: usize = 160;
 
 /// Single-line, bounded text for a notification line; `None` when blank.
-fn notification_detail_text(text: &str) -> Option<String> {
+pub(super) fn notification_detail_text(text: &str) -> Option<String> {
     let text = text
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })

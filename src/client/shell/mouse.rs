@@ -2725,6 +2725,22 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                for (rect, view) in [
+                    (
+                        self.hits.working_list_button,
+                        super::notification_log::NotificationLogView::Working,
+                    ),
+                    (
+                        self.hits.asking_list_button,
+                        super::notification_log::NotificationLogView::Asking,
+                    ),
+                ] {
+                    if super::contains(rect, point) {
+                        self.toggle_notification_view(view, outcome);
+                        outcome.repaint = true;
+                        return;
+                    }
+                }
                 if super::contains(self.hits.space_filter_button, point) {
                     // The button opens the bar for typing, or closes it.
                     if self.space_filter.open {

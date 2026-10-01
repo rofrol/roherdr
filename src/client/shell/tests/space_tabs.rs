@@ -2160,3 +2160,123 @@ fn the_notification_list_shows_the_highlighted_rows_whole_text_below() {
     assert!(text.contains("nothing else"), "{text}");
     assert!(text.contains("×2"), "{text}");
 }
+
+fn header_agent(
+    pane: &str,
+    status: crate::api::schema::AgentStatus,
+    awaiting_reply: bool,
+    title: &str,
+) -> crate::protocol::ClientShellAgent {
+    crate::protocol::ClientShellAgent {
+        pane_id: pane.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: Some("claude".into()),
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: Some(title.into()),
+        terminal_title_stripped: Some(title.into()),
+        agent_status: status,
+        state_change_seq: 1,
+        awaiting_reply,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }
+}
+
+#[test]
+fn the_header_counts_agents_working_and_asking_and_lists_them_on_click() {
+    use crate::api::schema::AgentStatus::{Blocked, Idle, Working};
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![
+        header_agent("p1", Working, false, "Fix the login test"),
+        header_agent("p2", Working, false, "Write the docs"),
+        // Asking wins over working; a blocked agent with a reply wish counts once.
+        header_agent("pane_1", Working, true, "Which database?"),
+        header_agent("p4", Blocked, true, "Delete the build dir?"),
+        header_agent("p5", Idle, false, "idle one"),
+    ];
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(state.agent_indicator_counts(), (2, 2));
+
+    for width in [106, 140] {
+        let frame = state.compose(width, 30).unwrap();
+        let header = frame_rows(&frame)[state.hits.notification_log_button.y as usize].clone();
+        assert!(header.contains("?2"), "{width}: {header:?}");
+        assert!(header.contains('2'), "{header:?}");
+    }
+    let asking = state.hits.asking_list_button;
+    let working = state.hits.working_list_button;
+    assert!(asking.width > 0 && working.width > 0 && asking.x > working.x);
+
+    // Clicking opens the list of those agents: no request is sent.
+    let outcome = left_click(&mut state, (asking.x + 1, asking.y));
+    assert!(outcome.actions.is_empty());
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Which database?"), "{text}");
+    assert!(text.contains("Delete the build dir?"), "{text}");
+    assert!(text.contains("reply"), "{text}");
+    assert!(!text.contains("Fix the login test"), "{text}");
+    assert_eq!(state.hits.notification_log_rows.len(), 2);
+
+    // A row jumps to the agent's pane.
+    let row = state.hits.notification_log_rows[0].0;
+    let outcome = left_click(&mut state, (row.x + 3, row.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(target)
+                if target.pane_id == "pane_1"))));
+    assert!(state.overlay.is_none());
+
+    // The working button lists the other two.
+    let outcome = left_click(&mut state, (working.x + 1, working.y));
+    assert!(outcome.actions.is_empty());
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(
+        text.contains("Fix the login test") && text.contains("Write the docs"),
+        "{text}"
+    );
+    assert!(!text.contains("Which database?"), "{text}");
+}
+
+#[test]
+fn the_header_hides_indicators_for_zero_and_keeps_clear_of_the_sort_buttons() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut empty = state.snapshot.as_deref().expect("snapshot").clone();
+    empty.agents.clear();
+    state.set_snapshot(Box::new(empty));
+    state.compose(106, 30).unwrap();
+    assert_eq!(state.hits.working_list_button.width, 0);
+    assert_eq!(state.hits.asking_list_button.width, 0);
+
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![
+        header_agent("p1", crate::api::schema::AgentStatus::Working, false, "a"),
+        header_agent("p2", crate::api::schema::AgentStatus::Blocked, false, "b"),
+    ];
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let sort_right = state
+        .hits
+        .space_sort_buttons
+        .iter()
+        .map(|(rect, _)| rect.right())
+        .max()
+        .unwrap_or(0);
+    for rect in [
+        state.hits.working_list_button,
+        state.hits.asking_list_button,
+    ] {
+        assert!(
+            rect.width > 0 && rect.x >= sort_right,
+            "{rect:?} vs {sort_right}"
+        );
+    }
+}

@@ -2789,8 +2789,17 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     on one pane counted once), layout at 32 and 44 columns, a row vanishing
     live while the list is open (highlight follows the pane id), jump target,
     no request sent.
-  - Done: nothing yet; queued behind the fork history compaction and the
-    upstream rebase.
+  - Done 2026-10-01: `?n` (asking) and `◐n` (working, the animated glyph)
+    beside `✉` in the spaces header; counts from the snapshot (distinct
+    panes, attention wins over working, a zero count is hidden); a click opens
+    the notification list's dropdown with the agents (task, agent, space,
+    "approval" or "reply"), Enter or a click jumps to the pane (tab as a
+    fallback), no request is sent. They sit right of the sort buttons and
+    only when there is room: at the default 32 columns with `manual name ↑
+    prio ↓` only the asking one fits (both from about 36). Not done: the
+    time in the state (the snapshot has no timestamp), dimming the focused
+    pane's row, the multi-machine sidebar header, narrowing the sort buttons
+    to make room.
 
 - [ ] Rebuild the fork's history as functional commits (user, 2026-10-01:
   "add a functional split of the git history to the todo"). Today `master` is
