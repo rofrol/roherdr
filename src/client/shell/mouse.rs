@@ -476,6 +476,30 @@ impl ClientShellState {
         ((pointer + grab_offset - origin) as f32 / f32::from(length.max(1))).clamp(0.1, 0.9)
     }
 
+    /// Wheel scrolling over the tab bar stops at the first and last tab
+    /// instead of wrapping like the previous/next tab keybindings.
+    fn focused_tab_can_step(&self, delta: isize) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let (Some(workspace_id), Some(tab_id)) = (
+            snapshot.focused_workspace_id.as_deref(),
+            snapshot.focused_tab_id.as_deref(),
+        ) else {
+            return false;
+        };
+        let tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .collect::<Vec<_>>();
+        let Some(current) = tabs.iter().position(|tab| tab.tab_id == tab_id) else {
+            return false;
+        };
+        let next = current as isize + delta;
+        next >= 0 && (next as usize) < tabs.len()
+    }
+
     fn tab_drop_index_at(&self, point: (u16, u16)) -> Option<usize> {
         let snapshot = self.snapshot.as_deref()?;
         let workspace_id = snapshot.focused_workspace_id.as_deref()?;
@@ -1901,10 +1925,14 @@ impl ClientShellState {
                     || super::contains(self.hits.tab_scroll_right, point)
                     || super::contains(self.hits.new_tab, point) =>
             {
-                self.record_binding(
-                    crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousTab),
-                    outcome,
-                );
+                if self.focused_tab_can_step(-1) {
+                    self.record_binding(
+                        crate::input::KeybindMatch::Action(
+                            crate::input::KeybindAction::PreviousTab,
+                        ),
+                        outcome,
+                    );
+                }
             }
             MouseEventKind::ScrollDown
                 if self
@@ -1916,10 +1944,12 @@ impl ClientShellState {
                     || super::contains(self.hits.tab_scroll_right, point)
                     || super::contains(self.hits.new_tab, point) =>
             {
-                self.record_binding(
-                    crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
-                    outcome,
-                );
+                if self.focused_tab_can_step(1) {
+                    self.record_binding(
+                        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
+                        outcome,
+                    );
+                }
             }
             MouseEventKind::ScrollUp if super::contains(self.hits.agent_body, point) => {
                 let next = self.agent_scroll.saturating_sub(1);

@@ -47,6 +47,57 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
 }
 
 #[test]
+fn tab_bar_wheel_stops_at_the_first_and_last_tab() {
+    let mut snapshot = snapshot();
+    snapshot.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_1".into(),
+        number: 2,
+        label: "2".into(),
+        custom_label: false,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("tab bar");
+    let first_tab = state.hits.tabs[0].0;
+    let wheel = |state: &mut ClientShellState, kind| {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: first_tab.x,
+            row: first_tab.y,
+            modifiers: KeyModifiers::empty(),
+        })])
+    };
+
+    assert!(wheel(&mut state, MouseEventKind::ScrollUp)
+        .actions
+        .is_empty());
+    assert!(matches!(
+        &wheel(&mut state, MouseEventKind::ScrollDown).actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
+            )
+    ));
+
+    let mut update = state.snapshot.as_deref().expect("snapshot").clone();
+    update.focused_tab_id = Some("tab_2".into());
+    for tab in &mut update.tabs {
+        tab.focused = tab.tab_id == "tab_2";
+    }
+    state.set_snapshot(Box::new(update));
+    state.compose(106, 20).expect("last tab focused");
+    assert!(wheel(&mut state, MouseEventKind::ScrollDown)
+        .actions
+        .is_empty());
+}
+
+#[test]
 fn focused_last_overflow_tab_shows_its_full_label() {
     let mut projected = snapshot();
     let labels = [

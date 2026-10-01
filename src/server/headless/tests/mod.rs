@@ -6866,6 +6866,7 @@ fn notification_show_uses_client_shell_policy_independent_of_server_delivery() {
             position: Some(crate::config::ToastHerdrPosition::TopLeft),
             sound: api::schema::NotificationShowSound::Done,
         },
+        None,
     );
     let response: api::schema::SuccessResponse = serde_json::from_str(&response).unwrap();
     assert!(matches!(
@@ -6890,6 +6891,55 @@ fn notification_show_uses_client_shell_policy_independent_of_server_delivery() {
             position: Some(crate::config::ToastHerdrPosition::TopLeft),
         })
     );
+}
+
+#[test]
+fn notification_show_for_pane_sends_the_pane_tab_and_workspace_ids() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("jobs")];
+    let pane = server.app.state.workspaces[0].tabs[0].layout.focused();
+    let pane_id = server.app.public_pane_id(0, pane).unwrap();
+    let (shell_tx, shell_control, _shell_frames) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new_with_mode(
+            ClientConnectionMode::ClientShell,
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(shell_tx),
+        ),
+    );
+    let params = api::schema::NotificationShowParams {
+        title: "✓ Build".into(),
+        body: None,
+        position: None,
+        sound: api::schema::NotificationShowSound::None,
+    };
+
+    let response =
+        server.handle_notification_show_api("job".into(), params.clone(), Some(&pane_id));
+    let response: api::schema::SuccessResponse = serde_json::from_str(&response).unwrap();
+    assert!(matches!(
+        response.result,
+        api::schema::ResponseResult::NotificationShow { shown: true, .. }
+    ));
+    let ServerMessage::SemanticNotification(event) = read_server_message(
+        shell_control
+            .recv_timeout(Duration::from_millis(100))
+            .expect("targeted notification"),
+    ) else {
+        panic!("expected a semantic notification");
+    };
+    assert_eq!(event.kind, protocol::SemanticNotificationKind::Custom);
+    assert_eq!(event.pane_id.as_deref(), Some(pane_id.as_str()));
+    assert_eq!(event.tab_id, server.app.public_tab_id(0, 0));
+    assert_eq!(event.workspace_id, Some(server.app.public_workspace_id(0)));
+
+    let response = server.handle_notification_show_api("job".into(), params, Some("w9:p9"));
+    let response: api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+    assert_eq!(response.error.code, "pane_not_found");
 }
 
 #[test]

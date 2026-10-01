@@ -97,7 +97,7 @@ Raw socket method names use dot notation:
 | Area | Methods |
 | --- | --- |
 | Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
-| Notification | `notification.show` |
+| Notification | `notification.show`, `notification.show_for_pane` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
@@ -327,6 +327,14 @@ The response reports whether anything was shown:
 ```
 
 Possible reasons are `shown`, `disabled`, `rate_limited`, `no_foreground_client`, and `busy`. `disabled` means `ui.toast.delivery = "off"`. `busy` means an existing in-app toast was not replaced. Terminal and system delivery are best-effort through the current foreground attached Herdr client.
+
+`notification.show_for_pane` takes the same parameters plus a required `pane_id`, and says what the notification is about. With `ui.toast.delivery = "system"`, clicking the desktop notification focuses that pane, then its tab, then its workspace, whichever still exists. It is skipped while you are looking at that tab, like agent notifications. An unknown pane returns `pane_not_found`. It is a separate method so that an older server rejects it instead of silently dropping the target; fall back to `notification.show` on `unknown method`.
+
+```json
+{"id":"req_notify_pane","method":"notification.show_for_pane","params":{"pane_id":"w1:p4","title":"✓ Build","body":"test the new app set","sound":"done"}}
+```
+
+Click actions exist only where the desktop notifier supports them: on macOS through `terminal-notifier`, and for the local Herdr server.
 
 Set or clear the foreground client's outer terminal window title:
 

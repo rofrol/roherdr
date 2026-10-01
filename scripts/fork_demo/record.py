@@ -181,6 +181,15 @@ class Recorder:
                 except OSError:
                     return
 
+    def wait_for_usage(self, seconds):
+        """Wait until no usage footer row is still loading (agy /quota is slow)."""
+        end = time.time() + seconds
+        while time.time() < end:
+            rows = [line[:24] for line in self.screen.display]
+            if any(r.startswith(" AN ") for r in rows) and not any("…" in r for r in rows):
+                return
+            self.pump(1.0)
+
     def add(self, img, hold_ms):
         name = f"frame-{len(self.frames):02d}.png"
         img.save(os.path.join(self.out_dir, name))
@@ -230,6 +239,7 @@ def main():
 
     rec = Recorder(args.herdr, args.socket, args.out_dir)
     rec.pump(6)
+    rec.wait_for_usage(90)
     rec.shot("herdr fork: usage widget, middle-click close, clickable notifications", 2200)
 
     cap = "Click the usage footer to see limits and reset times"

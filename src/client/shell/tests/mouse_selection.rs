@@ -1094,8 +1094,19 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
 
 #[test]
 fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
+    let mut snapshot = snapshot();
+    snapshot.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_1".into(),
+        number: 2,
+        label: "2".into(),
+        custom_label: false,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(snapshot()));
+    state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("tab bar");
     let tab = state.hits.tabs[0].0;
@@ -1112,7 +1123,7 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_1"
+                crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
             )
     ));
     assert_eq!(state.tab_scroll, 0);

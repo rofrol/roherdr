@@ -1,4 +1,6 @@
-use crate::api::schema::{Method, NotificationShowParams, NotificationShowSound, Request};
+use crate::api::schema::{
+    Method, NotificationShowForPaneParams, NotificationShowParams, NotificationShowSound, Request,
+};
 use crate::config::ToastHerdrPosition;
 
 pub(super) fn run_notification_command(args: &[String]) -> std::io::Result<i32> {
@@ -21,11 +23,19 @@ pub(super) fn run_notification_command(args: &[String]) -> std::io::Result<i32> 
 }
 
 fn notification_show(args: &[String]) -> std::io::Result<i32> {
-    let params = match parse_notification_show_args(args) {
+    let (args, pane_id) = match take_pane_option(args) {
+        Ok(split) => split,
+        Err(NotificationShowArgError::Message(message)) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+        Err(NotificationShowArgError::Usage) => unreachable!("take_pane_option reports messages"),
+    };
+    let params = match parse_notification_show_args(&args) {
         Ok(params) => params,
         Err(NotificationShowArgError::Usage) => {
             eprintln!(
-                "usage: herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
+                "usage: herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request] [--pane PANE_ID]"
             );
             return Ok(2);
         }
@@ -35,10 +45,45 @@ fn notification_show(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
+    let method = match pane_id {
+        None => Method::NotificationShow(params),
+        Some(pane_id) => Method::NotificationShowForPane(NotificationShowForPaneParams {
+            pane_id,
+            title: params.title,
+            body: params.body,
+            position: params.position,
+            sound: params.sound,
+        }),
+    };
     super::print_response(&super::send_request(&Request {
         id: "cli:notification:show".into(),
-        method: Method::NotificationShow(params),
+        method,
     })?)
+}
+
+/// Split off `--pane PANE_ID`, which selects `notification.show_for_pane`:
+/// clicking the desktop notification then focuses that pane's tab.
+fn take_pane_option(
+    args: &[String],
+) -> Result<(Vec<String>, Option<String>), NotificationShowArgError> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut pane_id = None;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--pane" && index > 0 {
+            let Some(value) = args.get(index + 1) else {
+                return Err(NotificationShowArgError::Message(
+                    "missing value for --pane".into(),
+                ));
+            };
+            pane_id = Some(value.clone());
+            index += 2;
+        } else {
+            rest.push(args[index].clone());
+            index += 1;
+        }
+    }
+    Ok((rest, pane_id))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +227,25 @@ mod tests {
                 "invalid position: top-center (expected top-left, top-right, bottom-left, or bottom-right)"
                     .into()
             )
+        );
+    }
+
+    #[test]
+    fn pane_option_is_split_off_and_a_title_named_pane_is_kept() {
+        let (rest, pane) =
+            take_pane_option(&args(&["✓ Build", "--pane", "w1:p2", "--sound", "done"])).unwrap();
+        assert_eq!(rest, args(&["✓ Build", "--sound", "done"]));
+        assert_eq!(pane.as_deref(), Some("w1:p2"));
+
+        let (rest, pane) = take_pane_option(&args(&["--pane"])).unwrap();
+        assert_eq!(rest, args(&["--pane"]));
+        assert_eq!(pane, None);
+
+        assert_eq!(
+            take_pane_option(&args(&["title", "--pane"])),
+            Err(NotificationShowArgError::Message(
+                "missing value for --pane".into()
+            ))
         );
     }
 

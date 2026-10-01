@@ -1010,6 +1010,17 @@ impl App {
             Method::NotificationShow(params) => {
                 return self.handle_notification_show(request.id, params);
             }
+            Method::NotificationShowForPane(params) => {
+                // The in-app toast has no click action; the pane only has to exist.
+                if self.parse_pane_id(&params.pane_id).is_none() {
+                    return responses::encode_error(
+                        request.id,
+                        "pane_not_found",
+                        format!("pane {} not found", params.pane_id),
+                    );
+                }
+                return self.handle_notification_show(request.id, params.notification());
+            }
             Method::ReleaseNotesDismiss(params) => {
                 let Some(notes) = self.state.latest_release_notes.as_ref() else {
                     return responses::encode_error(

@@ -1,0 +1,14 @@
+id = "local.job"
+name = "Jobs"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Run long commands in their own tab and show them in the sidebar of the pane that started them"
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "list"
+title = "Jobs"
+placement = "popup"
+width = "80%"
+height = 20
+command = ["sh", "-c", "./herdr-job list; printf '\\nEnter closes. '; read -r _"]

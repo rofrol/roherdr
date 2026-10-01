@@ -338,6 +338,18 @@ fn notification_show_request_parses() {
 }
 
 #[test]
+fn notification_show_for_pane_request_parses() {
+    let json = r#"{"id":"req_1","method":"notification.show_for_pane","params":{"pane_id":"w1:p2","title":"✓ Build","sound":"done"}}"#;
+    let request: Request = serde_json::from_str(json).unwrap();
+    let Method::NotificationShowForPane(params) = request.method else {
+        panic!("expected notification.show_for_pane");
+    };
+    assert_eq!(params.pane_id, "w1:p2");
+    assert_eq!(params.notification().title, "✓ Build");
+    assert_eq!(params.sound, NotificationShowSound::Done);
+}
+
+#[test]
 fn notification_show_sound_defaults_to_none() {
     let json = r#"{"id":"req_1","method":"notification.show","params":{"title":"build failed"}}"#;
     let request: Request = serde_json::from_str(json).unwrap();

@@ -111,6 +111,33 @@ pub struct NotificationShowParams {
     pub sound: NotificationShowSound,
 }
 
+/// `notification.show` about a pane: clicking the desktop notification focuses
+/// that pane's tab, or its workspace once the tab is gone. A separate method
+/// rather than an optional field, so an older server rejects it instead of
+/// showing a notification that silently ignores the target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NotificationShowForPaneParams {
+    pub pane_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<crate::config::ToastHerdrPosition>,
+    #[serde(default, skip_serializing_if = "NotificationShowSound::is_none")]
+    pub sound: NotificationShowSound,
+}
+
+impl NotificationShowForPaneParams {
+    pub fn notification(&self) -> NotificationShowParams {
+        NotificationShowParams {
+            title: self.title.clone(),
+            body: self.body.clone(),
+            position: self.position,
+            sound: self.sound,
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
 )]

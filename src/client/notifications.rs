@@ -166,6 +166,8 @@ fn local_click_context() -> Option<LocalClickContext> {
     })
 }
 
+// Clicks only move focus (agent, tab, workspace) through this client's own
+// herdr binary; a server never chooses a command to run on the client's machine.
 #[cfg(not(windows))]
 fn system_notification_details(
     subtitle: Option<String>,
@@ -188,7 +190,20 @@ fn system_notification_details(
         target.pane_id.clone().into(),
     ]];
     if let Some(tab_id) = target.tab_id {
-        commands.push(vec![herdr, "tab".into(), "focus".into(), tab_id.into()]);
+        commands.push(vec![
+            herdr.clone(),
+            "tab".into(),
+            "focus".into(),
+            tab_id.into(),
+        ]);
+    }
+    if let Some(workspace_id) = target.workspace_id {
+        commands.push(vec![
+            herdr,
+            "workspace".into(),
+            "focus".into(),
+            workspace_id.into(),
+        ]);
     }
     crate::platform::DesktopNotificationDetails {
         subtitle,
@@ -324,6 +339,7 @@ mod tests {
             Some(shell::ClientNotificationClickTarget {
                 pane_id: "w1:p2".into(),
                 tab_id: Some("w1:t1".into()),
+                workspace_id: None,
             }),
             Some(context()),
         );
@@ -351,6 +367,28 @@ mod tests {
                 argv(&["/opt/herdr/bin/herdr", "agent", "focus", "w1:p2"]),
                 argv(&["/opt/herdr/bin/herdr", "tab", "focus", "w1:t1"]),
             ]
+        );
+    }
+
+    #[test]
+    fn click_target_falls_back_to_the_workspace_once_the_tab_is_gone() {
+        let details = system_notification_details(
+            None,
+            Some(shell::ClientNotificationClickTarget {
+                pane_id: "w1:p7".into(),
+                tab_id: Some("w1:t4".into()),
+                workspace_id: Some("w1".into()),
+            }),
+            Some(context()),
+        );
+        let commands = details.on_click.expect("click action").commands;
+        let verbs = commands
+            .iter()
+            .map(|argv| argv[1..].join(std::ffi::OsStr::new(" ")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            verbs,
+            ["agent focus w1:p7", "tab focus w1:t4", "workspace focus w1"]
         );
     }
 

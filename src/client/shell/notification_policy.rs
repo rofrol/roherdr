@@ -308,6 +308,7 @@ impl ClientShellState {
             .map(|pane_id| ClientNotificationClickTarget {
                 pane_id,
                 tab_id: event.tab_id.clone(),
+                workspace_id: event.workspace_id.clone(),
             });
         let (subtitle, body) = match task {
             Some(task) => (event.body, Some(task)),
@@ -361,6 +362,11 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         event: &SemanticNotification,
     ) -> NotificationValidation {
+        // Custom notifications (the socket API) may target any pane, not only an
+        // agent's, and carry no agent state to verify.
+        if event.kind == SemanticNotificationKind::Custom {
+            return NotificationValidation::Current;
+        }
         let Some(pane_id) = event.pane_id.as_deref() else {
             // Finished notifications carry no independently trustworthy completion state. Without
             // a projected pane to verify as Done, do not emit completion chrome or sound.

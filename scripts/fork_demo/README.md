@@ -13,7 +13,7 @@ shows the fork's features in a real herdr client:
 
 Requirements: macOS, `cargo` (the repo builds with Zig 0.16.0), `uv`, and
 `ffmpeg`. For real numbers in the usage footer, be logged in to Claude Code
-and to Codex with ChatGPT, and log in to DeepSeek and OpenRouter in pi
+to Codex with ChatGPT, and to the Antigravity CLI (`agy`) for Gemini, and log in to DeepSeek and OpenRouter in pi
 (`~/.pi/agent/auth.json`); a missing DeepSeek key shows `!`, a missing
 OpenRouter key hides its row.
 
@@ -59,3 +59,13 @@ the repository:
 3. Copy that link and cancel the edit.
 4. Replace the `user-attachments` line near the top of `README.md` with it,
    and commit the new `assets/fork-demo.mp4` together with the README change.
+
+### Uploading as an agent
+
+With the Claude in Chrome extension (Chrome logged in to GitHub), pass the MP4
+to the edit page's `#blob-dragged-file-input` with the file upload tool, copy
+the link, and close the tab. If the browser tools are missing, restart with
+`claude --continue --chrome`: `/chrome` may show "Status: Disabled" and
+"Extension: Not detected" even with the extension installed (on macOS the
+terminal can't read Chrome's profile, TCC). "Select browser…" appears only
+once the status is Enabled.

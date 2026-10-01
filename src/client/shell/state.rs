@@ -741,6 +741,8 @@ pub(crate) enum ClientShellNotificationEffect {
 pub(crate) struct ClientNotificationClickTarget {
     pub(crate) pane_id: String,
     pub(crate) tab_id: Option<String>,
+    /// Last resort once the pane and its tab are gone (e.g. a finished job tab).
+    pub(crate) workspace_id: Option<String>,
 }
 
 #[cfg(windows)]

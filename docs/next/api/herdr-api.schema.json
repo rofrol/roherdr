@@ -2354,6 +2354,41 @@
           ],
           "type": "object"
         },
+        "NotificationShowForPaneParams": {
+          "description": "`notification.show` about a pane: clicking the desktop notification focuses\nthat pane's tab, or its workspace once the tab is gone. A separate method\nrather than an optional field, so an older server rejects it instead of\nshowing a notification that silently ignores the target.",
+          "properties": {
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/ToastHerdrPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sound": {
+              "$ref": "#/schemas/request/$defs/NotificationShowSound"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "title"
+          ],
+          "type": "object"
+        },
         "NotificationShowParams": {
           "properties": {
             "body": {
@@ -4811,6 +4846,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/NotificationShowParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "notification.show_for_pane",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NotificationShowForPaneParams"
             }
           },
           "required": [

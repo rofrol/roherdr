@@ -46,10 +46,22 @@ commits sit on top of upstream `master` and are not meant for upstream PRs.
   quote no longer crash terminal-notifier, and an empty message is no longer
   rejected; both made herdr fall back to the Script Editor notification.
 
-Outside the fork itself, my dotfiles have a local plugin,
-[relaunch](https://github.com/rofrol/dotfiles/tree/master/.config/herdr/local-plugins/relaunch),
-that reruns the programs panes were running (lazygit, editors, ...) after a
-server restart or reboot; herdr itself brings them back as empty shells.
+### Plugins
+
+`plugins/` holds herdr plugins that need no fork code and work with upstream
+herdr too. Install one with `herdr plugin install rofrol/herdr/plugins/<name>`,
+or link it from a checkout with `herdr plugin link plugins/<name>`.
+
+- [**job**](plugins/job/README.md): `herdr-job run --name "Build" -- make`
+  runs a long command in its own unfocused tab (live output one click away)
+  and shows `⏳ Build`, then `✓`/`✗ <code>`, in the sidebar of the pane that
+  started it; `herdr-job wait <id>` follows the log and exits with the
+  command's code. It keeps state in files, so it works for any agent (Claude
+  Code, pi, ...) or by hand. Also has `herdr-bg-badge`, a Claude Code hook
+  that shows Claude's own background tasks in the sidebar.
+- [**relaunch**](plugins/relaunch/README.md): reruns the programs panes were
+  running (lazygit, editors, ...) after a server restart or reboot; herdr
+  itself brings them back as empty shells.
 
 The demo video below is recorded with `scripts/fork_demo/record.sh`; see
 [scripts/fork_demo/README.md](scripts/fork_demo/README.md) to re-record it.
@@ -88,7 +100,7 @@ herdr
 
 ---
 
-https://github.com/user-attachments/assets/1a9e3888-e2e0-48c5-adc8-aee87585abd2
+https://github.com/user-attachments/assets/1168b9e7-3662-4d6e-84fe-5a60d652d95c
 
 **the runtime your coding agents live on.**
 

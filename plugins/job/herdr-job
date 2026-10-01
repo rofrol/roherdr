@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""herdr-job: run long commands in their own herdr tab and wait for them.
+
+  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] -- COMMAND...
+                                 print job id, return at once
+  herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
+  herdr-job list                 show jobs and their state
+  herdr-job log ID               print the log path
+  herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
+
+The job runs in a new unfocused tab, so its output is visible live. The pane
+that started it (HERDR_PANE_ID) gets a `$jobs` sidebar token. Any agent can use
+it: the state lives in files under ~/.local/state/herdr-job/, not in the agent.
+"""
+import argparse
+import fcntl
+import json
+import os
+import secrets
+import shlex
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "herdr-job"
+SELF = Path(__file__).resolve()
+HERDR = os.environ.get("HERDR_BIN_PATH", "")
+if not os.access(HERDR, os.X_OK):
+    HERDR = "herdr"
+DONE_TTL_MS = 30 * 60 * 1000
+RUNNING_TTL_MS = 24 * 60 * 60 * 1000
+EXIT_LOST = 125
+CLOSE_OK_AFTER_S = 10
+REFRESH_S = 60
+# Keeps the typed `_exec` line out of zsh's history file; the leading space
+# keeps it out of atuin. zsh imports it from the environment.
+HISTORY_IGNORE = "*herdr-job _exec *"
+
+
+def herdr(*args, check=True):
+    out = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=10)
+    if check and out.returncode != 0:
+        raise SystemExit(f"herdr {' '.join(args)} failed: {out.stderr.strip() or out.stdout.strip()}")
+    return out.stdout
+
+
+def job_dir(job_id):
+    path = STATE / job_id
+    if not (path / "meta.json").exists():
+        raise SystemExit(f"no such job: {job_id}")
+    return path
+
+
+def read_meta(path):
+    return json.loads((path / "meta.json").read_text())
+
+
+def write_atomic(target, text):
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text)
+    tmp.replace(target)
+
+
+def write_meta(path, meta):
+    write_atomic(path / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def executor_alive(path, meta):
+    """Whether `_exec` still runs: it holds an exclusive flock on `lock` for its
+    whole life, and the kernel drops the lock however the process dies, so a
+    reused PID after a crash or reboot cannot fake a running job."""
+    try:
+        fd = os.open(path / "lock", os.O_RDWR)
+    except FileNotFoundError:
+        return pid_alive(meta.get("pid"))  # job started before lock files existed
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return pid_alive(meta.get("pid"))
+    finally:
+        os.close(fd)
+    return False
+
+
+def finished(path):
+    exit_file = path / "exit"
+    if not exit_file.exists():
+        return None
+    code = int(exit_file.read_text().strip() or EXIT_LOST)
+    return ("ok" if code == 0 else "failed"), code
+
+
+def status(path, meta=None):
+    """running | ok | failed | lost, plus the exit code when finished."""
+    meta = meta or read_meta(path)
+    if result := finished(path):
+        return result
+    if "started" in meta:
+        if executor_alive(path, meta):
+            return "running", None
+        # `_exec` may have written `exit` and died between the two checks.
+        return finished(path) or ("lost", EXIT_LOST)
+    if time.time() - meta["created"] > 60:
+        return "lost", EXIT_LOST
+    return "running", None
+
+
+def all_jobs():
+    if not STATE.exists():
+        return []
+    jobs = []
+    for path in sorted(STATE.iterdir()):
+        if (path / "meta.json").exists():
+            jobs.append((path, read_meta(path)))
+    return jobs
+
+
+def short(text, width=40):
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def update_owner_token(owner_pane):
+    """Summarise the owner's jobs into its `$jobs` sidebar token as counts,
+    e.g. `2⏳ 1✗ 3✓`: the agents panel cannot scroll, so a list of names
+    would push other agents out of view. Finished jobs count for
+    DONE_TTL_MS after they ended; a lost job counts as failed."""
+    if not owner_pane:
+        return
+    now = time.time()
+    running = failed = ok = 0
+    newest_end = 0.0
+    for path, meta in all_jobs():
+        if meta.get("owner_pane") != owner_pane:
+            continue
+        st, _ = status(path, meta)
+        if st == "running":
+            running += 1
+            continue
+        if "ended" not in meta:
+            # A lost job never wrote `ended`; start its window when it is noticed.
+            meta["ended"] = now
+            try:
+                write_meta(path, meta)
+            except OSError:  # another process recorded it at the same moment
+                pass
+        if now - meta["ended"] >= DONE_TTL_MS / 1000:
+            continue
+        newest_end = max(newest_end, meta["ended"])
+        if st == "ok":
+            ok += 1
+        else:
+            failed += 1
+    parts = [f"{n}{mark}" for n, mark in ((running, "⏳"), (failed, "✗"), (ok, "✓")) if n]
+    cmd = ["pane", "report-metadata", owner_pane, "--source", "herdr-job"]
+    if not parts:
+        cmd += ["--clear-token", "jobs"]
+    else:
+        # While a job runs its executor refreshes the token (REFRESH_S), so
+        # finished counts still age out; afterwards the token lives until the
+        # newest finished job's window ends.
+        ttl_ms = RUNNING_TTL_MS if running else int((newest_end - now) * 1000 + DONE_TTL_MS)
+        cmd += ["--token", f"jobs={' '.join(parts)}", "--ttl-ms", str(ttl_ms)]
+    herdr(*cmd, check=False)
+
+
+def cmd_run(args):
+    if not args.command:
+        raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
+    owner = os.environ.get("HERDR_PANE_ID")
+    if not os.environ.get("HERDR_SOCKET_PATH"):
+        raise SystemExit("herdr-job needs to run inside a herdr pane")
+    cwd = str(Path(args.cwd or os.getcwd()).resolve())
+    command = args.command[0] if len(args.command) == 1 else shlex.join(args.command)
+    job_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    create = ["tab", "create", "--no-focus", "--label", f"⏳ {short(args.name, 30)}", "--cwd", cwd]
+    create += ["--env", f"HISTORY_IGNORE={HISTORY_IGNORE}"]
+    origin = "started by hand"
+    owner_is_agent = False
+    if owner:
+        pane = json.loads(herdr("pane", "get", owner))["result"]["pane"]
+        create += ["--workspace", pane["workspace_id"]]
+        workspace = json.loads(herdr("workspace", "get", pane["workspace_id"]))["result"]["workspace"]
+        origin = f"from {pane.get('agent') or 'pane ' + owner} in {workspace.get('label') or pane['workspace_id']}"
+        owner_is_agent = bool(pane.get("agent"))
+    created = json.loads(herdr(*create))["result"]
+    path = STATE / job_id
+    path.mkdir(parents=True, mode=0o700)
+    meta = {
+        "id": job_id,
+        "name": args.name,
+        "command": command,
+        "cwd": cwd,
+        "why": args.why,
+        "keep": args.keep,
+        # An agent reports its own jobs when `herdr-job wait` wakes it; a person
+        # who started a job by hand has nobody else to tell them.
+        "notify": args.notify or ("never" if owner_is_agent else "always"),
+        "origin": origin,
+        "owner_pane": owner,
+        "tab_id": created["tab"]["tab_id"],
+        "pane_id": created["root_pane"]["pane_id"],
+        "created": time.time(),
+    }
+    write_meta(path, meta)
+    # `pane run` types into the tab's interactive shell; see HISTORY_IGNORE.
+    herdr("pane", "run", meta["pane_id"], f" {shlex.quote(str(SELF))} _exec {job_id}")
+    update_owner_token(owner)
+    print(job_id)
+
+
+def notify(meta, code):
+    """Desktop notification through herdr's own delivery settings. `--pane`
+    makes a click focus the job tab, or its workspace once the tab is closed;
+    herdr builds without `notification.show_for_pane` get a plain one."""
+    when = meta.get("notify", "always")
+    if when == "never" or (when == "failure" and code == 0):
+        return
+    title = f"✓ {meta['name']}" if code == 0 else f"✗ {code} {meta['name']}"
+    cmd = ["notification", "show", short(title, 80), "--sound", "done" if code == 0 else "request"]
+    body = meta.get("why") or meta.get("origin")
+    if body:
+        cmd += ["--body", short(body, 240)]
+    try:
+        herdr(*cmd, "--pane", meta["pane_id"])
+    except SystemExit:
+        herdr(*cmd, check=False)
+
+
+class Footer:
+    """A status line pinned to the pane's last row: the command's output scrolls
+    in the rows above it (a DECSTBM scroll region)."""
+
+    def __init__(self, meta):
+        self.meta = meta
+        self.state = "⏳ running"
+
+    def text(self):
+        parts = [self.meta["name"]]
+        if self.meta.get("why"):
+            parts.append(f"why: {self.meta['why']}")
+        parts.append(self.meta.get("origin", ""))
+        parts.append(f"herdr-job {self.meta['id']}")
+        return " · ".join(p for p in parts if p)
+
+    def size(self):
+        try:
+            return os.get_terminal_size(sys.stdout.fileno())
+        except OSError:
+            return None
+
+    def draw(self, rows, cols):
+        # No reverse video or background: it turns into a black bar on light
+        # themes. The state is bold in a palette colour, which themes adapt.
+        colour = {"⏳": 33, "✓": 32}.get(self.state[:1], 31)
+        line = short(self.text(), max(cols - len(self.state) - 4, 10))
+        sys.stdout.write(
+            f"\x1b7\x1b[{rows};1H\x1b[2K\x1b[1;{colour}m {self.state}\x1b[0m: {line}\x1b8"
+        )
+        sys.stdout.flush()
+
+    def start(self):
+        size = self.size()
+        if not size or size.lines < 4:
+            return
+        rows, cols = size.lines, size.columns
+        sys.stdout.write(f"\x1b[1;{rows - 1}r\x1b[{rows - 1};1H")
+        self.draw(rows, cols)
+
+    def finish(self, code):
+        self.state = "✓ done" if code == 0 else f"✗ exit {code}"
+        size = self.size()
+        if not size or size.lines < 4:
+            return
+        self.draw(size.lines, size.columns)
+
+    def release(self):
+        """Drop the scroll region; scroll the footer up one row so the shell
+        prompt that follows lands below it instead of over it."""
+        size = self.size()
+        if not size or size.lines < 4:
+            return
+        sys.stdout.write(f"\x1b[r\x1b[{size.lines};1H\n")
+        sys.stdout.flush()
+
+
+def refresh_owner_token(owner_pane):
+    """Recount the owner's jobs while this one runs, so finished counts age out."""
+    while True:
+        time.sleep(REFRESH_S)
+        try:
+            update_owner_token(owner_pane)
+        except Exception:  # a missed refresh only leaves a count stale
+            pass
+
+
+def cmd_exec(args):
+    """Runs inside the job's own pane: stream output to the terminal and the log."""
+    path = job_dir(args.id)
+    meta = read_meta(path)
+    lock = os.open(path / "lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        meta = read_meta(path)  # another executor may have run it before we locked
+    except BlockingIOError:
+        meta["started"] = True
+    # Never run a job twice: after a server restart the relaunch plugin replays
+    # the command line typed into this pane, which is `herdr-job _exec <id>`.
+    if "started" in meta:
+        print(f"herdr-job {meta['id']} already ran; not running it again", file=sys.stderr)
+        sys.exit(1)
+    # The lock stays held until this process exits; Python fds are not
+    # inherited by the command (PEP 446), so only `_exec` holds it.
+    meta["pid"] = os.getpid()
+    meta["started"] = time.time()
+    write_meta(path, meta)
+    footer = Footer(meta)
+    footer.start()
+    print(f"herdr-job {meta['id']}: {meta['name']}", flush=True)
+    if meta.get("why"):
+        print(f"why: {meta['why']}", flush=True)
+    print(f"$ {meta['command']}\n", flush=True)
+    code = EXIT_LOST
+    env = dict(os.environ, HERDR_JOB_ID=meta["id"])
+    env.pop("HISTORY_IGNORE", None)
+    try:
+        # The job has no controlling terminal (its own session, output piped to
+        # the log), so /dev/tty fails; this lets it show progress in the tab
+        # without putting it in the log that `wait` streams.
+        env["HERDR_JOB_TTY"] = os.ttyname(sys.stdout.fileno())
+    except OSError:
+        pass
+    with open(path / "log", "ab", buffering=0) as log:
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", meta["command"]],
+            cwd=meta["cwd"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+        def forward(signum, _frame):
+            try:
+                os.killpg(proc.pid, signum)
+            except ProcessLookupError:
+                pass
+
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, forward)
+        signal.signal(signal.SIGWINCH, lambda *_: footer.start())
+        threading.Thread(target=refresh_owner_token, args=(meta.get("owner_pane"),), daemon=True).start()
+        assert proc.stdout is not None
+        for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            log.write(chunk)
+        code = proc.wait()
+        if code < 0:
+            code = 128 - code
+    meta["ended"] = time.time()
+    write_meta(path, meta)
+    write_atomic(path / "exit", f"{code}\n")
+    mark = "✓" if code == 0 else "✗"
+    herdr("tab", "rename", meta["tab_id"], f"{mark} {short(meta['name'], 30)}", check=False)
+    update_owner_token(meta.get("owner_pane"))
+    notify(meta, code)
+    footer.finish(code)
+    print(f"\nherdr-job {meta['id']}: exit {code}", flush=True)
+    if code == 0 and not meta.get("keep"):
+        # The log stays in the state dir and the sidebar keeps ✓; the tab is noise now.
+        print(f"closing this tab in {CLOSE_OK_AFTER_S} s (herdr-job run --keep leaves it open)", flush=True)
+        time.sleep(CLOSE_OK_AFTER_S)
+        herdr("tab", "close", meta["tab_id"], check=False)
+    footer.release()
+    sys.exit(code)
+
+
+def cmd_wait(args):
+    path = job_dir(args.id)
+    log_path = path / "log"
+    offset = 0
+
+    def drain():
+        nonlocal offset
+        if args.quiet or not log_path.exists():
+            return
+        with open(log_path, "rb") as log:
+            log.seek(offset)
+            data = log.read()
+        offset += len(data)
+        if data:
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+
+    while True:
+        drain()
+        st, code = status(path)
+        if st != "running":
+            drain()
+            meta = read_meta(path)
+            if st == "lost":
+                update_owner_token(meta.get("owner_pane"))
+            print(f"\nherdr-job {args.id} ({meta['name']}): {st}, exit {code}", flush=True)
+            sys.exit(code)
+        time.sleep(2)
+
+
+def cmd_list(_args):
+    jobs = all_jobs()
+    if not jobs:
+        print("no jobs")
+        return
+    for path, meta in jobs:
+        st, code = status(path, meta)
+        end = meta.get("ended") or time.time()
+        minutes = int((end - meta.get("started", meta["created"])) // 60)
+        state = st if code is None else f"{st} ({code})"
+        print(f"{meta['id']}  {state:<12} {minutes:>4}m  {meta['name']}  [{meta['tab_id']}]")
+
+
+def cmd_log(args):
+    print(job_dir(args.id) / "log")
+
+
+def cmd_clean(args):
+    owners = set()
+    here = os.environ.get("HERDR_PANE_ID")
+    for path, meta in all_jobs():
+        if not args.all and meta.get("owner_pane") != here:
+            continue
+        st, _ = status(path, meta)
+        if st == "running":
+            continue
+        herdr("tab", "close", meta["tab_id"], check=False)
+        owners.add(meta.get("owner_pane"))
+        for child in path.iterdir():
+            child.unlink()
+        path.rmdir()
+    for owner in owners:
+        update_owner_token(owner)
+
+
+def main():
+    os.umask(0o077)  # commands and logs may contain secrets
+    parser = argparse.ArgumentParser(prog="herdr-job", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    run = sub.add_parser("run", help="start a job in its own tab")
+    run.add_argument("--name", required=True)
+    run.add_argument("--why", help="why the job runs; shown in the job tab's footer")
+    run.add_argument("--keep", action="store_true", help="keep the tab open after success")
+    run.add_argument(
+        "--notify",
+        choices=["always", "failure", "never"],
+        help="desktop notification when the job ends (default: always when started by hand, never from an agent)",
+    )
+    run.add_argument("--cwd")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    run.set_defaults(func=cmd_run)
+    wait = sub.add_parser("wait", help="follow a job until it ends")
+    wait.add_argument("id")
+    wait.add_argument("--quiet", action="store_true")
+    wait.set_defaults(func=cmd_wait)
+    sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
+    log = sub.add_parser("log", help="print the log path")
+    log.add_argument("id")
+    log.set_defaults(func=cmd_log)
+    clean = sub.add_parser("clean", help="close tabs of this pane's finished jobs")
+    clean.add_argument("--all", action="store_true", help="also jobs started from other panes")
+    clean.set_defaults(func=cmd_clean)
+    exec_ = sub.add_parser("_exec")
+    exec_.add_argument("id")
+    exec_.set_defaults(func=cmd_exec)
+    args = parser.parse_args()
+    if getattr(args, "command", None) and args.command[:1] == ["--"]:
+        args.command = args.command[1:]
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

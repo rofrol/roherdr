@@ -316,7 +316,11 @@ fn notification_command() -> Command {
                     "bottom-left",
                     "bottom-right",
                 ]))
-                .arg(option("sound", "SOUND").value_parser(["none", "done", "request"])),
+                .arg(option("sound", "SOUND").value_parser(["none", "done", "request"]))
+                .arg(
+                    option("pane", "PANE_ID")
+                        .help("Pane the notification is about; clicking it focuses the pane's tab"),
+                ),
         )
 }
 

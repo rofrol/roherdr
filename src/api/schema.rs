@@ -63,6 +63,8 @@ pub enum Method {
     ServerReloadAgentManifests(EmptyParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
+    #[serde(rename = "notification.show_for_pane")]
+    NotificationShowForPane(NotificationShowForPaneParams),
     #[serde(rename = "product_announcement.dismiss")]
     ProductAnnouncementDismiss(ProductAnnouncementDismissParams),
     #[serde(rename = "release_notes.dismiss")]

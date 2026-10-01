@@ -383,6 +383,39 @@ mod tests {
         assert!(state.pending_notifications.is_empty());
     }
 
+    #[test]
+    fn custom_notification_for_a_non_agent_pane_shows_with_its_click_target() {
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.toast_delivery = crate::config::ToastDelivery::System;
+        let mut state = ClientShellState::new(config);
+        state.set_snapshot(Box::new(super::super::tests::snapshot()));
+        let event = SemanticNotification {
+            kind: SemanticNotificationKind::Custom,
+            title: "✓ Build b18".into(),
+            body: Some("test the new app set".into()),
+            sound: None,
+            agent: None,
+            workspace_id: Some("ws_9".into()),
+            tab_id: Some("tab_9".into()),
+            pane_id: Some("job_pane".into()),
+            position: None,
+        };
+        let (effects, _) =
+            state.receive_notification(&ClientEndpointId::Local, event, std::time::Instant::now());
+        let [ClientShellNotificationEffect::System { click_target, .. }] = effects.as_slice()
+        else {
+            panic!("expected one system notification, got {}", effects.len());
+        };
+        assert_eq!(
+            click_target,
+            &Some(ClientNotificationClickTarget {
+                pane_id: "job_pane".into(),
+                tab_id: Some("tab_9".into()),
+                workspace_id: Some("ws_9".into()),
+            })
+        );
+    }
+
     fn system_toast_effect(terminal_title: Option<&str>) -> Vec<ClientShellNotificationEffect> {
         let mut config = ClientShellConfig::from_config(&Config::default());
         config.toast_delivery = crate::config::ToastDelivery::System;
@@ -442,6 +475,7 @@ mod tests {
             &Some(ClientNotificationClickTarget {
                 pane_id: "pane_1".into(),
                 tab_id: Some("tab_2".into()),
+                workspace_id: Some("ws_1".into()),
             })
         );
     }

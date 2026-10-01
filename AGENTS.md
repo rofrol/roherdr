@@ -342,3 +342,36 @@ git push --force-with-lease origin master
 
 Do not create merge commits from `upstream/master`. Keep the fork's own commits
 linear on top of upstream.
+
+To re-record the fork demo video and upload it for the README, follow
+`scripts/fork_demo/README.md`; uploading needs the Claude in Chrome tools
+(see "Uploading as an agent" there).
+
+### Trying a fix in the running Herdr
+
+A committed fix is not in the user's session until the binary they run is
+replaced. After a user-facing fix, find that binary first; do not assume a
+location. The running server's path is the most reliable, `command -v herdr`
+is the fallback:
+
+```bash
+ps -axo command | grep '[h]erdr server'
+command -v herdr
+```
+
+Replace that binary with the fix (the build takes over a minute, so use
+`herdr-job`):
+
+- `~/.cargo/bin/herdr`: `cargo install --path . --locked`
+- another user-owned path: `cargo build --release --locked`, then copy
+  `target/release/herdr` over it
+- a package-managed path (Homebrew, Nix, system directories): ask the user
+  before touching it
+
+Then tell the user to move the running session onto the new binary and attach
+again:
+
+```bash
+herdr server live-handoff
+herdr
+```

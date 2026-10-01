@@ -219,12 +219,52 @@ impl HeadlessServer {
         self.send_notify_to_foreground_client(kind, title, body.map(str::to_string))
     }
 
+    /// Public (workspace, tab, pane) ids of a pane, as sent with notifications.
+    fn notification_target(
+        &self,
+        public_pane_id: &str,
+    ) -> Option<(String, Option<String>, String)> {
+        let (ws_idx, pane_id) = self.app.parse_pane_id(public_pane_id)?;
+        let tab_id = self.app.state.workspaces[ws_idx]
+            .find_tab_index_for_pane(pane_id)
+            .and_then(|tab_idx| self.app.public_tab_id(ws_idx, tab_idx));
+        Some((
+            self.app.public_workspace_id(ws_idx),
+            tab_id,
+            self.app.public_pane_id(ws_idx, pane_id)?,
+        ))
+    }
+
+    /// `target_pane` (from `notification.show_for_pane`) gives the notification
+    /// the pane, tab and workspace ids the client turns into its click action.
     pub(super) fn handle_notification_show_api(
         &mut self,
         id: String,
         params: api::schema::NotificationShowParams,
+        target_pane: Option<&str>,
     ) -> String {
         use api::schema::NotificationShowReason;
+
+        let target = match target_pane {
+            None => None,
+            Some(public_id) => match self.notification_target(public_id) {
+                Some(target) => Some(target),
+                None => {
+                    return serde_json::to_string(&api::schema::ErrorResponse {
+                        id,
+                        error: api::schema::ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {public_id} not found"),
+                        },
+                    })
+                    .unwrap_or_else(|_| "{}".to_string());
+                }
+            },
+        };
+        let (workspace_id, tab_id, pane_id) = match target {
+            Some((workspace_id, tab_id, pane_id)) => (Some(workspace_id), tab_id, Some(pane_id)),
+            None => (None, None, None),
+        };
 
         let Some(title) = sanitize_notification_text(&params.title, 80) else {
             return serde_json::to_string(&api::schema::ErrorResponse {
@@ -269,9 +309,9 @@ impl HeadlessServer {
                 body,
                 sound,
                 agent: None,
-                workspace_id: None,
-                tab_id: None,
-                pane_id: None,
+                workspace_id,
+                tab_id,
+                pane_id,
                 position: params.position,
             },
         ));
