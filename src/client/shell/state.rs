@@ -157,7 +157,7 @@ pub(super) struct ShellHitMap {
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     /// The notification history button at the right of the spaces header.
     pub(super) notification_log_button: Rect,
-    /// The `/` button in the spaces header that opens the filter bar.
+    /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.
     pub(super) space_filter_bar: Rect,
@@ -274,6 +274,10 @@ pub(super) struct ClientTabPress {
 pub(super) struct TabLineGeometry {
     pub(super) lines: Vec<(usize, i32)>,
     pub(super) bottom: i32,
+    /// The space's top-level tab ids at the start: a drag cancels when they
+    /// change under it (a tab closed or added elsewhere), since the rows no
+    /// longer match the tabs.
+    pub(super) top_level: Vec<String>,
 }
 
 pub(super) enum ClientChromeDrag {

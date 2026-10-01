@@ -13,6 +13,15 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ReopenTab) => {
                 self.reopen_closed_tab(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::FilterSpaces)
+                if self.endpoints.len() > 1 =>
+            {
+                // The several-machines sidebar has no filter bar to type into.
+                self.receive_endpoint_unavailable(
+                    "the spaces filter is not available with several machines".to_owned(),
+                );
+                outcome.repaint = true;
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::FilterSpaces) => {
                 // Opens the bar for typing; the sidebar shows if it was collapsed.
                 if self.sidebar_collapsed {

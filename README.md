@@ -125,7 +125,8 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
 - [**job**](plugins/job/README.md): `herdr-job run --name "Build" -- make`
   runs a long command in its own unfocused tab (live output one click away)
   and shows `⧖ Build`, then `✓`/`✗ <code>`, in the sidebar of the pane that
-  started it; `herdr-job wait <id>` follows the log and exits with the
+  started it; `herdr-job wait <id>` prints a start line, then the final line (a failure adds the log's
+  last lines; `--stream` follows the whole log) and exits with the
   command's code. It keeps state in files, so it works for any agent (Claude
   Code, pi, ...) or by hand. Also has `herdr-bg-badge`, a Claude Code hook
   that shows Claude's own background tasks in the sidebar.

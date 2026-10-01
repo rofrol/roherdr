@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import runpy
 import re
+import sys
+import time
 import unicodedata
 import unittest
 from unittest.mock import patch, Mock
@@ -247,3 +249,64 @@ class OpenJobTests(unittest.TestCase):
             focused, error = self.run_open(args, tab=answer)
             self.assertEqual(focused, [], answer)
             self.assertIn("is gone", error, answer)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitTests(unittest.TestCase):
+    JOB = "20261001-124548-1827"
+
+    def wait(self, log, outcome=("ok", 0), polls=1, **flags):
+        cmd_wait = JOB["cmd_wait"]
+        base = Path(tempfile.mkdtemp())
+        path = base / self.JOB
+        path.mkdir()
+        (path / "log").write_bytes(log)
+        states = iter([("running", None)] * polls + [outcome])
+        patches = {
+            "job_dir": lambda _id: path,
+            "read_meta": lambda _path: {"name": "build", "tab_id": "w:t7", "owner_pane": None},
+            "status": lambda _path, meta=None: next(states),
+            "reconcile_tabs": lambda: None,
+            "update_owner_token": lambda _pane: None,
+        }
+        args = SimpleNamespace(id=self.JOB, quiet=flags.get("quiet", False), stream=flags.get("stream", False))
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        with patch.dict(cmd_wait.__globals__, patches), patch.object(sys, "stdout", out), \
+                patch.object(time, "sleep", lambda _s: None):
+            try:
+                cmd_wait(args)
+                code = 0
+            except SystemExit as error:
+                code = error.code
+        out.flush()
+        return code, out.buffer.getvalue().decode()
+
+    def test_by_default_a_job_is_a_start_line_and_the_final_line(self):
+        code, text = self.wait(b"".join(b"line %d\n" % n for n in range(5000)), polls=3)
+        self.assertEqual(code, 0)
+        lines = [line for line in text.split("\n") if line]
+        self.assertEqual(len(lines), 2, text)
+        self.assertIn("waiting; to look at it: herdr tab focus w:t7", lines[0])
+        self.assertEqual(lines[1], f"herdr-job {self.JOB} (build): ok, exit 0")
+
+    def test_a_failure_adds_a_bounded_tail_without_escapes_and_keeps_the_code(self):
+        log = b"".join(b"\x1b[31mline %d\x1b[0m\n" % n for n in range(5000))
+        code, text = self.wait(log, outcome=("failed", 42))
+        self.assertEqual(code, 42)
+        self.assertIn("line 4999", text)
+        self.assertNotIn("line 4900", text)
+        self.assertNotIn("\x1b", text)
+        self.assertLessEqual(text.count("line "), 41)
+        self.assertTrue(text.rstrip().endswith(f"herdr-job {self.JOB} (build): failed, exit 42"))
+
+    def test_stream_follows_the_whole_log_and_quiet_prints_only_the_final_line(self):
+        log = b"a\nb\nc\n"
+        code, text = self.wait(log, stream=True)
+        self.assertEqual(text, f"a\nb\nc\n\nherdr-job {self.JOB} (build): ok, exit 0\n")
+        code, text = self.wait(log, quiet=True, outcome=("failed", 3))
+        self.assertEqual((code, text), (3, f"\nherdr-job {self.JOB} (build): failed, exit 3\n"))
+
+    def test_a_missing_log_is_not_an_error(self):
+        code, text = self.wait(b"", outcome=("failed", 1))
+        self.assertEqual(code, 1)
+        self.assertNotIn("last lines", text)

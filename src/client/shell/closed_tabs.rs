@@ -89,34 +89,45 @@ impl ClientShellState {
     /// up as soon as the request is sent, so a second press never repeats it.
     pub(super) fn reopen_closed_tab(&mut self, outcome: &mut ClientShellInput) {
         outcome.repaint = true;
-        while let Some(closed) = self.closed_tabs.pop_back() {
-            let space_exists = closed.endpoint_id == self.active_endpoint_id
-                && self.snapshot.as_deref().is_some_and(|snapshot| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.workspace_id == closed.workspace_id)
-                });
-            if !space_exists {
-                continue;
-            }
-            let params = crate::api::schema::TabCreateParams {
-                workspace_id: Some(closed.workspace_id.clone()),
-                cwd: closed.cwd.clone(),
-                focus: true,
-                label: closed.label.clone(),
-                env: Default::default(),
-            };
-            self.push_endpoint_method_with_kind(
-                crate::api::schema::Method::TabCreate(params),
-                PendingEndpointKind::ReopenTab {
-                    closed: Box::new(closed),
-                },
-                outcome,
-            );
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            self.receive_endpoint_unavailable("not connected: nothing to reopen yet".to_owned());
             return;
-        }
-        self.receive_endpoint_unavailable("no closed tab to reopen".to_owned());
+        };
+        // Spaces of this machine that are gone take their entries with them;
+        // another machine's entries wait for that machine.
+        let active = self.active_endpoint_id.clone();
+        let spaces = snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.workspace_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        self.closed_tabs
+            .retain(|closed| closed.endpoint_id != active || spaces.contains(&closed.workspace_id));
+        let Some(at) = self
+            .closed_tabs
+            .iter()
+            .rposition(|closed| closed.endpoint_id == active)
+        else {
+            self.receive_endpoint_unavailable("no closed tab to reopen".to_owned());
+            return;
+        };
+        let Some(closed) = self.closed_tabs.remove(at) else {
+            return;
+        };
+        let params = crate::api::schema::TabCreateParams {
+            workspace_id: Some(closed.workspace_id.clone()),
+            cwd: closed.cwd.clone(),
+            focus: true,
+            label: closed.label.clone(),
+            env: Default::default(),
+        };
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::TabCreate(params),
+            PendingEndpointKind::ReopenTab {
+                closed: Box::new(closed),
+            },
+            outcome,
+        );
     }
 
     /// Puts the reopened tab back after the tab that stood before it, when
@@ -134,6 +145,11 @@ impl ClientShellState {
             return (true, Vec::new());
         };
         let mut outcome = ClientShellInput::default();
+        // The machine may have changed since the create was sent: the new
+        // tab is on the other one, so leave it where it is.
+        if closed.endpoint_id != self.active_endpoint_id {
+            return (true, Vec::new());
+        }
         let insert = self.snapshot.as_deref().and_then(|snapshot| {
             let tops = snapshot
                 .tabs

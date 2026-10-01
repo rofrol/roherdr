@@ -392,6 +392,23 @@ Derive state from what the client already receives, and fetch on a user
 action (opening a dropdown). A background `notification.list` fetch broke
 `federated_client_starts_without_local_and_survives_its_restart` this way.
 
+### Disk space: the shared `target/`
+
+Several sessions build in one `target/`, and `cargo test` leaves a hashed
+binary per build, so it once grew to 66 GB and filled the disk. Use the just
+recipes: `just sweep` frees space (it takes cargo's lock and gives up while a
+build runs) and `just guard` runs before `test` and `ci`. Never run
+`cargo sweep` or delete `target/` artifacts by hand: that can break another
+session's build. If `just guard` refuses to build (under 15 GiB free), stop
+and tell the user instead of freeing space another way.
+
+### Waiting for a job
+
+`herdr-job wait <id>` prints a start line, then only the final line (a failure
+adds the log's last lines), so waiting costs the conversation almost nothing;
+add `--stream` only when you need the whole log as it grows. Use the log path
+`herdr-job log <id>` to read more after a failure.
+
 ### Naming options
 
 Name boolean options positively (`show_agents_panel = false`), not as

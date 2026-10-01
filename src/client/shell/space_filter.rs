@@ -272,7 +272,13 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
-        if !self.space_filter.open || !self.space_filter.focused || self.overlay.is_some() {
+        // Only in the terminal: a pending prefix, navigate or copy mode owns
+        // the next key (`prefix` then `u`), not the filter.
+        if !self.space_filter.open
+            || !self.space_filter.focused
+            || self.overlay.is_some()
+            || self.mode != ClientShellMode::Terminal
+        {
             return false;
         }
         let plain = !key
@@ -308,6 +314,25 @@ impl ClientShellState {
             _ => return false,
         }
         outcome.repaint = true;
+        true
+    }
+
+    /// Pasted or composed text goes into the focused filter, one line of it.
+    /// Returns whether the filter took it.
+    pub(super) fn insert_filter_text(&mut self, text: &str) -> bool {
+        if !self.space_filter.open
+            || !self.space_filter.focused
+            || self.overlay.is_some()
+            || self.mode != ClientShellMode::Terminal
+        {
+            return false;
+        }
+        let line = text
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>();
+        self.space_filter.query.push_str(line.trim());
+        self.reset_filter_selection();
         true
     }
 
@@ -562,7 +587,7 @@ mod tests {
             ["repo", "  repo-feature", "  repo-fix (last)"]
         );
         assert_eq!(shown("notes"), ["notes"]);
-        // Both children, and the lone space whose branch is `main`.
+        // `fix` fits only the second child (and its parent stays as context).
         assert_eq!(
             shown("fix"),
             ["repo", "  repo-fix (last)"],

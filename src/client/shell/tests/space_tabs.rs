@@ -1985,3 +1985,89 @@ fn focusing_a_job_unfolds_its_parents_squares_once() {
     state.compose(106, 30).unwrap();
     assert!(state.hits.space_tab_squares.is_empty());
 }
+
+#[test]
+fn reopening_keeps_entries_it_cannot_use_yet() {
+    let mut state = state_with_three_tabs();
+    let entry = |endpoint: ClientEndpointId, workspace: &str, label: &str| {
+        crate::client::shell::closed_tabs::ClosedTab {
+            endpoint_id: endpoint,
+            workspace_id: workspace.into(),
+            label: Some(label.into()),
+            cwd: None,
+            after_tab_id: None,
+        }
+    };
+    let remote = ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("00000000000000000000000000000002")
+            .expect("profile id"),
+    );
+    state.remember_closed_tab(entry(remote.clone(), "ws_9", "elsewhere"));
+    state.remember_closed_tab(entry(ClientEndpointId::Local, "ws_gone", "gone"));
+    state.remember_closed_tab(entry(ClientEndpointId::Local, "ws_1", "usable"));
+    // The usable entry opens; the one of this machine's vanished space is dropped;
+    // the other machine's entry waits for that machine.
+    let outcome = reopen(&mut state);
+    let requests = endpoint_requests(&outcome);
+    let [(_, crate::api::schema::Method::TabCreate(params))] = &requests[..] else {
+        panic!("expected a tab create");
+    };
+    assert_eq!(params.label.as_deref(), Some("usable"));
+    let kept = state
+        .closed_tabs
+        .iter()
+        .map(|closed| closed.label.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(kept, ["elsewhere"]);
+    // Nothing left for this machine: a notice, and the other entry stays.
+    assert!(endpoint_requests(&reopen(&mut state)).is_empty());
+    assert_eq!(state.closed_tabs.len(), 1);
+}
+
+#[test]
+fn pasted_text_goes_into_the_focused_filter_and_not_into_the_pane() {
+    let mut state = state_with_named_tabs();
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    let outcome = state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Paste(
+        "rev\niew ".into(),
+    )]);
+    assert_eq!(state.space_filter.query, "rev iew");
+    assert!(outcome.repaint);
+    assert!(
+        outcome.requests.is_empty() && outcome.actions.is_empty(),
+        "nothing reaches the pane"
+    );
+    // Blurred, the paste is the pane's again.
+    state.space_filter.focused = false;
+    state.space_filter.query.clear();
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Paste("x".into())]);
+    assert!(state.space_filter.query.is_empty());
+}
+
+#[test]
+fn a_pending_prefix_keeps_its_key_from_the_filter_bar() {
+    let mut state = state_with_named_tabs();
+    state.space_filter.open = true;
+    state.space_filter.focused = true;
+    state.mode = ClientShellMode::Prefix;
+    type_text(&mut state, "u");
+    assert!(state.space_filter.query.is_empty());
+}
+
+#[test]
+fn a_tab_line_drag_cancels_when_the_spaces_tabs_change_under_it() {
+    let mut state = state_with_three_tabs();
+    let (first, third) = (line_row(&state, "tab_1"), line_row(&state, "tab_3"));
+    left_click(&mut state, first);
+    left_drag(&mut state, third);
+    assert_eq!(slot(&state), Some(3));
+    // Another client closes `tab_2` while the drag is on.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    left_drag(&mut state, third);
+    assert_eq!(slot(&state), None, "rows no longer match the tabs");
+    assert!(tab_moves(&left_release(&mut state, third)).is_empty());
+}
