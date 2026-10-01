@@ -48,7 +48,37 @@
   scrolling is applied by the OS before the terminal, so the direction is
   already right) and on Windows and Linux, whether the step (rows per event)
   should differ by platform, and whether a config option is needed at all.
-  Done: nothing yet.
+  - Answer (consulted DeepSeek, Opus and GPT 2026-10-01, unanimous on the
+    first point): the direction is not herdr's. The OS applies "natural
+    scrolling" (macOS) or its inverse before the terminal reports a wheel
+    event, and the terminal sends only "wheel up" or "wheel down" without a
+    magnitude; herdr applies what it gets and must never invert, or a user
+    gets a double inversion. So it is neither "like macOS" nor "like Windows":
+    it follows the user's system setting. Not audited yet: that every surface
+    (pane scrollback, spaces list, agents panel, overlay lists, tab bar, the
+    selection moving in a list) maps wheel-up to "earlier or higher content"
+    with the same sign; a test per surface should assert it.
+  - Speed is where herdr is inconsistent: `ui.mouse_scroll_lines` (default 3)
+    for pane scrollback, 1 row for the spaces list and agents panel, fixed 1
+    or 3 for overlays, 3 synthetic wheel events per step for alt-screen reads.
+    The models disagree on the cure: the platform is the wrong axis (the
+    device matters, a mouse notch against a trackpad flick, and over SSH the
+    server cannot see the client's OS; a client-side handshake could report the
+    local OS but not the device); Opus and DeepSeek propose one step function
+    by event rhythm (an isolated event is a notch and moves N rows, a burst
+    under about 20-40 ms moves 1 row per event), lists always 1; GPT proposes a
+    neutral default of 1 for everything herdr scrolls itself, forwarding one
+    unchanged wheel event (not three) to a child that has mouse reporting, and
+    no acceleration heuristics at first. All keep `ui.mouse_scroll_lines` as an
+    advanced override rather than removing it.
+  - Tests the models ask for: a pure `scroll_step` function with an injected
+    clock, the sign on every surface, replayed raw SGR streams through a PTY,
+    and a manual matrix (macOS Terminal.app, iTerm2, Ghostty with trackpad and
+    mouse and natural scrolling on and off; Windows Terminal; Linux VTE and
+    kitty; SSH from macOS and Windows to Linux).
+  - Decision needed from the user: adaptive step (rhythm) or a plain 1 per
+    event, and whether the alt-screen forward changes from 3 events to 1.
+  - Done: nothing yet.
 
 - Deferred Herdr behavior-context integrations: Pi and Claude Code are
   already implemented. The checkboxes below select future implementation
