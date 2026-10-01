@@ -815,7 +815,11 @@ impl ClientShellState {
             .iter()
             .find(|layout| layout.workspace_id == workspace_id)
             .map_or(last_row + 1, |layout| layout.bottom.max(last_row + 1));
-        Some(TabLineGeometry { lines, bottom })
+        Some(TabLineGeometry {
+            lines,
+            bottom,
+            top_level: top_level.into_iter().map(str::to_owned).collect(),
+        })
     }
 
     /// Where a dragged tab line would land among its space's top-level tabs
@@ -838,7 +842,18 @@ impl ClientShellState {
             .filter(|tab| tab.workspace_id == workspace_id && tab.parent_tab_id.is_none())
             .map(|tab| tab.tab_id.as_str())
             .collect::<Vec<_>>();
-        let TabLineGeometry { lines, bottom } = geometry;
+        let TabLineGeometry {
+            lines,
+            bottom,
+            top_level: started_with,
+        } = geometry;
+        if top_level
+            .iter()
+            .map(|id| id.to_string())
+            .ne(started_with.iter().cloned())
+        {
+            return None;
+        }
         let bottom = *bottom;
         let (first_index, first_row) = *lines.first()?;
         let (last_index, _) = *lines.last()?;

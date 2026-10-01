@@ -8,8 +8,17 @@ export HERDR_DISABLE_USAGE := "1"
 
 python := if os() == "windows" { "python" } else { "python3" }
 
+# Free disk space for the shared target/: remove the debug profile (and, if still over the limit, the cross targets) once target/ is over 25 GiB.
+# Run it through just only: it waits for no build, it gives up if cargo is building. Never delete target/ by hand.
+sweep:
+    {{python}} scripts/target_sweep.py sweep
+
+# Before a build: with under 15 GiB free, sweep target/ and refuse to build if that is not enough.
+guard:
+    {{python}} scripts/target_sweep.py guard
+
 # Run tests
-test:
+test: guard
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
     just maintenance-test
     just ui-hot-path-architecture-test
@@ -18,7 +27,7 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    {{python}} -m unittest scripts.test_target_sweep scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
     {{python}} -m unittest discover -s plugins/job -p "test_*.py"
     {{python}} -m unittest discover -s plugins/consult -p "test_*.py"
     just pi-activity-test
@@ -50,7 +59,7 @@ lint:
     & .\scripts\windows_check.ps1 -Mode lint
 
 # Run PR CI checks
-ci filter='all()': lint
+ci filter='all()': guard lint
     just ci-tests "{{filter}}"
 
 # Keep the test build independently configurable from clippy in CI.

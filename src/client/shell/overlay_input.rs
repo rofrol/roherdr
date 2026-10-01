@@ -445,6 +445,9 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
+        if self.insert_filter_text(text) {
+            return true;
+        }
         if self.insert_worktree_overlay_text(text) {
             return true;
         }

@@ -9,7 +9,8 @@ the same for Claude Code, pi, or any other agent, and for you.
 
 ```sh
 id=$(herdr-job run --name "Build b17" --why "test the new app set" -- make image)
-herdr-job wait "$id"      # follows the log, exits with the command's exit code
+herdr-job wait "$id"      # a start line, then the final line; exits with the command's exit code
+herdr-job wait --stream "$id"  # follows the whole log as it grows (the old behaviour)
 herdr-job list            # all jobs: running / ok / failed (code) / lost
 herdr-job log "$id"       # log path
 herdr-job clean           # close this pane's finished job tabs (--all: everyone's)
@@ -41,7 +42,7 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
 - The command gets `HERDR_JOB_ID` and `HERDR_JOB_TTY`, the tab's terminal. It
   runs without a controlling terminal, so `/dev/tty` fails; writing progress
   to `$HERDR_JOB_TTY` shows it in the tab but keeps it out of the log that
-  `wait` streams (see [Skills](#skills-a-script-in-its-own-job-tab)).
+  `wait --stream` shows (see [Skills](#skills-a-script-in-its-own-job-tab)).
 - The starting pane gets a `$jobs` token with counts of its jobs that still
   have a tab, e.g. `⧖ 2 !1 ✓1`: running, failed (or lost) and successful,
   with the same icons as the tab bar.

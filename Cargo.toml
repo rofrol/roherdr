@@ -92,3 +92,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Test and dev binaries pile up in target/debug/deps, one per build. Line tables
+# keep backtraces (file:line) at a fraction of the size of full debug info.
+[profile.dev]
+debug = "line-tables-only"

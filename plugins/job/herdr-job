@@ -616,14 +616,42 @@ def cmd_exec(args):
     sys.exit(code)
 
 
+ANSI_SEQUENCE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]")
+FAILURE_TAIL_LINES = 40
+FAILURE_TAIL_BYTES = 8192
+
+
+def log_tail(log_path):
+    """The last lines of a job's log, without terminal escapes, for the
+    report of a failure: bounded, so a noisy build cannot flood the caller."""
+    try:
+        with open(log_path, "rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 4 * FAILURE_TAIL_BYTES))
+            data = log.read()
+    except OSError:
+        return ""
+    text = ANSI_SEQUENCE.sub("", data.decode("utf-8", "replace")).replace("\r", "")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    tail = "\n".join(lines[-FAILURE_TAIL_LINES:])
+    return tail[-FAILURE_TAIL_BYTES:]
+
+
 def cmd_wait(args):
+    """Waits for a job and exits with its code. By default it prints a line
+    to say what it waits for, nothing while the job runs, and the final line;
+    a failure adds the tail of the log. `--stream` follows the whole log as it
+    grows (the old behaviour), `--quiet` prints only the final line."""
     path = job_dir(args.id)
     log_path = path / "log"
     offset = 0
+    stream = args.stream or os.environ.get("HERDR_JOB_WAIT_STREAM") == "1"
 
     def drain():
         nonlocal offset
-        if args.quiet or not log_path.exists():
+        if not stream or args.quiet or not log_path.exists():
             return
         with open(log_path, "rb") as log:
             log.seek(offset)
@@ -633,6 +661,9 @@ def cmd_wait(args):
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
 
+    if not stream and not args.quiet:
+        meta = read_meta(path)
+        print(f"herdr-job {args.id} ({meta['name']}): waiting; to look at it: herdr tab focus {meta['tab_id']}", flush=True)
     while True:
         drain()
         st, code = status(path)
@@ -642,6 +673,10 @@ def cmd_wait(args):
             if st == "lost":
                 update_owner_token(meta.get("owner_pane"))
             reconcile_tabs()
+            if not stream and not args.quiet and st != "ok":
+                tail = log_tail(log_path)
+                if tail:
+                    print(f"--- last lines of the log (all of it: {log_path}) ---\n{tail}\n---", flush=True)
             print(f"\nherdr-job {args.id} ({meta['name']}): {st}, exit {code}", flush=True)
             sys.exit(code)
         time.sleep(2)
@@ -734,9 +769,10 @@ def main():
     run.add_argument("--cwd")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
-    wait = sub.add_parser("wait", help="follow a job until it ends")
+    wait = sub.add_parser("wait", help="wait for a job to end")
     wait.add_argument("id")
     wait.add_argument("--quiet", action="store_true")
+    wait.add_argument("--stream", action="store_true", help="follow the whole log as it grows")
     wait.set_defaults(func=cmd_wait)
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
     open_ = sub.add_parser("open", help="focus a job's tab")

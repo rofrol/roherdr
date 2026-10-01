@@ -422,12 +422,13 @@ fn countdown_parts(resets_at: u64, now_unix: u64) -> (String, Option<String>) {
     }
 }
 
-/// `3d`, `1d10h`, `2h15m`, `45m`, `<1m` or `now`: without a space, so a cell
-/// in the footer fits five columns.
+/// `3d`, `1d10h`, `2h15m`, `45m`, `<1m` or `now`: without a space, and with
+/// the second unit dropped once the first has two digits (`23h59m` is `23h`,
+/// `12d3h` is `12d`), so a cell in the footer fits five columns.
 pub(super) fn compact_countdown(resets_at: u64, now_unix: u64) -> String {
     match countdown_parts(resets_at, now_unix) {
-        (first, Some(second)) => format!("{first}{second}"),
-        (first, None) => first,
+        (first, Some(second)) if first.chars().count() <= 2 => format!("{first}{second}"),
+        (first, _) => first,
     }
 }
 
@@ -698,7 +699,9 @@ mod tests {
         assert_eq!(compact(hour), "1h");
         assert_eq!(compact(2 * hour + 15 * minute), "2h15m");
         assert_eq!(detailed(2 * hour + 15 * minute), "2h 15m");
-        assert_eq!(compact(23 * hour + 59 * minute), "23h59m");
+        assert_eq!(compact(23 * hour + 59 * minute), "23h");
+        assert_eq!(compact(9 * hour + 59 * minute), "9h59m");
+        assert_eq!(compact(12 * day + 3 * hour), "12d");
         // From a day: days and hours; minutes are dropped, and `24h 30m` is a day.
         assert_eq!(compact(24 * hour), "1d");
         assert_eq!(compact(24 * hour + 30 * minute), "1d");

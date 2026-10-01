@@ -552,6 +552,10 @@ impl ClientShellState {
                         .clone()
                         .with_repeat_count(1)
                         .with_kind(KeyEventKind::Repeat);
+                    // A held key goes to the focused filter bar like its first press.
+                    if self.handle_space_filter_key(&repeated, outcome) {
+                        continue;
+                    }
                     if let Some(target) = self.route_key_press(&repeated, outcome) {
                         self.push_pane_key(target, repeated, outcome);
                     }
