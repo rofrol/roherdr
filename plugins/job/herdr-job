@@ -16,6 +16,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import secrets
 import shlex
 import signal
@@ -660,6 +661,34 @@ def cmd_list(_args):
         print(f"{meta['id']}  {state:<12} {minutes:>4}m  {meta['name']}  [{meta['tab_id']}]")
 
 
+LINK_JOB = re.compile(r"herdr-job://(\d{8}-\d{6}-[0-9a-f]{4})")
+
+
+def cmd_open(args):
+    """Focuses a job's tab. With `--from-click` the id comes from the link that
+    was clicked (`herdr-job://<id>`, the plugin's link handler)."""
+    if args.from_click:
+        match = LINK_JOB.fullmatch(os.environ.get("HERDR_PLUGIN_CLICKED_URL", ""))
+        if not match:
+            raise SystemExit("herdr-job: the clicked link is not a job link")
+        job_id = match.group(1)
+    else:
+        job_id = args.id or ""
+    if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{4}", job_id) or not job_dir(job_id).is_dir():
+        raise SystemExit(f"herdr-job: no such job {job_id!r}")
+    tab_id = read_meta(job_dir(job_id)).get("tab_id")
+    # One lookup of the tab itself (a click should feel instant, and the list
+    # of all jobs grows): the tab must still carry this job's metadata, so a
+    # closed tab, or a tab id another job now holds, is not focused.
+    try:
+        tab = json.loads(herdr("tab", "get", tab_id, check=False) or "{}")["result"]["tab"]
+    except (KeyError, TypeError, ValueError):
+        tab = {}
+    if (tab.get("job") or {}).get("id") != job_id:
+        raise SystemExit(f"herdr-job: the tab of {job_id} is gone")
+    herdr("tab", "focus", tab_id)
+
+
 def cmd_log(args):
     print(job_dir(args.id) / "log")
 
@@ -710,6 +739,10 @@ def main():
     wait.add_argument("--quiet", action="store_true")
     wait.set_defaults(func=cmd_wait)
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
+    open_ = sub.add_parser("open", help="focus a job's tab")
+    open_.add_argument("id", nargs="?")
+    open_.add_argument("--from-click", action="store_true", help="take the id from the clicked job link")
+    open_.set_defaults(func=cmd_open)
     log = sub.add_parser("log", help="print the log path")
     log.add_argument("id")
     log.set_defaults(func=cmd_log)
