@@ -194,6 +194,8 @@ pub enum AppEvent {
     ForegroundProgramChanged {
         pane_id: PaneId,
         program: Option<String>,
+        /// Whether the program is the pane's own shell, not one it started.
+        shell: bool,
         observed_at: Instant,
     },
     /// Background git status refresh completed for workspaces.

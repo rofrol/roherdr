@@ -247,7 +247,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
-    pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// While a space is dragged: where it would land, `Some(None)` for the end.
+    pub(super) workspace_drop_before: Option<Option<&'a str>>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,
 }
 

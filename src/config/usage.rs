@@ -24,6 +24,11 @@ pub struct UsageConfig {
     pub auth_file: String,
     /// Read OpenRouter credits when an API key is found.
     pub openrouter: bool,
+    /// Read the Kimi (Moonshot) prepaid balance when an API key is found.
+    pub kimi: bool,
+    /// Moonshot API host: `api.moonshot.ai` (USD) or `api.moonshot.cn`
+    /// (CNY, a separate account).
+    pub kimi_host: String,
 }
 
 pub(crate) const MIN_USAGE_REFRESH_INTERVAL_SECS: u64 = 60;
@@ -39,6 +44,8 @@ impl Default for UsageConfig {
             deepseek: true,
             auth_file: crate::usage::DEFAULT_AUTH_FILE.to_owned(),
             openrouter: true,
+            kimi: true,
+            kimi_host: "api.moonshot.ai".to_owned(),
         }
     }
 }

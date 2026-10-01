@@ -204,6 +204,8 @@ A tab is another terminal layout inside a workspace. Without `--workspace`, `tab
 
 With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab from a keybinding or the tab menu. Ordinary CLI/API tab closes remain immediate.
 
+With `ui.confirm_close_running` enabled (the default), the TUI also asks before closing a tab, pane or workspace that has running work: a tab marked running with `tab status`, an agent that is working or waiting for an answer, or a program the pane's shell started, such as a build or `lazygit`. An idle agent closes without asking. The dialog names what the close would stop. This works independently of `ui.confirm_close`, and CLI/API closes remain immediate.
+
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 
 ## Panes

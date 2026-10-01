@@ -297,18 +297,42 @@ pub(crate) fn render_sidebar(
         crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
+    let mut entries = workspace_entries(snapshot, state.collapsed_groups);
+    // While a space is dragged the list shows where it would land, and the
+    // header says so in words.
+    let drag = state
+        .dragged_workspace_id
+        .zip(state.workspace_drop_before)
+        .and_then(|(source, before)| {
+            let preview = entries_with_drag(snapshot, &entries, source, before)?;
+            let hint = drag_hint(snapshot, &entries, &preview, source);
+            Some((preview, hint))
+        });
+    let header = match &drag {
+        Some((_, hint)) => format!(" {hint}"),
+        None => " spaces".to_owned(),
+    };
     put_text(
         buffer,
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " spaces",
+        &header,
         Style::default()
-            .fg(palette.overlay0)
+            .fg(if drag.is_some() {
+                palette.accent
+            } else {
+                palette.overlay0
+            })
             .add_modifier(Modifier::BOLD),
     );
-
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let mut dragged_family = HashSet::new();
+    if let Some((preview, _)) = drag {
+        entries = preview;
+        if let Some(source) = state.dragged_workspace_id {
+            dragged_family = family_ids(snapshot, &entries, source);
+        }
+    }
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -325,7 +349,7 @@ pub(crate) fn render_sidebar(
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
-                    workspace_rows(
+                    let rows = workspace_rows(
                         workspace,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
                         displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups),
@@ -333,8 +357,15 @@ pub(crate) fn render_sidebar(
                         &config.spaces,
                     )
                     .len()
-                    .max(1)
-                    .min(u16::MAX as usize) as u16
+                    .max(1);
+                    let agents = super::space_agents::space_agent_lines(
+                        snapshot,
+                        workspace,
+                        state.collapsed_groups,
+                        config,
+                    )
+                    .len();
+                    (rows + agents).min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
         })
@@ -389,7 +420,16 @@ pub(crate) fn render_sidebar(
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
         let tab_jobs = displayed_workspace_tab_jobs(snapshot, workspace, state.collapsed_groups);
         let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
+        let agent_lines = super::space_agents::space_agent_lines(
+            snapshot,
+            workspace,
+            state.collapsed_groups,
+            config,
+        );
+        let row_height = own_rows
+            .saturating_add(agent_lines.len().min(u16::MAX as usize) as u16)
+            .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
         }
@@ -397,11 +437,9 @@ pub(crate) fn render_sidebar(
         let selected = state.selected_workspace_id.is_some_and(|target| {
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
-        let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+        let dragged = dragged_family.contains(workspace.workspace_id.as_str());
         if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
-        } else if dragged {
-            buffer.set_style(rect, Style::default().bg(palette.surface1));
         } else if workspace.focused {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
@@ -418,6 +456,32 @@ pub(crate) fn render_sidebar(
             dragged,
             palette,
         );
+        if dragged {
+            // An accent bar marks the lifted block; the selection grey stays
+            // for the selection.
+            for row in rect.y..rect.bottom() {
+                put_text(
+                    buffer,
+                    rect.x,
+                    row,
+                    1,
+                    "▌",
+                    Style::default().fg(palette.accent),
+                );
+            }
+        }
+        hits.space_agents
+            .extend(super::space_agents::render_space_agent_lines(
+                buffer,
+                Rect::new(
+                    rect.x,
+                    rect.y.saturating_add(own_rows),
+                    rect.width,
+                    rect.height.saturating_sub(own_rows),
+                ),
+                &agent_lines,
+                config,
+            ));
         let group_toggle = render_parent_group_toggle(
             buffer,
             rect,
@@ -443,20 +507,6 @@ pub(crate) fn render_sidebar(
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.workspace_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
-    }
-
-    if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
-        *row >= workspace_area.y.saturating_add(1)
-            && *row < workspace_area.bottom().saturating_sub(1)
-    }) {
-        put_text(
-            buffer,
-            body.x,
-            row,
-            body.width,
-            &"─".repeat(body.width as usize),
-            Style::default().fg(palette.accent),
-        );
     }
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
@@ -551,6 +601,102 @@ pub(crate) fn render_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// `entries` as the drag would leave them: the dragged space and its
+/// indented worktrees moved before `before`, or to the end. `None` when the
+/// dragged space or `before` is not a top-level entry.
+fn entries_with_drag(
+    snapshot: &ClientShellSnapshot,
+    entries: &[WorkspaceEntry],
+    source: &str,
+    before: Option<&str>,
+) -> Option<Vec<WorkspaceEntry>> {
+    let id = |entry: &WorkspaceEntry| {
+        snapshot
+            .workspaces
+            .get(entry.index)
+            .map(|workspace| workspace.workspace_id.as_str())
+    };
+    let start = entries
+        .iter()
+        .position(|entry| !entry.indented && id(entry) == Some(source))?;
+    let end = entries[start + 1..]
+        .iter()
+        .position(|entry| !entry.indented)
+        .map_or(entries.len(), |offset| start + 1 + offset);
+    let mut rest = entries.to_vec();
+    let family = rest.drain(start..end).collect::<Vec<_>>();
+    let at = match before {
+        Some(before) => rest
+            .iter()
+            .position(|entry| !entry.indented && id(entry) == Some(before))?,
+        None => rest.len(),
+    };
+    rest.splice(at..at, family);
+    Some(rest)
+}
+
+/// Ids of the dragged space and its indented worktrees.
+fn family_ids<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    entries: &[WorkspaceEntry],
+    source: &str,
+) -> HashSet<&'a str> {
+    let mut ids = HashSet::new();
+    let mut inside = false;
+    for entry in entries {
+        let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+            continue;
+        };
+        if !entry.indented {
+            inside = workspace.workspace_id == source;
+        }
+        if inside {
+            ids.insert(workspace.workspace_id.as_str());
+        }
+    }
+    ids
+}
+
+/// `herdr → before try-roguix`, `herdr → end` or `no change · Esc`; the
+/// sidebar is narrow, so the words are few.
+fn drag_hint(
+    snapshot: &ClientShellSnapshot,
+    entries: &[WorkspaceEntry],
+    preview: &[WorkspaceEntry],
+    source: &str,
+) -> String {
+    let order = |entries: &[WorkspaceEntry]| {
+        entries
+            .iter()
+            .filter(|entry| !entry.indented)
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>()
+    };
+    let (before, after) = (order(entries), order(preview));
+    if before == after {
+        return "no change · Esc".to_owned();
+    }
+    let label = |index: usize| {
+        snapshot
+            .workspaces
+            .get(index)
+            .map_or("?", |workspace| workspace.label.as_str())
+    };
+    let Some(position) = after.iter().position(|index| {
+        snapshot
+            .workspaces
+            .get(*index)
+            .is_some_and(|workspace| workspace.workspace_id == source)
+    }) else {
+        return "no change · Esc".to_owned();
+    };
+    let name = label(after[position]);
+    match after.get(position + 1) {
+        Some(next) => format!("{name} → before {}", label(*next)),
+        None => format!("{name} → end"),
+    }
 }
 
 pub(crate) fn workspace_entries(
@@ -766,7 +912,7 @@ pub(in crate::client::shell) fn displayed_workspace_tab_jobs(
 
 /// The workspace itself, or every workspace of its group when it is the
 /// collapsed parent row that stands for them.
-fn displayed_workspaces<'a>(
+pub(in crate::client::shell) fn displayed_workspaces<'a>(
     snapshot: &'a ClientShellSnapshot,
     workspace: &'a ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
@@ -903,8 +1049,6 @@ pub(in crate::client::shell) fn render_workspace_rows(
 
     let background = if selected {
         Some(workspace_selection_background(palette))
-    } else if dragged {
-        Some(palette.surface1)
     } else if focused {
         Some(workspace_active_background(palette, navigating))
     } else {

@@ -971,6 +971,10 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
+    /// Ask before closing a tab, pane or workspace that has running work: a
+    /// tab marked running (e.g. a herdr-job), a working or blocked agent, or a
+    /// program the shell started. Independent of `confirm_close`. Default: true.
+    pub confirm_close_running: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
     pub prompt_new_tab_name: bool,
     /// Ask for a workspace name before interactive creation. Default: false.
@@ -1223,6 +1227,7 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
+            confirm_close_running: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             pane_borders: PaneBordersConfig::Auto,

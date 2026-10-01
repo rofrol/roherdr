@@ -383,14 +383,25 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
         state.chrome_drag,
         Some(ClientChromeDrag::Workspace {
             ref source_workspace_id,
-            target: Some((None, _)),
+            target: Some(None),
+            ..
         }) if source_workspace_id == "ws_1"
     ));
-    let frame = state.compose(106, 24).expect("workspace drop indicator");
-    assert!(frame
-        .cells
-        .chunks(frame.width as usize)
-        .any(|row| row.iter().take(20).any(|cell| cell.symbol == "─")));
+    let frame = state.compose(106, 24).expect("live drag preview");
+    let rows = frame_rows(&frame);
+    assert!(rows[0].contains("client-shell → end"), "{}", rows[0]);
+    // The preview draws the dragged space last, marked with an accent bar.
+    let dragged = state
+        .hits
+        .workspaces
+        .last()
+        .expect("dragged space drawn last");
+    assert_eq!(dragged.workspace_id, "ws_1");
+    assert!(
+        rows[dragged.rect.y as usize].starts_with('▌'),
+        "{}",
+        rows[dragged.rect.y as usize]
+    );
 
     let release =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -1739,4 +1750,71 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(repaint);
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
+}
+
+#[test]
+fn a_dragged_space_passes_a_neighbour_at_its_middle_and_says_no_change_at_home() {
+    let mut projected = snapshot();
+    for index in 2..=3 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("three workspaces");
+    let first = state.hits.workspaces[0].rect;
+    let second = state.hits.workspaces[1].rect;
+    let mouse = |kind, row| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: first.x + 2,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    let target = |state: &ClientShellState| match &state.chrome_drag {
+        Some(ClientChromeDrag::Workspace { target, .. }) => target.clone(),
+        _ => panic!("dragging"),
+    };
+
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        first.y,
+    )]);
+    // One row down, still above the second space's middle: no change.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        first.y + 1,
+    )]);
+    assert_eq!(target(&state), Some(Some("ws_2".into())));
+    let frame = state.compose(106, 24).expect("no-change preview");
+    assert!(frame_rows(&frame)[0].contains("no change"));
+
+    // Down by the second space's height: the block has passed it.
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        first.y + second.height,
+    )]);
+    assert_eq!(target(&state), Some(Some("ws_3".into())));
+    let frame = state.compose(106, 24).expect("moved preview");
+    assert!(frame_rows(&frame)[0].contains("client-shell → before"));
+
+    // Esc cancels: nothing moves, and the pane does not get the key.
+    let cancelled = state.handle_input_bytes(b"\x1b");
+    assert!(state.chrome_drag.is_none());
+    let released = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        first.y + second.height,
+    )]);
+    assert!(cancelled.actions.iter().chain(&released.actions).all(
+        |action| !matches!(action, ClientShellAction::Endpoint { request, .. }
+            if matches!(request.method, crate::api::schema::Method::WorkspaceMove(_)
+                | crate::api::schema::Method::WorkspaceMoveBlock(_)))
+    ));
+    assert!(cancelled.requests.is_empty());
 }

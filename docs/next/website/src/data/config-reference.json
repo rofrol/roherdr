@@ -528,6 +528,18 @@
           "type": "boolean",
           "default": "true",
           "description": "Show the OpenRouter credit balance and API key spend. Hidden unless a key is found in OPENROUTER_API_KEY or usage.auth_file. When the credits endpoint refuses the key, its remaining limit stands in for the account balance."
+        },
+        {
+          "key": "usage.kimi",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the Kimi (Moonshot) prepaid balance. Hidden unless a key is found in MOONSHOT_API_KEY or under \"kimi\" in usage.auth_file."
+        },
+        {
+          "key": "usage.kimi_host",
+          "type": "string",
+          "default": "\"api.moonshot.ai\"",
+          "description": "Moonshot API host for the Kimi balance: api.moonshot.ai (USD) or api.moonshot.cn (CNY). The two platforms are separate accounts."
         }
       ]
     },
@@ -1007,6 +1019,12 @@
           "description": "Ask for confirmation before closing a workspace."
         },
         {
+          "key": "ui.confirm_close_running",
+          "type": "boolean",
+          "default": "true",
+          "description": "Ask before closing a tab, pane or workspace with running work: a tab marked running, a working or blocked agent, or a program the shell started. Independent of `ui.confirm_close`."
+        },
+        {
           "key": "ui.prompt_new_tab_name",
           "type": "boolean",
           "default": "true",
@@ -1147,6 +1165,12 @@
           "type": "integer",
           "default": "0",
           "description": "Blank terminal rows between worktree groups and unrelated top-level Spaces. Worktree parents and their indented children remain packed."
+        },
+        {
+          "key": "ui.sidebar.spaces.agents",
+          "type": "boolean",
+          "default": "false",
+          "description": "Experimental. List each Space's agents under it: a line with the agent's state and task, and a line with its herdr-job counts when it has jobs."
         },
         {
           "key": "ui.sidebar.spaces.rows",

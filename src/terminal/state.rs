@@ -148,6 +148,8 @@ pub struct TerminalState {
     /// Name of the process group leading the pane's terminal, e.g. `zsh` or
     /// `lazygit`.
     pub foreground_program: Option<String>,
+    /// Whether the foreground program is the pane's own shell.
+    foreground_program_is_shell: bool,
     foreground_program_changed_at: Option<Instant>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
@@ -191,6 +193,7 @@ impl TerminalState {
             terminal_title: None,
             terminal_title_changed_at: None,
             foreground_program: None,
+            foreground_program_is_shell: false,
             foreground_program_changed_at: None,
             manual_label: None,
             agent_name: None,
@@ -301,12 +304,14 @@ impl TerminalState {
     pub(crate) fn set_foreground_program(
         &mut self,
         program: Option<String>,
+        shell: bool,
         observed_at: Instant,
     ) -> bool {
-        if self.foreground_program == program {
+        if self.foreground_program == program && self.foreground_program_is_shell == shell {
             return false;
         }
         self.foreground_program = program;
+        self.foreground_program_is_shell = shell;
         self.foreground_program_changed_at = Some(observed_at);
         self.revision = self.revision.wrapping_add(1);
         true
@@ -331,6 +336,15 @@ impl TerminalState {
             }
             _ => Some(title),
         }
+    }
+
+    /// The program the pane's shell started and that still leads its
+    /// terminal, e.g. a build or `lazygit`; closing the pane would kill it.
+    /// `None` while the shell itself is in the foreground.
+    pub(crate) fn running_program(&self) -> Option<&str> {
+        self.foreground_program
+            .as_deref()
+            .filter(|_| !self.foreground_program_is_shell)
     }
 
     /// What runs in the terminal, for naming the tab that shows it: the pane's
@@ -2541,7 +2555,7 @@ mod tests {
         assert_eq!(terminal.running_label(), None);
 
         let started = Instant::now();
-        terminal.set_foreground_program(Some("zsh".into()), started);
+        terminal.set_foreground_program(Some("zsh".into()), true, started);
         assert_eq!(terminal.running_label().as_deref(), Some("zsh"));
 
         terminal.set_terminal_title(Some("~/repo".into()));
@@ -2555,11 +2569,27 @@ mod tests {
     }
 
     #[test]
+    fn running_program_is_only_what_the_shell_started() {
+        let mut terminal = test_terminal();
+        assert_eq!(terminal.running_program(), None);
+
+        terminal.set_foreground_program(Some("zsh".into()), true, Instant::now());
+        assert_eq!(terminal.running_program(), None);
+
+        terminal.set_foreground_program(Some("cargo".into()), false, Instant::now());
+        assert_eq!(terminal.running_program(), Some("cargo"));
+
+        // A nested shell has the same name but is not the pane's own shell.
+        terminal.set_foreground_program(Some("zsh".into()), false, Instant::now());
+        assert_eq!(terminal.running_program(), Some("zsh"));
+    }
+
+    #[test]
     fn program_title_goes_stale_when_a_later_program_takes_the_terminal() {
         let mut terminal = test_terminal();
         terminal.set_terminal_title(Some("notes.md - NVIM".into()));
         // A shell hook's title lands just before detection sees the program.
-        terminal.set_foreground_program(Some("nvim".into()), Instant::now());
+        terminal.set_foreground_program(Some("nvim".into()), false, Instant::now());
         assert_eq!(
             terminal.current_program_title().as_deref(),
             Some("notes.md - NVIM")
@@ -2568,6 +2598,7 @@ mod tests {
         // The shell took the terminal back long after, without retitling it.
         terminal.set_foreground_program(
             Some("zsh".into()),
+            true,
             Instant::now() + FOREGROUND_PROGRAM_TITLE_GRACE * 2,
         );
         assert_eq!(terminal.current_program_title(), None);

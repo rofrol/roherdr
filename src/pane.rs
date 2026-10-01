@@ -325,7 +325,16 @@ fn program_display_name(name: &str) -> Option<String> {
 #[derive(Default)]
 struct ForegroundProgramTracker {
     last_pgid: Option<u32>,
-    last_program: Option<String>,
+    last_program: Option<ForegroundProgram>,
+}
+
+/// The program leading a pane's terminal, and whether it is the pane's own
+/// shell (its group is the shell's) rather than something the shell started.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForegroundProgram {
+    name: String,
+    shell: bool,
 }
 
 #[cfg(unix)]
@@ -344,14 +353,18 @@ impl ForegroundProgramTracker {
         observed_at: std::time::Instant,
     ) {
         let Some(program) = self.changed_program(foreground_pgid, |pgid| {
-            foreground_program_name(shell_pid, pgid)
+            foreground_program_name(shell_pid, pgid).map(|name| ForegroundProgram {
+                name,
+                shell: pgid == shell_pid,
+            })
         }) else {
             return;
         };
         if let Err(e) = state_events
             .send(AppEvent::ForegroundProgramChanged {
                 pane_id,
-                program: Some(program),
+                program: Some(program.name),
+                shell: program.shell,
                 observed_at,
             })
             .await
@@ -369,8 +382,8 @@ impl ForegroundProgramTracker {
     fn changed_program(
         &mut self,
         foreground_pgid: Option<u32>,
-        lookup: impl FnOnce(u32) -> Option<String>,
-    ) -> Option<String> {
+        lookup: impl FnOnce(u32) -> Option<ForegroundProgram>,
+    ) -> Option<ForegroundProgram> {
         let pgid = foreground_pgid.filter(|pgid| self.last_pgid != Some(*pgid))?;
         // A failed lookup (the group is still starting or already gone) is
         // retried on the next tick instead of being remembered for the group.
@@ -4137,34 +4150,40 @@ mod tests {
     #[test]
     fn foreground_program_tracker_names_each_new_program_once() {
         let mut tracker = ForegroundProgramTracker::default();
-        let name = |program: &'static str| move |_: u32| Some(program.to_string());
+        let name = |program: &'static str| {
+            move |_: u32| {
+                Some(ForegroundProgram {
+                    name: program.to_string(),
+                    shell: program == "zsh",
+                })
+            }
+        };
+        let named = |program: Option<ForegroundProgram>| program.map(|program| program.name);
 
-        assert_eq!(tracker.changed_program(None, name("zsh")), None);
+        assert_eq!(named(tracker.changed_program(None, name("zsh"))), None);
         assert_eq!(
-            tracker.changed_program(Some(10), name("zsh")).as_deref(),
+            named(tracker.changed_program(Some(10), name("zsh"))).as_deref(),
             Some("zsh")
         );
         assert_eq!(
-            tracker.changed_program(Some(10), |_| panic!("same group is not looked up")),
+            named(tracker.changed_program(Some(10), |_| panic!("same group is not looked up"))),
             None
         );
         assert_eq!(
-            tracker
-                .changed_program(Some(20), name("lazygit"))
-                .as_deref(),
+            named(tracker.changed_program(Some(20), name("lazygit"))).as_deref(),
             Some("lazygit")
         );
         // A failed lookup leaves the group to be retried on the next tick.
-        assert_eq!(tracker.changed_program(Some(10), |_| None), None);
+        assert_eq!(named(tracker.changed_program(Some(10), |_| None)), None);
         assert_eq!(
-            tracker.changed_program(Some(10), name("zsh")).as_deref(),
+            named(tracker.changed_program(Some(10), name("zsh"))).as_deref(),
             Some("zsh")
         );
 
         // After a reset the group is looked up again, but an unchanged program
         // is not published twice.
         tracker.reset();
-        assert_eq!(tracker.changed_program(Some(10), name("zsh")), None);
+        assert_eq!(named(tracker.changed_program(Some(10), name("zsh"))), None);
     }
 
     #[cfg(unix)]

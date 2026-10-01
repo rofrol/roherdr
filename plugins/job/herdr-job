@@ -172,30 +172,68 @@ def set_final_tab_status(meta, code):
             return
 
 
-def reconcile_tabs():
-    """Give every tab still marked running whose job has ended its final status.
+def job_labels(meta):
+    """The labels a job's tab carries: herdr builds without tab statuses get
+    the state icon in the label."""
+    name = short(meta["name"], 30)
+    return {name} if meta.get("tab_status") else {f"{mark} {name}" for mark in "⧖✓✗"}
+
+
+def job_tabs(tabs):
+    """Maps each open tab to the job that owns it, from `tabs` (tab id → tab).
 
     Tab ids can come back after a restart, so only the newest job of a tab
     decides, and only while the tab still carries that job's label: a job
-    starting right now may hold a reused id before its meta.json exists. A
-    job without an `exit` file that is no longer running (lost) is marked
-    failed, never succeeded."""
-    try:
-        running = {tab["tab_id"]: tab.get("label") for tab in list_tabs() if tab.get("status") == "running"}
-    except (SystemExit, ValueError, KeyError):
-        return
+    starting right now may hold a reused id before its meta.json exists, and
+    a label the user changed means the tab is theirs now."""
     newest = {}
     for path, meta in all_jobs():
         tab_id = meta.get("tab_id")
-        if tab_id in running and meta.get("tab_status"):
-            if tab_id not in newest or meta["created"] > newest[tab_id][1]["created"]:
-                newest[tab_id] = (path, meta)
-    for tab_id, (path, meta) in newest.items():
-        if running[tab_id] != short(meta["name"], 30):
+        if tab_id in tabs and (tab_id not in newest or meta["created"] > newest[tab_id][1]["created"]):
+            newest[tab_id] = (path, meta)
+    return {tab_id: job for tab_id, job in newest.items() if tabs[tab_id].get("label") in job_labels(job[1])}
+
+
+def close_due(meta, st):
+    return st == "ok" and not meta.get("keep") and time.time() - meta.get("ended", 0) >= CLOSE_OK_AFTER_S
+
+
+def close_job_tab(meta):
+    """Close a succeeded job's tab. A live handoff can leave the server
+    unreachable for a while, so retry with backoff; stop once the tab is gone
+    or no longer this job's. `reconcile_tabs` closes whatever still slips
+    through."""
+    for delay in (0, 1, 2, 4, 8, 15, 30):
+        time.sleep(delay)
+        try:
+            tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+        except (SystemExit, ValueError, KeyError):
             continue
+        owner = job_tabs(tabs).get(meta["tab_id"])
+        if not owner or owner[1]["id"] != meta["id"]:
+            return
+        if herdr_ok("tab", "close", meta["tab_id"]):
+            return
+
+
+def reconcile_tabs():
+    """Repair job tabs the job's own last herdr calls missed, e.g. during a
+    live handoff: a tab still marked running whose job has ended gets its
+    final status, and a succeeded job's tab closes as it would have (unless
+    `--keep`). A job without an `exit` file that is no longer running (lost)
+    is marked failed, never succeeded."""
+    try:
+        tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    except (SystemExit, ValueError, KeyError):
+        return
+    for tab_id, (path, meta) in job_tabs(tabs).items():
         st, code = status(path, meta)
-        if st != "running":
+        if st == "running":
+            continue
+        if meta.get("tab_status") and tabs[tab_id].get("status") == "running":
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
+        if close_due(meta, st):
+            herdr_ok("tab", "close", tab_id)
 
 
 def update_owner_token(owner_pane):
@@ -444,6 +482,9 @@ def cmd_exec(args):
         )
 
         def forward(signum, _frame):
+            # Once reaped, the job's process group id may belong to another process.
+            if proc.returncode is not None:
+                return
             try:
                 os.killpg(proc.pid, signum)
             except ProcessLookupError:
@@ -478,7 +519,7 @@ def cmd_exec(args):
         # The log stays in the state dir and the sidebar keeps ✓; the tab is noise now.
         print(f"closing this tab in {CLOSE_OK_AFTER_S} s (herdr-job run --keep leaves it open)", flush=True)
         time.sleep(CLOSE_OK_AFTER_S)
-        herdr("tab", "close", meta["tab_id"], check=False)
+        close_job_tab(meta)
     footer.release()
     sys.exit(code)
 
@@ -535,13 +576,19 @@ def cmd_log(args):
 def cmd_clean(args):
     owners = set()
     here = os.environ.get("HERDR_PANE_ID")
+    tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    owned = job_tabs(tabs)
     for path, meta in all_jobs():
         if not args.all and meta.get("owner_pane") != here:
             continue
         st, _ = status(path, meta)
         if st == "running":
             continue
-        herdr("tab", "close", meta["tab_id"], check=False)
+        # A reused tab id or a renamed tab is not this job's to close.
+        tab_id = meta.get("tab_id")
+        if tab_id in owned and owned[tab_id][0] == path and not herdr_ok("tab", "close", tab_id):
+            print(f"herdr-job: could not close tab {tab_id} of {meta['id']}; keeping the job", file=sys.stderr)
+            continue
         owners.add(meta.get("owner_pane"))
         for child in path.iterdir():
             child.unlink()

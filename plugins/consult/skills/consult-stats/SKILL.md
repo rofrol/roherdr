@@ -36,7 +36,10 @@ Claude is scored too, once per round (all consult calls on the same question), w
   file). Counting them afterwards is biased — the models' answers leak into what you "already knew".
 - After triage: `--findings` your own claims; `--accepted` how many survived verification; `--refuted` your claims
   disproved by a consulted model or by verification (your errors); `--unique` accepted ones no consulted model had; `--missed` accepted
-  findings of consulted models you did not have. `--model` = your exact model id (e.g. claude-opus-5-5).
+  findings of consulted models you did not have. `--model` = your exact model id (e.g. claude-opus-5-5), always:
+  without it the entry says `unknown`. The effort comes from `$CLAUDE_EFFORT` (set by Claude Code) unless you pass
+  `--effort`; the entry also records where the effort came from and the Claude Code version. The coordinator table
+  groups by `model@effort`.
 - `--note`: what you got wrong or missed (e.g. "assumed MBID stable across releases; missed video recordings").
 - Log it even for a single-model round. Re-running `self` with the same round (or calls) replaces the entry.
   `recent` lists rated calls that have no coordinator entry yet.

@@ -77,6 +77,9 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
 - [**relaunch**](plugins/relaunch/README.md): reruns the programs panes were
   running (lazygit, editors, ...) after a server restart or reboot; herdr
   itself brings them back as empty shells.
+- [**restart**](plugins/restart/README.md): restarts idle Claude and pi
+  agents in place after they update and resumes their sessions, keeping the
+  flags they were started with.
 - [**consult**](plugins/consult/README.md): `gpt`, `gemini` and `deepseek`
   skills that let a coding agent ask another model for a second opinion, and
   `consult-stats`, which logs every call and rates which models helped.

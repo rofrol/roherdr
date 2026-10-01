@@ -42,6 +42,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) prompt_new_tab_name: bool,
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
+    pub(super) confirm_close_running: bool,
     pub(super) mouse_capture: bool,
     pub(super) mouse_scroll_lines: usize,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
@@ -98,6 +99,8 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    /// Agent and job lines under a space (`ui.sidebar.spaces.agents`), by pane.
+    pub(super) space_agents: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -190,6 +193,9 @@ pub(super) struct ClientWorkspacePress {
 pub(super) struct ClientTabPress {
     pub(super) tab_id: String,
     pub(super) workspace_id: String,
+    /// Pressed in the main row, not the second row (where a parent also has
+    /// its own entry).
+    pub(super) main_row: bool,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
 }
@@ -222,7 +228,10 @@ pub(super) enum ClientChromeDrag {
     },
     Workspace {
         source_workspace_id: String,
-        target: Option<(Option<String>, u16)>,
+        /// Where the space would land: before this space, or `None` for the end.
+        target: Option<Option<String>>,
+        /// Rows between the dragged block's top and the row it was grabbed at.
+        grab_offset: u16,
     },
     PaneSplit {
         hit: PaneSplitHit,
@@ -585,8 +594,12 @@ pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: String,
     pub(super) close_group: bool,
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
+    /// A single pane to close instead of the tab or workspace.
+    pub(super) pane_target: Option<String>,
     pub(super) title: String,
     pub(super) detail: String,
+    /// The running work the close would stop, e.g. `build marked running`.
+    pub(super) running: Option<String>,
 }
 
 #[derive(Debug)]
@@ -907,6 +920,10 @@ pub(crate) struct ClientShellState {
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
+    /// Last focused tab of each tab group, by endpoint and the group's
+    /// top-level tab. Kept by this client, so one client's navigation never
+    /// moves another's.
+    pub(super) last_group_tabs: HashMap<(ClientEndpointId, String), String>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
@@ -1086,6 +1103,7 @@ impl ClientShellState {
             chrome_drag: None,
             workspace_press: None,
             tab_press: None,
+            last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
             workspace_scroll: 0,
@@ -1628,6 +1646,7 @@ impl ClientShellState {
             }
         }
         self.snapshot = Some(snapshot);
+        self.remember_focused_group_tab();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
