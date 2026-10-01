@@ -383,6 +383,80 @@ mod tests {
         assert!(state.pending_notifications.is_empty());
     }
 
+    fn system_toast_effect(terminal_title: Option<&str>) -> Vec<ClientShellNotificationEffect> {
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.toast_delivery = crate::config::ToastDelivery::System;
+        config.toast_delay_seconds = 0;
+        let mut state = ClientShellState::new(config);
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.agents.push(crate::protocol::ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_2".into(),
+            name: Some("claude".into()),
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: terminal_title.map(|title| format!("✳ {title}")),
+            terminal_title_stripped: terminal_title.map(str::to_owned),
+            agent_status: crate::api::schema::AgentStatus::Blocked,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        });
+        state.set_snapshot(Box::new(snapshot));
+        let event = SemanticNotification {
+            kind: SemanticNotificationKind::NeedsAttention,
+            title: "claude needs attention".into(),
+            body: Some("repo · 1 · tab 2".into()),
+            sound: None,
+            agent: Some("claude".into()),
+            workspace_id: Some("ws_1".into()),
+            tab_id: Some("tab_2".into()),
+            pane_id: Some("pane_1".into()),
+            position: None,
+        };
+        state
+            .receive_notification(&ClientEndpointId::Local, event, std::time::Instant::now())
+            .0
+    }
+
+    #[test]
+    fn system_toast_shows_agent_task_with_context_subtitle_and_click_target() {
+        let effects = system_toast_effect(Some("Fix\tthe  login\nbug"));
+        let [ClientShellNotificationEffect::System {
+            title,
+            subtitle,
+            body,
+            click_target,
+        }] = effects.as_slice()
+        else {
+            panic!("expected one system notification, got {}", effects.len());
+        };
+        assert_eq!(title, "claude needs attention");
+        assert_eq!(subtitle.as_deref(), Some("repo · 1 · tab 2"));
+        assert_eq!(body.as_deref(), Some("Fix the login bug"));
+        assert_eq!(
+            click_target,
+            &Some(ClientNotificationClickTarget {
+                pane_id: "pane_1".into(),
+                tab_id: Some("tab_2".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn system_toast_without_agent_task_keeps_context_as_body() {
+        let effects = system_toast_effect(Some("   "));
+        let [ClientShellNotificationEffect::System { subtitle, body, .. }] = effects.as_slice()
+        else {
+            panic!("expected one system notification");
+        };
+        assert_eq!(subtitle, &None);
+        assert_eq!(body.as_deref(), Some("repo · 1 · tab 2"));
+    }
+
     #[test]
     fn retiring_one_endpoint_preserves_other_endpoint_notifications() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -441,7 +515,7 @@ mod tests {
         );
         assert_eq!(state.queued_notifications.len(), 1);
 
-        state.tick_notifications(now + std::time::Duration::from_secs(5));
+        state.tick_notifications(now + std::time::Duration::from_secs(8));
 
         assert_eq!(
             state

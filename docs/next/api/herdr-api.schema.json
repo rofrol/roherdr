@@ -4366,6 +4366,16 @@
           ],
           "type": "string"
         },
+        "UsageReadParams": {
+          "properties": {
+            "refresh": {
+              "default": false,
+              "description": "Ask the server to start a refresh now; the response still returns cached values.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "WorkspaceCloseParams": {
           "properties": {
             "close_group": {
@@ -6097,6 +6107,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "usage.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/UsageReadParams"
             }
           },
           "required": [
@@ -9149,6 +9175,98 @@
             }
           ]
         },
+        "ProviderUsage": {
+          "properties": {
+            "balances": {
+              "default": [],
+              "description": "Prepaid balances, one per currency.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageBalance"
+              },
+              "type": "array"
+            },
+            "label": {
+              "description": "Human-readable provider name.",
+              "type": "string"
+            },
+            "message": {
+              "description": "Error or hint for a status other than `ok`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "notes": {
+              "default": [],
+              "description": "Extra provider-specific facts for detail views.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "observed_at": {
+              "description": "Unix seconds of the last successful observation.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "plan": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "description": "Stable provider id such as `claude`, `codex`, `gemini`, `deepseek`, or `openrouter`.",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/ProviderUsageStatus"
+            },
+            "windows": {
+              "default": [],
+              "description": "Rate-limit windows in provider order.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageWindow"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "provider",
+            "label",
+            "status"
+          ],
+          "type": "object"
+        },
+        "ProviderUsageStatus": {
+          "oneOf": [
+            {
+              "enum": [
+                "ok"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "pending",
+              "description": "No observation has completed yet.",
+              "type": "string"
+            },
+            {
+              "const": "error",
+              "description": "The latest refresh failed; windows and balances keep the last good values.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A future status this client does not understand.",
+              "type": "string"
+            }
+          ]
+        },
         "ReadFormat": {
           "enum": [
             "text",
@@ -10030,6 +10148,22 @@
             },
             {
               "properties": {
+                "type": {
+                  "const": "usage_read",
+                  "type": "string"
+                },
+                "usage": {
+                  "$ref": "#/schemas/success_response/$defs/UsageReport"
+                }
+              },
+              "required": [
+                "type",
+                "usage"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "details": {
                   "$ref": "#/schemas/success_response/$defs/IntegrationInstallResult"
                 },
@@ -10570,6 +10704,88 @@
             "focused",
             "pane_count",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "UsageBalance": {
+          "properties": {
+            "currency": {
+              "type": "string"
+            },
+            "granted": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "topped_up": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "total": {
+              "description": "Decimal amount as reported by the provider.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "currency",
+            "total"
+          ],
+          "type": "object"
+        },
+        "UsageReport": {
+          "description": "Latest subscription/API allowance observed for each configured provider.",
+          "properties": {
+            "enabled": {
+              "description": "False when usage polling is disabled in the server config.",
+              "type": "boolean"
+            },
+            "providers": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ProviderUsage"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "enabled",
+            "providers"
+          ],
+          "type": "object"
+        },
+        "UsageWindow": {
+          "properties": {
+            "id": {
+              "description": "Stable window id such as `five_hour` or `weekly`.",
+              "type": "string"
+            },
+            "label": {
+              "description": "Short label such as `5h` or `week`.",
+              "type": "string"
+            },
+            "resets_at": {
+              "description": "Unix seconds when the window resets.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "used_percent": {
+              "description": "Consumed share of the window allowance, 0-100.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "used_percent"
           ],
           "type": "object"
         },

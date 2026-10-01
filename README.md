@@ -1,5 +1,69 @@
 # herdr
 
+## Fork changes
+
+Personal fork of [herdrdev/herdr](https://github.com/herdrdev/herdr); these
+commits sit on top of upstream `master` and are not meant for upstream PRs.
+
+- **Usage widget.** A sidebar footer below the agents list shows how much of
+  your coding-agent allowance is used: Anthropic/Claude (`AN`) and
+  OpenAI/Codex (`OA`) 5-hour and weekly limits with time to reset, the
+  Google/Gemini (`GO`) weekly limit, and the DeepSeek (`DS`) and OpenRouter
+  (`OR`) prepaid balances. Click it for details: reset clock times, plans,
+  free Codex limit resets, and a refresh button (`r`). It is on by default; turn it off with:
+
+  ```toml
+  [usage]
+  enabled = false
+  ```
+
+  Claude uses the Claude Code login, Codex goes through `codex app-server`,
+  Gemini runs the Antigravity CLI's `agy -p /quota` (the details also show
+  Antigravity's separate Claude/GPT weekly group), DeepSeek uses its balance
+  API, OpenRouter its key and credits API (balance plus daily/weekly/monthly
+  key spend). DeepSeek and OpenRouter keys come
+  from `DEEPSEEK_API_KEY`/`OPENROUTER_API_KEY`, then `auth_file` (default
+  `~/.pi/agent/auth.json`, the pi coding agent's logins); OpenRouter is
+  hidden without a key. The server refreshes every 5 minutes
+  (`refresh_interval_secs`); set `claude`, `codex`, `gemini`, `deepseek` or
+  `openrouter` to `false` to hide a provider. All herdr instances share one
+  cache (`~/.local/state/herdr/usage-cache.json`): a recent observation is
+  reused instead of refetched, and a rate-limited provider backs off
+  (5 min doubling to 1 h) while the footer keeps its last good values.
+- **Middle click closes tabs and workspaces.** Middle-click a tab or a
+  workspace in the sidebar to close it, with the same confirmation as the
+  context menu's Close. Pane apps with mouse reporting still get middle clicks
+  inside the pane.
+- **Clickable, richer macOS notifications** (`[ui.toast] delivery = "system"`
+  with `terminal-notifier`):
+  - clicking an agent notification focuses that agent's pane
+    (`herdr agent focus`, falling back to `herdr tab focus`) and activates the
+    terminal;
+  - the message is the agent's task (its terminal title), the subtitle is the
+    workspace and tab;
+  - a new notification from the same pane replaces the previous one.
+- **terminal-notifier fixes.** Titles starting with `(`, `[`, `{`, `<` or a
+  quote no longer crash terminal-notifier, and an empty message is no longer
+  rejected; both made herdr fall back to the Script Editor notification.
+
+Outside the fork itself, my dotfiles have a local plugin,
+[relaunch](https://github.com/rofrol/dotfiles/tree/master/.config/herdr/local-plugins/relaunch),
+that reruns the programs panes were running (lazygit, editors, ...) after a
+server restart or reboot; herdr itself brings them back as empty shells.
+
+The demo video below is recorded with `scripts/fork_demo/record.sh`; see
+[scripts/fork_demo/README.md](scripts/fork_demo/README.md) to re-record it.
+
+Install from source (needs Zig 0.16.0) with `cargo install --path . --locked`.
+Don't run `herdr update`: it replaces the fork with the upstream release.
+To switch the running server to the new build without losing panes, hand it
+off live (experimental upstream), then start the client again:
+
+```sh
+herdr server live-handoff
+herdr
+```
+
 
 <p align="center">
   <img src="assets/logo.png" alt="herdr" width="100" />
@@ -24,7 +88,7 @@
 
 ---
 
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
+https://github.com/user-attachments/assets/1a9e3888-e2e0-48c5-adc8-aee87585abd2
 
 **the runtime your coding agents live on.**
 

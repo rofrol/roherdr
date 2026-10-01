@@ -1,6 +1,10 @@
 # herdr task runner
 set windows-shell := ["cmd.exe", "/d", "/s", "/c"]
 
+# Servers started by integration tests must not poll real provider usage
+# endpoints with the developer's logins.
+export HERDR_DISABLE_USAGE := "1"
+
 python := if os() == "windows" { "python" } else { "python3" }
 
 # Run tests

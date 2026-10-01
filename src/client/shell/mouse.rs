@@ -5,6 +5,32 @@ const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl ClientShellState {
+    /// Middle click on a sidebar workspace or a tab closes it through the same
+    /// confirmation path as the context menu's Close.
+    fn close_chrome_target_at(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) {
+        if !self.config.mouse_capture {
+            return;
+        }
+        let workspace_id = (!self.sidebar_collapsed)
+            .then(|| self.active_endpoint_workspace_at(point))
+            .flatten();
+        if let Some(workspace_id) = workspace_id {
+            self.request_workspace_close(workspace_id, outcome);
+            outcome.repaint = true;
+            return;
+        }
+        let tab_id = self
+            .hits
+            .tabs
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, tab_id)| tab_id.clone());
+        if let Some(tab_id) = tab_id {
+            self.request_tab_close(tab_id, outcome);
+            outcome.repaint = true;
+        }
+    }
+
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
         let (min, max) = crate::config::validated_sidebar_bounds(
             self.config.sidebar_min_width,
@@ -1723,6 +1749,7 @@ impl ClientShellState {
                     Some(ClientShellOverlay::ConfirmClose(_)) => {
                         self.accept_close_confirmation(outcome);
                     }
+                    Some(ClientShellOverlay::Usage(_)) => self.refresh_usage(outcome),
                     _ => {}
                 }
             } else if super::contains(self.hits.overlay_clear, point) {
@@ -2021,6 +2048,10 @@ impl ClientShellState {
                     }
                     return;
                 }
+                if super::contains(self.hits.usage_footer, point) {
+                    self.open_usage_overlay(outcome);
+                    return;
+                }
                 if super::contains(self.hits.agent_sort_toggle, point) {
                     let sort = match self.config.agent_panel_sort {
                         crate::config::AgentPanelSortConfig::Spaces => {
@@ -2293,7 +2324,9 @@ impl ClientShellState {
                         stripped_modifiers: crossterm::event::KeyModifiers::empty(),
                         last_event: mouse,
                     });
+                    return;
                 }
+                self.close_chrome_target_at(point, outcome);
             }
             MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
             | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}

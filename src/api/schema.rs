@@ -11,6 +11,7 @@ pub mod response;
 pub mod server;
 pub mod session;
 pub mod tabs;
+pub mod usage;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -25,6 +26,7 @@ pub use response::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
+pub use usage::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -223,6 +225,8 @@ pub enum Method {
     PaneWaitForOutput(PaneWaitForOutputParams),
     #[serde(rename = "integration.list")]
     IntegrationList(EmptyParams),
+    #[serde(rename = "usage.read")]
+    UsageRead(UsageReadParams),
     #[serde(rename = "integration.install")]
     IntegrationInstall(IntegrationInstallParams),
     #[serde(rename = "integration.uninstall")]

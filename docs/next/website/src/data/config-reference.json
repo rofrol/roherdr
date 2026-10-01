@@ -478,6 +478,60 @@
       ]
     },
     {
+      "id": "usage",
+      "title": "Usage",
+      "keys": [
+        {
+          "key": "usage.enabled",
+          "type": "boolean",
+          "default": "true",
+          "description": "Poll provider subscription and API allowance in the background and show it in a sidebar footer below the agents list. Click the footer for details. Polling contacts provider services; set it to false to turn it off."
+        },
+        {
+          "key": "usage.refresh_interval_secs",
+          "type": "integer",
+          "default": "300",
+          "description": "Seconds between background refreshes. Values below 60 are raised to 60."
+        },
+        {
+          "key": "usage.claude",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show Claude 5-hour and weekly limits using the Claude Code login (~/.claude/.credentials.json or the macOS keychain). The Claude usage endpoint is undocumented and may change."
+        },
+        {
+          "key": "usage.codex",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show Codex 5-hour and weekly rate limits through the local codex app-server. Requires the codex CLI logged in with ChatGPT."
+        },
+        {
+          "key": "usage.gemini",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show Gemini weekly limits for a Google AI subscription through the Antigravity CLI (agy -p /quota), per model group (Gemini, and Claude/GPT models served by Antigravity). Requires agy on PATH and logged in; running /quota does not consume quota."
+        },
+        {
+          "key": "usage.deepseek",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the DeepSeek prepaid API balance. Requires a key from DEEPSEEK_API_KEY or usage.auth_file."
+        },
+        {
+          "key": "usage.auth_file",
+          "type": "string",
+          "default": "\"~/.pi/agent/auth.json\"",
+          "description": "JSON file mapping provider ids to API keys in the pi coding agent's auth.json layout ({\"deepseek\": {\"key\": ...}, \"openrouter\": {\"access\": ...}}). Used when the provider's environment variable is not set. An empty string disables it."
+        },
+        {
+          "key": "usage.openrouter",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the OpenRouter credit balance and API key spend. Hidden unless a key is found in OPENROUTER_API_KEY or usage.auth_file. When the credits endpoint refuses the key, its remaining limit stands in for the account balance."
+        }
+      ]
+    },
+    {
       "id": "keys",
       "title": "Keybindings",
       "keys": [

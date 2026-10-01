@@ -430,6 +430,17 @@ pub(crate) fn render_sidebar(
         }
     }
 
+    let (detail_area, usage_area) = super::usage::split_usage_footer(detail_area, state.usage);
+    if let Some(report) = state.usage.filter(|_| !usage_area.is_empty()) {
+        super::usage::render_usage_footer(
+            buffer,
+            usage_area,
+            report,
+            crate::usage::now_unix(),
+            palette,
+            hits,
+        );
+    }
     super::render_agent_panel(
         buffer,
         detail_area,

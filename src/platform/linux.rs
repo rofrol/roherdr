@@ -971,6 +971,16 @@ pub fn show_desktop_notification(title: &str, body: Option<&str>) -> std::io::Re
     show_desktop_notification_with_command(title, body, |program| Command::new(program))
 }
 
+/// Show a desktop notification; `notify-send` has no subtitle or click
+/// command, so the subtitle is folded into the body.
+pub fn show_desktop_notification_with_details(
+    title: &str,
+    body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
+) -> std::io::Result<bool> {
+    show_desktop_notification(title, details.flattened_body(body).as_deref())
+}
+
 fn show_desktop_notification_with_command(
     title: &str,
     body: Option<&str>,

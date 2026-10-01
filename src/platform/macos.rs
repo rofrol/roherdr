@@ -740,30 +740,48 @@ fn unique_timestamp_nanos() -> u128 {
 /// hosting terminal on click. Fall back to built-in AppleScript notifications
 /// when it is not available.
 pub fn show_desktop_notification(title: &str, body: Option<&str>) -> std::io::Result<bool> {
-    show_desktop_notification_with_command(title, body, |program| Command::new(program))
+    show_desktop_notification_with_details(
+        title,
+        body,
+        &super::DesktopNotificationDetails::default(),
+    )
+}
+
+/// Show a native macOS notification with a subtitle, replacement group and
+/// click command. Only `terminal-notifier` supports these; the AppleScript
+/// fallback folds the subtitle into the body and ignores the rest.
+pub fn show_desktop_notification_with_details(
+    title: &str,
+    body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
+) -> std::io::Result<bool> {
+    show_desktop_notification_with_command(title, body, details, |program| Command::new(program))
 }
 
 fn show_desktop_notification_with_command(
     title: &str,
     body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
     mut command: impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
-    if show_terminal_notifier_notification(title, body, &mut command).unwrap_or(false) {
+    if show_terminal_notifier_notification(title, body, details, &mut command).unwrap_or(false) {
         return Ok(true);
     }
 
-    show_osascript_notification(title, body, &mut command)
+    show_osascript_notification(title, details.flattened_body(body).as_deref(), &mut command)
 }
 
 fn show_terminal_notifier_notification(
     title: &str,
     body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let activate_bundle_id = verified_terminal_bundle_identifier(command);
     show_terminal_notifier_notification_with_options(
         title,
         body,
+        details,
         activate_bundle_id.as_deref(),
         command,
     )
@@ -772,11 +790,12 @@ fn show_terminal_notifier_notification(
 fn show_terminal_notifier_notification_with_options(
     title: &str,
     body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
     activate_bundle_id: Option<&str>,
     command: &mut impl FnMut(&str) -> Command,
 ) -> std::io::Result<bool> {
     let mut cmd = command("terminal-notifier");
-    build_terminal_notifier_command(&mut cmd, title, body, activate_bundle_id);
+    build_terminal_notifier_command(&mut cmd, title, body, details, activate_bundle_id);
     run_notification_command(cmd)
 }
 
@@ -784,13 +803,84 @@ fn build_terminal_notifier_command(
     cmd: &mut Command,
     title: &str,
     body: Option<&str>,
+    details: &super::DesktopNotificationDetails,
     activate_bundle_id: Option<&str>,
 ) {
-    cmd.arg("-title").arg(title);
-    cmd.arg("-message").arg(body.unwrap_or_default());
+    cmd.arg("-title").arg(terminal_notifier_text(title));
+    if let Some(subtitle) = details.subtitle.as_deref() {
+        cmd.arg("-subtitle").arg(terminal_notifier_text(subtitle));
+    }
+    cmd.arg("-message")
+        .arg(terminal_notifier_text(body.unwrap_or_default()));
+    if let Some(group) = details.group.as_deref() {
+        cmd.arg("-group").arg(group);
+    }
+    if let Some(script) = details
+        .on_click
+        .as_ref()
+        .and_then(notification_click_shell_command)
+    {
+        cmd.arg("-execute").arg(script);
+    }
     if let Some(bundle_id) = activate_bundle_id {
         cmd.arg("-activate").arg(bundle_id);
     }
+}
+
+/// terminal-notifier reads option values through NSUserDefaults, which parses
+/// values starting (even after whitespace) with `(`, `[`, `{`, `<` or a quote
+/// as property lists (a title like `(foo)` crashes it) and treats a leading
+/// `-` as another option. It strips one leading backslash, so every displayed
+/// value gets one. An empty message is rejected, so it becomes a space.
+fn terminal_notifier_text(value: &str) -> String {
+    if value.is_empty() {
+        return "\\ ".to_owned();
+    }
+    format!("\\{value}")
+}
+
+/// Encode a click action as the `/bin/sh -c` script terminal-notifier runs on
+/// click: `ENV=.. cmd1 >/dev/null 2>&1 || ENV=.. cmd2 >/dev/null 2>&1`.
+/// Returns `None` when a value is not UTF-8 or the action has no commands.
+fn notification_click_shell_command(action: &super::NotificationClickAction) -> Option<String> {
+    let env = action
+        .env
+        .iter()
+        .map(|(key, value)| {
+            let valid_key = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                && !key.starts_with(|ch: char| ch.is_ascii_digit());
+            valid_key
+                .then(|| {
+                    value
+                        .to_str()
+                        .map(|value| format!("{key}={}", shell_quote(value)))
+                })
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let commands = action
+        .commands
+        .iter()
+        .filter(|argv| !argv.is_empty())
+        .map(|argv| {
+            let words = argv
+                .iter()
+                .map(|arg| arg.to_str().map(shell_quote))
+                .collect::<Option<Vec<_>>>()?;
+            Some(
+                env.iter()
+                    .cloned()
+                    .chain(words)
+                    .chain([">/dev/null".to_owned(), "2>&1".to_owned()])
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!commands.is_empty()).then(|| commands.join(" || "))
 }
 
 fn show_osascript_notification(
@@ -1192,6 +1282,22 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
+/// Reads a generic password from the login keychain without prompting through a TTY.
+pub(crate) fn read_keychain_generic_password(service: &str) -> Option<String> {
+    let output = crate::noninteractive_process::command("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let secret = String::from_utf8(output.stdout).ok()?;
+    let secret = secret.trim_end_matches(['\r', '\n']);
+    (!secret.is_empty()).then(|| secret.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1321,6 +1427,7 @@ mod tests {
             &mut cmd,
             "pi finished",
             Some("workspace 1"),
+            &super::super::DesktopNotificationDetails::default(),
             Some("com.mitchellh.ghostty"),
         );
         let args = cmd
@@ -1331,9 +1438,9 @@ mod tests {
             args,
             vec![
                 "-title",
-                "pi finished",
+                r"\pi finished",
                 "-message",
-                "workspace 1",
+                r"\workspace 1",
                 "-activate",
                 "com.mitchellh.ghostty"
             ]
@@ -1359,6 +1466,7 @@ mod tests {
         let shown = show_terminal_notifier_notification_with_options(
             "title",
             Some("body"),
+            &super::super::DesktopNotificationDetails::default(),
             Some("com.mitchellh.ghostty"),
             &mut command,
         )
@@ -1390,16 +1498,151 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
                 .env("HERDR_NOTIFY_ARGS", &path);
             cmd
         };
-        let shown = show_desktop_notification_with_command("title", Some("body"), &mut command)
-            .expect("osascript fallback should run");
+        let details = super::super::DesktopNotificationDetails {
+            subtitle: Some("workspace".into()),
+            ..Default::default()
+        };
+        let shown =
+            show_desktop_notification_with_command("title", Some("body"), &details, &mut command)
+                .expect("osascript fallback should run");
 
         assert!(shown);
         let args = std::fs::read_to_string(&path).expect("args file");
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             args,
-            "-e\non run argv\n-e\ndisplay notification (item 2 of argv) with title (item 1 of argv)\n-e\nend run\ntitle\nbody\n"
+            "-e\non run argv\n-e\ndisplay notification (item 2 of argv) with title (item 1 of argv)\n-e\nend run\ntitle\nworkspace — body\n"
         );
+    }
+
+    #[test]
+    fn terminal_notifier_command_includes_details_and_click_script() {
+        let details = super::super::DesktopNotificationDetails {
+            subtitle: Some("repo · 1 · (tab)".into()),
+            group: Some("herdr:/tmp/h.sock:w1:p1".into()),
+            on_click: Some(super::super::NotificationClickAction {
+                env: vec![("HERDR_SOCKET_PATH".into(), "/tmp/it's here.sock".into())],
+                commands: vec![
+                    vec![
+                        "/bin/herdr".into(),
+                        "agent".into(),
+                        "focus".into(),
+                        "w1:p1".into(),
+                    ],
+                    vec![
+                        "/bin/herdr".into(),
+                        "tab".into(),
+                        "focus".into(),
+                        "w1:t1".into(),
+                    ],
+                ],
+            }),
+        };
+        let mut cmd = Command::new("terminal-notifier");
+        build_terminal_notifier_command(
+            &mut cmd,
+            "(claude) finished",
+            Some("-fix bug"),
+            &details,
+            Some("com.mitchellh.ghostty"),
+        );
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let socket = r"HERDR_SOCKET_PATH='/tmp/it'\''s here.sock'";
+        assert_eq!(
+            args,
+            vec![
+                "-title".to_owned(),
+                r"\(claude) finished".to_owned(),
+                "-subtitle".to_owned(),
+                r"\repo · 1 · (tab)".to_owned(),
+                "-message".to_owned(),
+                r"\-fix bug".to_owned(),
+                "-group".to_owned(),
+                "herdr:/tmp/h.sock:w1:p1".to_owned(),
+                "-execute".to_owned(),
+                format!(
+                    "{socket} /bin/herdr agent focus w1:p1 >/dev/null 2>&1 || \
+                     {socket} /bin/herdr tab focus w1:t1 >/dev/null 2>&1"
+                ),
+                "-activate".to_owned(),
+                "com.mitchellh.ghostty".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn notification_click_script_runs_commands_in_order_until_one_succeeds() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-notification-click-{}-{}",
+            std::process::id(),
+            unique_timestamp_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let log = dir.join("log");
+        let action = super::super::NotificationClickAction {
+            env: vec![("HERDR_TEST_LOG".into(), log.clone().into_os_string())],
+            commands: vec![
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "echo first >> \"$HERDR_TEST_LOG\"; exit 1".into(),
+                ],
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "echo second >> \"$HERDR_TEST_LOG\"".into(),
+                ],
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "echo third >> \"$HERDR_TEST_LOG\"".into(),
+                ],
+            ],
+        };
+        let script = notification_click_shell_command(&action).expect("script");
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .expect("sh runs");
+        let logged = std::fs::read_to_string(&log).expect("log");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(status.success());
+        assert_eq!(logged, "first\nsecond\n");
+    }
+
+    #[test]
+    fn notification_click_script_rejects_invalid_env_names_and_empty_actions() {
+        let bad_env = super::super::NotificationClickAction {
+            env: vec![("A B".into(), "x".into())],
+            commands: vec![vec!["true".into()]],
+        };
+        assert_eq!(notification_click_shell_command(&bad_env), None);
+        assert_eq!(
+            notification_click_shell_command(&super::super::NotificationClickAction::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn terminal_notifier_text_always_escapes_the_first_character() {
+        for value in [
+            "(a)",
+            " (repo) · 1",
+            "[a]",
+            "{a}",
+            "<a>",
+            "\"a\"",
+            "-a",
+            "\\a",
+            "plain",
+        ] {
+            assert_eq!(terminal_notifier_text(value), format!("\\{value}"));
+        }
+        assert_eq!(terminal_notifier_text(""), "\\ ");
     }
 
     #[test]

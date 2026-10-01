@@ -523,3 +523,114 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_workspace_cl
             if params.workspace_id == "ws_1" && !params.close_group
     ));
 }
+
+fn middle_click(state: &mut ClientShellState, rect: ratatui::layout::Rect) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Middle),
+        column: rect.x + 1,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Method> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect()
+}
+
+fn snapshot_with_second_tab() -> ClientShellSnapshot {
+    let mut snapshot = snapshot();
+    snapshot.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_1".into(),
+        number: 2,
+        label: "2".into(),
+        custom_label: false,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    snapshot
+}
+
+#[test]
+fn middle_click_closes_tab_and_workspace() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.confirm_close = false;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot_with_second_tab()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    let tab = state
+        .hits
+        .tabs
+        .iter()
+        .find(|(_, tab_id)| tab_id == "tab_2")
+        .map(|(rect, _)| *rect)
+        .expect("tab_2 hit");
+    let outcome = middle_click(&mut state, tab);
+    assert!(matches!(
+        endpoint_methods(&outcome)[..],
+        [crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { ref tab_id })]
+            if tab_id == "tab_2"
+    ));
+
+    let workspace = state.hits.workspaces[0].rect;
+    let outcome = middle_click(&mut state, workspace);
+    assert!(matches!(
+        endpoint_methods(&outcome)[..],
+        [crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
+            ref workspace_id,
+            close_group: true,
+        })] if workspace_id == "ws_1"
+    ));
+}
+
+#[test]
+fn middle_click_on_workspace_asks_for_confirmation_when_enabled() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.confirm_close = true;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    let workspace = state.hits.workspaces[0].rect;
+    let outcome = middle_click(&mut state, workspace);
+    assert!(endpoint_methods(&outcome).is_empty());
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ConfirmClose(_))
+    ));
+}
+
+#[test]
+fn middle_click_does_not_close_behind_an_overlay() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.confirm_close = false;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot_with_second_tab()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let workspace = state.hits.workspaces[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: workspace.x + 2,
+        row: workspace.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.overlay.is_some());
+
+    let outcome = middle_click(&mut state, workspace);
+    assert!(!endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::WorkspaceClose(_) | crate::api::schema::Method::TabClose(_)
+    )));
+}

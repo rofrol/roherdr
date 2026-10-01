@@ -94,6 +94,22 @@ impl App {
         }
     }
 
+    /// Start, retune, or stop usage polling after a config change.
+    pub(crate) fn apply_usage_config(&mut self, config: &crate::config::UsageConfig) {
+        self.state.usage.enabled = config.enabled;
+        if !config.enabled {
+            self.usage_poller = None;
+            self.state.usage.providers.clear();
+            return;
+        }
+        match self.usage_poller.as_ref() {
+            Some(poller) => poller.reconfigure(config.clone()),
+            None => {
+                self.usage_poller = super::spawn_usage_poller(&self.policy, config, &self.event_tx);
+            }
+        }
+    }
+
     pub(crate) fn run_auto_update_check(&mut self) {
         if !background_update_check_enabled(
             self.policy.background_updates,

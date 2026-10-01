@@ -10,6 +10,7 @@ pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
 mod tabs;
+mod usage;
 mod workspaces;
 mod worktrees;
 
@@ -744,9 +745,9 @@ impl App {
         if self.state.toast != previous_toast {
             self.toast_deadline = self.state.toast.as_ref().map(|toast| {
                 let duration = match toast.kind {
-                    ToastKind::NeedsAttention => Duration::from_secs(8),
-                    ToastKind::Finished => Duration::from_secs(5),
-                    ToastKind::UpdateInstalled => Duration::from_secs(3),
+                    ToastKind::NeedsAttention => Duration::from_secs(12),
+                    ToastKind::Finished => Duration::from_secs(8),
+                    ToastKind::UpdateInstalled => Duration::from_secs(5),
                 };
                 Instant::now() + duration
             });
@@ -1217,6 +1218,7 @@ impl App {
             Method::IntegrationList(_) => {
                 return self.handle_integration_list(request.id);
             }
+            Method::UsageRead(params) => return self.handle_usage_read(request.id, params),
             Method::IntegrationInstall(params) => {
                 return self.handle_integration_install(request.id, params);
             }

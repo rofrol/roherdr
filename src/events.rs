@@ -167,6 +167,8 @@ pub enum AppEvent {
         version: String,
         install_command: String,
     },
+    /// Provider usage polling produced a new report.
+    UsageUpdated(crate::api::schema::UsageReport),
     /// Remote agent detection manifest update check finished.
     AgentDetectionManifestsUpdated {
         updated: Vec<crate::detect::manifest_update::ManifestUpdateCommit>,

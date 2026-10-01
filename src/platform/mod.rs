@@ -388,11 +388,50 @@ pub(crate) use unix_common::{
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 
+/// Optional presentation and click behavior for a desktop notification.
+///
+/// Platforms ignore the parts they cannot express; see
+/// [`DesktopNotificationDetails::flattened_body`] for a portable body.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopNotificationDetails {
+    pub subtitle: Option<String>,
+    /// Notifications sharing a group replace each other.
+    pub group: Option<String>,
+    pub on_click: Option<NotificationClickAction>,
+}
+
+impl DesktopNotificationDetails {
+    /// Body for platforms without a subtitle line: `subtitle — body`.
+    pub fn flattened_body(&self, body: Option<&str>) -> Option<String> {
+        match (self.subtitle.as_deref(), body) {
+            (Some(subtitle), Some(body)) if !body.is_empty() => {
+                Some(format!("{subtitle} — {body}"))
+            }
+            (Some(subtitle), _) => Some(subtitle.to_owned()),
+            (None, body) => body.map(str::to_owned),
+        }
+    }
+}
+
+/// Commands run when a notification is clicked, tried in order until one
+/// succeeds. `env` applies to every command.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotificationClickAction {
+    pub env: Vec<(String, std::ffi::OsString)>,
+    pub commands: Vec<Vec<std::ffi::OsString>>,
+}
+
 #[cfg(not(unix))]
 pub(crate) fn begin_cli_output() {}
 
 #[cfg(not(unix))]
 pub(crate) fn end_cli_output() {}
+
+/// Keychain-backed credentials exist only on macOS.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn read_keychain_generic_password(_service: &str) -> Option<String> {
+    None
+}
 
 #[cfg(target_os = "linux")]
 mod linux;

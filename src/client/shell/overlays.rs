@@ -79,8 +79,193 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::Usage(v) => render_usage_overlay(b, v, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
+}
+
+const USAGE_MODAL_WIDTH: u16 = 76;
+const USAGE_BAR_WIDTH: usize = 12;
+
+fn usage_overlay_lines(
+    overlay: &super::usage::ClientUsageOverlay,
+    now_unix: u64,
+    p: &Palette,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::text::{Line, Span};
+    // Paragraph patches cell styles, so clear modifiers left by the sidebar underneath.
+    let base = Style::default()
+        .bg(p.panel_bg)
+        .remove_modifier(Modifier::BOLD | Modifier::DIM);
+    let dim = base.fg(p.overlay0);
+    let Some(report) = overlay.report.as_ref() else {
+        return vec![Line::from(Span::styled(" waiting for the server…", dim))];
+    };
+    if !report.enabled {
+        return vec![Line::from(Span::styled(
+            " usage polling is disabled; set [usage] enabled = true",
+            dim,
+        ))];
+    }
+    let mut lines = Vec::new();
+    for provider in &report.providers {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        let mut heading = vec![Span::styled(
+            format!(" {}", provider.label),
+            base.fg(p.text).add_modifier(Modifier::BOLD),
+        )];
+        if let Some(plan) = provider.plan.as_deref() {
+            heading.push(Span::styled(format!(" · {plan}"), base.fg(p.overlay1)));
+        }
+        if let Some(observed_at) = provider.observed_at {
+            heading.push(Span::styled(
+                format!("  {}", super::usage::observed_age(observed_at, now_unix)),
+                dim,
+            ));
+        }
+        lines.push(Line::from(heading));
+        for window in &provider.windows {
+            let used = window.used_percent.min(100);
+            let filled = (usize::from(used) * USAGE_BAR_WIDTH).div_ceil(100);
+            let color = super::usage::used_color(used, p);
+            let mut spans = vec![
+                Span::styled(format!("   {:<11}", window.label), base.fg(p.overlay1)),
+                Span::styled("█".repeat(filled), base.fg(color)),
+                Span::styled("░".repeat(USAGE_BAR_WIDTH - filled), base.fg(p.surface1)),
+                Span::styled(format!(" {used:>3}% used"), base.fg(color)),
+            ];
+            if let Some(resets_at) = window.resets_at {
+                let mut reset = if resets_at < now_unix.saturating_add(60) {
+                    "  resetting now".to_owned()
+                } else {
+                    format!(
+                        "  resets in {}",
+                        super::usage::detailed_countdown(resets_at, now_unix)
+                    )
+                };
+                if let Some(clock) = super::usage::reset_clock(resets_at, overlay.utc_offset_secs) {
+                    reset.push_str(&format!(" ({clock})"));
+                }
+                spans.push(Span::styled(reset, dim));
+            }
+            lines.push(Line::from(spans));
+        }
+        for balance in &provider.balances {
+            let mut text = format!(
+                "   balance    {}",
+                super::usage::format_balance(&balance.total, &balance.currency)
+            );
+            let parts = [
+                ("topped up", balance.topped_up.as_deref()),
+                ("granted", balance.granted.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(label, amount)| {
+                amount.map(|amount| {
+                    format!(
+                        "{label} {}",
+                        super::usage::format_balance(amount, &balance.currency)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+            if !parts.is_empty() {
+                text.push_str(&format!(" ({})", parts.join(", ")));
+            }
+            lines.push(Line::from(Span::styled(text, base.fg(p.text))));
+        }
+        for note in &provider.notes {
+            lines.push(Line::from(Span::styled(format!("   {note}"), dim)));
+        }
+        match provider.status {
+            crate::api::schema::ProviderUsageStatus::Pending => {
+                lines.push(Line::from(Span::styled("   loading…", dim)));
+            }
+            crate::api::schema::ProviderUsageStatus::Error
+            | crate::api::schema::ProviderUsageStatus::Unknown => {
+                let message = provider.message.as_deref().unwrap_or("refresh failed");
+                lines.push(Line::from(Span::styled(
+                    format!("   ! {message}"),
+                    base.fg(p.red),
+                )));
+            }
+            crate::api::schema::ProviderUsageStatus::Ok => {}
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " no providers enabled in [usage]",
+            dim,
+        )));
+    }
+    lines
+}
+
+fn render_usage_overlay(
+    b: &mut Buffer,
+    overlay: &super::usage::ClientUsageOverlay,
+    p: &Palette,
+) -> Option<OverlayRender> {
+    let lines = usage_overlay_lines(overlay, crate::usage::now_unix(), p);
+    let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    // Border, header, gap, content, gap, footer, border.
+    let outer = popup(b.area, USAGE_MODAL_WIDTH, content_height.saturating_add(6))?;
+    let inner = panel(b, outer, p.accent, p.panel_bg)?;
+    let base = Style::default()
+        .bg(p.panel_bg)
+        .remove_modifier(Modifier::DIM);
+    put_text(
+        b,
+        inner.x.saturating_add(1),
+        inner.y,
+        inner.width.saturating_sub(2),
+        "usage",
+        base.fg(p.text).add_modifier(Modifier::BOLD),
+    );
+    let label = if overlay.refreshing {
+        " refreshing… "
+    } else {
+        " r refresh "
+    };
+    let refresh_width = display_width(label).min(inner.width);
+    let refresh = Rect::new(
+        inner.right().saturating_sub(refresh_width),
+        inner.y,
+        refresh_width,
+        1,
+    );
+    button(
+        b,
+        refresh,
+        label,
+        Style::default()
+            .fg(contrast(p))
+            .bg(p.accent)
+            .add_modifier(Modifier::BOLD)
+            .remove_modifier(Modifier::DIM),
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y.saturating_add(2),
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    ratatui::widgets::Widget::render(ratatui::widgets::Paragraph::new(lines), body, b);
+    put_text(
+        b,
+        inner.x.saturating_add(1),
+        inner.bottom().saturating_sub(1),
+        inner.width.saturating_sub(2),
+        "esc close · r refresh",
+        base.fg(p.overlay0),
+    );
+    Some(OverlayRender {
+        area: outer,
+        primary: refresh,
+        ..OverlayRender::default()
+    })
 }
 
 pub(crate) fn render_global_menu(

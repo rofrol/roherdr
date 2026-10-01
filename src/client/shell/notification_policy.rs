@@ -14,10 +14,10 @@ enum NotificationValidation {
 
 fn notification_duration(kind: SemanticNotificationKind) -> std::time::Duration {
     std::time::Duration::from_secs(match kind {
-        SemanticNotificationKind::NeedsAttention => 8,
-        SemanticNotificationKind::Finished => 5,
-        SemanticNotificationKind::UpdateInstalled => 3,
-        SemanticNotificationKind::Custom => 5,
+        SemanticNotificationKind::NeedsAttention => 12,
+        SemanticNotificationKind::Finished => 8,
+        SemanticNotificationKind::UpdateInstalled => 5,
+        SemanticNotificationKind::Custom => 8,
     })
 }
 
@@ -229,22 +229,8 @@ impl ClientShellState {
                     });
                 }
                 crate::config::ToastDelivery::System if !suppress_external => {
-                    #[cfg(windows)]
-                    let target = pending.event.pane_id.as_ref().and_then(|pane_id| {
-                        self.endpoint_boot_id(&pending.endpoint_id).map(|boot_id| {
-                            ClientSystemNotificationTarget {
-                                endpoint_id: pending.endpoint_id.clone(),
-                                boot_id: boot_id.to_owned(),
-                                pane_id: pane_id.clone(),
-                            }
-                        })
-                    });
-                    effects.push(ClientShellNotificationEffect::System {
-                        title: pending.event.title,
-                        body: pending.event.body,
-                        #[cfg(windows)]
-                        target,
-                    });
+                    effects
+                        .push(self.system_notification_effect(&pending.endpoint_id, pending.event));
                 }
                 crate::config::ToastDelivery::Terminal | crate::config::ToastDelivery::System => {}
             }
@@ -290,6 +276,60 @@ impl ClientShellState {
             });
         }
         outcome
+    }
+
+    /// Agent notifications show the agent's task (its terminal title) as the
+    /// message and the workspace/tab context as the subtitle, and focus the
+    /// agent's pane on click when the endpoint is local.
+    fn system_notification_effect(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        event: SemanticNotification,
+    ) -> ClientShellNotificationEffect {
+        let task = event.pane_id.as_deref().and_then(|pane_id| {
+            let snapshot = self
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+                .and_then(|endpoint| endpoint.snapshot.as_deref())?;
+            let agent = snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)?;
+            agent
+                .terminal_title_stripped
+                .as_deref()
+                .and_then(notification_detail_text)
+        });
+        let click_target = event
+            .pane_id
+            .clone()
+            .filter(|_| endpoint_id.is_local())
+            .map(|pane_id| ClientNotificationClickTarget {
+                pane_id,
+                tab_id: event.tab_id.clone(),
+            });
+        let (subtitle, body) = match task {
+            Some(task) => (event.body, Some(task)),
+            None => (None, event.body),
+        };
+        #[cfg(windows)]
+        let target = event.pane_id.as_ref().and_then(|pane_id| {
+            self.endpoint_boot_id(endpoint_id)
+                .map(|boot_id| ClientSystemNotificationTarget {
+                    endpoint_id: endpoint_id.clone(),
+                    boot_id: boot_id.to_owned(),
+                    pane_id: pane_id.clone(),
+                })
+        });
+        ClientShellNotificationEffect::System {
+            title: event.title,
+            subtitle,
+            body,
+            click_target,
+            #[cfg(windows)]
+            target,
+        }
     }
 
     fn notification_target_is_active(
@@ -367,5 +407,46 @@ impl ClientShellState {
                 NotificationValidation::Stale
             }
         }
+    }
+}
+
+const MAX_NOTIFICATION_DETAIL_CHARS: usize = 160;
+
+/// Single-line, bounded text for a notification line; `None` when blank.
+fn notification_detail_text(text: &str) -> Option<String> {
+    let text = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_NOTIFICATION_DETAIL_CHARS {
+        return Some(text);
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_NOTIFICATION_DETAIL_CHARS - 1)
+        .collect::<String>();
+    truncated.push('…');
+    Some(truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_detail_text_is_single_line_and_bounded() {
+        assert_eq!(notification_detail_text(" \t\n "), None);
+        assert_eq!(
+            notification_detail_text("a\x1b[31mb\nc").as_deref(),
+            Some("a [31mb c")
+        );
+        let long = "x".repeat(MAX_NOTIFICATION_DETAIL_CHARS + 10);
+        let text = notification_detail_text(&long).expect("text");
+        assert_eq!(text.chars().count(), MAX_NOTIFICATION_DETAIL_CHARS);
+        assert!(text.ends_with('…'));
     }
 }

@@ -248,6 +248,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    pub(super) usage: Option<&'a crate::api::schema::UsageReport>,
 }
 
 pub(super) fn render_shell(

@@ -205,6 +205,9 @@ pub enum ResponseResult {
     IntegrationList {
         integrations: Vec<super::integrations::IntegrationInfo>,
     },
+    UsageRead {
+        usage: super::usage::UsageReport,
+    },
     IntegrationInstall {
         target: IntegrationTarget,
         details: IntegrationInstallResult,

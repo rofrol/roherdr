@@ -5,7 +5,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
+    SoundConfig, TabBarRightEntryConfig, ThemeConfig, UsageConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
@@ -317,6 +317,7 @@ pub struct Config {
     pub session: SessionConfig,
     pub server: ServerConfig,
     pub update: UpdateConfig,
+    pub usage: UsageConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,

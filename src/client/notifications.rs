@@ -70,14 +70,34 @@ pub(super) fn handle_shell_notification_effects(
             }
             shell::ClientShellNotificationEffect::System {
                 title,
+                subtitle,
                 body,
+                click_target,
                 #[cfg(windows)]
                 target,
             } => {
                 #[cfg(windows)]
-                let result = show_system_notification(&title, body.as_deref(), target, event_tx);
+                let result = {
+                    // Windows clicks go through the endpoint target; the subtitle
+                    // is folded into the body.
+                    let _ = click_target;
+                    let details = crate::platform::DesktopNotificationDetails {
+                        subtitle,
+                        ..Default::default()
+                    };
+                    let body = details.flattened_body(body.as_deref());
+                    show_system_notification(&title, body.as_deref(), target, event_tx)
+                };
                 #[cfg(not(windows))]
-                let result = crate::platform::show_desktop_notification(&title, body.as_deref());
+                let result = {
+                    let details =
+                        system_notification_details(subtitle, click_target, local_click_context());
+                    crate::platform::show_desktop_notification_with_details(
+                        &title,
+                        body.as_deref(),
+                        &details,
+                    )
+                };
                 if let Err(err) = result {
                     warn!(err = %err, "failed to emit system notification");
                 }
@@ -125,6 +145,68 @@ fn show_system_notification(
             }),
         )
     })
+}
+
+
+/// How a notification click reaches the local server: this executable and
+/// the API socket this client process resolved.
+#[cfg(not(windows))]
+struct LocalClickContext {
+    herdr_exe: std::path::PathBuf,
+    api_socket: std::path::PathBuf,
+}
+
+#[cfg(not(windows))]
+fn local_click_context() -> Option<LocalClickContext> {
+    let herdr_exe = std::env::current_exe().ok()?;
+    let api_socket = std::path::absolute(crate::api::socket_path()).ok()?;
+    Some(LocalClickContext {
+        herdr_exe,
+        api_socket,
+    })
+}
+
+#[cfg(not(windows))]
+fn system_notification_details(
+    subtitle: Option<String>,
+    click_target: Option<shell::ClientNotificationClickTarget>,
+    context: Option<LocalClickContext>,
+) -> crate::platform::DesktopNotificationDetails {
+    let Some((target, context)) = click_target.zip(context) else {
+        return crate::platform::DesktopNotificationDetails {
+            subtitle,
+            ..Default::default()
+        };
+    };
+    let herdr = context.herdr_exe.into_os_string();
+    // Agent focus selects the exact pane; the tab fallback covers panes whose
+    // agent was released since the notification was shown.
+    let mut commands = vec![vec![
+        herdr.clone(),
+        "agent".into(),
+        "focus".into(),
+        target.pane_id.clone().into(),
+    ]];
+    if let Some(tab_id) = target.tab_id {
+        commands.push(vec![herdr, "tab".into(), "focus".into(), tab_id.into()]);
+    }
+    crate::platform::DesktopNotificationDetails {
+        subtitle,
+        // Namespaced by socket so panes of different sessions do not replace
+        // each other's notifications.
+        group: Some(format!(
+            "herdr:{}:{}",
+            context.api_socket.display(),
+            target.pane_id
+        )),
+        on_click: Some(crate::platform::NotificationClickAction {
+            env: vec![(
+                crate::api::SOCKET_PATH_ENV_VAR.to_owned(),
+                context.api_socket.into_os_string(),
+            )],
+            commands,
+        }),
+    }
 }
 
 pub(super) fn handle_notify(
@@ -223,5 +305,61 @@ mod tests {
         // This send must run while native delivery is still waiting.
         release.send(()).expect("client loop remained responsive");
         second.await.expect("replacement delivered after original");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> LocalClickContext {
+        LocalClickContext {
+            herdr_exe: "/opt/herdr/bin/herdr".into(),
+            api_socket: "/Users/me/.config/herdr/sessions/work/herdr.sock".into(),
+        }
+    }
+
+    #[test]
+    fn click_target_focuses_agent_then_tab_on_the_resolved_socket() {
+        let details = system_notification_details(
+            Some("repo · 1".into()),
+            Some(shell::ClientNotificationClickTarget {
+                pane_id: "w1:p2".into(),
+                tab_id: Some("w1:t1".into()),
+            }),
+            Some(context()),
+        );
+        assert_eq!(details.subtitle.as_deref(), Some("repo · 1"));
+        assert_eq!(
+            details.group.as_deref(),
+            Some("herdr:/Users/me/.config/herdr/sessions/work/herdr.sock:w1:p2")
+        );
+        let action = details.on_click.expect("click action");
+        assert_eq!(
+            action.env,
+            vec![(
+                "HERDR_SOCKET_PATH".to_owned(),
+                "/Users/me/.config/herdr/sessions/work/herdr.sock".into()
+            )]
+        );
+        let argv = |args: &[&str]| {
+            args.iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            action.commands,
+            vec![
+                argv(&["/opt/herdr/bin/herdr", "agent", "focus", "w1:p2"]),
+                argv(&["/opt/herdr/bin/herdr", "tab", "focus", "w1:t1"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn notification_without_click_target_has_no_group_or_action() {
+        let details = system_notification_details(None, None, Some(context()));
+        assert_eq!(
+            details,
+            crate::platform::DesktopNotificationDetails::default()
+        );
     }
 }

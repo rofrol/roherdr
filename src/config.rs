@@ -7,6 +7,7 @@ mod sidebar;
 mod sound;
 mod tab_bar;
 mod theme;
+mod usage;
 mod window_title;
 mod write;
 
@@ -35,6 +36,7 @@ pub use self::{
     sound::SoundConfig,
     tab_bar::TabBarRightEntryConfig,
     theme::{parse_color, CustomThemeColors, ModeThemeColors, ThemeConfig, THEME_NAMES},
+    usage::UsageConfig,
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 

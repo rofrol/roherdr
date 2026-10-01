@@ -810,6 +810,8 @@ pub struct AppState {
     pub view: ViewState,
     // Notifications
     pub update_available: Option<String>,
+    /// Latest provider allowance report from the usage poller.
+    pub usage: crate::api::schema::UsageReport,
     pub update_install_command: String,
     pub latest_release_notes_available: bool,
     pub update_dismissed: bool,
@@ -1054,6 +1056,7 @@ impl AppState {
                 pane_infos: Vec::new(),
             },
             update_available: None,
+            usage: crate::api::schema::UsageReport::default(),
             update_install_command: "herdr update".into(),
             latest_release_notes_available: false,
             update_dismissed: false,

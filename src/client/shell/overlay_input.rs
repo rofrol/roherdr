@@ -569,6 +569,18 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::Usage(_))) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    self.overlay = None;
+                    outcome.repaint = true;
+                }
+                KeyCode::Char('r') => self.refresh_usage(outcome),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             match key.code {
                 KeyCode::Esc => {

@@ -134,6 +134,7 @@ pub struct App {
     pub(crate) pending_worktree_remove_runtime_restores: HashMap<crate::layout::PaneId, u64>,
     pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) next_auto_update_check: Option<Instant>,
+    pub(crate) usage_poller: Option<crate::usage::UsagePoller>,
     pub(crate) next_agent_manifest_update_check: Option<Instant>,
     pub(crate) update_version_check_enabled: bool,
     pub(crate) update_manifest_check_enabled: bool,
@@ -180,6 +181,26 @@ pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
 fn auto_updates_enabled(background_updates: bool) -> bool {
     background_updates && !cfg!(debug_assertions)
+}
+
+/// Set by the test runner so servers spawned by integration tests never poll.
+const DISABLE_USAGE_ENV: &str = "HERDR_DISABLE_USAGE";
+
+/// Usage polling contacts provider services, so tests and disabled configs never start it.
+fn spawn_usage_poller(
+    policy: &AppPolicy,
+    config: &crate::config::UsageConfig,
+    event_tx: &mpsc::Sender<AppEvent>,
+) -> Option<crate::usage::UsagePoller> {
+    if !policy.background_updates
+        || !config.enabled
+        || std::env::var_os(DISABLE_USAGE_ENV).is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+    crate::usage::UsagePoller::spawn(config.clone(), event_tx.clone())
+        .inspect_err(|error| tracing::warn!(%error, "failed to start usage poller"))
+        .ok()
 }
 
 fn background_update_check_enabled(background_updates: bool, check_enabled: bool) -> bool {
@@ -520,6 +541,10 @@ impl App {
                 pane_infos: Vec::new(),
             },
             update_available,
+            usage: crate::api::schema::UsageReport {
+                enabled: config.usage.enabled,
+                providers: Vec::new(),
+            },
             update_install_command,
             latest_release_notes_available,
             update_dismissed: false,
@@ -605,6 +630,8 @@ impl App {
             }
         }
 
+        let usage_poller = spawn_usage_poller(&policy, &config.usage, &event_tx);
+
         let last_focus = state.active.and_then(|idx| {
             state
                 .workspaces
@@ -642,6 +669,7 @@ impl App {
             pending_worktree_remove_runtime_exits: HashMap::new(),
             pending_worktree_remove_runtime_restores: HashMap::new(),
             next_api_worktree_operation_id: 1,
+            usage_poller,
             next_auto_update_check: version_check_enabled
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             next_agent_manifest_update_check: manifest_check_enabled
@@ -965,6 +993,10 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
+        }
+
+        if !invalid_section("usage") {
+            self.apply_usage_config(&config.usage);
         }
 
         if !invalid_section("update") {
