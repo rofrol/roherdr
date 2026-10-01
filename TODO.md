@@ -59,6 +59,10 @@
     click_menu_only_removes_it`.
   - Not done: space group headers in the bookmark list; reopening the list
     after a removal from its menu (the list closes).
+  - Also (user, same day, "no padding between Remove and the left edge, is it
+    meant to be so?"; DeepSeek and GPT: no): context menu items now have one
+    column of padding each side, the highlight bar spanning both
+    (`render_context_menu`); the dropdown lists already have a gutter.
 
 - [x] Unfolding a tab line's squares near the bottom shows nothing (user,
   2026-10-01: "I click and the jobs list does not unfold"; later "maybe I could

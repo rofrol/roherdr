@@ -2695,6 +2695,10 @@ fn a_bookmark_row_shows_the_tabs_task_and_its_right_click_menu_only_removes_it()
         .map(|item| item.label)
         .collect::<Vec<_>>();
     assert_eq!(labels, ["Remove from bookmarks"]);
+    // The item does not touch the border: one column of padding each side.
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("│ Remove from bookmarks "), "{text}");
     let outcome = state.handle_input_bytes(b"\r");
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
