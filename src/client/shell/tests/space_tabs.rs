@@ -1174,10 +1174,10 @@ fn the_notification_history_lists_and_opens_past_notifications() {
     let frame = state.compose(106, 30).unwrap();
     let rows = state.hits.notification_log_rows.clone();
     assert_eq!(rows.len(), 2);
-    // Newest first, unread marked.
+    // Newest first; the highlighted row has the accent bar.
     let first = frame_rows(&frame)[rows[0].0.y as usize].clone();
     assert!(
-        first.contains("• ") && first.contains("elsewhere"),
+        first.contains("▌") && first.contains("elsewhere"),
         "{first:?}"
     );
 
@@ -2655,7 +2655,7 @@ fn unfolding_a_tab_line_near_the_bottom_scrolls_its_squares_into_view() {
 }
 
 #[test]
-fn a_bookmark_row_shows_the_tabs_task_and_its_right_click_menu_only_removes_it() {
+fn a_bookmark_row_shows_the_tabs_task_and_its_menu_opens_over_the_list() {
     let mut state = state_with_tabs(true);
     state.sidebar_width = 40;
     state.config.tab_label = crate::config::TabLabelConfig::Title;
@@ -2679,29 +2679,120 @@ fn a_bookmark_row_shows_the_tabs_task_and_its_right_click_menu_only_removes_it()
     assert!(text.contains("Job search automation"), "{text}");
 
     let row = state.hits.notification_log_rows[0].0;
-    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
-        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
-        column: row.x + 3,
-        row: row.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
-        panic!("a menu opens");
+    let right_click = |state: &mut ClientShellState| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: row.x + 3,
+            row: row.y,
+            modifiers: KeyModifiers::empty(),
+        })])
     };
-    assert_eq!(menu.y, row.y, "the menu starts at the clicked row");
-    let labels = menu
-        .items()
-        .into_iter()
-        .map(|item| item.label)
-        .collect::<Vec<_>>();
-    assert_eq!(labels, ["Remove from bookmarks"]);
-    // The item does not touch the border: one column of padding each side.
+    right_click(&mut state);
+    // The menu opens over the list; the list stays.
     let frame = state.compose(106, 30).unwrap();
     let text = frame_rows(&frame).join("\n");
+    assert!(
+        text.contains("Job search automation"),
+        "the list stays: {text}"
+    );
     assert!(text.contains("│ Remove from bookmarks "), "{text}");
-    let outcome = state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some()
+    ));
+    let item = state.hits.bookmark_menu_row;
+    assert_eq!(
+        item.y,
+        row.y + 1,
+        "the popup's border is on the clicked row"
+    );
+
+    // Esc closes only the menu.
+    state.handle_input_bytes(b"\x1b");
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_none()
+    ));
+
+    // Choosing the item removes the bookmark and leaves the list open.
+    right_click(&mut state);
+    state.compose(106, 30).unwrap();
+    let item = state.hits.bookmark_menu_row;
+    let outcome = left_click(&mut state, (item.x + 2, item.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
                 if params.tab_id == "tab_1" && !params.bookmarked))));
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_none()
+    ));
+
+    // A click elsewhere closes only the menu as well.
+    right_click(&mut state);
+    state.compose(106, 30).unwrap();
+    left_click(&mut state, (row.x + 3, row.y + 2));
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_none()
+    ));
+}
+
+#[test]
+fn the_filter_lives_in_the_header_row_and_its_cursor_is_a_bar_not_a_fill() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    // Closed: a magnifier beside the sort button; nothing at the bottom.
+    assert!(
+        rows[0].contains("⇅ manual") && rows[0].contains('⌕'),
+        "{:?}",
+        rows[0]
+    );
+    assert!(!rows.iter().any(|row| row.contains("/ filter")));
+    let body_y = state.hits.workspace_body.y;
+
+    // Open: the bar replaces the header row; the list does not move down.
+    let button = state.hits.space_filter_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    state.handle_input_bytes(b"c");
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    assert!(rows[0].starts_with(" / c"), "{:?}", rows[0]);
+    assert!(!rows[0].contains('⇅'), "{:?}", rows[0]);
+    assert_eq!(state.hits.workspace_body.y, body_y);
+
+    // The space the arrows chose has a bar down its block and no fill.
+    let name_row = state.hits.workspaces[0].rect;
+    let cell = |x: u16, y: u16| &frame.cells[y as usize * frame.width as usize + x as usize];
+    let selection = crate::protocol::color_to_u32(state.config.palette.selection_bg);
+    for y in name_row.y..name_row.bottom() {
+        assert_ne!(
+            cell(name_row.x + 12, y).bg,
+            selection,
+            "row {y} is not filled"
+        );
+    }
+}
+
+#[test]
+fn the_job_summary_on_a_space_row_is_right_aligned() {
+    let mut state = state_with_tabs(false);
+    state.sidebar_width = 40;
+    with_job(&mut state, "job_1", TabStatus::Running);
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("client-shell"))
+        .expect("the space's name row");
+    let chars = row.chars().collect::<Vec<_>>();
+    let name_end = row.find("client-shell").unwrap_or(0);
+    let glyph = chars[..40]
+        .iter()
+        .rposition(|c| matches!(*c, '◐' | '◓' | '◑' | '◒'))
+        .expect("the running jobs count");
+    // Far right of the name, close to the sidebar's edge (column 40).
+    assert!(glyph > name_end + 20 && glyph >= 30, "{glyph} in {row:?}");
 }

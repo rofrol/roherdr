@@ -163,6 +163,8 @@ pub(super) struct ShellHitMap {
     pub(super) asking_list_button: Rect,
     /// The `★` button that lists the bookmarked tabs.
     pub(super) bookmarks_list_button: Rect,
+    /// The item of the bookmark menu open over the bookmarks list.
+    pub(super) bookmark_menu_row: Rect,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.

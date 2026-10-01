@@ -36,6 +36,16 @@ pub(super) struct ClientNotificationLogOverlay {
     pub(super) highlighted: usize,
     /// What the rows list.
     pub(super) view: NotificationLogView,
+    /// The one-item menu of a bookmark row, open over the list: it closes
+    /// alone, and removing the bookmark leaves the list open.
+    pub(super) menu: Option<BookmarkMenu>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BookmarkMenu {
+    pub(super) tab_id: String,
+    pub(super) x: u16,
+    pub(super) y: u16,
 }
 
 /// The dropdowns behind the header buttons: the past notifications, and
@@ -260,6 +270,34 @@ impl ClientShellState {
         else {
             return;
         };
+        self.remove_bookmark(tab_id, outcome);
+    }
+
+    /// Opens the bookmark row's menu over the list, at the pointer.
+    pub(super) fn open_bookmark_row_menu(&mut self, index: usize, x: u16, y: u16) {
+        let Some(tab_id) = self
+            .bookmark_rows()
+            .into_iter()
+            .nth(index)
+            .and_then(|row| row.tab_id)
+        else {
+            return;
+        };
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            log.highlighted = index;
+            log.menu = Some(BookmarkMenu { tab_id, x, y });
+        }
+    }
+
+    /// The open bookmark menu's tab, closing the menu.
+    pub(super) fn take_bookmark_menu(&mut self) -> Option<BookmarkMenu> {
+        match self.overlay.as_mut() {
+            Some(ClientShellOverlay::NotificationLog(log)) => log.menu.take(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn remove_bookmark(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
         self.push_endpoint_method(
             crate::api::schema::Method::TabBookmark(crate::api::schema::TabBookmarkParams {
                 tab_id,
@@ -464,6 +502,7 @@ impl ClientShellState {
             ClientNotificationLogOverlay {
                 highlighted: 0,
                 view,
+                menu: None,
             },
         ));
         if view != NotificationLogView::History {

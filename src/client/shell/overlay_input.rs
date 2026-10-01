@@ -585,6 +585,18 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
+            // A bookmark row's menu is open: Enter removes, Esc or any other
+            // key closes only the menu.
+            if matches!(&self.overlay, Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some())
+            {
+                if let Some(menu) = self.take_bookmark_menu() {
+                    if key.code == KeyCode::Enter {
+                        self.remove_bookmark(menu.tab_id, outcome);
+                    }
+                }
+                outcome.repaint = true;
+                return;
+            }
             match key.code {
                 KeyCode::Esc => {
                     self.overlay = None;

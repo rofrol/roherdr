@@ -12,11 +12,7 @@
 
 use std::collections::HashSet;
 
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Modifier, Style},
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 
 use super::render::put_text;
 use super::state::WorkspaceEntry;
@@ -406,32 +402,6 @@ impl ClientShellState {
         self.space_filter.close();
         self.push_endpoint_method(method, outcome);
     }
-}
-
-/// Draws the `/ filter` button that opens the bar, centred in `room` (the
-/// footer row between `new` and `menu`). Returns its rect, empty when it does
-/// not fit.
-pub(super) fn render_filter_button(
-    buffer: &mut Buffer,
-    room: Rect,
-    open: bool,
-    palette: &Palette,
-) -> Rect {
-    const LABEL: &str = "/ filter";
-    let width = LABEL.chars().count() as u16;
-    if room.width < width + 2 || room.height == 0 {
-        return Rect::default();
-    }
-    let x = room.x + (room.width - width) / 2;
-    let style = if open {
-        Style::default()
-            .fg(palette.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(palette.overlay0)
-    };
-    put_text(buffer, x, room.y, width, LABEL, style);
-    Rect::new(x.saturating_sub(1), room.y, width + 2, 1)
 }
 
 /// Draws the bar: `/ query▏`, the `shown/total` spaces count while a query is

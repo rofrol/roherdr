@@ -410,28 +410,46 @@ pub(crate) fn render_notification_log(
         }
         let row = Rect::new(inner.x, row_y, inner.width, 1);
         let selected = index == highlighted;
-        let base = if selected {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, base);
-        let mark = if *unread { "•" } else { " " };
-        put_text(
-            buffer,
-            row.x,
-            row.y,
+        // The highlighted row is a light accent tint with a bar in the first
+        // column, so the state icons keep their own colours (a solid accent
+        // fill turned them white); without an RGB palette, the solid fill.
+        let tint = super::render::tabs::blend(
+            palette.accent,
+            palette.panel_bg,
             1,
-            mark,
-            if selected {
-                base
+            if matches!(palette.panel_bg, ratatui::style::Color::Rgb(r, g, b)
+                if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) < 128_000)
+            {
+                4
             } else {
-                base.fg(palette.accent).add_modifier(Modifier::BOLD)
+                6
             },
         );
-        let time_style = if selected {
+        let solid = selected && tint.is_none();
+        let base = match (selected, tint) {
+            (true, Some(tint)) => Style::default().fg(palette.text).bg(tint),
+            (true, None) => Style::default()
+                .fg(panel_contrast_fg(palette))
+                .bg(palette.accent),
+            _ => Style::default().fg(palette.text).bg(palette.panel_bg),
+        };
+        buffer.set_style(row, base);
+        let (mark, mark_style) = if selected && !solid {
+            ("▌", base.fg(palette.accent))
+        } else if *unread {
+            (
+                "•",
+                if selected {
+                    base
+                } else {
+                    base.fg(palette.accent).add_modifier(Modifier::BOLD)
+                },
+            )
+        } else {
+            (" ", base)
+        };
+        put_text(buffer, row.x, row.y, 1, mark, mark_style);
+        let time_style = if solid {
             base
         } else {
             base.fg(palette.overlay1)
@@ -444,7 +462,7 @@ pub(crate) fn render_notification_log(
             text_x = row.x.saturating_add(3 + display_width(time));
         }
         if let Some((glyph, color)) = icon {
-            let style = if selected { base } else { base.fg(*color) };
+            let style = if solid { base } else { base.fg(*color) };
             put_text(buffer, text_x.saturating_sub(1), row.y, 1, glyph, style);
             text_x = text_x.saturating_add(1);
         }
