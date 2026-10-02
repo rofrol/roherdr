@@ -55,12 +55,25 @@ function paneState(paneId) {
   return fg.every(p => p.pid === info.shell_pid || SHELLS.has(String(p.name).replace(/^-/, ""))) ? "idle" : "busy";
 }
 
+// `install` points BASE/relaunch.zsh (sourced from .zshrc) at this plugin;
+// re-point it when the plugin has moved, e.g. after an update.
+function relinkHook() {
+  const link = path.join(BASE, "relaunch.zsh");
+  const target = path.join(__dirname, "relaunch.zsh");
+  try {
+    if (fs.readlinkSync(link) === target) return;
+    fs.unlinkSync(link);
+    fs.symlinkSync(target, link);
+    log(`relinked ${link} -> ${target}`);
+  } catch {} // not installed through `install`: nothing to fix
+}
+
 const quote = s => `'${s.replace(/'/g, `'\\''`)}'`;
 
 (async () => {
   const dryRun = process.argv[2] === "--dry-run";
   const out = dryRun ? console.log : log;
-  if (!dryRun) { trimLog(); log(`run pid ${process.pid}`); }
+  if (!dryRun) { trimLog(); log(`run pid ${process.pid}`); relinkHook(); }
   let files = [];
   try { files = fs.readdirSync(DIR); } catch { return; }
   const live = new Map(api(["pane", "list"]).panes.map(p => [p.pane_id, p]));

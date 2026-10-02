@@ -138,7 +138,8 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
   that shows Claude's own background tasks in the sidebar.
 - [**relaunch**](plugins/relaunch/README.md): reruns the programs panes were
   running (lazygit, editors, ...) after a server restart or reboot; herdr
-  itself brings them back as empty shells.
+  itself brings them back as empty shells. zsh only; after installing, add its
+  shell hook with the "Relaunch: install zsh hook" popup (`./install`).
 - [**restart**](plugins/restart/README.md): restarts idle Claude and pi
   agents in place after they update and resumes their sessions, keeping the
   flags they were started with.
