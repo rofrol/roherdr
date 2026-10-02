@@ -719,26 +719,33 @@ impl ClientShellState {
     }
 }
 
-/// `HH:MM` for today, `Mon DD HH:MM` for older days, in the local time
-/// offset `utc_offset_secs`.
-pub(super) fn notification_time(unix_ms: u64, now_unix: u64, utc_offset_secs: i64) -> String {
-    let local = |secs: i64| {
-        time::OffsetDateTime::from_unix_timestamp(secs + utc_offset_secs)
-            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
-    };
-    let at = local((unix_ms / 1000) as i64);
-    let now = local(now_unix as i64);
+/// `HH:MM` in the local time offset `utc_offset_secs`; the day is said once
+/// per group by `notification_day`.
+pub(super) fn notification_time(unix_ms: u64, utc_offset_secs: i64) -> String {
+    let at = local_datetime((unix_ms / 1000) as i64, utc_offset_secs);
+    format!("{:02}:{:02}", at.hour(), at.minute())
+}
+
+/// The day group of a notification: `Today`, `Oct 2` for other days of this
+/// year, `Oct 2 2025` for other years, in the local time offset
+/// `utc_offset_secs`.
+pub(super) fn notification_day(unix_ms: u64, now_unix: u64, utc_offset_secs: i64) -> String {
+    let at = local_datetime((unix_ms / 1000) as i64, utc_offset_secs);
+    let now = local_datetime(now_unix as i64, utc_offset_secs);
+    let month = at.month().to_string();
+    let month = month.get(..3).unwrap_or(&month);
     if at.date() == now.date() {
-        format!("{:02}:{:02}", at.hour(), at.minute())
+        "Today".to_owned()
+    } else if at.year() == now.year() {
+        format!("{month} {}", at.day())
     } else {
-        format!(
-            "{} {:>2} {:02}:{:02}",
-            &at.month().to_string()[..3],
-            at.day(),
-            at.hour(),
-            at.minute()
-        )
+        format!("{month} {} {}", at.day(), at.year())
     }
+}
+
+fn local_datetime(secs: i64, utc_offset_secs: i64) -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp(secs.saturating_add(utc_offset_secs))
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
 }
 
 #[cfg(test)]
@@ -746,11 +753,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn times_show_the_date_only_for_other_days() {
+    fn times_are_the_clock_and_days_group_them() {
         // 2026-09-28 22:05:00 UTC.
         let at = 1_790_633_100_000;
-        assert_eq!(notification_time(at, 1_790_633_200, 0), "22:05");
-        assert_eq!(notification_time(at, 1_790_633_200, 7200), "00:05");
-        assert_eq!(notification_time(at, 1_790_720_000, 0), "Sep 28 22:05");
+        assert_eq!(notification_time(at, 0), "22:05");
+        assert_eq!(notification_time(at, 7200), "00:05");
+        assert_eq!(notification_day(at, 1_790_633_200, 0), "Today");
+        // Past local midnight the same instant is yesterday's group.
+        assert_eq!(notification_day(at, 1_790_640_000, 0), "Sep 28");
+        assert_eq!(notification_day(at, 1_790_633_200, 7200), "Today");
+        // A clock ahead of `now` still gets its own day, never "Today".
+        assert_eq!(notification_day(at, 1_790_550_000, 0), "Sep 28");
+        // 2027-01-01 00:10 UTC: another year says the year.
+        assert_eq!(notification_day(at, 1_798_762_200, 0), "Sep 28 2026");
     }
 }

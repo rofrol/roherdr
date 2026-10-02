@@ -485,7 +485,7 @@
   one failed with `rm: ... Directory not empty` and the other could not find
   `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`.
 
-- [ ] Notification list times look odd without today's date (user, 2026-10-03
+- [x] Notification list times look odd without today's date (user, 2026-10-03
   00:10, screenshot of the `✉5` list: "somehow weird without the date today").
   `notification_time` (`src/client/shell/notification_log.rs`) prints `HH:MM`
   for today and `Mon DD HH:MM` for older days, right-aligned to the widest, so
@@ -509,8 +509,13 @@
     (each row's day from its own instant's offset, not one captured
     `utc_offset_secs`), timezone change, future timestamps from clock skew,
     15 rows spanning several days.
-  - Decided (user, 2026-10-03): day separator rows. Not started yet, because
-    another session was working in the checkout. Target look:
+  - Decided (user, 2026-10-03): day separator rows. Done 2026-10-03: every
+    row shows `HH:MM`; a muted line (`Today`, `Oct 2`, `Oct 2 2025`) names the
+    day above its first row, takes no hit target and no row slot (tests
+    `times_are_the_clock_and_days_group_them`,
+    `notification_list_names_each_day_once_above_its_rows`). Not done: the
+    local offset is still captured once per draw, so rows from before a DST
+    change can land in the wrong day. Look:
 
     ```
      Today

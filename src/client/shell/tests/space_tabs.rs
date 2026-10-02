@@ -1176,12 +1176,21 @@ fn the_notification_history_lists_and_opens_past_notifications() {
     assert_eq!(rows.len(), 2);
     // Newest first; no row is highlighted until one is picked; the unread
     // row is marked, the read row is not.
-    let first = frame_rows(&frame)[rows[0].0.y as usize].clone();
+    // Only the list's own columns: a day separator moves the rows down, onto
+    // lines where the sidebar draws its own `▌`.
+    let in_row = |rect: Rect| {
+        frame_rows(&frame)[rect.y as usize]
+            .chars()
+            .skip(rect.x as usize)
+            .take(rect.width as usize)
+            .collect::<String>()
+    };
+    let first = in_row(rows[0].0);
     assert!(
         !first.contains('▌') && first.contains('•') && first.contains("elsewhere"),
         "{first:?}"
     );
-    let second = frame_rows(&frame)[rows[1].0.y as usize].clone();
+    let second = in_row(rows[1].0);
     assert!(
         !second.contains('•') && second.contains("on this tab"),
         "{second:?}"
