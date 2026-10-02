@@ -32,9 +32,13 @@ def model_version(model, base_url):
         return ""
     return next((m.get("name") or "" for m in models if m.get("id") == model), "")
 
-def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, version="", fingerprint=""):
-    """Record the call for consult-stats; never let logging fail the consultation."""
+def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, version="", fingerprint="",
+             error_kind="", error_text=""):
+    """Record the call for consult-stats; never let logging fail the consultation. On an error, `error_kind` when
+    known, else consult.py classifies `error_text` (sent on stdin and not stored: it can echo the request)."""
     args = [*(["--model-version", version] if version else []), *(["--fingerprint", fingerprint] if fingerprint else [])]
+    if status == "error":
+        args += ["--error-kind", error_kind] if error_kind else ["--error-text-file", "-"] if error_text else []
     if usage:  # normalized: input includes cache hits, output includes reasoning
         norm = {"input": usage.get("prompt_tokens"), "cached": usage.get("prompt_cache_hit_tokens"),
                 "output": usage.get("completion_tokens"),
@@ -43,7 +47,7 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, ver
     try:
         subprocess.run([str(CONSULT), "log", "--skill", "deepseek", "--model", model, "--status", status,
                         "--seconds", str(int(seconds)), "--prompt-chars", str(prompt_chars),
-                        "--answer-chars", str(answer_chars), *args], timeout=10)
+                        "--answer-chars", str(answer_chars), *args], input=error_text, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -105,7 +109,7 @@ def main():
     signal.alarm(a.timeout)  # hard cap, fires even while blocked in a read
 
     start = time.monotonic()
-    reasoning, content, finish, usage, fingerprint = [], [], None, None, ""
+    reasoning, content, finish, usage, fingerprint, error_kind = [], [], None, None, "", ""
     live = live_output()
     try:
         with urllib.request.urlopen(req, timeout=min(120, a.timeout)) as r:
@@ -130,12 +134,14 @@ def main():
                         content.append(delta["content"])
                     finish = choice.get("finish_reason") or finish
     except Deadline:
-        finish = "deadline"
+        finish, error_kind = "deadline", "timeout"
     except urllib.error.HTTPError as e:
-        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, version=model_version(a.model, base_url))
-        sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')}")
+        detail = f"HTTP {e.code}: {e.read().decode(errors='replace')}"
+        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, version=model_version(a.model, base_url),
+                 error_text=detail)
+        sys.exit(detail)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        finish = f"error: {e}"
+        finish = f"error: {type(e).__name__}: {e}"
     finally:
         signal.alarm(0)
 
@@ -144,7 +150,7 @@ def main():
         live.write("\n\n--- answer ---\n")
         live.close()
     log_call(a.model, "ok" if finish in ("stop", None) else "error", time.monotonic() - start, len(prompt), len(answer),
-             usage, model_version(a.model, base_url), fingerprint)
+             usage, model_version(a.model, base_url), fingerprint, error_kind, f"finish_reason {finish}")
     if a.show_reasoning and reasoning:
         print("=== reasoning ===\n" + "".join(reasoning) + "\n=== answer ===")
     print(answer)

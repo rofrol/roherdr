@@ -32,18 +32,22 @@ done
 # Regex match instead of ${prompt//[[:space:]]/}: the substitution is quadratic in bash and hangs on long prompts.
 [[ $prompt =~ [^[:space:]] ]] || { echo "Empty prompt" >&2; exit 1; }
 
-start=$SECONDS; answer_chars=""
+start=$SECONDS; answer_chars=""; error_kind=""
 # Log every call for consult-stats; logging must not change the exit code or fail the call.
 consult_log() {
-  local rc=$? usage=""
+  local rc=$? usage="" why=()
   # Token usage from agy's result event; read before $tmp goes away. output_tokens includes thinking_tokens.
   usage=$(jq -c 'select(.event=="result") | .result.usage // empty' "$tmp/out" 2>/dev/null | tail -1) || true
-  rm -rf "$tmp" 2>/dev/null || true
+  # Why it failed: an explicit kind, else consult.py classifies $tmp/why (the text is not logged).
+  if [ $rc != 0 ]; then
+    if [ -n "$error_kind" ]; then why=(--error-kind "$error_kind"); elif [ -s "$tmp/why" ]; then why=(--error-text-file "$tmp/why"); fi
+  fi
   "$consult_dir"/consult.py log --skill gemini --model "$model" --mode "${repo:+repo}" \
     --status "$([ $rc = 0 ] && echo ok || echo error)" --seconds $((SECONDS-start)) \
-    --prompt-chars ${#prompt} ${answer_chars:+--answer-chars $answer_chars} \
+    --prompt-chars ${#prompt} ${answer_chars:+--answer-chars $answer_chars} ${why[@]+"${why[@]}"} \
     ${usage:+--usage-raw "$usage"} ${usage:+--usage "$(jq -c '{input: .input_tokens, cached: .cache_read_tokens,
       output: .output_tokens, reasoning: .thinking_tokens}' <<<"$usage" 2>/dev/null)"} || true
+  rm -rf "$tmp" 2>/dev/null || true
   exit $rc
 }
 tmp=$(mktemp -d); trap consult_log EXIT
@@ -63,15 +67,15 @@ prompt="$note"$'\n\n'"$prompt"
 # Prompt goes via stdin as stream-json: -p "text" would hit ARG_MAX on large diffs.
 jq -nc --arg p "$prompt" '{event:"user",message:{role:"user",content:$p}}' |
   (cd "$cwd" && agy --input-format stream-json --output-format stream-json --model "$model" -p=) >"$tmp/out" 2>"$tmp/err" ||
-  { cat "$tmp/err" "$tmp/out" >&2; exit 1; }
+  { cat "$tmp/err" "$tmp/out" >&2; tail -n 20 "$tmp/err" >"$tmp/why" 2>/dev/null || true; exit 1; }
 result=$(jq -c 'select(.event=="result") | .result' "$tmp/out" | tail -1)
-[ -n "$result" ] || { cat "$tmp/err" "$tmp/out" >&2; exit 1; }
+[ -n "$result" ] || { cat "$tmp/err" "$tmp/out" >&2; tail -n 20 "$tmp/err" >"$tmp/why" 2>/dev/null || true; exit 1; }
 if [ "$(jq -r .status <<<"$result")" != SUCCESS ]; then
-  jq -r '.error // "agy: error without a description"' <<<"$result" >&2; cat "$tmp/err" >&2; exit 1
+  jq -r '.error // "agy: error without a description"' <<<"$result" | tee "$tmp/why" >&2; cat "$tmp/err" >&2; exit 1
 fi
 denied=$(jq -r '[.denied_actions[]?.action] | unique | join(", ")' <<<"$result")
 [ -z "$denied" ] || echo "Warning: agy denied tools: $denied" >&2
 answer=$(jq -r .response <<<"$result")
-[[ $answer =~ [^[:space:]] ]] || { echo "Empty answer (the model probably tried to use a blocked tool)" >&2; cat "$tmp/err" >&2; exit 1; }
+[[ $answer =~ [^[:space:]] ]] || { error_kind=empty; echo "Empty answer (the model probably tried to use a blocked tool)" >&2; cat "$tmp/err" >&2; exit 1; }
 answer_chars=${#answer}
 printf '%s\n' "$answer"

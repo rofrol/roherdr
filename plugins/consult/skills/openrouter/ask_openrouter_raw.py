@@ -125,8 +125,11 @@ def scan_secrets(text):
                "There is no override.")
 
 
-def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, version="", fingerprint=""):
+def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, version="", fingerprint="",
+             error_kind="", error_text=""):
     args = [*(["--model-version", version] if version else []), *(["--fingerprint", fingerprint] if fingerprint else [])]
+    if status == "error":  # the error text goes on stdin and is classified, never stored: it can echo the request
+        args += ["--error-kind", error_kind] if error_kind else ["--error-text-file", "-"] if error_text else []
     if usage:
         norm = {"input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens"),
                 "reasoning": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")}
@@ -134,7 +137,7 @@ def log_call(model, status, seconds, prompt_chars, answer_chars, usage=None, ver
     try:
         subprocess.run([str(CONSULT), "log", "--skill", "openrouter", "--model", model, "--status", status,
                         "--seconds", str(int(seconds)), "--prompt-chars", str(prompt_chars),
-                        "--answer-chars", str(answer_chars), *args], timeout=10)
+                        "--answer-chars", str(answer_chars), *args], input=error_text, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -236,13 +239,14 @@ def main():
         with urllib.request.urlopen(req, timeout=min(120, a.timeout)) as r:
             resp = json.load(r)
     except Deadline:
-        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0)
+        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, error_kind="timeout")
         sys.exit(f"\n[ask_openrouter: no answer within {a.timeout}s]")
     except urllib.error.HTTPError as e:
-        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0)
-        sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')[:500]}")
+        detail = f"HTTP {e.code}: {e.read().decode(errors='replace')[:500]}"
+        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, error_text=detail)
+        sys.exit(detail)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0)
+        log_call(a.model, "error", time.monotonic() - start, len(prompt), 0, error_text=f"{type(e).__name__}: {e}")
         sys.exit(f"ask_openrouter: request failed: {e}")
     finally:
         signal.alarm(0)
@@ -259,8 +263,10 @@ def main():
     served_name = ident.get("model") or served
     provider = ident.get("provider_name") or ident.get("upstream_inference_provider") or "unknown-provider"
     version = f"{served_name} via {provider}" if served_name else ""
+    # OpenRouter can answer 200 with an error object (e.g. an upstream provider failure) instead of choices.
+    upstream = (resp.get("error") or {}).get("message") if isinstance(resp.get("error"), dict) else ""
     log_call(a.model, "ok" if answer else "error", time.monotonic() - start, len(prompt), len(answer),
-             usage, version, gen_id)
+             usage, version, gen_id, "" if upstream else "empty", str(upstream or ""))
 
     # Identity check: a cloaked slug that comes back as a different, named model (or an unverifiable provider) is a
     # finding, not a success — surface it so a silent swap cannot pass unnoticed.

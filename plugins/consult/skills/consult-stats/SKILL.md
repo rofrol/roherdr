@@ -7,8 +7,9 @@ description: 'Statistics of consulted models (gpt: astra/sol/terra, gemini flash
 
 Commands below use `$D` for this skill's directory, the one holding this `SKILL.md` (Claude Code shows it as "Base directory for this skill", pi lists the skill's location); set it first, e.g. `D=~/.claude/skills/consult-stats` or `D=~/.pi/agent/skills/consult-stats`.
 
-The gpt, gemini, deepseek and claude scripts log every call to `~/.local/state/consult/log.jsonl` (skill, model, effort, mode, status,
-seconds, prompt/answer size, cwd, round id from `$CONSULT_ROUND`, token usage) and print `[consult id: XXXXXXXX]` on stderr. Usefulness comes from ratings:
+The gpt, gemini, deepseek, claude and openrouter scripts log every call to `~/.local/state/consult/log.jsonl` (skill, model, effort, mode,
+status, error kind, seconds, prompt/answer size, cwd, round id from `$CONSULT_ROUND`, token usage) and print `[consult id: XXXXXXXX]` on
+stderr. Usefulness comes from ratings:
 
 ```bash
 O="$D/consult.py"
@@ -16,7 +17,8 @@ $O rate <id> useful|partial|useless [--findings N] [--accepted N] [--unique N] [
 $O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models
 $O self --round <round> --model <your model id> --findings N --accepted N --refuted N --unique N --missed N [--note "..."]
 $O stats [--days 30]     # per skill/model: unique per rated call, wrong (rejected findings), rated/calls, err
-$O stats --all           # + score, acc/find, speed, tokens, @high history, per coordinator table
+$O stats --all           # + score, acc/find, latency (n, p50, p90), tokens, errors by kind, rounds table, @high history,
+                         #   per coordinator table
 $O stats --pairs         # + token efficiency (acc/1M output tokens) and paired within-round token ratios (e.g. sol vs astra)
 $O recent [-n 20]        # latest calls with their ids and ratings (find unrated ones)
 $O stats --by-alias      # group by the requested model (alias) instead of the version it resolved to
@@ -36,6 +38,20 @@ Rate after triaging the answer, not on first read:
 - `--note`: a few words on why (e.g. "caught race in cache invalidation", "hallucinated API").
 
 When showing stats, point out small samples (<5 rated calls per model) instead of drawing conclusions from them.
+
+## Errors and latency
+
+A failed call records why in `error_kind`: `limit` (rate limit or exhausted plan), `auth`, `model` (unknown or
+unsupported model id), `timeout`, `empty`, `server`, `network`, `other` (a reason was seen but not recognized). The
+wrapper passes the kind when it knows it, otherwise its error text on `--error-text-file`, which `consult.py` classifies
+and never stores (stderr and provider bodies can echo the prompt or credentials). Calls logged before 2026-10-02 have no
+kind and show as `unknown`; do not backfill them by guessing.
+
+Latency columns cover ok calls only: the median and a nearest-rank p90, shown from 10 calls on (below that it would just
+be the maximum). The rounds table answers "which model does a round wait for": per model, the rounds it joined, how
+often it finished last alone (by logged end time, so a model launched late is not blamed for the others), how often
+that last call had failed, and the gap to the next model's end. A model that only fails fast never shows up there;
+read its errors in the error table.
 
 ## You as coordinator
 
