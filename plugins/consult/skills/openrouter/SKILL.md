@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
+description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo and Space Bunny trial rounds described inside; never as a default consultant otherwise.
 ---
 
 # Consulting an OpenRouter model (cloaked models such as Space Bunny Alpha)
@@ -58,10 +58,24 @@ payload summary is printed there.
 
 ## When to use it
 
-- Only on an explicit request to try or evaluate an OpenRouter / cloaked model, or to run an A/B against the normal
-  consultants. **Never** add it to the default consultation set (that stays sol + DeepSeek, Gemini/Claude on request).
+- On an explicit request to try or evaluate an OpenRouter / cloaked model, and in the two trials below: MiMo and
+  Space Bunny each join the default round (sol + DeepSeek) with the same prompt and round id.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
+
+## Space Bunny trial (from 2026-10-02)
+
+The user asked to add Space Bunny Alpha (the default model, no `-m`) to consultations. It is free while in preview,
+so the cost is only the extra answer to read. Because its unnamed provider logs everything:
+
+- Add `"$D"/ask_openrouter.sh "<same prompt>"` to a round only when the prompt holds nothing private: public code,
+  generic design or tooling questions, synthetic snippets. When the round carries the user's private code or data,
+  skip Space Bunny and say so; never strip a prompt down just to fit it in.
+- Same scoring as the MiMo trial: rate every call, 20 rounds hard cap, stop after 8 rated rounds below 0.7 accepted
+  unique findings per call or above 40% rejected. On a pass it stays as a fourth voice for public material only (it
+  cannot replace DeepSeek, which also gets private code); a cloaked model can also vanish or turn into a paid named
+  one, so re-check the slug when it errors.
+- The served identity is unverified by design; consult-stats logs the provider the completion reports.
 
 ## MiMo trial (from 2026-10-02)
 
