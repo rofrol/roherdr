@@ -931,6 +931,15 @@ pub(crate) fn render_sidebar(
                 .map(|filter| filter.query),
             config,
         );
+        render_worktree_trunk(
+            target,
+            rect,
+            entry,
+            entries
+                .get(entry_position + 1)
+                .is_some_and(|next| next.indented),
+            palette,
+        );
         // The filter's cursor is a bar down the whole block, not a fill.
         if selected && state.space_filter.is_some() {
             for row in rect.y..rect.bottom() {
@@ -1505,6 +1514,36 @@ fn open_button_style(buffer: &mut Buffer, pill: Rect, style: Style, palette: &Pa
     open
 }
 
+/// Column of the worktree tree's trunk, left of the tab lines' state icons.
+const WORKTREE_TRUNK_COLUMN: u16 = 1;
+
+/// Draws the worktree tree's trunk down a space's block below its name line:
+/// through a parent space's rows and tab lines when worktree spaces follow
+/// it, and through a worktree space that is not the last one. Without it the
+/// first child's connector hangs under the parent's last tab line and reads
+/// as that tab's child.
+pub(in crate::client::shell) fn render_worktree_trunk(
+    buffer: &mut Buffer,
+    area: Rect,
+    entry: &WorkspaceEntry,
+    // The next entry is a worktree space of this group.
+    children_follow: bool,
+    palette: &Palette,
+) {
+    let continues = if entry.indented {
+        !entry.last_child
+    } else {
+        children_follow
+    };
+    if !continues || area.width <= WORKTREE_TRUNK_COLUMN {
+        return;
+    }
+    let x = area.x + WORKTREE_TRUNK_COLUMN;
+    for y in area.y.saturating_add(1)..area.bottom() {
+        put_text(buffer, x, y, 1, "│", Style::default().fg(palette.overlay0));
+    }
+}
+
 /// Columns the name line of a space leaves at its right with vertical tabs:
 /// a gap, the drag grip, a gap and the new-tab `+`.
 const NAME_LINE_ACTIONS_WIDTH: u16 = 4;
@@ -1546,16 +1585,17 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
         let mut x = area.x;
         if entry.indented {
+            // The connector starts in the trunk's column (see
+            // `render_worktree_trunk`), left of the parent's tab lines, so it
+            // cannot read as a child of the tab above.
             let prefix = if row_index == 0 {
                 if entry.last_child {
-                    "   └─ "
+                    " └─── "
                 } else {
-                    "   ├─ "
+                    " ├─── "
                 }
-            } else if entry.last_child {
-                "        "
             } else {
-                "   │    "
+                "        "
             };
             x = put_segment(
                 buffer,
