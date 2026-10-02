@@ -30,12 +30,14 @@ wrappers: `lg` (an alias for lazygit) or `npm run dev` show up as the process
 they start, so the wrong thing would come back. So this plugin hooks into the
 shell, and that hook has to be written for each shell.
 
-zsh has `preexec` and `precmd` built in, which is all the hook needs. bash has
-neither: it needs a `DEBUG` trap plus `PROMPT_COMMAND` (what the bash-preexec
-library does) or `PS0`, which bash 3.2, the one macOS ships, lacks. A `DEBUG`
-trap also competes with other tools that set one (starship, atuin), so bash
-support needs testing on bash 3.2 and 5.x next to those tools. fish has
-`fish_preexec`/`fish_postexec` events and would be simpler.
+zsh has `preexec` and `precmd` built in, which is all the hook needs. bash
+4.4+ (every current Linux, Homebrew's bash) can do the same with `PS0` (runs
+before a command) and `PROMPT_COMMAND` (before the prompt), appending to what
+starship and similar tools already put there; `PS0` runs in a subshell, so the
+"only delete a record this shell wrote" check would compare the record's time
+with the shell's start instead of using a variable. The bash 3.2 that macOS
+still ships as `/bin/bash` has no `PS0` and would stay unsupported; macOS uses
+zsh by default anyway. fish has `fish_preexec`/`fish_postexec` events.
 
 Neither is written yet because no pane here runs them. In bash or fish panes
 the plugin records nothing and those panes come back as empty shells after a
