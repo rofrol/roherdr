@@ -324,6 +324,16 @@
     headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
     alone it passed 60/60 under load, so it likely depends on another test. Not
     investigated further.
+- [ ] Consult stats popup loses the model column when scrolled right (user,
+  2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
+  `q/call`, no model names, "and what about this? ask the models"). The table is
+  127 columns wide; the popup (`width = "90%"`) is narrower, and `less -RS`
+  scrolls right by half a screen, so the 49-column name column (`openrouter/
+  stealth/space-bunny-alpha via Stealth`; the ` via` stays because an unversioned
+  error-only row with the short name would clash) scrolls off and the numbers have
+  no labels. Candidate: `less --header=2,<name width + 1>` (less 668 on macOS
+  supports header columns), but the output holds several tables with different
+  name widths and header rows.
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
