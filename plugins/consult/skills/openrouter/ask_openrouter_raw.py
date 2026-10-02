@@ -8,9 +8,10 @@ treat everything sent as seen by a third party. Private code is allowed by the u
 Safety is layered, because the real risk is not this script but the calling agent pasting file content into the
 prompt (see the consult on 2026-10-02). This script cannot read the repository on its own (there is no `-r` mode):
   * the prompt is whatever you pass as arguments;
-  * a file's contents are attached only with an explicit `-f PATH` AND the `--allow-files` flag;
+  * a file's contents are attached only with an explicit `-f PATH` (the user allowed private code, 2026-10-03);
   * every `-f` path is checked fail-closed (inside the cwd, no symlink component, tracked-and-not-gitignored,
-    not on a secrets denylist, not binary, within a size cap);
+    not on a secrets denylist, not binary, within a size cap); ask_openrouter.sh runs that check outside its
+    sandbox (`--vet-file`) and hands the sandboxed run only the vetted copy (`--staged`);
   * the whole assembled prompt is scanned for secret-shaped strings and the send is HARD-REFUSED on a match,
     with no override, so a human must sanitise and resend;
   * the exact payload (sha256, size, attached files) is printed before sending so a human watching can see it;
@@ -31,7 +32,10 @@ MODEL_ALIASES = {
     "mimo-flash": ("xiaomi/mimo-v2.6-flash", "Xiaomi"),
 }
 
-# A file whose name matches any of these is never attached, even with --allow-files.
+# ask_openrouter.sh stages each run under this directory; a --staged attachment must come from it.
+STAGE_ROOT = Path("/tmp/consult-openrouter").resolve()
+
+# A file whose name matches any of these is never attached.
 DENY_GLOBS = [
     ".env", ".env.*", "*.env", "*.key", "*.pem", "*.p12", "*.pfx", "*.jks", "*.keystore",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "*.ppk",
@@ -117,6 +121,14 @@ def check_file(path):
     return data.decode(errors="replace")
 
 
+def read_staged(path):
+    """A copy ask_openrouter.sh vetted with --vet-file before entering the sandbox; only its staging dir counts."""
+    real = Path(path).resolve()
+    if STAGE_ROOT not in real.parents:
+        reject(f"staged file {path!r} is outside {STAGE_ROOT}")
+    return real.read_text(errors="replace")
+
+
 def scan_secrets(text):
     hits = sorted({name for name, rx in SECRET_PATTERNS.items() if rx.search(text)})
     if hits:
@@ -175,22 +187,34 @@ def main():
     p.add_argument("-m", "--model", default=os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
     p.add_argument("--provider", default=os.environ.get("OPENROUTER_PROVIDER", ""),
                    help="serve only through this OpenRouter provider (e.g. Xiaomi), no fallbacks")
-    p.add_argument("-f", "--file", action="append", default=[], help="attach a file (needs --allow-files; - = stdin)")
-    p.add_argument("--allow-files", action="store_true", help="permit -f attachments (off by default)")
+    p.add_argument("-f", "--file", action="append", default=[], type=lambda v: ("file", v),
+                   help="attach a vetted file (- = stdin)")
+    # LABEL=PATH: a copy ask_openrouter.sh vetted outside the sandbox, which cannot read the repository.
+    p.add_argument("--staged", action="append", dest="file", type=lambda v: ("staged", v), help=argparse.SUPPRESS)
+    # With --out: vet one -f path and copy it there, then exit (ask_openrouter.sh runs this unsandboxed).
+    p.add_argument("--vet-file", help=argparse.SUPPRESS)
+    p.add_argument("--out", help=argparse.SUPPRESS)
+    p.add_argument("--allow-files", action="store_true", help="accepted for old callers; -f needs no flag")
     p.add_argument("-s", "--system", default="You are a senior engineer giving a candid, concrete second opinion. "
                    "Point out mistakes, risks and counter-examples; say plainly when you are unsure or need to see code.")
     p.add_argument("-t", "--timeout", type=int, default=int(os.environ.get("OPENROUTER_TIMEOUT", 420)))
     a = p.parse_args()
+    if a.vet_file:
+        if not a.out:
+            reject("--vet-file needs --out")
+        Path(a.out).write_text(check_file(a.vet_file))
+        return
     run_in_herdr_job(a.model)
     a.model, a.provider = resolve_model(a.model, a.provider)
 
     prompt = " ".join(a.prompt)
-    if a.file and not a.allow_files:
-        reject("-f was given without --allow-files; attachments are off by default for this skill")
     total = len(prompt.encode())
     attached = []
-    for f in a.file:
-        if f == "-":
+    for kind, f in a.file:
+        if kind == "staged":
+            label, _, path = f.partition("=")
+            text = read_staged(path)
+        elif f == "-":
             text = (Path(os.environ["CONSULT_STDIN"]).read_text(errors="replace")
                     if os.environ.get("CONSULT_STDIN") else sys.stdin.read())
             label = "stdin"
