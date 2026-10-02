@@ -3,18 +3,18 @@ name: Fork release
 # Builds the fork's binaries and publishes them as a GitHub (pre)release. Fork only: upstream's
 # release.yml needs its maintainers, secrets, Homebrew, Nix and website, none of which exist here.
 #
-#   git tag fork-v0.9.3-1 && git push origin fork-v0.9.3-1
-#   gh workflow run fork-release.yml -f tag=fork-v0.9.3-1      (builds the same tag by hand)
+#   git tag roherdr-v0.9.3.1 && git push origin roherdr-v0.9.3.1
+#   gh workflow run fork-release.yml -f tag=roherdr-v0.9.3.1      (builds the same tag by hand)
 #
 # The binary stays `herdr`; only the asset names carry the fork's name (FORK_NAME below: roherdr).
 
 on:
   push:
-    tags: ["fork-v*"]
+    tags: ["roherdr-v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: release tag to create or update, e.g. fork-v0.9.3-1
+        description: release tag to create or update, e.g. roherdr-v0.9.3.1
         required: true
         type: string
 
