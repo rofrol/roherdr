@@ -1,0 +1,40 @@
+;; Sandbox profile for running the OpenRouter consult script (ask-bunny).
+;; A "deny default" profile fails to initialise on recent macOS (even /bin/echo aborts), so this allows by default
+;; and denies every read path that could hold a secret. The sandboxed process can reach the network and /tmp/bunny,
+;; but the kernel refuses to read the user's secret stores and project trees — so a cloaked/untrusted model never
+;; receives them even if the script is tricked into opening a file. The OpenRouter token is passed in the
+;; environment (OPENROUTER_BEARER) by the wrapper, so nothing here needs to read ~/.pi.
+;;
+;; HOME is substituted by ask-bunny before the profile is loaded (sandbox-exec has no variable expansion of its own);
+;; the wrapper writes the expanded profile to /tmp/bunny/bunny.sb.
+(version 1)
+(allow default)
+
+;; Secret stores and credential files in the home directory.
+(deny file-read*
+  (subpath "@HOME@/.pi")
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.config")
+  (subpath "@HOME@/.gemini")
+  (subpath "@HOME@/.codex")
+  (subpath "@HOME@/.anthropic")
+  (subpath "@HOME@/.claude")
+  (subpath "@HOME@/.cache/herdr")
+  (literal "@HOME@/.netrc")
+  (literal "@HOME@/.gitconfig")
+  (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.pgpass"))
+
+;; The user's whole project tree: the Bunny-side process has no business reading any project file, so this blocks a
+;; repo-local .env or config outright. The script and consult-stats are staged into /tmp/bunny instead.
+(deny file-read* (subpath "@HOME@/personal_projects"))
+
+;; Backstop: secret-shaped filenames anywhere else the default allow would otherwise expose.
+(deny file-read*
+  (regex #"\.env($|\.)")
+  (regex #"\.(pem|key|p12|pfx|jks|keystore|ppk)$")
+  (regex #"/(id_rsa|id_dsa|id_ecdsa|id_ed25519)($|\.)")
+  (regex #"/(credentials|secrets?)(\.|$)")
+  (regex #"/auth\.json$"))
