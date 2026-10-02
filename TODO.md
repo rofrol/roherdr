@@ -442,6 +442,26 @@
     compile errors show up locally. Still to do: rerun CI until `check` is green
     on all three systems (nextest stops at the first failure), then the name and
     the release workflow.
+  - Done 2026-10-02: CI is green on the fork on all three systems (run
+    36957931855: Ubuntu, macOS, Windows `check`, ConPTY package, conventional
+    commits; all 3580 Windows tests pass). More fixes after the first runs:
+    `target_sweep.py` and its tests run without `fcntl` on Windows; the fork's
+    Unix-only plugin tests (`fork-plugin-test`) run on Unix only; the macOS
+    symlink test is skipped on Windows. To run CI by hand (push and PR events do
+    not start it on this fork): a throwaway branch `ci-dispatch-N` whose `ci.yml`
+    has `workflow_dispatch:`, then `gh workflow run ci.yml --ref ci-dispatch-N`.
+    Upstream's workflows (preview, release, pr-gate, label-next-release-issues,
+    distribution, website-deploy, nix, windows-arm64) are disabled on the fork
+    (`gh workflow disable`, reversible); `ci.yml` and `build-artifacts-manual.yml`
+    stay. New `.github/workflows/fork-release.yml`: a `fork-v*` tag or a manual
+    dispatch with a tag builds Linux x86_64/aarch64 (static musl), macOS
+    arm64/x86_64 and the Windows zip with its ConPTY runtime, and publishes a
+    prerelease with `SHA256SUMS`; the asset names use `FORK_NAME` (now
+    `herdr-fork`). First dispatch built macOS and Windows; Linux aarch64 failed on
+    an `ldd` check (replaced by `file`), rerun in progress.
+  - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
+    title, `--version` text), the self-updater pointing at upstream, trying a
+    prerelease download on the Mac.
   - Done: nothing yet.
 
 - [x] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to
