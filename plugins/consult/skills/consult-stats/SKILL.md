@@ -41,7 +41,8 @@ When showing stats, point out small samples (<5 rated calls per model) instead o
 
 Never consult the model you are running on (`$PI_MODEL`): answers from the same model are not an independent second
 opinion, and their `--unique` count is not meaningful (rate such a call with `--unique 0` and say so in the note).
-Check the acting model before choosing the round's models.
+Check the acting model before choosing the round's models. The default set and the running trials (MiMo, and Space
+Bunny for public material only) are listed under "Default consultation set" in the gpt skill's `SKILL.md`.
 
 The agent that asks (Claude Code, pi) is scored too, once per round (all consult calls on the same question), with `self`:
 - **Before reading any model's answer**, write down your own findings/hypotheses (in the conversation or a scratchpad
