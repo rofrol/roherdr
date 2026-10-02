@@ -363,6 +363,28 @@
   no labels. Candidate: `less --header=2,<name width + 1>` (less 668 on macOS
   supports header columns), but the output holds several tables with different
   name widths and header rows.
+  Consulted Sol, DeepSeek and MiMo (round `20261003-005800-9223`; Space Bunny
+  returned an empty answer). Unanimous: reject `--header` as the fix (it is
+  file-global, so table 1's header floats over the efficiency table and the
+  paired lines; a fixed `50` drifts from the data-driven name width; less before
+  ~590 rejects the option and the popup shows nothing, and `less A || less B`
+  cannot fall back because the first less already read the pipe). Reject shorter
+  names (a second label vocabulary, still too wide) and one block per model.
+  Proposed fix:
+  - `consult.py stats --width N`, explicit only; without it the output stays
+    byte-identical for agents. With it, split the main table into stacked bands
+    that repeat the full name column, header and row order (MiMo: band 1 `uniq/call
+    wrong rated err score`, band 2 `acc/find unique out/call`, band 3 `lat n p50 s
+    p90 s`), drop no column; the 82-column efficiency table stays whole; wrap the
+    legend and the paired lines at N with a hanging indent. If even the name plus
+    one column does not fit, fall back (Sol: one block per model for that width;
+    otherwise the approved collision-safe middle ellipsis).
+  - The plugin measures the popup itself (`stty size` inside the pane; `$COLUMNS`
+    is unset in `sh -c`), falls back to 100, and drops `-S` so an over-long line
+    wraps instead of scrolling the labels away.
+  - MiMo: stop sending stderr into the popup (`2>&1`), a traceback renders as
+    ragged table rows. Tests (DeepSeek): every line `<= N` at 60/80/100/120, and
+    the default output unchanged.
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
