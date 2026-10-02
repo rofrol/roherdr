@@ -142,6 +142,7 @@ def hook_source():
     return text[start : text.index("\nPY\n", start)]
 
 
+@unittest.skipIf(os.name == "nt", "the hook script runs under a POSIX shell")
 class StopHook(unittest.TestCase):
     """The Claude Stop hook asks once for a final question that was not reported."""
 
@@ -253,6 +254,7 @@ class StopHook(unittest.TestCase):
         self.assertEqual(json.loads(self.run_hook(entries))["decision"], "block")
 
 
+@unittest.skipIf(os.name == "nt", "the hook script runs under a POSIX shell")
 class PlanHook(unittest.TestCase):
     """The TodoWrite hook reports `done/total` as the plan token."""
 

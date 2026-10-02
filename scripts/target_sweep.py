@@ -13,12 +13,16 @@ running, instead of guessing from the process list. Run it through the justfile,
 not by hand, and do not delete `target/` artifacts yourself.
 """
 import argparse
-import fcntl
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: nothing here applies
+    fcntl = None
 
 GIB = 1024**3
 DEFAULT_MAX_TARGET_GIB = 25
@@ -107,6 +111,9 @@ def free_bytes(path):
 
 
 def main():
+    if fcntl is None:
+        print("target sweep: not needed on Windows")
+        return 0
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=["sweep", "guard"])
     parser.add_argument("--target", type=Path, default=Path(__file__).resolve().parent.parent / "target")

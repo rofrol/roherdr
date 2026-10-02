@@ -28,11 +28,20 @@ test: guard
 # Run repository maintenance contract tests
 maintenance-test:
     {{python}} -m unittest scripts.test_target_sweep scripts.test_awaiting_reply_audit scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    bun test scripts/release-workflows.test.ts
+    just fork-plugin-test
+
+# The fork's plugins (herdr-job, consult, the Pi extensions) are Unix tools: their tests run on Unix only.
+[unix]
+fork-plugin-test:
     {{python}} -m unittest discover -s plugins/job -p "test_*.py"
     {{python}} -m unittest discover -s plugins/consult -p "test_*.py"
     just pi-activity-test
-    bun test scripts/release-workflows.test.ts
     bun test plugins/pi-title/*.test.ts
+
+[windows]
+fork-plugin-test:
+    @echo the fork plugin tests are Unix-only
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
 [windows]

@@ -1,4 +1,7 @@
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +33,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(self.names(target_sweep.plan(Path("/t"), sizes, 13 * GIB)), ["debug", "a"])
 
 
+@unittest.skipIf(fcntl is None, "advisory file locks are Unix-only")
 class LockTests(unittest.TestCase):
     def test_a_running_build_stops_the_sweep(self):
         with tempfile.TemporaryDirectory() as tmp:
