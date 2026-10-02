@@ -856,7 +856,7 @@ impl ClientShellState {
                 let rendered = render::render_notification_log(
                     &mut composed,
                     anchor,
-                    log.highlighted,
+                    self.notification_log_highlighted(&entries),
                     &rows,
                     &self.config.palette,
                 )?;

@@ -364,7 +364,7 @@ pub(crate) type LogRow = (
 pub(crate) fn render_notification_log(
     buffer: &mut Buffer,
     button: Rect,
-    highlighted: usize,
+    highlighted: Option<usize>,
     rows: &[LogRow],
     palette: &Palette,
 ) -> Option<OverlayRender> {
@@ -419,7 +419,7 @@ pub(crate) fn render_notification_log(
             break;
         }
         let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let selected = index == highlighted;
+        let selected = Some(index) == highlighted;
         // The highlighted row is a light accent tint with a bar in the first
         // column, so the state icons keep their own colours (a solid accent
         // fill turned them white); without an RGB palette, the solid fill.
