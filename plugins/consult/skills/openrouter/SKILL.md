@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo and Space Bunny trial rounds described inside; never as a default consultant otherwise.
+description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
 ---
 
 # Consulting an OpenRouter model (cloaked models such as Space Bunny Alpha)
@@ -59,38 +59,37 @@ payload summary is printed there.
 
 ## When to use it
 
-- On an explicit request to try or evaluate an OpenRouter / cloaked model, and in the two trials below: MiMo and
-  Space Bunny each join the default round (sol + DeepSeek) with the same prompt and round id.
+- On an explicit request to try or evaluate an OpenRouter / cloaked model, and in the MiMo trial below: MiMo joins
+  the default round (sol + DeepSeek) with the same prompt and round id.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
 
-## Space Bunny trial (from 2026-10-02)
+## Space Bunny trial (2026-10-02, ended 2026-10-03)
 
-The user asked to add Space Bunny Alpha (the default model, no `-m`) to consultations. It is free while in preview,
-so the cost is only the extra answer to read.
+Space Bunny Alpha (the default model, no `-m`) joined 19 rounds and failed: over the shared rounds 0.53 accepted
+unique findings per call against DeepSeek's 0.74, below the 0.7 early-stop bar, with p50 latency 76 s. The user
+dropped it from rounds on 2026-10-03; ask it only on request. A cloaked model can vanish or turn into a paid named
+one, so re-check the slug when it errors; the served identity is unverified by design.
 
-- Add `"$D"/ask_openrouter.sh "<same prompt>"` to every round, with the same prompt as the others, private code
-  included: the user decided on 2026-10-02 that Space Bunny may get everything DeepSeek and MiMo get, accepting that
-  its unnamed provider logs it. Secrets still never go (the secret scan hard-refuses them).
-- Same scoring as the MiMo trial: rate every call, 20 rounds hard cap, stop after 8 rated rounds below 0.7 accepted
-  unique findings per call or above 40% rejected. On a pass it can replace DeepSeek like MiMo could; a cloaked model can also vanish or turn into a paid named
-  one, so re-check the slug when it errors.
-- The served identity is unverified by design; consult-stats logs the provider the completion reports.
+## MiMo trial (second, from 2026-10-03)
 
-## MiMo trial (from 2026-10-02)
+Xiaomi MiMo-V2.6-Pro (`-m mimo`) through OpenRouter, pinned to the Xiaomi provider so the prompt goes to one known
+party, not to whichever of the four hosts (GMICloud, DeepInfra, Novita, Xiaomi) OpenRouter picks. Direct Xiaomi
+billing is not cheaper per token (same $0.435/$0.87 per M), and its Token Plan subscription forbids calls from
+scripts. A consult costs about half a cent.
 
-The user decided to trial Xiaomi MiMo-V2.6-Pro (`-m mimo`) through OpenRouter, pinned to the Xiaomi provider so the
-prompt goes to one known party, not to whichever of the four hosts (GMICloud, DeepInfra, Novita, Xiaomi) OpenRouter
-picks. Direct Xiaomi billing is not cheaper per token (same $0.435/$0.87 per M), and its Token Plan subscription
-forbids calls from scripts. A consult costs about half a cent.
-
-- The trial is an audition against DeepSeek, not an extra voice: in each consultation round add `-m mimo` next to the
-  default pair (sol + DeepSeek), same prompt, same round id, and rate it like the others.
-- 20 rounds, hard cap. Stop early after 8 rated rounds if MiMo's accepted unique findings per call are below 0.7 or
-  more than 40% of its findings are rejected.
-- Pass: MiMo beats DeepSeek by at least 0.5 accepted unique findings per call over the same rounds, with a rejected
-  share no higher than DeepSeek's. On a pass MiMo replaces DeepSeek in the default pair; on a fail drop it. Compare
-  with `consult.py stats --pairs`.
+- First trial (2026-10-02, rule: replace DeepSeek on >= +0.5 accepted unique findings per call with a rejected share
+  no higher): over the first 20 shared rounds MiMo 1.10 vs DeepSeek 0.75, paired difference +0.35 (bootstrap 95% CI
+  0.10..0.60), rejected 31/137 vs 28/137. Reliably better, but below the margin, so DeepSeek stays; the rejected gap
+  (3 findings) is noise. The CI shows more rounds would not reach +0.5.
+- Second trial, decided by the user on 2026-10-03: MiMo as a cheap third voice next to DeepSeek, not its
+  replacement. In each consultation round add `-m mimo` next to the default pair (sol + DeepSeek), same prompt, same
+  round id, and rate it like the others. Count only rounds started after `20261003-013705-77a9`.
+- 20 shared rounds, hard cap. Pass: paired mean difference MiMo minus DeepSeek in accepted unique findings per call
+  >= +0.25, and MiMo's rejected share at most 5 points above DeepSeek's (a smaller gap is noise at this sample size).
+  On a pass MiMo stays in the default set next to DeepSeek; on a fail drop it. Replacing DeepSeek needs its own
+  decision. Until `consult.py stats --vs` exists (TODO.md), compute the paired figures over the shared rounds only,
+  never from the pooled table rows, which mix rounds without MiMo.
 - Xiaomi publishes no retention or training terms for this API (China-based, like DeepSeek). Send it what you would
   send DeepSeek, never secrets; the secret scan still hard-refuses them. Attach files with `-f` as for DeepSeek: the
   `ask_openrouter.sh` sandbox cannot read the repo, so the wrapper vets each `-f` file outside it and passes in a copy.

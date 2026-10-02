@@ -29,7 +29,7 @@ Guidelines:
   `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- Who joins a round (default pair, MiMo and Space Bunny trials) is set under "Default consultation set" in the gpt
+- Who joins a round (default pair, MiMo trial) is set under "Default consultation set" in the gpt
   skill's `SKILL.md`.
 - Every consultation is a round: start the command with `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)`
   and launch all models for that question in the same Bash call, so their calls share the round id
