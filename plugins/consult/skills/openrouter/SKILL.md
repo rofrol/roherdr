@@ -87,8 +87,11 @@ scripts. A consult costs about half a cent.
 - 20 shared rounds, hard cap. Pass: paired mean difference MiMo minus DeepSeek in accepted unique findings per call
   >= +0.25, and MiMo's rejected share at most 5 points above DeepSeek's (a smaller gap is noise at this sample size).
   On a pass MiMo stays in the default set next to DeepSeek; on a fail drop it. Replacing DeepSeek needs its own
-  decision. Until `consult.py stats --vs` exists (TODO.md), compute the paired figures over the shared rounds only,
+  decision. Read the result with `consult.py stats --vs mimo deepseek --since 20261003-013705-77a9 --rounds 20`,
   never from the pooled table rows, which mix rounds without MiMo.
+- A round whose coordinator is DeepSeek asks Sol + Claude Sonnet, so it has no DeepSeek call: it does not count
+  toward the 20 rounds (`--vs` leaves it out). Still add MiMo there if you like; never add a DeepSeek call only to
+  make a pair (that is a self-consultation). The verdict therefore speaks for rounds run by other coordinators.
 - Xiaomi publishes no retention or training terms for this API (China-based, like DeepSeek). Send it what you would
   send DeepSeek, never secrets; the secret scan still hard-refuses them. Attach files with `-f` as for DeepSeek: the
   `ask_openrouter.sh` sandbox cannot read the repo, so the wrapper vets each `-f` file outside it and passes in a copy.

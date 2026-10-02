@@ -408,7 +408,7 @@
   (20 shared rounds, pass on >= +0.25 paired unique per call with a rejected
   share at most 5 points above DeepSeek's); written into the openrouter, gpt,
   deepseek and consult-stats `SKILL.md` and the plugin README.
-- [ ] Head-to-head trial view in consult stats (user, 2026-10-03: "MiMo has more
+- [x] Head-to-head trial view in consult stats (user, 2026-10-03: "MiMo has more
   unique but more rejected? Show it in the table? Is the verdict visible in the
   table?"). It is not: `--pairs` pairs only models of the same skill, so the
   MiMo-vs-DeepSeek verdict came from an ad-hoc script. Add `consult.py stats
@@ -420,6 +420,10 @@
   and verdict printed by the tool (`unique margin >= +0.50: no`, `rejected
   share <= peer: no`, `verdict: keep DeepSeek`), with rounds past the trial's
   cap shown separately as post-endpoint.
+  Done 2026-10-03 as `consult.py stats --vs A B [--since ROUND] [--rounds N]`,
+  after a second round (`20261003-014925-9487`, Sol, DeepSeek, MiMo agree):
+  numbers only, no rule verdict and no cost column (no price table yet), and
+  `--pairs` untouched. It also counts the rounds it leaves out.
 - [ ] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is

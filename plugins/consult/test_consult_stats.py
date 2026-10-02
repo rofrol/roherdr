@@ -175,3 +175,44 @@ class LogCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VsTests(unittest.TestCase):
+    def run_vs(self, calls, ratings, **kw):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            mod.print_vs(dict(calls), ratings, "mimo", "deepseek", **kw)
+        return out.getvalue()
+
+    def rounds(self):
+        calls, ratings = [], {}
+        for i, (um, ud) in enumerate([(2, 0), (1, 1), (0, 1)]):
+            rnd = f"2026100{i + 1}-000000-aaaa"
+            for cid, model, skill, u in ((f"m{i}", "xiaomi/mimo-v2.6-pro", "openrouter", um),
+                                         (f"d{i}", "DeepSeek-V4.1-Flash", "deepseek", ud)):
+                calls.append(call(cid, model, 0, 10, rnd=rnd, skill=skill))
+                ratings[cid] = {"verdict": "useful", "findings": 4, "accepted": 3, "unique": u}
+        return calls, ratings
+
+    def test_pairs_only_shared_rated_rounds(self):
+        calls, ratings = self.rounds()
+        calls.append(call("x", "DeepSeek-V4.1-Flash", 0, 10, rnd="20261009-000000-bbbb", skill="deepseek"))
+        calls.append(call("e", "xiaomi/mimo-v2.6-pro", 0, 10, status="error", rnd="20261009-000000-bbbb",
+                          skill="openrouter"))
+        text = self.run_vs(calls, ratings)
+        self.assertIn("3 shared rated rounds", text)
+        self.assertIn("0 rounds with only mimo, 1 with only deepseek", text)
+        self.assertIn("paired uniq/call mimo - deepseek: +0.33", text)
+        self.assertIn("W/T/L 1/1/1", text)
+        self.assertIn("rejected share mimo - deepseek: +0.0 points", text)
+
+    def test_since_and_rounds_cut_chronologically(self):
+        calls, ratings = self.rounds()
+        self.assertIn("1 shared rated rounds (20261002-000000-aaaa", self.run_vs(calls, ratings, since="20261001-000000-aaaa", limit=1))
+        self.assertIn("1 later rounds left out", self.run_vs(calls, ratings, since="20261001-000000-aaaa", limit=1))
+
+    def test_bootstrap_is_seeded(self):
+        data = list(range(10))
+        self.assertEqual(mod.bootstrap_ci(data, lambda xs: sum(xs) / len(xs)),
+                         mod.bootstrap_ci(data, lambda xs: sum(xs) / len(xs)))
