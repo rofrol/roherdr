@@ -13,9 +13,17 @@ _herdr_relaunch_preexec() {
   # Never record herdr itself (e.g. `herdr server stop` would replay on every start).
   [[ $cmd == herdr* || $cmd == *"&& herdr"* ]] && { rm -f -- "$_herdr_relaunch_file"; return; }
   (umask 077; mkdir -p "${_herdr_relaunch_file:h}" &&
-    print -r -- "$HERDR_TAB_ID"$'\n'"$PWD"$'\n'"$cmd" >| "$_herdr_relaunch_file")
+    print -r -- "$HERDR_TAB_ID"$'\n'"$PWD"$'\n'"$cmd" >| "$_herdr_relaunch_file") &&
+    _herdr_relaunch_owned=1
 }
-_herdr_relaunch_precmd() { rm -f -- "$_herdr_relaunch_file"; }
+# Delete only a record this shell wrote: precmd also runs before a new shell's
+# first prompt, and a shell restored after a restart must leave the previous
+# shell's record for the startup hook.
+_herdr_relaunch_precmd() {
+  [[ -n $_herdr_relaunch_owned ]] || return 0
+  unset _herdr_relaunch_owned
+  rm -f -- "$_herdr_relaunch_file"
+}
 
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec _herdr_relaunch_preexec

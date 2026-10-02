@@ -7,10 +7,16 @@ and nothing running in the background.
 - `relaunch.zsh` (sourced from `~/.zshrc` in herdr panes) writes the command
   you start to `~/.local/state/herdr/plugins/local.relaunch/<socket>/<pane>`
   (preexec) and deletes it when the prompt returns (precmd). A restart kills
-  the program before precmd, so its record survives. Files are 0600 and may
+  the program before precmd, so its record survives. A shell deletes only a
+  record it wrote itself: precmd also runs before a new shell's first prompt,
+  and a shell restored after a reboot must leave the old record for the hook. Files are 0600 and may
   contain command-line secrets; treat them like shell history.
 - The `[[startup]]` hook (`relaunch.js`) reruns each record in the same pane if
   it has the same id and tab, is not an agent pane and is an idle shell.
+
+Each run appends what it did (`ran`, `skip <reason>`, `drop`) to
+`~/.local/state/herdr/plugins/local.relaunch/relaunch.log` (0600, trimmed past
+256 KiB), because the server keeps hook output only until its next start.
 
 Limits: programs start fresh (no in-app state); only commands typed in zsh are
 seen; a one-shot command killed mid-way (e.g. a migration) is run again.
