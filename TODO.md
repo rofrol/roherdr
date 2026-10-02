@@ -411,6 +411,19 @@
   `ui.tab_label` derives from the title is already the task, so nothing changes
   for it.
 
+- [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
+  probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
+  rollback) is the update path of the only user, and the updater is off for fork builds.
+  Trigger to do it: the first outside user relying on the published binaries, or the
+  public announcement. Then in two steps: (1) notify only: compare `(0.9.3, revision)`
+  from the embedded `ROHERDR_VERSION` with the newest `roherdr-v*` release of
+  `rofrol/roherdr`, show "newer release available" and the download command, nothing
+  replaced; local builds (hash instead of a number) do not check. (2) Only when several
+  binary users need it, after the upstream rebase: download `roherdr-<os>-<arch>`, verify
+  `SHA256SUMS`, stage the file and swap it after the process exits, with a tested rollback;
+  if the fork gets a Homebrew tap, leave upgrades to Homebrew instead. Not before the
+  upstream rebase (rebase debt). Done: nothing.
+
 - [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
   a name for the herdr fork, I already have roguix, maybe follow similar
   conventions; make the Windows tests pass; do we build releases on GitHub
