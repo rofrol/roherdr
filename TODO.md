@@ -40,12 +40,20 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
-- [ ] Flaky tests under load (seen 2026-10-01 while other sessions built):
+- [x] Flaky tests under load (seen 2026-10-01 while other sessions built):
   `client_mode::federated_client_starts_without_local_and_survives_its_restart`
   (4 of the last 8 full runs, passes alone) and once `app::api::plugins::tests::
   plugin_pane_open_uses_plugin_root_title_env_and_target_context` ("bin path"
   panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
-  investigated. Done: nothing.
+  investigated.
+  Done 2026-10-02: the plugin test's capture helper (`read_capture_when_ready`) now takes
+  the file only when a second read 40 ms later finds it unchanged (the shell creates the
+  file before `printf` writes it, so a loaded machine could read a partial one; 25 stressed
+  runs did not reproduce the old failure, so this is by reasoning, not by a failing test
+  turned green); the federated test's waits (8-15 s each) are tripled with `patient()` (it
+  failed at 26-28 s in full runs under load 30-47 and passed alone in 11-16 s, even with 12
+  busy processes running, so this too is a margin, not a reproduction). Watch the next
+  full runs; reopen if either fails again.
 
 - [x] History rows were cramped and unaligned (user, 2026-10-02, screenshot: the
   time glued to the state icon; "some rows have only a date, some date and
