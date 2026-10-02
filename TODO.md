@@ -395,11 +395,21 @@
   the hook output lives only in the in-memory plugin log, so the 12:31 run is
   lost. Plan: (1) plugin fix: `precmd` deletes only a record its own shell wrote
   in `preexec` (a shell-local flag), `relaunch.js` tolerates a missing file and
-  appends its output to a log file; (2) later, consider moving the record into
-  core (server saves the foreground argv and the process's own cwd per non-agent
-  pane; on a cold restore only, relaunch an opt-in or allowlisted program once
-  per snapshot generation, spawned as argv rather than typed into the shell;
-  never for one-shot commands; argv may hold secrets).
+  appends its output to a log file (done, `00767242`); (2) move it into core.
+  Design consulted (round `20261002-234859-8d6d`, Sol, DeepSeek, MiMo, Space
+  Bunny): all four reject "everything but agents and shells" (kitty-like) even
+  with a denylist (one-shots such as `terraform apply`, `rsync --delete`, a
+  `git commit` editor; `npm run dev` shows up as `node ...`). Consensus: an
+  allowlist `[session] relaunch_programs` (code default empty, so upstream is
+  unchanged; the user's config lists `lazygit`); record per pane the last
+  stable allowlisted foreground job (canonical executable path, argv, the
+  process's own cwd), never cleared by a failed probe, frozen at shutdown so a
+  shell that returns because SIGTERM killed the program does not erase it;
+  restore only on a cold restore, spawned as argv with `launch_argv` +
+  `respawn_shell_on_exit` (MiMo alone preferred typing into the shell);
+  `session.json` must become 0600 (it is 0644 today); the plugin must not
+  launch a second copy. Later options: an "offer, don't run" mode for
+  uncertain records, a per-pane opt-in tied to one command.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
