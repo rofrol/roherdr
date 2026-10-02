@@ -32,13 +32,38 @@ pub(super) struct NotificationLog {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ClientNotificationLogOverlay {
-    /// Index into the rows, newest first.
-    pub(super) highlighted: usize,
+    /// The row Enter, `x` and Delete act on, kept by what it shows so it
+    /// stays on the same agent, tab or notification when the rows change
+    /// under it. None until the pointer or an arrow key picks a row: the list
+    /// opens on a click, and a row lit at once looked current and made `x`
+    /// remove the first bookmark nobody chose.
+    pub(super) highlighted: Option<RowKey>,
     /// What the rows list.
     pub(super) view: NotificationLogView,
     /// The one-item menu of a bookmark row, open over the list: it closes
     /// alone, and removing the bookmark leaves the list open.
     pub(super) menu: Option<BookmarkMenu>,
+}
+
+/// What a dropdown row shows: a past notification, an agent's pane, or a
+/// bookmarked tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RowKey {
+    Notification(u64),
+    Pane(String),
+    Tab(String),
+}
+
+impl RowKey {
+    fn of(view: NotificationLogView, row: &NotificationRecord) -> Option<Self> {
+        match view {
+            NotificationLogView::History => Some(Self::Notification(row.id)),
+            NotificationLogView::Working | NotificationLogView::Asking => {
+                row.pane_id.clone().map(Self::Pane)
+            }
+            NotificationLogView::Bookmarks => row.tab_id.clone().map(Self::Tab),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,8 +301,41 @@ impl ClientShellState {
         if log.view != NotificationLogView::Bookmarks {
             return;
         }
-        let highlighted = log.highlighted;
+        let Some(highlighted) = self.notification_log_highlighted(&self.notification_log_rows())
+        else {
+            return;
+        };
         self.remove_bookmark_row(highlighted, outcome);
+        // The row stays until the snapshot drops it; a second `x` must not
+        // remove it again or move on to the next bookmark.
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            log.highlighted = None;
+        }
+    }
+
+    /// The highlighted row's index in `rows`, or none when no row is
+    /// highlighted or the highlighted one is gone.
+    pub(super) fn notification_log_highlighted(
+        &self,
+        rows: &[NotificationRecord],
+    ) -> Option<usize> {
+        let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_ref() else {
+            return None;
+        };
+        let key = log.highlighted.as_ref()?;
+        rows.iter()
+            .position(|row| RowKey::of(log.view, row).as_ref() == Some(key))
+    }
+
+    /// Highlights the row at `index` of the open list.
+    pub(super) fn highlight_notification_log_row(&mut self, index: usize) {
+        let key = self
+            .notification_log_rows()
+            .get(index)
+            .and_then(|row| RowKey::of(self.notification_log_view(), row));
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            log.highlighted = key;
+        }
     }
 
     pub(super) fn remove_bookmark_row(&mut self, index: usize, outcome: &mut ClientShellInput) {
@@ -302,8 +360,8 @@ impl ClientShellState {
         else {
             return;
         };
+        self.highlight_notification_log_row(index);
         if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
-            log.highlighted = index;
             log.menu = Some(BookmarkMenu { tab_id, x, y });
         }
     }
@@ -525,7 +583,7 @@ impl ClientShellState {
         self.sync_notification_log_source();
         self.overlay = Some(ClientShellOverlay::NotificationLog(
             ClientNotificationLogOverlay {
-                highlighted: 0,
+                highlighted: None,
                 view,
                 menu: None,
             },
@@ -544,12 +602,20 @@ impl ClientShellState {
         }
     }
 
+    /// Moves the highlight by `delta` rows; with none, down starts at the
+    /// first row and up at the last.
     pub(super) fn move_notification_log_selection(&mut self, delta: isize) {
-        let rows = self.notification_log_rows().len();
-        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
-            log.highlighted = (log.highlighted as isize + delta)
-                .clamp(0, rows.saturating_sub(1) as isize) as usize;
+        let rows = self.notification_log_rows();
+        if rows.is_empty() {
+            return;
         }
+        let last = rows.len() - 1;
+        let index = match self.notification_log_highlighted(&rows) {
+            Some(index) => (index as isize + delta).clamp(0, last as isize) as usize,
+            None if delta < 0 => last,
+            None => 0,
+        };
+        self.highlight_notification_log_row(index);
     }
 
     /// A jump from a list, or a new tab, lands in a collapsed space (or one

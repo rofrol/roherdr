@@ -1174,11 +1174,11 @@ fn the_notification_history_lists_and_opens_past_notifications() {
     let frame = state.compose(106, 30).unwrap();
     let rows = state.hits.notification_log_rows.clone();
     assert_eq!(rows.len(), 2);
-    // Newest first; the highlighted row has the accent bar and keeps its
-    // unread mark beside it; the read row has none.
+    // Newest first; no row is highlighted until one is picked; the unread
+    // row is marked, the read row is not.
     let first = frame_rows(&frame)[rows[0].0.y as usize].clone();
     assert!(
-        first.contains("▌•") && first.contains("elsewhere"),
+        !first.contains('▌') && first.contains('•') && first.contains("elsewhere"),
         "{first:?}"
     );
     let second = frame_rows(&frame)[rows[1].0.y as usize].clone();
@@ -2543,6 +2543,94 @@ fn bookmarked_tabs_are_listed_in_the_order_of_the_spaces_and_removed_from_the_li
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
                 if params.tab_id == "tab_1" && !params.bookmarked))));
+}
+
+#[test]
+fn a_header_list_highlights_no_row_until_one_is_picked_and_keeps_it_on_its_tab() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents.clear();
+    let mut second_space = projected.workspaces[0].clone();
+    second_space.workspace_id = "ws_2".into();
+    second_space.label = "second".into();
+    second_space.number = 2;
+    second_space.focused = false;
+    projected.workspaces.push(second_space);
+    let mut other = projected.tabs[0].clone();
+    other.tab_id = "tab_other".into();
+    other.workspace_id = "ws_2".into();
+    other.label = "other tab".into();
+    other.focused = false;
+    other.bookmarked = true;
+    projected.tabs.push(other);
+    projected.tabs[0].label = "first tab".into();
+    projected.tabs[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    let key = |state: &mut ClientShellState, code: KeyCode| {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(
+            crate::input::TerminalKey::new(code, KeyModifiers::empty()),
+        )])
+    };
+    // The text of the highlighted row, if one has the accent bar.
+    let lit = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let lines = frame_rows(&frame);
+        state
+            .hits
+            .notification_log_rows
+            .iter()
+            .map(|(rect, _)| {
+                lines[rect.y as usize]
+                    .chars()
+                    .skip(rect.x as usize)
+                    .take(rect.width as usize)
+                    .collect::<String>()
+            })
+            .find(|line| line.contains('▌'))
+    };
+
+    state.compose(106, 30).unwrap();
+    let button = state.hits.bookmarks_list_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    assert_eq!(lit(&mut state), None);
+    // With nothing picked, `x` removes nothing and Enter jumps nowhere.
+    assert!(key(&mut state, KeyCode::Char('x')).actions.is_empty());
+    assert!(key(&mut state, KeyCode::Enter).actions.is_empty());
+    assert!(state.overlay.is_some());
+
+    // Up from nothing picks the last row.
+    key(&mut state, KeyCode::Up);
+    let line = lit(&mut state).expect("a row is lit");
+    assert!(line.contains("other tab"), "{line:?}");
+
+    // The rows reorder under it: the highlight stays on its tab.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces.reverse();
+    state.set_snapshot(Box::new(projected));
+    let line = lit(&mut state).expect("a row is lit");
+    assert!(line.contains("other tab"), "{line:?}");
+    let frame = state.compose(106, 30).unwrap();
+    let first = frame_rows(&frame)[state.hits.notification_log_rows[0].0.y as usize].clone();
+    assert!(first.contains("other tab"), "now first: {first:?}");
+
+    // `x` removes that bookmark once: the row waits for the snapshot, and a
+    // second `x` must not remove it again.
+    let outcome = key(&mut state, KeyCode::Char('x'));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabBookmark(params)
+                if params.tab_id == "tab_other" && !params.bookmarked))));
+    assert_eq!(lit(&mut state), None);
+    assert!(key(&mut state, KeyCode::Char('x')).actions.is_empty());
+
+    // Down from nothing picks the first row.
+    key(&mut state, KeyCode::Down);
+    let line = lit(&mut state).expect("a row is lit");
+    assert!(line.contains("other tab"), "{line:?}");
+    key(&mut state, KeyCode::Down);
+    let line = lit(&mut state).expect("a row is lit");
+    assert!(line.contains("first tab"), "{line:?}");
 }
 
 #[test]

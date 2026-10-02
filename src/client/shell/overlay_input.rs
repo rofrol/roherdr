@@ -611,11 +611,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
                 KeyCode::Enter => {
-                    let highlighted = match self.overlay.as_ref() {
-                        Some(ClientShellOverlay::NotificationLog(log)) => log.highlighted,
-                        _ => return,
-                    };
-                    self.activate_notification_log_row(highlighted, outcome);
+                    let rows = self.notification_log_rows();
+                    if let Some(highlighted) = self.notification_log_highlighted(&rows) {
+                        self.activate_notification_log_row(highlighted, outcome);
+                    }
                 }
                 KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('x') => {
                     self.remove_highlighted_bookmark(outcome);

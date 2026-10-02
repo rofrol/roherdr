@@ -2036,10 +2036,8 @@ impl ClientShellState {
                 .copied();
             match mouse.kind {
                 MouseEventKind::Moved => {
-                    if let (Some((_, index)), Some(ClientShellOverlay::NotificationLog(log))) =
-                        (row_hit, self.overlay.as_mut())
-                    {
-                        log.highlighted = index;
+                    if let Some((_, index)) = row_hit {
+                        self.highlight_notification_log_row(index);
                         outcome.repaint = true;
                     }
                 }
