@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Add the zsh hook of the relaunch plugin to ~/.zshrc (or $ZDOTDIR/.zshrc).
+# The block sources a stable link in the plugin's state directory, which this
+# script and every server start point at this plugin's relaunch.zsh, so moving
+# or updating the plugin needs no change in .zshrc.
+# Safe to re-run: an rc file that already sources relaunch.zsh is left alone.
+# Usage: install [--uninstall] [RC_FILE]
+set -euo pipefail
+here="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/local.relaunch"
+begin='# >>> herdr relaunch plugin >>>'
+end='# <<< herdr relaunch plugin <<<'
+
+uninstall=0
+if [ "${1:-}" = "--uninstall" ]; then uninstall=1; shift; fi
+rc="${1:-${ZDOTDIR:-$HOME}/.zshrc}"
+
+if [ "$uninstall" = 1 ]; then
+  if [ -f "$rc" ] && grep -qxF "$begin" "$rc"; then
+    tmp="$(mktemp "$rc.XXXXXX")"
+    awk -v b="$begin" -v e="$end" '$0 == b {skip = 1} !skip {print} $0 == e {skip = 0}' "$rc" > "$tmp"
+    cat "$tmp" > "$rc" && rm -f "$tmp"
+    echo "removed  the relaunch block from $rc"
+  else
+    echo "ok       $rc has no relaunch block"
+  fi
+  exit 0
+fi
+
+mkdir -p "$state"
+chmod 700 "$state"
+ln -sfn "$here/relaunch.zsh" "$state/relaunch.zsh"
+echo "linked   $state/relaunch.zsh -> $here/relaunch.zsh"
+
+if [ -f "$rc" ] && { grep -qxF "$begin" "$rc" || grep -q 'source .*relaunch\.zsh' "$rc"; }; then
+  echo "ok       $rc already sources relaunch.zsh"
+  exit 0
+fi
+# Keep the block on its own lines when the file does not end with a newline.
+if [ -s "$rc" ] && [ -n "$(tail -c 1 "$rc")" ]; then echo >> "$rc"; fi
+cat >> "$rc" <<EOF
+$begin
+# Remembers the program running in each herdr pane so it comes back after a reboot.
+_herdr_relaunch_zsh="\${XDG_STATE_HOME:-\$HOME/.local/state}/herdr/plugins/local.relaunch/relaunch.zsh"
+[[ -n \$HERDR_PANE_ID && -r \$_herdr_relaunch_zsh ]] && source "\$_herdr_relaunch_zsh"
+unset _herdr_relaunch_zsh
+$end
+EOF
+echo "added    the relaunch block to $rc; new herdr panes load it"

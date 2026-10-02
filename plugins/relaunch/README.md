@@ -21,17 +21,21 @@ Each run appends what it did (`ran`, `skip <reason>`, `drop`) to
 Limits: programs start fresh (no in-app state); only commands typed in zsh are
 seen; a one-shot command killed mid-way (e.g. a migration) is run again.
 
-Preview: `node relaunch.js --dry-run`. Disable: `herdr plugin unlink
-local.relaunch` and remove the `source` line from `~/.zshrc`.
+Preview: `node relaunch.js --dry-run`.
 
-Setup:
-
-```sh
-herdr plugin link ~/personal_projects/herdr/plugins/relaunch
-```
-
-and in `~/.zshrc`:
+Setup (zsh only; other shells are not recorded):
 
 ```sh
-[[ -n $HERDR_PANE_ID ]] && source ~/personal_projects/herdr/plugins/relaunch/relaunch.zsh
+herdr plugin install rofrol/herdr/plugins/relaunch   # or: herdr plugin link plugins/relaunch
 ```
+
+then add the zsh hook with the "Relaunch: install zsh hook" popup, or run
+`./install` in the plugin directory. It appends a marked block to `~/.zshrc`
+(`$ZDOTDIR/.zshrc` when set) that sources a link in the state directory
+above; the script and every server start point that link at the plugin, so
+the block keeps working when the plugin moves or updates. An rc file that
+already sources `relaunch.zsh` is left alone. Panes opened after that record
+their programs; open ones need a new shell (`exec zsh`).
+
+Disable: `./install --uninstall` (removes only the marked block) and
+`herdr plugin uninstall local.relaunch` (or `unlink` for a linked checkout).
