@@ -9,6 +9,12 @@ statistics on which of those models actually helped.
 - `claude`: Claude Sonnet 5.5 by default, or explicit Opus 5.5 with
   `ask_claude.py -m claude-opus-5-5`, via Claude Code CLI. Subscription billing
   requires subscription login; API-key/cloud billing is not a subscription.
+- `openrouter`: an OpenRouter model (default the free cloaked
+  `stealth/space-bunny-alpha`), on request only, never a default consultant. The
+  provider is anonymous and retains what is sent, so the skill sends synthetic or
+  public material only: it has no repo mode, attachments need `--allow-files` and
+  are vetted fail-closed, and the prompt is hard-refused if it contains
+  secret-shaped strings. See its `SKILL.md`.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`
@@ -25,6 +31,7 @@ spend another vendor's quota:
 | `claude` | the Anthropic account (Claude Code login; no API key is used) |
 | `gemini` | the Google AI subscription, through `agy` |
 | `deepseek` | DeepSeek API credits, per token |
+| `openrouter` | the OpenRouter account (cloaked models are free in preview) |
 
 So a Codex/ChatGPT limit (`You've hit your usage limit`) says nothing about
 Sonnet, and vice versa. After a limit error the call is logged with `status
