@@ -671,6 +671,39 @@
     tab, the agent state icon in the rows, the empty-state hint, a change
     event for other clients (they pick it up with the next snapshot).
 
+- [ ] Space bookmarks (user, 2026-10-02: "besides bookmarks for tabs, make
+  bookmarks for spaces"). Consulted GPT Sol, DeepSeek, MiMo and Space Bunny.
+  - Agreed by all four: mirror the tab bookmark. A persisted `bookmarked` flag
+    on the space in the server, optional in the snapshot and `workspace.list`/
+    `workspace.get` (absent means false); idempotent `workspace.bookmark
+    {workspace_id, bookmarked}` (the API's noun is `workspace`, so not a new
+    `space.*` family); CLI `herdr workspace bookmark|unbookmark <id>`; a
+    deleted space takes its bookmark with it; space and tab bookmarks are
+    independent (bookmarking a space does not bookmark its tabs, removing one
+    never touches the other).
+  - UI (all four): no second header button at 32 columns; the one `★N`
+    counts both and its dropdown shows space rows with their own glyph (not
+    colour alone), either interleaved (a space row, then the bookmarked tabs of
+    that space; Sol, MiMo) or in two sections, Spaces then Tabs (DeepSeek,
+    Space Bunny). A click on a space row focuses the space (its active tab,
+    like `workspace.focus`), expands it when collapsed and scrolls it into
+    view; an empty space shows its empty state and never gets a tab created.
+    Removal as for tab rows (middle click, Delete, `x`, right-click "Remove
+    from bookmarks"). Entry point: "Add to bookmarks" / "Remove from bookmarks"
+    in the space header's context menu.
+  - Open, the user's call: is a space bookmark a jump target only (Sol, Space
+    Bunny: do not reorder the sidebar) or also a pin that sorts the space to
+    the top of the sidebar (MiMo; DeepSeek thinks "pin" is what the user
+    means, since a list of spaces alone repeats the sidebar)? With several
+    servers: rows grouped by server, a server suffix on clashing names, each
+    server keeps its own bookmarks (no client-side cross-server store).
+  - Do not build (models): custom bookmark order, folders or tags, automatic
+    bookmarking, `expanded` or other UI state on the wire.
+  - Tests: absent field decodes as false, idempotent set, persistence over a
+    restart, delete cascade, rename and reorder relabel and re-sort, empty and
+    collapsed spaces, a space and its tab both bookmarked, two servers with
+    clashing names, 32-column header.
+
 - [x] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
   instance has a list of things it will do from its todo, and I do not see it").
   Claude Code keeps it as TodoWrite (and newer TaskCreate/TaskUpdate), Pi and
