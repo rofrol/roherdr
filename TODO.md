@@ -324,6 +324,35 @@
     headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
     alone it passed 60/60 under load, so it likely depends on another test. Not
     investigated further.
+- [ ] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
+  spaces: one click bubbles up the spaces where something is happening, but
+  their relative position does not change"; today the user drags them up by
+  hand). There is no space pinning: a space bookmark is a jump target only, and
+  `⇅ prio` re-sorts live and client-side by urgency level. Consulted Sol,
+  DeepSeek, MiMo and Space Bunny (unanimous on the shape):
+  - A one-shot action, not a sort mode: a stable partition of the server's
+    manual order (busy first, the rest after, each keeping its order) sent as
+    one `workspace.move_block` (it already collects non-contiguous members,
+    test `move_workspace_block_collects_non_contiguous_members`; DeepSeek and
+    MiMo assumed it could not). A worktree family moves whole and is busy when
+    any member is, collapsed ones included.
+  - Busy: working, blocked, a running job, done not yet seen. Not idle with an
+    agent, not seen done. `seen` is server state (`pane.seen`), so the models'
+    worry that it is per client does not apply. MiMo: use the same set as
+    `prio`, not a second definition of "active".
+  - Header button next to `⇅` with a hover label ("Move busy spaces to top,
+    changes the order for every client"); enabled only in `manual`, never
+    switches the sort mode by itself.
+  - Undo (all four disagreed with "drag back by hand"): offer Undo right after
+    the move; skip it when another client reordered meanwhile.
+- [ ] New space goes right after the active space, like new tabs (user,
+  2026-10-03: "new space creates it at the end; change it as with tabs"). After
+  the active space's whole worktree family. Models (unanimous): only for
+  spaces created from the UI, through an optional placement field on create
+  (atomic, not create-then-move); `workspace.create` from the CLI/API keeps
+  appending, because the server has no single active space and scripts rely on
+  the end. Keep the endpoint contract: an older server must not ignore the new
+  field and report success (a new method or advertised capability).
 - [ ] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
