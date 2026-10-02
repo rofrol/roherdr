@@ -6,7 +6,7 @@
 ;; environment (OPENROUTER_BEARER) by the wrapper, so nothing here needs to read ~/.pi.
 ;;
 ;; HOME is substituted by ask_openrouter.sh before the profile is loaded (sandbox-exec has no variable expansion of its own);
-;; the wrapper writes the expanded profile to /tmp/consult-openrouter/sandbox.sb.
+;; the wrapper writes the expanded profile to its per-run directory /tmp/consult-openrouter/run.XXXXXX/sandbox.sb.
 (version 1)
 (allow default)
 

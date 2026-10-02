@@ -22,7 +22,7 @@ Goes through OpenRouter's OpenAI-compatible API, billed to the user's OpenRouter
 ## Safe entry point: `ask_openrouter.sh` (sandboxed)
 
 Prefer **`ask_openrouter.sh`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of
-this skill into `/tmp/consult-openrouter`, and runs `ask_openrouter_raw.py` under `sandbox-exec` with `sandbox.sb`, so
+this skill into a per-run directory under `/tmp/consult-openrouter` (parallel runs must not share one), and runs `ask_openrouter_raw.py` under `sandbox-exec` with `sandbox.sb`, so
 the process that talks to the cloaked, logging provider **cannot read any secret or project file** — the kernel denies
 `~/.pi`, `~/.ssh`, `~/.config`, `~/personal_projects`, and any `.env`/`*.key`/`credentials`/`auth.json` path (verified:
 all return `PermissionError`). Paste the code the model needs into the prompt. Network and `/tmp/consult-openrouter` are
