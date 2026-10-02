@@ -1802,6 +1802,42 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       lab, like DeepSeek). Worth an A/B only through a route that pins the exact
       model id, and only after deciding what code it may see; never the default,
       never for `-r` with secrets.
+
+- [ ] Run the untrusted/cloaked OpenRouter consult (`ask-bunny`, Space Bunny /
+  MiMo) so a secret can never reach the logging provider (user, 2026-10-02).
+  - Done so far (committed `1d71dabf`): `ask-bunny` runs `ask_openrouter.py`
+    under macOS `sandbox-exec` (`bunny.sb`, `allow default` + `deny file-read*`
+    of `~/.pi`, `~/.ssh`, `~/.config`, `~/personal_projects`, `*.env`/`*.key`/
+    `credentials`/`auth.json`), token passed via `OPENROUTER_BEARER` from
+    outside the sandbox, clean cwd `/tmp/bunny`. Verified all those reads return
+    `PermissionError`. This removes the path where the model/script reads a
+    secret itself.
+  - NOT closed by the sandbox: the orchestrating agent can paste a secret into
+    the prompt (`ask-bunny "$(cat ~/.env)"` — the `cat` runs in the caller's
+    shell, before the sandbox).
+  - Decision (web research + consulted GPT Astra `117cec6b` and DeepSeek
+    `223dab7f`, 2026-10-02, agree): the only real close without a human
+    approval gate (which the user rejected) is capability split — the component
+    that talks to the model has no secrets, the component with secrets has no
+    channel to it. Egress DLP / secret-value registry / canary tokens are a
+    sensor, not a wall (base64, split, paraphrase, "key starts with sk-, 40
+    chars" bypass them); keep only as defense-in-depth.
+  - Build options (not built; both need a system change, so ask first):
+    - A separate macOS user `agentuser` (`dscl`), Bunny consults run as
+      `sudo -u agentuser` against a cleaned/secret-free workspace, so the
+      primary user's `~/.env`/Keychain/`~/.pi` are unreadable at the kernel
+      level — nothing to paste. Secret-needing work stays with the primary user
+      behind a narrow broker (unix socket, whitelisted operations) that returns
+      a result, not the value.
+    - Or run the whole agent in a Linux VM (Colima/Lima) with no home mount,
+      only a cleaned repo copy; credentials outside the VM via the broker.
+  - Irreducible (both models, explicit): while an agent can both read a secret
+    and send arbitrary text to the untrusted model, there is no 100% guarantee
+    without a human gate or removing its read access. So the chosen direction is
+    removing read access (B), not policy-only (C).
+  - Sources: specstory agent-secrets; dev.to "never see your API keys"; DZone
+    "4 ways agents exfiltrate secrets"; github.com/fabriziosalmi/aidlp.
+
 - [x] The job square's tooltip should appear after the same dwell as the
   cut tab label's (450 ms), not at once (2026-09-29, my request; consult
   GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
