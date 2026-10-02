@@ -214,6 +214,16 @@
   - Tests: a silent `sleep 1000`, a busy loop, an idle wait, a QEMU-like child
     with no display, output resuming, exit states, `kill -STOP`, pid reuse,
     stale samples, 50 jobs within the budget, an idle client sending nothing.
+  - Second sighting 2026-10-02 05:54 (screenshot: the purple "waits on a job"
+    icon on `MacBook 2010 spow…`, `► ◐ 1`): the running job is the same `rescue
+    builder VM`; its qemu (pid 10862) has run 12 h 29 min and uses 0.0% CPU
+    (it used 60% while building), so the VM is idle and the agent that started
+    it is idle too, yet both icons say "running"/"waiting on a job". This is
+    the case the design above is for: after a few minutes at about 0% CPU the
+    job shows `quiet · idle`, and the agent's mark should say it waits on a job
+    that is idle. `herdr-job` (Python, which wraps the command) could sample
+    its own process tree without any Rust build; showing it needs a field
+    on the job metadata or a token the client reads.
   - Done: nothing yet.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
