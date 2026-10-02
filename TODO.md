@@ -324,6 +324,37 @@
     headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
     alone it passed 60/60 under load, so it likely depends on another test. Not
     investigated further.
+- [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
+  `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
+  jobs here? after a computer restart?"). Cause: they are six job tabs that failed
+  on 2026-09-27 (four consults that hit a usage limit, `Pond perf A/B trace`
+  killed with 143, one more consult). A failed job tab stays open until closed;
+  a cold restore (`restore_tab`, `src/persist/restore.rs`) drops only the
+  `Running` status, so it keeps `failed`, the label and the job metadata but
+  starts a fresh login shell: the `!` points at an empty `$` prompt. The output
+  still exists in the herdr-job log. Four of the six were retried under new job
+  ids and succeeded, yet the old attempts still show `!`. Consulted GPT-6.1-sol
+  and DeepSeek (round `20261003-004441-d5a6`; MiMo and Space Bunny refused,
+  `-f` without `--allow-files`):
+  - Both: do not replay the log into the shell pane, and do not expire by age
+    (age is not acknowledgement). Sol: do not restore finished job tabs after a
+    cold restore (keep the outcome in `herdr-job list`); if they stay, show
+    "failed on Sep 27; terminal output was not restored" with a log action.
+    DeepSeek: keep the tab but turn it into a plain tab with a muted "ended"
+    mark instead of the red `!`, and seed a notice line into the pane
+    (`initial_history_ansi`).
+  - Both: a retry should supersede the failed attempt (`retry_of`, set by the
+    wrapper, never guessed from names), plus an explicit acknowledge/dismiss.
+  - Ownership: the server decides whether a job tab survives a cold restore;
+    the herdr-job wrapper owns logs, retries and retention and passes them as
+    neutral job metadata; the TUI only draws.
+  - Sol: wrapper reconciliation matches restored tabs by id and label although
+    tab ids are reused (`plugins/job/herdr-job`), and repairs only `running`
+    jobs; a job interrupted by the shutdown should become "interrupted", not
+    stay unclassified. Rejected: DeepSeek's "exit 143 is the reboot" (that job
+    was killed on 2026-09-27 03:47 and rerun a minute later), unverified: its
+    claim that the parent is restored by a renumbered tab number.
+
 - [ ] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
   `/tmp/consult-openrouter`, so in a round with MiMo and Space Bunny launched together
   one failed with `rm: ... Directory not empty` and the other could not find
