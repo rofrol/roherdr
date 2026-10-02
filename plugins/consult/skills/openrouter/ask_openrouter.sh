@@ -9,7 +9,7 @@
 # What this does NOT stop (the known residual, per the 2026-10-02 consults): a caller that substitutes a secret into
 # the prompt text itself, e.g. `ask_openrouter.sh "$(cat ~/.env)"` — the `cat` runs in the CALLER's shell, before the
 # sandbox. Closing that needs the caller to also lack read access (a separate macOS account holding the key). Use
-# this only for synthetic/public material.
+# this only for material without secrets.
 #
 # Usage: ask_openrouter.sh [ask_openrouter_raw.py args...]   e.g.  ask_openrouter.sh "Review this synthetic snippet: ..."
 set -euo pipefail

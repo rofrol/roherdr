@@ -16,7 +16,7 @@ statistics on which of those models actually helped.
   are vetted fail-closed, and the prompt is hard-refused if it contains
   secret-shaped strings. `-m mimo` asks Xiaomi MiMo-V2.6-Pro pinned to the
   Xiaomi provider, for the MiMo-vs-DeepSeek trial described in its `SKILL.md`;
-  Space Bunny has a parallel trial there, limited to public material.
+  Space Bunny has a parallel trial there.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`

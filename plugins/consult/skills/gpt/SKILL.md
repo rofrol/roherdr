@@ -46,8 +46,8 @@ Guidelines:
   `--unique` counts what the others (and Claude) missed.
 - MiMo trial (from 2026-10-02, up to 20 rounds): add Xiaomi MiMo to each default round with the openrouter skill's
   `ask_openrouter.sh -m mimo`, launched in the same Bash call; the trial rules are in that skill's `SKILL.md`.
-  Space Bunny trial (same date, same skill, `ask_openrouter.sh` without `-m`): add it too, but only to rounds whose
-  prompt holds no private code or data, because its anonymous provider logs everything.
+  Space Bunny trial (same date, same skill, `ask_openrouter.sh` without `-m`): add it to every round with the
+  same prompt (private code allowed by the user's decision, never secrets).
 - Never consult the model you are running on: that is a self-consultation, not a second opinion. Check your own model
   first (`$PI_MODEL`, or the model id you were given) and drop it from the pair. When the acting model is DeepSeek,
   the pair is **sol + Claude Sonnet** (Gemini is the alternative); when it is Claude, ask sol + DeepSeek.

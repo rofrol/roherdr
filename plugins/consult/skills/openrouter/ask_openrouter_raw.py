@@ -3,7 +3,7 @@
 
 For READ-ONLY consultation only, never a default consultant. The model's provider is anonymous and RETAINS the
 prompt and completion (OpenRouter Stealth Model Terms: not used for training, but logged by the unnamed lab), so
-treat everything sent as seen by a third party: send only synthetic or public material.
+treat everything sent as seen by a third party. Private code is allowed by the user's choice; secrets never are.
 
 Safety is layered, because the real risk is not this script but the calling agent pasting file content into the
 prompt (see the consult on 2026-10-02). This script cannot read the repository on its own (there is no `-r` mode):
@@ -212,7 +212,7 @@ def main():
           + ("; files: " + ", ".join(f"{n} ({c}c)" for n, c in attached) if attached else "; prompt only"),
           file=sys.stderr)
     if a.model.startswith("stealth/"):
-        print("  NOTE: the provider is anonymous and retains what is sent; synthetic/public content only.",
+        print("  NOTE: the provider is anonymous and retains what is sent; never send secrets.",
               file=sys.stderr)
     else:
         print(f"  NOTE: the prompt goes to {a.provider or 'whichever provider OpenRouter routes to'}; "
