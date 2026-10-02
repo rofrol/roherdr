@@ -1,6 +1,6 @@
-# roherd
+# roherdr
 
-**roherd is an unofficial fork of [herdr](https://github.com/herdrdev/herdr)**,
+**roherdr is an unofficial fork of [herdr](https://github.com/herdrdev/herdr)**,
 the terminal-based runtime for coding agents. It is not affiliated with the
 herdr project. The binary, the commands, the configuration directory and the
 `HERDR_*` variables keep the name `herdr`, so herdr's plugins, skills and agent
