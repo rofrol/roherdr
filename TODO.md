@@ -270,6 +270,17 @@
   (Consulted DeepSeek and GPT before this on priorities: both put the flaky tests and
   the 4-commit upstream rebase first; this was the user's explicit next item.)
 
+- [ ] Consult stats columns shift when a skill/model name is too long (user,
+  2026-10-02, screenshot of `consult-stats`): the long rows
+  `openrouter/xiaomi/mimo-v2.6-pro via Xiaomi` and
+  `openrouter/stealth/space-bunny-alpha via Stealth` overflow the first column
+  and push every number column (uniq/call, wrong, rated, err, score, acc/find,
+  unique, avg s, out/call) to the right, so they no longer line up with the
+  other rows and no longer sit under their headers. "tak nie może być" — the
+  table must stay column-aligned whatever the name length. Decide the fix (fixed
+  name-column width with truncation/ellipsis, wrapping, or a widest-name measure)
+  and ask the models before implementing.
+
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").
