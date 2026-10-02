@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`) for a second opinion, with hard guardrails against sending secrets. Use ONLY when the user asks to try/evaluate an OpenRouter or a cloaked/stealth model (e.g. "zapytaj Space Bunny", "spróbuj modelu z OpenRoutera"), never as a default consultant.
+description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
 ---
 
 # Consulting an OpenRouter model (cloaked models such as Space Bunny Alpha)
@@ -13,40 +13,43 @@ Goes through OpenRouter's OpenAI-compatible API, billed to the user's OpenRouter
 (`pi auth print-bearer-token --provider openrouter`), which refreshes the OAuth token; no key is stored in the skill.
 
 ```bash
-"$D"/ask-bunny "question"                               # RECOMMENDED: sandboxed, no access to secrets/repo
-"$D"/ask_openrouter.py "question"                       # raw client (no sandbox) — see the warning below
-"$D"/ask_openrouter.py -m openai/gpt-4o-mini "q"        # any OpenRouter slug
+"$D"/ask_openrouter.sh "question"                     # RECOMMENDED: sandboxed, no access to secrets/repo
+"$D"/ask_openrouter_raw.py "question"                 # raw client (no sandbox) — see the warning below
+"$D"/ask_openrouter_raw.py -m openai/gpt-4o-mini "q"  # any OpenRouter slug
+"$D"/ask_openrouter.sh -m mimo "q"                    # Xiaomi MiMo-V2.6-Pro, served only by Xiaomi
 ```
 
-## Safe entry point: `ask-bunny` (sandboxed)
+## Safe entry point: `ask_openrouter.sh` (sandboxed)
 
-Prefer **`ask-bunny`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of this
-skill into `/tmp/bunny`, and runs `ask_openrouter.py` under `sandbox-exec` with `bunny.sb`, so the process that talks
+Prefer **`ask_openrouter.sh`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of this
+skill into `/tmp/consult-openrouter`, and runs `ask_openrouter_raw.py` under `sandbox-exec` with `sandbox.sb`, so the process that talks
 to the cloaked, logging provider **cannot read any secret or project file** — the kernel denies `~/.pi`, `~/.ssh`,
 `~/.config`, `~/personal_projects`, and any `.env`/`*.key`/`credentials`/`auth.json` path (verified: all return
-`PermissionError`). Network and `/tmp/bunny` are allowed. consult-stats logging still works (only byte counts).
+`PermissionError`). Network and `/tmp/consult-openrouter` are allowed. consult-stats logging still works (only byte counts).
 
 Residual hole (known, per the 2026-10-02 consults): a caller that puts a secret into the prompt text itself, e.g.
-`ask-bunny "$(cat ~/.env)"` — the `cat` runs in the caller's shell before the sandbox. The sandbox cannot stop that;
+`ask_openrouter.sh "$(cat ~/.env)"` — the `cat` runs in the caller's shell before the sandbox. The sandbox cannot stop that;
 closing it needs the caller to also lack read access (a separate macOS account holding the key). So: synthetic/public
 material only.
 
 Optional extra layer — a restricted subagent so the orchestrating agent itself cannot read secrets to paste. Create
-`~/.claude/agents/bunny.md` (Claude Code) with a minimal tool set that can only run `ask-bunny`:
+`~/.claude/agents/openrouter.md` (Claude Code) with a minimal tool set that can only run `ask_openrouter.sh`:
 
 ```markdown
 ---
-name: bunny
-description: Ask the cloaked Space Bunny model for a synthetic/public second opinion. No repo or secret access.
+name: openrouter
+description: Ask an OpenRouter model for a second opinion through the sandboxed wrapper. No repo or secret access.
 tools: Bash
 ---
-You can ONLY consult Space Bunny via `~/.claude/skills/openrouter/ask-bunny "<prompt>"`.
+You can ONLY consult OpenRouter via `~/.claude/skills/openrouter/ask_openrouter.sh "<prompt>"`.
 Never read files, never include real secrets, config or private code — synthetic or public material only.
 ```
 
 (Not installed automatically: writing into `~/.claude` is a config change — ask the user first.)
 
-Options: `-m SLUG` (default `stealth/space-bunny-alpha`, env `OPENROUTER_MODEL`), `-f FILE` (repeatable; needs
+Options: `-m SLUG|ALIAS` (default `stealth/space-bunny-alpha`, env `OPENROUTER_MODEL`; aliases `mimo` =
+`xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi), `--provider NAME`
+(serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; needs
 `--allow-files`; `- ` = stdin), `--allow-files`, `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
 `OPENROUTER_TIMEOUT`. Answers can take a few minutes — use a Bash timeout of 600000.
 
@@ -59,6 +62,26 @@ payload summary is printed there.
   consultants. **Never** add it to the default consultation set (that stays sol + DeepSeek, Gemini/Claude on request).
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
+
+## MiMo trial (from 2026-10-02)
+
+The user decided to trial Xiaomi MiMo-V2.6-Pro (`-m mimo`) through OpenRouter, pinned to the Xiaomi provider so the
+prompt goes to one known party, not to whichever of the four hosts (GMICloud, DeepInfra, Novita, Xiaomi) OpenRouter
+picks. Direct Xiaomi billing is not cheaper per token (same $0.435/$0.87 per M), and its Token Plan subscription
+forbids calls from scripts. A consult costs about half a cent.
+
+- The trial is an audition against DeepSeek, not an extra voice: in each consultation round add `-m mimo` next to the
+  default pair (sol + DeepSeek), same prompt, same round id, and rate it like the others.
+- 20 rounds, hard cap. Stop early after 8 rated rounds if MiMo's accepted unique findings per call are below 0.7 or
+  more than 40% of its findings are rejected.
+- Pass: MiMo beats DeepSeek by at least 0.5 accepted unique findings per call over the same rounds, with a rejected
+  share no higher than DeepSeek's. On a pass MiMo replaces DeepSeek in the default pair; on a fail drop it. Compare
+  with `consult.py stats --pairs`.
+- Xiaomi publishes no retention or training terms for this API (China-based, like DeepSeek). Send it what you would
+  send DeepSeek, never secrets; the secret scan still hard-refuses them. The `ask_openrouter.sh` sandbox cannot read the repo,
+  so paste the relevant code into the prompt instead of `-f`.
+- The served provider is taken from the completion (`provider` field), because `/generation` answers 404 for pi's
+  OAuth token; consult-stats logs it as `xiaomi/mimo-v2.6-pro via Xiaomi`. A different provider prints a warning.
 
 ## Privacy and secrets — read before sending any code
 

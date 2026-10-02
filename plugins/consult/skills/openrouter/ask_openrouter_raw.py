@@ -25,6 +25,11 @@ CONSULT_DIR = Path(__file__).resolve().parent.parent / "consult-stats"  # the sk
 CONSULT = CONSULT_DIR / "consult.py"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "stealth/space-bunny-alpha"
+# Short names for named (non-cloaked) models on trial, each pinned to one provider so the code goes to a known party.
+MODEL_ALIASES = {
+    "mimo": ("xiaomi/mimo-v2.6-pro", "Xiaomi"),
+    "mimo-flash": ("xiaomi/mimo-v2.6-flash", "Xiaomi"),
+}
 
 # A file whose name matches any of these is never attached, even with --allow-files.
 DENY_GLOBS = [
@@ -55,7 +60,7 @@ class Deadline(Exception):
 
 
 def bearer():
-    # A pre-fetched token in the environment lets the sandboxed run (ask-bunny) avoid reading pi's auth.json, so the
+    # A pre-fetched token in the environment lets the sandboxed run (ask_openrouter.sh) avoid reading pi's auth.json, so the
     # sandbox can deny every secret path including ~/.pi. Fall back to pi when the env var is absent.
     env_tok = os.environ.get("OPENROUTER_BEARER")
     if env_tok:
@@ -155,10 +160,18 @@ def generation_identity(base_url, tok, gen_id):
     return {k: d.get(k) for k in ("model", "provider_name", "origin", "upstream_inference_provider") if d.get(k)}
 
 
+def resolve_model(model, provider):
+    """Expand a MODEL_ALIASES short name; an explicit --provider wins over the alias's pinned one."""
+    slug, pinned = MODEL_ALIASES.get(model, (model, ""))
+    return slug, provider or pinned
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("prompt", nargs="*")
     p.add_argument("-m", "--model", default=os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
+    p.add_argument("--provider", default=os.environ.get("OPENROUTER_PROVIDER", ""),
+                   help="serve only through this OpenRouter provider (e.g. Xiaomi), no fallbacks")
     p.add_argument("-f", "--file", action="append", default=[], help="attach a file (needs --allow-files; - = stdin)")
     p.add_argument("--allow-files", action="store_true", help="permit -f attachments (off by default)")
     p.add_argument("-s", "--system", default="You are a senior engineer giving a candid, concrete second opinion. "
@@ -166,6 +179,7 @@ def main():
     p.add_argument("-t", "--timeout", type=int, default=int(os.environ.get("OPENROUTER_TIMEOUT", 420)))
     a = p.parse_args()
     run_in_herdr_job(a.model)
+    a.model, a.provider = resolve_model(a.model, a.provider)
 
     prompt = " ".join(a.prompt)
     if a.file and not a.allow_files:
@@ -192,15 +206,22 @@ def main():
 
     base_url = os.environ.get("OPENROUTER_BASE_URL", DEFAULT_BASE_URL)
     digest = hashlib.sha256(prompt.encode()).hexdigest()[:12]
-    print(f"ask_openrouter: sending to {a.model} via {base_url}", file=sys.stderr)
+    print(f"ask_openrouter: sending to {a.model} via {base_url}"
+          + (f", provider pinned to {a.provider}" if a.provider else ""), file=sys.stderr)
     print(f"  payload: {len(prompt)} chars, sha256:{digest}"
           + ("; files: " + ", ".join(f"{n} ({c}c)" for n, c in attached) if attached else "; prompt only"),
           file=sys.stderr)
-    print("  NOTE: the provider is anonymous and retains what is sent; synthetic/public content only.", file=sys.stderr)
+    if a.model.startswith("stealth/"):
+        print("  NOTE: the provider is anonymous and retains what is sent; synthetic/public content only.",
+              file=sys.stderr)
+    else:
+        print(f"  NOTE: the prompt goes to {a.provider or 'whichever provider OpenRouter routes to'}; "
+              "its retention/training terms apply. No secrets or private code without the user's consent.",
+              file=sys.stderr)
 
     tok = bearer()
     body = {"model": a.model, "stream": False, "usage": {"include": True},
-            "provider": {"allow_fallbacks": False},
+            "provider": {"allow_fallbacks": False, **({"only": [a.provider]} if a.provider else {})},
             "messages": [{"role": "system", "content": a.system}, {"role": "user", "content": prompt}]}
     req = urllib.request.Request(base_url + "/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
@@ -232,6 +253,9 @@ def main():
     served = resp.get("model") or ""
     usage = resp.get("usage")
     ident = generation_identity(base_url, tok, gen_id) if gen_id else {}
+    # /generation answers 404 for pi's OAuth token (seen 2026-10-02), but the completion itself names its provider.
+    if resp.get("provider") and not ident.get("provider_name"):
+        ident["provider_name"] = resp["provider"]
     served_name = ident.get("model") or served
     provider = ident.get("provider_name") or ident.get("upstream_inference_provider") or "unknown-provider"
     version = f"{served_name} via {provider}" if served_name else ""
@@ -240,7 +264,10 @@ def main():
 
     # Identity check: a cloaked slug that comes back as a different, named model (or an unverifiable provider) is a
     # finding, not a success — surface it so a silent swap cannot pass unnoticed.
-    if served_name and served_name != a.model:
+    if a.provider and ident.get("provider_name") and ident["provider_name"] != a.provider:
+        print(f"\n[ask_openrouter: pinned provider {a.provider}, but {ident['provider_name']} served it]",
+              file=sys.stderr)
+    if served_name and not served_name.startswith(a.model):
         print(f"\n[ask_openrouter: requested {a.model}, served {served_name} via {provider}; "
               f"verify this is still the model you meant]", file=sys.stderr)
     elif not ident:

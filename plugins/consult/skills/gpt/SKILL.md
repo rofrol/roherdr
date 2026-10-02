@@ -44,6 +44,8 @@ Guidelines:
   Don't ask luna routinely: it adds an answer to read (Claude tokens) for little new. Use luna with `-e medium` only
   as a fallback when a sol call fails or hits the Plus limit. Terra only on request. Rate each call separately;
   `--unique` counts what the others (and Claude) missed.
+- MiMo trial (from 2026-10-02, up to 20 rounds): add Xiaomi MiMo to each default round with the openrouter skill's
+  `ask_openrouter.sh -m mimo`, launched in the same Bash call; the trial rules are in that skill's `SKILL.md`.
 - Never consult the model you are running on: that is a self-consultation, not a second opinion. Check your own model
   first (`$PI_MODEL`, or the model id you were given) and drop it from the pair. When the acting model is DeepSeek,
   the pair is **sol + Claude Sonnet** (Gemini is the alternative); when it is Claude, ask sol + DeepSeek.

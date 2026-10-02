@@ -14,7 +14,8 @@ statistics on which of those models actually helped.
   provider is anonymous and retains what is sent, so the skill sends synthetic or
   public material only: it has no repo mode, attachments need `--allow-files` and
   are vetted fail-closed, and the prompt is hard-refused if it contains
-  secret-shaped strings. See its `SKILL.md`.
+  secret-shaped strings. `-m mimo` asks Xiaomi MiMo-V2.6-Pro pinned to the
+  Xiaomi provider, for the MiMo-vs-DeepSeek trial described in its `SKILL.md`.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`

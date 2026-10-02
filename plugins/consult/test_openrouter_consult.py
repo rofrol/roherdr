@@ -12,7 +12,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-HELPER = Path(__file__).parent / "skills/openrouter/ask_openrouter.py"
+HELPER = Path(__file__).parent / "skills/openrouter/ask_openrouter_raw.py"
 
 _spec = importlib.util.spec_from_file_location("ask_openrouter", HELPER)
 mod = importlib.util.module_from_spec(_spec)
@@ -128,6 +128,17 @@ class CliGateTests(unittest.TestCase):
             r = self.run_helper(["my token is ghp_" + "a" * 30], root)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("secret-shaped", r.stderr + r.stdout)
+
+
+class ResolveModelTests(unittest.TestCase):
+    def test_alias_pins_its_provider(self):
+        self.assertEqual(mod.resolve_model("mimo", ""), ("xiaomi/mimo-v2.6-pro", "Xiaomi"))
+
+    def test_explicit_provider_wins_over_alias(self):
+        self.assertEqual(mod.resolve_model("mimo", "DeepInfra"), ("xiaomi/mimo-v2.6-pro", "DeepInfra"))
+
+    def test_plain_slug_passes_through_unpinned(self):
+        self.assertEqual(mod.resolve_model("stealth/space-bunny-alpha", ""), ("stealth/space-bunny-alpha", ""))
 
 
 if __name__ == "__main__":
