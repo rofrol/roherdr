@@ -827,7 +827,7 @@
   keyboard and scrollbar drag untouched). Done: `workspace_wheel_step` is 1;
   test `one_wheel_event_scrolls_the_spaces_list_by_one_row`.
 
-- [ ] Scroll direction and speed per operating system (user, 2026-10-01: "is
+- [x] Scroll direction and speed per operating system (user, 2026-10-01: "is
   scrolling in herdr (spaces, the main screen of a Claude instance, etc.)
   natural like macOS or like Windows? It should not be configured; defaults
   by operating system? Ask the models."). Third item to do. To investigate:
@@ -866,7 +866,16 @@
     kitty; SSH from macOS and Windows to Linux).
   - Decision needed from the user: adaptive step (rhythm) or a plain 1 per
     event, and whether the alt-screen forward changes from 3 events to 1.
-  - Done: nothing yet.
+  - Decided 2026-10-02 (DeepSeek and GPT again, plus a code check): do nothing more.
+    Keep `ui.mouse_scroll_lines = 3` for pane scrollback (no complaint, no adaptive
+    timing: the wheel event carries no magnitude or device identity), the sidebar list
+    and agents panel at 1 row per event. Both models also proposed changing "alt-screen
+    injection from 3 to 1", but that premise was wrong: `WHEEL_STEP_EVENTS = 3` in
+    `server/alt_screen_read.rs` is the harvester behind `agent read` of an alternate
+    screen's history, not the user's wheel. The user's wheel already reaches a child 1:1
+    (`apply_scroll` in `server/pane_input.rs`: one mouse report, or one alternate-scroll
+    encoding, or `lines` of herdr's own scrollback). Direction is the OS's. Not done: a
+    routing test table for one wheel event per surface (the models' ask).
 
 - Deferred Herdr behavior-context integrations: Pi and Claude Code are
   already implemented. The checkboxes below select future implementation
