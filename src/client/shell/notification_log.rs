@@ -1,8 +1,8 @@
 //! Notification history: a button at the right end of the spaces header
 //! lists the active machine's past notifications (`notification.list`,
 //! newest first, with the time each arrived); an entry navigates like
-//! clicking its toast. The button counts the notifications that arrived for
-//! a tab this client has not shown since; showing the tab clears them. Kept
+//! clicking its toast. The button counts the tabs this client received a
+//! notification for and has not shown since; showing the tab clears it. Kept
 //! per client, so one client does not clear another's count.
 //!
 //! Nothing is requested in the background: the count comes from the
@@ -143,11 +143,9 @@ impl ClientShellState {
         let current = log.source.as_ref().is_some_and(|(endpoint, boot)| {
             *endpoint == self.active_endpoint_id && Some(boot.as_str()) == boot_id
         });
-        Some(if current {
-            log.unread_tabs.values().sum()
-        } else {
-            0
-        })
+        // Unread tabs, not arrivals: the list marks one row per unread tab and
+        // collapses repeats, so the count matches the marks it shows.
+        Some(if current { log.unread_tabs.len() } else { 0 })
     }
 
     /// The view of the open dropdown, or none when no list is open.
@@ -225,13 +223,34 @@ impl ClientShellState {
             .collect()
     }
 
-    /// The tab state icon and colour for each row of the open list, as the
-    /// sidebar's tab lines draw them, for the rows whose tab still exists;
-    /// none for the others (they keep their mark in the text).
+    /// The icon and colour for each row of the open list. A history row shows
+    /// what happened then (finished, or asked), drawn like the sidebar draws
+    /// that state, not the tab's state now: a tab that resumed work is the
+    /// working list's. Other views show the tab's state now, for the rows
+    /// whose tab still exists. Rows without one keep their mark in the text.
     pub(super) fn notification_row_icons(
         &self,
         rows: &[NotificationRecord],
     ) -> Vec<Option<(&'static str, ratatui::style::Color)>> {
+        if self.notification_log_view() == NotificationLogView::History {
+            use crate::api::schema::AgentStatus;
+            let style = self.config.status_indicators;
+            let palette = &self.config.palette;
+            return rows
+                .iter()
+                .map(|row| {
+                    let mark = match row.kind.as_str() {
+                        "finished" => super::AgentMark::None,
+                        "needs_attention" | "asking" => super::AgentMark::AwaitsReply,
+                        _ => return None,
+                    };
+                    Some((
+                        super::agent_icon(AgentStatus::Done, mark, style),
+                        super::agent_color(AgentStatus::Done, mark, palette),
+                    ))
+                })
+                .collect();
+        }
         let snapshot = self.snapshot.as_deref();
         rows.iter()
             .map(|row| {
@@ -473,12 +492,18 @@ impl ClientShellState {
         text
     }
 
-    /// Whether an entry's tab still has notifications not seen.
-    pub(super) fn notification_is_unread(&self, entry: &NotificationRecord) -> bool {
-        entry
-            .tab_id
-            .as_deref()
-            .is_some_and(|tab_id| self.notification_log.unread_tabs.contains_key(tab_id))
+    /// Which rows are unread: the first (newest) row of each tab that still
+    /// has notifications not seen. Older rows of that tab were there before,
+    /// so marking them too would show more marks than the button counts.
+    pub(super) fn notification_unread_rows(&self, rows: &[NotificationRecord]) -> Vec<bool> {
+        let mut marked = std::collections::HashSet::new();
+        rows.iter()
+            .map(|entry| {
+                entry.tab_id.as_deref().is_some_and(|tab_id| {
+                    self.notification_log.unread_tabs.contains_key(tab_id) && marked.insert(tab_id)
+                })
+            })
+            .collect()
     }
 
     /// Opens the dropdown and fetches the list, or closes it.

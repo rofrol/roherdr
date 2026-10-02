@@ -281,7 +281,7 @@
   (Consulted DeepSeek and GPT before this on priorities: both put the flaky tests and
   the 4-commit upstream rebase first; this was the user's explicit next item.)
 
-- [ ] `✉N` disagrees with the history list (user, 2026-10-02, screenshot: `✉3`, the
+- [x] `✉N` disagrees with the history list (user, 2026-10-02, screenshot: `✉3`, the
   dropdown lists 6 rows: three `•` rows of finished tabs (`●`), one of them `×5`, and
   three of tabs working now (`◑`)). "There are three in the counter and more in the
   list"; "is this duplicated because we already have the working ones next to it?";
@@ -307,9 +307,23 @@
     dimmed). Space Bunny: unread-only by default with an "All" toggle; Sol and MiMo:
     keep the log, offer an unread filter. Rejected: MiMo's fetch at attach and on each
     notification (a background request holds the command lane, see AGENTS.md).
-  - Open: persist read state per machine/server run, or label N "since attach" (after
-    a client restart N is 0 under a full list); an unread tab whose record fell out of
-    the 100-entry ring or past the 15 rows needs "N more unread". Decide N first.
+  - Done 2026-10-02 (user: "the bar hiding `•` is not good", then "decide the rest
+    yourself"): the selection bar `▌` and the unread `•` have columns of their own;
+    `✉N` counts unread tabs (DeepSeek's choice: computable without a fetch, read state
+    is per tab anyway); `•` marks only the newest row of each unread tab, so the marks
+    match N while those rows are within the 15; a history row's icon is the event kind
+    then (finished as the sidebar draws Done, asking as `?`), not the tab's state now.
+    Tests: `the_history_counts_unread_tabs_and_shows_what_happened_then`,
+    `the_notification_history_lists_and_opens_past_notifications`.
+  - Not done: persisting read state or labelling N "since attach" (after a client
+    restart N is 0 under a full list); "N more unread" when an unread tab's row fell
+    out of the 15 rows or the 100-entry ring; a "New" / "Earlier" split or an
+    unread-only filter; a repeat after reading re-marking the row ("×5, 2 new").
+  - Seen during `just check`: `headless_scheduled_tasks_start_pending_agent_resume_
+    without_foreground_client` failed once in the full run (`handle_scheduled_tasks_
+    headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
+    alone it passed 60/60 under load, so it likely depends on another test. Not
+    investigated further.
 - [ ] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
   `/tmp/consult-openrouter`, so in a round with MiMo and Space Bunny launched together
   one failed with `rm: ... Directory not empty` and the other could not find

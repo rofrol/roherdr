@@ -359,7 +359,8 @@ pub(crate) type LogRow = (
 );
 
 /// The notification history dropdown under its button, over the panes:
-/// `HH:MM` and the text per row, newest first, unread ones marked `•`.
+/// `HH:MM` and the text per row, newest first, unread ones marked `•` in
+/// the column after the selection bar.
 pub(crate) fn render_notification_log(
     buffer: &mut Buffer,
     button: Rect,
@@ -443,21 +444,19 @@ pub(crate) fn render_notification_log(
             _ => Style::default().fg(palette.text).bg(palette.panel_bg),
         };
         buffer.set_style(row, base);
-        let (mark, mark_style) = if selected && !solid {
-            ("▌", base.fg(palette.accent))
-        } else if *unread {
-            (
-                "•",
-                if selected {
-                    base
-                } else {
-                    base.fg(palette.accent).add_modifier(Modifier::BOLD)
-                },
-            )
-        } else {
-            (" ", base)
-        };
-        put_text(buffer, row.x, row.y, 1, mark, mark_style);
+        // The selection bar and the unread mark have columns of their own, so
+        // the highlighted row still shows whether it is unread.
+        if selected && !solid {
+            put_text(buffer, row.x, row.y, 1, "▌", base.fg(palette.accent));
+        }
+        if *unread {
+            let mark_style = if solid {
+                base
+            } else {
+                base.fg(palette.accent).add_modifier(Modifier::BOLD)
+            };
+            put_text(buffer, row.x.saturating_add(1), row.y, 1, "•", mark_style);
+        }
         let time_style = if solid {
             base
         } else {

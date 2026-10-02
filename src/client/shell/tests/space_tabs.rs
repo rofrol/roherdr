@@ -1174,11 +1174,17 @@ fn the_notification_history_lists_and_opens_past_notifications() {
     let frame = state.compose(106, 30).unwrap();
     let rows = state.hits.notification_log_rows.clone();
     assert_eq!(rows.len(), 2);
-    // Newest first; the highlighted row has the accent bar.
+    // Newest first; the highlighted row has the accent bar and keeps its
+    // unread mark beside it; the read row has none.
     let first = frame_rows(&frame)[rows[0].0.y as usize].clone();
     assert!(
-        first.contains("▌") && first.contains("elsewhere"),
+        first.contains("▌•") && first.contains("elsewhere"),
         "{first:?}"
+    );
+    let second = frame_rows(&frame)[rows[1].0.y as usize].clone();
+    assert!(
+        !second.contains('•') && second.contains("on this tab"),
+        "{second:?}"
     );
 
     // Its tab is gone, so the space opens; the entry is read.
@@ -1189,6 +1195,53 @@ fn the_notification_history_lists_and_opens_past_notifications() {
                 if target.workspace_id == "ws_1"))));
     assert!(state.overlay.is_none());
     assert_eq!(state.notification_log_button(), Some(0));
+}
+
+#[test]
+fn the_history_counts_unread_tabs_and_shows_what_happened_then() {
+    let mut state = state_with_tabs(true);
+    let entry = |id: u64, kind: &str, tab: &str| crate::api::schema::NotificationRecord {
+        id,
+        unix_ms: 1_790_633_100_000,
+        kind: kind.into(),
+        title: format!("entry {id}"),
+        body: None,
+        agent: None,
+        workspace_id: Some("ws_1".into()),
+        tab_id: Some(tab.into()),
+        pane_id: None,
+        task: None,
+        request: None,
+        repeats: None,
+    };
+    // Two arrivals for one unvisited tab are one unread tab.
+    state.notification_log_received(Some("tab_9"));
+    state.notification_log_received(Some("tab_9"));
+    assert_eq!(state.notification_log_button(), Some(1));
+
+    // Newest first: only the newest row of the unread tab is marked.
+    let rows = vec![
+        entry(3, "asking", "tab_9"),
+        entry(2, "finished", "tab_9"),
+        entry(1, "finished", "tab_1"),
+    ];
+    assert_eq!(
+        state.notification_unread_rows(&rows),
+        vec![true, false, false]
+    );
+
+    // `tab_1` works now, but its row says it finished then.
+    let style = state.config.status_indicators;
+    let icons = state.notification_row_icons(&rows);
+    assert_eq!(icons[0].map(|(icon, _)| icon), Some("?"));
+    let done = super::super::AgentMark::None;
+    assert_eq!(
+        icons[2],
+        Some((
+            super::super::agent_icon(AgentStatus::Done, done, style),
+            super::super::agent_color(AgentStatus::Done, done, &state.config.palette),
+        ))
+    );
 }
 
 #[test]

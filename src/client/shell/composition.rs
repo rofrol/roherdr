@@ -818,10 +818,12 @@ impl ClientShellState {
                 let offset = super::usage::local_utc_offset_secs();
                 let entries = self.notification_log_rows();
                 let icons = self.notification_row_icons(&entries);
+                let unread = self.notification_unread_rows(&entries);
                 let rows = entries
                     .iter()
                     .zip(icons)
-                    .map(|(entry, icon)| {
+                    .zip(unread)
+                    .map(|((entry, icon), unread)| {
                         let mut text = self.notification_row_text(entry);
                         // The tab's state icon replaces the mark in the text.
                         if icon.is_some() {
@@ -834,7 +836,7 @@ impl ClientShellState {
                         } else {
                             super::notification_log::notification_time(entry.unix_ms, now, offset)
                         };
-                        (time, text, self.notification_is_unread(entry), icon)
+                        (time, text, unread, icon)
                     })
                     .collect::<Vec<_>>();
                 let anchor = match log.view {
