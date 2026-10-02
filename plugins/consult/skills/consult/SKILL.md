@@ -10,8 +10,8 @@ the skill's location); set it first, e.g. `D=~/.claude/skills/consult` or `D=~/.
 skills are installed next to it: `"$D/../gpt"`, `"$D/../deepseek"`, `"$D/../openrouter"`, `"$D/../claude"`,
 `"$D/../gemini"`, `"$D/../consult-stats"`. Each vendor skill's `SKILL.md` has its options, privacy rules and limits.
 
-"Pytaj modeli" means consult now, in this turn: gather the facts, brief the models, verify and report. If the same
-message also asks for a TODO entry, do both and record the outcome in the entry.
+A request to ask the models means consult now, in this turn: gather the facts, brief the models, verify and
+report. If the same message also asks for a TODO entry, do both and record the outcome in the entry.
 
 ## Who joins a round
 
