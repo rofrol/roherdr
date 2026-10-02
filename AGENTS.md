@@ -490,7 +490,10 @@ When the file you edited also holds another session's uncommitted hunks,
 temporary index: save it as a patch, then `GIT_INDEX_FILE=<tmp> git read-tree
 HEAD`, `GIT_INDEX_FILE=<tmp> git apply --cached <patch>`, `GIT_INDEX_FILE=<tmp>
 git commit`, and finally `git apply --cached <patch>` on the real index so it
-matches the new `HEAD`. Never run a bare `git commit` (no paths) on the shared
+matches the new `HEAD`. Read the patch first: git merges hunks whose context
+overlaps, so a hunk next to another session's edit carries their lines too;
+then build the file from `git show HEAD:<path>` with only your paragraph
+replaced instead. Never run a bare `git commit` (no paths) on the shared
 index: a `M` in the first column of `git status --short` (`M `, `MM`) is
 another session's staged change, and it would go into your commit (this
 happened on 2026-10-02).
