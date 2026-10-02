@@ -28,6 +28,10 @@ const REMINDER_EVENT: &str = "UserPromptSubmit";
 /// The hook action that asks the agent once to report a final question it did not report.
 const STOP_CHECK_ACTION: &str = "stop-check";
 const STOP_CHECK_EVENT: &str = "Stop";
+/// The hook action that reports the agent's own todo list (`TodoWrite`) as the `plan` token.
+const PLAN_ACTION: &str = "plan";
+const PLAN_EVENT: &str = "PostToolUse";
+const PLAN_MATCHER: &str = "TodoWrite";
 
 struct HookRemoval {
     event: &'static str,
@@ -199,13 +203,23 @@ pub(crate) fn add_awaiting_reply_reminder(
         hook_path,
         REMINDER_EVENT,
         REMINDER_ACTION,
+        None,
     )?;
-    add_event_hook(
+    let with_stop = add_event_hook(
         &with_reminder,
         settings_path,
         hook_path,
         STOP_CHECK_EVENT,
         STOP_CHECK_ACTION,
+        None,
+    )?;
+    add_event_hook(
+        &with_stop,
+        settings_path,
+        hook_path,
+        PLAN_EVENT,
+        PLAN_ACTION,
+        Some(PLAN_MATCHER),
     )
 }
 
@@ -216,6 +230,7 @@ fn add_event_hook(
     hook_path: &Path,
     event: &str,
     action: &str,
+    matcher: Option<&str>,
 ) -> io::Result<String> {
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
@@ -226,7 +241,7 @@ fn add_event_hook(
         "claude settings hooks",
     )?;
     let command = hook_command(hook_path, Some(action));
-    ensure_command_hook(hooks, event, command.clone(), 10, None)?;
+    ensure_command_hook(hooks, event, command.clone(), 10, matcher)?;
     if desired == original {
         return Ok(content.to_string());
     }
@@ -270,13 +285,23 @@ fn add_event_hook(
             .array_value()
             .ok_or_else(|| settings_error(&format!("hooks.{event}")))?,
     };
-    entries.append(json!({
-        hooks: [{
-            "type": "command",
-            command: command,
-            timeout: 10u64,
-        }],
-    }));
+    match matcher {
+        Some(matcher) => entries.append(json!({
+            matcher: matcher,
+            hooks: [{
+                "type": "command",
+                command: command,
+                timeout: 10u64,
+            }],
+        })),
+        None => entries.append(json!({
+            hooks: [{
+                "type": "command",
+                command: command,
+                timeout: 10u64,
+            }],
+        })),
+    };
     verify_updated(root.to_string(), settings_path, &desired)
 }
 
@@ -293,12 +318,19 @@ pub(crate) fn remove_awaiting_reply_reminder(
         REMINDER_EVENT,
         REMINDER_ACTION,
     )?;
-    remove_event_hook(
+    let without_stop = remove_event_hook(
         &without_reminder,
         settings_path,
         hook_path,
         STOP_CHECK_EVENT,
         STOP_CHECK_ACTION,
+    )?;
+    remove_event_hook(
+        &without_stop,
+        settings_path,
+        hook_path,
+        PLAN_EVENT,
+        PLAN_ACTION,
     )
 }
 

@@ -973,7 +973,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
-    assert!(settings["hooks"].get("PostToolUse").is_none());
+    assert_only_the_plan_hook(&settings);
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert_only_the_stop_check_hook(&settings);
@@ -990,6 +990,16 @@ fn assert_only_the_reminder_prompt_hook(settings: &Value) {
     let hooks = entries[0]["hooks"].as_array().unwrap();
     assert_eq!(hooks.len(), 1);
     assert!(hooks[0]["command"].as_str().unwrap().ends_with(" reminder"));
+}
+
+/// Install leaves herdr only its todo-list report on `PostToolUse`, for `TodoWrite` alone.
+fn assert_only_the_plan_hook(settings: &Value) {
+    let entries = settings["hooks"]["PostToolUse"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["matcher"], "TodoWrite");
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"].as_str().unwrap().ends_with(" plan"));
 }
 
 /// Install leaves herdr only its stop check on `Stop` (it asks once for a final question that the
@@ -1098,7 +1108,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert_only_the_reminder_prompt_hook(&settings);
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
-    assert!(settings["hooks"].get("PostToolUse").is_none());
+    assert_only_the_plan_hook(&settings);
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert_only_the_stop_check_hook(&settings);

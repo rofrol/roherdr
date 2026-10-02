@@ -221,6 +221,65 @@ PY
   exit 0
 fi
 
+# PostToolUse hook for TodoWrite: report how far the agent's own todo list is as the `plan` token
+# (`3/7`), which the sidebar shows beside the tab. HERDR_AGENT_PLAN=0 turns it off.
+if [ "$action" = "plan" ]; then
+  [ "${HERDR_ENV:-}" = "1" ] || exit 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  [ "${HERDR_AGENT_PLAN:-1}" != "0" ] || exit 0
+  command -v python3 >/dev/null 2>&1 || exit 0
+  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+import json
+import os
+import socket
+import time
+
+try:
+    with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
+        hook_input = json.loads(handle.read() or "{}")
+except Exception:
+    raise SystemExit(0)
+if hook_input.get("hook_event_name") != "PostToolUse" or hook_input.get("tool_name") != "TodoWrite":
+    raise SystemExit(0)
+if hook_input.get("agent_id"):
+    raise SystemExit(0)
+todos = (hook_input.get("tool_input") or {}).get("todos")
+if not isinstance(todos, list):
+    raise SystemExit(0)
+items = [t for t in todos if isinstance(t, dict)]
+done = sum(1 for t in items if t.get("status") == "completed")
+value = f"{done}/{len(items)}" if items else None
+request = {
+    "id": f"herdr:claude:plan:{int(time.time() * 1000)}",
+    "method": "pane.report_metadata",
+    "params": {
+        "pane_id": os.environ["HERDR_PANE_ID"],
+        "source": "herdr:claude",
+        "agent": "claude",
+        "tokens": {"plan": value},
+        "seq": time.time_ns(),
+        # Kept for six hours; every TodoWrite renews it, a new session in the pane lets it lapse.
+        "ttl_ms": 21_600_000,
+    },
+}
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    client.connect(os.environ["HERDR_SOCKET_PATH"])
+    client.sendall((json.dumps(request) + "\n").encode())
+    try:
+        client.recv(4096)
+    except Exception:
+        pass
+    client.close()
+except Exception:
+    pass
+PY
+  exit 0
+fi
+
 case "$action" in
   session) ;;
   *) exit 0 ;;

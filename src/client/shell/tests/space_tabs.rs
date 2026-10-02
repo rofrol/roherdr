@@ -2914,3 +2914,27 @@ fn history_times_and_icons_form_columns_whatever_their_format() {
     let today = rows.iter().find(|row| row.contains("today entry")).unwrap();
     assert!(today.contains(':') && today.find("today").unwrap() > today.find(':').unwrap() + 3);
 }
+
+#[test]
+fn a_tab_line_shows_the_progress_of_the_agents_todo_list() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0]
+        .tokens
+        .push(("plan".to_owned(), "3/7".to_owned()));
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let line = state.hits.space_tabs[0].0;
+    let row = &rows[line.y as usize];
+    assert!(row.contains("agent tab") && row.contains("3/7"), "{row:?}");
+    assert!(row.find("agent tab").unwrap() < row.find("3/7").unwrap());
+
+    // Without the token, or with a stray value, nothing is drawn.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].tokens.clear();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    assert!(!frame_rows(&frame)[line.y as usize].contains("3/7"));
+}

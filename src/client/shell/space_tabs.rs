@@ -30,6 +30,8 @@ pub(super) struct SpaceTabLine {
     /// Running, failed and succeeded counts of the tab and its nested tabs,
     /// e.g. `⧖ 1 !1 ✓2`.
     pub(super) jobs: Vec<(Option<TabStatus>, String)>,
+    /// How far the agent's own todo list is (`3/7`), from its `plan` token.
+    pub(super) plan: Option<String>,
     /// The nested tabs, in tab order, drawn as squares while unfolded.
     pub(super) squares: Vec<TabSquare>,
     pub(super) unfolded: bool,
@@ -208,6 +210,7 @@ pub(super) fn space_tab_lines_filtered(
                 label: super::render::tabs::sidebar_tab_label(tab, snapshot, config),
                 active: active_group == Some(tab.tab_id.as_str()),
                 jobs: super::tab_groups::children_summary_segments(&group),
+                plan: tab_plan(snapshot, tab),
                 unfolded: !squares.is_empty() && unfolded_squares.contains(&tab.tab_id),
                 squares,
             }
@@ -386,6 +389,27 @@ pub(super) fn tab_state_icon(
         ),
         None => (PROGRAM_ICON, palette.overlay0),
     }
+}
+
+/// The `plan` token of the tab's focused agent (else its first one).
+fn tab_plan(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<String> {
+    let mut agents = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id);
+    let first = agents.next()?;
+    let agent = if first.focused {
+        first
+    } else {
+        agents.find(|agent| agent.focused).unwrap_or(first)
+    };
+    agent
+        .tokens
+        .iter()
+        .find(|(key, _)| key == "plan")
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty() && value.len() <= 9)
+        .map(str::to_owned)
 }
 
 fn stands_for_a_group(
@@ -613,7 +637,25 @@ pub(super) fn render_space_tab_lines(
             (true, 0) => 1,
             (true, jobs) => jobs + 2,
         };
-        let label_width = available.saturating_sub(if fold_width > 0 { fold_width + 1 } else { 0 });
+        let area_width = available.saturating_sub(if fold_width > 0 { fold_width + 1 } else { 0 });
+        // The todo progress sits at the right end of the label's room, dim,
+        // when the label keeps at least a few columns.
+        let plan = line
+            .plan
+            .as_deref()
+            .filter(|plan| area_width >= plan.chars().count() as u16 + 1 + 6);
+        let plan_width = plan.map_or(0, |plan| plan.chars().count() as u16 + 1);
+        let label_width = area_width.saturating_sub(plan_width);
+        if let Some(plan) = plan {
+            super::render::put_text(
+                buffer,
+                text_x + area_width - (plan_width - 1),
+                y,
+                plan_width - 1,
+                plan,
+                Style::default().fg(palette.overlay1),
+            );
+        }
         let label = truncate(&line.label, label_width as usize);
         if label != line.label {
             hits.tooltips.push(super::tooltip::TooltipTarget {
