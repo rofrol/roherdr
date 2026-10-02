@@ -918,15 +918,8 @@ mod tests {
         loop {
             pump();
             if let Ok(contents) = std::fs::read_to_string(path) {
-                // A command may write its output in pieces (the shell opens
-                // the file first): take it once a second read, a moment
-                // later, finds it unchanged.
                 if !contents.is_empty() {
-                    std::thread::sleep(std::time::Duration::from_millis(40));
-                    if std::fs::read_to_string(path).is_ok_and(|again| again == contents) {
-                        return contents;
-                    }
-                    continue;
+                    return contents;
                 }
             }
             assert!(
@@ -1777,12 +1770,12 @@ platforms = ["linux"]
 [[actions]]
 id = "probe"
 title = "Probe executable"
-command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" > action-status']
+command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" > action-status.tmp && mv action-status.tmp action-status']
 
 [[panes]]
 id = "probe"
 title = "Probe executable"
-command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" > pane-status']
+command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" > pane-status.tmp && mv pane-status.tmp pane-status']
 "#,
             );
             link_manifest(&mut app, &plugin_root);
@@ -1888,7 +1881,7 @@ platforms = ["linux", "macos"]
 [[panes]]
 id = "board"
 title = "Plugin Board"
-command = ["sh", "-c", "printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$PWD\" \"$HERDR_PLUGIN_ID\" \"$HERDR_PLUGIN_ENTRYPOINT_ID\" \"$HERDR_WORKSPACE_ID\" \"$HERDR_PANE_ID\" \"$HERDR_BIN_PATH\" \"$HERDR_PLUGIN_CONTEXT_JSON\" \"${{HERDR_CELL_WIDTH_PX-unset}}\" \"${{HERDR_CELL_HEIGHT_PX-unset}}\" > {}"]
+command = ["sh", "-c", "printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$PWD\" \"$HERDR_PLUGIN_ID\" \"$HERDR_PLUGIN_ENTRYPOINT_ID\" \"$HERDR_WORKSPACE_ID\" \"$HERDR_PANE_ID\" \"$HERDR_BIN_PATH\" \"$HERDR_PLUGIN_CONTEXT_JSON\" \"${{HERDR_CELL_WIDTH_PX-unset}}\" \"${{HERDR_CELL_HEIGHT_PX-unset}}\" > {0}.tmp && mv {0}.tmp {0}"]
 "#,
                 capture.display()
             ),
@@ -1995,7 +1988,7 @@ platforms = ["linux", "macos"]
 [[panes]]
 id = "board"
 title = "Plugin Board"
-command = ["sh", "-c", "printf '%s\n%s\n%s\n' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PLUGIN_CONFIG_DIR\" \"$HERDR_PLUGIN_STATE_DIR\" > {}"]
+command = ["sh", "-c", "printf '%s\n%s\n%s\n' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PLUGIN_CONFIG_DIR\" \"$HERDR_PLUGIN_STATE_DIR\" > {0}.tmp && mv {0}.tmp {0}"]
 "#,
                 capture.display()
             ),
@@ -2345,7 +2338,7 @@ title = "Plugin Popup"
 placement = "popup"
 width = "80%"
 height = "40%"
-command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
+command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{0}.tmp' && mv '{0}.tmp' '{0}'; sleep 1"]
 "#,
             env_capture.display()
         );
@@ -2936,7 +2929,7 @@ min_herdr_version = "0.6.10"
 platforms = ["linux", "macos"]
 
 [[startup]]
-command = ["sh", "-c", "printf '%s:%s' \"$HERDR_PLUGIN_ID\" \"$HERDR_PLUGIN_EVENT\" > {}"]
+command = ["sh", "-c", "printf '%s:%s' \"$HERDR_PLUGIN_ID\" \"$HERDR_PLUGIN_EVENT\" > {0}.tmp && mv {0}.tmp {0}"]
 "#,
                 capture.display()
             ),
@@ -2984,7 +2977,7 @@ platforms = ["linux", "macos"]
 
 [[events]]
 on = "worktree.created"
-command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
+command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {0}.tmp && mv {0}.tmp {0}"]
 "#,
                 capture.display()
             ),
