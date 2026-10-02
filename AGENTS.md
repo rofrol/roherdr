@@ -472,8 +472,18 @@ cargo build --release --locked
 scripts/herdr_live.sh install
 ```
 
-Ask with `AskUserQuestion`, putting "Install now (Recommended)" first so
-Enter confirms it, and "Not now" second. If the user is on the phone app,
+Standing approval (the user, 2026-10-02: "ta", to the proposal below; he had
+answered yes to every install question): after `just check` is green, build
+and install without asking, and push with a plain fast-forward `git push
+origin master` without asking. Ask first only for what is not routine: a
+force-push or any push that is not a fast-forward, `rollback`, changing an
+integration in `~/.claude` or another agent's config, a failing or uncertain
+check, a build that was not made from a clean commit of current `master`, and
+anything the user has said to hold. The user can withdraw this at any time.
+Say in the final message what was installed and pushed and how to roll back.
+
+Where a decision is still needed, ask with `AskUserQuestion`, putting
+"Install now (Recommended)" first so Enter confirms it, and "Not now" second. If the user is on the phone app,
 where multiple-choice prompts may not work, ask in plain text. Run
 `install` only after a yes; on "Not now", report that the build is ready and
 that they can install it later with `scripts/herdr_live.sh install` or by
