@@ -9,14 +9,12 @@ statistics on which of those models actually helped.
 - `claude`: Claude Sonnet 5.5 by default, or explicit Opus 5.5 with
   `ask_claude.py -m claude-opus-5-5`, via Claude Code CLI. Subscription billing
   requires subscription login; API-key/cloud billing is not a subscription.
-- `openrouter`: an OpenRouter model (default the free cloaked
-  `stealth/space-bunny-alpha`), on request or in a trial round, never a default consultant. The
-  provider is anonymous and retains what is sent, so the skill sends synthetic or
-  public material only: it has no repo mode, `-f` attachments are vetted
+- `openrouter`: an OpenRouter model (default Xiaomi MiMo-V2.6-Pro pinned to the
+  Xiaomi provider), on request or in a trial round, never a default consultant.
+  Providers may retain what is sent, so the skill never sends secrets: it has no repo mode, `-f` attachments are vetted
   fail-closed outside its sandbox, and the prompt is hard-refused if it contains
-  secret-shaped strings. `-m mimo` asks Xiaomi MiMo-V2.6-Pro pinned to the
-  Xiaomi provider, for the MiMo trial described in its `SKILL.md`; Space
-  Bunny's trial ended on 2026-10-03 (failed).
+  secret-shaped strings. The MiMo trial is described in its `SKILL.md`; the
+  cloaked Space Bunny was removed on 2026-10-03 after failing its trial.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`
@@ -33,7 +31,7 @@ spend another vendor's quota:
 | `claude` | the Anthropic account (Claude Code login; no API key is used) |
 | `gemini` | the Google AI subscription, through `agy` |
 | `deepseek` | DeepSeek API credits, per token |
-| `openrouter` | the OpenRouter account (cloaked models are free in preview) |
+| `openrouter` | the OpenRouter account (per token; MiMo about half a cent a consult) |
 
 So a Codex/ChatGPT limit (`You've hit your usage limit`) says nothing about
 Sonnet, and vice versa. After a limit error the call is logged with `status
