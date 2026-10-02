@@ -413,6 +413,12 @@
   2026-10-02): stay with the fixed plugin for now; core is not started. Check
   `~/.local/state/herdr/plugins/local.relaunch/relaunch.log` after the next
   reboot; reopen the core design if the plugin misses a program again.
+  Shell integrations (user asked whether zsh/bash/fish integrations are needed;
+  round `20261002-235514-ed34`, all four models): no. The zsh plugin is the
+  shell integration this needs, and zsh is the only shell in use; add bash or
+  fish hooks only when such panes exist. Core-injected integration (ZDOTDIR,
+  OSC 133) is worth it only for prompt, idle or exit-code features; OSC 133
+  marks command boundaries but carries no command text.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
