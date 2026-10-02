@@ -65,6 +65,7 @@ class WindowsCrossTests(unittest.TestCase):
             self.assertEqual(cargo.kwargs["env"]["KEEP_ME"], "yes")
             self.assertNotIn(windows_cross.LIBC_ENV, os.environ)
 
+    @unittest.skipIf(os.name == "nt", "the macOS system-library link is a Unix symlink workaround")
     def test_macos_links_its_system_libraries_into_the_managed_sdk_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
