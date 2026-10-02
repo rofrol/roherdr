@@ -10,12 +10,13 @@ statistics on which of those models actually helped.
   `ask_claude.py -m claude-opus-5-5`, via Claude Code CLI. Subscription billing
   requires subscription login; API-key/cloud billing is not a subscription.
 - `openrouter`: an OpenRouter model (default the free cloaked
-  `stealth/space-bunny-alpha`), on request only, never a default consultant. The
+  `stealth/space-bunny-alpha`), on request or in a trial round, never a default consultant. The
   provider is anonymous and retains what is sent, so the skill sends synthetic or
   public material only: it has no repo mode, attachments need `--allow-files` and
   are vetted fail-closed, and the prompt is hard-refused if it contains
   secret-shaped strings. `-m mimo` asks Xiaomi MiMo-V2.6-Pro pinned to the
-  Xiaomi provider, for the MiMo-vs-DeepSeek trial described in its `SKILL.md`.
+  Xiaomi provider, for the MiMo-vs-DeepSeek trial described in its `SKILL.md`;
+  Space Bunny has a parallel trial there, limited to public material.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
   accepted, unique) and scores itself as coordinator. `consult.py stats`
