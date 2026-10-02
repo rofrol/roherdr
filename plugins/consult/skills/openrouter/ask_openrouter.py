@@ -55,6 +55,11 @@ class Deadline(Exception):
 
 
 def bearer():
+    # A pre-fetched token in the environment lets the sandboxed run (ask-bunny) avoid reading pi's auth.json, so the
+    # sandbox can deny every secret path including ~/.pi. Fall back to pi when the env var is absent.
+    env_tok = os.environ.get("OPENROUTER_BEARER")
+    if env_tok:
+        return env_tok.strip()
     try:
         out = subprocess.run(["pi", "auth", "print-bearer-token", "--provider", "openrouter", "--min-expiry", "15m"],
                              capture_output=True, text=True, timeout=30)

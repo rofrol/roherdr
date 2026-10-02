@@ -13,10 +13,38 @@ Goes through OpenRouter's OpenAI-compatible API, billed to the user's OpenRouter
 (`pi auth print-bearer-token --provider openrouter`), which refreshes the OAuth token; no key is stored in the skill.
 
 ```bash
-"$D"/ask_openrouter.py "question"                       # stealth/space-bunny-alpha (default), prompt only
+"$D"/ask-bunny "question"                               # RECOMMENDED: sandboxed, no access to secrets/repo
+"$D"/ask_openrouter.py "question"                       # raw client (no sandbox) — see the warning below
 "$D"/ask_openrouter.py -m openai/gpt-4o-mini "q"        # any OpenRouter slug
-"$D"/ask_openrouter.py --allow-files -f src/foo.rs "Review this snippet"
 ```
+
+## Safe entry point: `ask-bunny` (sandboxed)
+
+Prefer **`ask-bunny`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of this
+skill into `/tmp/bunny`, and runs `ask_openrouter.py` under `sandbox-exec` with `bunny.sb`, so the process that talks
+to the cloaked, logging provider **cannot read any secret or project file** — the kernel denies `~/.pi`, `~/.ssh`,
+`~/.config`, `~/personal_projects`, and any `.env`/`*.key`/`credentials`/`auth.json` path (verified: all return
+`PermissionError`). Network and `/tmp/bunny` are allowed. consult-stats logging still works (only byte counts).
+
+Residual hole (known, per the 2026-10-02 consults): a caller that puts a secret into the prompt text itself, e.g.
+`ask-bunny "$(cat ~/.env)"` — the `cat` runs in the caller's shell before the sandbox. The sandbox cannot stop that;
+closing it needs the caller to also lack read access (a separate macOS account holding the key). So: synthetic/public
+material only.
+
+Optional extra layer — a restricted subagent so the orchestrating agent itself cannot read secrets to paste. Create
+`~/.claude/agents/bunny.md` (Claude Code) with a minimal tool set that can only run `ask-bunny`:
+
+```markdown
+---
+name: bunny
+description: Ask the cloaked Space Bunny model for a synthetic/public second opinion. No repo or secret access.
+tools: Bash
+---
+You can ONLY consult Space Bunny via `~/.claude/skills/openrouter/ask-bunny "<prompt>"`.
+Never read files, never include real secrets, config or private code — synthetic or public material only.
+```
+
+(Not installed automatically: writing into `~/.claude` is a config change — ask the user first.)
 
 Options: `-m SLUG` (default `stealth/space-bunny-alpha`, env `OPENROUTER_MODEL`), `-f FILE` (repeatable; needs
 `--allow-files`; `- ` = stdin), `--allow-files`, `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
