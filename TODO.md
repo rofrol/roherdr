@@ -1620,6 +1620,34 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     identities and local usefulness; preserve explicit selection and report
     unavailable models without silent fallback. No scheduled polling or
     paid benchmark/model calls until the workflow is designed and approved.
+  - New leads (user, 2026-10-02), folded in as unverified leads, not grounds to
+    switch a default:
+    - SuperGrok's "160x more in the subscription than in tokens"
+      (https://x.com/PawelHuryn/status/2105703147184239042): a cost/access
+      ratio, not a quality signal. It compares a flat subscription's
+      theoretical token ceiling with marginal API price and ignores rate
+      limits/fair-use, that a sub may be a loss-leader, and that real
+      consumption sits far below the cap. "How many tokens do I get" in Claude
+      Max 5x vs 20x vs a GPT sub is throughput (how many consultations), not
+      competence; tokens of different models are not one unit of useful work.
+    - Artificial Analysis AA-Omniscience
+      (https://x.com/ArtificialAnlys/status/2105392625788637299): Gemini 4 Argon
+      15% hallucination (lowest among models scoring 45+ on the Intelligence
+      Index), vs GPT-6 Astra 51% and GPT-6.1 Sol 54% at max effort. A
+      general-knowledge hallucination benchmark, not reasoning over an unknown
+      codebase. Low hallucination suggests better uncertainty calibration (more
+      "I don't know / show me the file", fewer confident false positives),
+      genuinely useful for a devil's advocate, but it does not transfer the
+      percentages to code review, and a cautious model can also miss more real
+      bugs. One recent third-party score is a lead, not a default switch.
+    - Consulted GPT Astra (9cf5c878) and DeepSeek (c883180b) 2026-10-02 as
+      devil's advocates (both agree): neither argument measures quality. The
+      deciding metric stays per-consult verifiable value-add — accepted/unique
+      findings, plus false-positives-per-accepted, finding severity, cost per
+      accepted finding, and calibration (does it admit "I don't know" and ask
+      for evidence) — measured by blind A/B on the same unknown repo with the
+      same prompt, and by also scoring misses on cases with known bugs, never a
+      leaderboard or a subscription multiplier.
 - [x] The job square's tooltip should appear after the same dwell as the
   cut tab label's (450 ms), not at once (2026-09-29, my request; consult
   GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
