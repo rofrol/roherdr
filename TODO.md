@@ -510,6 +510,18 @@
     an unofficial fork)` for fork builds; README title and first paragraph;
     release assets `roherd-<os>-<arch>`; the GitHub repo is renamed to
     `rofrol/roherd` with a description and topics after the first release run.
+  - Versioning policy decided 2026-10-02 (DeepSeek and GPT agree; the try-roguix
+    session explained its own, which differs): tags `fork-v<upstream version>-<fork
+    revision>`, e.g. `fork-v0.9.3-1`; the revision counts published fork releases (not
+    commits or rebases), restarts at 1 when upstream's version changes, tags are
+    annotated and never reused; `Cargo.toml` stays at upstream's version (fewer rebase
+    conflicts). try-roguix uses independent semver `vX.Y.Z` (it has no upstream release
+    to track; `bNN` there are image build counters, not releases) and records upstream
+    in the release title, with upstream tags fetched into a namespace; roherdr's
+    upstream tags are already namespaced `upstream/*`. First release: `fork-v0.9.3-1`
+    pushed 2026-10-02 (run 37010319126). Not done: the revision in `--version`
+    (`herdr 0.9.3 (roherdr r1, ...)`, injected from the tag at build time), a self-update
+    check against the fork's releases (the updater is off for fork builds).
   - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
     title, `--version` text), the self-updater pointing at upstream, trying a
     prerelease download on the Mac.
