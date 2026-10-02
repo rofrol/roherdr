@@ -28,8 +28,7 @@ the requested model is available. The call has no tools or MCP servers, runs
 outside the repository, and does not persist a session. Include all relevant
 context in the prompt or repeated `-f FILE` attachments. Only `-f -` reads
 stdin. Do not send secrets or confidential code without permission.
-Who joins a round (default set, running trials) is set under "Default consultation set" in the gpt skill's
-`SKILL.md`.
+Who joins a round (default set, running trials) is set in the `consult` skill's `SKILL.md`.
 
 Inside Herdr, the helper uses a visible `herdr-job` tab and waits for the
 result. Outside Herdr it runs directly. Allow a shell timeout longer than
