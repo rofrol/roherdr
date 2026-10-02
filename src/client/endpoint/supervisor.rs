@@ -9,6 +9,18 @@ use crate::protocol::{ClientSurfaceSize, RenderEncoding};
 use interprocess::TryClone as _;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Test-only override of the first retry delay, in milliseconds. The delay
+/// doubles with every failed attempt, so a test that drops a connection
+/// several times in a row would otherwise wait for 0.5 s, 1 s, 2 s... on top
+/// of whatever the machine adds.
+const TEST_RETRY_DELAY_ENV: &str = "HERDR_TEST_ENDPOINT_RETRY_MS";
+
+fn initial_retry_delay() -> Duration {
+    std::env::var(TEST_RETRY_DELAY_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(INITIAL_RETRY_DELAY, Duration::from_millis)
+}
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
@@ -359,7 +371,7 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
 }
 
 fn retry_delay(attempt: u32) -> Duration {
-    INITIAL_RETRY_DELAY
+    initial_retry_delay()
         .saturating_mul(
             1_u32
                 .checked_shl(attempt.saturating_sub(1).min(8))

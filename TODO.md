@@ -49,19 +49,30 @@
   `master` is now 0 behind upstream.
 
 - [x] Flaky tests under load (seen 2026-10-01 while other sessions built):
-  `client_mode::federated_client_starts_without_local_and_survives_its_restart`
-  (4 of the last 8 full runs, passes alone) and once `app::api::plugins::tests::
-  plugin_pane_open_uses_plugin_root_title_env_and_target_context` ("bin path"
-  panic at `plugins/mod.rs:1938`, passes alone). Both pass on a rerun; neither
-  investigated.
-  Done 2026-10-02: the plugin test's capture helper (`read_capture_when_ready`) now takes
-  the file only when a second read 40 ms later finds it unchanged (the shell creates the
-  file before `printf` writes it, so a loaded machine could read a partial one; 25 stressed
-  runs did not reproduce the old failure, so this is by reasoning, not by a failing test
-  turned green); the federated test's waits (8-15 s each) are tripled with `patient()` (it
-  failed at 26-28 s in full runs under load 30-47 and passed alone in 11-16 s, even with 12
-  busy processes running, so this too is a margin, not a reproduction). Watch the next
-  full runs; reopen if either fails again.
+  `client_mode::federated_client_starts_without_local_and_survives_its_restart` and
+  `app::api::plugins::tests::plugin_pane_open_uses_plugin_root_title_env_and_target_context`.
+  First "fix" 2026-10-02 (two-read file helper, all waits tripled) was a guess; the user
+  disliked it and DeepSeek, GPT and Opus agreed (reproduce, no timeout inflation, atomic
+  publication, diagnostics), so it was reverted and redone:
+  - Reproduced with `cargo nextest run --stress-count N` plus 12 busy `yes` processes:
+    the federated test failed 1 in about 25 runs, at "recovered Local must be
+    selectable". Cause: the test sent ONE sidebar click right after the remote died, and
+    a click that lands while the sidebar is being redrawn is dropped, so it then waited
+    10 s for a selection that never came. Fix: the click is sent again from the current
+    layout every 250 ms until the selection shows (same for the earlier remote-ready
+    click). Result: 40/40 under the same load (was 29/30 and 19/20); the test also takes
+    8 s instead of 11-16 s.
+  - Also in that test: the reconnect delay doubles per dropped bridge (0.5 s, 1 s, 2 s
+    ...), so the three reconnect cycles waited on the schedule. New hidden env
+    `HERDR_TEST_ENDPOINT_RETRY_MS` (supervisor) sets the first delay; the test uses 50
+    ms. The timeouts keep their original values; timeouts now print the screen.
+  - Plugin test: the commands that write the capture files now write `name.tmp` and
+    `mv` it, so the file appears complete (the old helper could read a half-written
+    one); the helper is unchanged. 300 stress iterations of all plugin tests under 16
+    busy processes: 300/300. The original failure never reproduced, so that fix is by
+    reasoning plus the stress result.
+  - Not done: a nextest retry budget (`flaky-result`), kept out on purpose: it would
+    hide the signal; reopen if a test flakes again, with the stress command above.
 
 - [x] History rows were cramped and unaligned (user, 2026-10-02, screenshot: the
   time glued to the state icon; "some rows have only a date, some date and
