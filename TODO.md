@@ -3153,6 +3153,31 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
 
 ## Deferred
 
+- [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
+  screenshot 10 s after installing `bcf83e77`; rare, fix only if it happens
+  again): in a Claude Code pane the caret sat one row below the prompt, a
+  few columns right, and blinked fast; one earlier output line read
+  `[1Brestarcuruchamiałby...`, a literal `[1B` with every space gone.
+  - Cause found in the code: the PTY reader is paused at any byte, not at
+    a parser ground state, and the parser's pending sequence is not handed
+    over, so the new parser printed `[1B` without its ESC. Primary-screen
+    handoff sends only `initial_history_ansi` (text, no cursor position,
+    pending wrap, DECSCUSR style or DECTCEM visibility); only the alternate
+    screen carries cursor state. Claude Code's relative cursor moves then
+    start from the end of the replayed history.
+  - Not explained: the lost spaces (overwritten from the wrong origin, or a
+    lossy history replay) and the fast blink (DECSCUSR has no speed; maybe
+    `?25h/l` toggling at the wrong place or the detached client's stale
+    cursor).
+  - Consulted sol, DeepSeek and Space Bunny (MiMo timed out). Plan: a
+    differential test (the same bytes parsed straight through vs. handed off
+    at every byte of short CSI and UTF-8 fixtures, including a reader's
+    read-ahead buffer); cut only at ground state or hand over the pending
+    bytes; carry primary cursor position, pending wrap, style and
+    visibility; compare old and new grids right after replay, before the
+    child writes or the nudge (a same-size SIGWINCH may not redraw on
+    macOS).
+
 - [ ] Consult stats: pair the coordinator with Opus at a lower effort
   (`claude -p --model <same id> --effort low`, fresh context without project
   instructions or tools) to measure what effort buys.
