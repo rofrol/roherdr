@@ -399,6 +399,22 @@
     `herdr --version`, checksum, a smoke run.
   - Order: baseline CI, disable the upstream workflows, green Windows, the
     name commit, then the release workflow and a prerelease.
+  - Progress 2026-10-02: the fork's workflows do not run on `push` or
+    `pull_request` (0 runs after many pushes and a throwaway PR; only a
+    `workflow_dispatch` runs), so CI is run by dispatch from a branch whose
+    `ci.yml` has `workflow_dispatch:` added (`ci-dispatch*`, never merged; the
+    first run: Build artifacts (manual) for Linux green in 6 min). First CI run
+    on the fork (run 36954449725): Windows `check` failed to compile the tests
+    (`running_program` missing in two `ClientShellPane` literals in
+    `activation_tests.rs`; a `System { .. }` pattern without `target` in
+    `shell/notifications.rs`), Ubuntu failed
+    `cases::sessions::integration_commands_run_locally_when_server_is_missing`
+    (`tests/cli/sessions.rs` expected Pi `v9`, the fork's is `v10`; that test is
+    Linux-only, so `just check` on macOS never ran it). All fixed;
+    `just windows-lint` now runs `cargo clippy --all-targets`, so Windows test
+    compile errors show up locally. Still to do: rerun CI until `check` is green
+    on all three systems (nextest stops at the first failure), then the name and
+    the release workflow.
   - Done: nothing yet.
 
 - [x] Tab bookmarks (user, 2026-10-01: "right click on a tab, add to

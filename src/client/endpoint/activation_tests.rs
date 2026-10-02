@@ -1422,6 +1422,7 @@ fn notification_successor_replay_rejects_a_restarted_destination() {
             foreground_cwd: None,
             focused: false,
             right_click_passthrough: false,
+            running_program: None,
         });
         state
             .shell
@@ -1539,6 +1540,7 @@ fn notification_click_on_remote_source_supersedes_a_handoff() {
         foreground_cwd: None,
         focused: false,
         right_click_passthrough: false,
+        running_program: None,
     });
     shell.set_endpoint_snapshot(&remote, Box::new(snapshot));
     endpoints.set_surface_active(&ClientEndpointId::Local, false);

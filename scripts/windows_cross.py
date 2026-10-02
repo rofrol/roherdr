@@ -125,20 +125,8 @@ def lint() -> None:
     env = {**os.environ, LIBC_ENV: str(libc), "LIBGHOSTTY_VT_SIMD": "false"}
     subprocess.run(["rustup", "target", "add", TARGET], check=True)
     subprocess.run(
-        # --tests also checks Windows-only test code, which Unix builds never compile.
-        [
-            "cargo",
-            "clippy",
-            "--bin",
-            "herdr",
-            "--tests",
-            "--locked",
-            "--target",
-            TARGET,
-            "--",
-            "-D",
-            "warnings",
-        ],
+        # --all-targets also checks Windows-only test code, which Unix builds never compile.
+        ["cargo", "clippy", "--all-targets", "--locked", "--target", TARGET, "--", "-D", "warnings"],
         env=env,
         check=True,
     )
