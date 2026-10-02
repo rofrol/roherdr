@@ -329,6 +329,31 @@
   one failed with `rm: ... Directory not empty` and the other could not find
   `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`.
 
+- [ ] Notification list times look odd without today's date (user, 2026-10-03
+  00:10, screenshot of the `✉5` list: "somehow weird without the date today").
+  `notification_time` (`src/client/shell/notification_log.rs`) prints `HH:MM`
+  for today and `Mon DD HH:MM` for older days, right-aligned to the widest, so
+  just after midnight `00:08` (newest) sat under seven blank cells above
+  `Oct  2 23:59`: the date is left out exactly where midnight makes it matter,
+  the unread dot floats away from its time, and the 12-cell column is spent
+  anyway. Consulted GPT-6.1-sol, DeepSeek, Xiaomi MiMo and Space Bunny
+  (2026-10-03, round `20261003-001208-0476`):
+  - Sol, MiMo and Space Bunny: muted day separator rows (`Today`, `Oct 2`)
+    with every row showing a left-aligned `HH:MM`; the date is said once and
+    seven cells go back to the titles. Separators must not take notification
+    slots (the 15-row cap counts notifications), never stand without rows
+    under them, and regroup on redraw when the list stays open across midnight.
+  - DeepSeek (and the others' fallback): always a fixed-width dated stamp
+    (`Oct 03 00:08`); no midnight special case and nothing goes stale, at the
+    cost of the width.
+  - All: no relative ages (they drift while read, scan badly, go negative
+    with clock skew); `Today HH:MM` repeats context; `10-03` invites
+    month/day confusion.
+  - Edge cases to test: midnight rollover while open, year boundary, DST
+    (each row's day from its own instant's offset, not one captured
+    `utc_offset_secs`), timezone change, future timestamps from clock skew,
+    15 rows spanning several days.
+
 - [x] Consult stats columns shift when a skill/model name is too long (user,
   2026-10-02, screenshot of `consult-stats`): the long rows
   `openrouter/xiaomi/mimo-v2.6-pro via Xiaomi` and
