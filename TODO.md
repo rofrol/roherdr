@@ -683,19 +683,17 @@
     never touches the other).
   - UI (all four): no second header button at 32 columns; the one `★N`
     counts both and its dropdown shows space rows with their own glyph (not
-    colour alone), either interleaved (a space row, then the bookmarked tabs of
-    that space; Sol, MiMo) or in two sections, Spaces then Tabs (DeepSeek,
-    Space Bunny). A click on a space row focuses the space (its active tab,
+    colour alone), in two sections, Spaces then Tabs (the user, 2026-10-02:
+    "spaces first"; DeepSeek and Space Bunny; Sol and MiMo had interleaved a
+    space row with its bookmarked tabs). A click on a space row focuses the space (its active tab,
     like `workspace.focus`), expands it when collapsed and scrolls it into
     view; an empty space shows its empty state and never gets a tab created.
     Removal as for tab rows (middle click, Delete, `x`, right-click "Remove
     from bookmarks"). Entry point: "Add to bookmarks" / "Remove from bookmarks"
     in the space header's context menu.
-  - Open, the user's call: is a space bookmark a jump target only (Sol, Space
-    Bunny: do not reorder the sidebar) or also a pin that sorts the space to
-    the top of the sidebar (MiMo; DeepSeek thinks "pin" is what the user
-    means, since a list of spaces alone repeats the sidebar)? With several
-    servers: rows grouped by server, a server suffix on clashing names, each
+  - A space bookmark is a jump target only (the user, 2026-10-02; Sol and
+    Space Bunny): it does not pin or reorder the space in the sidebar (MiMo and
+    DeepSeek had proposed sorting it to the top). With several servers: rows grouped by server, a server suffix on clashing names, each
     server keeps its own bookmarks (no client-side cross-server store).
   - Do not build (models): custom bookmark order, folders or tags, automatic
     bookmarking, `expanded` or other UI state on the wire.
