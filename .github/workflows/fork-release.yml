@@ -82,6 +82,9 @@ jobs:
       - name: Remove Zig caches
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
+      - name: Fork revision for --version
+        run: echo "ROHERDR_VERSION=${RELEASE_TAG#roherdr-v}" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -116,6 +119,10 @@ jobs:
         uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
         with:
           version: 0.16.0
+
+      - name: Fork revision for --version
+        shell: pwsh
+        run: '"ROHERDR_VERSION=$($env:RELEASE_TAG -replace '^roherdr-v','')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV'
 
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc

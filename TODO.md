@@ -521,8 +521,11 @@
     conflicts). try-roguix uses independent semver `vX.Y.Z` (it has no upstream release
     to track; `bNN` there are image build counters, not releases) and records upstream
     in the release title, with upstream tags fetched into a namespace; roherdr's
-    upstream tags are already namespaced `upstream/*`. First release: `roherdr-v0.9.3.1`. Not done: the revision in `--version`
-    (`herdr 0.9.3 (roherdr r1, ...)`, injected from the tag at build time), a self-update
+    upstream tags are already namespaced `upstream/*`. First release: `roherdr-v0.9.3.1`. `--version` now shows the revision
+    (`herdr 0.9.3 (roherdr 0.9.3.1, an unofficial fork)`; CI sets `ROHERDR_VERSION` from the tag,
+    local builds show the commit hash, `+` when dirty; the `herdr <semver>` prefix is unchanged;
+    DeepSeek and GPT agree). The first release `roherdr-v0.9.3.1` was built before this, so
+    it prints no revision; the next release carries it. Not done: a self-update
     check against the fork's releases (the updater is off for fork builds).
   - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
     title, `--version` text), the self-updater pointing at upstream, trying a
