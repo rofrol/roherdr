@@ -385,16 +385,38 @@
 - [ ] Drop DeepSeek for MiMo? (user, 2026-10-03, "and what about costs?").
   Pre-registered rule (openrouter `SKILL.md`): MiMo must beat DeepSeek by
   >= 0.5 accepted unique findings per call over the same rounds with a rejected
-  share no higher. Over the first 20 paired rounds (MiMo ran 22, over the cap):
-  MiMo 1.10 vs DeepSeek 0.75 (+0.35) and 23% vs 20% rejected, so it fails on
-  both counts; keep DeepSeek, drop MiMo from default rounds. Space Bunny (19
-  rounds): 0.53 vs 0.74, under its 0.7 early-stop bar, so it fails too. All four
-  consulted models agree: apply the rule as written, treat the two extra MiMo
-  rounds as exploratory, and use cost and latency only in a new pre-registered
-  trial. Cost: MiMo about half a cent per consult at 4.2k output tokens
-  (DeepSeek 7.5k); latency p50 50 s vs 24 s (MiMo: a veto for interactive use).
-  Awaiting the user's decision before editing the trial sections in the
-  openrouter and gpt `SKILL.md`.
+  share no higher. First 20 shared rounds (ad-hoc script; the stats table
+  cannot show this, see the next item): MiMo 1.10 vs DeepSeek 0.75 unique per
+  call, paired mean difference +0.35, bootstrap 95% CI 0.10..0.60, unique W/T/L
+  8/11/1; rejected 31/137 (23%) vs 28/137 (20%); accepted per call 5.3 vs 5.45.
+  All 23 shared rounds: +0.35, CI 0.13..0.57. So MiMo is reliably better on
+  unique findings, but by less than the +0.5 margin the rule asked for. The
+  rejected gap is 3 findings, noise (Space Bunny: roughly -7..+12 points); the
+  first summary "fails on both counts" overstated it. The pooled table rows mix
+  cohorts (DeepSeek's 261 calls span rounds without MiMo) and must not decide.
+  Space Bunny (19 rounds): 0.53 vs 0.74, under its 0.7 early-stop bar: drop.
+  Consulted Sol, DeepSeek, MiMo, Space Bunny (rounds `20261003-013157-b88d`,
+  `20261003-013705-77a9`): all four say do not replace DeepSeek under this rule.
+  Split on MiMo: Sol drop it; DeepSeek keep both and extend to ~40 rounds;
+  MiMo keep it as a cheap extra and open a new pre-registered trial with a
+  realistic margin (0.25), since the CI says more rounds will not reach 0.5;
+  Space Bunny keep both in a new trial. Cost: MiMo about half a cent per call
+  and 4.2k output tokens (DeepSeek 7.5k, its price not yet checked). Latency
+  p50 50 s vs 24 s barely matters: calls in a round run in parallel and Sol is
+  slower anyway (MiMo's point). Awaiting the user's decision before editing the
+  trial sections in the openrouter and gpt `SKILL.md`.
+- [ ] Head-to-head trial view in consult stats (user, 2026-10-03: "MiMo has more
+  unique but more rejected? Show it in the table? Is the verdict visible in the
+  table?"). It is not: `--pairs` pairs only models of the same skill, so the
+  MiMo-vs-DeepSeek verdict came from an ad-hoc script. Add `consult.py stats
+  --vs A B` (all four consulted models agree on the shape), shared rounds only:
+  per model calls, findings, accepted, rejected `n/N (%)`, unique per call,
+  accepted per call, output tokens per call, latency p50/p90, `$` per call (or
+  "unknown", never guessed); paired unique difference with a round bootstrap CI
+  and W/T/L, paired rejected-share difference with CI; then the rule's checks
+  and verdict printed by the tool (`unique margin >= +0.50: no`, `rejected
+  share <= peer: no`, `verdict: keep DeepSeek`), with rounds past the trial's
+  cap shown separately as post-endpoint.
 - [ ] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
