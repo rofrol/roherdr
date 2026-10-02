@@ -26,6 +26,18 @@ pub fn version() -> String {
     }
 }
 
+/// The fork's own revision for `--version`: `0.9.3.1` for a release build
+/// (CI sets `ROHERDR_VERSION` from the `roherdr-v*` tag), else the short hash
+/// of the commit the binary was built from (`+` marks uncommitted changes).
+pub fn fork_revision() -> Option<String> {
+    if let Some(version) = non_empty(option_env!("ROHERDR_VERSION")) {
+        return Some(version.to_owned());
+    }
+    commit_line()
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+}
+
 pub fn is_preview() -> bool {
     channel() == "preview"
 }

@@ -761,9 +761,12 @@ fn main() -> io::Result<()> {
             "herdr {}{}",
             crate::build_info::version(),
             if crate::build_info::is_fork() {
-                " (roherdr, an unofficial fork)"
+                match crate::build_info::fork_revision() {
+                    Some(revision) => format!(" (roherdr {revision}, an unofficial fork)"),
+                    None => " (roherdr, an unofficial fork)".to_owned(),
+                }
             } else {
-                ""
+                String::new()
             }
         );
         return Ok(());
