@@ -2847,6 +2847,56 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     terminal below about 120 columns (still "consider"); a dragged width
     is unchanged.
 
+- [ ] Bug (user, 2026-10-02): "it seems that after installing a new herdr
+  version, or maybe just after detaching, the questions disappeared; there are
+  no asking tabs anymore." Found in the code: the live handoff carries
+  `HandoffAgentState { authority, sequence, acquisition_pending }`
+  (`src/terminal/state.rs`), without `awaiting_reply_reported`, so every `?`
+  is lost on `scripts/herdr_live.sh install`; the session file
+  (`src/persist/snapshot.rs`) does not save it either. A plain detach keeps
+  the server, so it should not lose it. Consulted Sol, DeepSeek, MiMo and
+  Space Bunny (round 20261002-220912-44e2); all agree the field explains the
+  install, not a detach.
+  - Plan: carry the flag in the handoff state (serde default `false` for an
+    older sender) and restore it before the first client snapshot. Test: report
+    awaiting reply while Idle, hand off, attach a fresh client, see `?`.
+  - The first install of the fix still loses the flags (the old binary is the
+    sender); accept it.
+  - Check the detach case separately before blaming it: mark, detach,
+    reattach without an install, look at `?`. Suspects from the models: the
+    attach resize makes the agent repaint its prompt, which clears the flag
+    (`advance_awaiting_reply`); a key from the attach counted as typing; the
+    `flag && Idle` gate with a state not yet Idle.
+  - Full restart from the session file: do not restore the flag, since the
+    agent is relaunched and its question is gone (all models: only when the
+    same live agent continues).
+
+- [ ] New tab right after the current one (user, 2026-10-02: "should a new tab
+  be created after the current one by default? make it configurable, so it can
+  also go at the end of the space"). Today `create_tab_with_runtime`
+  (`src/workspace.rs`) always appends. Consulted the same four models (same
+  round). Plan:
+  - Option `ui.new_tab_position = "after_current" | "end_of_space"` (positive
+    enum), default `after_current` as asked; a changed default, say so in the
+    docs.
+  - "After the current" means after its whole group: a parent with children
+    gets the new tab after its last child (never between the parent and its
+    first child, which would look like a new child); in a child tab the new
+    top-level tab goes after that parent's group. Bunny's variant: from a
+    child, add a sibling child; rejected for now, because the new tab is not
+    the child's job. Decide with the user if it matters.
+  - Follow it: the new-tab key and `+`, the new tab in the focused pane's
+    directory, moving a pane out into its own tab (Bunny disagrees: keep that
+    next to its source). Do not: reopening a closed tab (it already restores
+    its place with `after_tab_id`), `tab.create` from the API without a
+    position (stays at the end for scripts; add an explicit `after_tab_id`
+    later if wanted), job child tabs (they stay at the end of their parent's
+    children), session restore and handoff (saved order).
+  - "Current" is the requesting client's active tab, sent with the request,
+    not a server-wide guess; the new tab gets focus only in that client.
+    Public tab numbers are stable (never reused), so inserting in the middle
+    renumbers nothing.
+
 ## Deferred
 
 - [ ] Consult stats: pair the coordinator with Opus at a lower effort
