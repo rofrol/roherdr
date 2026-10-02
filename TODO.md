@@ -353,6 +353,18 @@
     (each row's day from its own instant's offset, not one captured
     `utc_offset_secs`), timezone change, future timestamps from clock skew,
     15 rows spanning several days.
+  - Decided (user, 2026-10-03): day separator rows. Not started yet, because
+    another session was working in the checkout. Target look:
+
+    ```
+     Today
+    • 00:08 ● Gemini review needed
+    • 00:05 ● Kimi done
+      00:05 ● Wait for job finished
+     Oct 2
+      23:59 ● Pi finished the turn
+      23:57 ● Herdr build ok
+    ```
 
 - [x] Consult stats columns shift when a skill/model name is too long (user,
   2026-10-02, screenshot of `consult-stats`): the long rows
