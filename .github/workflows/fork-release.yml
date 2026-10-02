@@ -6,7 +6,7 @@ name: Fork release
 #   git tag fork-v0.9.3-1 && git push origin fork-v0.9.3-1
 #   gh workflow run fork-release.yml -f tag=fork-v0.9.3-1      (builds the same tag by hand)
 #
-# The binary stays `herdr`; only the asset names carry the fork's name (FORK_NAME below: roherd).
+# The binary stays `herdr`; only the asset names carry the fork's name (FORK_NAME below: roherdr).
 
 on:
   push:
@@ -24,7 +24,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RUST_TOOLCHAIN_VERSION: 1.96.1
-  FORK_NAME: roherd
+  FORK_NAME: roherdr
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   LIBGHOSTTY_VT_OPTIMIZE: ReleaseSafe
   LIBGHOSTTY_VT_SIMD: "false"

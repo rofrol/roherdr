@@ -761,7 +761,7 @@ fn main() -> io::Result<()> {
             "herdr {}{}",
             crate::build_info::version(),
             if crate::build_info::is_fork() {
-                " (roherd, an unofficial fork)"
+                " (roherdr, an unofficial fork)"
             } else {
                 ""
             }

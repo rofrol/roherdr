@@ -473,7 +473,10 @@
     "panics"); `corralix` and `flockix` (herding puns; users `Corralix` and
     `Flockix` exist); `rogux` (closest to roguix, too close). Rejected by all:
     `herdix`, `herdrix`, `herdux`. My order: `drovix`, `ropanix`, `roherdix`.
-  - Name chosen 2026-10-02 by the user: **roherd** (his own pick, not one of the
+  - Name chosen 2026-10-02 by the user: first **roherd**, an hour later
+    **roherdr** (it keeps the `-r` of herdr, so it is closer to upstream's name
+    than the models advised; the README disclaimer carries the weight). Everything
+    below was done for `roherd` and renamed to `roherdr`. Original note: **roherd** (his own pick, not one of the
     models' lists; contains "herd", which Opus and DeepSeek advised against, so
     the README says first thing that it is unofficial and not affiliated).
     Checked free the same day: crates.io, npm, Homebrew, GitHub user and repo
