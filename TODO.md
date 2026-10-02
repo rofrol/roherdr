@@ -378,7 +378,7 @@
   directory and one run rewrote `sandbox.sb` while the other loaded it; each
   run now gets its own.
 
-- [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
+- [x] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again
   in the pane where it had been running. Facts: the boot was at 12:08, the cold
   restore at 12:31; of four lazygit panes only `w15:p2` was relaunched (by
@@ -409,7 +409,10 @@
   `respawn_shell_on_exit` (MiMo alone preferred typing into the shell);
   `session.json` must become 0600 (it is 0644 today); the plugin must not
   launch a second copy. Later options: an "offer, don't run" mode for
-  uncertain records, a per-pane opt-in tied to one command.
+  uncertain records, a per-pane opt-in tied to one command. Decision (user,
+  2026-10-02): stay with the fixed plugin for now; core is not started. Check
+   after the next
+  reboot; reopen the core design if the plugin misses a program again.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
