@@ -4,6 +4,7 @@
   consult.py log --skill S --model M --status ok|error [--effort E] [--mode M] [--seconds N] [--prompt-chars N]
                 [--answer-chars N] [--usage JSON] [--usage-raw JSON]
                 [--model-version V] [--fingerprint F]                      (round id from $CONSULT_ROUND)
+                [--error-kind K | --error-text-file PATH|-]                (errors only; the text is classified, never stored)
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
   consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
@@ -13,7 +14,7 @@
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
 Usage is normalized by the ask_* scripts: input includes cached, output includes reasoning (both are subsets).
 """
-import argparse, json, math, os, sys, time, uuid
+import argparse, json, math, os, re, statistics, sys, time, uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -21,6 +22,26 @@ LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
 USAGE_KEYS = ("input", "cached", "output", "reasoning")
 PAIR_REF = {"gpt": "gpt-6-astra"}  # reference model for --pairs, when it is in the group
+# Why a call failed. `limit` covers both rate limits and exhausted plans (the vendors' texts do not separate them
+# reliably). Calls logged before error kinds existed have none and show as `unknown`; `other` means a reason was
+# seen but not recognized.
+ERROR_KINDS = ("limit", "auth", "model", "timeout", "empty", "server", "network", "other")
+# Checked in order, on the wrapper's error text (stderr tail, provider error message). The text itself is never
+# logged: stderr and provider bodies can echo the prompt or credentials.
+ERROR_PATTERNS = (
+    ("auth", r"\b(?:HTTP|status|code)[ :=]*40[13]\b|\bunauthori[sz]ed\b|\binvalid (?:api )?key\b|\blog ?in\b"
+             r"|\btoken (?:expired|invalid)\b|\bno [\w-]+ (?:token|key|accountId)\b|\bnot logged in\b"),
+    ("model", r"\bunrecognized_model\b|\b(?:invalid|unknown) model\b|\bnot a valid model\b"
+              r"|\bmodel [^\n]{0,80}\b(?:is )?not (?:supported|recogni[sz]ed|found)\b"),
+    ("limit", r"\b(?:HTTP|status|code)[ :=]*(?:429|402)\b|\btoo many requests\b|\busage limit\b|\brate[ -]?limit"
+              r"|\bquota\b|\bresource[_ ]exhausted\b|\binsufficient (?:balance|credits?)\b"),
+    ("server", r"\b(?:HTTP|status|code)[ :=]*5\d\d\b|\boverloaded\b|\binternal server error\b|\bbad gateway\b"
+               r"|\bservice unavailable\b"),
+    ("timeout", r"\btimed? ?out\b|\btimeout\b|\bdeadline\b|\bno answer within\b"),
+    ("network", r"\bconnection (?:refused|reset|error|aborted)\b|\bname resolution\b|\bnodename nor servname\b"
+                r"|\bnetwork is unreachable\b|\bURLError\b|\bSSL\b"),
+    ("empty", r"\bempty answer\b|\bno (?:successful )?answer\b"),
+)
 
 
 def append(rec):
@@ -53,6 +74,14 @@ def load():
     return calls, ratings, rounds
 
 
+def classify_error(text):
+    """The error kind for a wrapper's error text: the first matching ERROR_PATTERNS entry, else `other`."""
+    for kind, pattern in ERROR_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return kind
+    return "other"
+
+
 def label(c):
     """skill/model, plus @effort when set explicitly (gemini has it in the model id, deepseek has none), -r for repo mode.
     Old calls without effort and new ones without -e (@default) share a row."""
@@ -63,6 +92,28 @@ def label(c):
 
 def out_tokens(c):
     return (c.get("usage") or {}).get("output")
+
+
+def name_width(labels, floor=34):
+    """Width of a table's first column: the longest label (at least `floor`, the old fixed width), so a long name
+    does not push the number columns out of line. Labels are never cut: they are the rows' keys."""
+    return max([floor, *map(len, labels)])
+
+
+def p50(xs):
+    return statistics.median(xs) if xs else None
+
+
+def p90(xs, min_n=10):
+    """Nearest-rank 90th percentile; None under `min_n` values, where it would just be the maximum."""
+    if len(xs) < min_n:
+        return None
+    xs = sorted(xs)
+    return xs[math.ceil(0.9 * len(xs)) - 1]
+
+
+def secs(x):
+    return "-" if x is None else f"{x:.0f}"
 
 
 def ktok(n):
@@ -79,6 +130,16 @@ def cmd_log(a):
     for key, val in (("model_version", a.model_version), ("fingerprint", a.fingerprint)):
         if val:
             rec[key] = val
+    if a.status == "error":
+        kind = a.error_kind
+        if not kind and a.error_text_file:
+            try:
+                text = sys.stdin.read() if a.error_text_file == "-" else Path(a.error_text_file).read_text(errors="replace")
+            except OSError:
+                text = ""
+            kind = classify_error(text[-4000:]) if text.strip() else None
+        if kind:
+            rec["error_kind"] = kind
     for key, raw in (("usage", a.usage), ("usage_raw", a.usage_raw)):
         try:
             val = json.loads(raw) if raw else None
@@ -180,13 +241,16 @@ def cmd_stats(a):
     if not a.by_alias:
         calls = by_version(calls)
     rows = defaultdict(lambda: defaultdict(float))
+    lat = defaultdict(list)  # seconds of ok calls, per row
+    kinds = defaultdict(Counter)  # error kinds, per row
     for c in calls.values():
         s = rows[label(c)]
         s["calls"] += 1
         s["errors"] += c["status"] != "ok"
+        if c["status"] != "ok":
+            kinds[label(c)][c.get("error_kind") or "unknown"] += 1
         if c["status"] == "ok" and c.get("seconds") is not None:
-            s["ok"] += 1
-            s["secs"] += c["seconds"]
+            lat[label(c)].append(c["seconds"])
         if c["status"] == "ok" and out_tokens(c) is not None:
             s["used"] += 1
             s["out"] += out_tokens(c)
@@ -205,9 +269,10 @@ def cmd_stats(a):
         print("No data.")
         return
     extra = a.all or a.pairs
-    hdr = f'{"skill/model":34} {"uniq/call":>9} {"wrong":>5} {"rated":>7} {"err":>4}'
+    w = name_width(rows)
+    hdr = f'{"skill/model":{w}} {"uniq/call":>9} {"wrong":>5} {"rated":>7} {"err":>4}'
     if extra:
-        hdr += f' {"score":>6} {"acc/find":>9} {"unique":>6} {"avg s":>6} {"out/call":>8}'
+        hdr += f' {"score":>6} {"acc/find":>9} {"unique":>6} {"lat n":>5} {"p50 s":>5} {"p90 s":>5} {"out/call":>8}'
     print(hdr + "\n" + "-" * len(hdr))
     # Anecdotal rows (under 5 rated calls) go last, so a lucky 2/2 does not top the table.
     for k, s in sorted(rows.items(), key=lambda kv: (kv[1]["rated"] < 5,
@@ -217,13 +282,13 @@ def cmd_stats(a):
         wrong = f'{1 - s["accepted"] / s["findings"]:.0%}' if s["findings"] else "-"
         rated = f'{int(s["rated"])}/{int(s["calls"])}'
         err = f'{s["errors"] / s["calls"]:.0%}'
-        line = f'{k:34} {uniq:>9} {wrong:>5} {rated:>7} {err:>4}'
+        line = f'{k:{w}} {uniq:>9} {wrong:>5} {rated:>7} {err:>4}'
         if extra:
-            avg = f'{s["secs"] / s["ok"]:.0f}' if s["ok"] else "-"
             score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             out = ktok(s["out"] / s["used"]) if s["used"] else "-"
-            line += f' {score:>6} {acc:>9} {int(s["unique"]):6} {avg:>6} {out:>8}'
+            line += (f' {score:>6} {acc:>9} {int(s["unique"]):6} {len(lat[k]):5} {secs(p50(lat[k])):>5} '
+                     f'{secs(p90(lat[k])):>5} {out:>8}')
         print(line)
     print("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
           "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
@@ -232,11 +297,15 @@ def cmd_stats(a):
           "Models are named by the version the provider reported; a row named by an alias (deepseek/deepseek-flash) holds calls\n"
           "logged before versions were recorded, of unknown version. --by-alias merges them.")
     if extra:
-        print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.")
+        print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.\n"
+              "lat n, p50 s, p90 s: wrapper wall-clock seconds of ok calls (median; nearest-rank p90, shown from 10 calls on).\n"
+              "Failed calls are left out of the latency columns; their time counts in the rounds table (--all).")
     if a.pairs:
         print_pairs(calls, ratings)
     if not a.all:
         return
+    print_errors(kinds, rows)
+    print_rounds(calls, since)
     selves = defaultdict(lambda: defaultdict(float))
     for rd in rounds.values():
         if rd["ts"] < since:
@@ -246,15 +315,78 @@ def cmd_stats(a):
         for k in ("findings", "accepted", "refuted", "unique", "missed"):
             s[k] += rd.get(k) or 0
     if selves:
-        hdr = f'{"coordinator":34} {"rounds":>6} {"acc/find":>9} {"refuted":>7} {"unique":>6} {"missed":>6} {"recall":>6}'
+        cw = name_width(selves)
+        hdr = f'{"coordinator":{cw}} {"rounds":>6} {"acc/find":>9} {"refuted":>7} {"unique":>6} {"missed":>6} {"recall":>6}'
         print("\n" + hdr + "\n" + "-" * len(hdr))
         for k, s in sorted(selves.items()):
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             known = s["accepted"] + s["missed"]
             recall = f'{s["accepted"] / known:.2f}' if known else "-"
-            print(f'{k:34} {int(s["rounds"]):6} {acc:>9} {int(s["refuted"]):7} {int(s["unique"]):6} {int(s["missed"]):6} {recall:>6}')
+            print(f'{k:{cw}} {int(s["rounds"]):6} {acc:>9} {int(s["refuted"]):7} {int(s["unique"]):6} {int(s["missed"]):6} {recall:>6}')
         print("\nrefuted: Claude's own claims disproved (by a consulted model or verification); missed: accepted findings of consulted models "
               "Claude did not have; recall: accepted / (accepted + missed), i.e. against findings anyone discovered.")
+
+
+def print_errors(kinds, rows):
+    """Failed calls per row, by kind; `unknown` holds calls logged before kinds were recorded."""
+    kinds = {k: c for k, c in kinds.items() if k in rows}
+    if not kinds:
+        return
+    w = name_width(kinds)
+    print(f'\n{"errors by kind":{w}} {"n":>4}  kinds')
+    print("-" * (w + 30))
+    order = {k: i for i, k in enumerate((*ERROR_KINDS, "unknown"))}
+    for k, c in sorted(kinds.items(), key=lambda kv: -sum(kv[1].values())):
+        parts = ", ".join(f"{n} {kind}" for kind, n in sorted(c.items(), key=lambda kv: order.get(kv[0], 99)))
+        print(f'{k:{w}} {sum(c.values()):4}  {parts}')
+
+
+def round_finishes(calls, since=0):
+    """Rounds with at least two models, as {round: {label: call}}. A model asked twice in a round (a retry) counts
+    once, by its last call. Rounds that started before `since` are left out whole, so --days never cuts one."""
+    rounds = defaultdict(dict)
+    for c in sorted(calls.values(), key=lambda c: c["ts"]):
+        if c.get("round"):
+            rounds[c["round"]][label(c)] = c
+    def start(members):
+        return min(c["ts"] - (c.get("seconds") or 0) for c in members.values())
+    return {r: m for r, m in rounds.items() if len(m) >= 2 and start(m) >= since}
+
+
+def round_table(calls, since=0):
+    """Per model: rounds joined, how often it finished last (alone), how often that last call had failed, and the
+    finish gap: how much later it finished than the next model, i.e. how long the round waited for it alone.
+    Finish times are the logged end times (`ts`), so a model launched late is not blamed for the others' time."""
+    stats = defaultdict(lambda: {"rounds": 0, "last": 0, "last_err": 0, "gaps": []})
+    for members in round_finishes(calls, since).values():
+        for k in members:
+            stats[k]["rounds"] += 1
+        ends = sorted(members.items(), key=lambda kv: kv[1]["ts"], reverse=True)
+        (k, c), second = ends[0], ends[1][1]
+        gap = c["ts"] - second["ts"]
+        if gap > 0:  # a tie has no single straggler
+            stats[k]["last"] += 1
+            stats[k]["last_err"] += c["status"] != "ok"
+            stats[k]["gaps"].append(gap)
+    return stats
+
+
+def print_rounds(calls, since=0):
+    stats = round_table(calls, since)
+    if not stats:
+        return
+    w = name_width(stats)
+    hdr = f'{"rounds (2+ models)":{w}} {"rounds":>6} {"last":>9} {"failed":>6} {"gap p50":>7} {"gap sum":>8}'
+    print("\n" + hdr + "\n" + "-" * len(hdr))
+    # Under 5 rounds is anecdotal and goes last, like the main table.
+    for k, s in sorted(stats.items(), key=lambda kv: (kv[1]["rounds"] < 5, -sum(kv[1]["gaps"]))):
+        last = f'{s["last"]}/{s["rounds"]}'
+        total = sum(s["gaps"])
+        print(f'{k:{w}} {s["rounds"]:6} {last:>9} {s["last_err"]:6} {secs(p50(s["gaps"])):>7} '
+              f'{f"{total / 60:.0f} min" if total >= 600 else f"{total} s":>8}')
+    print("last: rounds it finished last, alone; failed: of those, how many ended in an error (time spent waiting for a\n"
+          "failure); gap: seconds between its end and the next model's end in those rounds (by logged end time), so\n"
+          "gap sum is how long rounds waited for it alone. Rounds joined differ between models: compare last/rounds.")
 
 
 def print_pairs(calls, ratings):
@@ -269,12 +401,13 @@ def print_pairs(calls, ratings):
             s["out"] += out_tokens(c)
             s["accepted"] += r["accepted"]
             s["score"] += VERDICTS[r["verdict"]]
-    print(f'\n{"efficiency (rated, with usage)":34} {"n":>3} {"out tok":>8} {"acc/1M out":>10} {"score/100k":>10}')
-    print("-" * 69)
+    w = name_width([*eff, "efficiency (rated, with usage)"])
+    print(f'\n{"efficiency (rated, with usage)":{w}} {"n":>3} {"out tok":>8} {"acc/1M out":>10} {"score/100k":>10}')
+    print("-" * (w + 35))
     if not eff:
         print("(no rated calls with token usage yet)")
     for k, s in sorted(eff.items()):
-        print(f'{k:34} {int(s["n"]):3} {ktok(s["out"]):>8} {1e6 * s["accepted"] / s["out"]:10.1f} '
+        print(f'{k:{w}} {int(s["n"]):3} {ktok(s["out"]):>8} {1e6 * s["accepted"] / s["out"]:10.1f} '
               f'{1e5 * s["score"] / s["out"]:10.2f}')
     print("sums over calls, not means of per-call ratios; n<5 is anecdotal.")
 
@@ -315,11 +448,14 @@ def print_pairs(calls, ratings):
 def cmd_recent(a):
     calls, ratings, rounds = load()
     calls = by_version(calls)
-    for c in sorted(calls.values(), key=lambda c: c["ts"])[-a.n:]:
+    latest = sorted(calls.values(), key=lambda c: c["ts"])[-a.n:]
+    w = name_width(label(c) for c in latest)
+    for c in latest:
         r = ratings.get(c["id"])
         rated = f'{r["verdict"]} {r.get("accepted") or 0}/{r.get("findings") or 0} u{r.get("unique") or 0}' if r else "unrated"
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["ts"]))
-        print(f'{c["id"]}  {when}  {label(c):34} {c["status"]:5}  {ktok(out_tokens(c)):>6}  {rated}  '
+        status = c["status"] if c["status"] == "ok" else f'{c["status"]}:{c.get("error_kind") or "unknown"}'
+        print(f'{c["id"]}  {when}  {label(c):{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
               f'{Path(c.get("cwd") or "").name}')
     covered = {i for rd in rounds.values() for i in rd["calls"].split(",")}
     todo = sorted(i for i in calls if i not in covered and i in ratings)
@@ -340,6 +476,10 @@ def main():
     l.add_argument("--usage-raw", default="", help="the provider's usage object, kept for later")
     l.add_argument("--model-version", default="", help="the model the provider says serves --model (when it is an alias)")
     l.add_argument("--fingerprint", default="", help="the provider's backend fingerprint (e.g. system_fingerprint)")
+    e = l.add_mutually_exclusive_group()
+    e.add_argument("--error-kind", choices=ERROR_KINDS, help="why the call failed, when the wrapper knows it")
+    e.add_argument("--error-text-file", help="the wrapper's error text (- = stdin), classified into an error kind; "
+                                            "the text is not stored")
     sub.add_parser("new-round")
     r = sub.add_parser("rate")
     r.add_argument("id"); r.add_argument("verdict", choices=list(VERDICTS))
@@ -360,6 +500,8 @@ def main():
     s.add_argument("--by-alias", action="store_true", help="group by the requested model, merging its versions")
     n = sub.add_parser("recent"); n.add_argument("-n", type=int, default=20)
     a = p.parse_args()
+    if a.cmd == "log" and a.status == "ok" and (a.error_kind or a.error_text_file):
+        p.error("--error-kind/--error-text-file only go with --status error")
     {"log": cmd_log, "new-round": cmd_new_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,
      "recent": cmd_recent}[a.cmd](a)
 

@@ -317,7 +317,11 @@
   Decision (user, 2026-10-02): go with MiMo's direction — data-driven width as the
   default mechanism (no truncation by default; the label is the key), plus the free
   ` via <provider>` normalization and bounding every column; a cap/`--name-width`
-  stays an optional guard only. Not started.
+  stays an optional guard only. Partly done (2026-10-02, with the error-kind and
+  latency work): every table's name column (stats, errors, rounds, pairs,
+  coordinator, recent) now takes its width from the longest label, never cut.
+  Still open: the ` via <provider>` normalization and bounding the numeric
+  columns.
 
 - [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again

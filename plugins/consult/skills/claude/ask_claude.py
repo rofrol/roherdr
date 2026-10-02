@@ -37,6 +37,7 @@ def main():
         parser.error("Empty prompt")
     start = time.monotonic()
     status, answer, usage, version = "error", "", {}, ""
+    error_kind, error_text = "", ""  # why it failed; the text is classified by consult.py, never stored
     rc = 1
     try:
         # No repository context, tools, MCP servers, or persisted child session.
@@ -49,6 +50,7 @@ def main():
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr)
         rc = result.returncode
+        error_text = result.stderr[-2000:] + "\n" + result.stdout[-2000:]
         payload = json.loads(result.stdout)
         usage = payload.get("usage") or {}
         models = payload.get("modelUsage") or {}
@@ -61,9 +63,16 @@ def main():
             print(answer)
         else:
             rc = rc or 1
+            error_text = f"{answer}\n{error_text}"
+            if rc == 0 and not answer:
+                error_kind = "empty"
             print(answer or "Claude returned no successful answer", file=sys.stderr)
+    except subprocess.TimeoutExpired as error:
+        print(f"Claude consultation failed: {error}", file=sys.stderr)
+        error_kind, rc = "timeout", 1
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"Claude consultation failed: {error}", file=sys.stderr)
+        error_text = f"{error_text}\n{type(error).__name__}: {error}"
         rc = 1
     finally:
         log = [str(CONSULT_DIR / "consult.py"), "log", "--skill", "claude", "--model", args.model,
@@ -71,6 +80,8 @@ def main():
                "--prompt-chars", str(len(prompt)), "--answer-chars", str(len(answer))]
         if version:
             log += ["--model-version", version]
+        if status == "error":
+            log += ["--error-kind", error_kind] if error_kind else ["--error-text-file", "-"] if error_text.strip() else []
         if usage:
             cached = usage.get("cache_read_input_tokens", 0)
             normalized = {"input": usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0) + cached,
@@ -78,7 +89,7 @@ def main():
                           "reasoning": (usage.get("output_tokens_details") or {}).get("thinking_tokens")}
             log += ["--usage", json.dumps(normalized), "--usage-raw", json.dumps(usage)]
         try:
-            subprocess.run(log, timeout=10, check=False)
+            subprocess.run(log, input=error_text, text=True, timeout=10, check=False)
         except (OSError, subprocess.SubprocessError):
             pass  # Logging must not change the consultation outcome.
     return rc

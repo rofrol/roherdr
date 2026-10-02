@@ -31,18 +31,22 @@ done
 # Regex match instead of ${prompt//[[:space:]]/}: the substitution is quadratic in bash and hangs on long prompts.
 [[ $prompt =~ [^[:space:]] ]] || { echo "Empty prompt" >&2; exit 1; }
 
-start=$SECONDS; answer_chars=""
+start=$SECONDS; answer_chars=""; error_kind=""
 # Log every call for consult-stats; logging must not change the exit code or fail the call.
 consult_log() {
-  local rc=$? usage=""
+  local rc=$? usage="" why=()
   # Token usage from the last Codex event that has one; read before $tmp goes away.
   usage=$(jq -c 'select(.usage? | type == "object") | .usage' "$tmp/events" 2>/dev/null | tail -1) || true
-  rm -rf "$tmp" 2>/dev/null || true  # a straggling Codex child can still be writing there
+  # Why it failed: an explicit kind, else consult.py classifies $tmp/why (the text is not logged).
+  if [ $rc != 0 ]; then
+    if [ -n "$error_kind" ]; then why=(--error-kind "$error_kind"); elif [ -s "$tmp/why" ]; then why=(--error-text-file "$tmp/why"); fi
+  fi
   "$consult_dir"/consult.py log --skill gpt --model "$model" --effort "${effort:-default}" --mode "${repo:+repo}" \
     --status "$([ $rc = 0 ] && echo ok || echo error)" --seconds $((SECONDS-start)) \
-    --prompt-chars ${#prompt} ${answer_chars:+--answer-chars $answer_chars} \
+    --prompt-chars ${#prompt} ${answer_chars:+--answer-chars $answer_chars} ${why[@]+"${why[@]}"} \
     ${usage:+--usage-raw "$usage"} ${usage:+--usage "$(jq -c '{input: .input_tokens, cached: .cached_input_tokens,
       output: .output_tokens, reasoning: (.reasoning_output_tokens // .reasoning_tokens)}' <<<"$usage" 2>/dev/null)"} || true
+  rm -rf "$tmp" 2>/dev/null || true  # a straggling Codex child can still be writing there
   exit $rc
 }
 tmp=$(mktemp -d); trap consult_log EXIT
@@ -51,8 +55,8 @@ tmp=$(mktemp -d); trap consult_log EXIT
 # pi refreshes the OAuth token if needed and writes it back to its auth.json; Codex only gets a bearer token,
 # so it never refreshes (rotating) tokens itself. Separate CODEX_HOME: ~/.codex (and its auth.json) is not used.
 export PI_CODEX_TOKEN PI_CODEX_ACCOUNT
-PI_CODEX_TOKEN=$(pi auth print-bearer-token --provider openai-codex --min-expiry 15m) || { echo "No openai-codex token in pi; log in to pi (/login)" >&2; exit 1; }
-PI_CODEX_ACCOUNT=$(jq -er '."openai-codex".accountId' ~/.pi/agent/auth.json) || { echo "No openai-codex accountId in ~/.pi/agent/auth.json" >&2; exit 1; }
+PI_CODEX_TOKEN=$(pi auth print-bearer-token --provider openai-codex --min-expiry 15m) || { error_kind=auth; echo "No openai-codex token in pi; log in to pi (/login)" >&2; exit 1; }
+PI_CODEX_ACCOUNT=$(jq -er '."openai-codex".accountId' ~/.pi/agent/auth.json) || { error_kind=auth; echo "No openai-codex accountId in ~/.pi/agent/auth.json" >&2; exit 1; }
 
 out="$tmp/answer"; mkdir "$tmp/cwd" "$tmp/home"
 cwd="$tmp/cwd"
@@ -73,7 +77,9 @@ progress=${HERDR_JOB_TTY:-/dev/null}
 if ! printf '%s' "$prompt" | codex "${args[@]}" - 2>&1 >"$tmp/events" | tee "$tmp/err" >"$progress"; then
   cat "$tmp/err" >&2
   # With --json Codex reports API errors (e.g. 401) only as events, not on stderr.
-  jq -r 'select(.type == "turn.failed") | .error.message' "$tmp/events" 2>/dev/null | tail -1 | cut -c1-500 >&2 || true
+  jq -r 'select(.type == "turn.failed" or .type == "error") | .error.message // .message // empty' "$tmp/events" 2>/dev/null |
+    tail -1 | cut -c1-500 | tee "$tmp/why" >&2 || true
+  [ -s "$tmp/why" ] || tail -n 20 "$tmp/err" >"$tmp/why" 2>/dev/null || true  # no failure event: classify stderr
   exit 1
 fi
 answer_chars=$(wc -m <"$out" | tr -d " ")
