@@ -314,8 +314,10 @@
     (non-reproducible across runs). Right-ellipsis is wrong (cuts the model tail);
     use middle if a cap is ever added. Note `len()` != terminal display width if
     non-ASCII names ever appear (wcwidth).
-  Not started; awaiting the user's go on the direction (data-driven width as the
-  default mechanism vs. a fixed cap people can compare over time).
+  Decision (user, 2026-10-02): go with MiMo's direction — data-driven width as the
+  default mechanism (no truncation by default; the label is the key), plus the free
+  ` via <provider>` normalization and bounding every column; a cap/`--name-width`
+  stays an optional guard only. Not started.
 
 - [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again
