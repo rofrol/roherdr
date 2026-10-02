@@ -288,9 +288,34 @@
   and push every number column (uniq/call, wrong, rated, err, score, acc/find,
   unique, avg s, out/call) to the right, so they no longer line up with the
   other rows and no longer sit under their headers. "tak nie może być" — the
-  table must stay column-aligned whatever the name length. Decide the fix (fixed
-  name-column width with truncation/ellipsis, wrapping, or a widest-name measure)
-  and ask the models before implementing.
+  table must stay column-aligned whatever the name length. The user proposed
+  dropping the redundant skill prefix (`claude-sonnet-5-5`), `model [skill]`, or
+  ellipsis with a hover bubble like tab names.
+  Consulted GPT-6.1-sol, DeepSeek, Xiaomi MiMo and Space Bunny (2026-10-02).
+  Unanimous: the hover bubble is a category error (this is plain `print()` text in
+  a terminal pane, no hover surface — tab bubbles are the TUI drawing its own
+  rows); `model [skill]` is the same characters reordered and does not help; the
+  root cause is that `{k:34}` (and the numeric `>9 >5 >7 >4`) are *minimum* widths,
+  so Python never truncates. Recommended fix (synthesis):
+  - Compute the name-column width from the data with a nested spec `{k:{W}}`
+    (`W = max(len("skill/model"), *name lengths)`) — lossless, no truncation, so no
+    silent collision (the label is the aggregation/sort key; derive a display
+    string, never mutate the key). MiMo's collision point argues against making
+    truncation the default.
+  - For free, normalize the redundant ` via <provider>` suffix, but only when it
+    equals the OpenRouter slug's author segment case-insensitively
+    (`openrouter/stealth/space-bunny-alpha via Stealth` → `.../space-bunny-alpha`);
+    do not generalize from n=2 (`anthropic/claude via Azure` keeps ` via Azure`).
+    Dropping `claude/` saves nothing on the overflowing rows (24 chars already).
+  - Bound the numeric columns and the header rule the same way (they share the
+    min-width bug), so a wide value cannot shift the row either.
+  - Optional guard only: a `--name-width N` override, or a hard cap with
+    middle-ellipsis (ASCII `...`, not `…`). Reject terminal-size autosizing
+    (non-reproducible across runs). Right-ellipsis is wrong (cuts the model tail);
+    use middle if a cap is ever added. Note `len()` != terminal display width if
+    non-ASCII names ever appear (wcwidth).
+  Not started; awaiting the user's go on the direction (data-driven width as the
+  default mechanism vs. a fixed cap people can compare over time).
 
 - [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again
