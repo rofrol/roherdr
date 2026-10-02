@@ -343,8 +343,16 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ## Consult helpers (`plugins/consult`)
 
-These helpers ask other models for a second opinion. Quota verdicts do not
-belong in a state file:
+These helpers ask other models for a second opinion. Before a non-trivial
+design decision (tools, workflows, API shapes, where to document), gather the
+facts from the repo, then consult the default set (listed under "Default
+consultation set" in `plugins/consult/skills/gpt/SKILL.md`) in parallel as
+devil's advocates with an explicit role and a factual briefing. Their answers
+are not ground truth: verify each claim against the code and tell the user
+where you agree and where you do not. These consults have overturned first
+proposals and found real bugs.
+
+Quota verdicts do not belong in a state file:
 
 - Never persist "blocked until X": it is a prediction, and it goes stale when a
   provider resets a window early (this happened with Gemini's weekly quota,
