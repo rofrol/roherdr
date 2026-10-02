@@ -1,9 +1,9 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`; `-m mimo` = Xiaomi MiMo-V2.6-Pro pinned to Xiaomi) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj Space Bunny", "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
+description: Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
 ---
 
-# Consulting an OpenRouter model (cloaked models such as Space Bunny Alpha)
+# Consulting an OpenRouter model (Xiaomi MiMo by default)
 
 Commands below use `$D` for this skill's directory (Claude Code shows it as "Base directory for this skill"; pi lists
 the skill's location); set it first, e.g. `D=~/.claude/skills/openrouter` or `D=~/.pi/agent/skills/openrouter`.
@@ -16,7 +16,7 @@ Goes through OpenRouter's OpenAI-compatible API, billed to the user's OpenRouter
 "$D"/ask_openrouter.sh "question"                     # RECOMMENDED: sandboxed, no access to secrets/repo
 "$D"/ask_openrouter_raw.py "question"                 # raw client (no sandbox) — see the warning below
 "$D"/ask_openrouter_raw.py -m openai/gpt-4o-mini "q"  # any OpenRouter slug
-"$D"/ask_openrouter.sh -m mimo "q"                    # Xiaomi MiMo-V2.6-Pro, served only by Xiaomi
+"$D"/ask_openrouter.sh -m mimo-flash "q"              # Xiaomi MiMo-V2.6-Flash, served only by Xiaomi
 ```
 
 ## Safe entry point: `ask_openrouter.sh` (sandboxed)
@@ -48,7 +48,7 @@ Never read files, never include real secrets, config or private code — synthet
 
 (Not installed automatically: writing into `~/.claude` is a config change — ask the user first.)
 
-Options: `-m SLUG|ALIAS` (default `stealth/space-bunny-alpha`, env `OPENROUTER_MODEL`; aliases `mimo` =
+Options: `-m SLUG|ALIAS` (default `mimo`, env `OPENROUTER_MODEL`; aliases `mimo` =
 `xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi), `--provider NAME`
 (serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; `-` =
 stdin; `--allow-files` is still accepted but no longer needed), `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
@@ -64,12 +64,11 @@ payload summary is printed there.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
 
-## Space Bunny trial (2026-10-02, ended 2026-10-03)
+## Space Bunny (removed 2026-10-03)
 
-Space Bunny Alpha (the default model, no `-m`) joined 19 rounds and failed: over the shared rounds 0.53 accepted
-unique findings per call against DeepSeek's 0.74, below the 0.7 early-stop bar, with p50 latency 76 s. The user
-dropped it from rounds on 2026-10-03; ask it only on request. A cloaked model can vanish or turn into a paid named
-one, so re-check the slug when it errors; the served identity is unverified by design.
+The cloaked `stealth/space-bunny-alpha` was the default until it failed its trial (19 rounds: 0.53 accepted unique
+findings per call against DeepSeek's 0.74, p50 76 s). The user removed it on 2026-10-03: its long answers only cost
+the coordinator's tokens. Do not ask it, not even on request without the user naming it again.
 
 ## MiMo trial (second, from 2026-10-03)
 
@@ -101,11 +100,11 @@ scripts. A consult costs about half a cent.
 The real leak risk is not this script (it never reads the repository on its own; there is no `-r` mode) but **you,
 the agent, pasting file contents into the prompt**. So:
 
-- **Private code is allowed, secrets never.** The user decided on 2026-10-02 that consults through this skill (Space
-  Bunny and MiMo) may get the same code and context as DeepSeek. Never send credentials, keys, tokens, `.env` or
+- **Private code is allowed, secrets never.** The user decided on 2026-10-02 that consults through this skill (MiMo
+  and other models on request) may get the same code and context as DeepSeek. Never send credentials, keys, tokens, `.env` or
   auth files, or personal data of third parties.
 - Attachments go only with an explicit `-f` (the `--allow-files` gate was dropped on 2026-10-03, when the user asked
-  for `-f` to work for MiMo and Space Bunny). `ask_openrouter.sh` vets each path outside the sandbox (which cannot read
+  for `-f` to work for MiMo). `ask_openrouter.sh` vets each path outside the sandbox (which cannot read
   the repo) and hands the sandboxed run only the vetted copy. Each `-f` path is vetted fail-closed: it must be
   inside the current directory, have no symlink component, be a tracked, non-gitignored file in a git repo, not match
   the secrets denylist (`.env*`, `*.key`, `*.pem`, `auth.json`, `*secret*`, `*credential*`, …), not be binary, and be

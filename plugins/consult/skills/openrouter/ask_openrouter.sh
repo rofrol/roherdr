@@ -26,7 +26,7 @@ fi
 
 # Stage a clean copy of just the two skills the run needs, into a dir with no secrets. Preserve the sibling layout
 # (openrouter/ + consult-stats/) so the script finds consult-stats for logging. Each run gets its own directory:
-# rounds launch MiMo and Space Bunny in parallel, and a shared one let one run delete and rewrite sandbox.sb while
+# parallel runs (two OpenRouter models in one round) did, and a shared one let one run delete and rewrite sandbox.sb while
 # the other was loading it ("sandbox-exec: no version specified", 2026-10-02).
 mkdir -p "$STAGE_ROOT"
 STAGE=$(mktemp -d "$STAGE_ROOT/run.XXXXXX")

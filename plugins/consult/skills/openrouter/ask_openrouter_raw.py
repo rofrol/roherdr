@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ask an OpenRouter model (default: the free cloaked `stealth/space-bunny-alpha`) for a second opinion.
+"""Ask an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro, pinned to the Xiaomi provider) for a second opinion.
 
 For READ-ONLY consultation only, never a default consultant. The model's provider is anonymous and RETAINS the
 prompt and completion (OpenRouter Stealth Model Terms: not used for training, but logged by the unnamed lab), so
@@ -25,7 +25,7 @@ from pathlib import Path
 CONSULT_DIR = Path(__file__).resolve().parent.parent / "consult-stats"  # the skills live side by side
 CONSULT = CONSULT_DIR / "consult.py"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "stealth/space-bunny-alpha"
+DEFAULT_MODEL = "mimo"  # an alias, so the default keeps its provider pin
 # Short names for named (non-cloaked) models on trial, each pinned to one provider so the code goes to a known party.
 MODEL_ALIASES = {
     "mimo": ("xiaomi/mimo-v2.6-pro", "Xiaomi"),
