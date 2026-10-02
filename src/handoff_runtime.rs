@@ -34,6 +34,11 @@ pub(crate) struct HandoffRuntimeState {
     pub alternate_screen_ansi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<crate::terminal::state::HandoffAgentState>,
+    /// The agent's report that its turn ended with a question for the user
+    /// (the `?` mark). Separate from `agent_state`, which only agents with full
+    /// lifecycle hooks have; Claude and Pi report just this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_reply_reported: bool,
 }
 
 #[cfg(unix)]

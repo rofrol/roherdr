@@ -2171,6 +2171,14 @@ impl TerminalState {
         self.awaiting_reply() != was_awaiting
     }
 
+    /// Puts back a report carried over a live handoff, without the state
+    /// check of `report_awaiting_reply`: the new server has not detected the
+    /// agent's state yet, and the mark shows once it is idle again.
+    #[cfg(unix)]
+    pub(crate) fn restore_awaiting_reply_report(&mut self) {
+        self.awaiting_reply_reported = true;
+    }
+
     /// Applies an agent state transition to the awaiting-reply report. Entering
     /// `Blocked` drops it: a form or permission prompt after the report means the report
     /// was not the turn's last action (e.g. an in-turn question tool that the user
