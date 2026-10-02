@@ -1,9 +1,15 @@
-# herdr
+# roherd
+
+**roherd is an unofficial fork of [herdr](https://github.com/herdrdev/herdr)**,
+the terminal-based runtime for coding agents. It is not affiliated with the
+herdr project. The binary, the commands, the configuration directory and the
+`HERDR_*` variables keep the name `herdr`, so herdr's plugins, skills and agent
+integrations work unchanged. herdr's licence (Apache-2.0) and notices apply.
 
 ## Fork changes
 
-Personal fork of [herdrdev/herdr](https://github.com/herdrdev/herdr); these
-commits sit on top of upstream `master` and are not meant for upstream PRs.
+These commits sit on top of upstream `master` and are not meant for upstream
+PRs.
 
 - **Usage widget.** A footer at the bottom of the sidebar shows how much of
   your coding-agent allowance is used: Anthropic/Claude (`AN`) and
