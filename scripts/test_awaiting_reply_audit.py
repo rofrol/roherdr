@@ -253,5 +253,74 @@ class StopHook(unittest.TestCase):
         self.assertEqual(json.loads(self.run_hook(entries))["decision"], "block")
 
 
+class PlanHook(unittest.TestCase):
+    """The TodoWrite hook reports `done/total` as the plan token."""
+
+    def report(self, payload):
+        import socket
+        import subprocess
+        import threading
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "s.sock")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(path)
+            server.listen(1)
+            received = []
+
+            def accept():
+                server.settimeout(5)
+                try:
+                    connection, _ = server.accept()
+                    received.append(connection.recv(65536).decode())
+                    connection.sendall(b"{}\n")
+                    connection.close()
+                except OSError:
+                    pass
+
+            thread = threading.Thread(target=accept)
+            thread.start()
+            env = dict(os.environ, HERDR_ENV="1", HERDR_PANE_ID="p1", HERDR_SOCKET_PATH=path)
+            env.pop("CURSOR_VERSION", None)
+            subprocess.run(
+                ["sh", HOOK, "plan"],
+                input=json.dumps(payload),
+                text=True,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            thread.join(6)
+            server.close()
+            return json.loads(received[0]) if received else None
+
+    def test_reports_the_completed_count(self):
+        todos = [
+            {"content": "a", "status": "completed"},
+            {"content": "b", "status": "in_progress"},
+            {"content": "c", "status": "pending"},
+        ]
+        request = self.report(
+            {"hook_event_name": "PostToolUse", "tool_name": "TodoWrite",
+             "tool_input": {"todos": todos}}
+        )
+        self.assertEqual(request["method"], "pane.report_metadata")
+        self.assertEqual(request["params"]["tokens"], {"plan": "1/3"})
+        self.assertEqual(request["params"]["pane_id"], "p1")
+
+    def test_an_empty_list_clears_the_token(self):
+        request = self.report(
+            {"hook_event_name": "PostToolUse", "tool_name": "TodoWrite",
+             "tool_input": {"todos": []}}
+        )
+        self.assertEqual(request["params"]["tokens"], {"plan": None})
+
+    def test_other_tools_report_nothing(self):
+        self.assertIsNone(
+            self.report({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                         "tool_input": {"command": "ls"}})
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

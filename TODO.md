@@ -458,7 +458,7 @@
     tab, the agent state icon in the rows, the empty-state hint, a change
     event for other clients (they pick it up with the next snapshot).
 
-- [ ] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
+- [x] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
   instance has a list of things it will do from its todo, and I do not see it").
   Claude Code keeps it as TodoWrite (and newer TaskCreate/TaskUpdate), Pi and
   Codex have plans; each shows it only in its own pane. Consulted DeepSeek, Opus
@@ -482,7 +482,19 @@
     on request; no full list in the sidebar.
   - Rollout: API and validation tests, the Claude hook with a recorded
     payload, the token and footer, the Pi extension, the dropdown, Codex.
-  - Done: nothing yet.
+  - Done 2026-10-02 (first slice, Claude Code only; uses the existing token API
+    instead of a new method): a `PostToolUse` hook for `TodoWrite`
+    (`herdr-agent-state.sh plan`, installed with the other hooks, matcher
+    `TodoWrite`) reports `done/total` of the todo list as the `plan` token with
+    `pane.report_metadata` (kept 6 hours, renewed by each `TodoWrite`; an empty
+    list clears it; `HERDR_AGENT_PLAN=0` turns it off); the sidebar shows it dim
+    at the right end of the tab's line (`agent tab      3/7`). Tests:
+    `PlanHook` in `scripts/test_awaiting_reply_audit.py`, the install tests and
+    `a_tab_line_shows_the_progress_of_the_agents_todo_list`. Not done: the
+    in-progress item in a tooltip or dropdown; a clean-up at `SessionStart` or
+    `/clear` (the token lapses after 6 hours); `TaskCreate`/`TaskUpdate`; Pi and
+    Codex; the audit's note on how often agents use `TodoWrite`. Needs
+    `herdr integration install claude` and a restart of sessions.
 
 - [x] Bug (reported 2026-10-01 16:48 through another session, screenshot
   `~/.local/share/herdr-bug-reports/2026-10-01-working-agents-dropdown.png`):
