@@ -228,12 +228,31 @@ fn waits_on_job(
         })
 }
 
+/// Whether every running job of the tab is idle (its runner reports no output
+/// and almost no CPU): the agent waits on work that is not doing anything.
+fn waits_on_idle_job(snapshot: &crate::protocol::ClientShellSnapshot, tab_id: &str) -> bool {
+    use crate::api::schema::{TabActivity, TabStatus};
+    let mut running = snapshot.tabs.iter().filter(|tab| {
+        tab.parent_tab_id.as_deref() == Some(tab_id) && tab.status == Some(TabStatus::Running)
+    });
+    let mut any = false;
+    for tab in running.by_ref() {
+        any = true;
+        if tab.activity != Some(TabActivity::Idle) {
+            return false;
+        }
+    }
+    any
+}
+
 /// What a finished agent waits on, beyond its `AgentStatus`. A TUI presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentMark {
     None,
     /// A job it started still runs (see `waits_on_job`).
     WaitsOnJob,
+    /// Every job it started that still runs is idle (see `waits_on_idle_job`).
+    WaitsOnIdleJob,
     /// Its turn ended with a question for the user (`awaiting_reply`), which
     /// wins over a running job: only the user can move it on.
     AwaitsReply,
@@ -247,9 +266,20 @@ fn agent_mark(
     if agent.awaiting_reply && matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done) {
         AgentMark::AwaitsReply
     } else if waits_on_job(snapshot, &agent.tab_id, agent.agent_status) {
-        AgentMark::WaitsOnJob
+        if waits_on_idle_job(snapshot, &agent.tab_id) {
+            AgentMark::WaitsOnIdleJob
+        } else {
+            AgentMark::WaitsOnJob
+        }
     } else {
         AgentMark::None
+    }
+}
+
+impl AgentMark {
+    /// Waits on a running job, idle or not.
+    fn waits_on_a_job(self) -> bool {
+        matches!(self, Self::WaitsOnJob | Self::WaitsOnIdleJob)
     }
 }
 
@@ -283,6 +313,8 @@ fn agent_icon(
 ) -> &'static str {
     match (mark, style) {
         (AgentMark::AwaitsReply, _) => "?",
+        // A job that runs but does nothing: a dotted ring that does not turn.
+        (AgentMark::WaitsOnIdleJob, _) => "◌",
         (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Dots) => "●",
         (
             AgentMark::WaitsOnJob,
@@ -303,6 +335,7 @@ fn agent_color(
 ) -> ratatui::style::Color {
     match mark {
         AgentMark::WaitsOnJob => palette.mauve,
+        AgentMark::WaitsOnIdleJob => palette.overlay1,
         AgentMark::AwaitsReply => status_color(crate::api::schema::AgentStatus::Done, palette),
         AgentMark::None => status_color(status, palette),
     }

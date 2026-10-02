@@ -167,6 +167,7 @@ mod tests {
 
     fn tab(tab_id: &str, label: &str, status: Option<TabStatus>) -> ClientShellTab {
         ClientShellTab {
+            activity: None,
             bookmarked: false,
             tab_id: tab_id.into(),
             workspace_id: "w1".into(),

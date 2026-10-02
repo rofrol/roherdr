@@ -288,6 +288,8 @@ pub(super) fn agent_row(
     let mark = agent_mark(snapshot, agent);
     let state_text = if mark == AgentMark::AwaitsReply {
         "awaiting reply"
+    } else if mark == AgentMark::WaitsOnIdleJob {
+        "waiting on an idle job"
     } else if mark == AgentMark::WaitsOnJob {
         "waiting on job"
     } else {

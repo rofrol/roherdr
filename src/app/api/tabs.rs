@@ -361,6 +361,10 @@ impl App {
             return tab_not_found(id, &params.tab_id);
         };
         tab.status = params.status;
+        // Only a running job can be idle; any other status clears it.
+        tab.activity = params
+            .activity
+            .filter(|_| params.status == Some(crate::api::schema::TabStatus::Running));
         self.schedule_session_save();
         let tab = self.tab_info(ws_idx, tab_idx).unwrap();
         encode_success(id, ResponseResult::TabInfo { tab })
@@ -662,6 +666,7 @@ mod tests {
         app.handle_tab_set_status(
             "req".into(),
             TabSetStatusParams {
+                activity: None,
                 tab_id: job.clone(),
                 status: Some(crate::api::schema::TabStatus::Failed),
             },
@@ -693,6 +698,44 @@ mod tests {
         let response = app.handle_tab_close("req".into(), TabTarget { tab_id: parent });
         assert!(!response.contains("error"), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn api_tab_activity_marks_only_a_running_job_and_clears_with_any_status_change() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("job"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+        let set = |app: &mut App, status, activity| {
+            app.handle_tab_set_status(
+                "req".into(),
+                TabSetStatusParams {
+                    tab_id: tab_id.clone(),
+                    status,
+                    activity,
+                },
+            );
+            app.tab_info(0, 1).unwrap().activity
+        };
+        use crate::api::schema::{
+            TabActivity::Idle,
+            TabStatus::{Running, Succeeded},
+        };
+        assert_eq!(set(&mut app, Some(Running), Some(Idle)), Some(Idle));
+        // The runner says nothing new: a status report without an activity clears it.
+        assert_eq!(set(&mut app, Some(Running), None), None);
+        assert_eq!(set(&mut app, Some(Running), Some(Idle)), Some(Idle));
+        // A finished job is not idle, whatever is sent.
+        assert_eq!(set(&mut app, Some(Succeeded), Some(Idle)), None);
     }
 
     #[test]

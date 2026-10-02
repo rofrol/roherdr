@@ -45,6 +45,9 @@ pub struct Tab {
     pub status: Option<crate::api::schema::TabStatus>,
     /// Pinned by the user to the bookmarks list; shared by every client.
     pub bookmarked: bool,
+    /// What the tab's running job does, as its runner reports it; runtime
+    /// only, so a restart clears it until the runner reports again.
+    pub activity: Option<crate::api::schema::TabActivity>,
     pub job: Option<crate::api::schema::TabJobMetadata>,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -193,6 +196,7 @@ impl Tab {
                 parent: None,
                 status: None,
                 bookmarked: false,
+                activity: None,
                 job: None,
                 root_pane: root_id,
                 layout,
@@ -460,6 +464,7 @@ impl Tab {
             parent: None,
             status: None,
             bookmarked: false,
+            activity: None,
             job: None,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

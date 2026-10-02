@@ -193,6 +193,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
     projected.tab_bar_right_separator = " · ".into();
     for number in 2..=8 {
         projected.tabs.push(ClientShellTab {
+            activity: None,
             bookmarked: false,
             tab_id: format!("tab_{number}"),
             workspace_id: "ws_1".into(),
@@ -249,6 +250,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
 fn inactive_auto_named_tab_label_does_not_stack_terminal_faint() {
     let mut projected = snapshot();
     projected.tabs.push(ClientShellTab {
+        activity: None,
         bookmarked: false,
         tab_id: "tab_2".into(),
         workspace_id: "ws_1".into(),

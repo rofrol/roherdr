@@ -310,3 +310,38 @@ class WaitTests(unittest.TestCase):
         code, text = self.wait(b"", outcome=("failed", 1))
         self.assertEqual(code, 1)
         self.assertNotIn("last lines", text)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class IdleJobTests(unittest.TestCase):
+    def test_cputime_formats(self):
+        parse = JOB["parse_cputime"]
+        self.assertEqual(parse("0:01.50"), 1.5)
+        self.assertEqual(parse("12:34.00"), 12 * 60 + 34)
+        self.assertEqual(parse("1:02:03"), 3723)
+        self.assertEqual(parse("2-00:00:10"), 2 * 86400 + 10)
+
+    def test_the_tree_sums_the_job_and_its_descendants_only(self):
+        tree = JOB["tree_cpu_seconds"]
+        ps = "\n".join(
+            ["100 1 0:01.00", "101 100 0:02.00", "102 101 0:04.00", "200 1 5:00.00", "bad line"]
+        )
+        self.assertEqual(tree(ps, 100), 7.0)
+        self.assertIsNone(tree(ps, 999))
+
+    def test_a_job_is_idle_only_after_a_quiet_window_with_almost_no_cpu(self):
+        idle = JOB["job_is_idle"]
+        window = JOB["IDLE_WINDOW_S"]
+        step = JOB["SAMPLE_INTERVAL_S"]
+        times = list(range(0, window + 2 * step, step))
+        flat = [(t, 100.0) for t in times]
+        now = times[-1]
+        self.assertTrue(idle(flat, last_output=0, now=now))
+        # Output inside the window means it works.
+        self.assertFalse(idle(flat, last_output=now - 10, now=now))
+        # CPU use above 2% of a core means it works.
+        busy = [(t, 100.0 + t * 0.5) for t in times]
+        self.assertFalse(idle(busy, last_output=0, now=now))
+        # Too few samples to say.
+        self.assertFalse(idle(flat[-2:], last_output=0, now=now))
+        self.assertFalse(idle([], last_output=0, now=now))

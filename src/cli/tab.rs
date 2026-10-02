@@ -306,10 +306,20 @@ fn tab_parent(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn tab_status(args: &[String]) -> std::io::Result<i32> {
-    let usage = "usage: herdr tab status <tab_id> running|succeeded|failed|none";
-    let (Some(raw_tab_id), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
+    let usage = "usage: herdr tab status <tab_id> running|succeeded|failed|none [--activity idle]";
+    let (Some(raw_tab_id), Some(value)) = (args.first(), args.get(1)) else {
         eprintln!("{usage}");
         return Ok(2);
+    };
+    let activity = match args.get(2..).unwrap_or_default() {
+        [] => None,
+        [flag, kind] if flag == "--activity" && kind == "idle" => {
+            Some(crate::api::schema::TabActivity::Idle)
+        }
+        _ => {
+            eprintln!("{usage}");
+            return Ok(2);
+        }
     };
     let status = match value.as_str() {
         "running" => Some(TabStatus::Running),
@@ -326,6 +336,7 @@ fn tab_status(args: &[String]) -> std::io::Result<i32> {
         method: Method::TabSetStatus(TabSetStatusParams {
             tab_id: super::normalize_tab_id(raw_tab_id),
             status,
+            activity,
         }),
     })?)
 }
@@ -380,7 +391,7 @@ fn print_tab_help() {
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab close <tab_id>");
     eprintln!("  herdr tab parent <tab_id> <parent_tab_id>|none");
-    eprintln!("  herdr tab status <tab_id> running|succeeded|failed|none");
+    eprintln!("  herdr tab status <tab_id> running|succeeded|failed|none [--activity idle]");
     eprintln!("  herdr tab bookmark <tab_id>");
     eprintln!("  herdr tab unbookmark <tab_id>");
 }

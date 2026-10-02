@@ -1035,8 +1035,34 @@
           ],
           "type": "string"
         },
+        "TabActivity": {
+          "description": "What a running tab's job is doing, as far as its runner can tell.",
+          "oneOf": [
+            {
+              "const": "idle",
+              "description": "No output for a while and (almost) no CPU: the job runs but does nothing.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "TabInfo": {
           "properties": {
+            "activity": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabActivity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running job does (see `tab.set_status`); absent when unknown."
+            },
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
@@ -4399,6 +4425,21 @@
             }
           ]
         },
+        "TabActivity": {
+          "description": "What a running tab's job is doing, as far as its runner can tell.",
+          "oneOf": [
+            {
+              "const": "idle",
+              "description": "No output for a while and (almost) no CPU: the job runs but does nothing.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "TabBookmarkParams": {
           "properties": {
             "bookmarked": {
@@ -4567,6 +4608,17 @@
         },
         "TabSetStatusParams": {
           "properties": {
+            "activity": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabActivity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running job does; omit or null to clear it (a status change\nwithout an activity always clears it)."
+            },
             "status": {
               "anyOf": [
                 {
@@ -11146,8 +11198,34 @@
           ],
           "type": "string"
         },
+        "TabActivity": {
+          "description": "What a running tab's job is doing, as far as its runner can tell.",
+          "oneOf": [
+            {
+              "const": "idle",
+              "description": "No output for a while and (almost) no CPU: the job runs but does nothing.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "TabInfo": {
           "properties": {
+            "activity": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabActivity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running job does (see `tab.set_status`); absent when unknown."
+            },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
