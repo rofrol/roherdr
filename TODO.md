@@ -382,7 +382,7 @@
   the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
   skills would split the log keys (`skill` field) and break muscle memory. At
   most one README line stating the convention. Awaiting the user's decision.
-- [ ] Drop DeepSeek for MiMo? (user, 2026-10-03, "and what about costs?").
+- [x] Drop DeepSeek for MiMo? (user, 2026-10-03, "and what about costs?").
   Pre-registered rule (openrouter `SKILL.md`): MiMo must beat DeepSeek by
   >= 0.5 accepted unique findings per call over the same rounds with a rejected
   share no higher. First 20 shared rounds (ad-hoc script; the stats table
@@ -403,8 +403,11 @@
   Space Bunny keep both in a new trial. Cost: MiMo about half a cent per call
   and 4.2k output tokens (DeepSeek 7.5k, its price not yet checked). Latency
   p50 50 s vs 24 s barely matters: calls in a round run in parallel and Sol is
-  slower anyway (MiMo's point). Awaiting the user's decision before editing the
-  trial sections in the openrouter and gpt `SKILL.md`.
+  slower anyway (MiMo's point). Decision (user, 2026-10-03): keep DeepSeek,
+  drop Space Bunny from rounds, and run a second MiMo trial as a third voice
+  (20 shared rounds, pass on >= +0.25 paired unique per call with a rejected
+  share at most 5 points above DeepSeek's); written into the openrouter, gpt,
+  deepseek and consult-stats `SKILL.md` and the plugin README.
 - [ ] Head-to-head trial view in consult stats (user, 2026-10-03: "MiMo has more
   unique but more rejected? Show it in the table? Is the verdict visible in the
   table?"). It is not: `--pairs` pairs only models of the same skill, so the
