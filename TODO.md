@@ -353,6 +353,48 @@
   appending, because the server has no single active space and scripts rely on
   the end. Keep the endpoint contract: an older server must not ignore the new
   field and report success (a new method or advertised capability).
+- [ ] Consult cost per model and the coordinator's extra spend (user,
+  2026-10-03: "how much money/tokens a model used on a consult, and how much
+  more the coordinator burned by asking it"). Today every call logs normalized
+  usage, but no money, and the coordinator's own tokens are not logged at all.
+  Consulted Sol, DeepSeek, MiMo and Space Bunny (round `20261003-013157-b88d`,
+  agree on the shape):
+  - Money only where money exists: a versioned, dated price table (input,
+    cached input, output; reasoning billed as output, never twice since output
+    already includes it), `$` per call for DeepSeek and OpenRouter. Subscription
+    models (GPT, Claude, Gemini) show tokens and "included in subscription", not
+    a made-up per-token price; an API-list-price equivalent only as a separately
+    labelled column. A free preview model is `$0` for now, not for good.
+  - Coordinator: log the Claude Code session id and the round's start and end
+    (`new-round` to the last `rate`/`self`), then sum that window's per-message
+    usage from the session transcript, keeping cache reads apart. Label it
+    "consult-associated usage", not "extra": those turns also carry the existing
+    context (Sol, Space Bunny). Keep it per round, not split per model. Do not
+    add the answers again: they are already in the tool-result input (Space
+    Bunny). `answer_chars` is only a fallback proxy: it misses reasoning tokens.
+  - The true "how much more" needs a few matched tasks with and without a
+    consult; a one-off audit, not a stats column.
+  - DeepSeek: a later trial could score coordinator tokens per accepted unique
+    finding, which is what a shorter answer saves.
+- [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
+  (user, 2026-10-03: "do we need to unify ask in one place and consult in
+  another?"). All four consulted models (same round): leave it. `consult` names
+  the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
+  skills would split the log keys (`skill` field) and break muscle memory. At
+  most one README line stating the convention. Awaiting the user's decision.
+- [ ] Drop DeepSeek for MiMo? (user, 2026-10-03, "and what about costs?").
+  Pre-registered rule (openrouter `SKILL.md`): MiMo must beat DeepSeek by
+  >= 0.5 accepted unique findings per call over the same rounds with a rejected
+  share no higher. Over the first 20 paired rounds (MiMo ran 22, over the cap):
+  MiMo 1.10 vs DeepSeek 0.75 (+0.35) and 23% vs 20% rejected, so it fails on
+  both counts; keep DeepSeek, drop MiMo from default rounds. Space Bunny (19
+  rounds): 0.53 vs 0.74, under its 0.7 early-stop bar, so it fails too. All four
+  consulted models agree: apply the rule as written, treat the two extra MiMo
+  rounds as exploratory, and use cost and latency only in a new pre-registered
+  trial. Cost: MiMo about half a cent per consult at 4.2k output tokens
+  (DeepSeek 7.5k); latency p50 50 s vs 24 s (MiMo: a veto for interactive use).
+  Awaiting the user's decision before editing the trial sections in the
+  openrouter and gpt `SKILL.md`.
 - [ ] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
