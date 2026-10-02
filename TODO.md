@@ -281,6 +281,40 @@
   (Consulted DeepSeek and GPT before this on priorities: both put the flaky tests and
   the 4-commit upstream rebase first; this was the user's explicit next item.)
 
+- [ ] `✉N` disagrees with the history list (user, 2026-10-02, screenshot: `✉3`, the
+  dropdown lists 6 rows: three `•` rows of finished tabs (`●`), one of them `×5`, and
+  three of tabs working now (`◑`)). "There are three in the counter and more in the
+  list"; "is this duplicated because we already have the working ones next to it?";
+  "so the envelope list has only the ones with the blue dot?"
+  - Cause: three different units. `✉N` sums the notifications this client received
+    live for tabs it has not shown since (`unread_tabs`, in memory, reset on a client
+    restart or machine switch). The list is the server's last 15 records, read and
+    unread, repeats collapsed (`×5` is the server's total, not arrivals since attach).
+    `•` marks every row whose tab is in `unread_tabs`, so older, already seen rows of
+    that tab get it too, and the highlight bar `▌` replaces the `•` of the selected
+    row. The icon after the time is the tab's CURRENT state (`●` finished not
+    visited, `◑` working), so a past event of a tab that resumed work looks like a
+    copy of the `◐` list.
+  - Consulted Sol, DeepSeek, MiMo, Space Bunny (round 20261002-231839-b0cc). All four:
+    the row icon shows the event kind at the time (finished, asking, custom), not the
+    tab's current state, so `✉` answers "what happened" and `◐` "what runs now"; keep
+    rows of working tabs (an agent finishes, then resumes); separate the selection from
+    the unread mark (`▌ •`, never one replacing the other); count a `×N` row once.
+  - What N counts, they differ: unread rows / collapsed groups (Sol, MiMo, Space Bunny;
+    needs record ids, and a repeat after reading marks the row unread again, "×5, 2
+    new"), or unread tabs (DeepSeek: computable without a fetch; the dropdown opens
+    with a "New" section, one row per unread tab, then "Earlier" with read rows
+    dimmed). Space Bunny: unread-only by default with an "All" toggle; Sol and MiMo:
+    keep the log, offer an unread filter. Rejected: MiMo's fetch at attach and on each
+    notification (a background request holds the command lane, see AGENTS.md).
+  - Open: persist read state per machine/server run, or label N "since attach" (after
+    a client restart N is 0 under a full list); an unread tab whose record fell out of
+    the 100-entry ring or past the 15 rows needs "N more unread". Decide N first.
+- [ ] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
+  `/tmp/consult-openrouter`, so in a round with MiMo and Space Bunny launched together
+  one failed with `rm: ... Directory not empty` and the other could not find
+  `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`.
+
 - [ ] Consult stats columns shift when a skill/model name is too long (user,
   2026-10-02, screenshot of `consult-stats`): the long rows
   `openrouter/xiaomi/mimo-v2.6-pro via Xiaomi` and
