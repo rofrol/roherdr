@@ -1853,6 +1853,7 @@ fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
     // stood before it, ahead of `review`.
     let boot = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
     let tab = crate::api::schema::TabInfo {
+        activity: None,
         bookmarked: false,
         job: None,
         tab_id: "tab_9".into(),
@@ -2978,4 +2979,30 @@ fn squares_opened_for_a_focused_job_fold_again_when_the_focus_leaves_the_job() {
     focus(&mut state, "tab_1");
     assert!(unfolded(&state), "the user's own unfold sticks");
     let _ = &mut outcome;
+}
+
+#[test]
+fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
+    use crate::api::schema::TabActivity;
+    let mut state = state_with_tabs(true);
+    set_agent_status(&mut state, AgentStatus::Idle, false);
+    with_job(&mut state, "job_1", TabStatus::Running);
+    let icon = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let line = state.hits.space_tabs[0].0;
+        frame_rows(&frame)[line.y as usize].clone()
+    };
+    // A running job: the half circle of a job.
+    let row = icon(&mut state);
+    assert!(!row.contains('◌'), "{row:?}");
+    // The job reports it is idle: the agent's icon is the still ring.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for tab in &mut projected.tabs {
+        if tab.tab_id == "job_1" {
+            tab.activity = Some(TabActivity::Idle);
+        }
+    }
+    state.set_snapshot(Box::new(projected));
+    let row = icon(&mut state);
+    assert!(row.contains('◌'), "{row:?}");
 }

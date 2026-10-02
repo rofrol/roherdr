@@ -57,12 +57,27 @@ pub struct TabSetParentParams {
     pub parent_tab_id: Option<String>,
 }
 
+/// What a running tab's job is doing, as far as its runner can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TabActivity {
+    /// No output for a while and (almost) no CPU: the job runs but does nothing.
+    Idle,
+    /// A value from a newer server that this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabSetStatusParams {
     pub tab_id: String,
     /// Omit or null to clear the status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<TabStatus>,
+    /// What the running job does; omit or null to clear it (a status change
+    /// without an activity always clears it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<TabActivity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -111,4 +126,7 @@ pub struct TabInfo {
     /// means false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bookmarked: bool,
+    /// What the running job does (see `tab.set_status`); absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<TabActivity>,
 }

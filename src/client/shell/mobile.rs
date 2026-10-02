@@ -675,6 +675,8 @@ fn mobile_items(
             let status_key = status_text(agent.agent_status);
             detail.push(if mark == AgentMark::AwaitsReply {
                 "awaiting reply".to_owned()
+            } else if mark == AgentMark::WaitsOnIdleJob {
+                "waiting on an idle job".to_owned()
             } else if mark == AgentMark::WaitsOnJob {
                 "waiting on job".to_owned()
             } else {

@@ -800,6 +800,7 @@ fn restore_tab(
     (
         Some((
             crate::workspace::Tab {
+                activity: None,
                 bookmarked: snap.bookmarked,
                 custom_name: snap.custom_name.clone(),
                 number,

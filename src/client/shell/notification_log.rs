@@ -325,7 +325,7 @@ impl ClientShellState {
     ) -> bool {
         !Self::agent_is_asking(agent)
             && (agent.agent_status == crate::api::schema::AgentStatus::Working
-                || super::agent_mark(snapshot, agent) == super::AgentMark::WaitsOnJob)
+                || super::agent_mark(snapshot, agent).waits_on_a_job())
     }
 
     pub(super) fn agent_indicator_counts(&self) -> (usize, usize) {

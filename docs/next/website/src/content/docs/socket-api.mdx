@@ -845,6 +845,9 @@ top-level tab, and `tab.set_status` (`tab_id`, optional `status`: `running`,
 optional `parent_tab_id` and `status`; the server keeps children right after
 their parent in the tab order, and `tab.close` of a tab with children fails
 with `tab_has_children`.
+`tab.set_status` also takes an optional `activity` (`idle`): a job runner reports that a
+running job has produced no output and used almost no CPU for five minutes; tab objects carry
+it as `activity`, and any status change without an activity clears it.
 `tab.bookmark` (`tab_id`, `bookmarked`) bookmarks a tab or removes the
 bookmark; repeating it is harmless. Tab objects report `bookmarked: true` only
 for bookmarked tabs. The bookmark belongs to the tab: it survives a restart,

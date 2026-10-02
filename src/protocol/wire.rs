@@ -1066,6 +1066,9 @@ pub struct ClientShellTab {
     /// send it.
     #[serde(default)]
     pub bookmarked: bool,
+    /// What the running job does (idle, say); older servers do not send it.
+    #[serde(default)]
+    pub activity: Option<crate::api::schema::TabActivity>,
     /// What runs in the tab's focused pane: its label, agent, the current
     /// program's terminal title, or the program name.
     #[serde(default)]
@@ -2859,6 +2862,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],
             tabs: vec![ClientShellTab {
+                activity: None,
                 bookmarked: false,
                 tab_id: "w1:t1".into(),
                 workspace_id: "w1".into(),

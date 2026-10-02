@@ -366,7 +366,11 @@ fn tab_state(
     let mark = if awaits_reply {
         AgentMark::AwaitsReply
     } else if waits_on_job(snapshot, &tab.tab_id, status) {
-        AgentMark::WaitsOnJob
+        if waits_on_idle_job(snapshot, &tab.tab_id) {
+            AgentMark::WaitsOnIdleJob
+        } else {
+            AgentMark::WaitsOnJob
+        }
     } else {
         AgentMark::None
     };

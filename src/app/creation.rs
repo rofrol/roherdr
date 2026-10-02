@@ -230,6 +230,7 @@ impl App {
                 .and_then(|parent_idx| self.public_tab_id(ws_idx, parent_idx)),
             status: tab.status,
             bookmarked: tab.bookmarked,
+            activity: tab.activity,
             job: tab.job.clone(),
         })
     }

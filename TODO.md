@@ -182,7 +182,7 @@
     `no spaces match "x"` with the count in the error colour for zero matches;
     two-stage Esc (clear, then close).
 
-- [ ] A silent job looks the same as a stuck one (user, 2026-10-01, screenshot of
+- [x] A silent job looks the same as a stuck one (user, 2026-10-01, screenshot of
   the job "rescue builder VM": the pane shows only `$ ./builder-vm.sh` and a
   cursor, the running icon turns; "is anything executing here?"). Checked: yes.
   `herdr-job` (pid 10823) runs `./builder-vm.sh`, which started a
@@ -224,7 +224,23 @@
     that is idle. `herdr-job` (Python, which wraps the command) could sample
     its own process tree without any Rust build; showing it needs a field
     on the job metadata or a token the client reads.
-  - Done: nothing yet.
+  - Done 2026-10-02 (first slice: idle only, no CPU figure in the UI):
+    `herdr-job _exec` watches the job's output and samples the CPU time of its
+    process tree every 15 s; after 5 minutes without output and under 2% of one
+    core it runs `herdr tab status <tab> running --activity idle` (new optional
+    `activity` on `tab.set_status`, shown as `activity` in tab objects and the
+    client snapshot; runtime only, cleared by any status change). The client
+    shows the agent that waits only on idle jobs with a still `◌` in the dimmer
+    overlay colour and "waiting on an idle job" in the agent views; the job's
+    footer says `(idle)` with `◌`. Tests: `IdleJobTests` (cputime parsing, tree
+    sum, the idle rule), `api_tab_activity_marks_only_a_running_job_and_clears_
+    with_any_status_change`, `an_agent_waiting_on_an_idle_job_gets_a_ring_that_
+    does_not_turn`. Not done: the running job's own square and the `◐ N` counts
+    on the tab line, the elapsed time and busiest child in the footer and
+    tooltips, the models' `kill -STOP`/zombie states, a Linux `ps` check (the
+    sampler uses `ps -axo pid=,ppid=,cputime=`, which also works on Linux).
+    Jobs already running when this was installed (the rescue builder VM) have the
+    old wrapper and are not sampled.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
