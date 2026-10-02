@@ -16,7 +16,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"          # .../skills/openrouter
 SKILLS_ROOT="$(dirname "$SKILL_DIR")"                              # .../skills (has consult-stats sibling)
-STAGE=/tmp/consult-openrouter
+STAGE_ROOT=/tmp/consult-openrouter
 
 # Token first, outside the sandbox (this is the one trusted step that may read pi's auth).
 if ! TOK="$(pi auth print-bearer-token --provider openrouter --min-expiry 15m 2>/dev/null)" || [ -z "$TOK" ]; then
@@ -25,9 +25,12 @@ if ! TOK="$(pi auth print-bearer-token --provider openrouter --min-expiry 15m 2>
 fi
 
 # Stage a clean copy of just the two skills the run needs, into a dir with no secrets. Preserve the sibling layout
-# (openrouter/ + consult-stats/) so the script finds consult-stats for logging.
-mkdir -p "$STAGE"
-rm -rf "$STAGE/openrouter" "$STAGE/consult-stats"
+# (openrouter/ + consult-stats/) so the script finds consult-stats for logging. Each run gets its own directory:
+# rounds launch MiMo and Space Bunny in parallel, and a shared one let one run delete and rewrite sandbox.sb while
+# the other was loading it ("sandbox-exec: no version specified", 2026-10-02).
+mkdir -p "$STAGE_ROOT"
+STAGE=$(mktemp -d "$STAGE_ROOT/run.XXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
 cp -R "$SKILL_DIR" "$STAGE/openrouter"
 cp -R "$SKILLS_ROOT/consult-stats" "$STAGE/consult-stats"
 rm -rf "$STAGE/openrouter/__pycache__" "$STAGE/consult-stats/__pycache__"
@@ -39,6 +42,7 @@ sed "s#@HOME@#$HOME#g" "$SKILL_DIR/sandbox.sb" > "$STAGE/sandbox.sb"
 cd "$STAGE"
 
 # CONSULT_IN_JOB=1 skips the herdr-job re-exec (the staged copy has no in_herdr_job sibling wiring to rely on).
-exec sandbox-exec -f "$STAGE/sandbox.sb" \
+# No exec: the EXIT trap removes this run's staging directory afterwards, keeping the script's exit code.
+sandbox-exec -f "$STAGE/sandbox.sb" \
   /usr/bin/env OPENROUTER_BEARER="$TOK" CONSULT_IN_JOB=1 \
   /usr/bin/python3 "$STAGE/openrouter/ask_openrouter_raw.py" "$@"
