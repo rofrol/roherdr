@@ -411,7 +411,7 @@
   launch a second copy. Later options: an "offer, don't run" mode for
   uncertain records, a per-pane opt-in tied to one command. Decision (user,
   2026-10-02): stay with the fixed plugin for now; core is not started. Check
-   after the next
+  `~/.local/state/herdr/plugins/local.relaunch/relaunch.log` after the next
   reboot; reopen the core design if the plugin misses a program again.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
