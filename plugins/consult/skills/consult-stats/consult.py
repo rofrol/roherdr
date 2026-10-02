@@ -9,12 +9,13 @@
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
   consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
   consult.py stats [--days N] [--pairs] [--all] [--by-alias]
+  consult.py stats --vs A B [--since ROUND] [--rounds N] [--by-alias]   # head-to-head over shared rounds
   consult.py recent [-n N]
 
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
 Usage is normalized by the ask_* scripts: input includes cached, output includes reasoning (both are subsets).
 """
-import argparse, json, math, os, re, statistics, sys, time, uuid
+import argparse, json, math, os, random, re, statistics, sys, time, uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -264,12 +265,85 @@ def cmd_self(a):
     append(rec)
 
 
+def bootstrap_ci(rounds, stat, n=2000, seed=0):
+    """95% percentile interval of `stat` over `n` resamples of whole rounds; seeded, so a rerun prints the same."""
+    rng = random.Random(seed)
+    vals = sorted(stat([rng.choice(rounds) for _ in rounds]) for _ in range(n))
+    return vals[int(0.025 * n)], vals[int(0.975 * n) - 1]
+
+
+def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None):
+    """Head-to-head of two models over the rounds where both answered and were rated (same prompt). A pattern matches
+    a row label (`skill/model...`) by substring, case-insensitive. Numbers only: a trial's pass rule is judged by
+    the reader, not encoded here."""
+    sides = (a_pat, b_pat)
+    by_round = defaultdict(lambda: ([], []))
+    for c in calls.values():
+        if c["status"] != "ok" or not c.get("round") or (since and c["round"] <= since):  # a failed try has no answer
+            continue
+        for k, pat in enumerate(sides):
+            if pat.casefold() in label(c).casefold():
+                by_round[c["round"]][k].append(c)
+    shared, only, unrated, ambiguous = [], [0, 0], 0, 0
+    for rd in sorted(by_round):  # round ids start with their date and time, so this is chronological
+        ca, cb = by_round[rd]
+        if len(ca) > 1 or len(cb) > 1 or (ca and cb and ca[0]["id"] == cb[0]["id"]):
+            ambiguous += 1
+        elif not (ca and cb):
+            only[0 if ca else 1] += 1
+        elif all(ratings.get(c["id"], {}).get(k) is not None for c in (ca[0], cb[0]) for k in ("findings", "accepted")):
+            shared.append((rd, ca[0], cb[0]))
+        else:
+            unrated += 1
+    later = len(shared) - limit if limit and len(shared) > limit else 0
+    if limit:
+        shared = shared[:limit]
+    names = display_names(c for _, *pair in shared for c in pair)
+    print(f"{a_pat} vs {b_pat}: {len(shared)} shared rated rounds" + (f" ({shared[0][0]} .. {shared[-1][0]})" if shared else "")
+          + (f"; {later} later rounds left out by --rounds" if later else ""))
+    print(f"left out: {only[0]} rounds with only {a_pat}, {only[1]} with only {b_pat}, {unrated} not fully rated, "
+          f"{ambiguous} where a pattern matched two calls")
+    if not shared:
+        return
+    rows = []
+    for k in (0, 1):
+        cs = [pair[k] for _, *pair in shared]
+        rs = [ratings[c["id"]] for c in cs]
+        find, acc = sum(r["findings"] for r in rs), sum(r["accepted"] for r in rs)
+        outs = [out_tokens(c) for c in cs if out_tokens(c) is not None]
+        rows.append([" / ".join(sorted({names.get(label(c), label(c)) for c in cs})), str(len(cs)), str(find), str(acc),
+                     f"{find - acc} ({100 * (find - acc) / find:.0f}%)" if find else "-",
+                     f'{sum(r.get("unique") or 0 for r in rs) / len(rs):.2f}', f"{acc / len(rs):.2f}",
+                     ktok(sum(outs) / len(outs)) if outs else "-",
+                     secs(p50([c["seconds"] for c in cs if c.get("seconds") is not None]))])
+    header = ["model", "rounds", "findings", "accepted", "rejected", "uniq/call", "acc/call", "out/call", "p50 s"]
+    print("\n".join(table(header, rows, "<>>>>>>>>")))
+
+    def uniq_diff(rs):
+        return sum((ratings[x["id"]].get("unique") or 0) - (ratings[y["id"]].get("unique") or 0) for _, x, y in rs) / len(rs)
+
+    def rejected_diff(rs):  # percentage points; a side without findings counts as 0% rejected
+        share = [sum(ratings[p[k]["id"]]["findings"] - ratings[p[k]["id"]]["accepted"] for p in rs)
+                 / max(1, sum(ratings[p[k]["id"]]["findings"] for p in rs)) for k in (1, 2)]
+        return 100 * (share[0] - share[1])
+    d = [(ratings[x["id"]].get("unique") or 0) - (ratings[y["id"]].get("unique") or 0) for _, x, y in shared]
+    lo, hi = bootstrap_ci(shared, uniq_diff)
+    print(f"paired uniq/call {a_pat} - {b_pat}: {uniq_diff(shared):+.2f} (95% CI {lo:+.2f}..{hi:+.2f}), "
+          f"rounds W/T/L {sum(x > 0 for x in d)}/{sum(x == 0 for x in d)}/{sum(x < 0 for x in d)}")
+    lo, hi = bootstrap_ci(shared, rejected_diff)
+    print(f"rejected share {a_pat} - {b_pat}: {rejected_diff(shared):+.1f} points (95% CI {lo:+.1f}..{hi:+.1f})")
+    print("CI: percentile bootstrap over whole rounds (2000 resamples, seed 0); descriptive with this few rounds.")
+
+
 def cmd_stats(a):
     calls, ratings, rounds = load()
     since = time.time() - a.days * 86400 if a.days else 0
     calls = {i: c for i, c in calls.items() if c["ts"] >= since}
     if not a.by_alias:
         calls = by_version(calls)
+    if a.vs:
+        print_vs(calls, ratings, *a.vs, since=a.since, limit=a.rounds)
+        return
     rows = defaultdict(lambda: defaultdict(float))
     lat = defaultdict(list)  # seconds of ok calls, per row
     kinds = defaultdict(Counter)  # error kinds, per row
@@ -527,6 +601,10 @@ def main():
     s.add_argument("--pairs", action="store_true", help="token efficiency and paired within-round comparisons")
     s.add_argument("--all", action="store_true", help="all columns, @high history and the coordinator table")
     s.add_argument("--by-alias", action="store_true", help="group by the requested model, merging its versions")
+    s.add_argument("--vs", nargs=2, metavar=("A", "B"),
+                   help="head-to-head over rounds where both answered and were rated; A, B match row labels by substring")
+    s.add_argument("--since", metavar="ROUND", help="with --vs: only rounds after this round id")
+    s.add_argument("--rounds", type=int, metavar="N", help="with --vs: only the first N shared rounds")
     n = sub.add_parser("recent"); n.add_argument("-n", type=int, default=20)
     a = p.parse_args()
     if a.cmd == "log" and a.status == "ok" and (a.error_kind or a.error_text_file):

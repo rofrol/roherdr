@@ -22,6 +22,11 @@ $O stats --all           # + score, acc/find, latency (n, p50, p90), tokens, err
 $O stats --pairs         # + token efficiency (acc/1M output tokens) and paired within-round token ratios (e.g. sol vs astra)
 $O recent [-n 20]        # latest calls with their ids and ratings (find unrated ones)
 $O stats --by-alias      # group by the requested model (alias) instead of the version it resolved to
+$O stats --vs mimo deepseek [--since ROUND] [--rounds 20]
+                        # head-to-head over rounds where both answered and were rated: findings, rejected n (%),
+                        # uniq/call, acc/call, tokens, p50; paired uniq/call difference with a round-bootstrap CI and
+                        # W/T/L, rejected-share difference. Numbers only: judge a trial's rule yourself. A and B match
+                        # row labels by substring; a round where one matches two calls is left out and counted.
 ```
 
 Stats name a model by the version the provider reported for the call (`model_version`, e.g. DeepSeek's

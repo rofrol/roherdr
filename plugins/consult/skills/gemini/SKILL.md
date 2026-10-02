@@ -44,7 +44,8 @@ Guidelines:
 - Gemini has no context of this conversation: include the goal, relevant code and constraints in the prompt.
 - Sending code sends it to Google's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
-- If the user asks for several models ("Gemini i GPT", "wszystkie"), run them in parallel and compare.
+- If the user asks for several models ("Gemini i GPT", "wszystkie"), run them in parallel and compare. Who joins
+  a round by default (and the running trials) is set under "Default consultation set" in the gpt skill's `SKILL.md`.
 - Data collection for consult-stats (since 2026-09-26; only high had been used before): whenever you consult Gemini,
   ask it **three times in parallel with `-e low`, `-e medium` and `-e high`**, same prompt, same round (unless the user
   named one effort), and rate each call separately — so the efforts are compared on the same task. This uses about
