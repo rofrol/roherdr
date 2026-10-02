@@ -349,9 +349,10 @@ pub(crate) fn render_global_menu(
     })
 }
 
-/// One row of the dropdown: the time, the text, whether it is unread, and the
-/// tab's state icon with its colour.
+/// One row of the dropdown: its day group (`Today`, `Oct 2`), the time, the
+/// text, whether it is unread, and the tab's state icon with its colour.
 pub(crate) type LogRow = (
+    Option<String>,
     String,
     String,
     bool,
@@ -360,7 +361,8 @@ pub(crate) type LogRow = (
 
 /// The notification history dropdown under its button, over the panes:
 /// `HH:MM` and the text per row, newest first, unread ones marked `•` in
-/// the column after the selection bar.
+/// the column after the selection bar. A muted separator line names the day
+/// above the first row of each day, so the times need no date of their own.
 pub(crate) fn render_notification_log(
     buffer: &mut Buffer,
     button: Rect,
@@ -378,11 +380,21 @@ pub(crate) fn render_notification_log(
         .min(140)
         .max(20.min(screen.width));
     let min_width = 56.min(max_width);
-    // One column for the times (right-aligned, so `00:22` and `Sep 29 00:05`
-    // line up) and one for the state icons, the same on every row.
+    // Each row whose day differs from the row above starts a group with a
+    // separator line; separators are not rows, so they take no hit target.
+    let separators = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (day, ..))| {
+            day.as_ref()
+                .filter(|day| index == 0 || rows[index - 1].0.as_ref() != Some(*day))
+        })
+        .collect::<Vec<_>>();
+    // One column for the times and one for the state icons, the same on every
+    // row.
     let time_width = rows
         .iter()
-        .map(|(time, ..)| display_width(time))
+        .map(|(_, time, ..)| display_width(time))
         .max()
         .unwrap_or(0);
     let has_icons = rows.iter().any(|(.., icon)| icon.is_some());
@@ -390,13 +402,14 @@ pub(crate) fn render_notification_log(
         2 + if time_width > 0 { time_width + 1 } else { 0 } + if has_icons { 2 } else { 1 };
     let widest = rows
         .iter()
-        .map(|(_, text, ..)| {
+        .map(|(_, _, text, ..)| {
             text_offset + display_width(&text.replace(|c: char| c.is_control(), " ")) + 1
         })
         .max()
         .unwrap_or(0);
     let width = widest.saturating_add(2).clamp(min_width, max_width);
-    let height = (rows.len().max(1) as u16)
+    let lines = rows.len() + separators.iter().flatten().count();
+    let height = (lines.max(1) as u16)
         .saturating_add(2)
         .min(screen.height.saturating_sub(button.bottom()).max(3));
     let x = button.x.min(screen.right().saturating_sub(width));
@@ -413,8 +426,22 @@ pub(crate) fn render_notification_log(
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
     }
-    for (index, (time, text, unread, icon)) in rows.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
+    let mut row_y = inner.y;
+    for (index, (_, time, text, unread, icon)) in rows.iter().enumerate() {
+        if let Some(day) = separators[index] {
+            if row_y >= inner.bottom() {
+                break;
+            }
+            put_text(
+                buffer,
+                inner.x.saturating_add(1),
+                row_y,
+                inner.width.saturating_sub(1),
+                day,
+                Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+            );
+            row_y = row_y.saturating_add(1);
+        }
         if row_y >= inner.bottom() {
             break;
         }
@@ -500,6 +527,7 @@ pub(crate) fn render_notification_log(
             base,
         );
         hits.push((row, index));
+        row_y = row_y.saturating_add(1);
     }
     Some(OverlayRender {
         area: rect,
@@ -1752,4 +1780,74 @@ fn render_confirm_close_overlay(
         cursor: None,
         ..OverlayRender::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_list_names_each_day_once_above_its_rows() {
+        let row = |day: &str, time: &str, text: &str| -> LogRow {
+            (
+                Some(day.to_owned()),
+                time.to_owned(),
+                text.to_owned(),
+                false,
+                None,
+            )
+        };
+        let rows = vec![
+            row("Today", "00:08", "newest"),
+            row("Today", "00:01", "after midnight"),
+            row("Oct 2", "23:59", "before midnight"),
+        ];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 70, 12));
+        let rendered = render_notification_log(
+            &mut buffer,
+            Rect::new(0, 0, 4, 1),
+            None,
+            &rows,
+            &Palette::catppuccin(),
+        )
+        .expect("the list fits");
+        let lines = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let line_of = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing: {lines:#?}"))
+        };
+        // One separator per day, right above its first row, and the times
+        // carry no date.
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("Today")).count(),
+            1
+        );
+        assert_eq!(line_of("Today") + 1, line_of("00:08 newest"));
+        assert_eq!(line_of("00:01 after midnight") + 1, line_of("Oct 2"));
+        assert_eq!(line_of("Oct 2") + 1, line_of("23:59 before midnight"));
+        // Separators are not rows: the hits map each notification to its own
+        // line, and the box is tall enough for the two separators.
+        let hit_lines = rendered
+            .menu_rows
+            .iter()
+            .map(|(rect, index)| (rect.y as usize, *index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hit_lines,
+            vec![
+                (line_of("newest"), 0),
+                (line_of("after midnight"), 1),
+                (line_of("before midnight"), 2),
+            ]
+        );
+        assert_eq!(rendered.area.height, 3 + 2 + 2);
+    }
 }

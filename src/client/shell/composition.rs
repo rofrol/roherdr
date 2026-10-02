@@ -831,12 +831,19 @@ impl ClientShellState {
                                 text = rest.to_owned();
                             }
                         }
-                        let time = if entry.unix_ms == 0 {
-                            String::new()
+                        let (day, time) = if entry.unix_ms == 0 {
+                            (None, String::new())
                         } else {
-                            super::notification_log::notification_time(entry.unix_ms, now, offset)
+                            (
+                                Some(super::notification_log::notification_day(
+                                    entry.unix_ms,
+                                    now,
+                                    offset,
+                                )),
+                                super::notification_log::notification_time(entry.unix_ms, offset),
+                            )
                         };
-                        (time, text, unread, icon)
+                        (day, time, text, unread, icon)
                     })
                     .collect::<Vec<_>>();
                 let anchor = match log.view {
