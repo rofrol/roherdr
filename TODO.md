@@ -1096,12 +1096,23 @@
     ordinary top-level tabs instead of inside the herdr-job group? They are
     presumably launched by `plugins/consult` outside `herdr-job run`; check
     whether they should go through it (see `herdr-job` in the global rules).
-  - [ ] Why does the worktree group look like this (a bare `▼ name  +` row
-    with a `└─` stub, unlike the tab rows above it)? Check which parent
-    link and row kind the renderer uses for a worktree group.
-  - [ ] Why does the worktree's `└─` connector hang under `ask gemini`, as
-    if it were its child? Verify the real parent ids (`tab_parent_index`)
-    versus a purely visual artefact of the connector drawing.
+  - [x] (fixed 2026-10-03 with the trunk below) Why does the worktree group
+    look like this (a bare `▼ name  +` row with a `└─` stub, unlike the tab
+    rows above it)? Check which parent link and row kind the renderer uses
+    for a worktree group.
+  - [x] (fixed 2026-10-03, reported again with `Pusty job na karcie` above
+    the worktree) Why does the worktree's `└─` connector hang under `ask
+    gemini`, as if it were its child? It was purely visual: the child's
+    `   └─ ` prefix put the connector in column 3, the column of the tab
+    lines' state icons, with nothing linking it to the parent space's name.
+    Now `render_worktree_trunk` draws a `│` trunk in column 1 down the
+    parent's rows and tab lines (and down a worktree that is not the last),
+    and the child's prefix is ` └─── `, so it hangs from the space, not the
+    tab. Consulted GPT sol, MiMo and Space Bunny (all chose the trunk) and
+    DeepSeek (chose moving the connector without a trunk, fearing the
+    selected tab's fill would cover the trunk; it starts at column 5).
+    Left open from the consults: a space's name text and its tab lines'
+    text do not share a left edge.
   - [x] (fixed by the worktree tab indent below; installed build pending)
     Why is `zsh` after the worktree group not indented like the other
     tabs? Check whether it is a child of the group or a top-level tab drawn
