@@ -1092,7 +1092,23 @@ impl ClientShellState {
             return None;
         }
         let snapshot = self.snapshot.as_deref()?;
-        super::close_impact::summary(&running_work(snapshot))
+        // Name the tabs as the sidebar does (their task), not by number.
+        let mut named = snapshot.clone();
+        for tab in &mut named.tabs {
+            tab.label = super::render::tabs::sidebar_tab_label(tab, snapshot, &self.config);
+        }
+        super::close_impact::summary(&running_work(&named))
+    }
+
+    /// A tab's name as the sidebar shows it.
+    fn tab_display_label(&self, tab_id: &str) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
+        Some(super::render::tabs::sidebar_tab_label(
+            tab,
+            snapshot,
+            &self.config,
+        ))
     }
 
     pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
@@ -1140,12 +1156,16 @@ impl ClientShellState {
         else {
             return false;
         };
-        let label = target.label.clone();
+        let label = self
+            .tab_display_label(tab_id)
+            .unwrap_or_else(|| target.label.clone());
         let workspace_id = target.workspace_id.clone();
         let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
         else {
             return false;
         };
+        // The line above already names the tab.
+        let running = running.replace(&format!(" in {label}"), "");
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
@@ -1157,7 +1177,7 @@ impl ClientShellState {
                     children_only: false,
                 }),
                 pane_target: None,
-                title: "Close tab with running work?".to_owned(),
+                title: "Close tab?".to_owned(),
                 detail: label,
                 running: Some(running),
             },
@@ -1175,7 +1195,8 @@ impl ClientShellState {
             Some((
                 pane.workspace_id.clone(),
                 pane.label.clone(),
-                tab.label.clone(),
+                self.tab_display_label(&tab.tab_id)
+                    .unwrap_or_else(|| tab.label.clone()),
             ))
         });
         if let (Some(running), Some((workspace_id, pane_label, tab_label))) = (running, target) {
@@ -1185,12 +1206,13 @@ impl ClientShellState {
                     close_group: false,
                     tab_target: None,
                     pane_target: Some(pane_id),
-                    title: "Close pane with running work?".to_owned(),
+                    title: "Close pane?".to_owned(),
                     detail: match pane_label {
                         Some(pane_label) => format!("{pane_label} in {tab_label}"),
-                        None => format!("pane in {tab_label}"),
+                        None => tab_label.clone(),
                     },
-                    running: Some(running),
+                    // The line above already names the tab.
+                    running: Some(running.replace(&format!(" in {tab_label}"), "")),
                 },
             ));
             outcome.repaint = true;
