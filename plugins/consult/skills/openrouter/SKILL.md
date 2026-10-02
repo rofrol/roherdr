@@ -21,11 +21,12 @@ Goes through OpenRouter's OpenAI-compatible API, billed to the user's OpenRouter
 
 ## Safe entry point: `ask_openrouter.sh` (sandboxed)
 
-Prefer **`ask_openrouter.sh`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of this
-skill into `/tmp/consult-openrouter`, and runs `ask_openrouter_raw.py` under `sandbox-exec` with `sandbox.sb`, so the process that talks
-to the cloaked, logging provider **cannot read any secret or project file** — the kernel denies `~/.pi`, `~/.ssh`,
-`~/.config`, `~/personal_projects`, and any `.env`/`*.key`/`credentials`/`auth.json` path (verified: all return
-`PermissionError`). Network and `/tmp/consult-openrouter` are allowed. consult-stats logging still works (only byte counts).
+Prefer **`ask_openrouter.sh`** on macOS. It fetches the OpenRouter token (outside the sandbox), stages a clean copy of
+this skill into `/tmp/consult-openrouter`, and runs `ask_openrouter_raw.py` under `sandbox-exec` with `sandbox.sb`, so
+the process that talks to the cloaked, logging provider **cannot read any secret or project file** — the kernel denies
+`~/.pi`, `~/.ssh`, `~/.config`, `~/personal_projects`, and any `.env`/`*.key`/`credentials`/`auth.json` path (verified:
+all return `PermissionError`). Paste the code the model needs into the prompt. Network and `/tmp/consult-openrouter` are
+allowed. consult-stats logging still works (only byte counts).
 
 Residual hole (known, per the 2026-10-02 consults): a caller that puts a secret into the prompt text itself, e.g.
 `ask_openrouter.sh "$(cat ~/.env)"` — the `cat` runs in the caller's shell before the sandbox. The sandbox cannot stop that;
@@ -66,14 +67,13 @@ payload summary is printed there.
 ## Space Bunny trial (from 2026-10-02)
 
 The user asked to add Space Bunny Alpha (the default model, no `-m`) to consultations. It is free while in preview,
-so the cost is only the extra answer to read. Because its unnamed provider logs everything:
+so the cost is only the extra answer to read.
 
-- Add `"$D"/ask_openrouter.sh "<same prompt>"` to a round only when the prompt holds nothing private: public code,
-  generic design or tooling questions, synthetic snippets. When the round carries the user's private code or data,
-  skip Space Bunny and say so; never strip a prompt down just to fit it in.
+- Add `"$D"/ask_openrouter.sh "<same prompt>"` to every round, with the same prompt as the others, private code
+  included: the user decided on 2026-10-02 that Space Bunny may get everything DeepSeek and MiMo get, accepting that
+  its unnamed provider logs it. Secrets still never go (the secret scan hard-refuses them).
 - Same scoring as the MiMo trial: rate every call, 20 rounds hard cap, stop after 8 rated rounds below 0.7 accepted
-  unique findings per call or above 40% rejected. On a pass it stays as a fourth voice for public material only (it
-  cannot replace DeepSeek, which also gets private code); a cloaked model can also vanish or turn into a paid named
+  unique findings per call or above 40% rejected. On a pass it can replace DeepSeek like MiMo could; a cloaked model can also vanish or turn into a paid named
   one, so re-check the slug when it errors.
 - The served identity is unverified by design; consult-stats logs the provider the completion reports.
 
@@ -102,8 +102,9 @@ forbids calls from scripts. A consult costs about half a cent.
 The real leak risk is not this script (it never reads the repository on its own; there is no `-r` mode) but **you,
 the agent, pasting file contents into the prompt**. So:
 
-- **Send synthetic or public material only.** Do not consult it about the user's private code, configuration or data
-  unless the user explicitly says that exact content may go to an anonymous third party.
+- **Private code is allowed, secrets never.** The user decided on 2026-10-02 that consults through this skill (Space
+  Bunny and MiMo) may get the same code and context as DeepSeek. Never send credentials, keys, tokens, `.env` or
+  auth files, or personal data of third parties.
 - Attachments are **off by default**. `-f` needs `--allow-files`, and each `-f` path is vetted fail-closed: it must be
   inside the current directory, have no symlink component, be a tracked, non-gitignored file in a git repo, not match
   the secrets denylist (`.env*`, `*.key`, `*.pem`, `auth.json`, `*secret*`, `*credential*`, …), not be binary, and be
