@@ -417,6 +417,24 @@ Derive state from what the client already receives, and fetch on a user
 action (opening a dropdown). A background `notification.list` fetch broke
 `federated_client_starts_without_local_and_survives_its_restart` this way.
 
+### Flaky tests
+
+A test that needs a longer timeout is a test with an asynchronous bug (see Rule 10
+in `~/personal_projects/agents.md/AGENTS.md`): do not raise the wait. Reproduce it
+first with a stress loop while other processes keep the machine busy:
+
+```bash
+(for i in $(seq 1 12); do (yes > /dev/null &); done)
+cargo nextest run --no-fail-fast --stress-count 40 -E 'test(<name>)'
+pkill yes
+```
+
+Known causes here: a UI click sent once while the sidebar redraws is dropped (send
+it again from the current screen until its effect shows); a file read while the
+writer has not finished (publish it with `name.tmp` and `mv`); the endpoint reconnect
+delay doubles per drop (`HERDR_TEST_ENDPOINT_RETRY_MS` sets the first one in tests).
+Do not add nextest retries: they hide the signal.
+
 ### Disk space: the shared `target/`
 
 Several sessions build in one `target/`, and `cargo test` leaves a hashed
