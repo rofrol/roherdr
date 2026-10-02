@@ -35,6 +35,33 @@ cp -R "$SKILL_DIR" "$STAGE/openrouter"
 cp -R "$SKILLS_ROOT/consult-stats" "$STAGE/consult-stats"
 rm -rf "$STAGE/openrouter/__pycache__" "$STAGE/consult-stats/__pycache__"
 
+# The sandbox cannot read the repository, so vet each -f file here, from the caller's directory, with the client's own
+# fail-closed check (--vet-file), and hand the sandboxed run only the vetted copy (--staged LABEL=PATH).
+# `-f -` (stdin) passes through unchanged.
+mkdir "$STAGE/files"
+ARGS=()
+n=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f|--file|--file=*)
+      if [ "$1" = "${1#--file=}" ]; then
+        [ $# -ge 2 ] || { echo "ask_openrouter.sh: $1 needs a path" >&2; exit 2; }
+        path="$2"; shift 2
+      else
+        path="${1#--file=}"; shift
+      fi
+      if [ "$path" = "-" ]; then
+        ARGS+=(-f -)
+      else
+        n=$((n + 1))
+        /usr/bin/python3 "$SKILL_DIR/ask_openrouter_raw.py" --vet-file "$path" --out "$STAGE/files/$n"
+        ARGS+=(--staged "$path=$STAGE/files/$n")
+      fi
+      ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
 # Expand @HOME@ in the profile (sandbox-exec does no variable expansion itself).
 sed "s#@HOME@#$HOME#g" "$SKILL_DIR/sandbox.sb" > "$STAGE/sandbox.sb"
 
@@ -45,4 +72,4 @@ cd "$STAGE"
 # No exec: the EXIT trap removes this run's staging directory afterwards, keeping the script's exit code.
 sandbox-exec -f "$STAGE/sandbox.sb" \
   /usr/bin/env OPENROUTER_BEARER="$TOK" CONSULT_IN_JOB=1 \
-  /usr/bin/python3 "$STAGE/openrouter/ask_openrouter_raw.py" "$@"
+  /usr/bin/python3 "$STAGE/openrouter/ask_openrouter_raw.py" ${ARGS[@]+"${ARGS[@]}"}

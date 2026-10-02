@@ -12,8 +12,8 @@ statistics on which of those models actually helped.
 - `openrouter`: an OpenRouter model (default the free cloaked
   `stealth/space-bunny-alpha`), on request or in a trial round, never a default consultant. The
   provider is anonymous and retains what is sent, so the skill sends synthetic or
-  public material only: it has no repo mode, attachments need `--allow-files` and
-  are vetted fail-closed, and the prompt is hard-refused if it contains
+  public material only: it has no repo mode, `-f` attachments are vetted
+  fail-closed outside its sandbox, and the prompt is hard-refused if it contains
   secret-shaped strings. `-m mimo` asks Xiaomi MiMo-V2.6-Pro pinned to the
   Xiaomi provider, for the MiMo-vs-DeepSeek trial described in its `SKILL.md`;
   Space Bunny has a parallel trial there.

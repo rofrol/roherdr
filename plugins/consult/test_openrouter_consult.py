@@ -116,12 +116,31 @@ class CliGateTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(HELPER), *args], cwd=cwd,
                               capture_output=True, text=True, env=env, timeout=20)
 
-    def test_file_without_allow_files_is_refused(self):
+    def test_vet_file_copies_a_tracked_file(self):
+        with git_repo() as root:
+            (root / "ok.txt").write_text("fn add(a, b) { a + b }\n")
+            out = root.parent / (root.name + ".vetted")
+            try:
+                r = self.run_helper(["--vet-file", "ok.txt", "--out", str(out)], root)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("add", out.read_text())
+            finally:
+                out.unlink(missing_ok=True)
+
+    def test_vet_file_refuses_a_gitignored_file(self):
+        with git_repo() as root:
+            (root / ".env").write_text("TOKEN=abc\n")
+            out = root / "vetted"
+            r = self.run_helper(["--vet-file", ".env", "--out", str(out)], root)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(out.exists())
+
+    def test_staged_file_outside_the_staging_dir_is_refused(self):
         with git_repo() as root:
             (root / "ok.txt").write_text("data\n")
-            r = self.run_helper(["-f", "ok.txt", "review"], root)
+            r = self.run_helper(["--staged", f"ok.txt={root / 'ok.txt'}", "review"], root)
             self.assertNotEqual(r.returncode, 0)
-            self.assertIn("--allow-files", r.stderr + r.stdout)
+            self.assertIn("outside", r.stderr + r.stdout)
 
     def test_secret_in_prompt_is_refused_before_send(self):
         with git_repo() as root:

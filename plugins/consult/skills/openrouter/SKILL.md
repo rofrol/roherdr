@@ -50,8 +50,8 @@ Never read files, never include real secrets, config or private code — synthet
 
 Options: `-m SLUG|ALIAS` (default `stealth/space-bunny-alpha`, env `OPENROUTER_MODEL`; aliases `mimo` =
 `xiaomi/mimo-v2.6-pro`, `mimo-flash` = `xiaomi/mimo-v2.6-flash`, both pinned to provider Xiaomi), `--provider NAME`
-(serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; needs
-`--allow-files`; `- ` = stdin), `--allow-files`, `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
+(serve only through that OpenRouter provider, no fallbacks; env `OPENROUTER_PROVIDER`; overrides an alias's pin), `-f FILE` (repeatable; `-` =
+stdin; `--allow-files` is still accepted but no longer needed), `-s SYSTEM`, `-t SECONDS` (default 420), env `OPENROUTER_BASE_URL`,
 `OPENROUTER_TIMEOUT`. Answers can take a few minutes — use a Bash timeout of 600000.
 
 Inside herdr the script runs in its own herdr-job tab (no notification) so the user can watch it; the pre-send
@@ -92,8 +92,8 @@ forbids calls from scripts. A consult costs about half a cent.
   share no higher than DeepSeek's. On a pass MiMo replaces DeepSeek in the default pair; on a fail drop it. Compare
   with `consult.py stats --pairs`.
 - Xiaomi publishes no retention or training terms for this API (China-based, like DeepSeek). Send it what you would
-  send DeepSeek, never secrets; the secret scan still hard-refuses them. The `ask_openrouter.sh` sandbox cannot read the repo,
-  so paste the relevant code into the prompt instead of `-f`.
+  send DeepSeek, never secrets; the secret scan still hard-refuses them. Attach files with `-f` as for DeepSeek: the
+  `ask_openrouter.sh` sandbox cannot read the repo, so the wrapper vets each `-f` file outside it and passes in a copy.
 - The served provider is taken from the completion (`provider` field), because `/generation` answers 404 for pi's
   OAuth token; consult-stats logs it as `xiaomi/mimo-v2.6-pro via Xiaomi`. A different provider prints a warning.
 
@@ -105,7 +105,9 @@ the agent, pasting file contents into the prompt**. So:
 - **Private code is allowed, secrets never.** The user decided on 2026-10-02 that consults through this skill (Space
   Bunny and MiMo) may get the same code and context as DeepSeek. Never send credentials, keys, tokens, `.env` or
   auth files, or personal data of third parties.
-- Attachments are **off by default**. `-f` needs `--allow-files`, and each `-f` path is vetted fail-closed: it must be
+- Attachments go only with an explicit `-f` (the `--allow-files` gate was dropped on 2026-10-03, when the user asked
+  for `-f` to work for MiMo and Space Bunny). `ask_openrouter.sh` vets each path outside the sandbox (which cannot read
+  the repo) and hands the sandboxed run only the vetted copy. Each `-f` path is vetted fail-closed: it must be
   inside the current directory, have no symlink component, be a tracked, non-gitignored file in a git repo, not match
   the secrets denylist (`.env*`, `*.key`, `*.pem`, `auth.json`, `*secret*`, `*credential*`, …), not be binary, and be
   within a size cap. A path that fails any check is refused.
