@@ -359,11 +359,26 @@
 
 - [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again
-  in the pane where it had been running. Find out what the cold restore saves
-  for a pane running a non-agent program (command, cwd) and whether it relaunches
-  anything besides agents; then decide the fix (relaunch known programs such as
-  lazygit, a per-pane saved command, or an opt-in list) and ask the models
-  before implementing.
+  in the pane where it had been running. Facts: the boot was at 12:08, the cold
+  restore at 12:31; of four lazygit panes only `w15:p2` was relaunched (by
+  `plugins/relaunch`), `wR:p6` and `w4:pR` were started by hand at 23:01, and
+  `w6:p4` stayed a shell; the 22:42 handoff's startup-hook log had no record for
+  any of the three. Pane ids are stable across the cold restore. Consulted Sol,
+  DeepSeek, MiMo and Space Bunny: all four named the cause, confirmed by
+  experiment (a fresh `zsh -i` with no command deletes its pane's record, a
+  control with another socket keeps it): `relaunch.zsh`'s `precmd` deletes the
+  record unconditionally, and it also runs before a new shell's FIRST prompt, so
+  every restored shell races `relaunch.js` for its own record. Second bug:
+  `relaunch.js` reads each record lazily (`readFileSync` after waiting up to 15 s
+  per earlier pane), so a deleted record throws ENOENT and aborts the whole run;
+  the hook output lives only in the in-memory plugin log, so the 12:31 run is
+  lost. Plan: (1) plugin fix: `precmd` deletes only a record its own shell wrote
+  in `preexec` (a shell-local flag), `relaunch.js` tolerates a missing file and
+  appends its output to a log file; (2) later, consider moving the record into
+  core (server saves the foreground argv and the process's own cwd per non-agent
+  pane; on a cold restore only, relaunch an opt-in or allowlisted program once
+  per snapshot generation, spawned as argv rather than typed into the shell;
+  never for one-shot commands; argv may hold secrets).
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
