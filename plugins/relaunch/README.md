@@ -30,19 +30,24 @@ wrappers: `lg` (an alias for lazygit) or `npm run dev` show up as the process
 they start, so the wrong thing would come back. So this plugin hooks into the
 shell, and that hook has to be written for each shell.
 
-zsh has `preexec` and `precmd` built in, which is all the hook needs. bash
-4.4+ (every current Linux, Homebrew's bash) can do the same with `PS0` (runs
-before a command) and `PROMPT_COMMAND` (before the prompt), appending to what
-starship and similar tools already put there; `PS0` runs in a subshell, so the
-"only delete a record this shell wrote" check would compare the record's time
-with the shell's start instead of using a variable. The bash 3.2 that macOS
-still ships as `/bin/bash` has no `PS0` and would stay unsupported; macOS uses
-zsh by default anyway. fish has `fish_preexec`/`fish_postexec` events.
+zsh has `preexec` and `precmd` built in, and `preexec` receives the command
+line as typed, which is all the hook needs. bash 4.4+ has the hook points
+(`PS0` before a command, `PROMPT_COMMAND` before the prompt; macOS's
+`/bin/bash` 3.2 lacks `PS0`, but macOS defaults to zsh anyway), but no hook
+gets the typed text. The only source is history (`fc -ln -1`), and when the
+command is not saved there (`ignorespace` with a leading space, `ignoredups`,
+`HISTIGNORE`, history off) it returns the previous command, so after a reboot
+the wrong command would be typed into the pane. That is worse than bringing
+nothing back. A bash hook would have to skip a command when `HISTCMD` did not
+advance, refuse to load with history off, keep its ownership as a per-shell
+token inside the record (not file times), and append to `PS0` and
+`PROMPT_COMMAND` after starship or atuin set them. fish has
+`fish_preexec`/`fish_postexec` with the command line, like zsh.
 
-Neither is written yet because no pane here runs them. In bash or fish panes
-the plugin records nothing and those panes come back as empty shells after a
-reboot. Open an issue at
-https://github.com/rofrol/roherdr/issues if you need one.
+Neither is written yet because no pane here runs them (four models consulted
+on 2026-10-03 agreed to wait for a request). In bash or fish panes the plugin
+records nothing and those panes come back as empty shells after a reboot.
+Open an issue at https://github.com/rofrol/roherdr/issues if you need one.
 
 Herdr itself has no shell integration for zsh, bash or fish (unlike Ghostty or
 kitty, it does not inject rc files or read OSC 133 prompt marks). Building that

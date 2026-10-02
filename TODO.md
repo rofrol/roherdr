@@ -456,6 +456,15 @@
   fish hooks only when such panes exist. Core-injected integration (ZDOTDIR,
   OSC 133) is worth it only for prompt, idle or exit-code features; OSC 133
   marks command boundaries but carries no command text.
+  Bash (round `20261003-002103-2b0f`, all four models): wait for a request.
+  The blocker is not bash 3.2 but the command text: bash hooks get it only
+  from history, which returns the previous command when the new one is not
+  saved (`ignorespace`, `ignoredups`, history off); the README of the plugin
+  lists what a bash hook would need. Open from that round: the zsh hook's
+  "never record herdr" guard matches `herdr*` and `*"&& herdr"*` only, so
+  `foo; herdr server stop` or `x | herdr ...` is recorded and replayed; a
+  plain `*herdr*` would also skip `cd herdr && lazygit`, so match a word
+  boundary.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
