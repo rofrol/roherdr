@@ -459,6 +459,20 @@
     prerelease with `SHA256SUMS`; the asset names use `FORK_NAME` (now
     `herdr-fork`). First dispatch built macOS and Windows; Linux aarch64 failed on
     an `ldd` check (replaced by `file`), rerun in progress.
+  - Name consultation 2026-10-02 (DeepSeek, Opus, GPT, Gemini; availability
+    checked the same day on crates.io, npm and GitHub, `.dev` by DNS; trademark
+    NOT checked). All four: keep `herdr` out of the repo name, say "unofficial
+    fork of herdr" in the description, README line one and the topics, keep
+    attribution and Apache-2.0, `--version` like `herdr 0.9.3 (<name> fork)`.
+    Candidates by support: `drovix` (drover + ix; Opus's pick; crates and npm
+    free, a GitHub user `drovix` and 8 repos exist, `drovix.dev` has no DNS
+    record); `roherdix` (ro + herd + ix; Gemini's pick, DeepSeek's 4th; free
+    everywhere I looked, but contains "herd", which Opus and DeepSeek avoid for
+    confusion); `rofherdix` (DeepSeek's pick, same objection, clumsy);
+    `ropanix` (ro + pane + ix; GPT's pick, free, a pun on panes, reads like
+    "panics"); `corralix` and `flockix` (herding puns; users `Corralix` and
+    `Flockix` exist); `rogux` (closest to roguix, too close). Rejected by all:
+    `herdix`, `herdrix`, `herdux`. My order: `drovix`, `ropanix`, `roherdix`.
   - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
     title, `--version` text), the self-updater pointing at upstream, trying a
     prerelease download on the Mac.
