@@ -547,6 +547,7 @@ mod tests {
             subtitle,
             body,
             click_target,
+            ..
         }] = effects.as_slice()
         else {
             panic!("expected one system notification, got {}", effects.len());
