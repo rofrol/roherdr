@@ -467,6 +467,16 @@ notes commit is pushed on its own. Never end a session with your own edits
 left uncommitted: commit them or say in your final message that they are
 there.
 
+When the file you edited also holds another session's uncommitted hunks,
+`git commit -- <path>` would take theirs too. Commit only your hunk through a
+temporary index: save it as a patch, then `GIT_INDEX_FILE=<tmp> git read-tree
+HEAD`, `GIT_INDEX_FILE=<tmp> git apply --cached <patch>`, `GIT_INDEX_FILE=<tmp>
+git commit`, and finally `git apply --cached <patch>` on the real index so it
+matches the new `HEAD`. Never run a bare `git commit` (no paths) on the shared
+index: a `M` in the first column of `git status --short` (`M `, `MM`) is
+another session's staged change, and it would go into your commit (this
+happened on 2026-10-02).
+
 ### Installing a fix into the running Herdr
 
 After a user-facing fix passes its tests, build it on top of current
