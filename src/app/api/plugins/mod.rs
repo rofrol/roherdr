@@ -918,8 +918,15 @@ mod tests {
         loop {
             pump();
             if let Ok(contents) = std::fs::read_to_string(path) {
+                // A command may write its output in pieces (the shell opens
+                // the file first): take it once a second read, a moment
+                // later, finds it unchanged.
                 if !contents.is_empty() {
-                    return contents;
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                    if std::fs::read_to_string(path).is_ok_and(|again| again == contents) {
+                        return contents;
+                    }
+                    continue;
                 }
             }
             assert!(
