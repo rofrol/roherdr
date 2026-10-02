@@ -2938,3 +2938,44 @@ fn a_tab_line_shows_the_progress_of_the_agents_todo_list() {
     let frame = state.compose(106, 30).unwrap();
     assert!(!frame_rows(&frame)[line.y as usize].contains("3/7"));
 }
+
+#[test]
+fn squares_opened_for_a_focused_job_fold_again_when_the_focus_leaves_the_job() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    state.compose(106, 30).unwrap();
+    let unfolded = |state: &ClientShellState| {
+        state
+            .unfolded_squares
+            .get(&ClientEndpointId::Local)
+            .is_some_and(|set| set.contains("tab_1"))
+    };
+    let focus = |state: &mut ClientShellState, tab: &str| {
+        let previous = state.snapshot.as_deref().unwrap().focused_tab_id.clone();
+        let mut projected = state.snapshot.as_deref().unwrap().clone();
+        projected.focused_tab_id = Some(tab.to_owned());
+        for t in &mut projected.tabs {
+            t.focused = t.tab_id == tab;
+        }
+        state.set_snapshot(Box::new(projected));
+        state.unfold_focused_job(previous.as_deref());
+    };
+    // Focus lands on the job: its parent's squares open.
+    focus(&mut state, "job_1");
+    assert!(unfolded(&state));
+    // The job closes and the focus goes back to the parent: they fold again.
+    focus(&mut state, "tab_1");
+    assert!(!unfolded(&state), "the parent folds again");
+
+    // Squares the user opened stay open.
+    let mut outcome = ClientShellInput::default();
+    state
+        .unfolded_squares
+        .entry(ClientEndpointId::Local)
+        .or_default()
+        .insert("tab_1".into());
+    focus(&mut state, "job_1");
+    focus(&mut state, "tab_1");
+    assert!(unfolded(&state), "the user's own unfold sticks");
+    let _ = &mut outcome;
+}

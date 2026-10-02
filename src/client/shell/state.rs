@@ -1162,6 +1162,9 @@ pub(crate) struct ClientShellState {
     /// Tabs whose nested tabs are unfolded as squares under their tab line,
     /// by endpoint; folded by default and not saved.
     pub(super) unfolded_squares: HashMap<ClientEndpointId, HashSet<String>>,
+    /// The unfolded tabs that focusing one of their jobs opened (not the
+    /// user's own toggle): they fold again when the focus leaves the group.
+    pub(super) auto_unfolded: HashSet<(ClientEndpointId, String)>,
     /// The squares' order as last drawn; held while the pointer is over the
     /// spaces list, so a job tab that closes leaves a blank slot instead of
     /// moving the others.
@@ -1368,6 +1371,7 @@ impl ClientShellState {
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
             unfolded_squares: HashMap::new(),
+            auto_unfolded: HashSet::new(),
             held_squares: HashMap::new(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),

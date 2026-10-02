@@ -20,18 +20,36 @@ impl super::ClientShellState {
         if previous_focus == Some(focused) {
             return;
         }
-        let Some(parent) = snapshot
-            .tabs
-            .iter()
-            .find(|tab| tab.tab_id == focused)
-            .and_then(|tab| tab.parent_tab_id.clone())
-        else {
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == focused) else {
             return;
         };
-        self.unfolded_squares
-            .entry(self.active_endpoint_id.clone())
-            .or_default()
-            .insert(parent);
+        let parent = tab.parent_tab_id.clone();
+        let endpoint = self.active_endpoint_id.clone();
+        // What this opened for a job folds again once the focus is no longer
+        // on one of that parent's jobs (the job closed and the focus went
+        // back to the parent, say), so the list does not stay spread out.
+        let stale = self
+            .auto_unfolded
+            .iter()
+            .filter(|(owner, opened)| *owner == endpoint && parent.as_deref() != Some(opened))
+            .map(|(_, opened)| opened.clone())
+            .collect::<Vec<_>>();
+        for opened in stale {
+            if let Some(unfolded) = self.unfolded_squares.get_mut(&endpoint) {
+                unfolded.remove(&opened);
+            }
+            self.auto_unfolded.remove(&(endpoint.clone(), opened));
+        }
+        if let Some(parent) = parent {
+            if self
+                .unfolded_squares
+                .entry(endpoint.clone())
+                .or_default()
+                .insert(parent.clone())
+            {
+                self.auto_unfolded.insert((endpoint, parent));
+            }
+        }
     }
 
     /// Records the focused tab as its group's last one, so selecting the

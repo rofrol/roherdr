@@ -528,7 +528,7 @@ fn closing_a_running_tab_asks_even_with_close_confirmation_off() {
         assert_no_close(&requested);
         let frame = state.compose(106, 24).unwrap();
         let text = frame_rows(&frame).join("\n");
-        assert!(text.contains("Close tab with running work?"), "{text}");
+        assert!(text.contains("Close tab?"), "{text}");
         assert!(text.contains("stops: build marked running"), "{text}");
         assert_tab_close(&state.handle_input_bytes(b"\r"));
         assert!(state.overlay.is_none());
@@ -597,8 +597,8 @@ fn closing_a_pane_with_a_waiting_agent_asks_first() {
     assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
     assert!(matches!(state.overlay.as_ref(),
         Some(ClientShellOverlay::ConfirmClose(confirm))
-            if confirm.title == "Close pane with running work?"
-                && confirm.running.as_deref() == Some("claude waiting in 1")));
+            if confirm.title == "Close pane?"
+                && confirm.running.as_deref() == Some("claude waiting")));
     assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
     assert!(state.overlay.is_none());
 
@@ -610,7 +610,7 @@ fn closing_a_pane_with_a_waiting_agent_asks_first() {
     assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
     assert!(matches!(state.overlay.as_ref(),
         Some(ClientShellOverlay::ConfirmClose(confirm))
-            if confirm.running.as_deref() == Some("claude idle in 1")));
+            if confirm.running.as_deref() == Some("claude idle")));
     assert!(pane_closes(&state.handle_input_bytes(b"\x1b")).is_empty());
 
     // With background tasks it names them: they die with the pane.
@@ -622,7 +622,7 @@ fn closing_a_pane_with_a_waiting_agent_asks_first() {
     assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
     assert!(matches!(state.overlay.as_ref(),
         Some(ClientShellOverlay::ConfirmClose(confirm))
-            if confirm.running.as_deref() == Some("claude idle in 1 · 2 bg")));
+            if confirm.running.as_deref() == Some("claude idle · 2 bg")));
     assert_eq!(pane_closes(&state.handle_input_bytes(b"\r")), ["pane_1"]);
 }
 
@@ -636,7 +636,7 @@ fn closing_a_pane_running_a_program_asks_first() {
     assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
     assert!(matches!(state.overlay.as_ref(),
         Some(ClientShellOverlay::ConfirmClose(confirm))
-            if confirm.running.as_deref() == Some("lazygit in 1")));
+            if confirm.running.as_deref() == Some("lazygit")));
     assert_eq!(pane_closes(&state.handle_input_bytes(b"\r")), ["pane_1"]);
 }
 
@@ -764,4 +764,22 @@ fn the_parents_own_entry_in_the_second_row_selects_the_parent() {
         .map(|(rect, _)| *rect)
         .expect("parent entry");
     assert_eq!(focused_by(&click_up(&mut state, parent_entry)), ["tab_1"]);
+}
+
+#[test]
+fn the_close_dialog_names_the_tab_by_its_task_and_does_not_repeat_it() {
+    let mut state = close_state(false, 2);
+    state.config.tab_label = crate::config::TabLabelConfig::Title;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut agent = busy_agent("pane_1", AgentStatus::Blocked);
+    agent.terminal_title_stripped = Some("Unpack the 7z archives".into());
+    projected.agents.push(agent);
+    state.set_snapshot(Box::new(projected));
+
+    assert!(pane_closes(&close_focused_pane(&mut state)).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.title == "Close pane?"
+                && confirm.detail == "Unpack the 7z archives"
+                && confirm.running.as_deref() == Some("claude waiting")));
 }

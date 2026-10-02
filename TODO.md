@@ -293,6 +293,33 @@
     released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
     extension), V3 inference, an LLM judge for the audit.
 
+- [x] Close dialog was cluttered and named the tab by a number (user,
+  2026-10-02, screenshot: `Close pane with running work? / pane in 5 / stops:
+  claude idle in 5`; "the task name as on the tab is not visible; too cluttered;
+  why the number 5?"). Consulted DeepSeek and GPT: order title, target (the
+  sidebar label), consequence, resume hint; short titles, no numbers.
+  - Done 2026-10-02: the dialogs name tabs by their sidebar label (the given
+    name, else the task); the title is `Close pane?` / `Close tab?` (no longer
+    "with running work", which was false for an idle agent); the line under it is
+    the label alone, and `stops:` no longer repeats it (`stops: claude waiting`).
+    Test: `the_close_dialog_names_the_tab_by_its_task_and_does_not_repeat_it`.
+  - Not done: the models' wording of the consequence ("ends the idle Claude
+    session, unsent input and scrollback are lost, you can resume"), the resume
+    hint, `Close space?` listing its tabs.
+
+- [x] Closing a tab unfolds the jobs of the previous one (user, 2026-10-02, two
+  screenshots: the "Herdr sessions…" line with 17 squares open after a job tab
+  closed). Cause: focusing a job opens its parent's squares so the sidebar shows
+  where you are, and the opening was kept; when the job closes the focus goes
+  back to the parent, which stayed spread out. Done: what focusing a job opened
+  (`auto_unfolded`) folds again as soon as the focus is no longer on one of that
+  parent's jobs; squares the user unfolded stay. Test: `squares_opened_for_a_
+  focused_job_fold_again_when_the_focus_leaves_the_job`. Consulted DeepSeek and
+  GPT afterwards: the rule is right (a temporary cue, manual unfolds persist; no
+  timers or pointer rules). Not done: restoring the auto-unfold from the active
+  job after a restart (squares are not saved), DeepSeek's debounce when the focus
+  only passes through the parent.
+
 - [x] Bookmark rows and popups (user, 2026-10-01, three screenshots): (1) the
   bookmark list showed "1 · job-seeker" and "2 · herdr" where the sidebar says
   "Job search automation": "why a tab number or name when there is a task
