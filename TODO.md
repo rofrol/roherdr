@@ -40,6 +40,14 @@
     working and job-waiting counts (the models say do not mix colours in one
     count).
 
+- [x] Rebase onto upstream 2026-10-02 (4 upstream commits: terminal text reads,
+  client snapshots, two Windows perf changes): 77 fork commits replayed with no conflicts;
+  checked in a worktree with `just check` (Linux-side tests, Windows lint) before moving
+  `master`; force-pushed with `--force-with-lease` on the reviewed SHA under the standing
+  approval. Backup tag `backup/pre-rebase-20261002` (pushed). The release tag
+  `roherdr-v0.9.3.1` still points at the pre-rebase commit, as tags must not move.
+  `master` is now 0 behind upstream.
+
 - [x] Flaky tests under load (seen 2026-10-01 while other sessions built):
   `client_mode::federated_client_starts_without_local_and_survives_its_restart`
   (4 of the last 8 full runs, passes alone) and once `app::api::plugins::tests::
