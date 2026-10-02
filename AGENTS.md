@@ -345,8 +345,8 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 These helpers ask other models for a second opinion. Before a non-trivial
 design decision (tools, workflows, API shapes, where to document), gather the
-facts from the repo, then consult the default set (listed under "Default
-consultation set" in `plugins/consult/skills/gpt/SKILL.md`) in parallel as
+facts from the repo, then consult the default set (listed in the `consult` skill,
+`plugins/consult/skills/consult/SKILL.md`) in parallel as
 devil's advocates with an explicit role and a factual briefing. Their answers
 are not ground truth: verify each claim against the code and tell the user
 where you agree and where you do not. These consults have overturned first

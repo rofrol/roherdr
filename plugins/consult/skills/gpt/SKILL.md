@@ -36,29 +36,11 @@ Guidelines:
 - GPT has no context of this conversation: include the goal, relevant code and constraints in the prompt.
 - Sending code sends it to OpenAI's servers. Don't send secrets, credentials, or code the user marked as confidential; ask first if unsure.
 - Treat the answer as a second opinion, not ground truth — verify claims, and tell the user where you agree/disagree.
-- Default consultation set (revised 2026-09-30 by the user: **sol 6.1 (default effort) plus DeepSeek** in parallel,
-  unless the user named models; **astra is off by default for now, available on request**). The 2026-09-27 astra/luna
-  trial is still the only paired evidence: luna@medium was clearly behind astra (0.58 vs 1.43 accepted unique findings
-  per rated call and 22% vs 35% rejected findings; astra 69, luna@medium 33 rated calls), and gpt-6-sol never beat
-  astra over ~12 paired rounds. **gpt-6.1-sol is new and unevaluated**, so rate its calls and revisit this default.
-  Don't ask luna routinely: it adds an answer to read (Claude tokens) for little new. Use luna with `-e medium` only
-  as a fallback when a sol call fails or hits the Plus limit. Terra only on request. Rate each call separately;
-  `--unique` counts what the others (and Claude) missed.
-- MiMo trial (second, from 2026-10-03, 20 rounds): add Xiaomi MiMo to each default round with the openrouter skill's
-  `ask_openrouter.sh -m mimo`, launched in the same Bash call; the rules are in that skill's `SKILL.md`. Space Bunny
-  was removed on 2026-10-03 (failed its trial).
-- Never consult the model you are running on: that is a self-consultation, not a second opinion. Check your own model
-  first (`$PI_MODEL`, or the model id you were given) and drop it from the pair. When the acting model is DeepSeek,
-  the pair is **sol + Claude Sonnet** (Gemini is the alternative); when it is Claude, ask sol + DeepSeek.
+- Who joins a round (default set, self-consultation rule, running trials) and how a round is run, rated and scored
+  is in the `consult` skill's `SKILL.md`.
 - If the user asks for "GPT and DeepSeek", run both in parallel and compare.
 - On a usage-limit error, tell the user (Plus limits) and don't retry in that round (no other GPT model either); in a multi-model round go on with the others. The reported reset time is not reliable (on 2026-09-26 a limit said "try again tomorrow" and cleared within two hours), so try GPT once again at the next consultation in the session; after a second limit error in a row, skip it for the rest of the session.
-- After triaging the answer, rate it (id is printed on stderr as `[consult id: ...]`):
-  `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
-  — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
-  (write your own findings down before reading the answers).
-- Every consultation is a round: start the command with `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)`
-  and launch all models for that question in the same Bash call, so their calls share the round id
-  (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).
+- After triaging, rate the call (id printed on stderr as `[consult id: ...]`) as the `consult` skill describes.
 
 ## Code review
 
