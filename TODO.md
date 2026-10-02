@@ -281,6 +281,14 @@
   name-column width with truncation/ellipsis, wrapping, or a widest-name measure)
   and ask the models before implementing.
 
+- [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
+  machine rebooted, herdr restored the session but did not start `lazygit` again
+  in the pane where it had been running. Find out what the cold restore saves
+  for a pane running a non-agent program (command, cwd) and whether it relaunches
+  anything besides agents; then decide the fix (relaunch known programs such as
+  lazygit, a per-pane saved command, or an opt-in list) and ask the models
+  before implementing.
+
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").
