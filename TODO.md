@@ -473,6 +473,14 @@
     "panics"); `corralix` and `flockix` (herding puns; users `Corralix` and
     `Flockix` exist); `rogux` (closest to roguix, too close). Rejected by all:
     `herdix`, `herdrix`, `herdux`. My order: `drovix`, `ropanix`, `roherdix`.
+  - Name chosen 2026-10-02 by the user: **roherd** (his own pick, not one of the
+    models' lists; contains "herd", which Opus and DeepSeek advised against, so
+    the README says first thing that it is unofficial and not affiliated).
+    Checked free the same day: crates.io, npm, Homebrew, GitHub user and repo
+    names; trademark not checked. Done: `--version` prints `herdr 0.9.3 (roherd,
+    an unofficial fork)` for fork builds; README title and first paragraph;
+    release assets `roherd-<os>-<arch>`; the GitHub repo is renamed to
+    `rofrol/roherd` with a description and topics after the first release run.
   - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
     title, `--version` text), the self-updater pointing at upstream, trying a
     prerelease download on the Mac.
