@@ -1668,6 +1668,31 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       for evidence) — measured by blind A/B on the same unknown repo with the
       same prompt, and by also scoring misses on cases with known bugs, never a
       leaderboard or a subscription multiplier.
+  - More leads (user, 2026-10-02):
+    - TerminalBench 4.0 cost/task (https://artificialanalysis.ai/evaluations/
+      terminalbench-4-0): user cited Grok 4.7 (xhigh) $14.6, GPT-6.1 Sol (max)
+      $1.82, Claude Opus 5.5 (high, with fallback) $5.12. More relevant than
+      AA-Omniscience (agentic coding, not trivia) but still not our role:
+      TerminalBench is a tool-using agent that solves tasks, we run a read-only
+      second opinion. Cost without the paired score is half the picture — on the
+      page's score chart the top is Claude Sonnet 5.5 (max, fallback) 63.6%,
+      then Opus 5.5 59.6% (Sol's score not surfaced in the fetch), so "cheapest"
+      is not "best". Effort labels (xhigh/max/high) are not comparable across
+      providers, "with fallback" means the figure is not pure Opus, and API
+      $/task is not our subscription-quota consumption (consults bill to the CLI
+      subscription).
+    - "Space Bunny Alpha", free now on OpenRouter
+      (https://openrouter.ai/rankings#leaderboard-table), guessed to be
+      MiniMax-M3.1 (https://www.reddit.com/r/SillyTavernAI/comments/1wo8csn/
+      comment/pbmo076/): a cloaked model. "Free" is a promo / data-collection
+      phase, not a quality score; the identity is a Reddit guess, so it fails
+      this item's "exact model identity" rule and can be swapped under us
+      (consult-stats could not log the real version). Privacy red flag: consults
+      send code, and `-r` repo mode sends the whole checkout including untracked
+      files, to an unknown provider with unknown retention (MiniMax is a China
+      lab, like DeepSeek). Worth an A/B only through a route that pins the exact
+      model id, and only after deciding what code it may see; never the default,
+      never for `-r` with secrets.
 - [x] The job square's tooltip should appear after the same dwell as the
   cut tab label's (450 ms), not at once (2026-09-29, my request; consult
   GPT-6 Astra and DeepSeek first: DeepSeek had argued for "at once" since
