@@ -2255,4 +2255,22 @@ fn worktree_tab_lines_are_indented_under_the_worktree_name() {
         .find(|(_, tab_id)| tab_id == "tab_ws2")
         .expect("child tab hit");
     assert!(usize::from(rect.x) < column("child-tab"));
+    // The worktree hangs from the parent space's trunk, left of the parent's
+    // tab lines, not from the state icon of the tab above it.
+    let line = |row: u16| {
+        let start = usize::from(row) * usize::from(frame.width);
+        frame.cells[start..start + usize::from(frame.width)]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+    };
+    let parent_tab_row = (0..frame.height)
+        .find(|row| line(*row).contains("parent-tab"))
+        .expect("parent tab line");
+    assert_eq!(line(parent_tab_row).chars().nth(1), Some('│'));
+    assert!(line(parent_tab_row + 1).starts_with(" └─── "));
+    let child_tab_row = (0..frame.height)
+        .find(|row| line(*row).contains("child-tab"))
+        .expect("child tab line");
+    assert_eq!(line(child_tab_row).chars().nth(1), Some(' '));
 }

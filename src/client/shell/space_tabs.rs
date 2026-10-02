@@ -55,7 +55,7 @@ const SQUARE_GAP: u16 = 1;
 /// Squares start where the tab line's fill starts, past its state icon.
 const SQUARES_INDENT: u16 = 5;
 /// Columns a worktree space's tab lines move right, so they sit under the
-/// worktree's name (after its `   └─ ` tree prefix) and not level with the
+/// worktree's name (after its ` └─── ` tree prefix) and not level with the
 /// parent space's tab lines.
 const WORKTREE_TAB_INDENT: u16 = 5;
 
@@ -287,7 +287,7 @@ pub(super) fn render_space_disclosure(
             .is_some()
             .then(|| tabs_collapse_key(&workspace.workspace_id))
     })?;
-    // After the tree prefix (`   ├─ `) of a worktree child.
+    // After the tree prefix (` ├─── `) of a worktree child.
     let x = rect.x.saturating_add(if entry.indented { 6 } else { 1 });
     if x.saturating_add(2) > rect.right() {
         return None;
