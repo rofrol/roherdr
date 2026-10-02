@@ -3,7 +3,7 @@
 Skills that let a coding agent ask another model for a second opinion, and
 statistics on which of those models actually helped.
 
-- `consult`: the round itself: who joins by default ("pytaj modeli"), the
+- `consult`: the round itself: who joins by default when asked to consult the models, the
   no-self-consultation rule, the running trial, and how to rate and score.
 - `gpt`: GPT via Codex CLI on the ChatGPT subscription (credentials from pi).
 - `gemini`: Gemini via Antigravity CLI (`agy`) on the Google AI subscription.
