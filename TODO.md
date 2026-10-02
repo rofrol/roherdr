@@ -242,6 +242,18 @@
     Jobs already running when this was installed (the rescue builder VM) have the
     old wrapper and are not sampled.
 
+- [x] The `?` marks vanish after a restart of herdr (user, 2026-10-02: "make the
+  questions not disappear after a herdr restart"). Cause: the awaiting-reply report is
+  runtime state; the live handoff (every `herdr_live.sh install`) carried only the hook
+  authority of agents with full lifecycle hooks, which Claude and Pi are not. Done: the
+  handoff state has its own `awaiting_reply_reported` flag, set from the old terminal and
+  put back in the new one (`restore_awaiting_reply_report`; the mark shows once the new
+  server sees the agent idle). Test: `awaiting_reply_report_survives_a_live_handoff`
+  (the state through JSON; the real handoff itself is not exercised). Not done: a cold
+  restart of the server (processes gone, sessions resumed), where the marks still go.
+  (Consulted DeepSeek and GPT before this on priorities: both put the flaky tests and
+  the 4-commit upstream rebase first; this was the user's explicit next item.)
+
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").

@@ -590,6 +590,10 @@ fn restore_tab(
         let handoff_agent_state = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
+        #[cfg(unix)]
+        let handoff_awaiting_reply = imported_runtime
+            .as_ref()
+            .is_some_and(|imported| imported.state.awaiting_reply_reported);
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -735,6 +739,10 @@ fn restore_tab(
                 #[cfg(unix)]
                 if let Some(agent_state) = handoff_agent_state {
                     terminal.restore_handoff_agent_state(agent_state);
+                }
+                #[cfg(unix)]
+                if handoff_awaiting_reply {
+                    terminal.restore_awaiting_reply_report();
                 }
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);

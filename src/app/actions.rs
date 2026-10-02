@@ -3397,6 +3397,47 @@ mod tests {
         assert!(!h.awaiting(), "a turn without a report shows nothing");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn awaiting_reply_report_survives_a_live_handoff() {
+        // The old server holds the report and puts it in the handoff state.
+        let mut old = AwaitingReplyHarness::new();
+        old.change(AgentState::Idle);
+        old.report();
+        assert!(old.terminal().has_awaiting_reply_report());
+        let mut state = crate::handoff_runtime::HandoffRuntimeState {
+            pane_id: 1,
+            child_pid: 0,
+            rows: 24,
+            cols: 80,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            keyboard_protocol_flags: 0,
+            keyboard_protocol_ansi: None,
+            input_state: None,
+            terminal_title: None,
+            initial_history_ansi: None,
+            alternate_screen_ansi: None,
+            agent_state: None,
+            awaiting_reply_reported: old.terminal().has_awaiting_reply_report(),
+        };
+        // It crosses the process boundary as JSON.
+        state = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert!(state.awaiting_reply_reported);
+
+        // The new server starts with a fresh terminal that detects Idle again.
+        let mut new = AwaitingReplyHarness::new();
+        new.change(AgentState::Idle);
+        assert!(!new.awaiting());
+        if state.awaiting_reply_reported {
+            new.terminal().restore_awaiting_reply_report();
+        }
+        assert!(new.awaiting(), "the mark is back once the agent is idle");
+        // Typing still clears it.
+        assert!(new.type_input());
+        assert!(!new.awaiting());
+    }
+
     #[test]
     fn awaiting_reply_report_while_idle_shows_at_once() {
         let mut h = AwaitingReplyHarness::new();
