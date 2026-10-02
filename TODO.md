@@ -329,7 +329,7 @@
   one failed with `rm: ... Directory not empty` and the other could not find
   `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`.
 
-- [ ] Consult stats columns shift when a skill/model name is too long (user,
+- [x] Consult stats columns shift when a skill/model name is too long (user,
   2026-10-02, screenshot of `consult-stats`): the long rows
   `openrouter/xiaomi/mimo-v2.6-pro via Xiaomi` and
   `openrouter/stealth/space-bunny-alpha via Stealth` overflow the first column
@@ -368,8 +368,15 @@
   stays an optional guard only. Partly done (2026-10-02, with the error-kind and
   latency work): every table's name column (stats, errors, rounds, pairs,
   coordinator, recent) now takes its width from the longest label, never cut.
-  Still open: the ` via <provider>` normalization and bounding the numeric
-  columns.
+  Done (2026-10-02, details decided with the same four models at the user's
+  request): one `table()` helper sizes every column of the five column tables
+  from its widest cell (name column floor 34, no trailing spaces, rule from the
+  widths); ` via X` is dropped for display only when X is the served model's
+  author, before `@effort`/` -r`, and names that would then coincide keep their
+  full form. `recent` keeps its own layout and the paired-rounds prose its raw
+  names. Found on the way: parallel `ask_openrouter.sh` runs shared one staging
+  directory and one run rewrote `sandbox.sb` while the other loaded it; each
+  run now gets its own.
 
 - [ ] lazygit not reopened after a computer restart (user, 2026-10-02): after the
   machine rebooted, herdr restored the session but did not start `lazygit` again

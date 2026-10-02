@@ -101,6 +101,39 @@ class WidthTests(unittest.TestCase):
         self.assertEqual(mod.name_width(["x" * 100]), 100)  # never cut: the label is the row's key
 
 
+class DisplayTests(unittest.TestCase):
+    def test_strip_via_only_the_author(self):
+        self.assertEqual(mod.strip_via("xiaomi/mimo-v2.6-pro via Xiaomi"), "xiaomi/mimo-v2.6-pro")
+        self.assertEqual(mod.strip_via("stealth/space-bunny-alpha via Stealth"), "stealth/space-bunny-alpha")
+        for kept in ("xiaomi/mimo-v2.6-pro via DeepInfra", "xiaomi/mimo via unknown-provider", "mimo via Mimo",
+                     "deepseek-flash"):
+            self.assertEqual(mod.strip_via(kept), kept)
+
+    def test_display_keeps_effort_and_repo_mode(self):
+        c = {"skill": "openrouter", "model": "xiaomi/mimo-v2.6-pro via Xiaomi", "effort": "low", "mode": "repo"}
+        self.assertEqual(mod.display_names([c]), {mod.label(c): "openrouter/xiaomi/mimo-v2.6-pro@low -r"})
+
+    def test_names_that_would_coincide_stay_full(self):
+        versioned = {"skill": "openrouter", "model": "xiaomi/mimo-v2.6-pro via Xiaomi"}
+        alias = {"skill": "openrouter", "model": "xiaomi/mimo-v2.6-pro"}  # logged without a version
+        names = mod.display_names([versioned, alias])
+        self.assertEqual(names[mod.label(versioned)], mod.label(versioned))
+        self.assertEqual(names[mod.label(alias)], mod.label(alias))
+
+
+class TableTests(unittest.TestCase):
+    def test_columns_grow_with_their_widest_cell(self):
+        lines = mod.table(["name", "acc/find", "note"], [["a", "12/13", "x"], ["b", "10213/99999", "longer"]], "<><")
+        self.assertEqual(len(lines[0].split("acc/find")[0]), 34 + 1 + len("10213/99999") - len("acc/find"))
+        self.assertTrue(lines[2].endswith(" 12/13 x"))
+        self.assertTrue(lines[3].endswith(" 10213/99999 longer"))
+        self.assertEqual(len(lines[1]), 34 + 1 + 11 + 1 + 6)
+        self.assertFalse(any(line != line.rstrip() for line in lines))
+
+    def test_empty_table_has_header_and_rule(self):
+        self.assertEqual(len(mod.table(["name", "n"], [], "<>")), 2)
+
+
 class LogCliTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

@@ -95,9 +95,39 @@ def out_tokens(c):
 
 
 def name_width(labels, floor=34):
-    """Width of a table's first column: the longest label (at least `floor`, the old fixed width), so a long name
-    does not push the number columns out of line. Labels are never cut: they are the rows' keys."""
+    """Width of a name column: the longest label (at least `floor`, the old fixed width), so a long name does not
+    push the other columns out of line. Labels are never cut: they are the rows' keys."""
     return max([floor, *map(len, labels)])
+
+
+def table(header, rows, align):
+    """Lines of a plain-text table, rule included: each column as wide as its widest cell or header (the name
+    column at least `name_width`'s floor), aligned per `align` ('<' or '>' per column); no trailing spaces."""
+    widths = [max([len(h), *(len(r[i]) for r in rows)]) for i, h in enumerate(header)]
+    widths[0] = name_width([header[0], *(r[0] for r in rows)])
+
+    def line(cells):
+        assert len(cells) == len(header), (cells, header)
+        return " ".join(f"{c:{a}{w}}" for c, a, w in zip(cells, align, widths)).rstrip()
+    return [line(header), "-" * (sum(widths) + len(widths) - 1), *map(line, rows)]
+
+
+def strip_via(model):
+    """`xiaomi/mimo-v2.6-pro via Xiaomi` -> `xiaomi/mimo-v2.6-pro`: the provider repeats the model's author. Any other
+    provider (`via DeepInfra`, `via unknown-provider`) is information and stays."""
+    served, sep, provider = model.rpartition(" via ")
+    if sep and "/" in served and provider.strip().casefold() == served.split("/", 1)[0].casefold():
+        return served
+    return model
+
+
+def display_names(calls):
+    """Row label -> the name shown, without a redundant ` via <author>`. Only the display changes: the label stays the
+    row's key, so a model logged without a version is not merged into its versioned row. Labels whose short names
+    would coincide keep their full form."""
+    short = {label(c): label({**c, "model": strip_via(c["model"])}) for c in calls}
+    clashes = Counter(short.values())
+    return {k: v if clashes[v] == 1 else k for k, v in short.items()}
 
 
 def p50(xs):
@@ -269,11 +299,11 @@ def cmd_stats(a):
         print("No data.")
         return
     extra = a.all or a.pairs
-    w = name_width(rows)
-    hdr = f'{"skill/model":{w}} {"uniq/call":>9} {"wrong":>5} {"rated":>7} {"err":>4}'
+    names = display_names(calls.values())
+    header = ["skill/model", "uniq/call", "wrong", "rated", "err"]
     if extra:
-        hdr += f' {"score":>6} {"acc/find":>9} {"unique":>6} {"lat n":>5} {"p50 s":>5} {"p90 s":>5} {"out/call":>8}'
-    print(hdr + "\n" + "-" * len(hdr))
+        header += ["score", "acc/find", "unique", "lat n", "p50 s", "p90 s", "out/call"]
+    lines = []
     # Anecdotal rows (under 5 rated calls) go last, so a lucky 2/2 does not top the table.
     for k, s in sorted(rows.items(), key=lambda kv: (kv[1]["rated"] < 5,
                                                      -(kv[1]["unique"] / kv[1]["rated"] if kv[1]["rated"] else -1),
@@ -282,30 +312,31 @@ def cmd_stats(a):
         wrong = f'{1 - s["accepted"] / s["findings"]:.0%}' if s["findings"] else "-"
         rated = f'{int(s["rated"])}/{int(s["calls"])}'
         err = f'{s["errors"] / s["calls"]:.0%}'
-        line = f'{k:{w}} {uniq:>9} {wrong:>5} {rated:>7} {err:>4}'
+        line = [names.get(k, k), uniq, wrong, rated, err]
         if extra:
             score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             out = ktok(s["out"] / s["used"]) if s["used"] else "-"
-            line += (f' {score:>6} {acc:>9} {int(s["unique"]):6} {len(lat[k]):5} {secs(p50(lat[k])):>5} '
-                     f'{secs(p90(lat[k])):>5} {out:>8}')
-        print(line)
+            line += [score, acc, str(int(s["unique"])), str(len(lat[k])), secs(p50(lat[k])), secs(p90(lat[k])), out]
+        lines.append(line)
+    print("\n".join(table(header, lines, "<" + ">" * (len(header) - 1))))
     print("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
           "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
           "over rated calls; rated: rated/all calls, unrated ones are left out; err: calls that failed (no answer), not wrong answers.\n"
           "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.\n"
           "Models are named by the version the provider reported; a row named by an alias (deepseek/deepseek-flash) holds calls\n"
-          "logged before versions were recorded, of unknown version. --by-alias merges them.")
+          "logged before versions were recorded, of unknown version. --by-alias merges them. A provider that only repeats\n"
+          "the model's author (`via Xiaomi` on xiaomi/...) is not shown.")
     if extra:
         print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.\n"
               "lat n, p50 s, p90 s: wrapper wall-clock seconds of ok calls (median; nearest-rank p90, shown from 10 calls on).\n"
               "Failed calls are left out of the latency columns; their time counts in the rounds table (--all).")
     if a.pairs:
-        print_pairs(calls, ratings)
+        print_pairs(calls, ratings, names)
     if not a.all:
         return
-    print_errors(kinds, rows)
-    print_rounds(calls, since)
+    print_errors(kinds, rows, names)
+    print_rounds(calls, since, names)
     selves = defaultdict(lambda: defaultdict(float))
     for rd in rounds.values():
         if rd["ts"] < since:
@@ -315,30 +346,30 @@ def cmd_stats(a):
         for k in ("findings", "accepted", "refuted", "unique", "missed"):
             s[k] += rd.get(k) or 0
     if selves:
-        cw = name_width(selves)
-        hdr = f'{"coordinator":{cw}} {"rounds":>6} {"acc/find":>9} {"refuted":>7} {"unique":>6} {"missed":>6} {"recall":>6}'
-        print("\n" + hdr + "\n" + "-" * len(hdr))
+        lines = []
         for k, s in sorted(selves.items()):
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             known = s["accepted"] + s["missed"]
             recall = f'{s["accepted"] / known:.2f}' if known else "-"
-            print(f'{k:{cw}} {int(s["rounds"]):6} {acc:>9} {int(s["refuted"]):7} {int(s["unique"]):6} {int(s["missed"]):6} {recall:>6}')
+            lines.append([k, str(int(s["rounds"])), acc, *(str(int(s[x])) for x in ("refuted", "unique", "missed")),
+                          recall])
+        header = ["coordinator", "rounds", "acc/find", "refuted", "unique", "missed", "recall"]
+        print("\n" + "\n".join(table(header, lines, "<>>>>>>")))
         print("\nrefuted: Claude's own claims disproved (by a consulted model or verification); missed: accepted findings of consulted models "
               "Claude did not have; recall: accepted / (accepted + missed), i.e. against findings anyone discovered.")
 
 
-def print_errors(kinds, rows):
+def print_errors(kinds, rows, names):
     """Failed calls per row, by kind; `unknown` holds calls logged before kinds were recorded."""
     kinds = {k: c for k, c in kinds.items() if k in rows}
     if not kinds:
         return
-    w = name_width(kinds)
-    print(f'\n{"errors by kind":{w}} {"n":>4}  kinds')
-    print("-" * (w + 30))
     order = {k: i for i, k in enumerate((*ERROR_KINDS, "unknown"))}
+    lines = []
     for k, c in sorted(kinds.items(), key=lambda kv: -sum(kv[1].values())):
         parts = ", ".join(f"{n} {kind}" for kind, n in sorted(c.items(), key=lambda kv: order.get(kv[0], 99)))
-        print(f'{k:{w}} {sum(c.values()):4}  {parts}')
+        lines.append([names.get(k, k), str(sum(c.values())), parts])
+    print("\n" + "\n".join(table(["errors by kind", "n", "kinds"], lines, "<><")))
 
 
 def round_finishes(calls, since=0):
@@ -371,25 +402,24 @@ def round_table(calls, since=0):
     return stats
 
 
-def print_rounds(calls, since=0):
+def print_rounds(calls, since, names):
     stats = round_table(calls, since)
     if not stats:
         return
-    w = name_width(stats)
-    hdr = f'{"rounds (2+ models)":{w}} {"rounds":>6} {"last":>9} {"failed":>6} {"gap p50":>7} {"gap sum":>8}'
-    print("\n" + hdr + "\n" + "-" * len(hdr))
+    lines = []
     # Under 5 rounds is anecdotal and goes last, like the main table.
     for k, s in sorted(stats.items(), key=lambda kv: (kv[1]["rounds"] < 5, -sum(kv[1]["gaps"]))):
-        last = f'{s["last"]}/{s["rounds"]}'
         total = sum(s["gaps"])
-        print(f'{k:{w}} {s["rounds"]:6} {last:>9} {s["last_err"]:6} {secs(p50(s["gaps"])):>7} '
-              f'{f"{total / 60:.0f} min" if total >= 600 else f"{total} s":>8}')
+        lines.append([names.get(k, k), str(s["rounds"]), f'{s["last"]}/{s["rounds"]}', str(s["last_err"]),
+                      secs(p50(s["gaps"])), f"{total / 60:.0f} min" if total >= 600 else f"{total} s"])
+    header = ["rounds (2+ models)", "rounds", "last", "failed", "gap p50", "gap sum"]
+    print("\n" + "\n".join(table(header, lines, "<>>>>>")))
     print("last: rounds it finished last, alone; failed: of those, how many ended in an error (time spent waiting for a\n"
           "failure); gap: seconds between its end and the next model's end in those rounds (by logged end time), so\n"
           "gap sum is how long rounds waited for it alone. Rounds joined differ between models: compare last/rounds.")
 
 
-def print_pairs(calls, ratings):
+def print_pairs(calls, ratings, names):
     """Token efficiency per model, and paired token ratios within rounds (same prompt, mode and effort)."""
     usable = [c for c in calls.values() if c["status"] == "ok" and out_tokens(c)]
     eff = defaultdict(lambda: defaultdict(float))
@@ -401,14 +431,12 @@ def print_pairs(calls, ratings):
             s["out"] += out_tokens(c)
             s["accepted"] += r["accepted"]
             s["score"] += VERDICTS[r["verdict"]]
-    w = name_width([*eff, "efficiency (rated, with usage)"])
-    print(f'\n{"efficiency (rated, with usage)":{w}} {"n":>3} {"out tok":>8} {"acc/1M out":>10} {"score/100k":>10}')
-    print("-" * (w + 35))
+    lines = [[names.get(k, k), str(int(s["n"])), ktok(s["out"]), f'{1e6 * s["accepted"] / s["out"]:.1f}',
+              f'{1e5 * s["score"] / s["out"]:.2f}'] for k, s in sorted(eff.items())]
+    header = ["efficiency (rated, with usage)", "n", "out tok", "acc/1M out", "score/100k"]
+    print("\n" + "\n".join(table(header, lines, "<>>>>")))
     if not eff:
         print("(no rated calls with token usage yet)")
-    for k, s in sorted(eff.items()):
-        print(f'{k:{w}} {int(s["n"]):3} {ktok(s["out"]):>8} {1e6 * s["accepted"] / s["out"]:10.1f} '
-              f'{1e5 * s["score"] / s["out"]:10.2f}')
     print("sums over calls, not means of per-call ratios; n<5 is anecdotal.")
 
     # Pair each model with its vendor's reference: PAIR_REF, else the model in most shared rounds of that
@@ -449,13 +477,14 @@ def cmd_recent(a):
     calls, ratings, rounds = load()
     calls = by_version(calls)
     latest = sorted(calls.values(), key=lambda c: c["ts"])[-a.n:]
-    w = name_width(label(c) for c in latest)
+    names = display_names(latest)
+    w = name_width(names.values())
     for c in latest:
         r = ratings.get(c["id"])
         rated = f'{r["verdict"]} {r.get("accepted") or 0}/{r.get("findings") or 0} u{r.get("unique") or 0}' if r else "unrated"
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["ts"]))
         status = c["status"] if c["status"] == "ok" else f'{c["status"]}:{c.get("error_kind") or "unknown"}'
-        print(f'{c["id"]}  {when}  {label(c):{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
+        print(f'{c["id"]}  {when}  {names[label(c)]:{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
               f'{Path(c.get("cwd") or "").name}')
     covered = {i for rd in rounds.values() for i in rd["calls"].split(",")}
     todo = sorted(i for i in calls if i not in covered and i in ratings)
