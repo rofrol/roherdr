@@ -63,6 +63,10 @@
     selection bar must stop meaning "this terminal is shown" for the parent.
     Rejected by all: keep as is; force-unfold while a child is focused
     (makes the fold control a lie).
+  - Decision (user, 2026-10-03): variant d. A folded parent with a focused
+    hidden child shows one extra row for that job (status glyph and label)
+    carrying the selection bar; the parent line is dimmed, not blue. The
+    squares stay folded. Persistence of the fold is not decided yet.
   - Persisting the fold: sol and MiMo, per client and keyed by a stable
     tab identity plus a generation (tab ids are reused); DeepSeek: not the
     fix, it hides the reaction bug. Not shared through the server: two
