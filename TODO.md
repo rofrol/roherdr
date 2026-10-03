@@ -2827,6 +2827,18 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Key stored 2026-10-03 in `~/.config/herdr/openai-admin-key` (0600,
     one line); both `/v1/organization/costs` and
     `/v1/organization/usage/completions` answer 200 with it.
+  - OpenAI spend and completion tokens done 2026-10-03: `usage.openai_api`
+    (off by default, row `OP`), key only from `usage.openai_admin_key_file`
+    (refused unless owner-only), polled at most every 15 min. Consulted Sol,
+    DeepSeek and MiMo (round `20261003-054331-c102`). Accepted: no env var
+    (agent panes would inherit it), explicit opt-in, `input_tokens` already
+    includes cached ones, label tokens "completions only" and spend
+    "organization-wide", sum every result per bucket, a scope hint on
+    401/403. Rejected: decimal crate (f64 over at most 31 buckets is exact
+    to the cent), partial-success status per endpoint (both must succeed,
+    else the last good values stay), a cross-process refresh lease.
+  - Left for later: other usage endpoints (embeddings, images, audio), a
+    budget in `[usage]`, filtering by project.
 - [x] Classify the native-graphics CoW retention benchmark failure.
   - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
     `src/platform/mod.rs::clone_native_image_source` deliberately returns
