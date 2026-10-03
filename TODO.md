@@ -2851,6 +2851,28 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     budget used and the period end. Built 2026-10-03: the limit is read
     from OpenAI each refresh (a failed read only adds a note); no config
     number.
+  - Follow-ups (round `20261003-115359-3a57`, Sol, DeepSeek, MiMo agree):
+    - [ ] Now: a Usage section in the Settings overlay (reuse `ConfigEdit`
+      and the reload flow) with the master switch and one toggle per
+      provider, mirroring `[usage]` keys exactly. Show credential state next
+      to keyed providers ("on, no key") instead of hiding them silently.
+      Turning `openai_api` on shows the admin-key warning first; never a
+      text field for the key.
+    - [ ] Now: when `openai_api` is on and the key file is missing, the row
+      says `OA setup needed` and the details say: create an Admin key at
+      platform.openai.com → Organization settings → Admin keys, save it as
+      one line in the configured path, mode 0600. Herdr only reads costs,
+      completions usage and the spend limit. Do not promise a read-only key:
+      the Admin API's key creation takes only a name and expiry (checked in
+      openai-python 2026-10-03), so the key may carry admin authority.
+      Nothing is shown while `openai_api` is off.
+    - [ ] Later, on demand: spend per project (`group_by=project_id`, flat
+      list in the details, org total and limit kept) and per line item
+      (`group_by=line_item`). Never a config project filter: filtered spend
+      would read as the org total next to the org limit.
+    - Never: polling the other usage endpoints (embeddings, images, audio,
+      vector stores, code interpreter; all answer 200) for the footer.
+      Costs already include their dollars; their units do not mix.
 - [x] Classify the native-graphics CoW retention benchmark failure.
   - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
     `src/platform/mod.rs::clone_native_image_source` deliberately returns
