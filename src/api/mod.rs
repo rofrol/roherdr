@@ -23,6 +23,8 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
     matches!(
         &request.method,
         Method::ServerReloadConfig(_)
+            | Method::UsageSetEnabled(_)
+            | Method::UsageSetProvider(_)
             | Method::ServerReloadAgentManifests(_)
             | Method::NotificationShow(_)
             | Method::NotificationShowForPane(_)

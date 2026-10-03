@@ -24,7 +24,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use self::cache::{Plan, UsageCache};
-use crate::api::schema::{ProviderUsage, ProviderUsageStatus, UsageReport};
+use crate::api::schema::{
+    ProviderUsage, ProviderUsageStatus, UsageProviderSetting, UsageReport, UsageSettings,
+};
 use crate::config::UsageConfig;
 use crate::events::AppEvent;
 
@@ -35,6 +37,26 @@ const MIN_MANUAL_REFRESH_GAP: Duration = Duration::from_secs(30);
 enum FetchError {
     RateLimited,
     Failed(String),
+    /// The user must set something up first; `setup` lists the steps.
+    Setup {
+        message: String,
+        setup: String,
+    },
+}
+
+/// A failed refresh as the report shows it.
+struct Failure {
+    message: String,
+    setup: Option<String>,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            setup: None,
+        }
+    }
 }
 
 impl From<String> for FetchError {
@@ -123,6 +145,48 @@ impl Provider {
         }
     }
 
+    fn enabled_in(self, config: &UsageConfig) -> bool {
+        match self {
+            Self::Claude => config.claude,
+            Self::Codex => config.codex,
+            Self::OpenAiApi => config.openai_api,
+            Self::Gemini => config.gemini,
+            Self::DeepSeek => config.deepseek,
+            Self::OpenRouter => config.openrouter,
+            Self::Kimi => config.kimi,
+        }
+    }
+
+    /// Whether the credential the provider needs is in place, without
+    /// contacting the provider.
+    fn credential(self, config: &UsageConfig) -> &'static str {
+        let keyed = match self {
+            Self::Claude | Self::Codex | Self::Gemini => return "not_required",
+            Self::OpenAiApi => {
+                return match openai_api::admin_key(config) {
+                    Ok(_) => "found",
+                    Err(problem) if problem.unsafe_file => "unsafe",
+                    Err(_) => "missing",
+                }
+            }
+            Self::DeepSeek => keys::KeyedProvider::DeepSeek,
+            Self::OpenRouter => keys::KeyedProvider::OpenRouter,
+            Self::Kimi => keys::KeyedProvider::Kimi,
+        };
+        if keys::api_key(config, &keyed).is_ok() {
+            "found"
+        } else {
+            "missing"
+        }
+    }
+
+    fn warning(self) -> Option<&'static str> {
+        matches!(self, Self::OpenAiApi).then_some(
+            "needs an OpenAI Admin key, which can manage the whole organization; \
+             herdr only reads costs, usage and the spend limit",
+        )
+    }
+
     /// Shortest gap between fetches, whatever the configured interval.
     fn min_refresh_secs(self) -> u64 {
         match self {
@@ -135,6 +199,43 @@ impl Provider {
 }
 
 const OPENAI_API_MIN_REFRESH_SECS: u64 = 15 * 60;
+
+/// Every provider in footer order.
+const ALL_PROVIDERS: [Provider; 7] = [
+    Provider::Claude,
+    Provider::Codex,
+    Provider::OpenAiApi,
+    Provider::Gemini,
+    Provider::DeepSeek,
+    Provider::OpenRouter,
+    Provider::Kimi,
+];
+
+/// The `[usage]` key that turns a provider on, which is also its id.
+pub(crate) fn provider_config_key(id: &str) -> Option<&'static str> {
+    ALL_PROVIDERS
+        .into_iter()
+        .map(Provider::id)
+        .find(|candidate| *candidate == id)
+}
+
+/// The server's usage choices and credential state for every provider, read
+/// from config and local files only, so it also works while polling is off.
+pub(crate) fn settings(config: &UsageConfig) -> UsageSettings {
+    UsageSettings {
+        enabled: config.enabled,
+        providers: ALL_PROVIDERS
+            .into_iter()
+            .map(|provider| UsageProviderSetting {
+                provider: provider.id().to_owned(),
+                label: provider.label().to_owned(),
+                enabled: provider.enabled_in(config),
+                credential: provider.credential(config).to_owned(),
+                warning: provider.warning().map(str::to_owned),
+            })
+            .collect(),
+    }
+}
 
 fn enabled_providers(config: &UsageConfig) -> Vec<Provider> {
     if !config.enabled {
@@ -226,7 +327,7 @@ fn refresh(
     config: &UsageConfig,
     cache: &UsageCache,
     forced: bool,
-) -> Vec<(Provider, Result<ProviderUsage, String>)> {
+) -> Vec<(Provider, Result<ProviderUsage, Failure>)> {
     let now = now_unix();
     let interval_secs = config.refresh_interval().as_secs();
     let fetched = std::thread::scope(|scope| {
@@ -261,7 +362,9 @@ fn refresh(
     UsageCache::update(|cache| {
         for (provider, plan, fetched) in fetched {
             let result = match (plan, fetched) {
-                (Plan::Blocked(retry_in), _) => Err(rate_limited_message(provider, retry_in)),
+                (Plan::Blocked(retry_in), _) => {
+                    Err(rate_limited_message(provider, retry_in).into())
+                }
                 (Plan::Fresh(usage), _) => Ok(*usage),
                 (Plan::Fetch, Some(Ok(mut usage))) => {
                     usage.provider = provider.id().to_owned();
@@ -273,10 +376,14 @@ fn refresh(
                 }
                 (Plan::Fetch, Some(Err(FetchError::RateLimited))) => {
                     let retry_in = cache.record_rate_limit(provider.id(), now);
-                    Err(rate_limited_message(provider, retry_in))
+                    Err(rate_limited_message(provider, retry_in).into())
                 }
-                (Plan::Fetch, Some(Err(FetchError::Failed(message)))) => Err(message),
-                (Plan::Fetch, None) => Err("usage fetch did not run".into()),
+                (Plan::Fetch, Some(Err(FetchError::Failed(message)))) => Err(message.into()),
+                (Plan::Fetch, Some(Err(FetchError::Setup { message, setup }))) => Err(Failure {
+                    message,
+                    setup: Some(setup),
+                }),
+                (Plan::Fetch, None) => Err(String::from("usage fetch did not run").into()),
             };
             results.push((provider, result));
         }
@@ -308,7 +415,7 @@ fn publish(
 fn merge_result(
     provider: Provider,
     previous: Option<ProviderUsage>,
-    result: Result<ProviderUsage, String>,
+    result: Result<ProviderUsage, Failure>,
 ) -> ProviderUsage {
     match result {
         Ok(mut usage) => {
@@ -318,12 +425,13 @@ fn merge_result(
             usage.observed_at = usage.observed_at.or_else(|| Some(now_unix()));
             usage
         }
-        Err(message) => {
+        Err(Failure { message, setup }) => {
             tracing::debug!(provider = provider.id(), %message, "usage refresh failed");
             let mut usage =
                 previous.unwrap_or_else(|| ProviderUsage::pending(provider.id(), provider.label()));
             usage.status = ProviderUsageStatus::Error;
             usage.message = Some(message);
+            usage.setup = setup;
             usage
         }
     }
@@ -373,7 +481,11 @@ mod tests {
         good.windows.push(window(40));
         good.observed_at = Some(5);
 
-        let merged = merge_result(Provider::Claude, Some(good), Err("offline".into()));
+        let merged = merge_result(
+            Provider::Claude,
+            Some(good),
+            Err(String::from("offline").into()),
+        );
 
         assert_eq!(merged.status, ProviderUsageStatus::Error);
         assert_eq!(merged.message.as_deref(), Some("offline"));
@@ -413,6 +525,61 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["claude", "deepseek"]
         );
+    }
+
+    #[test]
+    fn settings_list_every_provider_with_its_choice_and_key_state() {
+        let config = UsageConfig {
+            openai_api: true,
+            openai_admin_key_file: "/nonexistent/herdr-openai-admin-key".into(),
+            kimi: false,
+            ..UsageConfig::default()
+        };
+        let settings = settings(&config);
+        assert!(settings.enabled);
+        assert_eq!(
+            settings
+                .providers
+                .iter()
+                .map(|provider| provider.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "claude",
+                "codex",
+                "openai_api",
+                "gemini",
+                "deepseek",
+                "openrouter",
+                "kimi"
+            ]
+        );
+        let openai = &settings.providers[2];
+        assert!(openai.enabled);
+        assert_eq!(openai.credential, "missing");
+        assert!(openai.warning.is_some());
+        assert_eq!(settings.providers[0].credential, "not_required");
+        assert!(!settings.providers[6].enabled);
+    }
+
+    #[test]
+    fn only_known_providers_have_a_config_key() {
+        assert_eq!(provider_config_key("openai_api"), Some("openai_api"));
+        assert_eq!(provider_config_key("auth_file"), None);
+        assert_eq!(provider_config_key("enabled"), None);
+    }
+
+    #[test]
+    fn a_setup_failure_keeps_its_steps_in_the_report() {
+        let merged = merge_result(
+            Provider::OpenAiApi,
+            None,
+            Err(Failure {
+                message: "no key".into(),
+                setup: Some("step one\nstep two".into()),
+            }),
+        );
+        assert_eq!(merged.status, ProviderUsageStatus::Error);
+        assert_eq!(merged.setup.as_deref(), Some("step one\nstep two"));
     }
 
     #[test]

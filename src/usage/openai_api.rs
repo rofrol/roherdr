@@ -76,7 +76,10 @@ struct CompletionsResult {
 }
 
 pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
-    let key = admin_key(config)?;
+    let key = admin_key(config).map_err(|problem| FetchError::Setup {
+        setup: setup_steps(config, &problem),
+        message: problem.message,
+    })?;
     let authorization = format!("Bearer {key}");
     let since = month_start_utc(super::now_unix());
     let costs: Vec<CostResult> = fetch_all(COSTS_URL, since, &authorization)?;
@@ -101,23 +104,54 @@ pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
     Ok(usage)
 }
 
-fn admin_key(config: &UsageConfig) -> Result<String, String> {
+/// Why the admin key cannot be used.
+pub(super) struct KeyProblem {
+    pub(super) message: String,
+    /// The file exists but is shared with other users or is malformed.
+    pub(super) unsafe_file: bool,
+}
+
+pub(super) fn admin_key(config: &UsageConfig) -> Result<String, KeyProblem> {
     let path = super::expand_home(config.openai_admin_key_file.trim());
-    let raw = crate::platform::read_secret_file(&path).map_err(|error| {
-        format!(
+    let raw = crate::platform::read_secret_file(&path).map_err(|error| KeyProblem {
+        unsafe_file: error.kind() != std::io::ErrorKind::NotFound,
+        message: format!(
             "cannot read the OpenAI admin key from {}: {error}",
             path.display()
-        )
+        ),
     })?;
     let key = raw.trim();
     // Headers travel to curl as lines; a key with a line break would add headers.
     if key.is_empty() || key.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(format!(
-            "{} must hold the OpenAI admin key on one line",
-            path.display()
-        ));
+        return Err(KeyProblem {
+            unsafe_file: true,
+            message: format!(
+                "{} must hold the OpenAI admin key on one line",
+                path.display()
+            ),
+        });
     }
     Ok(key.to_owned())
+}
+
+/// Steps shown in the details when the key is missing or unusable. The path
+/// is the server's, which may be another machine than the viewer's.
+fn setup_steps(config: &UsageConfig, problem: &KeyProblem) -> String {
+    let path = config.openai_admin_key_file.trim();
+    let mut steps = vec![
+        "Create an Admin key at platform.openai.com: Organization settings, Admin keys.".to_owned(),
+        format!("Save it as one line in {path} on the machine running this herdr server."),
+        format!("Make it private: chmod 600 {path}"),
+    ];
+    if problem.unsafe_file {
+        steps.insert(0, problem.message.clone());
+    }
+    steps.push(
+        "herdr only reads costs, completions usage and the spend limit, but an Admin key \
+         can manage the whole organization."
+            .to_owned(),
+    );
+    steps.join("\n")
 }
 
 fn fetch_all<T: serde::de::DeserializeOwned>(
@@ -366,6 +400,26 @@ mod tests {
         };
         assert!(apply_limit(&mut spend, &euros).is_err());
         assert_eq!(spend[0].limit, None);
+    }
+
+    #[test]
+    fn setup_steps_name_the_server_path_and_the_problem_only_when_the_file_is_bad() {
+        let config = UsageConfig {
+            openai_admin_key_file: "~/.config/herdr/openai-admin-key".into(),
+            ..UsageConfig::default()
+        };
+        let missing = KeyProblem {
+            message: "cannot read".into(),
+            unsafe_file: false,
+        };
+        let steps = setup_steps(&config, &missing);
+        assert!(steps.starts_with("Create an Admin key"));
+        assert!(steps.contains("chmod 600 ~/.config/herdr/openai-admin-key"));
+        let shared = KeyProblem {
+            message: "readable by other users".into(),
+            unsafe_file: true,
+        };
+        assert!(setup_steps(&config, &shared).starts_with("readable by other users\n"));
     }
 
     #[test]

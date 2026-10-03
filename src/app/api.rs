@@ -1255,6 +1255,20 @@ impl App {
                 return self.handle_integration_list(request.id);
             }
             Method::UsageRead(params) => return self.handle_usage_read(request.id, params),
+            Method::UsageSettings(_) => return self.handle_usage_settings(request.id),
+            Method::UsageSetEnabled(params) => {
+                return self.handle_usage_set(request.id, "enabled", params.enabled);
+            }
+            Method::UsageSetProvider(params) => {
+                let Some(key) = crate::usage::provider_config_key(&params.provider) else {
+                    return super::api::responses::encode_error(
+                        request.id,
+                        "unknown_provider",
+                        format!("unknown usage provider: {}", params.provider),
+                    );
+                };
+                return self.handle_usage_set(request.id, key, params.enabled);
+            }
             Method::IntegrationInstall(params) => {
                 return self.handle_integration_install(request.id, params);
             }

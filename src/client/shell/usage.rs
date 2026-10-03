@@ -332,7 +332,9 @@ fn provider_code_tooltip(
 ) -> super::tooltip::TooltipTarget {
     let code = provider_code(provider);
     let mut text = format!("{code} {}", provider_name(provider));
-    if matches!(
+    if provider.setup.is_some() {
+        text.push_str(" · setup needed");
+    } else if matches!(
         provider.status,
         ProviderUsageStatus::Error | ProviderUsageStatus::Unknown
     ) {
@@ -369,7 +371,7 @@ fn render_provider_row(
             .fg(palette.overlay1)
             .add_modifier(Modifier::BOLD),
     );
-    if failed {
+    if failed && provider.setup.is_none() {
         put_segment(
             buffer,
             x,
@@ -381,7 +383,17 @@ fn render_provider_row(
     }
     let short_x = row.x.saturating_add(SHORT_WINDOW_COLUMN);
     let (short, weekly) = footer_windows(provider);
-    if short.is_some() || weekly.is_some() {
+    if provider.setup.is_some() {
+        // The provider never ran; the details say what to set up.
+        put_segment(
+            buffer,
+            short_x,
+            row.y,
+            row.right(),
+            "setup needed",
+            Style::default().fg(palette.yellow),
+        );
+    } else if short.is_some() || weekly.is_some() {
         let mut end = short_x;
         for (column, window) in [(SHORT_WINDOW_COLUMN, short), (WEEKLY_WINDOW_COLUMN, weekly)] {
             let Some(window) = window else {
@@ -675,6 +687,30 @@ pub(super) fn compact_limit(limit: &str, currency: &str) -> String {
     format_balance(whole, currency)
 }
 
+/// `text` broken at spaces into lines of at most `width` columns; a word
+/// longer than the width gets a line of its own.
+pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for paragraph in text.lines() {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let needed = unicode_width::UnicodeWidthStr::width(line.as_str())
+                + usize::from(!line.is_empty())
+                + unicode_width::UnicodeWidthStr::width(word);
+            if !line.is_empty() && needed > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
 /// Token count such as `950`, `12.3k` or `4.1M`.
 pub(super) fn compact_tokens(count: u64) -> String {
     match count {
@@ -912,6 +948,37 @@ mod tests {
         assert_eq!(spend_limit_percent(&spend), None);
         spend.limit = None;
         assert_eq!(spend_limit_percent(&spend), None);
+    }
+
+    #[test]
+    fn words_wrap_at_spaces_and_keep_paragraphs() {
+        assert_eq!(
+            wrap_words("create an admin key\nsave it", 10),
+            vec!["create an", "admin key", "save it"]
+        );
+        assert_eq!(
+            wrap_words("averyveryverylongword x", 5),
+            vec!["averyveryverylongword", "x"]
+        );
+    }
+
+    #[test]
+    fn a_provider_that_needs_setup_says_so_instead_of_failing() {
+        let mut api = provider("openai_api", "OpenAI API");
+        api.status = ProviderUsageStatus::Error;
+        api.setup = Some("Create an Admin key".into());
+        let tip = provider_code_tooltip(0, 0, &api);
+        assert_eq!(tip.text, "OA OpenAI · API spend · setup needed");
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 1));
+        render_provider_row(
+            &mut buffer,
+            Rect::new(0, 0, 30, 1),
+            &api,
+            0,
+            &Palette::catppuccin(),
+        );
+        let row = (0..30).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        assert_eq!(row.trim_end(), " OA setup needed");
     }
 
     #[test]

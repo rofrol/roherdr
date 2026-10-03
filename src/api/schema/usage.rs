@@ -7,6 +7,39 @@ pub struct UsageReadParams {
     pub refresh: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageSetEnabledParams {
+    /// Whether the server polls providers at all.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageSetProviderParams {
+    /// Provider id from `usage.settings`, such as `claude` or `openai_api`.
+    pub provider: String,
+    pub enabled: bool,
+}
+
+/// The server's own `[usage]` choices and whether each provider can run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageSettings {
+    pub enabled: bool,
+    pub providers: Vec<UsageProviderSetting>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageProviderSetting {
+    pub provider: String,
+    pub label: String,
+    pub enabled: bool,
+    /// `not_required`, `found`, `missing` or `unsafe`; clients treat other
+    /// values as unknown.
+    pub credential: String,
+    /// Why turning it on needs care, such as an organization-wide key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 /// Latest subscription/API allowance observed for each configured provider.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UsageReport {
@@ -49,6 +82,10 @@ pub struct ProviderUsage {
     /// Text-completion tokens over the same period as `spend`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_tokens: Option<UsageCompletionTokens>,
+    /// What the user must do before the provider can be read, one step per
+    /// line. Set together with `status: error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -143,6 +180,7 @@ impl ProviderUsage {
             reset_credits: Vec::new(),
             spend: Vec::new(),
             completion_tokens: None,
+            setup: None,
         }
     }
 }

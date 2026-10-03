@@ -4721,6 +4721,34 @@
           },
           "type": "object"
         },
+        "UsageSetEnabledParams": {
+          "properties": {
+            "enabled": {
+              "description": "Whether the server polls providers at all.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "UsageSetProviderParams": {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "provider": {
+              "description": "Provider id from `usage.settings`, such as `claude` or `openai_api`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "enabled"
+          ],
+          "type": "object"
+        },
         "WorkspaceCloseParams": {
           "properties": {
             "close_group": {
@@ -6580,6 +6608,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/UsageReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "usage.settings",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "usage.set_enabled",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/UsageSetEnabledParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "usage.set_provider",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/UsageSetProviderParams"
             }
           },
           "required": [
@@ -9803,6 +9879,13 @@
               },
               "type": "array"
             },
+            "setup": {
+              "description": "What the user must do before the provider can be read, one step per\nline. Set together with `status: error`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "spend": {
               "default": [],
               "description": "Pay-as-you-go spend since `since`, one per currency. Not a prepaid balance.",
@@ -10752,6 +10835,22 @@
             },
             {
               "properties": {
+                "settings": {
+                  "$ref": "#/schemas/success_response/$defs/UsageSettings"
+                },
+                "type": {
+                  "const": "usage_settings",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "settings"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "notifications": {
                   "items": {
                     "$ref": "#/schemas/success_response/$defs/NotificationRecord"
@@ -11490,6 +11589,37 @@
           ],
           "type": "object"
         },
+        "UsageProviderSetting": {
+          "properties": {
+            "credential": {
+              "description": "`not_required`, `found`, `missing` or `unsafe`; clients treat other\nvalues as unknown.",
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "label": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "warning": {
+              "description": "Why turning it on needs care, such as an organization-wide key.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "provider",
+            "label",
+            "enabled",
+            "credential"
+          ],
+          "type": "object"
+        },
         "UsageReport": {
           "description": "Latest subscription/API allowance observed for each configured provider.",
           "properties": {
@@ -11538,6 +11668,25 @@
             "id",
             "kind",
             "title"
+          ],
+          "type": "object"
+        },
+        "UsageSettings": {
+          "description": "The server's own `[usage]` choices and whether each provider can run.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "providers": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageProviderSetting"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "enabled",
+            "providers"
           ],
           "type": "object"
         },

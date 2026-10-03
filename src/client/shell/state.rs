@@ -585,6 +585,7 @@ pub(super) enum ClientSettingsSection {
     Sound,
     Toast,
     Integrations,
+    Usage,
 }
 
 impl ClientSettingsSection {
@@ -594,6 +595,7 @@ impl ClientSettingsSection {
         Self::Sound,
         Self::Toast,
         Self::Integrations,
+        Self::Usage,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -603,6 +605,7 @@ impl ClientSettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::Integrations => "integrations",
+            Self::Usage => "usage",
         }
     }
 }
@@ -617,6 +620,22 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) integration_messages: Vec<String>,
     pub(super) loading_integrations: bool,
     pub(super) installing_integrations: bool,
+    pub(super) usage: ClientUsageSettings,
+}
+
+/// The usage tab: the active machine's `[usage]` choices, read and written
+/// through its server, which may be another machine than this client's.
+#[derive(Debug, Default)]
+pub(super) struct ClientUsageSettings {
+    pub(super) settings: Option<crate::api::schema::UsageSettings>,
+    /// The machine `settings` came from; a change of machine drops them.
+    pub(super) endpoint_id: Option<ClientEndpointId>,
+    pub(super) loading: bool,
+    /// The server predates `usage.settings`.
+    pub(super) unsupported: bool,
+    /// A provider whose warning was shown; the next apply turns it on.
+    pub(super) confirming: Option<String>,
+    pub(super) error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -872,6 +891,9 @@ pub(super) enum PendingEndpointKind {
     },
     IntegrationList,
     IntegrationInstall,
+    UsageSettings {
+        endpoint_id: ClientEndpointId,
+    },
     PrepareWorktreeCreate {
         workspace_id: String,
     },

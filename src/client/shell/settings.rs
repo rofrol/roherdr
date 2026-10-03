@@ -46,6 +46,7 @@ impl ClientShellState {
             integration_messages: Vec::new(),
             loading_integrations: false,
             installing_integrations: false,
+            usage: ClientUsageSettings::default(),
         }));
     }
 
@@ -55,7 +56,7 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
-            ClientSettingsSection::Integrations => 0,
+            ClientSettingsSection::Integrations | ClientSettingsSection::Usage => 0,
         }
     }
 
@@ -81,6 +82,95 @@ impl ClientShellState {
         if request_integrations {
             self.queue_integration_list(outcome, true);
         }
+        if section == ClientSettingsSection::Usage {
+            self.request_usage_settings(outcome);
+        }
+        outcome.repaint = true;
+    }
+
+    /// Reads the active machine's usage choices; opening the tab is the
+    /// user action that fetches them, never a background poll.
+    fn request_usage_settings(&mut self, outcome: &mut ClientShellInput) {
+        let method =
+            crate::api::schema::Method::UsageSettings(crate::api::schema::EmptyParams::default());
+        let supported = self.supports_endpoint_method(&method);
+        let endpoint_id = self.active_endpoint_id.clone();
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            if settings.usage.endpoint_id.as_ref() != Some(&endpoint_id) {
+                settings.usage = ClientUsageSettings::default();
+            }
+            settings.usage.unsupported = !supported;
+            settings.usage.loading = supported;
+        }
+        if supported {
+            self.push_usage_settings_method(method, endpoint_id, outcome);
+        }
+    }
+
+    fn push_usage_settings_method(
+        &mut self,
+        method: crate::api::schema::Method,
+        endpoint_id: ClientEndpointId,
+        outcome: &mut ClientShellInput,
+    ) {
+        if !self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::UsageSettings { endpoint_id },
+            outcome,
+        ) {
+            if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                settings.usage.loading = false;
+            }
+        }
+    }
+
+    /// Row 0 is the footer switch, then one row per provider. Turning on a
+    /// provider with a warning takes a second apply after the warning shows.
+    fn toggle_usage_choice(&mut self, selected: usize, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() else {
+            return;
+        };
+        let Some(current) = settings.usage.settings.as_ref() else {
+            return;
+        };
+        let method = if selected == 0 {
+            crate::api::schema::Method::UsageSetEnabled(crate::api::schema::UsageSetEnabledParams {
+                enabled: !current.enabled,
+            })
+        } else {
+            let Some(provider) = current.providers.get(selected - 1) else {
+                return;
+            };
+            let enabled = !provider.enabled;
+            if enabled
+                && provider.warning.is_some()
+                && settings.usage.confirming.as_deref() != Some(provider.provider.as_str())
+            {
+                settings.usage.confirming = Some(provider.provider.clone());
+                outcome.repaint = true;
+                return;
+            }
+            crate::api::schema::Method::UsageSetProvider(
+                crate::api::schema::UsageSetProviderParams {
+                    provider: provider.provider.clone(),
+                    enabled,
+                },
+            )
+        };
+        settings.usage.confirming = None;
+        if !self.supports_endpoint_method(&method) {
+            if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                settings.usage.error =
+                    Some("this machine's herdr cannot change usage settings; edit [usage] in its config.toml".into());
+            }
+            outcome.repaint = true;
+            return;
+        }
+        let endpoint_id = self.active_endpoint_id.clone();
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            settings.usage.loading = true;
+        }
+        self.push_usage_settings_method(method, endpoint_id, outcome);
         outcome.repaint = true;
     }
 
@@ -104,6 +194,11 @@ impl ClientShellState {
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
+                ClientSettingsSection::Usage => settings
+                    .usage
+                    .settings
+                    .as_ref()
+                    .map_or(0, |usage| usage.providers.len() + 1),
             },
             _ => 0,
         }
@@ -227,6 +322,7 @@ impl ClientShellState {
                 );
             }
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
+            ClientSettingsSection::Usage => self.toggle_usage_choice(selected, outcome),
         }
     }
 
@@ -346,6 +442,36 @@ impl ClientShellState {
                     Vec::new()
                 };
                 (true, actions)
+            }
+            PendingEndpointKind::UsageSettings { endpoint_id } => {
+                if endpoint_id != self.active_endpoint_id {
+                    return (false, Vec::new());
+                }
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.usage.loading = false;
+                    match result {
+                        Ok(crate::api::schema::ResponseResult::UsageSettings {
+                            settings: usage,
+                        }) => {
+                            settings.usage.settings = Some(usage);
+                            settings.usage.endpoint_id = Some(endpoint_id);
+                            settings.usage.error = None;
+                        }
+                        Ok(_) => {
+                            settings.usage.error = Some(
+                                "endpoint returned an unexpected usage settings result".into(),
+                            );
+                        }
+                        Err(error) => settings.usage.error = Some(error.message),
+                    }
+                    let count = settings
+                        .usage
+                        .settings
+                        .as_ref()
+                        .map_or(0, |usage| usage.providers.len() + 1);
+                    settings.selected = settings.selected.min(count.saturating_sub(1));
+                }
+                (true, Vec::new())
             }
             _ => (false, Vec::new()),
         }
