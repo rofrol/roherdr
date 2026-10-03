@@ -10,6 +10,8 @@ impl super::ClientShellState {
     /// Unfolds a parent's job squares when focus lands on one of its jobs
     /// (a click on a job link, say), so the sidebar shows where you are.
     /// Only a change of focus does it, so folding the squares by hand sticks.
+    /// Focus that lands on a job only because the focused tab closed is the
+    /// server's fallback, not a jump to that job, so it unfolds nothing.
     pub(super) fn unfold_focused_job(&mut self, previous_focus: Option<&str>) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -40,7 +42,9 @@ impl super::ClientShellState {
             }
             self.auto_unfolded.remove(&(endpoint.clone(), opened));
         }
-        if let Some(parent) = parent {
+        let focused_tab_closed = previous_focus
+            .is_some_and(|previous| snapshot.tabs.iter().all(|tab| tab.tab_id != previous));
+        if let Some(parent) = parent.filter(|_| !focused_tab_closed) {
             if self
                 .unfolded_squares
                 .entry(endpoint.clone())
