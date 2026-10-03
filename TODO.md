@@ -3770,6 +3770,44 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Public tab numbers are stable (never reused), so inserting in the middle
     renumbers nothing.
 
+- [ ] Dismiss an agent's question mark `?` without typing into its pane
+  (user, 2026-10-03: right click on the agent's tab and turn off the
+  question status; "maybe somewhere else too"). Today the report
+  (`awaiting_reply_reported`, `src/terminal/state.rs`) clears only on input
+  to the pane, agent exit or session change, or a Blocked state, so a
+  question the user answered elsewhere or wants to ignore stays as `?`.
+  Consulted sol, DeepSeek and MiMo (round `20261003-124735-15aa`). Plan:
+  - Server: a new advertised endpoint/API method (e.g.
+    `pane.clear_awaiting_reply` with `pane_ids: [..]`), idempotent, one
+    request per click (a tab's several panes in one call, not N calls on
+    the one command lane; all three). An older server without it hides the
+    action (endpoint contract). The clear is global like typing is today,
+    so it survives a handoff for free (the report is server state);
+    rejected per-client acknowledgement (DeepSeek, MiMo raise it) as it
+    would differ from how input clears it.
+  - Surfaces: tab menu item "Dismiss question" (with the count when several
+    panes await, MiMo), the pane menu for one pane, and a right click on a
+    row of the asking (`?`) header list (`NotificationLogView::Asking`).
+    Show the item when any agent of the tab has `awaiting_reply`, not when
+    the tab's aggregate icon is `?` (sol, DeepSeek: another agent's state
+    can mask the aggregate, `aggregate_icon` in `src/client/shell.rs`).
+  - CLI: a separate command such as `herdr pane dismiss-question [--pane]`
+    rather than `agent awaiting-reply --clear` (MiMo: that command is the
+    agent's report about itself); a clear error on an older server.
+  - Semantics: a later report shows `?` again (not a mute). Keep notification
+    history; dismissing must not fire a new done notification.
+  - Rejected: clicking the `?` icon itself (all three: collides with
+    selecting the tab, easy to hit by accident); a space-wide "Dismiss
+    questions" (too broad); MiMo's per-report `acked_through` counter (an
+    agent reports once per turn; optional: sol's report revision so a report
+    arriving between opening the menu and the click is not cleared).
+  - Open: whether dismissing also marks the tab seen. Sol and DeepSeek: no,
+    seen is separate; MiMo: yes, or the unseen done mark outlives the `?`
+    and reads as the same bug. Ask the user.
+  - Tests: clear via the method, re-report after it, a tab with two
+    awaiting agents, a tab whose aggregate icon is not `?`, handoff keeps
+    the cleared state, menu item hidden without the advertised method.
+
 - [ ] Bug: failed job tabs stay open after their parent tab closes (user,
   2026-10-03, screenshot `~/Screenshots/Screenshot 2026-10-03 at 01.57.03.png`:
   two `just check: notification …` job tabs still listed after the user
