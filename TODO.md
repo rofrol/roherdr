@@ -621,6 +621,41 @@
   after a second round (`20261003-014925-9487`, Sol, DeepSeek, MiMo agree):
   numbers only, no rule verdict and no cost column (no price table yet), and
   `--pairs` untouched. It also counts the rounds it leaves out.
+- [ ] Consult stats default view: mixed rows, too much data, and why `astra
+  -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
+  how do you rate these models now? The table is mixed up, deepseek is third;
+  maybe show last week as the first table. Very much data; is it needed? ask
+  the models"). Consulted sol, DeepSeek and MiMo (round
+  `20261003-124630-aaf5`).
+  - `astra -r` is not better (all three agree, verified in the log): 11 rated
+    calls, mostly code reviews, three of them beside only `luna -r`. In the
+    same window plain astra had 115 rated calls with uniq 1.57 versus 1.82,
+    the same 6.7 findings per call, but more accepted (5.1 versus 4.1) and
+    fewer rejected (24% versus 39%). Only paired rounds (same prompt, astra
+    and astra -r, same companions) could show a repo-mode gain.
+  - The mix-up: the default table pools all time and sorts by uniq/call, but
+    unique depends on who else was asked. The `deepseek-flash` alias row
+    (pre-2026-09-28, beside gpt-6-sol, terra, gemini) sits third; the current
+    DeepSeek-V4.1 row (0.86) is depressed by stronger companions (sol, MiMo).
+    `--days 7` alone does not fix it: it still shows the 09-26..09-28 rows.
+  - Proposed default (sol's framing; DeepSeek and MiMo close): current
+    configurations first (the default set and running trials, in configured
+    order), last 7 days with the dates printed; retired models, alias rows of
+    unknown version and rows under 5 rated calls collapse into one footer
+    line. Do not merge the unknown-version alias into V4.1 (sol; DeepSeek and
+    MiMo would merge with a footnote). MiMo: put the head-to-head of the
+    current set first, since only shared rounds control for companions.
+    Rows from another coordinator (Sonnet, asked by a DeepSeek-run agent)
+    are marked or split. Keep: rated/calls, uniq/call, rejected share, err,
+    p50. Cut from the default: call dates, the 8-line legend (two lines plus
+    `--legend`), anecdotal rows. All of it stays behind `--all`.
+  - Model ranking from shared rounds: sol 6.1 and MiMo tie on unique (60
+    rounds, -0.07, CI -0.28..+0.13, W/T/L 15/29/16), sol rejects 7 points
+    less, is faster (p50 38 s versus 47 s) and uses a quarter of the output
+    tokens. Both beat DeepSeek-V4.1 (sol +0.67 over 161 rounds, MiMo +0.48
+    over 58), DeepSeek is fastest (p50 16 s). Sonnet, Opus, Gemini, astra
+    `-r`: not comparable or too few. Keep sol + DeepSeek and finish the MiMo
+    trial; whether MiMo replaces DeepSeek is the trial's question.
 - [x] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
