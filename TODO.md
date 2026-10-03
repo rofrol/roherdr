@@ -3987,15 +3987,20 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     from the terminal to herdr; test with the signed release binary and test
     logout separately.
   - The `?` mark: today it survives a live handoff but not the agent's exit
-    and resume. Do not restore a live `?` on resume (the resumed agent has
-    not asked anything yet). Persist "was awaiting a reply" keyed by the
-    agent session id and pane, show it as a distinct stale mark until the
-    agent reports again, and consider a "the agent exited, resume?" hint on
-    panes whose agent died.
+    and resume. Restore the normal `?` on resume: the question is still the
+    last message of the resumed conversation and still unanswered, which is
+    exactly what `?` means (revised after the user asked "why not?"; the
+    first plan, a distinct stale mark, distinguished nothing the user
+    needs). Persist the report keyed by the agent session id, put it back
+    only when that same session id resumes with no user prompt after the
+    question (check the transcript, so an answer sent from another resume
+    or from the phone clears it), and clear it as today on the next prompt.
+    Separately, consider a "the agent exited, resume?" hint on panes whose
+    agent died.
   Consulted sol and MiMo (round `20261003-153021-f65d`). Both: the mechanism
   is plausible but unproven, disclaiming fixes nothing if macOS selects by
-  coalition or process group, and a restored `?` must be a distinct mark.
-  Rejected: MiMo's "survivors are those spawned after the handoffs"
+  coalition or process group. Rejected: both models' "a restored `?` must be
+  a distinct mark" (see above); MiMo's "survivors are those spawned after the handoffs"
   (it mixed UTC and local time; the start times contradict it) and its
   reading of `?` as "agent mid-turn".
 
