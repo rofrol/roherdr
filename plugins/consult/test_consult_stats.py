@@ -279,6 +279,14 @@ class WidthCliTests(unittest.TestCase):
                     long = [line for line in r.stdout.splitlines() if len(line) > width]
                     self.assertEqual(long, [])
 
+    def test_self_with_an_empty_id_is_rejected(self):
+        for args in (["--round", ""], ["--calls", " "]):
+            with self.subTest(args=args):
+                r = self.run_cli("self", *args, "--model", "m")
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("is empty", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+
     def test_a_narrow_width_is_rejected(self):
         r = self.run_cli("stats", "--width", "39")
         self.assertNotEqual(r.returncode, 0)
