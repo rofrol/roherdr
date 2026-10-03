@@ -3055,13 +3055,13 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     from OpenAI each refresh (a failed read only adds a note); no config
     number.
   - Follow-ups (round `20261003-115359-3a57`, Sol, DeepSeek, MiMo agree):
-    - [ ] Now: a Usage section in the Settings overlay (reuse `ConfigEdit`
+    - [x] Done 2026-10-03 (`8d5d016d`): a Usage section in the Settings overlay (reuse `ConfigEdit`
       and the reload flow) with the master switch and one toggle per
       provider, mirroring `[usage]` keys exactly. Show credential state next
       to keyed providers ("on, no key") instead of hiding them silently.
       Turning `openai_api` on shows the admin-key warning first; never a
       text field for the key.
-    - [ ] Now: when `openai_api` is on and the key file is missing, the row
+    - [x] Done 2026-10-03 (`8d5d016d`): when `openai_api` is on and the key file is missing, the row
       says `OA setup needed` and the details say: create an Admin key at
       platform.openai.com → Organization settings → Admin keys, save it as
       one line in the configured path, mode 0600. Herdr only reads costs,
