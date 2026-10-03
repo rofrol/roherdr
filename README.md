@@ -30,7 +30,13 @@ PRs.
   key spend). DeepSeek and OpenRouter keys come
   from `DEEPSEEK_API_KEY`/`OPENROUTER_API_KEY`, then `auth_file` (default
   `~/.pi/agent/auth.json`, the pi coding agent's logins); OpenRouter is
-  hidden without a key. The server refreshes every 5 minutes
+  hidden without a key. OpenAI API (`OP`, pay-as-you-go) month-to-date
+  spend and completion tokens are opt-in (`openai_api = true`): they need an
+  OpenAI Admin key with read access to usage and costs, one line in
+  `~/.config/herdr/openai-admin-key` (`openai_admin_key_file`), mode 0600;
+  no environment variable is read, so agent panes never inherit it. It is
+  organization-wide spend, not prepaid credit left, refreshed at most every
+  15 minutes. The server refreshes every 5 minutes
   (`refresh_interval_secs`); set `claude`, `codex`, `gemini`, `deepseek` or
   `openrouter` to `false` to hide a provider. All herdr instances share one
   cache (`~/.local/state/herdr/usage-cache.json`): a recent observation is

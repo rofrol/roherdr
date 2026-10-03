@@ -14,6 +14,7 @@ mod gemini;
 mod http;
 mod keys;
 mod kimi;
+mod openai_api;
 mod openrouter;
 
 pub(crate) use keys::DEFAULT_AUTH_FILE;
@@ -81,6 +82,7 @@ enum Provider {
     DeepSeek,
     OpenRouter,
     Kimi,
+    OpenAiApi,
 }
 
 impl Provider {
@@ -92,6 +94,7 @@ impl Provider {
             Self::DeepSeek => "deepseek",
             Self::OpenRouter => "openrouter",
             Self::Kimi => "kimi",
+            Self::OpenAiApi => "openai_api",
         }
     }
 
@@ -103,6 +106,7 @@ impl Provider {
             Self::DeepSeek => "DeepSeek",
             Self::OpenRouter => "OpenRouter",
             Self::Kimi => "Kimi",
+            Self::OpenAiApi => "OpenAI API",
         }
     }
 
@@ -114,9 +118,22 @@ impl Provider {
             Self::DeepSeek => deepseek::fetch(config),
             Self::OpenRouter => openrouter::fetch(config),
             Self::Kimi => kimi::fetch(config),
+            Self::OpenAiApi => openai_api::fetch(config),
+        }
+    }
+
+    /// Shortest gap between fetches, whatever the configured interval.
+    fn min_refresh_secs(self) -> u64 {
+        match self {
+            // OpenAI's cost and usage buckets update with a delay, so polling
+            // them every few minutes costs Admin API calls and shows nothing new.
+            Self::OpenAiApi => OPENAI_API_MIN_REFRESH_SECS,
+            _ => 0,
         }
     }
 }
+
+const OPENAI_API_MIN_REFRESH_SECS: u64 = 15 * 60;
 
 fn enabled_providers(config: &UsageConfig) -> Vec<Provider> {
     if !config.enabled {
@@ -136,6 +153,8 @@ fn enabled_providers(config: &UsageConfig) -> Vec<Provider> {
             config.kimi && keys::api_key(config, &keys::KeyedProvider::Kimi).is_ok(),
             Provider::Kimi,
         ),
+        // Opt-in: shows an error row when the key file is missing or unsafe.
+        (config.openai_api, Provider::OpenAiApi),
     ]
     .into_iter()
     .filter_map(|(enabled, provider)| enabled.then_some(provider))
@@ -213,7 +232,12 @@ fn refresh(
         let handles = providers
             .iter()
             .map(|provider| {
-                let plan = cache.plan(provider.id(), now, interval_secs, forced);
+                let plan = cache.plan(
+                    provider.id(),
+                    now,
+                    interval_secs.max(provider.min_refresh_secs()),
+                    forced,
+                );
                 let handle = matches!(plan, Plan::Fetch)
                     .then(|| scope.spawn(move || provider.fetch(config)));
                 (*provider, plan, handle)

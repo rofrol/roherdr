@@ -558,6 +558,18 @@
           "type": "string",
           "default": "\"api.moonshot.ai\"",
           "description": "Moonshot API host for the Kimi balance: api.moonshot.ai (USD) or api.moonshot.cn (CNY). The two platforms are separate accounts."
+        },
+        {
+          "key": "usage.openai_api",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show OpenAI API (pay-as-you-go) month-to-date spend and completion tokens through the Admin API. Off by default because an admin key reads organization-wide billing. This is spend, not prepaid credit left, and is refreshed at most every 15 minutes."
+        },
+        {
+          "key": "usage.openai_admin_key_file",
+          "type": "string",
+          "default": "\"~/.config/herdr/openai-admin-key\"",
+          "description": "File holding the OpenAI Admin key (read access to usage and costs) on one line. On Unix it must be owned by you and not readable by others (mode 0600). No environment variable is read, so agent panes never inherit the key."
         }
       ]
     },

@@ -178,6 +178,39 @@ fn usage_overlay_lines(
             }
             lines.push(Line::from(Span::styled(text, base.fg(p.text))));
         }
+        for spend in &provider.spend {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(
+                        "   spend      {}",
+                        super::usage::compact_spend(&spend.amount, &spend.currency)
+                    ),
+                    base.fg(p.text),
+                ),
+                Span::styled(
+                    format!("  since {}", super::usage::utc_day(spend.since)),
+                    dim,
+                ),
+            ]));
+        }
+        if let Some(tokens) = &provider.completion_tokens {
+            let plural = if tokens.requests == 1 { "" } else { "s" };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(
+                        "   tokens     in {} (cached {}), out {}",
+                        super::usage::compact_tokens(tokens.input),
+                        super::usage::compact_tokens(tokens.cached_input),
+                        super::usage::compact_tokens(tokens.output),
+                    ),
+                    base.fg(p.text),
+                ),
+                Span::styled(
+                    format!("  {} request{plural}, completions only", tokens.requests),
+                    dim,
+                ),
+            ]));
+        }
         lines.extend(reset_credit_lines(
             provider,
             now_unix,
