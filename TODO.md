@@ -19,7 +19,7 @@
          ❑ zsh                         ○ Agent zmienia zadanie…
   ```
   Consulted sol and MiMo (round `20261003-182122-ad0b`):
-  - Ownership is a runtime fact: a nullable owner tab id in server state,
+  - Ownership is a runtime fact: a nullable creator tab id in server state,
     exposed through the JSON API (both). `herdr worktree create` must send
     its `HERDR_PANE_ID` in the request explicitly; the server resolves the
     pane to a stable tab id and never trusts a client-sent tab id (MiMo).
@@ -38,6 +38,21 @@
     work in one worktree). If replacing agents ever makes the fallback
     annoying, sol's cheapest step is `herdr worktree adopt`, run from the
     new tab with its pane id.
+  - Several agents in one worktree do not argue against the nesting (user
+    asked, 2026-10-03; sol and MiMo, round `20261003-183003-b353`). They
+    get there by opening a second agent tab inside the worktree space (a
+    reviewer next to the implementer), or the creator keeps working on the
+    worktree from its parent tab by `cd` or absolute paths. The first are
+    the worktree space's own tabs, nested inside it already; neither
+    competes for the parent slot, which is the one tab that ran `create`, a
+    fixed fact. The argument was against re-attaching by cwd, which changes
+    and is shared. So the server field is `creator_tab`, not `owner`
+    (sol): it says "created here", not "owned now". Known weak spot: the
+    creator tab moves on to another task and the worktree still hangs
+    under it; acceptable with one task per agent.
+  - The folded worktree line must still show its agents' aggregate status
+    and any request for attention (both), as a collapsed space's name line
+    already does; folding never hides a blocked or failed agent.
   - Unowned (created from a bare shell or the UI, found on disk, or its
     tab closed) goes after the parent's tabs as today, with a short
     connector, not the long trunk. A closed owner tab never deletes the
