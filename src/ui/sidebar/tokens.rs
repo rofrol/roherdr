@@ -201,21 +201,19 @@ pub(crate) fn space_rows(
         .collect()
 }
 
-/// Branches whose name the push status chip leaves out.
-const DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];
-
+/// The chip names its branch, so a branch in sync still reads as one (a
+/// lone `✓` did not) and gives a click target as wide as the name.
 fn push_status(context: &SpaceTokenContext<'_>) -> Option<ResolvedTokenKind> {
     let branch = context.branch?;
-    // A worktree space is named after its branch already.
+    // A worktree space is named after its branch already: its chip shows
+    // only commits to push or pull.
     let named_by_branch = context.suppress_git_details
         || branch.strip_prefix("worktree/").unwrap_or(branch) == context.workspace;
-    let default = DEFAULT_BRANCHES.contains(&branch);
-    let shown = !named_by_branch && (!default || context.ahead_behind.is_none());
-    if !shown && context.ahead_behind.is_none() {
+    if named_by_branch && matches!(context.ahead_behind, None | Some((0, 0))) {
         return None;
     }
     Some(ResolvedTokenKind::PushStatus {
-        branch: shown.then(|| branch.to_string()),
+        branch: (!named_by_branch).then(|| branch.to_string()),
         ahead_behind: context.ahead_behind,
     })
 }
@@ -674,7 +672,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn push_status_names_only_a_branch_that_is_not_default_or_already_shown() {
+    fn push_status_names_its_branch_unless_the_space_is_named_after_it() {
         let tokens = std::collections::HashMap::new();
         let chip = |workspace: &str,
                     branch: Option<&str>,
@@ -696,37 +694,31 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 ahead_behind,
             })
         };
-        // The default branch shows only its state; without an upstream its name.
+        // Every branch leads its chip, also in sync or without an upstream.
         assert_eq!(
             chip("repo", Some("main"), Some((3, 0)), false),
-            kind(None, Some((3, 0)))
+            kind(Some("main"), Some((3, 0)))
         );
         assert_eq!(
             chip("repo", Some("master"), Some((0, 0)), false),
-            kind(None, Some((0, 0)))
+            kind(Some("master"), Some((0, 0)))
         );
         assert_eq!(
             chip("repo", Some("main"), None, false),
             kind(Some("main"), None)
         );
-        // Any other branch leads the chip.
         assert_eq!(
             chip("repo", Some("feat"), Some((1, 2)), false),
             kind(Some("feat"), Some((1, 2)))
         );
-        assert_eq!(
-            chip("repo", Some("feat"), None, false),
-            kind(Some("feat"), None)
-        );
-        // A space named after its branch, or a worktree child, shows the state alone.
+        // A space named after its branch, or a worktree child, shows only
+        // commits to push or pull, and no chip without any.
         assert_eq!(
             chip("feat", Some("worktree/feat"), Some((1, 0)), false),
             kind(None, Some((1, 0)))
         );
-        assert_eq!(
-            chip("x", Some("feat"), Some((0, 0)), true),
-            kind(None, Some((0, 0)))
-        );
+        assert_eq!(chip("feat", Some("feat"), Some((0, 0)), false), None);
+        assert_eq!(chip("x", Some("feat"), Some((0, 0)), true), None);
         assert_eq!(chip("x", Some("feat"), None, true), None);
         // Outside Git, or on a detached HEAD, there is no chip.
         assert_eq!(chip("repo", None, None, false), None);

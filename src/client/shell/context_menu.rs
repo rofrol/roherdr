@@ -3,12 +3,15 @@ use super::*;
 /// Branch names longer than this are cut in the branch menu.
 const BRANCH_NAME_MAX_WIDTH: usize = 32;
 
-/// A branch's push state in the branch menu: `↑1 ↓4`, `✓`, `gone`, `local`.
+/// A branch's push state in the branch menu: `↑1 ↓4`, `synced`, `gone`,
+/// `local`.
 fn branch_state(branch: &crate::api::schema::GitBranchInfo) -> String {
     if branch.upstream_gone {
         "gone".to_owned()
     } else if branch.upstream.is_none() {
         "local".to_owned()
+    } else if branch.ahead == 0 && branch.behind == 0 {
+        "synced".to_owned()
     } else {
         crate::ui::push_status_text(None, Some((branch.ahead, branch.behind)))
     }

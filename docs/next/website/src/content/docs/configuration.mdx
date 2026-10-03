@@ -401,7 +401,7 @@ Space rows accept these built-in tokens:
 - `workspace` — workspace name.
 - `branch` — Git branch when available.
 - `git_status` — Git ahead and behind counts when nonzero.
-- `push_status` — the push status chip: commits to push (`↑3`) and to pull (`↓2`), or `✓` when the branch matches its upstream. It starts with the branch name unless the branch is `main` or `master` or the space is already named after it; without an upstream it shows only the branch name. Clicking it opens a menu of the repository's other local branches with their push state (`gone` for a deleted upstream, `local` for none); the menu's title repeats the chip.
+- `push_status` — the push status chip: the branch name and the commits to push (`↑3`) and to pull (`↓2`); a branch in sync with its upstream shows only its name, dimmed. A space named after its branch (a worktree) shows only the counts, and no chip while there are none. Clicking it opens a menu of the repository's other local branches with their push state (`synced`, `gone` for a deleted upstream, `local` for none); the menu's title repeats the chip.
 - `tab_jobs` — counts of the space's tabs whose status (`herdr tab status`) is running (`⧖ 1`) or failed (`!1`), when nonzero. A collapsed worktree group counts all its spaces. It shows background work such as `herdr-job` jobs while the space's agents are idle. With `ui.sidebar.spaces.tabs`, a space that lists its tabs shows the jobs nested under a tab on that tab's line, and here only jobs nested under a tab that is gone.
 - `$name` — custom workspace metadata named `name`.
 
