@@ -2,6 +2,41 @@
 
 ## Next, in order
 
+- [ ] Folded jobs hide where the focus is, and a restart unfolds them again
+  (user, 2026-10-03, two screenshots). (1) He clicked a job square under the
+  `Token utilization…` tab, then folded the parent: the right pane still
+  shows the job's output, but the sidebar draws the parent line as selected
+  (`active` in `src/client/shell/space_tabs.rs` is "the active tab's group is
+  this line"), so it looks as if the parent were open. (2) After a server
+  restart the squares were unfolded on their own. Cause (read in code,
+  reproduction not done): `unfold_focused_job` (`src/client/shell/tab_groups.rs`)
+  unfolds a parent whenever the focused tab differs from `previous_focus`; on
+  reattach `previous_focus` is `None`, so a focused job unfolds its parent
+  and overrides the user's fold. `unfolded_squares` is client memory only.
+  Consulted sol, DeepSeek and MiMo (round `20261003-115517-edec`):
+  - Auto-unfold must not come from snapshot reconciliation: all three. MiMo:
+    do it in the user-input path (click/keyboard handler), not in the code
+    that applies snapshots; sol: unknown provenance means no auto-unfold;
+    DeepSeek: delete auto-unfold and let the folded line show where the focus
+    is. Reconnect, first snapshot, restored focus and agent-spawned focus are
+    not navigation.
+  - Folded parent with a focused hidden child: sol and MiMo want a suffix on
+    the parent line, `↳ <job label>` plus status (a glyph alone is ambiguous
+    between two failed jobs), truncating the label before the counts; DeepSeek
+    wants one transient row for the focused child. All three: the blue
+    selection bar must stop meaning "this terminal is shown" for the parent.
+    Rejected by all: keep as is; force-unfold while a child is focused
+    (makes the fold control a lie).
+  - Persisting the fold: sol and MiMo, per client and keyed by a stable
+    tab identity plus a generation (tab ids are reused); DeepSeek: not the
+    fix, it hides the reaction bug. Not shared through the server: two
+    clients would fight over each other's sidebar. Open: sol's three-state
+    disclosure (automatic, explicitly open, explicitly folded).
+  - Also: a focused child that closes must drop the suffix; keyboard
+    navigation must still reach folded children; a second client's focus
+    change must not change this client's line; the counts show no running
+    state while the squares do (MiMo, not checked).
+
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
   but it did not close the job." Closing a parent tab's last pane (cmd+w)
   checked only the parent for running work, and the server kept its child
