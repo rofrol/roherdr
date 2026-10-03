@@ -804,8 +804,8 @@ pub(super) enum ClientContextMenuTarget {
     SortSpaces(super::space_sort::SpaceSort),
     /// A row of the bookmarks list: only removing the bookmark.
     Bookmark { tab_id: String },
-    /// The installed agents but the launch button's own, opened by a right
-    /// click on the button (or a left click with nothing to repeat).
+    /// The installed agents, the launch button's own first, opened by a
+    /// right click on the button (or a left click with nothing to repeat).
     AgentPicker {
         workspace_id: String,
         current: Option<String>,

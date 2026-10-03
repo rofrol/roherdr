@@ -826,6 +826,22 @@ pub(crate) fn render_context_menu(
             &item.label,
             style,
         );
+        if let ClientContextMenuAction::LaunchAgent(agent) = item.action {
+            if let Some(kind) = menu.picker_agent(agent) {
+                // The `A` keeps the menu's background and the agent's colour
+                // on the highlighted row too, so the colour stays readable;
+                // the highlight starts after it.
+                let lead = Rect::new(row.x, row.y, 2, 1).intersection(row);
+                buffer.set_style(lead, plain);
+                if lead.width == 2 {
+                    buffer[(row.x + 1, row.y)].set_style(
+                        Style::default()
+                            .fg(super::agent_launch::agent_badge_color(kind, palette))
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+            }
+        }
         rows.push((row, index));
         row_y = row_y.saturating_add(1);
     }
