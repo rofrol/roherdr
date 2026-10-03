@@ -318,6 +318,33 @@ pub(super) fn render_usage_footer(
             now_unix,
             palette,
         );
+        hits.tooltips
+            .push(provider_code_tooltip(area.x, row, provider));
+    }
+}
+
+/// Hovering a row's code (and its `!` mark) names the vendor: `AN Anthropic`.
+/// The details modal shows the same names, so hover is never the only way.
+fn provider_code_tooltip(
+    x: u16,
+    row: u16,
+    provider: &ProviderUsage,
+) -> super::tooltip::TooltipTarget {
+    let code = provider_code(provider);
+    let mut text = format!("{code} {}", provider_name(provider));
+    if matches!(
+        provider.status,
+        ProviderUsageStatus::Error | ProviderUsageStatus::Unknown
+    ) {
+        text.push_str(" · refresh failed");
+    }
+    super::tooltip::TooltipTarget {
+        // The code and the `!` mark after it.
+        rect: Rect::new(x.saturating_add(CODE_COLUMN), row, 3, 1),
+        // Per provider, not per code: two rows share `OA`.
+        id: format!("usage:{}", provider.provider),
+        text,
+        bg: None,
     }
 }
 
@@ -532,6 +559,20 @@ pub(super) fn provider_code(provider: &ProviderUsage) -> String {
             .take(2)
             .flat_map(char::to_uppercase)
             .collect(),
+    }
+}
+
+/// Vendor behind a row's code, with the product where one vendor has two rows.
+pub(super) fn provider_name(provider: &ProviderUsage) -> String {
+    match provider.provider.as_str() {
+        "claude" => "Anthropic".into(),
+        "codex" => "OpenAI · Codex".into(),
+        "openai_api" => "OpenAI · API spend".into(),
+        "gemini" => "Google".into(),
+        "deepseek" => "DeepSeek".into(),
+        "openrouter" => "OpenRouter".into(),
+        "kimi" => "Moonshot · Kimi".into(),
+        _ => provider.label.clone(),
     }
 }
 
@@ -871,6 +912,24 @@ mod tests {
         assert_eq!(spend_limit_percent(&spend), None);
         spend.limit = None;
         assert_eq!(spend_limit_percent(&spend), None);
+    }
+
+    #[test]
+    fn hovering_a_code_names_its_vendor_per_row() {
+        let tip = provider_code_tooltip(10, 5, &provider("claude", "Claude"));
+        assert_eq!(tip.text, "AN Anthropic");
+        assert_eq!(tip.rect, Rect::new(11, 5, 3, 1));
+        let codex = provider_code_tooltip(10, 6, &provider("codex", "Codex"));
+        let api = provider_code_tooltip(10, 7, &provider("openai_api", "OpenAI API"));
+        assert_eq!(codex.text, "OA OpenAI · Codex");
+        assert_eq!(api.text, "OA OpenAI · API spend");
+        assert_ne!(codex.id, api.id);
+        let mut failed = provider("mistral", "Mistral");
+        failed.status = ProviderUsageStatus::Error;
+        assert_eq!(
+            provider_code_tooltip(0, 0, &failed).text,
+            "MI Mistral · refresh failed"
+        );
     }
 
     #[test]
