@@ -111,6 +111,11 @@ The plugin pane list has:
 - **Consult stats**: `consult.py stats --pairs` in a popup (`q` closes).
 - **Consult: recent calls**: the latest calls with ids and ratings, and the
   rounds that still lack a coordinator entry.
+
+Both popups run through `page-consult`, which passes the popup's width as
+`--width`: a table wider than the popup is split into bands that each repeat
+the model column, so scrolling never leaves numbers without names. An error
+is shown after the pager closes.
 - **Consult: install skills**: runs `install-skills`.
 
 This fork's herdr menu (the launcher at the top of the sidebar) also has a

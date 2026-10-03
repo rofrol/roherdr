@@ -173,6 +173,124 @@ class LogCliTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+LONG = "openrouter/stealth/space-bunny-alpha via Stealth"
+
+
+class BandTests(unittest.TestCase):
+    header = ["skill/model", "uniq/call", "wrong", "rated", "err", "score", "acc/find", "unique", "lat n", "p50 s",
+              "p90 s", "out/call"]
+    rows = [[LONG, "0.58", "25%", "24/29", "3%", "0.75", "113/150", "14", "28", "58", "378", "9.0k"],
+            ["gpt/gpt-6.1-sol", "1.48", "13%", "140/167", "4%", "0.96", "757/875", "207", "161", "44", "152", "1.3k"]]
+
+    def bands(self, lines):
+        out, cur = [], []
+        for line in lines:
+            if line:
+                cur.append(line)
+            else:
+                out.append(cur)
+                cur = []
+        return out + [cur]
+
+    def test_without_width_or_when_it_fits_the_table_is_whole(self):
+        whole = mod.table(self.header, self.rows, "<" + ">" * 11)
+        self.assertEqual(mod.table(self.header, self.rows, "<" + ">" * 11, width=len(whole[1])), whole)
+        self.assertNotIn("", whole)
+
+    def test_bands_repeat_names_and_fit(self):
+        for width in (60, 80, 100):
+            with self.subTest(width=width):
+                lines = mod.table(self.header, self.rows, "<" + ">" * 11, width)
+                self.assertTrue(all(len(line) <= width for line in lines))
+                bands = self.bands(lines)
+                self.assertGreater(len(bands), 1)
+                seen = []
+                for band in bands:
+                    self.assertTrue(band[0].startswith("skill/model"))
+                    self.assertEqual([line.split()[0] for line in band[2:]], [LONG.split()[0], "gpt/gpt-6.1-sol"])
+                    seen += band[0].replace("lat n", "lat_n").replace("p50 s", "p50_s").replace("p90 s", "p90_s").split()[1:]
+                self.assertEqual(seen, [h.replace(" ", "_") for h in self.header[1:]])  # every column once, in order
+
+    def test_a_group_stays_together_when_it_fits(self):
+        lines = mod.table(self.header, self.rows, "<" + ">" * 11, 100, groups=[4, 3, 3, 1])
+        heads = [band[0] for band in self.bands(lines)]
+        self.assertTrue(any("lat n p50 s p90 s" in h for h in heads))
+        self.assertFalse(any(h.rstrip().endswith("score") for h in heads))
+
+    def test_a_name_too_wide_for_any_column_keeps_the_table_whole(self):
+        rows = [["x" * 70, "1"], ["y", "22"]]
+        self.assertEqual(mod.table(["name", "n"], rows, "<>", 60), mod.table(["name", "n"], rows, "<>"))
+
+
+class SayTests(unittest.TestCase):
+    def say(self, *args, **kw):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            mod.say(*args, **kw)
+        return out.getvalue()
+
+    def test_without_width_prints_as_is(self):
+        self.assertEqual(self.say("\na b\nc", None), "\na b\nc\n")
+
+    def test_paragraph_is_reflowed_and_keeps_its_leading_blank_line(self):
+        text = self.say("\nalpha beta-gamma\ndelta epsilon zeta eta", 12)
+        self.assertTrue(text.startswith("\nalpha\n"))
+        self.assertIn("beta-gamma", text)  # not broken at the hyphen
+        self.assertTrue(all(len(line) <= 12 for line in text.split("\n")))
+
+    def test_items_wrap_with_an_indent(self):
+        self.assertEqual(self.say("one two three\nfour", 9, items=True), "one two\n  three\nfour\n")
+
+    def test_a_long_word_overflows_instead_of_breaking(self):
+        self.assertEqual(self.say("ab " + "x" * 20, 10, items=True), "ab\n  " + "x" * 20 + "\n")
+
+
+class WidthCliTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        log = Path(self.dir.name) / "log.jsonl"
+        recs = []
+        for i, (skill, model) in enumerate([("openrouter", "stealth/space-bunny-alpha via Stealth"),
+                                            ("deepseek", "DeepSeek-V4.1-Flash"), ("gpt", "gpt-6.1-sol")] * 6):
+            cid = f"c{i:02d}"
+            recs.append({"type": "call", "id": cid, "ts": 1000 + i, "skill": skill, "model": model, "status": "ok",
+                         "seconds": 30 + i, "round": f"20261003-0000{i // 3:02d}-aaaa", "cwd": "/tmp/run.x",
+                         "usage": {"output": 1000 + 100 * i}})
+            recs.append({"type": "rating", "id": cid, "verdict": "useful", "findings": 4, "accepted": 3, "unique": 1})
+        log.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.env = {**os.environ, "CONSULT_LOG": str(log)}
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CONSULT), *args], text=True, capture_output=True, env=self.env)
+
+    def test_every_mode_fits_the_width(self):
+        for args in (["stats"], ["stats", "--pairs"], ["stats", "--all"], ["stats", "--vs", "bunny", "sol"],
+                     ["recent", "-n", "40"]):
+            for width in (60, 80, 100, 120):
+                with self.subTest(args=args, width=width):
+                    r = self.run_cli(*args, "--width", str(width))
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    long = [line for line in r.stdout.splitlines() if len(line) > width]
+                    self.assertEqual(long, [])
+
+    def test_a_narrow_width_is_rejected(self):
+        r = self.run_cli("stats", "--width", "39")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("at least 40", r.stderr)
+
+    def test_page_consult_without_a_terminal(self):
+        # No /dev/tty: the width falls back to 100; less writes straight through when stdout is not a terminal.
+        r = subprocess.run([str(Path(__file__).parent / "page-consult"), "stats", "--pairs"], text=True,
+                           capture_output=True, env=self.env, stdin=subprocess.DEVNULL, start_new_session=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("gpt/gpt-6.1-sol", r.stdout)
+        self.assertTrue(all(len(line) <= 100 for line in r.stdout.splitlines()))
+
+
 if __name__ == "__main__":
     unittest.main()
 
