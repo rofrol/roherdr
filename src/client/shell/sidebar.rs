@@ -260,6 +260,7 @@ pub(in crate::client::shell) fn build_row_tooltip(
         id: "build".to_owned(),
         text,
         bg: None,
+        starts_at_target: false,
     }
 }
 

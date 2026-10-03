@@ -626,6 +626,7 @@ pub(super) fn render_space_tab_lines(
                 }
             ),
             bg: None,
+            starts_at_target: false,
         });
         // The focused space's active tab also has an accent bar in the
         // fill's first column, so it is found by shape, not only by colour.
@@ -682,6 +683,8 @@ pub(super) fn render_space_tab_lines(
                 text: line.label.clone(),
                 // The line's own fill, active or not: only its width grows.
                 bg: Some(bg),
+                // Over the label only: the accent bar left of it stays.
+                starts_at_target: true,
             });
         }
         super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
@@ -767,6 +770,7 @@ pub(super) fn render_space_tab_lines(
                             id: super::tooltip::square_tooltip_id(&square.tab_id),
                             text: square.label.clone(),
                             bg: Some(square_fill(square, &fills, palette)),
+                            starts_at_target: false,
                         });
                     }
                     square_x = square_x.saturating_add(SQUARE_WIDTH + SQUARE_GAP);
@@ -869,7 +873,7 @@ fn render_segments(
 }
 
 /// `text` cut to `width` columns, ending in `…` when cut.
-fn truncate(text: &str, width: usize) -> String {
+pub(super) fn truncate(text: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if unicode_width::UnicodeWidthStr::width(text) <= width {
         return text.to_owned();

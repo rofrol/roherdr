@@ -347,6 +347,7 @@ fn provider_code_tooltip(
         id: format!("usage:{}", provider.provider),
         text,
         bg: None,
+        starts_at_target: false,
     }
 }
 

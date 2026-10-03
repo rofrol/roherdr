@@ -33,6 +33,11 @@ pub(super) struct TooltipTarget {
     pub(super) text: String,
     /// The tooltip's fill; the default is `surface1`.
     pub(super) bg: Option<ratatui::style::Color>,
+    /// The box starts at the target's left edge, without a padding column,
+    /// and its text is cut at the screen edge instead of moving the box
+    /// left, so a mark just left of the target (the active tab's accent
+    /// bar, the state icon) stays visible.
+    pub(super) starts_at_target: bool,
 }
 
 impl ClientShellState {
@@ -129,19 +134,28 @@ impl ClientShellState {
             .find(|target| target.id == tip.target)?;
         let text = sanitize(&target.text);
         let area = buffer.area;
-        let width = (unicode_width::UnicodeWidthStr::width(text.as_str()) as u16)
-            .saturating_add(2)
-            .min(area.width);
-        // The box's padding column sits left of the target, so the text
-        // starts where the target's text does.
-        let anchor_x = if target.id.starts_with("square:") {
-            target.rect.right()
+        let left_pad = u16::from(!target.starts_at_target);
+        let natural = (unicode_width::UnicodeWidthStr::width(text.as_str()) as u16)
+            .saturating_add(left_pad + 1);
+        let (x, width, text) = if target.starts_at_target {
+            let x = target.rect.x.min(area.right());
+            let width = natural.min(area.right() - x);
+            let text = super::space_tabs::truncate(&text, width.saturating_sub(1) as usize);
+            (x, width, text)
         } else {
-            target.rect.x
+            let width = natural.min(area.width);
+            // The box's padding column sits left of the target, so the text
+            // starts where the target's text does.
+            let anchor_x = if target.id.starts_with("square:") {
+                target.rect.right()
+            } else {
+                target.rect.x
+            };
+            let x = anchor_x
+                .saturating_sub(1)
+                .min(area.right().saturating_sub(width));
+            (x, width, text)
         };
-        let x = anchor_x
-            .saturating_sub(1)
-            .min(area.right().saturating_sub(width));
         let rect = Rect::new(x, target.rect.y, width, 1).intersection(area);
         let palette = &self.config.palette;
         let bg = target.bg.unwrap_or(palette.surface1);
@@ -157,9 +171,9 @@ impl ClientShellState {
         }
         super::render::put_text(
             buffer,
-            rect.x.saturating_add(1),
+            rect.x.saturating_add(left_pad),
             rect.y,
-            rect.width.saturating_sub(2),
+            rect.width.saturating_sub(left_pad + 1),
             &text,
             style,
         );
