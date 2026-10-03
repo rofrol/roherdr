@@ -3426,6 +3426,14 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Public tab numbers are stable (never reused), so inserting in the middle
     renumbers nothing.
 
+- [ ] Bug: failed job tabs stay open after their parent tab closes (user,
+  2026-10-03, screenshot `~/Screenshots/Screenshot 2026-10-03 at 01.57.03.png`:
+  two `just check: notification …` job tabs still listed after the user
+  closed the tab that started them). Expected: closing a tab also closes its
+  job child tabs, failed ones included (check `herdr-job _tab-closed` and
+  `clean`, which may only close finished-successful jobs or only this pane's
+  jobs). Consult the models before fixing (user asked: "pytaj modeli").
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
