@@ -2,7 +2,8 @@
 # Runs ci.yml of the fork on the current master. Push and pull_request events do
 # not start workflows on this fork, so this pushes a throwaway branch whose ci.yml
 # also has `workflow_dispatch:` and dispatches it. Usage: fork_ci_dispatch.sh [name]
-# Prints the run id; follow it with `gh run watch <id> -R rofrol/roherdr`.
+# Prints the run id; follow it with `gh run watch <id> -R rofrol/roherdr`. When the run
+# is done, delete the throwaway branch: `git push origin --delete ci-dispatch-<name>`.
 set -e
 cd "$(dirname "$0")/.."
 N="${1:-$(date +%m%d-%H%M)}"
