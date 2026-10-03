@@ -2,6 +2,16 @@
 
 ## Next, in order
 
+- [ ] Remember the fold state of job squares across a client restart (user,
+  2026-10-03). Which tab lines are unfolded (`unfolded_squares`) and which
+  job is pinned under a folded line (`kept_jobs`) live only in client memory,
+  so a new `herdr` client (after an install or a server restart) starts with
+  every line folded and no pins. Consult advice (sol, MiMo, rounds
+  `20261003-115517-edec` and `20261003-140047-f4be`): keep it per client,
+  not in shared server state (two clients would fight over each other's
+  sidebar); key it by a stable tab identity plus the server generation
+  (`boot_id`), because tab ids are reused; drop entries whose tab is gone.
+
 - [ ] The tab context menu's `Close jobs:` row starts one column left of
   every other item (user screenshot 2026-10-03). Cause:
   `render_context_menu` (`src/client/shell/overlays.rs`) draws plain items
