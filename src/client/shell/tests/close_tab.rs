@@ -556,6 +556,41 @@ fn closing_a_parent_names_its_running_children() {
     );
 }
 
+#[test]
+fn closing_a_parents_last_pane_closes_the_tab_with_its_children() {
+    // The user closed a tab with a job by its only pane, and the job kept
+    // running as a top-level tab.
+    let mut state = parent_with_jobs_state(false);
+    let requested = close_focused_pane(&mut state);
+    assert!(tab_closes(&requested).is_empty());
+    assert!(pane_closes(&requested).is_empty());
+    assert!(matches!(state.overlay.as_ref(),
+        Some(ClientShellOverlay::ConfirmClose(confirm))
+            if confirm.title == "Close tab and its child tabs?"
+                && confirm.running.as_deref() == Some("tests marked running")));
+    assert_eq!(
+        tab_closes(&state.handle_input_bytes(b"\r")),
+        ["tab_2", "tab_3", "tab_1"]
+    );
+}
+
+#[test]
+fn closing_one_of_a_parents_panes_leaves_its_children() {
+    let mut state = parent_with_jobs_state(false);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut second = projected.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    projected.panes.push(second);
+    state.set_snapshot(Box::new(projected));
+
+    let requested = close_focused_pane(&mut state);
+
+    assert!(state.overlay.is_none());
+    assert!(tab_closes(&requested).is_empty());
+    assert_eq!(pane_closes(&requested), ["pane_1"]);
+}
+
 fn busy_agent(pane_id: &str, status: AgentStatus) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: pane_id.into(),
