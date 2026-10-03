@@ -2,6 +2,33 @@
 
 ## Next, in order
 
+- [ ] The tab context menu's `Close jobs:` row starts one column left of
+  every other item (user screenshot 2026-10-03). Cause:
+  `render_context_menu` (`src/client/shell/overlays.rs`) draws plain items
+  at `inner.x + 1` (one padding column) but `JOB_CHIPS_LABEL` at `row.x`.
+  Consulted sol, DeepSeek and MiMo (round `20261003-124236-a8fd`). Fix:
+  - Draw the label, and the chips after it, from `inner.x + 1`.
+  - Width (all three, verified; my first plan to add 1 was wrong):
+    `chips_width` sums `label + 3` per chip, so it counts a gap after the
+    last chip that is never drawn. Count `sum(label + 2) + (chips - 1)`
+    instead; then the shifted row keeps the one-column right padding of
+    the other rows.
+  - Narrow screens (all three): when the width is clamped to the screen, a
+    chip cut by `intersection(row)` is still pushed as a hit rect, even a
+    zero-width or unreadable one. Intersect with the padded content rect
+    and skip chips that do not fit whole.
+  - Show the non-clickable label in a muted color (DeepSeek, MiMo; sol:
+    optional), so it does not read as a menu item; never highlight it.
+  - Tests: the substring assertion in `tests/space_tabs.rs` cannot see the
+    shift; assert the label's column equals `Rename`'s text column, the
+    right padding of the chips row, and that no hit rect covers the label.
+  - Open: DeepSeek proposes keeping the chip's status color as the
+    foreground when hovered (today it turns into the generic accent
+    highlight like every other item).
+  Rejected: DeepSeek's "zero-count chips render" (chips are pushed only
+  when their count is above 0); MiMo's ambiguous-width `◐`/`✓` worry is
+  out of scope for this row.
+
 - [ ] Hovering the focused space's active tab until its tooltip shows hides
   the blue accent bar `▌` left of the label (user screenshot 2026-10-03).
   Cause: the tab tooltip target starts at `text_x` and `render_tooltip`
