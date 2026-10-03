@@ -664,6 +664,33 @@
     passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
     the user replaced DeepSeek with MiMo, default set sol + MiMo, for
     quality, not cost; DeepSeek on request.
+- [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
+  show which models were tested together, e.g. sol ds mimo, and now a new
+  stage sol mimo? ask the models"). Unique per call only compares models
+  asked beside the same companions. Lineups derived from the log's rounds
+  (all calls, failed ones included): 32 distinct, led by astra+ds 116 rounds
+  (09-26..09-28), ds+sol 90 (09-30..10-03), ds alone 63, ds+mimo+sol 42,
+  ds+luna 31, astra+ds+luna 29, sonnet alone 27, bunny+ds+mimo+sol 22.
+  Consulted sol and MiMo (round `20261003-130240-6583`). Plan:
+  - `new-round` records the requested lineup (`--models sol,mimo`, the
+    consult skill passes the default set), because dates cannot assign
+    stages: the MiMo and Space Bunny trials ran inside the sol+ds period
+    (MiMo). Older rounds get a lineup derived from their calls, marked
+    derived.
+  - `stats --lineups`: one block per lineup with dates, coordinator, rounds,
+    full rounds; per model calls ok/failed, findings, accepted, rejected,
+    unique per answered call, p50. Lineups under 5 rounds fold into one line.
+  - Default `stats`: the current lineup's block first; no ranking across
+    lineups.
+  - Kept apart, each with a count so nothing is silently dropped: one-model
+    asks (unique is near tautological there), rounds where a companion
+    failed (its outage inflates the other's unique, sol), rounds run by
+    another coordinator, and rounds with an extra model asked on request.
+  - Named stages with a reason (`stage start sol+mimo --note ...`): only if
+    the why is worth keeping in the tool; the consult skill already records
+    each default-set change (sol). MiMo argued `--vs` already controls for
+    companions and this is bookkeeping; true for a two-model verdict, but
+    the user wants the history of what was tested.
 - [x] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
