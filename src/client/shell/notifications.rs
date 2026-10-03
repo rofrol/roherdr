@@ -182,10 +182,20 @@ pub(super) fn render_visible_notification(
     area: Rect,
     notification: &ClientVisibleNotification,
     default_position: crate::config::ToastHerdrPosition,
+    bottom_margin: u16,
     top_offset: u16,
     palette: &Palette,
 ) -> Rect {
     let event = &notification.event;
+    let position = event.position.unwrap_or(default_position);
+    let offset = match position {
+        crate::config::ToastHerdrPosition::TopLeft
+        | crate::config::ToastHerdrPosition::TopRight => top_offset,
+        crate::config::ToastHerdrPosition::BottomLeft
+        | crate::config::ToastHerdrPosition::BottomRight => {
+            top_offset.saturating_add(bottom_margin)
+        }
+    };
     let dot_color = match event.kind {
         SemanticNotificationKind::NeedsAttention => palette.red,
         SemanticNotificationKind::Finished => palette.blue,
@@ -198,8 +208,8 @@ pub(super) fn render_visible_notification(
         area,
         &event.title,
         event.body.as_deref().unwrap_or_default(),
-        event.position.unwrap_or(default_position),
-        top_offset,
+        position,
+        offset,
         dot_color,
         palette,
     )
@@ -661,6 +671,7 @@ mod tests {
                     area,
                     &notification(),
                     position,
+                    30,
                     1,
                     &palette,
                 );
@@ -668,5 +679,30 @@ mod tests {
                 assert!(rect.bottom() <= area.bottom());
             }
         }
+    }
+
+    #[test]
+    fn bottom_margin_lifts_bottom_toasts_and_leaves_top_ones() {
+        let palette = crate::app::client_palette_from_config(&Config::default());
+        let area = Rect::new(0, 0, 80, 30);
+        let place = |position, margin| {
+            let mut buffer = Buffer::empty(area);
+            render_visible_notification(
+                &mut buffer,
+                area,
+                &notification(),
+                position,
+                margin,
+                0,
+                &palette,
+            )
+        };
+        let bottom = crate::config::ToastHerdrPosition::BottomRight;
+        let top = crate::config::ToastHerdrPosition::TopRight;
+        assert_eq!(place(bottom, 0).bottom(), area.bottom());
+        assert_eq!(place(bottom, 6).bottom(), area.bottom() - 6);
+        assert_eq!(place(top, 6), place(top, 0));
+        // A margin taller than the frame pins the toast to the top instead of pushing it out.
+        assert_eq!(place(bottom, 100).y, area.y);
     }
 }

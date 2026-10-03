@@ -1351,7 +1351,7 @@
     `delivery = "system"` herdr's own toast shows only while the window is
     focused; the overlap checks above are still to do by eye.
 
-- [ ] Toasts back at the bottom right, above the agent's input box (user,
+- [x] Toasts back at the bottom right, above the agent's input box (user,
   2026-10-03: "I don't like the toasts at the top right. I preferred bottom
   right, but not so low that they cover the input line in Claude Code etc.").
   Claude Code keeps 5 rows at its pane's bottom: a rule, the prompt, a rule and
@@ -1368,6 +1368,7 @@
     "bottom-right"` and `bottom_margin = 6`. To check by eye: the toast clears
     Claude Code's input box with multi-line input, in side-by-side splits, on a
     short terminal, and a click still focuses or dismisses it.
+    The user tried the installed build (2026-10-03): "it's OK".
   - Later, if needed: cap the toast width (a 240-character body spans the
     frame), and drop the body line when the frame is short (MiMo).
 

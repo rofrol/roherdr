@@ -33,6 +33,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) toast_delay_seconds: u64,
     pub(super) toast_alert_on_finished: bool,
     pub(super) toast_position: crate::config::ToastHerdrPosition,
+    pub(super) toast_bottom_margin: u16,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,

@@ -215,6 +215,10 @@ pub struct ToastConfig {
 #[serde(default)]
 pub struct HerdrToastConfig {
     pub position: ToastHerdrPosition,
+    /// Rows between a bottom-anchored toast and the frame's bottom edge, so it
+    /// clears an agent's input box (Claude Code keeps hint lines below it).
+    /// Ignored by top positions.
+    pub bottom_margin: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -1338,6 +1342,7 @@ impl Default for HerdrToastConfig {
     fn default() -> Self {
         Self {
             position: ToastHerdrPosition::BottomRight,
+            bottom_margin: 0,
         }
     }
 }

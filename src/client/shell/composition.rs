@@ -670,6 +670,7 @@ impl ClientShellState {
                         Rect::new(0, 0, cols, rows),
                         notification,
                         self.config.toast_position,
+                        self.config.toast_bottom_margin,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
                         &self.config.palette,
                     )

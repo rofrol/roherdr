@@ -494,6 +494,7 @@ delay_seconds = 1
 
 [ui.toast.herdr]
 position = "bottom-right"
+bottom_margin = 0  # rows to keep free below the toast, e.g. an agent's input box
 ```
 
 Choose `herdr` for an in-app toast, `terminal` for an outer-terminal notification that also works over SSH, `system` for the local OS notification service, or `off` to disable popups. Herdr suppresses popups for the active tab. Search `ui.toast` in the [Config reference](/docs/config-reference/) for positions, delay behavior, and clipboard feedback settings.
