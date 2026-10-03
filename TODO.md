@@ -4044,6 +4044,44 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   (it mixed UTC and local time; the start times contradict it) and its
   reading of `?` as "agent mid-turn".
 
+- [ ] No view of how much memory and CPU spaces, tabs and jobs use (user,
+  2026-10-03). Consulted sol and MiMo (round `20261003-163010-4ae0`); both
+  keep a server-owned sampler and "CLI first, modal later". Plan:
+  - Sampler in the server, running only while someone subscribed (a CLI
+    `--watch` or an open view), pushing `resources.sampled` events; no
+    always-on cost, no client timer requests on the command lane. One worker,
+    no overlapping scans, cached snapshots with timestamp, interval, metric
+    kind and partial/error status; measure its own cost.
+  - One process enumeration per tick for the whole machine (macOS
+    `proc_listallpids` + `proc_pidinfo`, Linux `/proc`), one parent graph,
+    each `(pid, start time)` assigned once; never one walk per pane (sol).
+  - Attribution: the pane's PTY child tree, plus processes still holding the
+    pane's controlling tty (MiMo); process groups and sessions are no use
+    (`setsid` resets both). Daemons that escaped (cargo build server,
+    rust-analyzer, docker, a detached qemu) go into a `shared / unattributed`
+    row, not onto a pane, or the totals lie. The `HERDR_PANE_ID` env marker
+    (already set in `src/pane.rs`) needs `KERN_PROCARGS2` per pid on macOS:
+    later, benchmark first, never show env contents. Linux cgroups per pane:
+    later. herdr's own server and clients get their own row.
+  - CPU: per-process deltas of native counters (macOS task info ns, Linux
+    utime+stime) before summing, never a difference of changing tree totals;
+    label "% of one core" (sums above 100% are normal). Not `ps cputime` on
+    Linux (whole seconds; macOS `ps` has centiseconds).
+  - Memory: macOS `phys_footprint` labelled "footprint"; Linux RSS labelled
+    "RSS" by default (MiMo: `smaps_rollup` is costly on large processes),
+    PSS only on an explicit refresh; never mix metrics in one total, and
+    never call a sum "memory freed by closing this space".
+  - Jobs are tabs flagged as jobs, not a separate bucket.
+  - First slice: API method `resources.snapshot` + subscription, and
+    `herdr top` (space > tab > pane totals, process count, CPU, memory, sample
+    age; `--sort cpu|mem`, `--json`, `--watch`). A cheaper prototype (sol):
+    one `ps` per tick in the server plus the same graph aggregation, RSS
+    labelled as an estimate. Later: a Resources modal (sortable tree), top
+    processes per pane, tab tooltips (they force sampling on hover).
+  - Tests: aggregation over a synthetic process graph (reparenting, pid
+    reuse, a shared daemon, tty holders), no sampling without a subscriber,
+    the sampler stops after the last subscriber disconnects.
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
