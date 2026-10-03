@@ -73,6 +73,42 @@
     change must not change this client's line; the counts show no running
     state while the squares do (MiMo, not checked).
 
+- [ ] Do soon: when the agent in a session moves on to a different task, the
+  tab name does not follow (user, 2026-10-03). With `ui.tab_label = "title"`
+  an unnamed tab shows the focused agent's OSC title without its spinner
+  (`agent_task_title` in `src/client/shell/tabs.rs`; precedence in
+  `TerminalState::running_label`: manual label, agent, OSC title, program).
+  Evidence from `herdr agent list` (Claude Code 2.1.288): titles are the
+  topic of the first prompt (`Agent zmienia zadanie w sesji`, `Kontynuuj,
+  pytaj agentów`), and the spinner prefix (`◐`/`✳`) keeps changing, so the
+  OSC title is written all the time and only its topic stays fixed (MiMo's
+  point). Not yet verified whether Claude Code ever retitles (after
+  `/clear`, compaction, resume) or what Codex, pi and agy do; Herdr only
+  mirrors the title. Consulted sol, DeepSeek and MiMo (round
+  `20261003-122706-460f`):
+  - Verify first (all three): log raw OSC 0/2 per pane with timestamps
+    across unrelated prompts, `/clear`, compaction and resume, for each
+    agent. Sol: `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` exists (string found in
+    the 2.1.288 binary). Also look for a supported retitle command first.
+  - Direction (all three): an agent-reported task, e.g. `herdr agent
+    set-task "<short title>"` that the integration reminder asks for when
+    the task changes, stored per pane in server state and exposed through
+    the API, separate from the user's tab name, never mutating it.
+  - Its risks: agents ignore the reminder (MiMo guesses 60-70% compliance),
+    so it is an enrichment, not a guarantee; sol: reject writes from an old
+    session or turn (pane identity plus session generation), and mark the
+    task unconfirmed rather than clearing it on every prompt ("continue" is
+    not a new task, clearing would flicker); DeepSeek: dedupe repeats, and a
+    `clear-task` command. Restart: sol restores it as unconfirmed until the
+    same resumed agent confirms it, never onto a replacement process.
+  - Precedence (all three): user tab name, then the focused pane's agent
+    task, then its OSC title, then the program. MiMo: a small source mark so
+    the user sees who named the tab; and a tab with several agent panes
+    flips its name when focus moves between them.
+  - Rejected: Herdr summarizing prompts with its own model call (cost,
+    consent rule); showing the truncated latest prompt (a request is not a
+    task, churns every prompt, leaks secrets into screenshots) unless opt-in.
+
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
   but it did not close the job." Closing a parent tab's last pane (cmd+w)
   checked only the parent for running work, and the server kept its child
