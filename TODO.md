@@ -456,6 +456,19 @@
   - MiMo: stop sending stderr into the popup (`2>&1`), a traceback renders as
     ragged table rows. Tests (DeepSeek): every line `<= N` at 60/80/100/120, and
     the default output unchanged.
+  Rechecked 2026-10-03 after another session removed Space Bunny, made MiMo the
+  openrouter default and added `stats --vs` (user: "does this TODO still apply?
+  ask the models"). Still valid: Space Bunny's historical calls keep its row, so
+  the table is still 127 columns and the popup command is unchanged. Consulted
+  Sol, DeepSeek and MiMo (round `20261003-021026-b910`), unanimous:
+  - Hiding models with no recent calls (`--all` to show) is not the fix: without
+    Space Bunny the name column is still 43 (MiMo) and the table 121 columns, and
+    it changes the default output. A separate policy decision at most.
+  - Make `--width N` one rendering contract of the shared table helper, covering
+    `--vs` too (104-column table, prose up to 120, and `A / B` names grow by
+    concatenation), not only what the popup runs.
+  - Stderr must still surface when it no longer goes into less (for example to a
+    temporary file shown after the pager, or before it on a failed exit).
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
