@@ -5,15 +5,14 @@
 - [ ] Push status on the space name line, opening into a branch menu
   (user, 2026-10-03; queued next). Drop the branch row: the name line
   carries the push status chip (`↑3`); clicking the chip opens a menu of
-  the local branches with their push state, and the chip visibly grows into
-  that menu.
+  the other local branches with their push state, the chip becoming the
+  menu's header.
   ```
   today                        proposed               menu open
   ▾ herdr        ⋮ +           ▾ herdr  ↑3 ±2  +      ▾ herdr ╭ ↑3 master ─╮
-    master ↑3 ±2 ⧖1              ▌● 1 fix tooltip       ▌● 1 f│● master  ↑3│
-    ▌● 1 fix tooltip              ○ 2                    ○ 2  │  feat-x  ↑1│
-     ○ 2                                                      │  old     ↓4│
-                                                              ╰────────────╯
+    master ↑3 ±2 ⧖1              ▌● 1 fix tooltip       ▌● 1 f│  feat-x  ↑1│
+    ▌● 1 fix tooltip              ○ 2                    ○ 2  │  old     ↓4│
+     ○ 2                                                      ╰────────────╯
   ```
   Consulted sol and MiMo (round `20261003-165059-aaf8`):
   - Both: dropping the branch name loses "which branch am I on"; `↑3`
@@ -33,10 +32,12 @@
     under running agents is a footgun. Possible explicit rows later:
     `Switch branch…` (server checks dirty tree, worktree, running agents),
     `Copy name`, `Create worktree`.
-  - Morph: open anchored so the chip becomes the menu's header row, in the
-    same glyph and colour (MiMo), then grow the box in 2-3 frames (chip,
-    small box, full menu; text never stretched, hit rects only in the final
-    frame). `animations = false` shows the final menu at once.
+  - The checked-out branch is not a row: the chip is the menu's header and
+    already names it (user, 2026-10-03). The rows are the other branches.
+  - No morph animation (user, 2026-10-03: frames before the menu is
+    usable are a slowdown). The menu opens fully in the click's frame,
+    anchored so the chip becomes its header row in the same glyph and
+    colour (MiMo); that alone reads as the chip expanding.
 
 - [ ] Launch-agent button next to the space's `+` (user, 2026-10-03). It
   shows the logo of the agent last launched; left click opens a new tab in
