@@ -119,7 +119,7 @@
   endpoint (remote machine) sidebar draws the chip but does not open the
   menu; ja/zh-cn docs still show the two-row default.
 
-- [ ] Launch-agent button next to the space's `+` (user, 2026-10-03). It
+- [x] Launch-agent button next to the space's `+` (user, 2026-10-03). It
   shows the logo of the agent last launched; left click opens a new tab in
   that space running it, right click opens a menu to pick another agent
   (launches it and makes it the remembered one). Tab lines show the
@@ -152,6 +152,18 @@
   Rejected: MiMo's "terminals do not forward right click" (herdr captures
   the mouse and already uses right click in 29 places) and putting the logo
   in the state column.
+  Done 2026-10-03 (`700e1063`; the chip's branch name in `2c110b69`).
+  After trying it the user changed the plan (rounds `20261003-190652-918c`,
+  `20261003-192036-d841`, `20261003-194639-1880`): the button is a bold
+  `A` in the agent's colour, not its badge; ` A `, ` + `, the push status
+  chip and a tab line's job summary are three-column (padded) click
+  targets lit under the pointer, no tooltip on the chip; the drag grip is
+  the last column (` A  + ⋮`); tab lines show the two-letter badge only in
+  a space whose tabs run different agents; the picker lists the agents on
+  the server's PATH (`agent.kind_list`) and `tab.create_agent` types the
+  agent's command into a new tab's shell. The remembered agent is client
+  memory only (after a restart the space's newest agent tab decides). Not
+  done: the remote-machine sidebar has no launch button.
 
 - [x] Remember the fold state of job squares across a client restart (user,
   2026-10-03). Which tab lines are unfolded (`unfolded_squares`) and which
