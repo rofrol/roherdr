@@ -15,7 +15,7 @@ PRs.
   your coding-agent allowance is used: Anthropic/Claude (`AN`) and
   OpenAI/Codex (`OA`) 5-hour and weekly limits with time to reset, the
   Google/Gemini (`GO`) weekly limit, and the DeepSeek (`DS`) and OpenRouter
-  (`OR`) prepaid balances. Click it for details: reset clock times, plans,
+  (`OR`) prepaid balances. Hover a code to see its vendor (`AN Anthropic`); click it for details: reset clock times, plans,
   free Codex limit resets, and a refresh button (`r`). It is on by default; turn it off with:
 
   ```toml
