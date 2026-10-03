@@ -47,11 +47,10 @@
   one codepoint per vendor logo, variants `font|text|none`, vendor colour.
   ```
   ▾ herdr       ⋮ CL +         right click on CL:
-    ▌● 1 CL fix tooltip         ╭───────────────╮
-     ○ 2 CX review              │ CL claude   ✓ │
-                                │ CX codex      │
-                                │ PI pi         │
-                                ╰───────────────╯
+    ▌● 1 CL fix tooltip         ╭───────────╮
+     ○ 2 CX review              │ CX codex  │
+                                │ PI pi     │
+                                ╰───────────╯
   ```
   Consulted sol and MiMo (round `20261003-165059-aaf8`):
   - "Last launched" = last successfully launched agent in this space,
@@ -62,6 +61,9 @@
   - One gap column between the badge and `+`, each with its own hover and
     tooltip ("New claude tab here"); the picker is also reachable from the
     keyboard and the tab context menu, not right click only (sol).
+  - The menu lists only the other agents: the button already shows the
+    remembered one, so it gets no row and no check mark (user,
+    2026-10-03, as in the branch menu).
   - Tab line: the state icon keeps the left column; the badge goes after
     the tab number (both); the label is truncated first.
   - Missing today: herdr has no list of agent launch commands. Add one in
