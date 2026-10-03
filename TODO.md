@@ -2,6 +2,28 @@
 
 ## Next, in order
 
+- [ ] Hovering the focused space's active tab until its tooltip shows hides
+  the blue accent bar `▌` left of the label (user screenshot 2026-10-03).
+  Cause: the tab tooltip target starts at `text_x` and `render_tooltip`
+  (`src/client/shell/tooltip.rs`) draws the box from `target.rect.x - 1`
+  for its left padding column, which is `fill_x`, the column where
+  `src/client/shell/space_tabs.rs` draws the bar; the box's style and `" "`
+  replace it. When a label is wider than the room to the screen's right
+  edge, the clamp `min(area.right() - width)` moves the box further left,
+  over the gap column and the state icon too (rare: needs a very long label
+  or a narrow terminal). Consulted sol, DeepSeek and MiMo (round
+  `20261003-122831-6a2b`); all three confirm. Fix (sol and DeepSeek, I
+  agree): a per-target left bound in `TooltipTarget` (for tab labels:
+  `text_x`, no left padding); never clamp a tooltip past it, cut the text
+  with `…` instead. Rejected: restoring the cells under the box (MiMo's
+  pick) hides the start of the text once the box is clamped; redrawing the
+  bar in the tooltip renderer still covers the icon and puts tab knowledge
+  into the tooltip. Job squares, footer codes and the build row keep their
+  placement. Tests on the final buffer: the bar cell stays `▌` in the
+  accent colour with the tooltip shown; a label longer than the screen
+  keeps icon, gap and bar; an inactive tab or an unfocused space gets no
+  bar; the other targets' placement is unchanged.
+
 - [ ] The purple status spinner (`◓ Kontynuuj`, user screenshot
   2026-10-03) spins slower than the orange one. Cause: by design. Purple
   (mauve) is `AgentMark::WaitsOnJob` (agent idle or done while a job it
