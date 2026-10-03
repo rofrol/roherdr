@@ -2,6 +2,15 @@
 
 ## Next, in order
 
+- [ ] The purple status spinner (`◓ Kontynuuj`, user screenshot
+  2026-10-03) spins slower than the orange one. Find why the two states use
+  different frame rates or frame sets, and decide whether they should match.
+  Not investigated yet.
+
+- [ ] Add a legend control that explains the status glyphs and colors
+  (purple and orange spinners, squares, etc.). The user wants to consult the
+  models on its design (where it lives, how it opens) before building it.
+
 - [ ] Folded jobs hide where the focus is, and a restart unfolds them again
   (user, 2026-10-03, two screenshots). (1) He clicked a job square under the
   `Token utilization…` tab, then folded the parent: the right pane still
