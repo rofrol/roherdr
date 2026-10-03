@@ -15,6 +15,17 @@
   "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
   the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
   button in the parent's close dialog.
+- [x] Reopen after closing a tab with jobs (user, 2026-10-03): "the tab came
+  back without jobs, and closing it says it has jobs"; then "prefix+u does
+  not bring back the closed tab". A tab with jobs was never recorded, so
+  reopen silently brought back an older, unrelated tab, and the "no closed
+  tab to reopen" notice showed only once per server boot. Consulted sol,
+  DeepSeek and MiMo (unanimous): record the parent, reopen it as a fresh
+  shell and say its jobs were not restored; never fall through to an older
+  tab silently; rerunning jobs belongs to the job tool, not to reopen. Done:
+  the parent's entry counts its jobs and the reopen says they were not
+  restored; a job closed on its own leaves an entry that only says it cannot
+  be reopened; every press answers. Also bound `cmd+shift+t` to reopen.
 
 - [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
   work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio
