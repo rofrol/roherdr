@@ -1,6 +1,6 @@
 ---
 name: openrouter
-description: Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and for the MiMo trial rounds described inside; never as a default consultant otherwise.
+description: Consult an OpenRouter model (default: Xiaomi MiMo-V2.6-Pro pinned to the Xiaomi provider, part of the default consult set; any slug with `-m`) for a second opinion, with hard guardrails against sending secrets. Use when the user asks to try/evaluate an OpenRouter, cloaked/stealth or MiMo model (e.g. "zapytaj MiMo", "spróbuj modelu z OpenRoutera"), and in every default consult round (MiMo only; other OpenRouter models never by default).
 ---
 
 # Consulting an OpenRouter model (Xiaomi MiMo by default)
@@ -59,8 +59,8 @@ payload summary is printed there.
 
 ## When to use it
 
-- On an explicit request to try or evaluate an OpenRouter / cloaked model, and in the MiMo trial below: MiMo joins
-  the default round (sol + DeepSeek) with the same prompt and round id.
+- MiMo is in the default set (sol + MiMo, from 2026-10-03, see the `consult` skill) and joins every default round.
+  Other OpenRouter models only on an explicit request to try or evaluate them.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.
 
@@ -87,7 +87,8 @@ scripts. A consult costs about half a cent.
 - 20 shared rounds, hard cap. Pass: paired mean difference MiMo minus DeepSeek in accepted unique findings per call
   >= +0.25, and MiMo's rejected share at most 5 points above DeepSeek's (a smaller gap is noise at this sample size).
   On a pass MiMo stays in the default set next to DeepSeek; on a fail drop it. Replacing DeepSeek needs its own
-  decision. Read the result with `consult.py stats --vs mimo deepseek --since 20261003-013705-77a9 --rounds 20`,
+  decision. Result: passed (+0.45, CI +0.00..+0.85, W/T/L 11/6/3; rejected +3.1 points). The user then replaced
+  DeepSeek with MiMo on 2026-10-03 (default set sol + MiMo). Read the result with `consult.py stats --vs mimo deepseek --since 20261003-013705-77a9 --rounds 20`,
   never from the pooled table rows, which mix rounds without MiMo.
 - A round whose coordinator is DeepSeek asks Sol + Claude Sonnet, so it has no DeepSeek call: it does not count
   toward the 20 rounds (`--vs` leaves it out). Still add MiMo there if you like; never add a DeepSeek call only to
