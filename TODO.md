@@ -113,12 +113,15 @@
     changes must not redirect it.
   - No CLI in v1 (both): which machine's filesystem and which pane would be
     ambiguous.
-  - Check first whether it needs building (both): Cmd+Ctrl+Shift+4 puts a
-    screenshot on the clipboard and the existing paste works; dragging from
-    Finder pastes a path (local panes only). MiMo: copying a `.png` in
-    Finder puts a file URL on the pasteboard, and our
-    `read_clipboard_image` (`the clipboard as «class PNGf»`) may get the
-    file's icon or nothing; unverified, cheaper to fix than a picker.
+  - Several shots per task are the normal case (user, 2026-10-03: "I
+    sometimes take a few screenshots for one task"), so multi-select is
+    core, not an extra: e.g. Space toggles rows, and one key marks every
+    shot newer than the last attach to this pane; Enter pastes all paths
+    in one paste, oldest first.
+  Rejected: the clipboard route the models suggested checking first
+  (Cmd+Ctrl+Shift+4, or fixing Finder file-URL copies). The user's
+  screenshots go to disk, not the clipboard, and the clipboard holds one
+  image while a task needs several (user, 2026-10-03).
   Rejected: MiMo's "skip files younger than ~200 ms" (a wait, not a fix;
   macOS writes a hidden `.Screenshot…` file and renames it, so a listed
   file is complete; skip dotfiles instead).
