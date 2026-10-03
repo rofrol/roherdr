@@ -2,6 +2,74 @@
 
 ## Next, in order
 
+- [ ] Push status on the space name line, opening into a branch menu
+  (user, 2026-10-03; queued next). Drop the branch row: the name line
+  carries the push status chip (`↑3`); clicking the chip opens a menu of
+  the local branches with their push state, and the chip visibly grows into
+  that menu.
+  ```
+  today                        proposed               menu open
+  ▾ herdr        ⋮ +           ▾ herdr  ↑3 ±2  +      ▾ herdr ╭ ↑3 master ─╮
+    master ↑3 ±2 ⧖1              ▌● 1 fix tooltip       ▌● 1 f│● master  ↑3│
+    ▌● 1 fix tooltip              ○ 2                    ○ 2  │  feat-x  ↑1│
+     ○ 2                                                      │  old     ↓4│
+                                                              ╰────────────╯
+  ```
+  Consulted sol and MiMo (round `20261003-165059-aaf8`):
+  - Both: dropping the branch name loses "which branch am I on"; `↑3`
+    says nothing without it. Keep it when it is not the default branch
+    (`herdr feat-x↑3`), always in the chip's tooltip and as the menu's
+    header row. Worktree spaces are named after their branch already.
+  - The dirty count and job counts on the old branch row move to the name
+    line too; truncate the name first, then the dirty count, never the
+    chip (same order as the collapsed space line, which already looks like
+    this).
+  - The branch list with ahead/behind is a runtime fact: a server API
+    method, fetched once on the click (never on events or timers: one
+    request lane per machine). Open the menu at once with a loading row;
+    show stale, unavailable or `endpoint_busy` in the menu, never drop the
+    click.
+  - A branch row does nothing on click by default (both); checking out
+    under running agents is a footgun. Possible explicit rows later:
+    `Switch branch…` (server checks dirty tree, worktree, running agents),
+    `Copy name`, `Create worktree`.
+  - Morph: open anchored so the chip becomes the menu's header row, in the
+    same glyph and colour (MiMo), then grow the box in 2-3 frames (chip,
+    small box, full menu; text never stretched, hit rects only in the final
+    frame). `animations = false` shows the final menu at once.
+
+- [ ] Launch-agent button next to the space's `+` (user, 2026-10-03). It
+  shows the logo of the agent last launched; left click opens a new tab in
+  that space running it, right click opens a menu to pick another agent
+  (launches it and makes it the remembered one). Tab lines show the
+  agent's logo too. Reference: hhdebb/herdr-radar ships an icon font with
+  one codepoint per vendor logo, variants `font|text|none`, vendor colour.
+  ```
+  ▾ herdr       ⋮ CL +         right click on CL:
+    ▌● 1 CL fix tooltip         ╭───────────────╮
+     ○ 2 CX review              │ CL claude   ✓ │
+                                │ CX codex      │
+                                │ PI pi         │
+                                ╰───────────────╯
+  ```
+  Consulted sol and MiMo (round `20261003-165059-aaf8`):
+  - "Last launched" = last successfully launched agent in this space,
+    server-owned so clients agree and it survives a client restart (both).
+  - Default to a two-letter text badge in vendor colour (`CL`, `CX`,
+    `PI`); the icon font is opt-in (`font`), `none` hides it. Icon fonts
+    are often ambiguous-width (MiMo), so `font` must still take fixed cells.
+  - One gap column between the badge and `+`, each with its own hover and
+    tooltip ("New claude tab here"); the picker is also reachable from the
+    keyboard and the tab context menu, not right click only (sol).
+  - Tab line: the state icon keeps the left column; the badge goes after
+    the tab number (both); the label is truncated first.
+  - Missing today: herdr has no list of agent launch commands. Add one in
+    config (id, command, badge, colour); detection already knows which
+    agent runs in a pane, so the badge on tab lines needs no config.
+  Rejected: MiMo's "terminals do not forward right click" (herdr captures
+  the mouse and already uses right click in 29 places) and putting the logo
+  in the state column.
+
 - [ ] Remember the fold state of job squares across a client restart (user,
   2026-10-03). Which tab lines are unfolded (`unfolded_squares`) and which
   job is pinned under a folded line (`kept_jobs`) live only in client memory,
