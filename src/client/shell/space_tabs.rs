@@ -35,6 +35,9 @@ pub(super) struct SpaceTabLine {
     /// The nested tabs, in tab order, drawn as squares while unfolded.
     pub(super) squares: Vec<TabSquare>,
     pub(super) unfolded: bool,
+    /// The open job while the squares are folded: it takes a row of its own
+    /// under the line, so the sidebar says where the focus is.
+    pub(super) hidden_focus: Option<TabSquare>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,13 +81,20 @@ impl SpaceTabLine {
         } else {
             0
         };
-        (1 + squares).min(u16::MAX as usize) as u16
+        (1 + squares + usize::from(self.hidden_focus.is_some())).min(u16::MAX as usize) as u16
     }
 }
 
 impl SpaceTabLine {
     /// The row, among this line's square rows, of the open job's square.
     pub(super) fn focused_square_row(&self, width: u16) -> Option<usize> {
+        if self
+            .hidden_focus
+            .as_ref()
+            .is_some_and(|square| square.focused)
+        {
+            return Some(0);
+        }
         let index = self
             .squares
             .iter()
@@ -97,6 +107,10 @@ impl SpaceTabLine {
 /// Each unfolded tab line's square order as last drawn, `(tab id, label)`
 /// by line tab id, kept while the pointer is over the sidebar.
 pub(super) type HeldSquares = std::collections::HashMap<String, Vec<(String, String)>>;
+
+/// Each parent tab's last focused job, `(parent tab id, job tab id)`: the job
+/// a folded line keeps showing after the focus returns to the parent.
+pub(super) type KeptJobs = std::collections::HashMap<String, String>;
 
 /// Squares that fit on a row of a space block `width` columns wide, from the
 /// indent to the right edge, as the tab fill. Callers pass
@@ -116,6 +130,7 @@ pub(super) fn space_tab_lines(
     collapsed_groups: &HashSet<String>,
     unfolded_squares: &HashSet<String>,
     held_squares: &HeldSquares,
+    kept_jobs: &KeptJobs,
     config: &ClientShellConfig,
 ) -> Vec<SpaceTabLine> {
     space_tab_lines_filtered(
@@ -124,6 +139,7 @@ pub(super) fn space_tab_lines(
         collapsed_groups,
         unfolded_squares,
         held_squares,
+        kept_jobs,
         None,
         config,
     )
@@ -137,6 +153,7 @@ pub(super) fn space_tab_lines_filtered(
     collapsed_groups: &HashSet<String>,
     unfolded_squares: &HashSet<String>,
     held_squares: &HeldSquares,
+    kept_jobs: &KeptJobs,
     filter: Option<&super::space_filter::FilterView>,
     config: &ClientShellConfig,
 ) -> Vec<SpaceTabLine> {
@@ -204,6 +221,20 @@ pub(super) fn space_tab_lines_filtered(
                         .map(|child| square(child)),
                 )
                 .collect::<Vec<_>>();
+            let unfolded = !squares.is_empty() && unfolded_squares.contains(&tab.tab_id);
+            // The open job, or the one last open while the focus is on the
+            // parent: it stays until the user unfolds the squares.
+            let kept = kept_jobs.get(&tab.tab_id);
+            let hidden_focus = squares
+                .iter()
+                .find(|square| square.focused && !square.gone)
+                .or_else(|| {
+                    squares
+                        .iter()
+                        .find(|square| !square.gone && kept == Some(&square.tab_id))
+                })
+                .filter(|_| !unfolded)
+                .cloned();
             SpaceTabLine {
                 tab_id: tab.tab_id.clone(),
                 state: tab_state(snapshot, tab),
@@ -211,7 +242,8 @@ pub(super) fn space_tab_lines_filtered(
                 active: active_group == Some(tab.tab_id.as_str()),
                 jobs: super::tab_groups::children_summary_segments(&group),
                 plan: tab_plan(snapshot, tab),
-                unfolded: !squares.is_empty() && unfolded_squares.contains(&tab.tab_id),
+                unfolded,
+                hidden_focus,
                 squares,
             }
         })
@@ -563,8 +595,15 @@ pub(super) fn render_space_tab_lines(
         let active_text = Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD);
-        let solid = line.active && focused_space && fills.focused_active.is_none();
-        let (bg, text_style) = match (line.active, focused_space, fills.focused_active) {
+        // A folded line with the open job under it is not the selection:
+        // the job's row is.
+        let active = line.active
+            && !line
+                .hidden_focus
+                .as_ref()
+                .is_some_and(|square| square.focused);
+        let solid = active && focused_space && fills.focused_active.is_none();
+        let (bg, text_style) = match (active, focused_space, fills.focused_active) {
             (true, true, Some(tint)) => (tint, active_text),
             (true, true, None) => (
                 palette.accent,
@@ -630,7 +669,7 @@ pub(super) fn render_space_tab_lines(
         });
         // The focused space's active tab also has an accent bar in the
         // fill's first column, so it is found by shape, not only by colour.
-        if line.active && focused_space && fills.focused_active.is_some() && !lifted {
+        if active && focused_space && fills.focused_active.is_some() && !lifted {
             super::render::put_text(
                 buffer,
                 fill_x,
@@ -735,6 +774,51 @@ pub(super) fn render_space_tab_lines(
             );
         }
         y = y.saturating_add(1);
+        if let Some(square) = line.hidden_focus.as_ref().filter(|_| y < area.bottom()) {
+            let rect = Rect::new(fill_x, y, fill_right.saturating_sub(fill_x), 1);
+            let bg = square_fill(square, &fills, palette);
+            let solid = square.focused && fills.focused_active.is_none();
+            buffer.set_style(
+                Rect::new(rect.x, y, rect.width.saturating_add(fill_past), 1)
+                    .intersection(buffer.area),
+                Style::default().bg(bg),
+            );
+            if square.focused && !solid {
+                super::render::put_text(
+                    buffer,
+                    fill_x,
+                    y,
+                    1,
+                    "▌",
+                    Style::default().fg(palette.accent).bg(bg),
+                );
+            }
+            // Under the label, in the square's own glyph and colour.
+            render_square(
+                buffer,
+                Rect::new(text_x, y, SQUARE_WIDTH, 1).intersection(area),
+                square,
+                &fills,
+                palette,
+            );
+            let label_x = text_x.saturating_add(SQUARE_WIDTH);
+            let label_width = right.saturating_sub(label_x);
+            let label_style = if solid {
+                Style::default()
+                    .fg(panel_contrast_fg(palette))
+                    .add_modifier(Modifier::BOLD)
+            } else if square.focused {
+                Style::default()
+                    .fg(palette.text)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.overlay1)
+            };
+            let label = truncate(&square.label, label_width as usize);
+            super::render::put_text(buffer, label_x, y, label_width, &label, label_style);
+            hits.squares.push((rect, square.tab_id.clone()));
+            y = y.saturating_add(1);
+        }
         if line.unfolded {
             hits.order.insert(
                 line.tab_id.clone(),
@@ -965,6 +1049,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HeldSquares::new(),
+            &KeptJobs::new(),
             &config(false)
         )
         .is_empty());
@@ -974,6 +1059,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HeldSquares::new(),
+            &KeptJobs::new(),
             &config(true),
         );
         assert_eq!(
@@ -1021,6 +1107,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HeldSquares::new(),
+            &KeptJobs::new(),
             &config(true),
         )
         .into_iter()
@@ -1044,6 +1131,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HeldSquares::new(),
+            &KeptJobs::new(),
             &config(true),
         );
         assert_eq!(lines.len(), 1);
@@ -1068,6 +1156,7 @@ mod tests {
             &collapsed,
             &HashSet::new(),
             &HeldSquares::new(),
+            &KeptJobs::new(),
             &config(true),
         );
         assert!(lines.is_empty());
@@ -1117,6 +1206,7 @@ mod tests {
                 &HashSet::new(),
                 &unfolded,
                 &HeldSquares::new(),
+                &KeptJobs::new(),
                 &config(true),
             )
         };

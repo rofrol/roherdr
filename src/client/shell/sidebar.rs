@@ -567,6 +567,7 @@ pub(crate) fn render_sidebar(
                             state.collapsed_groups,
                             state.unfolded_squares,
                             state.held_squares,
+                            state.kept_jobs,
                             state
                                 .space_filter
                                 .as_ref()
@@ -793,6 +794,7 @@ pub(crate) fn render_sidebar(
             state.collapsed_groups,
             state.unfolded_squares,
             state.held_squares,
+            state.kept_jobs,
             state
                 .space_filter
                 .as_ref()
@@ -1726,6 +1728,7 @@ fn tab_line_extent(
         state.collapsed_groups,
         state.unfolded_squares,
         state.held_squares,
+        state.kept_jobs,
         state
             .space_filter
             .as_ref()
@@ -1774,6 +1777,7 @@ fn focus_depth(
         state.collapsed_groups,
         state.unfolded_squares,
         state.held_squares,
+        state.kept_jobs,
         state
             .space_filter
             .as_ref()

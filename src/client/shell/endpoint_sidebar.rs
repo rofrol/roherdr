@@ -17,13 +17,20 @@ fn collapsed_groups_for_endpoint<'a>(
 fn squares_state<'a>(
     state: &'a ShellRenderState<'_>,
     endpoint_id: &ClientEndpointId,
-) -> (&'a HashSet<String>, &'a super::space_tabs::HeldSquares) {
-    static NONE: std::sync::LazyLock<(HashSet<String>, super::space_tabs::HeldSquares)> =
-        std::sync::LazyLock::new(Default::default);
+) -> (
+    &'a HashSet<String>,
+    &'a super::space_tabs::HeldSquares,
+    &'a super::space_tabs::KeptJobs,
+) {
+    static NONE: std::sync::LazyLock<(
+        HashSet<String>,
+        super::space_tabs::HeldSquares,
+        super::space_tabs::KeptJobs,
+    )> = std::sync::LazyLock::new(Default::default);
     if endpoint_id == state.active_endpoint_id {
-        (state.unfolded_squares, state.held_squares)
+        (state.unfolded_squares, state.held_squares, state.kept_jobs)
     } else {
-        (&NONE.0, &NONE.1)
+        (&NONE.0, &NONE.1, &NONE.2)
     }
 }
 
@@ -343,13 +350,14 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(entry.index)?;
-                        let (unfolded, held) = squares_state(state, &endpoint.endpoint_id);
+                        let (unfolded, held, kept) = squares_state(state, &endpoint.endpoint_id);
                         let tab_lines = super::space_tabs::space_tab_lines(
                             snapshot,
                             workspace,
                             collapsed_groups,
                             unfolded,
                             held,
+                            kept,
                             config,
                         );
                         let rows = super::sidebar::workspace_rows(
@@ -521,13 +529,14 @@ pub(super) fn render_expanded(
                     workspace,
                     collapsed_groups,
                 );
-                let (unfolded, held) = squares_state(state, &endpoint.endpoint_id);
+                let (unfolded, held, kept) = squares_state(state, &endpoint.endpoint_id);
                 let tab_lines = super::space_tabs::space_tab_lines(
                     snapshot,
                     workspace,
                     collapsed_groups,
                     unfolded,
                     held,
+                    kept,
                     config,
                 );
                 let tab_jobs = super::space_tabs::space_row_tab_jobs(

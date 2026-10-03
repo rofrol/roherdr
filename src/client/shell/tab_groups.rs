@@ -7,55 +7,6 @@ use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab};
 
 impl super::ClientShellState {
-    /// Unfolds a parent's job squares when focus lands on one of its jobs
-    /// (a click on a job link, say), so the sidebar shows where you are.
-    /// Only a change of focus does it, so folding the squares by hand sticks.
-    /// Focus that lands on a job only because the focused tab closed is the
-    /// server's fallback, not a jump to that job, so it unfolds nothing.
-    pub(super) fn unfold_focused_job(&mut self, previous_focus: Option<&str>) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(focused) = snapshot.focused_tab_id.as_deref() else {
-            return;
-        };
-        if previous_focus == Some(focused) {
-            return;
-        }
-        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == focused) else {
-            return;
-        };
-        let parent = tab.parent_tab_id.clone();
-        let endpoint = self.active_endpoint_id.clone();
-        // What this opened for a job folds again once the focus is no longer
-        // on one of that parent's jobs (the job closed and the focus went
-        // back to the parent, say), so the list does not stay spread out.
-        let stale = self
-            .auto_unfolded
-            .iter()
-            .filter(|(owner, opened)| *owner == endpoint && parent.as_deref() != Some(opened))
-            .map(|(_, opened)| opened.clone())
-            .collect::<Vec<_>>();
-        for opened in stale {
-            if let Some(unfolded) = self.unfolded_squares.get_mut(&endpoint) {
-                unfolded.remove(&opened);
-            }
-            self.auto_unfolded.remove(&(endpoint.clone(), opened));
-        }
-        let focused_tab_closed = previous_focus
-            .is_some_and(|previous| snapshot.tabs.iter().all(|tab| tab.tab_id != previous));
-        if let Some(parent) = parent.filter(|_| !focused_tab_closed) {
-            if self
-                .unfolded_squares
-                .entry(endpoint.clone())
-                .or_default()
-                .insert(parent.clone())
-            {
-                self.auto_unfolded.insert((endpoint, parent));
-            }
-        }
-    }
-
     /// Records the focused tab as its group's last one, so selecting the
     /// group from the main row returns there. The group of a child is its
     /// parent; a top-level tab is its own group.
@@ -72,6 +23,12 @@ impl super::ClientShellState {
         };
         let group = tab.parent_tab_id.as_ref().unwrap_or(&tab.tab_id).clone();
         let focused = tab.tab_id.clone();
+        if tab.parent_tab_id.is_some() {
+            self.kept_jobs
+                .entry(self.active_endpoint_id.clone())
+                .or_default()
+                .insert(group.clone(), focused.clone());
+        }
         self.last_group_tabs
             .insert((self.active_endpoint_id.clone(), group), focused);
     }
