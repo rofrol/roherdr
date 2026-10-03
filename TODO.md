@@ -720,12 +720,20 @@
   disable, its rank, uniqueness, error rate, and maybe how much the
   coordinator's token cost increases"). Narrows the deferred settings >
   consults page and the auto-consult toggle (both below, under herdr > menu >
-  settings) to a plugin popup, no core change. Consulted sol and MiMo (round
-  `20261003-145404-dae6`). Plan:
-  - A plugin popup (`[[panes]]` in `plugins/consult/herdr-plugin.toml`): a
-    small stdlib Python curses script; popups already forward keys to `less`.
-    Rows `[x] model | uniq/call (n) | wrong% | err% | rated/calls | last
-    used`; Space toggles, a write is shown only after it is persisted.
+  settings). Consulted sol and MiMo (round `20261003-145404-dae6`). Not
+  started: another session is working nearby (user, 2026-10-03: "don't do it
+  for now, another session is on it; only the TODO"). Plan:
+  - A native herdr modal in Rust (user, 2026-10-03: "a script? I want it in
+    Rust"; chose the native modal over a ratatui binary in the plugin), in
+    the existing dialog style, mouse-first: clickable checkboxes. It replaces
+    the menu's **consult stats** item. The server reads the log and the state
+    file and exposes them through new advertised API methods (neutral names,
+    e.g. `consult.models.list`, `consult.models.set`), so the modal also
+    works against a remote server; an older server without them disables
+    only this item. Rows `[x] model | uniq/call (n) | wrong% | err% |
+    rated/calls | last used`; a toggle shows only after the server confirms
+    it is persisted. The statistics logic lives in `consult.py` today: decide
+    whether the server ports it or calls `consult.py ... --json`.
   - State: one global file `~/.local/state/consult/models.json`, written
     atomically. `consult.py models` prints the enabled set and is the single
     source: it prints the skill's default when the file is missing (MiMo),
