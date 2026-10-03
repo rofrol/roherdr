@@ -178,6 +178,13 @@ fn usage_overlay_lines(
             }
             lines.push(Line::from(Span::styled(text, base.fg(p.text))));
         }
+        lines.extend(reset_credit_lines(
+            provider,
+            now_unix,
+            overlay.utc_offset_secs,
+            base,
+            p,
+        ));
         for note in &provider.notes {
             lines.push(Line::from(Span::styled(format!("   {note}"), dim)));
         }
@@ -201,6 +208,64 @@ fn usage_overlay_lines(
             " no providers enabled in [usage]",
             dim,
         )));
+    }
+    lines
+}
+
+/// `3 reset credits · Full reset (Weekly + 5 hr) · redeem in Codex`, then one
+/// expiry per line, soonest first. A shared title is shown once in the heading.
+fn reset_credit_lines(
+    provider: &crate::api::schema::ProviderUsage,
+    now_unix: u64,
+    utc_offset_secs: i64,
+    base: Style,
+    p: &Palette,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::text::{Line, Span};
+    let credits = super::usage::live_reset_credits(provider, now_unix).collect::<Vec<_>>();
+    let Some(first) = credits.first() else {
+        return Vec::new();
+    };
+    let shared_title = credits
+        .iter()
+        .all(|credit| credit.title == first.title)
+        .then_some(first.title.as_str())
+        .filter(|title| !title.is_empty());
+    let plural = if credits.len() == 1 { "" } else { "s" };
+    let mut heading = format!("   {} reset credit{plural}", credits.len());
+    if let Some(title) = shared_title {
+        heading.push_str(&format!(" · {title}"));
+    }
+    heading.push_str(&format!(" · redeem in {}", provider.label));
+    let mut lines = vec![Line::from(Span::styled(heading, base.fg(p.overlay1)))];
+    for credit in credits {
+        let mut text = "     ".to_owned();
+        if shared_title.is_none() && !credit.title.is_empty() {
+            text.push_str(&format!("{}: ", credit.title));
+        }
+        let color = match credit.expires_at {
+            Some(expires_at) => {
+                text.push_str(&format!(
+                    "expires in {}",
+                    super::usage::detailed_countdown(expires_at, now_unix)
+                ));
+                if let Some(clock) =
+                    super::usage::expiry_clock(expires_at, now_unix, utc_offset_secs)
+                {
+                    text.push_str(&format!(" ({clock})"));
+                }
+                if expires_at.saturating_sub(now_unix) <= super::usage::RESET_CREDIT_WARNING_SECS {
+                    p.yellow
+                } else {
+                    p.overlay0
+                }
+            }
+            None => {
+                text.push_str("no expiry reported");
+                p.overlay0
+            }
+        };
+        lines.push(Line::from(Span::styled(text, base.fg(color))));
     }
     lines
 }
@@ -1849,5 +1914,52 @@ mod tests {
             ]
         );
         assert_eq!(rendered.area.height, 3 + 2 + 2);
+    }
+
+    #[test]
+    fn reset_credits_list_live_expiries_soonest_first() {
+        let credit =
+            |id: &str, title: &str, expires_at: u64| crate::api::schema::UsageResetCredit {
+                id: id.into(),
+                kind: "codexRateLimits".into(),
+                title: title.into(),
+                expires_at: Some(expires_at),
+            };
+        let now = 1_790_263_799; // 2026-09-24T15:29:59Z, a Thursday.
+        let mut codex = crate::api::schema::ProviderUsage::pending("codex", "Codex");
+        codex.reset_credits = vec![
+            credit("expired", "Full reset", now - 1),
+            credit("soon", "Full reset", now + 30 * 3_600),
+            credit("later", "Full reset", now + 20 * 86_400),
+        ];
+        let text = |lines: Vec<ratatui::text::Line<'static>>| {
+            lines.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        let p = Palette::catppuccin();
+
+        let lines = reset_credit_lines(&codex, now, 0, Style::default(), &p);
+        assert_eq!(lines[1].spans[0].style.fg, Some(p.yellow));
+        assert_eq!(lines[2].spans[0].style.fg, Some(p.overlay0));
+        assert_eq!(
+            text(lines),
+            vec![
+                "   2 reset credits · Full reset · redeem in Codex",
+                "     expires in 1d 6h (Fri 21:29)",
+                "     expires in 20d (Oct 14 15:29)",
+            ]
+        );
+
+        codex.reset_credits[2].title = "5 hr reset".into();
+        assert_eq!(
+            text(reset_credit_lines(&codex, now, 0, Style::default(), &p)),
+            vec![
+                "   2 reset credits · redeem in Codex",
+                "     Full reset: expires in 1d 6h (Fri 21:29)",
+                "     5 hr reset: expires in 20d (Oct 14 15:29)",
+            ]
+        );
+
+        codex.reset_credits.truncate(1);
+        assert!(reset_credit_lines(&codex, now, 0, Style::default(), &p).is_empty());
     }
 }

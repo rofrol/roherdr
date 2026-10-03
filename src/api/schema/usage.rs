@@ -39,6 +39,10 @@ pub struct ProviderUsage {
     /// Extra provider-specific facts for detail views.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Unredeemed one-time allowance resets, redeemed in the provider's own tool.
+    /// Clients hide credits whose `expires_at` has passed, since reports can be cached.
+    #[serde(default)]
+    pub reset_credits: Vec<UsageResetCredit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -68,6 +72,19 @@ pub struct UsageWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageResetCredit {
+    /// Provider id of the credit.
+    pub id: String,
+    /// Provider's kind of reset, such as `codexRateLimits`.
+    pub kind: String,
+    /// Provider's title, such as `Full reset (Weekly + 5 hr)`.
+    pub title: String,
+    /// Unix seconds when the unused credit expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UsageBalance {
     pub currency: String,
     /// Decimal amount as reported by the provider.
@@ -90,6 +107,7 @@ impl ProviderUsage {
             windows: Vec::new(),
             balances: Vec::new(),
             notes: Vec::new(),
+            reset_credits: Vec::new(),
         }
     }
 }

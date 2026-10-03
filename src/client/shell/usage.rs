@@ -2,9 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use crate::api::schema::{ProviderUsage, ProviderUsageStatus, UsageReport, UsageWindow};
+use crate::api::schema::{
+    ProviderUsage, ProviderUsageStatus, UsageReport, UsageResetCredit, UsageWindow,
+};
 
-use super::render::{put_segment, put_text};
+use super::render::{display_width, put_segment, put_text};
 use super::*;
 
 /// `usage.read` only returns the endpoint's cached report, so polling it is cheap.
@@ -15,6 +17,11 @@ const USAGE_REQUEST_STALE_AFTER: Duration = Duration::from_secs(60);
 const AGENTS_MIN_HEIGHT: u16 = 5;
 /// Columns kept free at the right of the footer's last row for the sidebar toggle.
 const SIDEBAR_TOGGLE_RESERVE: u16 = 2;
+/// A reset credit expiring sooner than this is highlighted.
+pub(super) const RESET_CREDIT_WARNING_SECS: u64 = 48 * 3_600;
+/// The footer flags an expiring reset credit only once a window is used this much;
+/// below it, redeeming the credit would recover little.
+const RESET_CREDIT_WORTH_PERCENT: u8 = 50;
 
 #[derive(Debug, Default)]
 pub(super) struct ClientUsageState {
@@ -164,6 +171,61 @@ pub(super) fn reset_clock(resets_at: u64, utc_offset_secs: i64) -> Option<String
     ))
 }
 
+/// [`reset_clock`] within six days, else `Oct 22 20:51`, so a weekday is never ambiguous.
+pub(super) fn expiry_clock(at: u64, now_unix: u64, utc_offset_secs: i64) -> Option<String> {
+    if at.saturating_sub(now_unix) < 6 * 86_400 {
+        return reset_clock(at, utc_offset_secs);
+    }
+    let local = time::OffsetDateTime::from_unix_timestamp(
+        i64::try_from(at).ok()?.checked_add(utc_offset_secs)?,
+    )
+    .ok()?;
+    let month = local.month().to_string();
+    Some(format!(
+        "{} {} {:02}:{:02}",
+        month.get(..3).unwrap_or(&month),
+        local.day(),
+        local.hour(),
+        local.minute()
+    ))
+}
+
+/// Reset credits that have not expired yet; a cached report can hold expired ones.
+pub(super) fn live_reset_credits(
+    provider: &ProviderUsage,
+    now_unix: u64,
+) -> impl Iterator<Item = &UsageResetCredit> {
+    provider
+        .reset_credits
+        .iter()
+        .filter(move |credit| credit.expires_at.is_none_or(|at| at > now_unix))
+}
+
+/// Expiry of a reset credit worth redeeming before it is lost: it expires
+/// within [`RESET_CREDIT_WARNING_SECS`], before the weekly window resets on
+/// its own, while a footer window is at least [`RESET_CREDIT_WORTH_PERCENT`] used.
+fn expiring_reset_credit(provider: &ProviderUsage, now_unix: u64) -> Option<u64> {
+    let expires_at = live_reset_credits(provider, now_unix)
+        .filter_map(|credit| credit.expires_at)
+        .min()?;
+    if expires_at.saturating_sub(now_unix) > RESET_CREDIT_WARNING_SECS {
+        return None;
+    }
+    let (short, weekly) = footer_windows(provider);
+    if weekly
+        .and_then(|weekly| weekly.resets_at)
+        .is_some_and(|resets_at| resets_at <= expires_at)
+    {
+        return None;
+    }
+    let used = [short, weekly]
+        .into_iter()
+        .flatten()
+        .map(|window| window.used_percent)
+        .max()?;
+    (used >= RESET_CREDIT_WORTH_PERCENT).then_some(expires_at)
+}
+
 /// Borrow-friendly form of [`ClientShellState::active_usage_report`] for render state.
 pub(super) fn active_report<'a>(
     usage: &'a ClientUsageState,
@@ -293,11 +355,12 @@ fn render_provider_row(
     let short_x = row.x.saturating_add(SHORT_WINDOW_COLUMN);
     let (short, weekly) = footer_windows(provider);
     if short.is_some() || weekly.is_some() {
+        let mut end = short_x;
         for (column, window) in [(SHORT_WINDOW_COLUMN, short), (WEEKLY_WINDOW_COLUMN, weekly)] {
             let Some(window) = window else {
                 continue;
             };
-            let x = put_segment(
+            end = put_segment(
                 buffer,
                 row.x.saturating_add(column),
                 row.y,
@@ -306,13 +369,27 @@ fn render_provider_row(
                 Style::default().fg(used_color(window.used_percent, palette)),
             );
             if let Some(resets_at) = window.resets_at {
-                put_segment(
+                end = put_segment(
                     buffer,
-                    x,
+                    end,
                     row.y,
                     row.right(),
                     &format!(" {}", compact_countdown(resets_at, now_unix)),
                     Style::default().fg(palette.overlay0),
+                );
+            }
+        }
+        if let Some(expires_at) = expiring_reset_credit(provider, now_unix) {
+            let marker = format!(" ↻{}", compact_countdown(expires_at, now_unix));
+            // A clipped countdown would misreport the expiry, so draw it whole or not at all.
+            if end.saturating_add(display_width(&marker)) <= row.right() {
+                put_segment(
+                    buffer,
+                    end,
+                    row.y,
+                    row.right(),
+                    &marker,
+                    Style::default().fg(palette.yellow),
                 );
             }
         }
@@ -570,6 +647,72 @@ mod tests {
         assert_eq!(rows[3], " DS $13.41 balance");
     }
 
+    fn with_credit(mut usage: ProviderUsage, expires_at: u64) -> ProviderUsage {
+        usage.reset_credits.push(UsageResetCredit {
+            id: "credit".into(),
+            kind: "codexRateLimits".into(),
+            title: "Full reset".into(),
+            expires_at: Some(expires_at),
+        });
+        usage
+    }
+
+    #[test]
+    fn footer_flags_a_reset_credit_lost_before_it_pays_off() {
+        let expires_at = 1_000 + 30 * 3_600;
+        let row = |usage: ProviderUsage, width: u16| {
+            let report = UsageReport {
+                enabled: true,
+                providers: vec![usage],
+            };
+            footer_text(&report, width).remove(1)
+        };
+
+        assert_eq!(
+            row(
+                with_credit(windowed("codex", "Codex", 87, 60), expires_at),
+                32
+            ),
+            " OA  87% 47m   60% 6d ↻1d6h"
+        );
+        // Little is used, so redeeming the credit would recover little.
+        assert_eq!(
+            row(
+                with_credit(windowed("codex", "Codex", 20, 40), expires_at),
+                32
+            ),
+            " OA  20% 47m   40% 6d"
+        );
+        // Further away than the warning period.
+        assert_eq!(
+            row(
+                with_credit(windowed("codex", "Codex", 87, 60), 1_000 + 3 * 86_400),
+                32
+            ),
+            " OA  87% 47m   60% 6d"
+        );
+        // Already expired; a cached report can still carry it.
+        assert_eq!(
+            row(with_credit(windowed("codex", "Codex", 87, 60), 999), 32),
+            " OA  87% 47m   60% 6d"
+        );
+        // The weekly window resets on its own before the credit expires.
+        let mut early_weekly = windowed("codex", "Codex", 87, 60);
+        early_weekly.windows[1].resets_at = Some(1_000 + 3_600);
+        assert_eq!(
+            row(with_credit(early_weekly, expires_at), 32),
+            " OA  87% 47m   60% 1h"
+        );
+        // Drawn whole or not at all.
+        assert_eq!(
+            row(
+                with_credit(windowed("codex", "Codex", 87, 60), expires_at),
+                26
+            ),
+            " OA  87% 47m   60% 6d"
+        );
+    }
+
     #[test]
     fn footer_keeps_the_sidebar_toggle_column_free() {
         let report = UsageReport {
@@ -714,6 +857,20 @@ mod tests {
         // An observation's age keeps its wording.
         assert_eq!(observed_age(1_000, 1_030), "just now");
         assert_eq!(observed_age(1_000, 1_000 + 4 * minute), "4m ago");
+    }
+
+    #[test]
+    fn expiry_clock_names_the_date_beyond_six_days() {
+        // 2026-09-24T15:29:59Z is a Thursday.
+        let at = 1_790_263_799;
+        assert_eq!(
+            expiry_clock(at, at - 5 * 86_400, 0).as_deref(),
+            Some("Thu 15:29")
+        );
+        assert_eq!(
+            expiry_clock(at, at - 6 * 86_400, 7_200).as_deref(),
+            Some("Sep 24 17:29")
+        );
     }
 
     #[test]

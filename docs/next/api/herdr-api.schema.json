@@ -9784,6 +9784,14 @@
               "description": "Stable provider id such as `claude`, `codex`, `gemini`, `deepseek`, or `openrouter`.",
               "type": "string"
             },
+            "reset_credits": {
+              "default": [],
+              "description": "Unredeemed one-time allowance resets, redeemed in the provider's own tool.\nClients hide credits whose `expires_at` has passed, since reports can be cached.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageResetCredit"
+              },
+              "type": "array"
+            },
             "status": {
               "$ref": "#/schemas/success_response/$defs/ProviderUsageStatus"
             },
@@ -11440,6 +11448,37 @@
           "required": [
             "enabled",
             "providers"
+          ],
+          "type": "object"
+        },
+        "UsageResetCredit": {
+          "properties": {
+            "expires_at": {
+              "description": "Unix seconds when the unused credit expires.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "Provider id of the credit.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "Provider's kind of reset, such as `codexRateLimits`.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Provider's title, such as `Full reset (Weekly + 5 hr)`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title"
           ],
           "type": "object"
         },
