@@ -2,6 +2,52 @@
 
 ## Next, in order
 
+- [ ] Nest a worktree space under the agent tab that created it (user,
+  2026-10-03; queued first). Today the worktree child sits at the bottom
+  of its parent space with a `│` trunk down the parent's whole block, which
+  is too invasive. An agent creates a worktree for its own task, so draw it
+  right under that agent's tab line with a short connector from the tab
+  down and right (as it once looked), and drop the long trunk.
+  ```
+  today                              proposed
+  ▾ herdr                 +          ▾ herdr                 +
+  │ master                             master
+  │ ❑ lazygit                          ❑ lazygit
+  │ ◐ Menu agenta i…  ▸ ◐ 1            ◐ Menu agenta i…  ▸ ◐ 1
+  │ ○ Agent zmienia zadanie…           └─ ▾ push status chip +
+  └─── ▾ push status chip +                ❑ zsh
+         ❑ zsh                         ○ Agent zmienia zadanie…
+  ```
+  Consulted sol and MiMo (round `20261003-182122-ad0b`):
+  - Ownership is a runtime fact: a nullable owner tab id in server state,
+    exposed through the JSON API (both). `herdr worktree create` must send
+    its `HERDR_PANE_ID` in the request explicitly; the server resolves the
+    pane to a stable tab id and never trusts a client-sent tab id (MiMo).
+    The UI never infers the owner from the focused tab (sol). Tab ids must
+    survive a restart, or the link is lost.
+  - "Creator" is attribution, not truth: agent A may hand the task to B
+    (MiMo). Allow explicit reassignment (drag onto a tab, or a menu
+    "detach from tab"); a drag must never re-parent silently.
+  - Unowned (created from a bare shell or the UI, found on disk, or its
+    tab closed) goes after the parent's tabs as today, with a short
+    connector, not the long trunk. A closed owner tab never deletes the
+    checkout.
+  - Fold control (the user's question: does the tab line need a button
+    next to the job summary?). Split: sol says no button, the worktree's
+    own `▾` folds it to its one name line, and the jobs `▸` stays
+    jobs-only (a jobs-labelled toggle hiding a checkout surprises); MiMo
+    says reuse `▸` for the whole subtree and show `▸ ◐ 1 ⎇ 2` when folded,
+    default folded, since a second chip costs width at ~24 columns. Mine:
+    sol's, a folded worktree already costs only one line; decide with the
+    user. Either way key the fold state by worktree space id, so a
+    reassignment keeps it, and never auto-expand on job events.
+  - The connector: `└─`, not `└───` (MiMo: 8 columns of prefix leave a
+    nested `❑ zsh` indistinguishable from a parent tab at 24 columns); keep
+    one gutter column through the nested block.
+  - The tab and its worktrees move together in a drag; the selected tab's
+    fill stops at the nested block; hiding a selected row moves the
+    selection to the collapsing ancestor; Up/Down follow visual rows (both).
+
 - [ ] Push status on the space name line, opening into a branch menu
   (user, 2026-10-03; queued next). Drop the branch row: the name line
   carries the push status chip (`↑3`); clicking the chip opens a menu of
