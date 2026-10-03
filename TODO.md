@@ -3986,6 +3986,46 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     spawn), or run the server as a launchd job. Both can move TCC prompts
     from the terminal to herdr; test with the signed release binary and test
     logout separately.
+  - Measured afterwards with `proc_pidinfo(PROC_PIDCOALITIONINFO)` (no root
+    needed): the herdr server, all 69 pane shells and every live claude,
+    survivors and resumed ones alike, are in resource coalition 2647; the
+    new Ghostty and the new herdr client are in 14055. So the whole server
+    tree still belongs to the dead Ghostty, and a Force Quit of its entry can
+    hit it again. Live handoff does not help: the successor is spawned by
+    the old server and inherits its coalition, and so does every pane it
+    creates later. Survivors in the same coalition mean the kill set was not
+    simply the coalition; still unexplained.
+  - Fix, after the second round (sol, MiMo, `20261003-153704-1042`, both
+    agree): start the macOS server as a per-user LaunchAgent, which gets its
+    own coalition without entitlements. Write the plist on first use,
+    `launchctl bootstrap gui/$UID <plist>` when it is not loaded, then
+    `launchctl kickstart gui/$UID/<label>` (never `-k`), and wait for the
+    socket. `RunAtLoad=false`, `ProcessType=Interactive`, no plain
+    `KeepAlive=true` (a broken build would respawn in a loop). Costs:
+    - The environment of launchd jobs is minimal: send the client's
+      `PATH`, `SSH_AUTH_SOCK` and the like over the socket for each new
+      pane instead of freezing them in the plist.
+    - TCC: permissions then belong to herdr, not Ghostty, and an ad hoc
+      signature changes its cdhash on every build, so grants may prompt
+      again after every `herdr_live.sh install`; sign with a stable
+      self-signed identity (MiMo).
+    - `bootstrap gui/$UID` fails over SSH; keep today's direct spawn as the
+      fallback (MiMo).
+    - Handoff: a successor spawned by the job's process leaves launchd
+      tracking a PID that exits; start the successor through launchd too,
+      or exec in place (sol).
+    - Panes that exist before the switch stay in the old coalition; they
+      move only by resuming the agent in a new pane.
+    Rejected: `responsibility_spawnattrs_setdisclaim` and
+    `posix_spawnattr_setcoalition_np` as the fix (they change attribution,
+    not coalition, or need private entitlements); `launchctl submit`
+    (legacy); MiMo's `waitid` on the agent to log its signal (the agent is
+    the shell's child, not herdr's); auto-resume without the user's click.
+  - Recovery: offer a grouped "N agents stopped, resume?" with one click,
+    using the session ids herdr already keeps; never resume automatically
+    (side effects of a half-done tool call, duplicate sessions).
+  - Until then, the user's side: do not Force Quit a "Ghostty" entry that
+    shows up after Ghostty has quit; Cmd+Q is enough.
   - The `?` mark: today it survives a live handoff but not the agent's exit
     and resume. Restore the normal `?` on resume: the question is still the
     last message of the resumed conversation and still unanswered, which is
