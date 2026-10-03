@@ -47,9 +47,30 @@
     competes for the parent slot, which is the one tab that ran `create`, a
     fixed fact. The argument was against re-attaching by cwd, which changes
     and is shared. So the server field is `creator_tab`, not `owner`
-    (sol): it says "created here", not "owned now". Known weak spot: the
-    creator tab moves on to another task and the worktree still hangs
-    under it; acceptable with one task per agent.
+    (sol): it says "created here", not "owned now".
+  - The creator tab moving on to another task (user asked, 2026-10-03;
+    sol and MiMo, round `20261003-221123-6e96`): both say nesting is OK
+    only with a detach rule, since a tab titled with task B and task A's
+    worktree under it reads as a current relation. The creator usually
+    is the worker (the screenshot's worktree has only a `zsh`; the agent
+    edits it from its parent tab), so the creator moving on means the
+    work there stopped.
+    - sol: store the creating pane's agent session id with the creator
+      tab (herdr already gets it via `pane.report_agent_session`). Detach
+      to the unattached tail when that pane reports a different non-null
+      id; never on a missing report or an unknown id becoming known, and
+      never re-attach after. Agents without integration keep the link.
+      Keep the selection and fold state through the move, never steal
+      focus.
+    - MiMo: session id is not task id (`/clear` and go on with the same
+      task detaches it, a topic change inside one session does not), and
+      the jump lands while you watch that tab; prefer a manual detach plus
+      the branch being merged or the worktree removed. Mine: a merged
+      branch's worktree is usually removed anyway, and the user said no
+      manual reassignment, so sol's rule; whether `/clear` counts as a new
+      task is the user's call.
+    - sol's fallback if the exceptions keep growing: no nesting, all
+      worktrees as sibling spaces with a "created by" note.
   - The folded worktree line must still show its agents' aggregate status
     and any request for attention (both), as a collapsed space's name line
     already does; folding never hides a blocked or failed agent.
