@@ -49,6 +49,9 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.rename",
     "tab.set_job_metadata",
     "usage.read",
+    "usage.set_enabled",
+    "usage.set_provider",
+    "usage.settings",
     "workspace.close",
     "workspace.create",
     "workspace.focus",
@@ -326,6 +329,18 @@ mod tests {
         assert_eq!(
             actual.remove("usage.read").as_deref(),
             Some("3f404ebf9107bd4eed4fe28c1035f748924c92c44503176d5ad96f824056df56")
+        );
+        assert_eq!(
+            actual.remove("usage.set_enabled").as_deref(),
+            Some("88d7120b61f358a23ea76e505ea6e47023039e9373689faacc8cb48065f93163")
+        );
+        assert_eq!(
+            actual.remove("usage.set_provider").as_deref(),
+            Some("84148124d82ec1b042d197dd5470777bd9b44fdf8634e8fbc40fc26b40115090")
+        );
+        assert_eq!(
+            actual.remove("usage.settings").as_deref(),
+            Some("c058886d69de2979c8d0f422e5a6934db8f59574bace3811d02aa7e5cb5257c2")
         );
 
         assert_eq!(

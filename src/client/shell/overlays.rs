@@ -240,11 +240,31 @@ fn usage_overlay_lines(
             }
             crate::api::schema::ProviderUsageStatus::Error
             | crate::api::schema::ProviderUsageStatus::Unknown => {
-                let message = provider.message.as_deref().unwrap_or("refresh failed");
-                lines.push(Line::from(Span::styled(
-                    format!("   ! {message}"),
-                    base.fg(p.red),
-                )));
+                if let Some(setup) = provider.setup.as_deref() {
+                    lines.push(Line::from(Span::styled(
+                        "   setup needed:",
+                        base.fg(p.yellow),
+                    )));
+                    for step in setup.lines() {
+                        let wrapped = super::usage::wrap_words(
+                            step,
+                            usize::from(USAGE_MODAL_WIDTH).saturating_sub(10),
+                        );
+                        for (index, line) in wrapped.into_iter().enumerate() {
+                            let bullet = if index == 0 { "·" } else { " " };
+                            lines.push(Line::from(Span::styled(
+                                format!("   {bullet} {line}"),
+                                base.fg(p.text),
+                            )));
+                        }
+                    }
+                } else {
+                    let message = provider.message.as_deref().unwrap_or("refresh failed");
+                    lines.push(Line::from(Span::styled(
+                        format!("   ! {message}"),
+                        base.fg(p.red),
+                    )));
+                }
             }
             crate::api::schema::ProviderUsageStatus::Ok => {}
         }

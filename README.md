@@ -37,7 +37,13 @@ PRs.
   no environment variable is read, so agent panes never inherit it. It is
   organization-wide spend, not prepaid credit left, refreshed at most every
   15 minutes. With a monthly spend limit set on the OpenAI platform it reads
-  `$4.20/$20`, coloured by the share used, and red once OpenAI enforces it. The server refreshes every 5 minutes
+  `$4.20/$20`, coloured by the share used, and red once OpenAI enforces it.
+  Settings has a `usage` tab with the footer switch and one toggle per
+  provider, showing which still lack a key; it changes the `[usage]` section
+  of the machine whose footer you see, also over SSH. Turning on the OpenAI
+  API asks for a second press after warning that an Admin key can manage the
+  whole organization. Without a usable key the row reads `OA setup needed`
+  and its details list the steps. The server refreshes every 5 minutes
   (`refresh_interval_secs`); set `claude`, `codex`, `gemini`, `deepseek` or
   `openrouter` to `false` to hide a provider. All herdr instances share one
   cache (`~/.local/state/herdr/usage-cache.json`): a recent observation is

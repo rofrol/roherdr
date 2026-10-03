@@ -208,6 +208,9 @@ pub enum ResponseResult {
     UsageRead {
         usage: super::usage::UsageReport,
     },
+    UsageSettings {
+        settings: super::usage::UsageSettings,
+    },
     NotificationList {
         notifications: Vec<super::NotificationRecord>,
     },

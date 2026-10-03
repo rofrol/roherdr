@@ -96,6 +96,7 @@ impl App {
 
     /// Start, retune, or stop usage polling after a config change.
     pub(crate) fn apply_usage_config(&mut self, config: &crate::config::UsageConfig) {
+        self.usage_config = config.clone();
         self.state.usage.enabled = config.enabled;
         if !config.enabled {
             self.usage_poller = None;

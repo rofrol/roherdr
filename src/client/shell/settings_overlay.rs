@@ -201,6 +201,16 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
+        ClientSettingsSection::Usage => {
+            render_usage_settings(
+                buffer,
+                content,
+                &settings.usage,
+                settings.selected,
+                palette,
+                &mut choice_hits,
+            );
+        }
     }
 
     let installable = settings
@@ -296,6 +306,116 @@ fn render_choice_section(
         let rect = Rect::new(area.x, y, area.width, 1);
         draw_choice(buffer, rect, choice, index == selected, false, palette);
         hits.push((rect, index));
+    }
+}
+
+/// `claude  on`, `deepseek  on · no key`: the machine's `[usage]` toggles
+/// with what each provider still needs.
+fn usage_choice_label(label: &str, enabled: bool, credential: &str) -> String {
+    let state = if enabled { "on" } else { "off" };
+    let note = match credential {
+        "missing" => " · no key",
+        "unsafe" => " · key file not private",
+        _ => "",
+    };
+    format!("{label:<12}{state}{note}")
+}
+
+fn render_usage_settings(
+    buffer: &mut Buffer,
+    area: Rect,
+    usage: &ClientUsageSettings,
+    selected: usize,
+    palette: &Palette,
+    hits: &mut Vec<(Rect, usize)>,
+) {
+    let dim = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+    put_text(
+        buffer,
+        area.x,
+        area.y,
+        area.width,
+        "usage footer",
+        Style::default()
+            .fg(palette.text)
+            .bg(palette.panel_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        buffer,
+        area.x,
+        area.y + 1,
+        area.width,
+        "what this machine's herdr polls for the sidebar footer",
+        dim,
+    );
+    let Some(settings) = usage.settings.as_ref() else {
+        let text = if usage.unsupported {
+            " this machine's herdr cannot change usage here; edit [usage] in its config.toml"
+        } else {
+            usage.error.as_deref().unwrap_or(" loading…")
+        };
+        put_text(buffer, area.x, area.y + 3, area.width, text, dim);
+        return;
+    };
+    let mut y = area.y + 3;
+    let rows = std::iter::once(usage_choice_label(
+        "footer",
+        settings.enabled,
+        "not_required",
+    ))
+    .chain(settings.providers.iter().map(|provider| {
+        usage_choice_label(&provider.label, provider.enabled, &provider.credential)
+    }));
+    for (index, label) in rows.enumerate() {
+        if y >= area.bottom() {
+            return;
+        }
+        let rect = Rect::new(area.x, y, area.width, 1);
+        draw_choice(buffer, rect, &label, index == selected, false, palette);
+        hits.push((rect, index));
+        y += 1;
+    }
+    let notice = usage
+        .confirming
+        .as_deref()
+        .and_then(|id| {
+            settings
+                .providers
+                .iter()
+                .find(|provider| provider.provider == id)
+        })
+        .and_then(|provider| {
+            provider
+                .warning
+                .as_deref()
+                .map(|warning| (provider, warning))
+        });
+    let mut lines = Vec::new();
+    if let Some((provider, warning)) = notice {
+        lines.push((format!("{}: {warning}.", provider.label), palette.yellow));
+        lines.push(("Press ↵ again to turn it on.".to_owned(), palette.yellow));
+    } else if let Some(error) = usage.error.as_deref() {
+        lines.push((error.to_owned(), palette.red));
+    } else if usage.loading {
+        lines.push(("saving…".to_owned(), palette.overlay1));
+    }
+    y += 1;
+    for (text, color) in lines {
+        for line in super::super::usage::wrap_words(&text, area.width.saturating_sub(2) as usize) {
+            if y >= area.bottom() {
+                return;
+            }
+            put_text(
+                buffer,
+                area.x,
+                y,
+                area.width,
+                &format!(" {line}"),
+                Style::default().fg(color).bg(palette.panel_bg),
+            );
+            y += 1;
+        }
     }
 }
 

@@ -1314,3 +1314,90 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
         })) if integration_messages == &["installed codex"]
     ));
 }
+
+#[test]
+fn usage_settings_tab_reads_the_server_and_confirms_the_admin_key_warning() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.open_settings_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.select_settings_section(ClientSettingsSection::Usage, &mut outcome);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("the usage tab should read the server's usage settings");
+    };
+    assert!(matches!(
+        request.method,
+        crate::api::schema::Method::UsageSettings(_)
+    ));
+    let request_id = request.id.clone();
+    let provider = |id: &str, enabled: bool, credential: &str, warning: Option<&str>| {
+        crate::api::schema::UsageProviderSetting {
+            provider: id.into(),
+            label: id.into(),
+            enabled,
+            credential: credential.into(),
+            warning: warning.map(str::to_owned),
+        }
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(crate::api::schema::ResponseResult::UsageSettings {
+            settings: crate::api::schema::UsageSettings {
+                enabled: true,
+                providers: vec![
+                    provider("claude", true, "not_required", None),
+                    provider("openai_api", false, "missing", Some("org-wide admin key")),
+                    provider("deepseek", true, "missing", None),
+                ],
+            },
+        }),
+    );
+    let frame = state.compose(106, 30).expect("usage settings");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("deepseek    on · no key"), "{text}");
+
+    // Row 0 is the footer switch, so openai_api is row 2.
+    state.select_settings_choice(2);
+    let mut first = ClientShellInput::default();
+    state.apply_settings_choice(&mut first);
+    assert!(
+        first.actions.is_empty(),
+        "the warning comes before the change"
+    );
+    let text = {
+        let frame = state.compose(106, 30).expect("warning");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(text.contains("org-wide admin key"), "{text}");
+
+    let mut second = ClientShellInput::default();
+    state.apply_settings_choice(&mut second);
+    let [ClientShellAction::Endpoint { request, .. }] = &second.actions[..] else {
+        panic!("the second apply turns the provider on");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::UsageSetProvider(params)
+            if params.provider == "openai_api" && params.enabled
+    ));
+}

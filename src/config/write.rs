@@ -4,6 +4,8 @@ pub(crate) enum ConfigEdit<'a> {
     StatusIndicators(super::StatusIndicatorStyle),
     Sound(bool),
     ToastDelivery(super::ToastDelivery),
+    /// A boolean key of `[usage]`, such as `enabled` or `openai_api`.
+    UsageBool(&'static str, bool),
 }
 
 impl ConfigEdit<'_> {
@@ -13,6 +15,7 @@ impl ConfigEdit<'_> {
             Self::StatusIndicators(_) => "status indicators",
             Self::Sound(_) => "sound setting",
             Self::ToastDelivery(_) => "toast setting",
+            Self::UsageBool(..) => "usage setting",
         }
     }
 
@@ -42,6 +45,7 @@ impl ConfigEdit<'_> {
                 let content = super::upsert_section_value(content, "ui.toast", "delivery", value);
                 super::remove_section_key(&content, "ui.toast", "enabled")
             }
+            Self::UsageBool(key, value) => super::upsert_section_bool(content, "usage", key, value),
         }
     }
 }
@@ -77,6 +81,18 @@ pub(crate) fn write_edit(edit: ConfigEdit<'_>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_bool_edits_only_its_key_and_keeps_comments() {
+        let content = "# my settings\n[usage]\nenabled = true # keep\nkimi = false\n";
+        let updated = ConfigEdit::UsageBool("openai_api", true).apply(content);
+        assert!(updated.contains("# my settings"));
+        assert!(updated.contains("kimi = false"));
+        assert!(updated.contains("openai_api = true"));
+        let updated = ConfigEdit::UsageBool("kimi", true).apply(&updated);
+        assert!(updated.contains("kimi = true"));
+        assert!(!updated.contains("kimi = false"));
+    }
 
     #[test]
     fn update_file_at_does_not_move_a_leading_bom_into_the_file() {
