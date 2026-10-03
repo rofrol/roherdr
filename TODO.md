@@ -485,6 +485,31 @@
   pager, temp files removed by a trap. Rejected from the review: shell quoting
   (the manifest passes an argv, no outer shell) and display width (labels are
   ASCII).
+- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
+  consult stats? we have Rust. ask the models"). `page-consult` pages
+  `consult.py` output with `less -R`; a popup is a real PTY pane
+  (`spawn_popup_command`, `src/app/popup.rs`). Consulted Sol, DeepSeek and MiMo
+  (round `20261003-022724-693a`), unanimous: keep `less` for now; "we have Rust"
+  is not a reason by itself, since the problem is viewing text, not the language.
+  - Reject a herdr pager subcommand (`herdr pager FILE`): it rebuilds `less`
+    (search, keys, ANSI, resize, mouse) and still runs inside a PTY, so it
+    gains nothing at the runtime/client boundary.
+  - Reject rewriting `consult.py stats` in Rust inside herdr: orthogonal, and it
+    couples personal analytics to the multiplexer.
+  - First step, a spike: a temporary popup with `command = ["seq", "1", "300"]`.
+    Does the popup keep scrollback, scroll with the mouse wheel and start at the
+    top? Does it get SIGWINCH on resize? If yes, drop `less` from
+    `page-consult` (print, then wait for Enter): mouse-first, no external pager,
+    but no `/` search. `less` runs on the alternate screen, so herdr's
+    scrollback sees nothing while it runs. If popups do not scroll, that is a
+    herdr defect worth fixing on its own.
+  - Later, only if several plugins want it (DeepSeek, MiMo): a manifest text
+    popup whose command's stdout herdr renders itself (no PTY, works on Windows
+    and remote clients). It is a new pane type: server-owned content,
+    client-owned viewport, reflow on resize, output limits, stderr and exit
+    status.
+  - Known limit either way: the tables are fitted to the width at launch; a
+    resized popup does not regenerate them.
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
