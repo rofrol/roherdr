@@ -1,10 +1,12 @@
 """Offline tests for consult.py: error kinds, latency percentiles, the rounds table and column widths."""
 import importlib.util
+import calendar
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -334,3 +336,34 @@ class VsTests(unittest.TestCase):
         data = list(range(10))
         self.assertEqual(mod.bootstrap_ci(data, lambda xs: sum(xs) / len(xs)),
                          mod.bootstrap_ci(data, lambda xs: sum(xs) / len(xs)))
+
+
+class DateRangeTests(unittest.TestCase):
+    def setUp(self):
+        self.tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+    def tearDown(self):
+        if self.tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.tz
+        time.tzset()
+
+    def ts(self, day):
+        return calendar.timegm(time.strptime(day, "%Y-%m-%d")) + 3600
+
+    def test_one_day_is_shown_once(self):
+        now = self.ts("2026-10-03")
+        self.assertEqual(mod.date_range(self.ts("2026-09-25"), self.ts("2026-09-25") + 600, now), "09-25")
+
+    def test_a_range_in_the_current_year_has_no_year(self):
+        now = self.ts("2026-10-03")
+        self.assertEqual(mod.date_range(self.ts("2026-09-25"), self.ts("2026-09-28"), now), "09-25..09-28")
+
+    def test_both_ends_get_the_year_when_one_is_outside_it(self):
+        now = self.ts("2027-01-05")
+        self.assertEqual(mod.date_range(self.ts("2026-12-28"), self.ts("2027-01-03"), now),
+                         "2026-12-28..2027-01-03")
+        self.assertEqual(mod.date_range(self.ts("2026-12-28"), self.ts("2026-12-30"), now), "2026-12-28..2026-12-30")

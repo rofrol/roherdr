@@ -16,7 +16,7 @@ O="$D/consult.py"
 $O rate <id> useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note "..."]
 $O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models
 $O self --round <round> --model <your model id> --findings N --accepted N --refuted N --unique N --missed N [--note "..."]
-$O stats [--days 30]     # per skill/model: unique per rated call, wrong (rejected findings), rated/calls, err
+$O stats [--days 30]     # per skill/model: call dates, unique per rated call, wrong (rejected findings), rated/calls, err
 $O stats --all           # + score, acc/find, latency (n, p50, p90), tokens, errors by kind, rounds table, @high history,
                          #   per coordinator table
 $O stats --pairs         # + token efficiency (acc/1M output tokens) and paired within-round token ratios (e.g. sol vs astra)

@@ -183,6 +183,16 @@ def display_names(calls):
     return {k: v if clashes[v] == 1 else k for k, v in short.items()}
 
 
+def date_range(first, last, now=None):
+    """`MM-DD..MM-DD` of two timestamps in local time, `MM-DD` for one day; both ends get the year when either is
+    outside the current year, so a December..January range stays readable."""
+    year = time.localtime(now).tm_year
+    a, b = time.localtime(first), time.localtime(last)
+    fmt = "%m-%d" if a.tm_year == b.tm_year == year else "%Y-%m-%d"
+    a, b = time.strftime(fmt, a), time.strftime(fmt, b)
+    return a if a == b else f"{a}..{b}"
+
+
 def p50(xs):
     return statistics.median(xs) if xs else None
 
@@ -403,6 +413,8 @@ def cmd_stats(a):
     for c in calls.values():
         s = rows[label(c)]
         s["calls"] += 1
+        s["first"] = min(s["first"] or c["ts"], c["ts"])
+        s["last"] = max(s["last"], c["ts"])
         s["errors"] += c["status"] != "ok"
         if c["status"] != "ok":
             kinds[label(c)][c.get("error_kind") or "unknown"] += 1
@@ -427,7 +439,7 @@ def cmd_stats(a):
         return
     extra = a.all or a.pairs
     names = display_names(calls.values())
-    header, groups = ["skill/model", "uniq/call", "wrong", "rated", "err"], [4]
+    header, groups = ["skill/model", "call dates", "uniq/call", "wrong", "rated", "err"], [5]
     if extra:
         header += ["score", "acc/find", "unique", "lat n", "p50 s", "p90 s", "out/call"]
         groups += [3, 3, 1]  # rating, latency, tokens
@@ -440,15 +452,17 @@ def cmd_stats(a):
         wrong = f'{1 - s["accepted"] / s["findings"]:.0%}' if s["findings"] else "-"
         rated = f'{int(s["rated"])}/{int(s["calls"])}'
         err = f'{s["errors"] / s["calls"]:.0%}'
-        line = [names.get(k, k), uniq, wrong, rated, err]
+        line = [names.get(k, k), date_range(s["first"], s["last"]), uniq, wrong, rated, err]
         if extra:
             score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             out = ktok(s["out"] / s["used"]) if s["used"] else "-"
             line += [score, acc, str(int(s["unique"])), str(len(lat[k])), secs(p50(lat[k])), secs(p90(lat[k])), out]
         lines.append(line)
-    print("\n".join(table(header, lines, "<" + ">" * (len(header) - 1), a.width, groups)))
-    say("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
+    print("\n".join(table(header, lines, "<<" + ">" * (len(header) - 2), a.width, groups)))
+    say("\ncall dates: first..last day (local time) of the row's calls in the window, failed and unrated ones included;\n"
+          "not continuous activity. Rows from different periods were rated against different companions.\n"
+          "uniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
           "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
           "over rated calls; rated: rated/all calls, unrated ones are left out; err: calls that failed (no answer), not wrong answers.\n"
           "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.\n"
