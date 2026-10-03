@@ -2828,7 +2828,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     one line); both `/v1/organization/costs` and
     `/v1/organization/usage/completions` answer 200 with it.
   - OpenAI spend and completion tokens done 2026-10-03: `usage.openai_api`
-    (off by default, row `OP`), key only from `usage.openai_admin_key_file`
+    (off by default, row `OA` under Codex's), key only from `usage.openai_admin_key_file`
     (refused unless owner-only), polled at most every 15 min. Consulted Sol,
     DeepSeek and MiMo (round `20261003-054331-c102`). Accepted: no env var
     (agent panes would inherit it), explicit opt-in, `input_tokens` already
@@ -2837,8 +2837,18 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     401/403. Rejected: decimal crate (f64 over at most 31 buckets is exact
     to the cent), partial-success status per endpoint (both must succeed,
     else the last good values stay), a cross-process refresh lease.
-  - Left for later: other usage endpoints (embeddings, images, audio), a
-    budget in `[usage]`, filtering by project.
+  - Left for later: other usage endpoints (embeddings, images, audio),
+    filtering by project.
+  - Row code (round `20261003-114021-c950`, Sol, DeepSeek, MiMo unanimous):
+    codes name vendors, so the API row is a second `OA` right under Codex,
+    told apart by `$ spend` versus `%`; a future Anthropic API row is a
+    second `AN`. `OP` read as a new vendor; `O$` would start a symbol class.
+  - Budget: do not take a number from `[usage]`. OpenAI has
+    `GET /v1/organization/spend_limit` (Sol; verified 2026-10-03: 404 "No
+    organization spend limit is configured" with our admin key). When a
+    limit is set, show `$4.20/20` (money first, never a bare `%` next to
+    subscription percentages) and in the details "spend limit from OpenAI",
+    budget used and the period end. Not built yet.
 - [x] Classify the native-graphics CoW retention benchmark failure.
   - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
     `src/platform/mod.rs::clone_native_image_source` deliberately returns
