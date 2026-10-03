@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.09.11.1"
+version = "2026.10.03.1"
 min_engine_version = 2
-updated_at = "2026-09-11T00:00:00Z"
+updated_at = "2026-10-03T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -41,6 +41,26 @@ visible_working = true
 # Claude renders activity summaries at column zero; wrapped continuations are indented.
 # Keeping that shape prevents user prompt text from impersonating this signal.
 regex = ['(?m)^[\x{002A}\x{00B7}\x{2722}\x{2736}\x{273B}\x{273D}][ \t]+\S[^\n]*?(?:\n[ \t]+[^\n]*?){0,3}·(?:[ \t]+|\n[ \t]*)[1-9]\d*(?:[ \t]+|\n[ \t]*)MCP(?:[ \t]+|\n[ \t]*)tasks?(?:[ \t]+|\n[ \t]*)still(?:[ \t]+|\n[ \t]*)running[ \t]*$']
+not = [
+  { contains = ["do you want to proceed?"] },
+  { contains = ["esc to cancel"] },
+  { contains = ["waiting for permission"] },
+  { contains = ["do you want to allow this connection?"] },
+  { contains = ["tab to amend"] },
+  { contains = ["ctrl+e to explain"] },
+]
+
+[[rules]]
+id = "background_monitor_working"
+state = "working"
+priority = 960
+region = "after_last_horizontal_rule"
+visible_working = true
+# The footer under the prompt box counts background tasks
+# (`⏵⏵ auto mode on · 1 shell, 1 monitor · ← for agents`). A monitor wakes
+# the agent with each event, so its turn goes on; a shell alone may be an
+# endless dev server the agent never waits for, so it does not count.
+line_regex = ['(?:^|[·,])\s*[1-9]\d*\s+monitors?\s*(?:[,·]|$)']
 not = [
   { contains = ["do you want to proceed?"] },
   { contains = ["esc to cancel"] },

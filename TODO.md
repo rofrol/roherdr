@@ -818,7 +818,7 @@
     headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
     alone it passed 60/60 under load, so it likely depends on another test. Not
     investigated further.
-- [ ] Claude with background shells/monitors shows idle (user, 2026-10-03,
+- [x] Claude with background shells/monitors shows idle (user, 2026-10-03,
   screenshot: "why doesn't this have the working icon?"). Pane `w12:p4B`,
   Claude Code 2.1.288, finished its turn while a background test and a
   monitor that will wake it keep running:
@@ -851,10 +851,20 @@
     `AgentStatus` variant is out: the enum is append-closed in frozen
     codecs (AGENTS.md); a badge needs an optional runtime field (pane
     background task counts) in the JSON API instead.
-  - Open: is the badge worth it, or only map monitor/agent/MCP counts to
-    working and leave shell-only as idle? Do it via the manifest
-    hot-reload loop with a live smoke test (AGENTS.md, Agent Detection
-    Updates).
+  - Decided (user, 2026-10-03, after round `20261003-222541-a2f7`): a
+    monitor in the footer means working, a shell alone stays idle, no
+    badge. A monitor that only listens (log tail, PR comments) and is
+    re-armed keeps the pane working all that time; the screen cannot tell
+    it from one waiting for an event, and its 30-minute expiry bounds
+    nothing because the agent re-arms it (sol). Rejected: MiMo's decay to
+    idle after 10 minutes of an unchanged footer (a re-arm does not change
+    the footer, so it would also drop a real wait, and the engine keeps no
+    time) and a hook writing the state into the title (Claude owns it).
+  - Done: rule `background_monitor_working` reads the footer
+    (`after_last_horizontal_rule`). Live smoke test on Claude Code
+    2.1.288 with a monitor in this session's pane: idle title plus
+    `1 shell, 1 monitor` matched it (status working); `1 shell` alone did
+    not.
 - [ ] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
