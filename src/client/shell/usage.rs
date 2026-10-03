@@ -502,12 +502,12 @@ fn footer_windows(provider: &ProviderUsage) -> (Option<&UsageWindow>, Option<&Us
 pub(super) fn provider_code(provider: &ProviderUsage) -> String {
     match provider.provider.as_str() {
         "claude" => "AN".into(),
-        "codex" => "OA".into(),
+        // Codes name vendors: Codex limits and API spend are both OpenAI.
+        "codex" | "openai_api" => "OA".into(),
         "gemini" => "GO".into(),
         "deepseek" => "DS".into(),
         "openrouter" => "OR".into(),
         "kimi" => "KM".into(),
-        "openai_api" => "OP".into(),
         _ => provider
             .label
             .chars()
@@ -819,6 +819,12 @@ mod tests {
             providers: vec![claude],
         };
         assert_eq!(footer_text(&report, 24)[1], " AN!");
+    }
+
+    #[test]
+    fn openai_api_spend_shares_the_openai_vendor_code() {
+        assert_eq!(provider_code(&provider("codex", "Codex")), "OA");
+        assert_eq!(provider_code(&provider("openai_api", "OpenAI API")), "OA");
     }
 
     #[test]

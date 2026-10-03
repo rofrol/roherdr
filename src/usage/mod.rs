@@ -78,11 +78,12 @@ impl UsagePoller {
 enum Provider {
     Claude,
     Codex,
+    // Same vendor as Codex, so its row sits right under it.
+    OpenAiApi,
     Gemini,
     DeepSeek,
     OpenRouter,
     Kimi,
-    OpenAiApi,
 }
 
 impl Provider {
