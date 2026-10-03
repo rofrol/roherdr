@@ -392,6 +392,7 @@ impl ClientShellState {
             | crate::api::schema::Method::PaneFocusDirection(_) => true,
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
+            crate::api::schema::Method::TabCreateAgent(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
         };
@@ -558,6 +559,9 @@ impl ClientShellState {
         }
         if let PendingEndpointKind::GitBranchList { workspace_id } = pending.kind {
             return self.complete_git_branch_list(workspace_id, result);
+        }
+        if let PendingEndpointKind::AgentKindList { workspace_id } = pending.kind {
+            return self.complete_agent_kind_list(workspace_id, result);
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {

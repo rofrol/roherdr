@@ -35,6 +35,17 @@ pub struct TabCreateChildParams {
     pub env: HashMap<String, String>,
 }
 
+/// Creates a tab running an interactive agent, typed into its new shell as
+/// if the user had launched it there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabCreateAgentParams {
+    pub workspace_id: String,
+    /// A canonical agent id, as `agent.kind_list` returns.
+    pub kind: String,
+    #[serde(default)]
+    pub focus: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct TabListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]

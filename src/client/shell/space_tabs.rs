@@ -18,6 +18,16 @@ use super::*;
 use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab, ClientShellWorkspace};
 
+/// The parts of the tab lines under the pointer, by tab id.
+#[derive(Clone, Copy, Default)]
+pub(super) struct TabLinePointer<'a> {
+    pub(super) square: Option<&'a str>,
+    pub(super) fold: Option<&'a str>,
+}
+
+/// A tab line's agent badge and the gap after it.
+const TAB_BADGE_WIDTH: u16 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SpaceTabLine {
     pub(super) tab_id: String,
@@ -25,6 +35,8 @@ pub(super) struct SpaceTabLine {
     /// without an agent.
     pub(super) state: Option<(crate::api::schema::AgentStatus, AgentMark)>,
     pub(super) label: String,
+    /// The canonical agent running in the tab, shown as its badge.
+    pub(super) agent: Option<String>,
     /// The space's active tab is this one or nested under it.
     pub(super) active: bool,
     /// Running, failed and succeeded counts of the tab and its nested tabs,
@@ -168,7 +180,7 @@ pub(super) fn space_tab_lines_filtered(
         .iter()
         .find(|tab| tab.tab_id == workspace.active_tab_id)
         .map(|tab| tab.parent_tab_id.as_deref().unwrap_or(&tab.tab_id));
-    top_level_tabs(snapshot, workspace)
+    let mut lines = top_level_tabs(snapshot, workspace)
         .filter(|tab| filter.is_none_or(|view| view.shows_tab(workspace, &tab.tab_id)))
         .map(|tab| {
             let group = snapshot
@@ -239,6 +251,7 @@ pub(super) fn space_tab_lines_filtered(
                 tab_id: tab.tab_id.clone(),
                 state: tab_state(snapshot, tab),
                 label: super::render::tabs::sidebar_tab_label(tab, snapshot, config),
+                agent: super::agent_launch::tab_agent(snapshot, &tab.tab_id).map(str::to_owned),
                 active: active_group == Some(tab.tab_id.as_str()),
                 jobs: super::tab_groups::children_summary_segments(&group),
                 plan: tab_plan(snapshot, tab),
@@ -247,7 +260,17 @@ pub(super) fn space_tab_lines_filtered(
                 squares,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // A badge tells agents apart: in a space whose tabs all run the same
+    // agent it would only repeat itself down the sidebar.
+    let mut agents = lines.iter().filter_map(|line| line.agent.as_deref());
+    let first = agents.next();
+    if agents.all(|agent| Some(agent) == first) {
+        for line in &mut lines {
+            line.agent = None;
+        }
+    }
+    lines
 }
 
 /// The header text while a tab line is dragged: which tab moves and where it
@@ -540,7 +563,7 @@ pub(super) struct SpaceTabHits {
 /// [`squares_per_row`]). Each line is a tab filled from the label (see
 /// [`TabLineFills`]). The state icon stays left of the fill, on the panel
 /// background, so it keeps its colour on every line. While the pointer is
-/// over one of a line's squares (`hovered_square`), the line names that job
+/// over one of a line's squares (`pointer.square`), the line names that job
 /// in place of its label: a square shows only a glyph.
 pub(super) fn render_space_tab_lines(
     buffer: &mut Buffer,
@@ -548,7 +571,8 @@ pub(super) fn render_space_tab_lines(
     lines: &[SpaceTabLine],
     focused_space: bool,
     squares_width: u16,
-    hovered_square: Option<&str>,
+    // What the pointer is over: a square names its job, a summary lights up.
+    pointer: TabLinePointer<'_>,
     // Columns right of `area` the tab fill continues into: the scrollbar's,
     // whose thin glyph then sits on the fill instead of a white gap.
     fill_past: u16,
@@ -704,6 +728,28 @@ pub(super) fn render_space_tab_lines(
             .filter(|plan| area_width >= plan.chars().count() as u16 + 1 + 6);
         let plan_width = plan.map_or(0, |plan| plan.chars().count() as u16 + 1);
         let label_width = area_width.saturating_sub(plan_width);
+        // The agent's badge leads the label (`CL fix tooltip`) while the
+        // label keeps a few columns.
+        let badge = line
+            .agent
+            .as_deref()
+            .filter(|_| label_width >= TAB_BADGE_WIDTH + 6);
+        let label_x = text_x + badge.map_or(0, |_| TAB_BADGE_WIDTH);
+        let label_width = label_width - badge.map_or(0, |_| TAB_BADGE_WIDTH);
+        if let Some(kind) = badge {
+            super::render::put_text(
+                buffer,
+                text_x,
+                y,
+                2,
+                &super::agent_launch::agent_badge(kind),
+                on_accent.unwrap_or_else(|| {
+                    Style::default()
+                        .fg(super::agent_launch::agent_badge_color(kind, palette))
+                        .add_modifier(Modifier::BOLD)
+                }),
+            );
+        }
         if let Some(plan) = plan {
             super::render::put_text(
                 buffer,
@@ -717,7 +763,7 @@ pub(super) fn render_space_tab_lines(
         let label = truncate(&line.label, label_width as usize);
         if label != line.label {
             hits.tooltips.push(super::tooltip::TooltipTarget {
-                rect: Rect::new(text_x, y, label_width, 1),
+                rect: Rect::new(label_x, y, label_width, 1),
                 id: format!("tab:{}", line.tab_id),
                 text: line.label.clone(),
                 // The line's own fill, active or not: only its width grows.
@@ -726,7 +772,7 @@ pub(super) fn render_space_tab_lines(
                 starts_at_target: true,
             });
         }
-        super::render::put_text(buffer, text_x, y, label_width, &label, text_style);
+        super::render::put_text(buffer, label_x, y, label_width, &label, text_style);
         if let Some(positions) =
             highlight.and_then(|query| super::space_filter::match_positions(query, &label))
         {
@@ -736,7 +782,7 @@ pub(super) fn render_space_tab_lines(
                 let width = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0) as u16;
                 if positions.contains(&at) && column + width <= label_width {
                     buffer.set_style(
-                        Rect::new(text_x + column, y, width.max(1), 1).intersection(buffer.area),
+                        Rect::new(label_x + column, y, width.max(1), 1).intersection(buffer.area),
                         Style::default()
                             .fg(palette.accent)
                             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -747,6 +793,23 @@ pub(super) fn render_space_tab_lines(
         }
         if fold_width > 0 {
             let fold_x = right.saturating_sub(fold_width);
+            // From the gap before the triangle to the fill's end: its
+            // padding on both sides, like the name line's buttons, all of it
+            // the click target, lit while the pointer is over it.
+            let fold_rect = Rect::new(
+                fold_x.saturating_sub(1),
+                y,
+                fill_right.saturating_sub(fold_x.saturating_sub(1)),
+                1,
+            );
+            if pointer.fold == Some(line.tab_id.as_str()) {
+                let lit =
+                    super::render::tabs::blend(palette.text, bg, 1, 5).unwrap_or(palette.surface1);
+                buffer.set_style(
+                    fold_rect.intersection(buffer.area),
+                    Style::default().bg(lit),
+                );
+            }
             super::render::put_text(
                 buffer,
                 fold_x,
@@ -755,11 +818,7 @@ pub(super) fn render_space_tab_lines(
                 if line.unfolded { "▼" } else { "►" },
                 on_accent.unwrap_or_else(|| Style::default().fg(palette.overlay1)),
             );
-            // From the triangle to the fill's end, so the padding counts too.
-            hits.folds.push((
-                Rect::new(fold_x, y, fill_right.saturating_sub(fold_x), 1),
-                line.tab_id.clone(),
-            ));
+            hits.folds.push((fold_rect, line.tab_id.clone()));
         }
         if jobs_width > 0 {
             // Right-aligned, so the counts of all lines form a column.
@@ -848,7 +907,7 @@ pub(super) fn render_space_tab_lines(
                     // square it covers names that one instead.
                     // It has the square's fill, so the two read as one;
                     // the square already shows the state.
-                    if hovered_square == Some(square.tab_id.as_str()) && !square.gone {
+                    if pointer.square == Some(square.tab_id.as_str()) && !square.gone {
                         hits.tooltips.push(super::tooltip::TooltipTarget {
                             rect,
                             id: super::tooltip::square_tooltip_id(&square.tab_id),

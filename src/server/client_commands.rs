@@ -13,6 +13,7 @@ pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
 const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 
 const CLIENT_SHELL_METHODS: &[&str] = &[
+    "agent.kind_list",
     "client_shell.surface.set",
     "command.invoke",
     "git.branch_list",
@@ -45,6 +46,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.bookmark",
     "tab.close",
     "tab.create",
+    "tab.create_agent",
     "tab.focus",
     "tab.move",
     "tab.rename",
@@ -299,6 +301,14 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         // Freeze additive methods separately without rewriting the published fixture.
+        assert_eq!(
+            actual.remove("agent.kind_list").as_deref(),
+            Some("6755852f82eb78c061dca4393e3ab21214cfbd4cc27e783212ce7e010b1971b0")
+        );
+        assert_eq!(
+            actual.remove("tab.create_agent").as_deref(),
+            Some("82ed0ac9d04d20facc5b20690cf387437a7a9323148edc60addaa32268afca24")
+        );
         assert_eq!(
             actual.remove("git.branch_list").as_deref(),
             Some("c7fb02f3c1ffdabfc47dbb60e9eb7970e2564fcbf257f63a2d491161d643d0d3")

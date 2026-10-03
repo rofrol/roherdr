@@ -115,6 +115,8 @@ pub(super) struct ShellHitMap {
     pub(super) space_new_tab: Vec<(Rect, String)>,
     /// A space's push status chip, which opens its branch menu.
     pub(super) space_push_status: Vec<(Rect, String)>,
+    /// A space's launch button, left of its `+`.
+    pub(super) space_launch_agent: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// Disclosure triangles and counts at the end of tab lines, with the
@@ -401,6 +403,7 @@ impl ShellHitMap {
         shift_all(&mut self.space_tabs);
         shift_all(&mut self.space_new_tab);
         shift_all(&mut self.space_push_status);
+        shift_all(&mut self.space_launch_agent);
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
             .filter_map(|mut target| {
@@ -429,6 +432,7 @@ impl ShellHitMap {
         self.space_tabs.extend(block.space_tabs);
         self.space_new_tab.extend(block.space_new_tab);
         self.space_push_status.extend(block.space_push_status);
+        self.space_launch_agent.extend(block.space_launch_agent);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
         self.space_tab_squares.extend(block.space_tab_squares);
@@ -759,10 +763,20 @@ pub(super) enum ClientContextMenuAction {
     SortSpaces(super::space_sort::SpaceSortKey),
     /// A row that only informs, such as a branch: closes the menu.
     Dismiss,
+    /// Launches the agent picker's row at this index in a new tab.
+    LaunchAgent(usize),
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
 pub(super) type BranchListing = Result<Vec<crate::api::schema::GitBranchInfo>, String>;
+
+/// The buttons at the end of a space's name line that light up on hover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NameLineButton {
+    PushStatus,
+    Launch,
+    NewTab,
+}
 
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
@@ -790,6 +804,14 @@ pub(super) enum ClientContextMenuTarget {
     SortSpaces(super::space_sort::SpaceSort),
     /// A row of the bookmarks list: only removing the bookmark.
     Bookmark { tab_id: String },
+    /// The installed agents but the launch button's own, opened by a right
+    /// click on the button (or a left click with nothing to repeat).
+    AgentPicker {
+        workspace_id: String,
+        current: Option<String>,
+        /// `None` while the server lists them.
+        kinds: Option<Result<Vec<String>, String>>,
+    },
     /// A space's other branches with their push state, opened from its push
     /// status chip, which the menu's title repeats.
     Branches {
@@ -910,6 +932,9 @@ pub(super) enum PendingEndpointKind {
         endpoint_id: ClientEndpointId,
     },
     GitBranchList {
+        workspace_id: String,
+    },
+    AgentKindList {
         workspace_id: String,
     },
     IntegrationList,
@@ -1187,6 +1212,10 @@ pub(crate) struct ClientShellState {
     pub(super) hovered_workspace_id: Option<String>,
     /// Nested tab whose square under a tab line is under the pointer.
     pub(super) hovered_square: Option<String>,
+    /// The name-line button the pointer is over, and its space.
+    pub(super) hovered_name_button: Option<(String, NameLineButton)>,
+    /// The tab line whose job summary (its fold toggle) the pointer is over.
+    pub(super) hovered_fold: Option<String>,
     pub(super) tooltip: Option<super::tooltip::Tooltip>,
     pub(super) tab_press: Option<ClientTabPress>,
     /// The spaces filter bar (client-only).
@@ -1212,6 +1241,9 @@ pub(crate) struct ClientShellState {
     /// spaces list, so a job tab that closes leaves a blank slot instead of
     /// moving the others.
     pub(super) held_squares: super::space_tabs::HeldSquares,
+    /// The agent each space's launch button last started, by workspace id;
+    /// client memory only (after a restart the newest tab's agent decides).
+    pub(super) launched_agents: HashMap<String, String>,
     /// Each parent tab's last focused job per endpoint, kept under its folded
     /// line after the focus returns to the parent. Client memory only.
     pub(super) kept_jobs: HashMap<ClientEndpointId, super::space_tabs::KeptJobs>,
@@ -1406,6 +1438,8 @@ impl ClientShellState {
             workspace_press: None,
             hovered_workspace_id: None,
             hovered_square: None,
+            hovered_name_button: None,
+            hovered_fold: None,
             tooltip: None,
             tab_press: None,
             space_filter: Default::default(),
@@ -1423,6 +1457,7 @@ impl ClientShellState {
             .into_iter()
             .collect(),
             held_squares: HashMap::new(),
+            launched_agents: HashMap::new(),
             kept_jobs: [(
                 ClientEndpointId::Local,
                 preferences
@@ -1715,6 +1750,8 @@ impl ClientShellState {
         self.workspace_press = None;
         self.hovered_workspace_id = None;
         self.hovered_square = None;
+        self.hovered_name_button = None;
+        self.hovered_fold = None;
         self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;

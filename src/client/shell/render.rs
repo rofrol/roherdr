@@ -244,6 +244,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) held_squares: &'a super::space_tabs::HeldSquares,
     /// The active endpoint's last open job per parent tab.
     pub(super) kept_jobs: &'a super::space_tabs::KeptJobs,
+    pub(super) launched_agents: &'a HashMap<String, String>,
     /// While the pointer is over a sorted list: its spaces' order as last
     /// drawn, kept until the pointer leaves.
     pub(super) held_space_order: Option<&'a [String]>,
@@ -275,6 +276,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) hovered_workspace_id: Option<&'a str>,
     /// Nested tab whose square is under the pointer; its tab line names it.
     pub(super) hovered_square: Option<&'a str>,
+    pub(super) hovered_name_button: Option<(&'a str, super::state::NameLineButton)>,
+    pub(super) hovered_fold: Option<&'a str>,
     /// Why the pressed space cannot be dragged, once the pointer moved.
     pub(super) workspace_drag_refusal: Option<super::WorkspaceDragRefusal>,
     pub(super) usage: Option<&'a crate::api::schema::UsageReport>,

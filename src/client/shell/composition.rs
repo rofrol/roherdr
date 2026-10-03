@@ -94,6 +94,7 @@ impl ClientShellState {
                 .kept_jobs
                 .get(&self.active_endpoint_id)
                 .unwrap_or(&NO_KEPT_JOBS),
+            launched_agents: &self.launched_agents,
             workspace_scroll: &mut self.workspace_scroll,
             workspace_scroll_anchor: &mut self.workspace_scroll_anchor,
             agent_scroll: &mut self.agent_scroll,
@@ -117,6 +118,8 @@ impl ClientShellState {
             pressed_workspace_id: None,
             hovered_workspace_id: None,
             hovered_square: None,
+            hovered_name_button: None,
+            hovered_fold: None,
             workspace_drag_refusal: None,
             space_sort: self.space_sort,
             notification_log_button,
@@ -361,6 +364,7 @@ impl ClientShellState {
                     .kept_jobs
                     .get(&self.active_endpoint_id)
                     .unwrap_or(&NO_KEPT_JOBS),
+                launched_agents: &self.launched_agents,
                 workspace_scroll: &mut self.workspace_scroll,
                 workspace_scroll_anchor: &mut self.workspace_scroll_anchor,
                 agent_scroll: &mut self.agent_scroll,
@@ -385,6 +389,11 @@ impl ClientShellState {
                 pressed_workspace_id,
                 hovered_workspace_id,
                 hovered_square: self.hovered_square.as_deref(),
+                hovered_name_button: self
+                    .hovered_name_button
+                    .as_ref()
+                    .map(|(workspace_id, button)| (workspace_id.as_str(), *button)),
+                hovered_fold: self.hovered_fold.as_deref(),
                 workspace_drag_refusal,
                 space_sort: self.space_sort,
                 notification_log_button,
