@@ -3506,6 +3506,33 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   unlike the other items. Consult the models before fixing (user asked:
   "pytaj modeli"), including which items a row menu in each list should have.
 
+- [ ] Short job tabs make the spaces panel jump (user, 2026-10-03 ~02:37:
+  "something appeared a moment ago, some card in try-roguix I think, and
+  quickly disappeared; the spaces panel jumps because of it"). Cause, from
+  `herdr-job list`: an agent in try-roguix ran two consult calls (gpt and
+  deepseek, jobs 20261003-023409-db1c and 20261003-023509-606a, tabs
+  `w6:t60` and `w6:t71`); each `ask_*` script reruns itself in a herdr-job
+  tab, which is created as a child row under the agent's tab (plus the
+  "waits on a job" summary on the parent), and a succeeded job's tab closes
+  10 s after it ends. So every consult inserts rows and removes them under
+  the user's pointer within a minute, in a space the user is not looking at.
+  Not yet confirmed by watching the panel; reproduce with `herdr-job run
+  --name x -- sleep 5` from another space and record the sidebar.
+  - Models (sol, DeepSeek, MiMo; 2026-10-03) all name the job tab as the
+    cause. Fixes they rank: (b) show running jobs as a fixed-width count on
+    the parent row instead of child rows (sol and MiMo first; keep failed
+    jobs as real rows, they do not churn); an explicit opt-out for
+    synchronous calls such as consults (`--no-tab`/ephemeral: the log stays,
+    `herdr-job log` reaches it) beats a duration threshold, which would make a
+    tab appear at N seconds mid-action (MiMo, sol); do not auto-expand spaces
+    the user is not in (all, but not enough on its own). Rejected by all:
+    holding a closed row's slot or appending rows at the end (stale click
+    targets, still shifts). Sol: bind a click to the row id captured on
+    pointer-down so a vanishing row never retargets it.
+  - My take: consult calls do not need a tab at all (the agent waits for the
+    answer and reads it itself), so start with a no-tab mode for the `ask_*`
+    scripts, then decide on the parent-row count for other jobs.
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
