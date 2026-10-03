@@ -3355,6 +3355,33 @@ fn unfolding_by_hand_unpins_the_kept_job_and_shows_all_jobs() {
 }
 
 #[test]
+fn unfolding_unpins_the_job_even_while_it_keeps_the_focus() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    let job_row = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let line = state.hits.space_tabs[0].0;
+        frame_rows(&frame)[line.y as usize + 1].contains("job job_1")
+    };
+    // Open job_1 and fold: it is pinned.
+    click_fold(&mut state);
+    focus_tab(&mut state, "job_1");
+    click_fold(&mut state);
+    assert!(job_row(&mut state));
+    // Unfold and fold again with the focus still on job_1: unpinned, and
+    // later snapshots with the same focus do not pin it again.
+    click_fold(&mut state);
+    click_fold(&mut state);
+    assert!(!job_row(&mut state));
+    focus_tab(&mut state, "job_1");
+    assert!(!job_row(&mut state));
+    // Opening a job again pins it.
+    focus_tab(&mut state, "tab_1");
+    focus_tab(&mut state, "job_1");
+    assert!(job_row(&mut state));
+}
+
+#[test]
 fn a_kept_job_that_closes_is_forgotten() {
     let mut state = state_with_tabs(true);
     with_job(&mut state, "job_1", TabStatus::Failed);

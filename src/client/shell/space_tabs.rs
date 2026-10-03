@@ -234,17 +234,13 @@ pub(super) fn space_tab_lines_filtered(
                 )
                 .collect::<Vec<_>>();
             let unfolded = !squares.is_empty() && unfolded_squares.contains(&tab.tab_id);
-            // The open job, or the one last open while the focus is on the
-            // parent: it stays until the user unfolds the squares.
+            // The job last opened, even while the focus is back on the
+            // parent: it stays until the user unfolds the squares, and a
+            // later fold shows nothing until another job is opened.
             let kept = kept_jobs.get(&tab.tab_id);
             let hidden_focus = squares
                 .iter()
-                .find(|square| square.focused && !square.gone)
-                .or_else(|| {
-                    squares
-                        .iter()
-                        .find(|square| !square.gone && kept == Some(&square.tab_id))
-                })
+                .find(|square| !square.gone && kept == Some(&square.tab_id))
                 .filter(|_| !unfolded)
                 .cloned();
             SpaceTabLine {
