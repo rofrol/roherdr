@@ -75,7 +75,7 @@
     fill stops at the nested block; hiding a selected row moves the
     selection to the collapsing ancestor; Up/Down follow visual rows (both).
 
-- [ ] Push status on the space name line, opening into a branch menu
+- [x] Push status on the space name line, opening into a branch menu
   (user, 2026-10-03; queued next). Drop the branch row: the name line
   carries the push status chip (`↑3`); clicking the chip opens a menu of
   the other local branches with their push state, the chip becoming the
@@ -111,6 +111,13 @@
     usable are a slowdown). The menu opens fully in the click's frame,
     anchored so the chip becomes its header row in the same glyph and
     colour (MiMo); that alone reads as the chip expanding.
+  Done 2026-10-03 (`d6edff00`): token `push_status` (default space rows
+  are now one line `state_icon, workspace, push_status, tab_jobs`), endpoint
+  method `git.branch_list` (one `git for-each-ref` on a worker thread),
+  the menu is a context menu target `Branches` with the chip drawn into its
+  top border. Rows only inform (a click closes the menu). Not done: the
+  endpoint (remote machine) sidebar draws the chip but does not open the
+  menu; ja/zh-cn docs still show the two-row default.
 
 - [ ] Launch-agent button next to the space's `+` (user, 2026-10-03). It
   shows the logo of the agent last launched; left click opens a new tab in
