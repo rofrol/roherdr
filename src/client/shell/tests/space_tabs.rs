@@ -1051,6 +1051,33 @@ fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
 }
 
 #[test]
+fn resting_on_a_tab_state_glyph_says_what_it_means() {
+    let mut state = state_with_tabs(true);
+    state.compose(106, 30).unwrap();
+    let (line, _) = state.hits.space_tabs[0];
+    let target = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-state:") && target.rect.y == line.y)
+        .expect("state glyph tooltip")
+        .clone();
+    assert_eq!(target.text, "working · menu › status legend");
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: target.rect.x,
+        row: target.rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 30).unwrap();
+    let deadline = state.tooltip_deadline().expect("pending dwell");
+    state.tick_selection_autoscroll(deadline);
+    let frame = state.compose(106, 30).unwrap();
+    let row = frame_rows(&frame)[target.rect.y as usize].clone();
+    assert!(row.contains("working · menu › status legend"), "{row}");
+}
+
+#[test]
 fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
     let mut state = state_with_tabs(true);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
@@ -1058,7 +1085,13 @@ fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
     projected.tabs[0].custom_label = true;
     state.set_snapshot(Box::new(projected));
     state.compose(106, 30).unwrap();
-    let target = state.hits.tooltips[0].clone();
+    let target = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab:"))
+        .expect("cut label tooltip")
+        .clone();
     assert_eq!(target.text, "a tab label much longer than the sidebar");
     state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
         kind: crossterm::event::MouseEventKind::Moved,
@@ -1712,14 +1745,11 @@ fn working_and_job_glyphs_turn_with_the_clock_and_stand_still_when_animations_ar
     };
     let first = row(&mut state);
     assert!(first.contains("◐ ▌agent tab"), "{first}");
-    // 160 ms later the working circle has turned once, the job's has not.
+    // 160 ms later both circles have turned once, in opposite directions.
     assert!(state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(170)));
     let second = row(&mut state);
     assert!(second.contains("◓ ▌agent tab"), "{second}");
-    assert!(
-        second.contains("◐ 1"),
-        "the job loop is still on its first frame: {second}"
-    );
+    assert!(second.contains("◒ 1"), "the job loop turned too: {second}");
     // A tick inside the same frame changes nothing, so nothing repaints.
     assert!(!state.tick_motion(state.motion_epoch + std::time::Duration::from_millis(180)));
     // Animations off: static glyphs, no timer.
@@ -1777,8 +1807,10 @@ fn the_waiting_icon_and_the_job_count_turn_in_step() {
         let chars = glyphs.chars().collect::<Vec<_>>();
         assert_eq!(chars.first(), chars.last(), "{seen:?}");
     }
+    // Counter-clockwise, one frame every 160 ms.
     assert_eq!(seen[0].chars().next(), Some('◐'));
-    assert_eq!(seen[2].chars().next(), Some('◒'));
+    assert_eq!(seen[1].chars().next(), Some('◒'));
+    assert_eq!(seen[2].chars().next(), Some('◑'));
 }
 
 #[test]

@@ -40,6 +40,7 @@ pub(crate) fn render_client_overlay(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
+    statuses: (crate::config::StatusIndicatorStyle, bool),
     p: &Palette,
 ) -> Option<OverlayRender> {
     if !matches!(
@@ -63,7 +64,7 @@ pub(crate) fn render_client_overlay(
         }
         ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
-        ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
+        ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, statuses, p),
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
@@ -1704,6 +1705,7 @@ fn render_help_overlay(
     b: &mut Buffer,
     h: &ClientHelpOverlay,
     k: &LiveKeybindConfig,
+    (status_style, animations): (crate::config::StatusIndicatorStyle, bool),
     p: &Palette,
 ) -> Option<OverlayRender> {
     use ratatui::widgets::{Paragraph, Widget, Wrap};
@@ -1718,7 +1720,11 @@ fn render_help_overlay(
         i.x,
         i.y,
         i.width,
-        "keybinds",
+        if h.legend {
+            "status legend"
+        } else {
+            "keybinds"
+        },
         Style::default()
             .fg(p.text)
             .bg(p.panel_bg)
@@ -1744,7 +1750,9 @@ fn render_help_overlay(
         i.x,
         sy,
         i.width,
-        &if h.search_focused {
+        &if h.legend {
+            " hover a status glyph in the sidebar to see its meaning".to_owned()
+        } else if h.search_focused {
             " / ".to_owned()
         } else {
             " / press / to filter by command or shortcut".to_owned()
@@ -1765,7 +1773,11 @@ fn render_help_overlay(
     };
 
     let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
-    let lines = help_lines(k, &h.query, p);
+    let lines = if h.legend {
+        super::super::status_legend::legend_lines(status_style, animations, p)
+    } else {
+        help_lines(k, &h.query, p)
+    };
     let viewport_rows = usize::from(body.height.max(1));
     let wrapped_rows = |width: u16| {
         let width = usize::from(width.max(1));
@@ -1821,7 +1833,9 @@ fn render_help_overlay(
         i.x,
         i.bottom() - 1,
         i.width,
-        if h.search_focused {
+        if h.legend {
+            " scroll j/k/↑↓/pgup/pgdn · close esc/enter"
+        } else if h.search_focused {
             " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc"
         } else {
             " search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter"

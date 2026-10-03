@@ -436,7 +436,7 @@ fn top_level_tabs<'a>(
 }
 
 /// U+274F: one cell, no emoji form, in the system symbol fonts.
-const PROGRAM_ICON: &str = "❏";
+pub(super) const PROGRAM_ICON: &str = "❏";
 
 /// The fills of the tab lines. Only the focused space's active tab is blue,
 /// a light accent tint so its job counts keep their colours; the active
@@ -613,6 +613,20 @@ pub(super) fn render_space_tab_lines(
             None => (PROGRAM_ICON, Style::default().fg(palette.overlay0)),
         };
         super::render::put_text(buffer, x, y, 1, icon, icon_style);
+        // The glyph says what it means on hover; the gap column next to it
+        // widens the one-cell target.
+        hits.tooltips.push(super::tooltip::TooltipTarget {
+            rect: Rect::new(x, y, 2, 1),
+            id: format!("tab-state:{}", line.tab_id),
+            text: format!(
+                "{} · menu › status legend",
+                match line.state {
+                    Some((status, mark)) => super::status_legend::agent_state_label(status, mark),
+                    None => super::status_legend::PROGRAM_LABEL,
+                }
+            ),
+            bg: None,
+        });
         // The focused space's active tab also has an accent bar in the
         // fill's first column, so it is found by shape, not only by colour.
         if line.active && focused_space && fills.focused_active.is_some() && !lifted {

@@ -4,6 +4,7 @@ use super::*;
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+        legend: false,
         query: TextEditor::default(),
         search_focused: true,
         scroll: 0,

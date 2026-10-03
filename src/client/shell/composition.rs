@@ -192,19 +192,27 @@ impl ClientShellState {
     ) -> Option<crate::client::frame_output::ComposedFrame> {
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
-        // Glyphs turn while an agent works or a job runs; with nothing to
-        // turn (or animations off) the timer stays idle.
-        self.motion_active = self.config.animations
-            && self.snapshot.as_deref().is_some_and(|snapshot| {
-                snapshot
-                    .agents
-                    .iter()
-                    .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
-                    || snapshot
-                        .tabs
-                        .iter()
-                        .any(|tab| tab.status == Some(crate::api::schema::TabStatus::Running))
-            });
+        // Glyphs turn while an agent works, a job runs or the status legend
+        // shows them; with nothing to turn (or animations off) the timer
+        // stays idle.
+        let legend_open = matches!(
+            self.overlay,
+            Some(ClientShellOverlay::Help(ClientHelpOverlay {
+                legend: true,
+                ..
+            }))
+        );
+        self.motion_active =
+            self.config.animations
+                && (legend_open
+                    || self.snapshot.as_deref().is_some_and(|snapshot| {
+                        snapshot.agents.iter().any(|agent| {
+                            agent.agent_status == crate::api::schema::AgentStatus::Working
+                        }) || snapshot
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.status == Some(crate::api::schema::TabStatus::Running))
+                    }));
         let _motion = crate::ui::motion::scope(if self.config.animations {
             self.motion
         } else {
@@ -910,6 +918,7 @@ impl ClientShellState {
                     &self.endpoints,
                     &self.active_endpoint_id,
                     &self.config.keybinds,
+                    (self.config.status_indicators, self.config.animations),
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
