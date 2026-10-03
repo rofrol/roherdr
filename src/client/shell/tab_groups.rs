@@ -7,6 +7,22 @@ use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab};
 
 impl super::ClientShellState {
+    /// Drops kept jobs that closed, so a new job that reuses the id is not
+    /// shown as kept.
+    pub(super) fn forget_closed_kept_jobs(&mut self) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        if let Some(kept) = self.kept_jobs.get_mut(&self.active_endpoint_id) {
+            kept.retain(|parent, job| {
+                snapshot
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.tab_id == *job && tab.parent_tab_id.as_ref() == Some(parent))
+            });
+        }
+    }
+
     /// Records the focused tab as its group's last one, so selecting the
     /// group from the main row returns there. The group of a child is its
     /// parent; a top-level tab is its own group.

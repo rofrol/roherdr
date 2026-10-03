@@ -3319,3 +3319,52 @@ fn the_last_open_job_stays_under_the_folded_line_after_the_focus_returns_to_the_
     let frame = state.compose(106, 30).unwrap();
     assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
 }
+
+#[test]
+fn unfolding_by_hand_unpins_the_kept_job_and_shows_all_jobs() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    with_job(&mut state, "job_2", TabStatus::Succeeded);
+    let job_row = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let line = state.hits.space_tabs[0].0;
+        frame_rows(&frame)[line.y as usize + 1].contains("job job_1")
+    };
+    let squares = |state: &ClientShellState| state.hits.space_tab_squares.len();
+    // Unfold, open job_1, fold: job_1 is pinned under the line.
+    click_fold(&mut state);
+    focus_tab(&mut state, "job_1");
+    click_fold(&mut state);
+    assert!(job_row(&mut state));
+    // Back on the parent, the pin stays.
+    focus_tab(&mut state, "tab_1");
+    assert!(job_row(&mut state));
+    // The summary unpins it and shows every job.
+    click_fold(&mut state);
+    state.compose(106, 30).unwrap();
+    assert_eq!(squares(&state), 2);
+    // Folding with the focus on the parent pins nothing.
+    click_fold(&mut state);
+    assert!(!job_row(&mut state));
+    assert_eq!(squares(&state), 0);
+}
+
+#[test]
+fn a_kept_job_that_closes_is_forgotten() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    focus_tab(&mut state, "job_1");
+    focus_tab(&mut state, "tab_1");
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.tabs.retain(|tab| tab.tab_id != "job_1");
+    state.set_snapshot(Box::new(projected));
+    assert!(state
+        .kept_jobs
+        .get(&ClientEndpointId::Local)
+        .is_none_or(|kept| kept.is_empty()));
+    // A new job that reuses the id is not shown as kept.
+    with_job(&mut state, "job_1", TabStatus::Running);
+    let frame = state.compose(106, 30).unwrap();
+    let line = state.hits.space_tabs[0].0;
+    assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
+}

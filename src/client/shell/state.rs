@@ -2036,6 +2036,7 @@ impl ClientShellState {
         if reattached {
             self.kept_jobs.remove(&self.active_endpoint_id);
         }
+        self.forget_closed_kept_jobs();
         self.remember_focused_group_tab();
         self.mark_focused_tab_notifications_read();
         self.reconcile_pending_workspace_highlight();
