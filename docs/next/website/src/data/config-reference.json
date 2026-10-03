@@ -1292,6 +1292,12 @@
           ]
         },
         {
+          "key": "ui.toast.herdr.bottom_margin",
+          "type": "integer",
+          "default": "0",
+          "description": "Rows between a bottom-anchored in-app toast and the bottom of the Herdr frame, for example to keep an agent's input box visible. A toast that would not fit moves down until it does. Top positions ignore it."
+        },
+        {
           "key": "ui.toast.clipboard.enabled",
           "type": "boolean",
           "default": "true",
