@@ -1,6 +1,7 @@
 //! Animated status glyphs: a working agent and a running job turn as half
-//! circles, in opposite directions and at different speeds, so the two stay
-//! apart without the hourglass the job used to have. Presentation only: the
+//! circles, in opposite directions, so the two stay apart without the
+//! hourglass the job used to have. They turn at the same speed: a slower
+//! spinner reads as lag, not as a different state. Presentation only: the
 //! client advances the phase from its own clock, nothing here reaches the
 //! server, and everything stays one cell wide in every frame.
 //!
@@ -16,8 +17,7 @@ use std::time::Duration;
 const WORKING_FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
 /// Running job: counter-clockwise.
 const JOB_FRAMES: [&str; 4] = ["◐", "◒", "◑", "◓"];
-const WORKING_PERIOD: Duration = Duration::from_millis(160);
-const JOB_PERIOD: Duration = Duration::from_millis(320);
+const PERIOD: Duration = Duration::from_millis(160);
 const WORKING_STATIC: &str = WORKING_FRAMES[0];
 const JOB_STATIC: &str = "◑";
 
@@ -25,34 +25,27 @@ const JOB_STATIC: &str = "◑";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Motion {
     enabled: bool,
-    working: usize,
-    job: usize,
+    frame: usize,
 }
 
 impl Motion {
     pub(crate) const STATIC: Self = Self {
         enabled: false,
-        working: 0,
-        job: 0,
+        frame: 0,
     };
 
-    /// The frames `elapsed` after the epoch both loops started together.
+    /// The frame `elapsed` after the epoch the loops started.
     pub(crate) fn at(elapsed: Duration) -> Self {
-        let frame = |period: Duration| (elapsed.as_millis() / period.as_millis()) as usize % 4;
         Self {
             enabled: true,
-            working: frame(WORKING_PERIOD),
-            job: frame(JOB_PERIOD),
+            frame: (elapsed.as_millis() / PERIOD.as_millis()) as usize % 4,
         }
     }
 
-    /// Time from `elapsed` to the next frame change of either loop.
+    /// Time from `elapsed` to the next frame change.
     pub(crate) fn until_next_frame(elapsed: Duration) -> Duration {
-        let until = |period: Duration| {
-            let period = period.as_millis();
-            Duration::from_millis((period - elapsed.as_millis() % period) as u64)
-        };
-        until(WORKING_PERIOD).min(until(JOB_PERIOD))
+        let period = PERIOD.as_millis();
+        Duration::from_millis((period - elapsed.as_millis() % period) as u64)
     }
 }
 
@@ -78,7 +71,7 @@ pub(crate) fn scope(motion: Motion) -> Scope {
 pub(crate) fn working_glyph() -> &'static str {
     let motion = CURRENT.with(Cell::get);
     if motion.enabled {
-        WORKING_FRAMES[motion.working % 4]
+        WORKING_FRAMES[motion.frame % 4]
     } else {
         WORKING_STATIC
     }
@@ -88,7 +81,7 @@ pub(crate) fn working_glyph() -> &'static str {
 pub(crate) fn job_glyph() -> &'static str {
     let motion = CURRENT.with(Cell::get);
     if motion.enabled {
-        JOB_FRAMES[motion.job % 4]
+        JOB_FRAMES[motion.frame % 4]
     } else {
         JOB_STATIC
     }
@@ -103,18 +96,17 @@ mod tests {
     }
 
     #[test]
-    fn working_turns_clockwise_and_a_job_counter_clockwise_and_slower() {
+    fn working_turns_clockwise_and_a_job_counter_clockwise_at_the_same_speed() {
         let shown = |at: u64| {
             let _scope = scope(Motion::at(ms(at)));
             (working_glyph(), job_glyph())
         };
         assert_eq!(shown(0), ("◐", "◐"));
-        assert_eq!(shown(160), ("◓", "◐"));
-        assert_eq!(shown(320), ("◑", "◒"));
-        assert_eq!(shown(480), ("◒", "◒"));
-        assert_eq!(shown(640), ("◐", "◑"));
-        // Both loops repeat after 1.28 s.
-        assert_eq!(shown(1_280), ("◐", "◐"));
+        assert_eq!(shown(160), ("◓", "◒"));
+        assert_eq!(shown(320), ("◑", "◑"));
+        assert_eq!(shown(480), ("◒", "◓"));
+        // Both loops repeat after 640 ms.
+        assert_eq!(shown(640), ("◐", "◐"));
     }
 
     #[test]

@@ -51,7 +51,7 @@
   keeps icon, gap and bar; an inactive tab or an unfocused space gets no
   bar; the other targets' placement is unchanged.
 
-- [ ] The purple status spinner (`◓ Kontynuuj`, user screenshot
+- [x] The purple status spinner (`◓ Kontynuuj`, user screenshot
   2026-10-03) spins slower than the orange one. Cause: by design. Purple
   (mauve) is `AgentMark::WaitsOnJob` (agent idle or done while a job it
   started runs, `agent_icon` in `src/client/shell.rs`); it draws the job
@@ -66,7 +66,7 @@
   left. Sol: one job showing yellow on its tab and purple on the agent row
   suggests two different states.
 
-- [ ] Add a legend that explains the status glyphs and colors. Same round:
+- [x] Add a legend that explains the status glyphs and colors. Same round:
   - Entry point: sol, a `ⓘ` button in the sidebar header plus a "Status
     legend" item in the global menu. Not `?`: the glyph `?` already means
     "agent awaits your reply" (DeepSeek proposed `?` and missed that). MiMo
@@ -86,6 +86,18 @@
     cell; `◉`/`●`, `○`/`◌`/`·` are near pairs. A legend documents this; it
     does not fix it. Open: whether to split those axes first.
   - Rejected: MiMo's "compositions such as `◐?`": one cell holds one glyph.
+  - Built 2026-10-03: the job glyph now turns at 160 ms, like working.
+    Global menu item "status legend" (before detach) opens the keybinds popup
+    in a legend mode (no search) listing agent states, the program tab,
+    job states and group counts, drawn with `agent_icon`/`agent_color`/
+    `tab_groups::status_icon` in the current style (dots style names the
+    colours); glyphs keep turning while it is open. Hovering a tab line's
+    state glyph (2 cells) shows its label and "menu › status legend".
+    Plan review round `20261003-131157-6708` (sol, MiMo): sol caught that the
+    legend would freeze (motion only ticks with a working agent or running
+    job). Not done: tooltips on the agent panel rows and job squares; a
+    sidebar header button (rejected for now: `?` already means awaits
+    reply); splitting the status axes.
 
 - [ ] Folded jobs hide where the focus is, and a restart unfolds them again
   (user, 2026-10-03, two screenshots). (1) He clicked a job square under the

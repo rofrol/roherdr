@@ -919,7 +919,7 @@ impl ClientShellState {
                 }
                 _ if text_character == Some('/') => {
                     if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
-                        help.search_focused = true;
+                        help.search_focused = !help.legend;
                         help.scroll = 0;
                     }
                 }

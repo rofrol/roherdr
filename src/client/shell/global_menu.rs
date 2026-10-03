@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum ClientGlobalMenuAction {
     Binding(crate::input::KeybindAction),
     ConsultStats,
+    StatusLegend,
     WhatsNew,
 }
 
@@ -52,6 +53,7 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
+    items.push(("status legend", ClientGlobalMenuAction::StatusLegend));
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
@@ -110,6 +112,14 @@ impl ClientShellState {
                 self.record_binding(crate::input::KeybindMatch::Action(binding), outcome)
             }
             ClientGlobalMenuAction::ConsultStats => self.open_consult_stats(outcome),
+            ClientGlobalMenuAction::StatusLegend => {
+                self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+                    legend: true,
+                    query: TextEditor::default(),
+                    search_focused: false,
+                    scroll: 0,
+                }));
+            }
             ClientGlobalMenuAction::WhatsNew => self.open_release_notes(),
         }
         outcome.repaint = true;

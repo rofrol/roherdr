@@ -202,6 +202,9 @@ pub(super) fn parent_entry_label(
         .unwrap_or_else(|| parent.label.clone())
 }
 
+/// The count glyph of children without a status.
+pub(super) const NO_STATUS_ICON: &str = "•";
+
 pub(super) fn status_icon(status: Option<TabStatus>) -> Option<&'static str> {
     match status? {
         TabStatus::Running => Some(crate::ui::motion::job_glyph()),
@@ -237,7 +240,7 @@ pub(super) fn children_summary_segments(
         (crate::ui::motion::job_glyph(), Some(TabStatus::Running)),
         ("!", Some(TabStatus::Failed)),
         ("✓", Some(TabStatus::Succeeded)),
-        ("•", None),
+        (NO_STATUS_ICON, None),
     ]
     .into_iter()
     .map(|(icon, status)| (icon, status, count(status)))

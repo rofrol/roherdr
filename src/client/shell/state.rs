@@ -568,6 +568,8 @@ pub(super) struct ClientNavigatorOverlay {
 
 #[derive(Debug)]
 pub(super) struct ClientHelpOverlay {
+    /// Shows the status legend instead of the keybinds; it has no search.
+    pub(super) legend: bool,
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) scroll: usize,

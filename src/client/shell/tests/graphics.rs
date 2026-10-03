@@ -266,6 +266,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             running: None,
         }),
         ClientShellOverlay::Help(ClientHelpOverlay {
+            legend: false,
             query: TextEditor::default(),
             search_focused: false,
             scroll: 0,
@@ -353,6 +354,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 &state.endpoints,
                 &state.active_endpoint_id,
                 &state.config.keybinds,
+                (state.config.status_indicators, state.config.animations),
                 &state.config.palette,
             ),
         }

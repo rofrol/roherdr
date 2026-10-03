@@ -524,6 +524,34 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
         highlighted: 4,
     }));
+    state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            legend: true,
+            ..
+        }))
+    ));
+    let legend = state.compose(106, 30).expect("legend");
+    let text = frame_rows(&legend).join("\n");
+    assert!(
+        text.contains("status legend") && text.contains("working"),
+        "{text}"
+    );
+    // The legend has no search: `/` leaves it as it is.
+    state.handle_input_bytes(b"/");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            legend: true,
+            search_focused: false,
+            ..
+        }))
+    ));
+
+    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
+        highlighted: 5,
+    }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);
     assert!(state.overlay.is_none());

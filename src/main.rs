@@ -360,7 +360,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # status_indicators = "shapes"
 
 # Turn the half circles of a working agent (clockwise) and of a running job
-# (counter-clockwise, slower) instead of showing them still. Only the "symbols"
+# (counter-clockwise, same speed) instead of showing them still. Only the "symbols"
 # and "shapes" styles use these glyphs. Set false for static glyphs: ◐ working,
 # ◑ job running.
 # animations = true
