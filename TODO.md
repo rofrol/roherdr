@@ -2848,7 +2848,9 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     organization spend limit is configured" with our admin key). When a
     limit is set, show `$4.20/20` (money first, never a bare `%` next to
     subscription percentages) and in the details "spend limit from OpenAI",
-    budget used and the period end. Not built yet.
+    budget used and the period end. Built 2026-10-03: the limit is read
+    from OpenAI each refresh (a failed read only adds a note); no config
+    number.
 - [x] Classify the native-graphics CoW retention benchmark failure.
   - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
     `src/platform/mod.rs::clone_native_image_source` deliberately returns
