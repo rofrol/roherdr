@@ -379,20 +379,7 @@ fn render_provider_row(
                 );
             }
         }
-        if let Some(expires_at) = expiring_reset_credit(provider, now_unix) {
-            let marker = format!(" ↻{}", compact_countdown(expires_at, now_unix));
-            // A clipped countdown would misreport the expiry, so draw it whole or not at all.
-            if end.saturating_add(display_width(&marker)) <= row.right() {
-                put_segment(
-                    buffer,
-                    end,
-                    row.y,
-                    row.right(),
-                    &marker,
-                    Style::default().fg(palette.yellow),
-                );
-            }
-        }
+        render_reset_credit_expiry(buffer, row, end, provider, now_unix, palette);
     } else if let Some(balance) = provider.balances.first() {
         // Prepaid balances have no reset window; label them so they do not read as a 5h cell.
         let x = put_segment(
@@ -426,6 +413,52 @@ fn render_provider_row(
             Style::default().fg(palette.overlay0),
         );
     }
+}
+
+/// Countdown to the soonest reset credit's expiry, right-aligned so it lines up
+/// across rows: `exp1d20h`, else `e1d20h`, else `e1d`, else nothing. `exp` keeps it from
+/// reading as a third reset countdown. Yellow when the credit is worth redeeming.
+fn render_reset_credit_expiry(
+    buffer: &mut Buffer,
+    row: Rect,
+    end: u16,
+    provider: &ProviderUsage,
+    now_unix: u64,
+    palette: &Palette,
+) {
+    let Some(expires_at) = live_reset_credits(provider, now_unix)
+        .filter_map(|credit| credit.expires_at)
+        .min()
+    else {
+        return;
+    };
+    let countdown = compact_countdown(expires_at, now_unix);
+    // Keep a space after the windows; a clipped countdown would misreport the expiry.
+    let room = row.right().saturating_sub(end.saturating_add(1));
+    // The first unit alone is floored, so it never shows more time than is left.
+    let first_unit = countdown_parts(expires_at, now_unix).0;
+    let Some(text) = [
+        format!("exp{countdown}"),
+        format!("e{countdown}"),
+        format!("e{first_unit}"),
+    ]
+    .into_iter()
+    .find(|text| display_width(text) <= room) else {
+        return;
+    };
+    let color = if expiring_reset_credit(provider, now_unix).is_some() {
+        palette.yellow
+    } else {
+        palette.overlay0
+    };
+    put_segment(
+        buffer,
+        row.right().saturating_sub(display_width(&text)),
+        row.y,
+        row.right(),
+        &text,
+        Style::default().fg(color),
+    );
 }
 
 /// The 5-hour and weekly windows, falling back to the first two windows reported.
@@ -658,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_flags_a_reset_credit_lost_before_it_pays_off() {
+    fn footer_shows_when_the_first_reset_credit_expires() {
         let expires_at = 1_000 + 30 * 3_600;
         let row = |usage: ProviderUsage, width: u16| {
             let report = UsageReport {
@@ -667,48 +700,51 @@ mod tests {
             };
             footer_text(&report, width).remove(1)
         };
+        let style_at = |usage: ProviderUsage, width: u16, column: u16| {
+            let report = UsageReport {
+                enabled: true,
+                providers: vec![usage],
+            };
+            let area = Rect::new(0, 0, width, footer_height(&report));
+            let mut buffer = Buffer::empty(area);
+            render_usage_footer(
+                &mut buffer,
+                area,
+                &report,
+                1_000,
+                &Palette::catppuccin(),
+                &mut ShellHitMap::default(),
+            );
+            buffer[(column, 1)].fg
+        };
+        let palette = Palette::catppuccin();
 
-        assert_eq!(
-            row(
-                with_credit(windowed("codex", "Codex", 87, 60), expires_at),
-                32
-            ),
-            " OA  87% 47m   60% 6d ↻1d6h"
-        );
-        // Little is used, so redeeming the credit would recover little.
-        assert_eq!(
-            row(
-                with_credit(windowed("codex", "Codex", 20, 40), expires_at),
-                32
-            ),
-            " OA  20% 47m   40% 6d"
-        );
-        // Further away than the warning period.
-        assert_eq!(
-            row(
-                with_credit(windowed("codex", "Codex", 87, 60), 1_000 + 3 * 86_400),
-                32
-            ),
-            " OA  87% 47m   60% 6d"
-        );
-        // Already expired; a cached report can still carry it.
-        assert_eq!(
-            row(with_credit(windowed("codex", "Codex", 87, 60), 999), 32),
-            " OA  87% 47m   60% 6d"
-        );
+        // Right-aligned to the 30 usable columns, before the sidebar toggle.
+        let busy = || with_credit(windowed("codex", "Codex", 87, 60), expires_at);
+        assert_eq!(row(busy(), 32), " OA  87% 47m   60% 6d  exp1d6h");
+        assert_eq!(style_at(busy(), 32, 29), palette.yellow);
+        assert_eq!(row(busy(), 30), " OA  87% 47m   60% 6d  e1d6h");
+        assert_eq!(row(busy(), 28), " OA  87% 47m   60% 6d  e1d");
+        assert_eq!(row(busy(), 26), " OA  87% 47m   60% 6d");
+
+        // Little is used, so it is shown but not highlighted.
+        let idle = || with_credit(windowed("codex", "Codex", 20, 40), expires_at);
+        assert_eq!(row(idle(), 32), " OA  20% 47m   40% 6d  exp1d6h");
+        assert_eq!(style_at(idle(), 32, 29), palette.overlay0);
         // The weekly window resets on its own before the credit expires.
         let mut early_weekly = windowed("codex", "Codex", 87, 60);
         early_weekly.windows[1].resets_at = Some(1_000 + 3_600);
         assert_eq!(
-            row(with_credit(early_weekly, expires_at), 32),
-            " OA  87% 47m   60% 1h"
+            style_at(with_credit(early_weekly, expires_at), 32, 29),
+            palette.overlay0
         );
-        // Drawn whole or not at all.
+        // Further away than the warning period.
+        let later = with_credit(windowed("codex", "Codex", 87, 60), 1_000 + 3 * 86_400);
+        assert_eq!(row(later.clone(), 32), " OA  87% 47m   60% 6d    exp3d");
+        assert_eq!(style_at(later, 32, 29), palette.overlay0);
+        // Already expired; a cached report can still carry it.
         assert_eq!(
-            row(
-                with_credit(windowed("codex", "Codex", 87, 60), expires_at),
-                26
-            ),
+            row(with_credit(windowed("codex", "Codex", 87, 60), 999), 32),
             " OA  87% 47m   60% 6d"
         );
     }
