@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::api::schema::{ProviderUsage, UsageBalance, UsageWindow};
+use crate::api::schema::{ProviderUsage, UsageBalance, UsageResetCredit, UsageWindow};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const RATE_LIMITS_REQUEST_ID: u64 = 2;
@@ -53,7 +53,20 @@ struct Credits {
 #[serde(rename_all = "camelCase")]
 struct ResetCredits {
     #[serde(default)]
-    available_count: u64,
+    credits: Vec<ResetCredit>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetCredit {
+    id: String,
+    #[serde(default)]
+    reset_type: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    title: String,
+    expires_at: Option<u64>,
 }
 
 pub(super) fn fetch() -> Result<ProviderUsage, String> {
@@ -185,16 +198,23 @@ fn parse_result(result: serde_json::Value) -> Result<ProviderUsage, String> {
             }
         }
     }
-    if let Some(resets) = result
+    // `availableCount` carries no expiry, so the list is the source of truth.
+    usage.reset_credits = result
         .rate_limit_reset_credits
-        .filter(|resets| resets.available_count > 0)
-    {
-        let plural = if resets.available_count == 1 { "" } else { "s" };
-        usage.notes.push(format!(
-            "{} free limit reset{plural} available",
-            resets.available_count
-        ));
-    }
+        .map(|resets| resets.credits)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|credit| credit.status == "available")
+        .map(|credit| UsageResetCredit {
+            id: credit.id,
+            kind: credit.reset_type,
+            title: credit.title,
+            expires_at: credit.expires_at,
+        })
+        .collect();
+    usage
+        .reset_credits
+        .sort_by_key(|credit| credit.expires_at.unwrap_or(u64::MAX));
     Ok(usage)
 }
 
@@ -238,7 +258,14 @@ mod tests {
                 "credits": {"hasCredits": false, "unlimited": false, "balance": "0"},
                 "planType": "plus"
             },
-            "rateLimitResetCredits": {"availableCount": 3}
+            "rateLimitResetCredits": {"availableCount": 3, "credits": [
+                {"id": "b", "resetType": "codexRateLimits", "status": "available",
+                 "expiresAt": 1792695118, "title": "Full reset (Weekly + 5 hr)"},
+                {"id": "a", "resetType": "codexRateLimits", "status": "available",
+                 "expiresAt": 1791155613, "title": "Full reset (Weekly + 5 hr)"},
+                {"id": "c", "resetType": "codexRateLimits", "status": "redeemed",
+                 "expiresAt": 1791000000, "title": "Full reset (Weekly + 5 hr)"}
+            ]}
         }))
         .unwrap();
         assert_eq!(usage.plan.as_deref(), Some("Plus"));
@@ -255,7 +282,18 @@ mod tests {
             vec![("five_hour", "5h", 59), ("weekly", "week", 72)]
         );
         assert!(usage.balances.is_empty());
-        assert_eq!(usage.notes, vec!["3 free limit resets available"]);
+        assert!(usage.notes.is_empty());
+        assert_eq!(
+            usage
+                .reset_credits
+                .iter()
+                .map(|credit| (credit.id.as_str(), credit.kind.as_str(), credit.expires_at))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a", "codexRateLimits", Some(1791155613)),
+                ("b", "codexRateLimits", Some(1792695118))
+            ]
+        );
     }
 
     #[test]

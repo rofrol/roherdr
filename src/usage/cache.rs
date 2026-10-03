@@ -44,7 +44,7 @@ pub(super) enum Plan {
     /// Backing off after a rate limit; seconds until the next attempt.
     Blocked(u64),
     /// Another instance observed it recently enough.
-    Fresh(ProviderUsage),
+    Fresh(Box<ProviderUsage>),
     Fetch,
 }
 
@@ -78,7 +78,7 @@ impl UsageCache {
         let fresh_after = now.saturating_sub(interval_secs.saturating_sub(FRESHNESS_SLACK_SECS));
         match &entry.usage {
             Some(usage) if !forced && usage.observed_at.is_some_and(|at| at > fresh_after) => {
-                Plan::Fresh(usage.clone())
+                Plan::Fresh(Box::new(usage.clone()))
             }
             _ => Plan::Fetch,
         }
@@ -158,7 +158,7 @@ mod tests {
 
         assert_eq!(
             cache.plan("claude", 1200, 300, false),
-            Plan::Fresh(observed("claude", 1000))
+            Plan::Fresh(Box::new(observed("claude", 1000)))
         );
         assert_eq!(cache.plan("claude", 1200, 300, true), Plan::Fetch);
         assert_eq!(cache.plan("claude", 1290, 300, false), Plan::Fetch);

@@ -237,7 +237,7 @@ fn refresh(
         for (provider, plan, fetched) in fetched {
             let result = match (plan, fetched) {
                 (Plan::Blocked(retry_in), _) => Err(rate_limited_message(provider, retry_in)),
-                (Plan::Fresh(usage), _) => Ok(usage),
+                (Plan::Fresh(usage), _) => Ok(*usage),
                 (Plan::Fetch, Some(Ok(mut usage))) => {
                     usage.provider = provider.id().to_owned();
                     usage.label = provider.label().to_owned();
