@@ -3307,7 +3307,8 @@ fn the_last_open_job_stays_under_the_folded_line_after_the_focus_returns_to_the_
     let frame = state.compose(106, 30).unwrap();
     assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
 
-    // A restarted server's ids are new: nothing is kept.
+    // A restarted server keeps its tab ids (a live handoff, a restore): the
+    // pin survives.
     state
         .unfolded_squares
         .entry(ClientEndpointId::Local)
@@ -3317,7 +3318,7 @@ fn the_last_open_job_stays_under_the_folded_line_after_the_focus_returns_to_the_
     projected.boot_id = "another boot".into();
     state.set_snapshot(Box::new(projected));
     let frame = state.compose(106, 30).unwrap();
-    assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
+    assert!(frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
 }
 
 #[test]
@@ -3367,4 +3368,55 @@ fn a_kept_job_that_closes_is_forgotten() {
     let frame = state.compose(106, 30).unwrap();
     let line = state.hits.space_tabs[0].0;
     assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
+}
+
+#[test]
+fn a_new_client_restores_the_unfolded_lines_and_the_pinned_jobs() {
+    let path =
+        std::env::temp_dir().join(format!("herdr-shell-job-folds-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let client = || {
+        let mut config = config_with_sidebar_width(26).with_preferences_path(path.clone());
+        config.spaces.tabs = true;
+        let mut state = ClientShellState::new(config);
+        // The first snapshot has every tab, the job too.
+        let mut projected = snapshot();
+        projected.tabs[0].label = "agent tab".into();
+        let mut job = projected.tabs[0].clone();
+        job.tab_id = "job_1".into();
+        job.label = "job job_1".into();
+        job.focused = false;
+        job.parent_tab_id = Some("tab_1".into());
+        job.status = Some(TabStatus::Failed);
+        projected.tabs.push(job);
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        state
+    };
+    let mut state = client();
+    // Unfold, open the job, fold: the job is pinned and saved.
+    click_fold(&mut state);
+    focus_tab(&mut state, "job_1");
+    click_fold(&mut state);
+    focus_tab(&mut state, "tab_1");
+    drop(state);
+
+    let mut state = client();
+    let frame = state.compose(106, 30).unwrap();
+    let line = state.hits.space_tabs[0].0;
+    assert!(
+        frame_rows(&frame)[line.y as usize + 1].contains("job job_1"),
+        "the pin comes back"
+    );
+    // Unfolded lines come back unfolded.
+    click_fold(&mut state);
+    drop(state);
+    let mut state = client();
+    state.compose(106, 30).unwrap();
+    assert_eq!(state.hits.space_tab_squares.len(), 1);
+    assert!(state
+        .unfolded_squares
+        .get(&ClientEndpointId::Local)
+        .is_some_and(|tabs| tabs.contains("tab_1")));
+    let _ = std::fs::remove_file(&path);
 }

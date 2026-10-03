@@ -30,6 +30,20 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+    /// The local server's tab lines whose job squares are unfolded. Tab ids
+    /// are kept across a live handoff and a restore and never reused within
+    /// a space, so they key this directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) unfolded_job_tabs: Vec<String>,
+    /// The local server's job pinned under each folded tab line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) kept_jobs: Vec<ClientKeptJob>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct ClientKeptJob {
+    pub(super) parent_tab_id: String,
+    pub(super) job_tab_id: String,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
