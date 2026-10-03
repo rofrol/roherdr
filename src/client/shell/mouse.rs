@@ -182,14 +182,15 @@ impl ClientShellState {
                 .entry(self.active_endpoint_id.clone())
                 .or_default();
             unfolded.retain(|key| live.contains(key));
-            let unfolded = self
-                .unfolded_squares
-                .entry(self.active_endpoint_id.clone())
-                .or_default();
             if !unfolded.remove(&tab_id) {
                 // Unfolding scrolls the list to show the squares.
                 self.reveal_unfolded_tab = Some(tab_id.clone());
-                unfolded.insert(tab_id);
+                unfolded.insert(tab_id.clone());
+                // Unfolding unpins the job kept under the folded line; a
+                // later fold shows only the job focused at that moment.
+                if let Some(kept) = self.kept_jobs.get_mut(&self.active_endpoint_id) {
+                    kept.remove(&tab_id);
+                }
             }
             return Some(None);
         }
