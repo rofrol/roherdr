@@ -309,6 +309,9 @@ def coordinator_label(rd):
 
 def cmd_self(a):
     calls, _, _ = load()
+    # An empty value (e.g. from a failed `$(...)` lookup) must not fall through to the other option.
+    if not (a.round or a.calls or "").strip():
+        sys.exit("--round or --calls is empty; take the ids from `consult.py recent`")
     if a.round:
         ids = sorted(i for i, c in calls.items() if c.get("round") == a.round)
         if not ids:
