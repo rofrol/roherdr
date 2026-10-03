@@ -510,6 +510,41 @@
     status.
   - Known limit either way: the tables are fitted to the width at launch; a
     resized popup does not regenerate them.
+- [ ] Consult stats per model over time, to spot a silently "nerfed" model
+  (user, 2026-10-03: "what if we showed stats for a model over time? we could
+  detect a nerfed model. How to display those graphs then? ask the models").
+  Log on 2026-10-03: about 7.5 days, DeepSeek ~460 calls, Sol ~175, MiMo 39.
+  `model_version` exists for DeepSeek (`DeepSeek-V4.1-Flash`, one fingerprint),
+  MiMo and Claude, never for the GPT models (Codex does not report it); `usage`
+  has `reasoning` tokens for every vendor. Consulted Sol, DeepSeek and MiMo
+  (round `20261003-023646-4385`), agreeing on:
+  - A drift report, not a "nerf detector": the data can show a change, not
+    its cause. No composite score, no alerts, no all-pairs dashboard.
+  - Primary series: the paired difference against a reference model over
+    shared rounds (reuses `--vs` and its round bootstrap), since pooled rates
+    move with the question mix. My addition: a pair alone cannot say which side
+    moved; rounds with three models (Sol, DeepSeek, MiMo) can, because the side
+    shared by both shifted differences is the one that changed.
+  - Objective companions: output and reasoning tokens per 1k prompt chars
+    (missing is not zero), error rate, latency only as a hint. Version and
+    fingerprint changes are markers on the time axis, not a series.
+  - Demote `unique` per call (depends on who else answered) and pooled useful
+    share (the rater is an LLM and drifts too; MiMo: check whether verdicts
+    correlate with answer length).
+  - Buckets: equal-n blocks (Sol: 50 rated calls; MiMo: rolling 50 shared
+    rounds, at least 30), labelled with their date span, with `n`, rating
+    coverage and a CI (Wilson for rates, round bootstrap for paired
+    differences). Below the minimum print "insufficient n", do not draw.
+    Fix the rule in advance (MiMo: |Δ| >= 15 points with the CI excluding 0 in
+    two consecutive blocks); no change-point detection yet.
+  - Display: text first, as `consult.py trend [--vs A B]` in the existing
+    `page-consult` popup, width-aware like `stats`: one row per block
+    (`span | n | Δ useful [CI] | coverage | errors | tokens | latency`), with
+    version changes marked. Sparklines at most as an extra column (they hide
+    the CI). No kitty-graphics PNG: `less -R` strips graphics escapes, and it
+    would need matplotlib. HTML only for one-off exploration.
+  - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
+    per week; a version bump answers the question without statistics.
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
