@@ -79,6 +79,101 @@ impl App {
         encode_success(id, ResponseResult::AgentStarted { agent, argv })
     }
 
+    pub(super) fn handle_agent_kind_list(&self, id: String) -> String {
+        let path = std::env::var_os("PATH");
+        let on_path = |executable: &str| {
+            path.as_deref().is_some_and(|path| {
+                std::env::split_paths(path)
+                    .filter(|dir| dir.is_absolute())
+                    .any(|dir| crate::pane::is_executable_file(&dir.join(executable)))
+            })
+        };
+        let kinds = crate::detect::Agent::ALL
+            .into_iter()
+            .filter(|agent| on_path(crate::detect::interactive_agent_executable(*agent)))
+            .map(|agent| crate::detect::agent_label(agent).to_string())
+            .collect();
+        encode_success(id, ResponseResult::AgentKindList { kinds })
+    }
+
+    /// A new tab whose shell is handed the agent's command, like a launch
+    /// typed by hand: the agent is not named or managed by Herdr.
+    pub(super) fn handle_tab_create_agent(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabCreateAgentParams,
+    ) -> String {
+        let Some(kind) = crate::detect::parse_canonical_agent_label(&params.kind) else {
+            return encode_error(
+                id,
+                "unsupported_agent_kind",
+                format!("unsupported interactive agent kind {}", params.kind),
+            );
+        };
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return encode_error(
+                id,
+                "workspace_not_found",
+                format!("workspace {} not found", params.workspace_id),
+            );
+        };
+        let response = self.create_tab_in_workspace(
+            id,
+            ws_idx,
+            None,
+            None,
+            params.focus,
+            None,
+            Default::default(),
+        );
+        let Ok(crate::api::schema::SuccessResponse {
+            result: ResponseResult::TabCreated { root_pane, .. },
+            ..
+        }) = serde_json::from_str(&response)
+        else {
+            return response;
+        };
+        if let Err(err) = self.type_agent_launch(&root_pane.pane_id, kind) {
+            tracing::warn!(err, pane = root_pane.pane_id, "could not launch the agent");
+        }
+        response
+    }
+
+    fn type_agent_launch(
+        &mut self,
+        pane_id: &str,
+        kind: crate::detect::Agent,
+    ) -> Result<(), String> {
+        let (ws_idx, pane) = self
+            .parse_current_public_pane_id(pane_id)
+            .ok_or("the new pane is gone")?;
+        let terminal_id = self.state.workspaces[ws_idx]
+            .terminal_id(pane)
+            .cloned()
+            .ok_or("the new pane has no terminal")?;
+        let runtime = self
+            .terminal_runtimes
+            .get(&terminal_id)
+            .ok_or("the new pane has no runtime")?;
+        // A shell that has not reported itself yet is the configured one.
+        let shell = crate::app::agents::available_shell_name(runtime).or_else(|| {
+            let configured = Some(self.state.default_shell.clone())
+                .filter(|shell| !shell.is_empty())
+                .or_else(|| std::env::var("SHELL").ok())?;
+            std::path::Path::new(&configured)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let shell = shell.ok_or("no shell to type the launch into")?;
+        let argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+        let command = crate::platform::interactive_shell_command(&argv, &shell)
+            .ok_or("the launch cannot be encoded for this shell")?;
+        let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
+        runtime
+            .try_send_bytes(Bytes::from(bytes))
+            .map_err(|err| err.to_string())
+    }
+
     pub(crate) fn handle_deferred_agent_api_request(
         &mut self,
         request: crate::api::schema::Request,

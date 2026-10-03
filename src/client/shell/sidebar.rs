@@ -878,30 +878,31 @@ pub(crate) fn render_sidebar(
             grab_color
                 .filter(|_| dragged || pressed)
                 .map(|name| (name, drag_bg)),
+            true,
             config,
         );
         if let Some(chip) = push_status.filter(|_| config.mouse_capture) {
+            // Lit under the pointer, like the buttons after it: that it
+            // opens the branch menu is shown, not told.
+            if state.hovered_name_button
+                == Some((workspace.workspace_id.as_str(), NameLineButton::PushStatus))
+            {
+                target.set_style(chip, Style::default().bg(palette.surface1));
+            }
             block_hits
                 .space_push_status
                 .push((chip, workspace.workspace_id.clone()));
-            block_hits.tooltips.push(super::tooltip::TooltipTarget {
-                rect: chip,
-                id: format!("push-status:{}", workspace.workspace_id),
-                text: push_status_tooltip(workspace),
-                bg: None,
-                starts_at_target: false,
-            });
         }
         if let Some(color) = grab_color {
             // A grip at the name line's right edge, left of the group
-            // chevron (with vertical tabs, left of the new-tab `+`), in the
-            // spacer column the name never reaches.
+            // chevron (with vertical tabs, the last column, right of the
+            // new-tab `+`), in a spacer column the name never reaches.
             let hovered = state.hovered_workspace_id == Some(workspace.workspace_id.as_str());
             if (dragged || pressed || hovered) && rect.width >= 6 {
                 put_text(
                     target,
                     rect.right()
-                        .saturating_sub(if config.spaces.tabs { 3 } else { 2 }),
+                        .saturating_sub(if config.spaces.tabs { 1 } else { 2 }),
                     rect.y,
                     1,
                     "⋮",
@@ -909,20 +910,71 @@ pub(crate) fn render_sidebar(
                 );
             }
         }
-        if config.spaces.tabs && config.mouse_capture && rect.width >= 6 {
-            // A new tab in this space, whichever space is focused.
+        if launch_button_shown(config, rect.width) {
+            // The agent last launched here, left of the `+`: a click starts
+            // it in a new tab, a right click picks another.
+            let kind = super::agent_launch::space_launch_agent(
+                snapshot,
+                state.launched_agents,
+                &workspace.workspace_id,
+            );
+            // Next to the `+`: the two ways to open a tab sit together.
+            let button = Rect::new(rect.right().saturating_sub(7), rect.y, 3, 1);
+            // The chip starts an agent, unlike the plain `+`; its colour is
+            // the agent's, which the tooltip names.
+            let hovered = state.hovered_name_button
+                == Some((workspace.workspace_id.as_str(), NameLineButton::Launch));
+            let (fg, tooltip) = match kind.as_deref() {
+                Some(kind) => (
+                    super::agent_launch::agent_badge_color(kind, palette),
+                    format!("Start {kind} in a new tab · right click: another agent"),
+                ),
+                None => (palette.overlay1, "Start an agent in a new tab".to_owned()),
+            };
+            // No background at rest; hovered, the chip's three columns, all
+            // of them clickable, show as one.
+            let style = Style::default().fg(fg).add_modifier(Modifier::BOLD);
+            let style = if hovered {
+                style.bg(palette.surface1)
+            } else {
+                style
+            };
             put_text(
                 target,
-                rect.right().saturating_sub(1),
-                rect.y,
-                1,
-                "+",
-                Style::default().fg(palette.overlay1),
+                button.x,
+                button.y,
+                button.width,
+                LAUNCH_LABEL,
+                style,
             );
-            block_hits.space_new_tab.push((
-                Rect::new(rect.right().saturating_sub(2), rect.y, 2, 1),
-                workspace.workspace_id.clone(),
-            ));
+            block_hits
+                .space_launch_agent
+                .push((button, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: button,
+                id: format!("launch-agent:{}", workspace.workspace_id),
+                text: tooltip,
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        if config.spaces.tabs && config.mouse_capture && rect.width >= 6 {
+            // A new tab in this space, whichever space is focused.
+            // ` + `: like the launch chip, three columns to click, lit on
+            // hover.
+            let button = Rect::new(rect.right().saturating_sub(4), rect.y, 3, 1);
+            let style = Style::default().fg(palette.overlay1);
+            let style = if state.hovered_name_button
+                == Some((workspace.workspace_id.as_str(), NameLineButton::NewTab))
+            {
+                style.bg(palette.surface1)
+            } else {
+                style
+            };
+            put_text(target, button.x, button.y, button.width, " + ", style);
+            block_hits
+                .space_new_tab
+                .push((button, workspace.workspace_id.clone()));
         }
         let tab_hits = super::space_tabs::render_space_tab_lines(
             target,
@@ -935,7 +987,10 @@ pub(crate) fn render_sidebar(
             &tab_lines,
             workspace.focused,
             squares_width.saturating_sub(super::space_tabs::tab_indent(entry.indented)),
-            state.hovered_square,
+            super::space_tabs::TabLinePointer {
+                square: state.hovered_square,
+                fold: state.hovered_fold,
+            },
             u16::from(show_scrollbar),
             super::space_tabs::tab_indent(entry.indented),
             state.tab_line_drag,
@@ -1560,9 +1615,29 @@ pub(in crate::client::shell) fn render_worktree_trunk(
 }
 
 /// Columns the name line of a space leaves at its right with vertical tabs:
-/// a gap, the drag grip, a gap and the new-tab `+`.
+/// the new-tab ` + ` (its padding is the gaps) and the drag grip.
 const NAME_LINE_ACTIONS_WIDTH: u16 = 4;
 
+/// The launch button: a bold `A` (agent) padded to three columns, all of
+/// them the click target. ASCII, so it keeps its
+/// width in every terminal.
+const LAUNCH_LABEL: &str = " A ";
+
+/// The launch chip, left of the `+`; its padding is the gaps around it.
+const LAUNCH_BUTTON_WIDTH: u16 = 3;
+
+/// Narrower space blocks keep their name rather than show the button.
+const LAUNCH_BUTTON_MIN_WIDTH: u16 = 16;
+
+/// The launch button shows on a space's name line next to its `+`.
+pub(in crate::client::shell) fn launch_button_shown(
+    config: &ClientShellConfig,
+    width: u16,
+) -> bool {
+    config.spaces.tabs && config.mouse_capture && width >= LAUNCH_BUTTON_MIN_WIDTH
+}
+
+#[allow(clippy::too_many_arguments)] // one space's drawing inputs, from two sidebars
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -1577,6 +1652,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // Name colour of a pressed or dragged space and, while dragged, its
     // background, which wins over selected and focused.
     grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
+    // The name line ends in the launch button (the local machine's spaces).
+    launch_button: bool,
     config: &ClientShellConfig,
 ) -> Option<Rect> {
     // Where the push status chip was drawn, for its click and tooltip.
@@ -1588,9 +1665,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
     let vertical_tabs = config.spaces.tabs;
     // Columns left free at the right: the grip's; with vertical tabs the
     // name line also ends in a new-tab `+`, a column apart from the grip.
+    let launch_button = launch_button && launch_button_shown(config, area.width);
     let reserved = |row_index: usize| {
         if vertical_tabs && row_index == 0 {
             NAME_LINE_ACTIONS_WIDTH
+                + if launch_button {
+                    LAUNCH_BUTTON_WIDTH
+                } else {
+                    0
+                }
         } else {
             2
         }
@@ -1682,11 +1765,14 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             right_edge
         };
+        // A column after the chip pads it like the name line's buttons; the
+        // gap before it pads its left.
         let push_right = if jobs_width > 0 {
             jobs_x.saturating_sub(1).max(x)
         } else {
             right_edge
-        };
+        }
+        .saturating_sub(u16::from(!push.is_empty()));
         let push_spans = style_for(&push, usize::from(push_right.saturating_sub(x)));
         let push_width = push_spans
             .iter()
@@ -1698,7 +1784,13 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 Rect::new(push_x, y, push_right.saturating_sub(push_x), 1),
                 buffer,
             );
-            push_status_rect = Some(Rect::new(push_x, y, push_right.saturating_sub(push_x), 1));
+            let pad_x = push_x.saturating_sub(1).max(area.x);
+            push_status_rect = Some(Rect::new(
+                pad_x,
+                y,
+                push_right.saturating_add(1).saturating_sub(pad_x),
+                1,
+            ));
         }
         let name_end = if push_width > 0 {
             push_x.saturating_sub(1).max(x)
@@ -1749,19 +1841,6 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
     }
     push_status_rect
-}
-
-/// What the push status chip says, in words, and that it opens a menu.
-fn push_status_tooltip(workspace: &ClientShellWorkspace) -> String {
-    let branch = workspace.branch.as_deref().unwrap_or("detached HEAD");
-    let status = match workspace.git_ahead_behind {
-        None => "no upstream".to_owned(),
-        Some((0, 0)) => "in sync with its upstream".to_owned(),
-        Some((ahead, 0)) => format!("{ahead} to push"),
-        Some((0, behind)) => format!("{behind} to pull"),
-        Some((ahead, behind)) => format!("{ahead} to push, {behind} to pull"),
-    };
-    format!("{branch}: {status} · click for branches")
 }
 
 /// Where a tab line is inside its space: the rows above it (the space's own

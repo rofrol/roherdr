@@ -43,6 +43,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::WorktreeRemove(_)
             | Method::TabCreate(_)
             | Method::TabCreateChild(_)
+            | Method::TabCreateAgent(_)
             | Method::TabFocus(_)
             | Method::TabRename(_)
             | Method::TabMove(_)

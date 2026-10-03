@@ -98,7 +98,7 @@ impl App {
     /// Creates a tab in a workspace and, with a parent, nests it before any
     /// client sees it, so it never shows as a top-level tab first.
     #[allow(clippy::too_many_arguments)] // the fields of the two create requests
-    fn create_tab_in_workspace(
+    pub(super) fn create_tab_in_workspace(
         &mut self,
         id: String,
         ws_idx: usize,
@@ -1007,5 +1007,68 @@ mod tests {
         assert!(response.contains("tab_create_failed"), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
         shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_agent_opens_a_tab_and_rejects_unknown_kinds() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.workspaces = vec![Workspace::test_new("agents")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let params = |kind: &str| crate::api::schema::TabCreateAgentParams {
+            workspace_id: workspace_id.clone(),
+            kind: kind.into(),
+            focus: true,
+        };
+
+        // An alias or unknown name is refused before any tab exists.
+        for kind in ["claude-code", "vim"] {
+            let response = app.handle_tab_create_agent("req".into(), params(kind));
+            assert!(response.contains("unsupported_agent_kind"), "{response}");
+        }
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+
+        let response = app.handle_tab_create_agent("req".into(), params("claude"));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(
+            matches!(success.result, ResponseResult::TabCreated { .. }),
+            "{response}"
+        );
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn agent_kind_list_names_only_canonical_agents() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let response = app.handle_agent_kind_list("req".into());
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentKindList { kinds } = success.result else {
+            panic!("unexpected response: {response}");
+        };
+        for kind in kinds {
+            assert!(
+                crate::detect::parse_canonical_agent_label(&kind).is_some(),
+                "{kind}"
+            );
+        }
     }
 }

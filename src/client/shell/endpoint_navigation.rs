@@ -28,6 +28,7 @@ impl ClientShellState {
                 .chain(&self.hits.space_tab_squares)
                 .chain(&self.hits.space_new_tab)
                 .chain(&self.hits.space_push_status)
+                .chain(&self.hits.space_launch_agent)
                 .any(|(rect, _)| super::contains(*rect, point)))
         .then(|| {
             self.hits.workspaces.iter().find(|hit| {
@@ -56,6 +57,37 @@ impl ClientShellState {
         .flatten();
         if self.hovered_square != hovered_square {
             self.hovered_square = hovered_square;
+            outcome.repaint = true;
+        }
+        let hovered_button = (mouse.kind == crossterm::event::MouseEventKind::Moved
+            && self.overlay.is_none())
+        .then(|| {
+            let at = |hits: &[(Rect, String)], button| {
+                hits.iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| (workspace_id.clone(), button))
+            };
+            at(&self.hits.space_push_status, NameLineButton::PushStatus)
+                .or_else(|| at(&self.hits.space_launch_agent, NameLineButton::Launch))
+                .or_else(|| at(&self.hits.space_new_tab, NameLineButton::NewTab))
+        })
+        .flatten();
+        if self.hovered_name_button != hovered_button {
+            self.hovered_name_button = hovered_button;
+            outcome.repaint = true;
+        }
+        let hovered_fold = (mouse.kind == crossterm::event::MouseEventKind::Moved
+            && self.overlay.is_none())
+        .then(|| {
+            self.hits
+                .space_tab_folds
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, tab_id)| tab_id.clone())
+        })
+        .flatten();
+        if self.hovered_fold != hovered_fold {
+            self.hovered_fold = hovered_fold;
             outcome.repaint = true;
         }
         if self.hovered_workspace_id != hovered {

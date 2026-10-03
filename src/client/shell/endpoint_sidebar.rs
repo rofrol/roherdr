@@ -599,6 +599,7 @@ pub(super) fn render_expanded(
                     selected,
                     state.selected_workspace_id.is_some(),
                     None,
+                    false,
                     config,
                 );
                 let online = endpoint.status == ClientEndpointStatus::Online;
@@ -613,7 +614,10 @@ pub(super) fn render_expanded(
                     &tab_lines,
                     endpoint_active && workspace.focused,
                     squares_width.saturating_sub(super::space_tabs::tab_indent(entry.indented)),
-                    state.hovered_square.filter(|_| endpoint_active),
+                    super::space_tabs::TabLinePointer {
+                        square: state.hovered_square.filter(|_| endpoint_active),
+                        fold: state.hovered_fold.filter(|_| endpoint_active),
+                    },
                     u16::from(show_scrollbar),
                     super::space_tabs::tab_indent(entry.indented),
                     state.tab_line_drag.filter(|_| endpoint_active),

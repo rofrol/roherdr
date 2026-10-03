@@ -111,6 +111,8 @@ pub enum Method {
     TabCreate(TabCreateParams),
     #[serde(rename = "tab.create_child")]
     TabCreateChild(TabCreateChildParams),
+    #[serde(rename = "tab.create_agent")]
+    TabCreateAgent(TabCreateAgentParams),
     #[serde(rename = "tab.list")]
     TabList(TabListParams),
     #[serde(rename = "tab.get")]
@@ -149,6 +151,8 @@ pub enum Method {
     AgentViewClear(AgentViewClearParams),
     #[serde(rename = "agent.focus")]
     AgentFocus(AgentTarget),
+    #[serde(rename = "agent.kind_list")]
+    AgentKindList(EmptyParams),
     #[serde(rename = "agent.start")]
     AgentStart(AgentStartParams),
     #[serde(rename = "agent.prompt")]

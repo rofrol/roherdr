@@ -1133,6 +1133,10 @@ impl App {
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
             Method::TabGet(target) => return self.handle_tab_get(request.id, target),
             Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
+            Method::TabCreateAgent(params) => {
+                return self.handle_tab_create_agent(request.id, params)
+            }
+            Method::AgentKindList(_) => return self.handle_agent_kind_list(request.id),
             Method::TabCreateChild(params) => {
                 return self.handle_tab_create_child(request.id, params);
             }

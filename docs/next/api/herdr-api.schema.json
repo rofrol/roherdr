@@ -4468,6 +4468,27 @@
           ],
           "type": "object"
         },
+        "TabCreateAgentParams": {
+          "description": "Creates a tab running an interactive agent, typed into its new shell as\nif the user had launched it there.",
+          "properties": {
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "kind": {
+              "description": "A canonical agent id, as `agent.kind_list` returns.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "kind"
+          ],
+          "type": "object"
+        },
         "TabCreateChildParams": {
           "description": "Creates a tab already nested under a top-level tab, in that tab's\nworkspace, so it never shows as a top-level tab first. A separate method\nfrom `tab.create`, whose shape is frozen: an older server rejects this one\ninstead of ignoring the parent and creating a top-level tab.",
           "properties": {
@@ -5591,6 +5612,22 @@
         {
           "properties": {
             "method": {
+              "const": "tab.create_agent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabCreateAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "tab.list",
               "type": "string"
             },
@@ -5884,6 +5921,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.kind_list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
             }
           },
           "required": [
@@ -10354,6 +10407,26 @@
                 "type",
                 "agent",
                 "argv"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Canonical ids of the interactive agents whose executable is on the\nserver's `PATH`, in Herdr's agent order.",
+              "properties": {
+                "kinds": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agent_kind_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "kinds"
               ],
               "type": "object"
             },

@@ -2154,7 +2154,7 @@ fn shell_mode_uses_login_shell(
     }
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };

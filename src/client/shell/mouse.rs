@@ -2538,6 +2538,16 @@ impl ClientShellState {
                 if self.on_gone_square(point) {
                     return;
                 }
+                let launch = self
+                    .hits
+                    .space_launch_agent
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .cloned();
+                if let Some((button, workspace_id)) = launch {
+                    self.open_agent_picker(workspace_id, button, outcome);
+                    return;
+                }
                 if let Some(tab_id) = self.space_tab_at(point) {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -2853,6 +2863,17 @@ impl ClientShellState {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     outcome.repaint = true;
                     self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                // The launch button starts its agent in a new tab.
+                let launch = self
+                    .hits
+                    .space_launch_agent
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .cloned();
+                if let Some((button, workspace_id)) = launch {
+                    self.click_launch_button(workspace_id, button, outcome);
                     return;
                 }
                 // The push status chip opens the space's branch menu.

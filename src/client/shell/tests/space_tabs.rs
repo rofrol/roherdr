@@ -214,7 +214,8 @@ fn the_triangle_before_the_counts_folds_and_unfolds_the_squares() {
     let fold_line = frame_rows(&frame)[fold.y as usize]
         .chars()
         .collect::<Vec<_>>();
-    assert_eq!(fold_line[fold.x as usize], '►');
+    // The target starts at the padding column before the triangle.
+    assert_eq!(fold_line[fold.x as usize + 1], '►');
     assert_eq!(state.hits.space_tab_folds.len(), 1);
     let outcome = click_fold(&mut state);
     assert!(!focuses(&outcome, "tab_1"));
@@ -242,7 +243,7 @@ fn the_triangle_before_the_counts_folds_and_unfolds_the_squares() {
     // The first square starts under the tab's fill, past the state icon.
     assert_eq!(square.x, line.x + 5);
     let fold_line = rows[line.y as usize].chars().collect::<Vec<_>>();
-    assert_eq!(fold_line[fold.x as usize], '▼');
+    assert_eq!(fold_line[fold.x as usize + 1], '▼');
 
     click_fold(&mut state);
     state.compose(106, 30).unwrap();
@@ -1039,9 +1040,12 @@ fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
     let row = frame_rows(&frame)[plus.y as usize]
         .chars()
         .collect::<Vec<_>>();
+    // ` + `, all three columns clickable, before the grip at the edge.
+    assert_eq!(plus.width, 3);
     assert_eq!(row[plus.x as usize + 1], '+');
+    assert_eq!(plus.right(), space.right() - 1);
 
-    let outcome = left_click(&mut state, (plus.x + 1, plus.y));
+    let outcome = left_click(&mut state, (plus.x, plus.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::TabCreate(params)
@@ -3440,8 +3444,8 @@ fn the_push_status_chip_opens_a_branch_menu_titled_like_the_chip() {
     };
     // The chip is on the name line; there is no branch line under it.
     // A narrow sidebar cuts the name, never the chip.
-    assert!(rows[chip.y as usize].contains("client-…"), "{rows:?}");
-    assert_eq!(at(&rows[chip.y as usize], chip), "feat-x ↑3");
+    assert!(rows[chip.y as usize].contains("cli…"), "{rows:?}");
+    assert_eq!(at(&rows[chip.y as usize], chip), " feat-x ↑3 ");
     assert!(!rows[chip.y as usize + 1].contains("feat-x"), "{rows:?}");
 
     // A click opens the menu at once and asks the server for the branches.
@@ -3453,7 +3457,7 @@ fn the_push_status_chip_opens_a_branch_menu_titled_like_the_chip() {
     let frame = state.compose(106, 30).unwrap();
     let rows = frame_rows(&frame);
     // The menu's title covers the chip with the same text.
-    assert_eq!(at(&rows[chip.y as usize], chip), "feat-x ↑3", "{rows:?}");
+    assert_eq!(at(&rows[chip.y as usize], chip), " feat-x ↑3 ", "{rows:?}");
     assert!(rows[chip.y as usize + 1].contains("loading…"), "{rows:?}");
 
     let branch = |name: &str, current: bool, ahead, behind, gone: bool, upstream: bool| {
@@ -3512,4 +3516,192 @@ fn a_branch_list_for_another_space_leaves_the_open_menu_loading() {
     assert!(!repaint);
     let frame = state.compose(106, 30).unwrap();
     assert!(frame_rows(&frame)[chip.y as usize + 1].contains("loading…"));
+}
+
+fn right_click(state: &mut ClientShellState, (column, row): (u16, u16)) -> ClientShellInput {
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn launched_agent(outcome: &ClientShellInput) -> Option<(String, String)> {
+    outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::Endpoint { request, .. } => match &request.method {
+            crate::api::schema::Method::TabCreateAgent(params) => {
+                Some((params.workspace_id.clone(), params.kind.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[test]
+fn the_launch_button_repeats_the_spaces_agent_and_its_menu_offers_the_others() {
+    let mut state = state_with_tabs(true);
+    let frame = state.compose(106, 30).unwrap();
+    let (button, workspace_id) = state.hits.space_launch_agent[0].clone();
+    assert_eq!(workspace_id, "ws_1");
+    let rows = frame_rows(&frame);
+    let at = |row: &str, rect: Rect| {
+        row.chars()
+            .skip(rect.x as usize)
+            .take(rect.width as usize)
+            .collect::<String>()
+    };
+    // An `A` chip, not the agent's letters; the tooltip names claude. With
+    // one agent in the space its tab line has no badge.
+    assert_eq!(at(&rows[button.y as usize], button), " A ", "{rows:?}");
+    assert!(state
+        .hits
+        .tooltips
+        .iter()
+        .any(|target| target.rect == button && target.text.starts_with("Start claude")));
+    assert!(
+        rows[button.y as usize + 1].contains("▌agent tab"),
+        "{rows:?}"
+    );
+
+    let outcome = left_click(&mut state, (button.x, button.y));
+    assert_eq!(
+        launched_agent(&outcome),
+        Some(("ws_1".into(), "claude".into()))
+    );
+
+    // A right click lists the installed agents but claude.
+    let outcome = right_click(&mut state, (button.x, button.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::AgentKindList(_)))));
+    let (repaint, _) = state.complete_agent_kind_list(
+        "ws_1".into(),
+        Ok(crate::api::schema::ResponseResult::AgentKindList {
+            kinds: vec!["pi".into(), "claude".into(), "codex".into()],
+        }),
+    );
+    assert!(repaint);
+    state.compose(106, 30).unwrap();
+    let rows = state.hits.context_menu_rows.clone();
+    assert_eq!(rows.len(), 2);
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame);
+    assert!(text[rows[0].0.y as usize].contains(" pi "), "{text:?}");
+    assert!(text[rows[1].0.y as usize].contains(" codex "), "{text:?}");
+
+    // Picking codex launches it, and the button repeats it from then on.
+    let outcome = left_click(&mut state, (rows[1].0.x + 1, rows[1].0.y));
+    assert_eq!(
+        launched_agent(&outcome),
+        Some(("ws_1".into(), "codex".into()))
+    );
+    state.compose(106, 30).unwrap();
+    let (button, _) = state.hits.space_launch_agent[0].clone();
+    assert!(state
+        .hits
+        .tooltips
+        .iter()
+        .any(|target| target.rect == button && target.text.starts_with("Start codex")));
+}
+
+#[test]
+fn tab_lines_show_agent_badges_only_where_agents_differ() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.number = 2;
+    tab.label = "review".into();
+    tab.focused = false;
+    projected.tabs.push(tab);
+    let mut agent = projected.agents[0].clone();
+    agent.pane_id = "pane_2".into();
+    agent.tab_id = "tab_2".into();
+    agent.agent = Some("codex".into());
+    agent.focused = false;
+    projected.agents.push(agent);
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("CL agent tab"), "{text}");
+    assert!(text.contains("CX review"), "{text}");
+}
+
+#[test]
+fn the_launch_button_without_any_agent_opens_the_picker() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents.clear();
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let (button, _) = state.hits.space_launch_agent[0].clone();
+    let outcome = left_click(&mut state, (button.x, button.y));
+    assert_eq!(launched_agent(&outcome), None);
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::AgentKindList(_)))));
+}
+
+#[test]
+fn the_name_line_buttons_light_up_under_the_pointer() {
+    let mut state = state_with_tabs(true);
+    state.compose(106, 30).unwrap();
+    let (plus, _) = state.hits.space_new_tab[0].clone();
+    let (launch, _) = state.hits.space_launch_agent[0].clone();
+    // The snapshot's `main` has no upstream: the chip names the branch.
+    let (chip, _) = state.hits.space_push_status[0].clone();
+    let surface = crate::protocol::color_to_u32(state.config.palette.surface1);
+    let lit = |state: &mut ClientShellState, rect: Rect| {
+        let frame = state.compose(106, 30).unwrap();
+        (rect.x..rect.right())
+            .all(|x| frame.cells[rect.y as usize * frame.width as usize + x as usize].bg == surface)
+    };
+    assert!(!lit(&mut state, plus) && !lit(&mut state, launch) && !lit(&mut state, chip));
+    for (target, other) in [(plus, launch), (launch, chip), (chip, plus)] {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            // A padding column counts as the button.
+            column: target.x,
+            row: target.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        assert!(lit(&mut state, target));
+        assert!(!lit(&mut state, other));
+    }
+}
+
+#[test]
+fn a_tab_lines_job_summary_lights_up_under_the_pointer_with_its_padding() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Running);
+    state.compose(106, 30).unwrap();
+    let (fold, tab_id) = state.hits.space_tab_folds[0].clone();
+    assert_eq!(tab_id, "tab_1");
+    let frame = state.compose(106, 30).unwrap();
+    let row = frame_rows(&frame)[fold.y as usize].clone();
+    let text = row
+        .chars()
+        .skip(fold.x as usize)
+        .take(fold.width as usize)
+        .collect::<String>();
+    // The gap before the triangle and the fill's last column pad it.
+    assert!(text.starts_with(" ►") && text.ends_with(' '), "{text:?}");
+    let bg_at = |frame: &FrameData, x: u16| {
+        frame.cells[fold.y as usize * frame.width as usize + x as usize].bg
+    };
+    let rest = bg_at(&frame, fold.x + 1);
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: fold.x,
+        row: fold.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let frame = state.compose(106, 30).unwrap();
+    let lit = bg_at(&frame, fold.x);
+    assert_ne!(lit, rest);
+    assert!((fold.x..fold.right()).all(|x| bg_at(&frame, x) == lit));
+    // The label left of it keeps the line's fill.
+    assert_eq!(bg_at(&frame, fold.x - 1), rest);
 }

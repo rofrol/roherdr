@@ -104,6 +104,11 @@ pub enum ResponseResult {
         agent: AgentInfo,
         argv: Vec<String>,
     },
+    /// Canonical ids of the interactive agents whose executable is on the
+    /// server's `PATH`, in Herdr's agent order.
+    AgentKindList {
+        kinds: Vec<String>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

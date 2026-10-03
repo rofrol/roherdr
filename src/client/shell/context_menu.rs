@@ -125,6 +125,21 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Bookmark { .. } => {
                 vec![item("Remove from bookmarks", Action::ToggleBookmark)]
             }
+            ClientContextMenuTarget::AgentPicker { current, kinds, .. } => match kinds {
+                None => vec![item("loading…", Action::Dismiss)],
+                Some(Err(message)) => vec![item(message, Action::Dismiss)],
+                Some(Ok(kinds)) => {
+                    let agents = super::agent_launch::picker_agents(kinds, current.as_deref());
+                    if agents.is_empty() {
+                        return vec![item("no other agents installed", Action::Dismiss)];
+                    }
+                    agents
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, kind)| item(kind, Action::LaunchAgent(index)))
+                        .collect()
+                }
+            },
             ClientContextMenuTarget::Branches { branches, .. } => match branches {
                 None => vec![item("loading…", Action::Dismiss)],
                 Some(Err(message)) => vec![item(message, Action::Dismiss)],
@@ -339,11 +354,12 @@ impl ClientShellState {
             ahead_behind: workspace.git_ahead_behind,
             branches: None,
         };
-        // The title starts two columns into the menu, after the corner and
-        // a space: there it covers the chip's text.
+        // The chip's text starts after its padding column; the title starts
+        // two columns into the menu, after the corner and a space: there it
+        // covers the chip's text.
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target,
-            x: chip.x.saturating_sub(2),
+            x: chip.x.saturating_sub(1),
             y: chip.y,
             highlighted: usize::MAX,
         }));
@@ -445,6 +461,21 @@ impl ClientShellState {
                 );
             }
             ClientContextMenuTarget::Branches { .. } => {}
+            ClientContextMenuTarget::AgentPicker {
+                workspace_id,
+                current,
+                kinds: Some(Ok(kinds)),
+            } => {
+                if let ClientContextMenuAction::LaunchAgent(index) = action {
+                    let picked = super::agent_launch::picker_agents(&kinds, current.as_deref())
+                        .get(index)
+                        .map(|kind| kind.to_string());
+                    if let Some(kind) = picked {
+                        self.launch_agent(workspace_id, kind, outcome);
+                    }
+                }
+            }
+            ClientContextMenuTarget::AgentPicker { .. } => {}
             ClientContextMenuTarget::SortSpaces(_) => {
                 if let ClientContextMenuAction::SortSpaces(key) = action {
                     self.space_sort = self.space_sort.clicked(key);
