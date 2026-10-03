@@ -8,21 +8,25 @@
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
   consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
-  consult.py stats [--days N] [--pairs] [--all] [--by-alias]
-  consult.py stats --vs A B [--since ROUND] [--rounds N] [--by-alias]   # head-to-head over shared rounds
-  consult.py recent [-n N]
+  consult.py stats [--days N] [--pairs] [--all] [--by-alias] [--width N]
+  consult.py stats --vs A B [--since ROUND] [--rounds N] [--by-alias] [--width N]   # head-to-head over shared rounds
+  consult.py recent [-n N] [--width N]
+
+--width N fits the output to N columns for a pager (the plugin's popups): a wider table is split into bands that each
+repeat the name column, prose is reflowed. Without it the output is unchanged, one line per row, for scripts and agents.
 
 Data: $CONSULT_LOG or ~/.local/state/consult/log.jsonl (one JSON object per line; ratings are separate lines).
 Usage is normalized by the ask_* scripts: input includes cached, output includes reasoning (both are subsets).
 """
-import argparse, json, math, os, random, re, statistics, sys, time, uuid
+import argparse, json, math, os, random, re, statistics, sys, textwrap, time, uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 
 LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log.jsonl"))
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
 USAGE_KEYS = ("input", "cached", "output", "reasoning")
-PAIR_REF = {"gpt": "gpt-6-astra"}  # reference model for --pairs, when it is in the group
+PAIR_REF = {"gpt": "gpt-6-astra"}
+MIN_WIDTH = 40  # below this the name column (at least 34 wide) leaves no room for a number  # reference model for --pairs, when it is in the group
 # Why a call failed. `limit` covers both rate limits and exhausted plans (the vendors' texts do not separate them
 # reliably). Calls logged before error kinds existed have none and show as `unknown`; `other` means a reason was
 # seen but not recognized.
@@ -101,16 +105,64 @@ def name_width(labels, floor=34):
     return max([floor, *map(len, labels)])
 
 
-def table(header, rows, align):
+def table(header, rows, align, width=None, groups=None):
     """Lines of a plain-text table, rule included: each column as wide as its widest cell or header (the name
-    column at least `name_width`'s floor), aligned per `align` ('<' or '>' per column); no trailing spaces."""
+    column at least `name_width`'s floor), aligned per `align` ('<' or '>' per column); no trailing spaces.
+
+    With `width`, a table wider than that is split into bands, blank-line separated, each a whole table with the
+    name column, the header and every row in the same order, so no number loses its label when a pager scrolls.
+    `groups` lists how many of the columns after the name belong together (default: each alone); a band takes
+    whole groups in order and splits a group only when it does not fit next to the name column alone. When some
+    column does not fit next to the name even alone, the table stays whole for the pager to wrap: one band per
+    column would be no easier to read, and labels are never cut."""
     widths = [max([len(h), *(len(r[i]) for r in rows)]) for i, h in enumerate(header)]
     widths[0] = name_width([header[0], *(r[0] for r in rows)])
 
-    def line(cells):
+    def line(cells, cols):
         assert len(cells) == len(header), (cells, header)
-        return " ".join(f"{c:{a}{w}}" for c, a, w in zip(cells, align, widths)).rstrip()
-    return [line(header), "-" * (sum(widths) + len(widths) - 1), *map(line, rows)]
+        return " ".join(f"{cells[i]:{align[i]}{widths[i]}}" for i in cols).rstrip()
+
+    def block(cols):
+        return [line(header, cols), "-" * (sum(widths[i] + 1 for i in cols) - 1), *(line(r, cols) for r in rows)]
+
+    def fits(cols):
+        return sum(widths[i] + 1 for i in [0, *cols]) - 1 <= width
+
+    cols = list(range(1, len(header)))
+    if not width or fits(cols) or not all(fits([c]) for c in cols):
+        return block([0, *cols])
+    sizes = groups or [1] * len(cols)
+    assert sum(sizes) == len(cols), (sizes, header)
+    bands, band, start = [], [], 0
+    for n in sizes:
+        group, start = cols[start:start + n], start + n
+        for part in [group] if fits(group) else [[c] for c in group]:
+            if band and not fits(band + part):
+                bands.append(band)
+                band = []
+            band += part
+    bands.append(band)
+    lines = []
+    for band in bands:
+        lines += [""] * bool(lines) + block([0, *band])
+    return lines
+
+
+def say(text, width=None, items=False):
+    """Print prose. With `width` it is reflowed to fit: as one paragraph, or with `items` line by line, each line
+    an item whose continuation is indented. Words are never broken, so a longer word overflows. Leading blank
+    lines stay, they separate sections."""
+    if not width:
+        print(text)
+        return
+    body = text.lstrip("\n")
+    lead = text[:len(text) - len(body)]
+    wrap = dict(width=width, break_long_words=False, break_on_hyphens=False)
+    if items:
+        lines = [part for item in body.split("\n") for part in textwrap.wrap(item, subsequent_indent="  ", **wrap) or [""]]
+    else:
+        lines = textwrap.wrap(" ".join(body.split("\n")), **wrap)
+    print(lead + "\n".join(lines))
 
 
 def strip_via(model):
@@ -272,7 +324,7 @@ def bootstrap_ci(rounds, stat, n=2000, seed=0):
     return vals[int(0.025 * n)], vals[int(0.975 * n) - 1]
 
 
-def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None):
+def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None, width=None):
     """Head-to-head of two models over the rounds where both answered and were rated (same prompt). A pattern matches
     a row label (`skill/model...`) by substring, case-insensitive. Numbers only: a trial's pass rule is judged by
     the reader, not encoded here."""
@@ -299,10 +351,10 @@ def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None):
     if limit:
         shared = shared[:limit]
     names = display_names(c for _, *pair in shared for c in pair)
-    print(f"{a_pat} vs {b_pat}: {len(shared)} shared rated rounds" + (f" ({shared[0][0]} .. {shared[-1][0]})" if shared else "")
-          + (f"; {later} later rounds left out by --rounds" if later else ""))
-    print(f"left out: {only[0]} rounds with only {a_pat}, {only[1]} with only {b_pat}, {unrated} not fully rated, "
-          f"{ambiguous} where a pattern matched two calls")
+    say(f"{a_pat} vs {b_pat}: {len(shared)} shared rated rounds" + (f" ({shared[0][0]} .. {shared[-1][0]})" if shared else "")
+        + (f"; {later} later rounds left out by --rounds" if later else ""), width, items=True)
+    say(f"left out: {only[0]} rounds with only {a_pat}, {only[1]} with only {b_pat}, {unrated} not fully rated, "
+        f"{ambiguous} where a pattern matched two calls", width, items=True)
     if not shared:
         return
     rows = []
@@ -317,7 +369,7 @@ def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None):
                      ktok(sum(outs) / len(outs)) if outs else "-",
                      secs(p50([c["seconds"] for c in cs if c.get("seconds") is not None]))])
     header = ["model", "rounds", "findings", "accepted", "rejected", "uniq/call", "acc/call", "out/call", "p50 s"]
-    print("\n".join(table(header, rows, "<>>>>>>>>")))
+    print("\n".join(table(header, rows, "<>>>>>>>>", width, groups=[1, 3, 2, 2])))
 
     def uniq_diff(rs):
         return sum((ratings[x["id"]].get("unique") or 0) - (ratings[y["id"]].get("unique") or 0) for _, x, y in rs) / len(rs)
@@ -328,11 +380,12 @@ def print_vs(calls, ratings, a_pat, b_pat, since=None, limit=None):
         return 100 * (share[0] - share[1])
     d = [(ratings[x["id"]].get("unique") or 0) - (ratings[y["id"]].get("unique") or 0) for _, x, y in shared]
     lo, hi = bootstrap_ci(shared, uniq_diff)
-    print(f"paired uniq/call {a_pat} - {b_pat}: {uniq_diff(shared):+.2f} (95% CI {lo:+.2f}..{hi:+.2f}), "
-          f"rounds W/T/L {sum(x > 0 for x in d)}/{sum(x == 0 for x in d)}/{sum(x < 0 for x in d)}")
+    say(f"paired uniq/call {a_pat} - {b_pat}: {uniq_diff(shared):+.2f} (95% CI {lo:+.2f}..{hi:+.2f}), "
+        f"rounds W/T/L {sum(x > 0 for x in d)}/{sum(x == 0 for x in d)}/{sum(x < 0 for x in d)}", width, items=True)
     lo, hi = bootstrap_ci(shared, rejected_diff)
-    print(f"rejected share {a_pat} - {b_pat}: {rejected_diff(shared):+.1f} points (95% CI {lo:+.1f}..{hi:+.1f})")
-    print("CI: percentile bootstrap over whole rounds (2000 resamples, seed 0); descriptive with this few rounds.")
+    say(f"rejected share {a_pat} - {b_pat}: {rejected_diff(shared):+.1f} points (95% CI {lo:+.1f}..{hi:+.1f})",
+        width, items=True)
+    say("CI: percentile bootstrap over whole rounds (2000 resamples, seed 0); descriptive with this few rounds.", width)
 
 
 def cmd_stats(a):
@@ -342,7 +395,7 @@ def cmd_stats(a):
     if not a.by_alias:
         calls = by_version(calls)
     if a.vs:
-        print_vs(calls, ratings, *a.vs, since=a.since, limit=a.rounds)
+        print_vs(calls, ratings, *a.vs, since=a.since, limit=a.rounds, width=a.width)
         return
     rows = defaultdict(lambda: defaultdict(float))
     lat = defaultdict(list)  # seconds of ok calls, per row
@@ -374,9 +427,10 @@ def cmd_stats(a):
         return
     extra = a.all or a.pairs
     names = display_names(calls.values())
-    header = ["skill/model", "uniq/call", "wrong", "rated", "err"]
+    header, groups = ["skill/model", "uniq/call", "wrong", "rated", "err"], [4]
     if extra:
         header += ["score", "acc/find", "unique", "lat n", "p50 s", "p90 s", "out/call"]
+        groups += [3, 3, 1]  # rating, latency, tokens
     lines = []
     # Anecdotal rows (under 5 rated calls) go last, so a lucky 2/2 does not top the table.
     for k, s in sorted(rows.items(), key=lambda kv: (kv[1]["rated"] < 5,
@@ -393,24 +447,24 @@ def cmd_stats(a):
             out = ktok(s["out"] / s["used"]) if s["used"] else "-"
             line += [score, acc, str(int(s["unique"])), str(len(lat[k])), secs(p50(lat[k])), secs(p90(lat[k])), out]
         lines.append(line)
-    print("\n".join(table(header, lines, "<" + ">" * (len(header) - 1))))
-    print("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
+    print("\n".join(table(header, lines, "<" + ">" * (len(header) - 1), a.width, groups)))
+    say("\nuniq/call: accepted findings nobody else (Claude, other models) had, per rated call — depends on who else was asked;\n"
           "wrong: share of findings rejected on verification (not necessarily false; also irrelevant or unverifiable), pooled\n"
           "over rated calls; rated: rated/all calls, unrated ones are left out; err: calls that failed (no answer), not wrong answers.\n"
           "Rows under 5 rated calls are anecdotal and sorted last. --all adds @high history, score, speed, tokens and the coordinator table.\n"
           "Models are named by the version the provider reported; a row named by an alias (deepseek/deepseek-flash) holds calls\n"
           "logged before versions were recorded, of unknown version. --by-alias merges them. A provider that only repeats\n"
-          "the model's author (`via Xiaomi` on xiaomi/...) is not shown.")
+          "the model's author (`via Xiaomi` on xiaomi/...) is not shown.", a.width)
     if extra:
-        print("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.\n"
+        say("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.\n"
               "lat n, p50 s, p90 s: wrapper wall-clock seconds of ok calls (median; nearest-rank p90, shown from 10 calls on).\n"
-              "Failed calls are left out of the latency columns; their time counts in the rounds table (--all).")
+              "Failed calls are left out of the latency columns; their time counts in the rounds table (--all).", a.width)
     if a.pairs:
-        print_pairs(calls, ratings, names)
+        print_pairs(calls, ratings, names, a.width)
     if not a.all:
         return
-    print_errors(kinds, rows, names)
-    print_rounds(calls, since, names)
+    print_errors(kinds, rows, names, a.width)
+    print_rounds(calls, since, names, a.width)
     selves = defaultdict(lambda: defaultdict(float))
     for rd in rounds.values():
         if rd["ts"] < since:
@@ -428,12 +482,12 @@ def cmd_stats(a):
             lines.append([k, str(int(s["rounds"])), acc, *(str(int(s[x])) for x in ("refuted", "unique", "missed")),
                           recall])
         header = ["coordinator", "rounds", "acc/find", "refuted", "unique", "missed", "recall"]
-        print("\n" + "\n".join(table(header, lines, "<>>>>>>")))
-        print("\nrefuted: Claude's own claims disproved (by a consulted model or verification); missed: accepted findings of consulted models "
-              "Claude did not have; recall: accepted / (accepted + missed), i.e. against findings anyone discovered.")
+        print("\n" + "\n".join(table(header, lines, "<>>>>>>", a.width)))
+        say("\nrefuted: Claude's own claims disproved (by a consulted model or verification); missed: accepted findings of consulted models "
+              "Claude did not have; recall: accepted / (accepted + missed), i.e. against findings anyone discovered.", a.width)
 
 
-def print_errors(kinds, rows, names):
+def print_errors(kinds, rows, names, width=None):
     """Failed calls per row, by kind; `unknown` holds calls logged before kinds were recorded."""
     kinds = {k: c for k, c in kinds.items() if k in rows}
     if not kinds:
@@ -443,7 +497,7 @@ def print_errors(kinds, rows, names):
     for k, c in sorted(kinds.items(), key=lambda kv: -sum(kv[1].values())):
         parts = ", ".join(f"{n} {kind}" for kind, n in sorted(c.items(), key=lambda kv: order.get(kv[0], 99)))
         lines.append([names.get(k, k), str(sum(c.values())), parts])
-    print("\n" + "\n".join(table(["errors by kind", "n", "kinds"], lines, "<><")))
+    print("\n" + "\n".join(table(["errors by kind", "n", "kinds"], lines, "<><", width)))
 
 
 def round_finishes(calls, since=0):
@@ -476,7 +530,7 @@ def round_table(calls, since=0):
     return stats
 
 
-def print_rounds(calls, since, names):
+def print_rounds(calls, since, names, width=None):
     stats = round_table(calls, since)
     if not stats:
         return
@@ -487,13 +541,13 @@ def print_rounds(calls, since, names):
         lines.append([names.get(k, k), str(s["rounds"]), f'{s["last"]}/{s["rounds"]}', str(s["last_err"]),
                       secs(p50(s["gaps"])), f"{total / 60:.0f} min" if total >= 600 else f"{total} s"])
     header = ["rounds (2+ models)", "rounds", "last", "failed", "gap p50", "gap sum"]
-    print("\n" + "\n".join(table(header, lines, "<>>>>>")))
-    print("last: rounds it finished last, alone; failed: of those, how many ended in an error (time spent waiting for a\n"
+    print("\n" + "\n".join(table(header, lines, "<>>>>>", width)))
+    say("last: rounds it finished last, alone; failed: of those, how many ended in an error (time spent waiting for a\n"
           "failure); gap: seconds between its end and the next model's end in those rounds (by logged end time), so\n"
-          "gap sum is how long rounds waited for it alone. Rounds joined differ between models: compare last/rounds.")
+          "gap sum is how long rounds waited for it alone. Rounds joined differ between models: compare last/rounds.", width)
 
 
-def print_pairs(calls, ratings, names):
+def print_pairs(calls, ratings, names, width=None):
     """Token efficiency per model, and paired token ratios within rounds (same prompt, mode and effort)."""
     usable = [c for c in calls.values() if c["status"] == "ok" and out_tokens(c)]
     eff = defaultdict(lambda: defaultdict(float))
@@ -508,10 +562,10 @@ def print_pairs(calls, ratings, names):
     lines = [[names.get(k, k), str(int(s["n"])), ktok(s["out"]), f'{1e6 * s["accepted"] / s["out"]:.1f}',
               f'{1e5 * s["score"] / s["out"]:.2f}'] for k, s in sorted(eff.items())]
     header = ["efficiency (rated, with usage)", "n", "out tok", "acc/1M out", "score/100k"]
-    print("\n" + "\n".join(table(header, lines, "<>>>>")))
+    print("\n" + "\n".join(table(header, lines, "<>>>>", width)))
     if not eff:
         print("(no rated calls with token usage yet)")
-    print("sums over calls, not means of per-call ratios; n<5 is anecdotal.")
+    say("sums over calls, not means of per-call ratios; n<5 is anecdotal.", width)
 
     # Pair each model with its vendor's reference: PAIR_REF, else the model in most shared rounds of that
     # skill/mode/effort (ties: alphabetical).
@@ -543,8 +597,9 @@ def print_pairs(calls, ratings, names):
                 cfg = "/".join(x for x in (effort, "-r" if mode == "repo" else "") if x)
                 lines.append(f'{skill} {model} vs {ref}{" [" + cfg + "]" if cfg else ""}: {len(logs)} rounds · '
                              f'out tokens {geo:.2f}× {spread} · score W/T/L {wtl[0]}/{wtl[1]}/{wtl[2]}')
-    print("\npaired within rounds (geometric mean of per-round output-token ratios)")
-    print("\n".join(lines) if lines else "(no rounds with token usage yet; set CONSULT_ROUND for parallel calls)")
+    say("\npaired within rounds (geometric mean of per-round output-token ratios)", width)
+    say("\n".join(lines) if lines else "(no rounds with token usage yet; set CONSULT_ROUND for parallel calls)", width,
+        items=True)
 
 
 def cmd_recent(a):
@@ -558,12 +613,12 @@ def cmd_recent(a):
         rated = f'{r["verdict"]} {r.get("accepted") or 0}/{r.get("findings") or 0} u{r.get("unique") or 0}' if r else "unrated"
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["ts"]))
         status = c["status"] if c["status"] == "ok" else f'{c["status"]}:{c.get("error_kind") or "unknown"}'
-        print(f'{c["id"]}  {when}  {names[label(c)]:{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
-              f'{Path(c.get("cwd") or "").name}')
+        say(f'{c["id"]}  {when}  {names[label(c)]:{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
+            f'{Path(c.get("cwd") or "").name}', a.width, items=True)
     covered = {i for rd in rounds.values() for i in rd["calls"].split(",")}
     todo = sorted(i for i in calls if i not in covered and i in ratings)
     if todo:
-        print(f"\nrated calls without a coordinator (self) entry: {', '.join(todo)}")
+        say(f"\nrated calls without a coordinator (self) entry: {', '.join(todo)}", a.width, items=True)
 
 
 def main():
@@ -606,7 +661,12 @@ def main():
     s.add_argument("--since", metavar="ROUND", help="with --vs: only rounds after this round id")
     s.add_argument("--rounds", type=int, metavar="N", help="with --vs: only the first N shared rounds")
     n = sub.add_parser("recent"); n.add_argument("-n", type=int, default=20)
+    for q in (s, n):
+        q.add_argument("--width", type=int, metavar="N", help=f"fit the output to N columns (at least {MIN_WIDTH}): wide "
+                       "tables split into bands that repeat the name column, prose is reflowed; for a pager")
     a = p.parse_args()
+    if getattr(a, "width", None) is not None and a.width < MIN_WIDTH:
+        p.error(f"--width must be at least {MIN_WIDTH}")
     if a.cmd == "log" and a.status == "ok" and (a.error_kind or a.error_text_file):
         p.error("--error-kind/--error-text-file only go with --status error")
     {"log": cmd_log, "new-round": cmd_new_round, "rate": cmd_rate, "self": cmd_self, "stats": cmd_stats,

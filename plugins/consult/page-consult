@@ -1,0 +1,25 @@
+#!/bin/sh
+# Pages `consult.py <args>` fitted to this pane's width, for the plugin's popups.
+# The output goes to a file first, so a failure is not lost in the pager: its
+# stderr and exit code are shown after less closes.
+cd "$(dirname "$0")" || exit 1
+out=$(mktemp) || exit 1
+err=$(mktemp) || { rm -f "$out"; exit 1; }
+trap 'rm -f "$out" "$err"' EXIT
+trap 'exit 130' HUP INT TERM
+
+# stty reads its stdin: ask the pane's terminal, not whatever stdin is.
+w=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
+case $w in '' | *[!0-9]*) w=100 ;; esac
+[ "$w" -ge 40 ] || w=40  # consult.py's minimum
+
+skills/consult-stats/consult.py "$@" --width "$w" >"$out" 2>"$err"
+rc=$?
+# No -S: a line that still does not fit wraps instead of scrolling the names away.
+[ -s "$out" ] && less -R "$out"
+if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
+    cat "$err"
+    [ "$rc" -ne 0 ] && echo "consult.py exited with $rc"
+    printf 'Enter closes. '
+    read -r _ </dev/tty
+fi

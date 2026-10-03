@@ -22,6 +22,7 @@ $O stats --all           # + score, acc/find, latency (n, p50, p90), tokens, err
 $O stats --pairs         # + token efficiency (acc/1M output tokens) and paired within-round token ratios (e.g. sol vs astra)
 $O recent [-n 20]        # latest calls with their ids and ratings (find unrated ones)
 $O stats --by-alias      # group by the requested model (alias) instead of the version it resolved to
+                        # --width N (stats, recent): fit to N columns for a pager; agents read the default
 $O stats --vs mimo deepseek [--since ROUND] [--rounds 20]
                         # head-to-head over rounds where both answered and were rated: findings, rejected n (%),
                         # uniq/call, acc/call, tokens, p50; paired uniq/call difference with a round-bootstrap CI and
