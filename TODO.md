@@ -3958,6 +3958,47 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     binding a click to the row id captured on pointer-down so a row that
     moves never retargets it.
 
+- [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
+  and their `?` marks did not come back after `claude --resume` (user,
+  2026-10-03, screenshots of job-seeker and email-assistant showing "Resume
+  this session with:"). Timeline from the logs (local time):
+  - 15:16:27 the user quit Ghostty (the Esc-debugging session told him the
+    herdr panes would survive); the herdr client logged its exit, the server
+    kept running.
+  - 15:17:35 loginwindow opened the Force Quit panel (Cmd+Opt+Esc) and logged
+    "Adding Ghostty to apps because it still has background processes".
+  - 15:17:39-40 every one of ~19 `claude` processes exited at once, with the
+    graceful resume hint (not SIGKILL). Their interactive zsh shells survived
+    (zsh ignores SIGTERM), so did the herdr server and ~12 other claude
+    processes. 15:18:20 the user wrote "zabiłem ghostty" ("I killed
+    Ghostty"). The log does not record the kill itself, so the click on
+    Force Quit is inferred.
+  - Start times do not split dead from alive: dead agents started from
+    2026-09-24 to 2026-10-03 11:47, survivors 2026-10-02 23:50 and
+    2026-10-03 12:16-15:03; live handoffs were at 14:07, 14:19 and 14:45.
+    Which processes macOS counts as Ghostty's "background processes"
+    (responsible pid, coalition, process group) is still unknown.
+  - Plan: reproduce with disposable agents (quit Ghostty, force-quit its
+    entry, record the signal in a wrapper, `sudo launchctl procinfo` on the
+    server, shells and agents before and after). Only then choose a fix:
+    disclaim responsibility when spawning the server and each handoff server
+    (`responsibility_spawnattrs_setdisclaim`, private API, works only at
+    spawn), or run the server as a launchd job. Both can move TCC prompts
+    from the terminal to herdr; test with the signed release binary and test
+    logout separately.
+  - The `?` mark: today it survives a live handoff but not the agent's exit
+    and resume. Do not restore a live `?` on resume (the resumed agent has
+    not asked anything yet). Persist "was awaiting a reply" keyed by the
+    agent session id and pane, show it as a distinct stale mark until the
+    agent reports again, and consider a "the agent exited, resume?" hint on
+    panes whose agent died.
+  Consulted sol and MiMo (round `20261003-153021-f65d`). Both: the mechanism
+  is plausible but unproven, disclaiming fixes nothing if macOS selects by
+  coalition or process group, and a restored `?` must be a distinct mark.
+  Rejected: MiMo's "survivors are those spawned after the handoffs"
+  (it mixed UTC and local time; the start times contradict it) and its
+  reading of `?` as "agent mid-turn".
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
