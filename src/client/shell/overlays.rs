@@ -830,10 +830,10 @@ pub(crate) fn render_context_menu(
             if let Some(kind) = menu.picker_agent(agent) {
                 // The `A` keeps the menu's background and the agent's colour
                 // on the highlighted row too, so the colour stays readable;
-                // the highlight starts after it.
-                let lead = Rect::new(row.x, row.y, 2, 1).intersection(row);
+                // the highlight starts a column after it.
+                let lead = Rect::new(row.x, row.y, 3, 1).intersection(row);
                 buffer.set_style(lead, plain);
-                if lead.width == 2 {
+                if lead.width == 3 {
                     buffer[(row.x + 1, row.y)].set_style(
                         Style::default()
                             .fg(super::agent_launch::agent_badge_color(kind, palette))

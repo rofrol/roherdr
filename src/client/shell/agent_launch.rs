@@ -203,13 +203,13 @@ pub(super) fn picker_agents<'a>(kinds: &'a [String], current: Option<&str>) -> V
     agents
 }
 
-/// A picker row: the button's `A` (coloured when drawn) and the agent; the
-/// button's own agent says so.
+/// A picker row: the button's `A` (coloured when drawn), a gap the
+/// highlight starts in, and the agent; the button's own agent has a check.
 pub(super) fn picker_label(kind: &str, current: Option<&str>) -> String {
     if Some(kind) == current {
-        format!("{LAUNCH_GLYPH} {kind} · last")
+        format!("{LAUNCH_GLYPH}  {kind} ✓")
     } else {
-        format!("{LAUNCH_GLYPH} {kind}")
+        format!("{LAUNCH_GLYPH}  {kind}")
     }
 }
 
