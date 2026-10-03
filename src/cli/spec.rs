@@ -285,6 +285,7 @@ fn tab_command() -> Command {
             Command::new("create")
                 .about("Create a tab")
                 .arg(option("workspace", "WORKSPACE_ID"))
+                .arg(option("parent", "TAB_ID"))
                 .arg(path_option("cwd", "PATH"))
                 .arg(option("label", "TEXT"))
                 .arg(env_option())

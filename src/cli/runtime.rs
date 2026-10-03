@@ -1,8 +1,8 @@
 use crate::api::schema::{
     EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
     PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
-    WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
+    PaneZoomParams, Request, TabCreateChildParams, TabCreateParams, TabListParams, TabRenameParams,
+    TabTarget, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
     WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
@@ -52,6 +52,10 @@ pub(super) fn tab_list(params: TabListParams) -> std::io::Result<i32> {
 
 pub(super) fn tab_create(params: TabCreateParams) -> std::io::Result<i32> {
     print_method_response("cli:tab:create", Method::TabCreate(params))
+}
+
+pub(super) fn tab_create_child(params: TabCreateChildParams) -> std::io::Result<i32> {
+    print_method_response("cli:tab:create", Method::TabCreateChild(params))
 }
 
 pub(super) fn tab_get(tab_id: String) -> std::io::Result<i32> {
