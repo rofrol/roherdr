@@ -3620,11 +3620,11 @@ fn the_launch_button_repeats_the_spaces_agent_and_its_menu_teaches_the_colours()
     assert_eq!(rows[0].0.y, button.y);
     let glyph = button.x + 1;
     assert!(
-        text[rows[0].0.y as usize].contains("A claude · last"),
+        text[rows[0].0.y as usize].contains("A  claude ✓"),
         "{text:?}"
     );
-    assert!(text[rows[1].0.y as usize].contains("A pi "), "{text:?}");
-    assert!(text[rows[2].0.y as usize].contains("A codex "), "{text:?}");
+    assert!(text[rows[1].0.y as usize].contains("A  pi "), "{text:?}");
+    assert!(text[rows[2].0.y as usize].contains("A  codex "), "{text:?}");
     let palette = &state.config.palette;
     for (row, color) in [
         (rows[0].0.y, palette.peach),
@@ -3634,8 +3634,12 @@ fn the_launch_button_repeats_the_spaces_agent_and_its_menu_teaches_the_colours()
         let cell = &frame.cells[usize::from(row) * usize::from(frame.width) + usize::from(glyph)];
         assert_eq!(cell.symbol, "A", "{text:?}");
         assert_eq!(cell.fg, crate::protocol::color_to_u32(color));
-        // Highlighted or not, the `A` keeps the menu's background.
+        // Highlighted or not, the `A` and the column after it keep the
+        // menu's background.
         assert_eq!(cell.bg, crate::protocol::color_to_u32(palette.panel_bg));
+        let gap =
+            &frame.cells[usize::from(row) * usize::from(frame.width) + usize::from(glyph) + 1];
+        assert_eq!(gap.bg, crate::protocol::color_to_u32(palette.panel_bg));
     }
 
     // Picking codex launches it, and the button repeats it from then on.

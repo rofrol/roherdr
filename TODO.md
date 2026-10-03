@@ -168,16 +168,22 @@
   colours in this menu"): every row starts with an `A` in its agent's
   colour, in the button's `A` column, and the menu opens over the button
   so its first row's `A` covers the one clicked. The button's own agent
-  is listed again, first, as `A claude · last`, and clicking it launches
-  it like the button. On the highlighted row the `A` keeps the menu's
-  background, so a blue `A` stays visible on the blue highlight.
+  is listed again, first, with a trailing `✓`, and clicking it launches
+  it like the button. On the highlighted row the `A` and the column after
+  it keep the menu's background, so a blue `A` stays visible on the blue
+  highlight and the highlight does not touch it.
   ```
-  ▾ herdr        A  + ⋮        ╭────────────────╮
-                          →    │A claude · last │ ← over the button
-                               │A pi            │
-                               │A codex         │
-                               ╰────────────────╯
+  ▾ herdr        A  + ⋮        ╭─────────────╮
+                          →    │A  claude ✓  │ ← over the button
+                               │A  pi        │
+                               │A  codex     │
+                               ╰─────────────╯
   ```
+  The user first saw `A claude · last` with the highlight touching the
+  `A`, and asked for a gap and an icon instead of the text (round
+  `20261003-210525-6b70`: sol wanted a leading `●` like the sort menu,
+  MiMo a trailing `↺` because `●` is the done/online dot and `✓3` means
+  succeeded jobs; the user chose `✓`).
   Consulted sol and MiMo (round `20261003-205224-eaff`): both: list the
   current agent too, but not as "default" (it is a client's memory, not
   a setting); sol: clicking it launches like every row; keep the
