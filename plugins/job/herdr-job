@@ -235,7 +235,9 @@ def reconcile_tabs():
     live handoff: a tab still marked running whose job has ended gets its
     final status, and a succeeded job's tab closes as it would have (unless
     `--keep`). A job without an `exit` file that is no longer running (lost)
-    is marked failed, never succeeded."""
+    is marked failed, never succeeded. A tab with no status at all gets one
+    too: a cold server start (a reboot) restores a running tab without its
+    status, and the sidebar would draw its job as a bare dot."""
     try:
         tabs = {tab["tab_id"]: tab for tab in list_tabs()}
     except (SystemExit, ValueError, KeyError):
@@ -244,7 +246,7 @@ def reconcile_tabs():
         st, code = status(path, meta)
         if st == "running":
             continue
-        if meta.get("tab_status") and tabs[tab_id].get("status") == "running":
+        if meta.get("tab_status") and tabs[tab_id].get("status") in ("running", None):
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
         # A focused tab is being read; its job's own `close_job_tab` waits.
         if close_due(meta, st) and not tabs[tab_id].get("focused"):
