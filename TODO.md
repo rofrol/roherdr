@@ -756,6 +756,43 @@
     headless(deadline, false)` returned false, `src/server/headless/tests/mod.rs:5874`);
     alone it passed 60/60 under load, so it likely depends on another test. Not
     investigated further.
+- [ ] Claude with background shells/monitors shows idle (user, 2026-10-03,
+  screenshot: "why doesn't this have the working icon?"). Pane `w12:p4B`,
+  Claude Code 2.1.288, finished its turn while a background test and a
+  monitor that will wake it keep running:
+  ```
+  ✻ Worked for 2m 54s · done 7:15 PM · 1 shell, 1 monitor still running
+  ※ recap: <3 wrapped lines>
+  ❯ <unsent draft>
+    ⏵⏵ auto mode on · 1 shell, 1 monitor · ← for agents
+  ```
+  Cause (`herdr agent explain`): `src/detect/manifests/claude.toml` maps
+  only `Waiting for N background agents to finish` and `· N MCP tasks still
+  running` (upstream #3094) to working; nothing matches shells or monitors,
+  and the title is `✳` (no spinner), so the pane is idle.
+  Consulted sol and MiMo (round `20261003-191957-972f`), both against my
+  draft of generalising the MCP rule to every `still running` list:
+  - A background shell must not mean working: an endless `npm run dev`
+    would pin the pane forever, and its count looks the same as a finite
+    test (both). A monitor, agent or MCP task wakes the agent, so it is
+    stronger evidence (MiMo); sol says even that is "can wake", not
+    "working", and only a lifecycle signal (a hook) can prove the agent
+    waits for it.
+  - Read the persistent footer below the prompt box's lower border, not
+    the `still running` activity line: that line is history, a long recap
+    or draft pushes it out of `bottom_non_empty_lines(12)`, and it can stay
+    after the tasks end (both). Match the whole count list (singular,
+    plural, any order), keep the permission-dialog NOT gates, and never
+    read the draft inside the box.
+  - Both want it shown apart from working: sol as an orthogonal background
+    badge (`idle` plus `1 shell, 1 monitor`), MiMo as a new state. A new
+    `AgentStatus` variant is out: the enum is append-closed in frozen
+    codecs (AGENTS.md); a badge needs an optional runtime field (pane
+    background task counts) in the JSON API instead.
+  - Open: is the badge worth it, or only map monitor/agent/MCP counts to
+    working and leave shell-only as idle? Do it via the manifest
+    hot-reload loop with a live smoke test (AGENTS.md, Agent Detection
+    Updates).
 - [ ] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
