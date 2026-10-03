@@ -9746,6 +9746,17 @@
               },
               "type": "array"
             },
+            "completion_tokens": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageCompletionTokens"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Text-completion tokens over the same period as `spend`."
+            },
             "label": {
               "description": "Human-readable provider name.",
               "type": "string"
@@ -9789,6 +9800,14 @@
               "description": "Unredeemed one-time allowance resets, redeemed in the provider's own tool.\nClients hide credits whose `expires_at` has passed, since reports can be cached.",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/UsageResetCredit"
+              },
+              "type": "array"
+            },
+            "spend": {
+              "default": [],
+              "description": "Pay-as-you-go spend since `since`, one per currency. Not a prepaid balance.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/UsageSpend"
               },
               "type": "array"
             },
@@ -11431,6 +11450,46 @@
           ],
           "type": "object"
         },
+        "UsageCompletionTokens": {
+          "properties": {
+            "cached_input": {
+              "description": "The part of `input` served from the prompt cache.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "input": {
+              "description": "Input tokens, cached ones included.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "output": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "requests": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "since": {
+              "description": "Unix seconds where the reported period starts.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "input",
+            "cached_input",
+            "output",
+            "requests",
+            "since"
+          ],
+          "type": "object"
+        },
         "UsageReport": {
           "description": "Latest subscription/API allowance observed for each configured provider.",
           "properties": {
@@ -11479,6 +11538,29 @@
             "id",
             "kind",
             "title"
+          ],
+          "type": "object"
+        },
+        "UsageSpend": {
+          "properties": {
+            "amount": {
+              "description": "Decimal amount spent since `since`.",
+              "type": "string"
+            },
+            "currency": {
+              "type": "string"
+            },
+            "since": {
+              "description": "Unix seconds where the reported period starts.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "currency",
+            "amount",
+            "since"
           ],
           "type": "object"
         },

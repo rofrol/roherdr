@@ -29,6 +29,12 @@ pub struct UsageConfig {
     /// Moonshot API host: `api.moonshot.ai` (USD) or `api.moonshot.cn`
     /// (CNY, a separate account).
     pub kimi_host: String,
+    /// Read OpenAI API month-to-date spend and completion tokens through the
+    /// Admin API. Off by default: an admin key reads organization-wide billing.
+    pub openai_api: bool,
+    /// File holding the OpenAI Admin key, readable only by its owner. No
+    /// environment variable is read, so the key never reaches agent panes.
+    pub openai_admin_key_file: String,
 }
 
 pub(crate) const MIN_USAGE_REFRESH_INTERVAL_SECS: u64 = 60;
@@ -46,6 +52,8 @@ impl Default for UsageConfig {
             openrouter: true,
             kimi: true,
             kimi_host: "api.moonshot.ai".to_owned(),
+            openai_api: false,
+            openai_admin_key_file: "~/.config/herdr/openai-admin-key".to_owned(),
         }
     }
 }
@@ -69,6 +77,7 @@ mod tests {
         assert_eq!(config, UsageConfig::default());
         assert!(config.enabled);
         assert!(config.claude && config.codex && config.gemini && config.deepseek);
+        assert!(!config.openai_api);
     }
 
     #[test]

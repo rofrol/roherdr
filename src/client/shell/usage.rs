@@ -398,6 +398,24 @@ fn render_provider_row(
             " balance",
             Style::default().fg(palette.overlay0),
         );
+    } else if let Some(spend) = provider.spend.first() {
+        // Pay-as-you-go spend is money already used, not credit left.
+        let x = put_segment(
+            buffer,
+            short_x,
+            row.y,
+            row.right(),
+            &compact_spend(&spend.amount, &spend.currency),
+            Style::default().fg(palette.text),
+        );
+        put_segment(
+            buffer,
+            x,
+            row.y,
+            row.right(),
+            " spend",
+            Style::default().fg(palette.overlay0),
+        );
     } else if !failed {
         let placeholder = if provider.status == ProviderUsageStatus::Pending {
             "…"
@@ -489,6 +507,7 @@ pub(super) fn provider_code(provider: &ProviderUsage) -> String {
         "deepseek" => "DS".into(),
         "openrouter" => "OR".into(),
         "kimi" => "KM".into(),
+        "openai_api" => "OP".into(),
         _ => provider
             .label
             .chars()
@@ -571,6 +590,36 @@ pub(super) fn compact_balance(total: &str, currency: &str) -> String {
         "EUR" => format!("€{amount}"),
         _ => format!("{amount} {currency}"),
     }
+}
+
+/// Spend rounded to cents; a sub-cent spend reads `<$0.01`, not `$0.00`.
+pub(super) fn compact_spend(amount: &str, currency: &str) -> String {
+    match amount.parse::<f64>() {
+        Ok(value) if value > 0.0 && value < 0.005 => {
+            format!("<{}", compact_balance("0.01", currency))
+        }
+        _ => compact_balance(amount, currency),
+    }
+}
+
+/// Token count such as `950`, `12.3k` or `4.1M`.
+pub(super) fn compact_tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=999_999 => format!("{:.1}k", count as f64 / 1_000.0),
+        _ => format!("{:.1}M", count as f64 / 1_000_000.0),
+    }
+}
+
+/// `Oct 1 UTC` for a period start in Unix seconds.
+pub(super) fn utc_day(unix: u64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(unix as i64).map_or_else(
+        |_| "?".into(),
+        |at| {
+            let month = at.month().to_string();
+            format!("{} {} UTC", &month[..3.min(month.len())], at.day())
+        },
+    )
 }
 
 pub(super) fn format_balance(total: &str, currency: &str) -> String {
@@ -917,6 +966,22 @@ mod tests {
             reset_clock(1_790_263_799, 7_200).as_deref(),
             Some("Thu 17:29")
         );
+    }
+
+    #[test]
+    fn spend_rounds_to_cents_but_keeps_sub_cent_spend_visible() {
+        assert_eq!(compact_spend("1.600173", "USD"), "$1.60");
+        assert_eq!(compact_spend("0.000000", "USD"), "$0.00");
+        assert_eq!(compact_spend("0.0012", "USD"), "<$0.01");
+    }
+
+    #[test]
+    fn token_counts_and_period_start_are_compact() {
+        assert_eq!(compact_tokens(950), "950");
+        assert_eq!(compact_tokens(12_345), "12.3k");
+        assert_eq!(compact_tokens(4_100_000), "4.1M");
+        // 2026-10-01T00:00:00Z
+        assert_eq!(utc_day(1_790_812_800), "Oct 1 UTC");
     }
 
     #[test]

@@ -43,6 +43,12 @@ pub struct ProviderUsage {
     /// Clients hide credits whose `expires_at` has passed, since reports can be cached.
     #[serde(default)]
     pub reset_credits: Vec<UsageResetCredit>,
+    /// Pay-as-you-go spend since `since`, one per currency. Not a prepaid balance.
+    #[serde(default)]
+    pub spend: Vec<UsageSpend>,
+    /// Text-completion tokens over the same period as `spend`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<UsageCompletionTokens>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -95,6 +101,27 @@ pub struct UsageBalance {
     pub topped_up: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageSpend {
+    pub currency: String,
+    /// Decimal amount spent since `since`.
+    pub amount: String,
+    /// Unix seconds where the reported period starts.
+    pub since: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageCompletionTokens {
+    /// Input tokens, cached ones included.
+    pub input: u64,
+    /// The part of `input` served from the prompt cache.
+    pub cached_input: u64,
+    pub output: u64,
+    pub requests: u64,
+    /// Unix seconds where the reported period starts.
+    pub since: u64,
+}
+
 impl ProviderUsage {
     pub fn pending(provider: &str, label: &str) -> Self {
         Self {
@@ -108,6 +135,8 @@ impl ProviderUsage {
             balances: Vec::new(),
             notes: Vec::new(),
             reset_credits: Vec::new(),
+            spend: Vec::new(),
+            completion_tokens: None,
         }
     }
 }

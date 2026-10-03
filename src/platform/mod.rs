@@ -388,6 +388,9 @@ pub(crate) use unix_common::{
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 
+mod secret_file;
+pub(crate) use secret_file::read_secret_file;
+
 /// Optional presentation and click behavior for a desktop notification.
 ///
 /// Platforms ignore the parts they cannot express; see
