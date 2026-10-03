@@ -3434,6 +3434,18 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   `clean`, which may only close finished-successful jobs or only this pane's
   jobs). Consult the models before fixing (user asked: "pytaj modeli").
 
+- [ ] Right click in the working list closes the list (user, 2026-10-03,
+  screenshots `~/Screenshots/Screenshot 2026-10-03 at 02.27.26.png`,
+  `02.27.34.png`, `02.27.39.png`). In the bookmark list (`★`) a right click on
+  a row keeps the list open under its one-item menu ("Remove from
+  bookmarks"). In the working list (`◐`) a right click on a row closes the
+  list and opens the full tab menu (New tab, Rename, Add to bookmarks, Close
+  jobs, Close) on its own; check the asking (`?`) and history lists too. Make
+  all header lists behave like the bookmark list: the list stays under the
+  menu. Also seen: the `Close jobs:` row of that menu has no left padding,
+  unlike the other items. Consult the models before fixing (user asked:
+  "pytaj modeli"), including which items a row menu in each list should have.
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
