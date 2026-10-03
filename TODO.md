@@ -133,9 +133,21 @@
     Tests in `scripts/test_awaiting_reply_audit.py` (parity of the detector,
     block once, passes when run). Needs `herdr integration install claude` to
     reach `~/.claude`, and a restart of the sessions.
+  - Done 2026-10-03: the Pi side of the Stop check, in `plugins/pi-title/pi-awaiting-reply.ts`
+    on Pi's `agent_before_settle` (Pi 1.0.0: `event.context.contextMessages` holds the turn
+    including the final assistant message; a returned `custom_message` entry with
+    `continue: true` is seen by the model and runs one more request; `display: false`).
+    Same rules as the Claude hook (question heuristic equal to the audit's, tested against
+    the Python by `bun test`; printed command gets the specific nudge; once per turn,
+    keyed on the turn's user message; `HERDR_AWAITING_REPLY_STOP=0|shadow`; logs to
+    the same jsonl with `"agent": "pi"`). Checked live with `pi -p` and a probe extension
+    (the continuation works) and with a copy of this extension without the TUI gate: it
+    blocked once on "Should I push the commits?" and the model, which was not waiting,
+    stopped (so a false positive costs one extra request). Active in Pi after `/reload`
+    (the extension is symlinked from `~/.pi/agent/extensions`). Not tested in a real TUI
+    session of a weak model.
   - Not done: a usage-example line in the instruction; prevalence of the
-    printed command by model (rerun the audit on new transcripts); the Pi side
-    of the Stop check.
+    printed command by model (rerun the audit on new transcripts).
 
 - [x] Dropdown without the preview at the bottom (user, 2026-10-01: "can we do
   without that preview below? maybe the bubble could grow to the right as with
