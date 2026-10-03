@@ -345,3 +345,29 @@ class IdleJobTests(unittest.TestCase):
         # Too few samples to say.
         self.assertFalse(idle(flat[-2:], last_output=0, now=now))
         self.assertFalse(idle([], last_output=0, now=now))
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class ReconcileTests(unittest.TestCase):
+    def reconcile(self, tab_status):
+        reconcile = JOB["reconcile_tabs"]
+        tab = {"tab_id": "w:t1", "label": "rescue", "focused": False}
+        if tab_status is not None:
+            tab["status"] = tab_status
+        meta = {"tab_id": "w:t1", "tab_status": True, "keep": True}
+        calls = Mock(return_value=True)
+        with patch.dict(reconcile.__globals__, {
+            "list_tabs": lambda: [tab],
+            "job_tabs": lambda tabs: {"w:t1": (Path("/nonexistent"), meta)},
+            "status": lambda path, meta: ("lost", JOB["EXIT_LOST"]),
+            "herdr_ok": calls,
+        }):
+            reconcile()
+        return [call.args for call in calls.call_args_list]
+
+    def test_a_lost_job_whose_tab_lost_its_status_on_a_cold_restart_is_marked_failed(self):
+        for tab_status in ("running", None):
+            self.assertEqual(self.reconcile(tab_status), [("tab", "status", "w:t1", "failed")])
+
+    def test_a_tab_that_already_shows_an_outcome_is_left_alone(self):
+        self.assertEqual(self.reconcile("failed"), [])
