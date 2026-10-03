@@ -108,6 +108,12 @@ pub struct UsageSpend {
     pub amount: String,
     /// Unix seconds where the reported period starts.
     pub since: u64,
+    /// Spend limit for the same period and currency, as set at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
+    /// The provider is rejecting requests because the limit was reached.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_enforcing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

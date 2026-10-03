@@ -14,6 +14,7 @@ use crate::config::UsageConfig;
 
 const COSTS_URL: &str = "https://api.openai.com/v1/organization/costs";
 const COMPLETIONS_URL: &str = "https://api.openai.com/v1/organization/usage/completions";
+const SPEND_LIMIT_URL: &str = "https://api.openai.com/v1/organization/spend_limit";
 /// Daily buckets; a month has at most 31, which is also the usage endpoint's page limit.
 const BUCKETS_PER_PAGE: u32 = 31;
 /// A month fits one page; more pages than this means the cursor is misbehaving.
@@ -47,6 +48,21 @@ struct Amount {
     currency: String,
 }
 
+/// Hard monthly limit set on the platform; only USD and `month` exist today.
+#[derive(Deserialize)]
+struct SpendLimit {
+    currency: String,
+    interval: String,
+    /// Cents.
+    threshold_amount: i64,
+    enforcement: Option<Enforcement>,
+}
+
+#[derive(Deserialize)]
+struct Enforcement {
+    status: String,
+}
+
 #[derive(Deserialize)]
 struct CompletionsResult {
     #[serde(default)]
@@ -68,6 +84,17 @@ pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
     let mut usage = ProviderUsage::pending("openai_api", "OpenAI API");
     usage.spend = spend(&costs, since);
     usage.completion_tokens = Some(completion_tokens(&completions, since));
+    // Spend without the limit is still worth showing, so a failed limit read
+    // only adds a note.
+    match spend_limit(&authorization) {
+        Ok(Some(limit)) => {
+            if let Err(message) = apply_limit(&mut usage.spend, &limit) {
+                usage.notes.push(message);
+            }
+        }
+        Ok(None) => {}
+        Err(message) => usage.notes.push(message),
+    }
     usage
         .notes
         .push("organization-wide; OpenAI reports costs with a delay".into());
@@ -138,6 +165,38 @@ fn fetch_all<T: serde::de::DeserializeOwned>(
     Err("OpenAI usage pagination did not end".to_owned().into())
 }
 
+/// `None` when the organization has no spend limit (OpenAI answers 404).
+fn spend_limit(authorization: &str) -> Result<Option<SpendLimit>, String> {
+    let response = super::http::get(SPEND_LIMIT_URL, &[("Authorization", authorization)])?;
+    match response.status {
+        200 => serde_json::from_str(&response.body)
+            .map(Some)
+            .map_err(|error| format!("unexpected OpenAI spend limit response: {error}")),
+        404 => Ok(None),
+        status => Err(format!("OpenAI spend limit unavailable ({status})")),
+    }
+}
+
+fn apply_limit(spend: &mut [UsageSpend], limit: &SpendLimit) -> Result<(), String> {
+    if limit.interval != "month" {
+        return Err(format!(
+            "OpenAI spend limit is per {}, not per month",
+            limit.interval
+        ));
+    }
+    let entry = spend
+        .iter_mut()
+        .find(|entry| entry.currency.eq_ignore_ascii_case(&limit.currency))
+        .ok_or_else(|| format!("OpenAI spend limit is in {}", limit.currency))?;
+    let cents = limit.threshold_amount;
+    entry.limit = Some(format!("{}.{:02}", cents / 100, (cents % 100).abs()));
+    entry.limit_enforcing = limit
+        .enforcement
+        .as_ref()
+        .is_some_and(|enforcement| enforcement.status == "enforcing");
+    Ok(())
+}
+
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -170,6 +229,8 @@ fn spend(costs: &[CostResult], since: u64) -> Vec<UsageSpend> {
             currency,
             amount: format!("{amount:.6}"),
             since,
+            limit: None,
+            limit_enforcing: false,
         })
         .collect()
 }
@@ -230,6 +291,8 @@ mod tests {
                 currency: "USD".into(),
                 amount: "1.600173".into(),
                 since: 7,
+                limit: None,
+                limit_enforcing: false,
             }]
         );
     }
@@ -271,6 +334,38 @@ mod tests {
     fn month_starts_at_midnight_utc_on_the_first() {
         // 2026-10-03T05:40:00Z
         assert_eq!(month_start_utc(1_791_006_000), 1_790_812_800);
+    }
+
+    #[test]
+    fn a_monthly_limit_attaches_to_the_spend_in_its_currency() {
+        let limit: SpendLimit = serde_json::from_str(
+            r#"{"object":"organization.spend_limit","currency":"USD","interval":"month","threshold_amount":2050,"enforcement":{"status":"enforcing"}}"#,
+        )
+        .unwrap();
+        let mut spend = spend(&[], 7);
+        apply_limit(&mut spend, &limit).unwrap();
+        assert_eq!(spend[0].limit.as_deref(), Some("20.50"));
+        assert!(spend[0].limit_enforcing);
+    }
+
+    #[test]
+    fn a_limit_in_another_currency_or_period_is_not_applied() {
+        let mut spend = spend(&[], 7);
+        let weekly = SpendLimit {
+            currency: "USD".into(),
+            interval: "week".into(),
+            threshold_amount: 100,
+            enforcement: None,
+        };
+        assert!(apply_limit(&mut spend, &weekly).is_err());
+        let euros = SpendLimit {
+            currency: "EUR".into(),
+            interval: "month".into(),
+            threshold_amount: 100,
+            enforcement: None,
+        };
+        assert!(apply_limit(&mut spend, &euros).is_err());
+        assert_eq!(spend[0].limit, None);
     }
 
     #[test]

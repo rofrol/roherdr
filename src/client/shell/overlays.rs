@@ -179,19 +179,32 @@ fn usage_overlay_lines(
             lines.push(Line::from(Span::styled(text, base.fg(p.text))));
         }
         for spend in &provider.spend {
+            let mut text = format!(
+                "   spend      {}",
+                super::usage::compact_spend(&spend.amount, &spend.currency)
+            );
+            if let (Some(limit), Some(percent)) = (
+                spend.limit.as_deref(),
+                super::usage::spend_limit_percent(spend),
+            ) {
+                text.push_str(&format!(
+                    " of {} limit ({percent}%)",
+                    super::usage::format_balance(limit, &spend.currency)
+                ));
+            }
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!(
-                        "   spend      {}",
-                        super::usage::compact_spend(&spend.amount, &spend.currency)
-                    ),
-                    base.fg(p.text),
-                ),
+                Span::styled(text, base.fg(p.text)),
                 Span::styled(
                     format!("  since {}", super::usage::utc_day(spend.since)),
                     dim,
                 ),
             ]));
+            if spend.limit_enforcing {
+                lines.push(Line::from(Span::styled(
+                    "   limit reached: the provider rejects API requests",
+                    base.fg(p.red),
+                )));
+            }
         }
         if let Some(tokens) = &provider.completion_tokens {
             let plural = if tokens.requests == 1 { "" } else { "s" };
