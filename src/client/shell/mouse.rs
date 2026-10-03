@@ -187,7 +187,7 @@ impl ClientShellState {
                 self.reveal_unfolded_tab = Some(tab_id.clone());
                 unfolded.insert(tab_id.clone());
                 // Unfolding unpins the job kept under the folded line; a
-                // later fold shows only the job focused at that moment.
+                // later fold shows none until the focus moves to a job.
                 if let Some(kept) = self.kept_jobs.get_mut(&self.active_endpoint_id) {
                     kept.remove(&tab_id);
                 }

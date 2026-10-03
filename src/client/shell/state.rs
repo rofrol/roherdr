@@ -1247,6 +1247,9 @@ pub(crate) struct ClientShellState {
     /// Each parent tab's last focused job per endpoint, kept under its folded
     /// line after the focus returns to the parent. Client memory only.
     pub(super) kept_jobs: HashMap<ClientEndpointId, super::space_tabs::KeptJobs>,
+    /// The focused tab the last snapshot had, by endpoint: a job is pinned
+    /// only when the focus moves to it, so unfolding unpins it for good.
+    pub(super) last_focused_tab: HashMap<ClientEndpointId, String>,
     pub(super) pointer_over_spaces: bool,
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
@@ -1468,6 +1471,7 @@ impl ClientShellState {
             )]
             .into_iter()
             .collect(),
+            last_focused_tab: HashMap::new(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
             workspace_scroll: 0,

@@ -27,7 +27,8 @@ impl super::ClientShellState {
 
     /// Records the focused tab as its group's last one, so selecting the
     /// group from the main row returns there. The group of a child is its
-    /// parent; a top-level tab is its own group.
+    /// parent; a top-level tab is its own group. Moving the focus to a job
+    /// also pins it under its parent's folded line.
     pub(super) fn remember_focused_group_tab(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -41,7 +42,14 @@ impl super::ClientShellState {
         };
         let group = tab.parent_tab_id.as_ref().unwrap_or(&tab.tab_id).clone();
         let focused = tab.tab_id.clone();
-        if tab.parent_tab_id.is_some() {
+        let moved = self.last_focused_tab.get(&self.active_endpoint_id) != Some(&focused);
+        if moved {
+            self.last_focused_tab
+                .insert(self.active_endpoint_id.clone(), focused.clone());
+        }
+        // Only a move pins: after an unfold unpins the job, later snapshots
+        // with the focus still on it must not pin it again.
+        if moved && tab.parent_tab_id.is_some() {
             self.kept_jobs
                 .entry(self.active_endpoint_id.clone())
                 .or_default()
