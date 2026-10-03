@@ -483,6 +483,40 @@
   the parent's entry counts its jobs and the reopen says they were not
   restored; a job closed on its own leaves an entry that only says it cannot
   be reopened; every press answers. Also bound `cmd+shift+t` to reopen.
+- [ ] Reopen brings back the agent (user, 2026-10-03): "I close the tab with
+  claude, reopen it with cmd+shift+t: just zsh in the shell". Reopen v1 is
+  client-local `tab.create` (fresh shell, focused pane's cwd); the client's
+  frozen bincode snapshot has no `agent_session`, and `tab.create`'s params
+  are frozen, so the client cannot pass a session ref. The server already
+  resumes agents after a restart (`agent_resume::plan`, the deferred resume
+  in `src/app/agent_resume.rs`).
+  - Consulted sol 6.1 and MiMo 2026-10-03 (unanimous): a server-owned,
+    bounded, in-memory closed-tab history, recorded in the same handler that
+    accepts `tab.close`, before the panes are torn down (a second step
+    races), with each pane's cwd, layout and agent session ref; a new
+    advertised method (`tab.reopen_closed`) recreates the tab and queues
+    resume through the restore path. Rejected: the client fetching
+    `agent_session` before closing (a second request on the one lane, races
+    the close; a new field on `tab.create` is silently ignored by old
+    servers) and keeping processes alive for an undo (changes what close
+    means; agents keep acting).
+  - Both: restore splits/layout in the same change (a multi-pane tab as one
+    shell is the same bug); resume only panes with a validated session ref;
+    plain shells start fresh in their cwd; this recovers the conversation,
+    not the process: a turn cut off mid-way is not re-run. A missing session
+    or CLI degrades that pane to a shell with a notice, never fails the tab.
+  - Both: claim (pop) the entry atomically, so two clients never resume the
+    same session twice (it can corrupt the session file); release it if the
+    tab cannot be built, but not if only an agent launch failed. When the
+    method exists but fails, do not fall back to v1 silently (duplicates,
+    hidden failure); fall back to v1 only when it is not advertised.
+  - To decide: scope. v1 is this client's newest close across spaces; a
+    server history is shared, so another client's close can come back
+    (sol: then call it "undo the space's last close"; MiMo: record the
+    closer and prefer its own entries). Process exits stay out (both). Where
+    the tab goes when its neighbour is gone; bound total payload, not only
+    the entry count; history is lost on a server restart (document it, and
+    a restart must not restore closed tabs).
 
 - [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
   work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio
