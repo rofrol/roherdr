@@ -710,13 +710,22 @@ impl Workspace {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;
         }
-        let Some(focused_number) = self.tab_number_to_focus_after_close(idx) else {
+        let Some(tab) = self.remove_tab_and_refocus(idx) else {
             return false;
         };
-        let tab = self.tabs.remove(idx);
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
+        true
+    }
+
+    /// Removes the tab at `idx` and focuses the tab `close_tab` would: a
+    /// closed job's parent, else a top-level sibling, never another group's
+    /// job. Every path that removes a whole tab goes through here, so closing
+    /// a tab's last pane picks the same tab as closing the tab.
+    fn remove_tab_and_refocus(&mut self, idx: usize) -> Option<Tab> {
+        let focused_number = self.tab_number_to_focus_after_close(idx)?;
+        let tab = self.tabs.remove(idx);
         // Removing a parent cannot reorder survivors, but its children must
         // not retain stale links (including for raw-parent state consumers).
         for survivor in &mut self.tabs {
@@ -727,7 +736,7 @@ impl Workspace {
         let focused_idx = self.tab_index_by_number(focused_number);
         debug_assert!(focused_idx.is_some(), "the chosen tab must survive closing");
         self.active_tab = focused_idx.unwrap_or(0);
-        true
+        Some(tab)
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
@@ -1020,12 +1029,8 @@ impl Workspace {
             if tab_count <= 1 {
                 return true;
             }
-            self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
+            if self.remove_tab_and_refocus(tab_idx).is_some() {
+                self.unregister_pane(pane_id);
             }
             return false;
         }
@@ -1263,12 +1268,8 @@ impl Workspace {
             if tab_count <= 1 {
                 return true;
             }
-            self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
+            if self.remove_tab_and_refocus(tab_idx).is_some() {
+                self.unregister_pane(pane_id);
             }
             return false;
         }
@@ -2190,6 +2191,53 @@ mod tests {
         assert!(!ws.close_tab(usize::MAX));
         assert_eq!(ws.tabs[ws.active_tab].root_pane, root);
         assert_eq!(ws.tabs.len(), 1);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn closing_a_tabs_last_pane_focuses_as_closing_the_tab() {
+        // Main tab p with job j, then main tab z: the user closes z's only
+        // pane (its shell exits, or close-pane). The focus goes to p, not to
+        // p's job, which sits right before z in the flat order.
+        for exits in [false, true] {
+            let mut ws = Workspace::test_new("test");
+            let p = ws.test_add_tab(Some("p"));
+            let j = ws.test_add_tab(Some("j"));
+            ws.set_tab_parent(j, Some(p)).unwrap();
+            let z = ws.test_add_tab(Some("z"));
+            ws.active_tab = z;
+            let pane = ws.tabs[z].root_pane;
+
+            let closes_workspace = if exits {
+                ws.remove_pane(pane)
+            } else {
+                ws.close_pane(pane)
+            };
+
+            assert!(!closes_workspace);
+            assert_eq!(ws.tabs[ws.active_tab].custom_name.as_deref(), Some("p"));
+            assert!(ws.public_pane_number(pane).is_none(), "the pane is gone");
+            ws.assert_invariants_for_test();
+        }
+    }
+
+    #[test]
+    fn closing_a_parents_last_pane_leaves_its_children_top_level() {
+        let mut ws = Workspace::test_new("test");
+        let a1 = ws.test_add_tab(Some("a1"));
+        ws.set_tab_parent(a1, Some(0)).unwrap();
+        let before = ws.test_add_tab(Some("b"));
+        ws.active_tab = before;
+        let pane = ws.tabs[0].root_pane;
+
+        assert!(!ws.close_pane(pane));
+
+        assert_eq!(ws.tab_parent_index(0), None);
+        assert_eq!(
+            ws.tabs[ws.active_tab].custom_name.as_deref(),
+            Some("b"),
+            "closing an inactive tab keeps the focus"
+        );
         ws.assert_invariants_for_test();
     }
 

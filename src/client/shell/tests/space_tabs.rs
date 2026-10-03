@@ -3132,6 +3132,42 @@ fn squares_opened_for_a_focused_job_fold_again_when_the_focus_leaves_the_job() {
 }
 
 #[test]
+fn focus_that_falls_on_a_job_when_the_focused_tab_closes_unfolds_nothing() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    // A plain tab after tab_1's job, focused; it closes and the focus falls
+    // on the job right before it.
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    let mut shell = projected.tabs[0].clone();
+    shell.tab_id = "tab_z".into();
+    shell.label = "zsh".into();
+    projected.tabs.push(shell);
+    projected.focused_tab_id = Some("tab_z".into());
+    for tab in &mut projected.tabs {
+        tab.focused = tab.tab_id == "tab_z";
+    }
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let previous = Some("tab_z".to_owned());
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.tabs.retain(|tab| tab.tab_id != "tab_z");
+    projected.focused_tab_id = Some("job_1".into());
+    for tab in &mut projected.tabs {
+        tab.focused = tab.tab_id == "job_1";
+    }
+    state.set_snapshot(Box::new(projected));
+    state.unfold_focused_job(previous.as_deref());
+    assert!(
+        state
+            .unfolded_squares
+            .get(&ClientEndpointId::Local)
+            .is_none_or(|set| set.is_empty()),
+        "{:?}",
+        state.unfolded_squares
+    );
+}
+
+#[test]
 fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
     use crate::api::schema::TabActivity;
     let mut state = state_with_tabs(true);
