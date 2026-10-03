@@ -19,7 +19,7 @@ use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
-use super::worktrees::{WorktreeInfo, WorktreeSourceInfo};
+use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SuccessResponse {
@@ -65,6 +65,9 @@ pub enum ResponseResult {
     WorktreeList {
         source: WorktreeSourceInfo,
         worktrees: Vec<WorktreeInfo>,
+    },
+    GitBranchList {
+        branches: Vec<GitBranchInfo>,
     },
     WorktreeCreated {
         workspace: WorkspaceInfo,

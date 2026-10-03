@@ -515,6 +515,68 @@ pub(crate) fn list_existing_worktrees(
     })
 }
 
+/// The most branches `git.branch_list` returns, newest commit first.
+pub(crate) const MAX_LISTED_BRANCHES: usize = 50;
+
+pub(crate) fn list_local_branches(
+    checkout: &Path,
+) -> Result<Vec<crate::api::schema::GitBranchInfo>, String> {
+    let output = repository_git_command(checkout, false)
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            &format!("--count={MAX_LISTED_BRANCHES}"),
+            "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(worktreepath)",
+            "refs/heads",
+        ])
+        .output()
+        .map_err(|err| err.to_string())?;
+    if output.status.success() {
+        return Ok(parse_branch_list(&String::from_utf8_lossy(&output.stdout)));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("git for-each-ref failed with status {}", output.status)
+    } else {
+        stderr
+    })
+}
+
+pub(crate) fn parse_branch_list(output: &str) -> Vec<crate::api::schema::GitBranchInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let current = fields.next()? == "*";
+            let name = fields.next().filter(|name| !name.is_empty())?.to_string();
+            let upstream = fields
+                .next()
+                .filter(|upstream| !upstream.is_empty())
+                .map(str::to_string);
+            let track = fields.next().unwrap_or_default();
+            let worktree_path = fields
+                .next()
+                .filter(|path| !current && !path.is_empty())
+                .map(str::to_string);
+            let count = |label: &str| {
+                track
+                    .split(", ")
+                    .find_map(|part| part.strip_prefix(label)?.trim().parse().ok())
+                    .unwrap_or(0)
+            };
+            Some(crate::api::schema::GitBranchInfo {
+                name,
+                current,
+                ahead: count("ahead "),
+                behind: count("behind "),
+                upstream_gone: upstream.is_some() && track == "gone",
+                upstream,
+                worktree_path,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod test_list_gate {
     use std::path::{Path, PathBuf};
@@ -607,6 +669,50 @@ mod tests {
     }
 
     #[test]
+    fn lists_local_branches_of_a_real_repository() {
+        let repo = create_committed_repo("branch-list");
+        run_git(&repo, &["checkout", "--quiet", "-b", "base"]);
+        run_git(&repo, &["checkout", "--quiet", "-b", "feat"]);
+        std::fs::write(repo.join("feat.txt"), "feat\n").unwrap();
+        run_git(&repo, &["add", "feat.txt"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "feat"]);
+        run_git(
+            &repo,
+            &["branch", "--quiet", "--set-upstream-to=base", "feat"],
+        );
+        run_git(&repo, &["checkout", "--quiet", "base"]);
+        let checkout = unique_temp_path("branch-list-wt");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "wt",
+                checkout.to_str().unwrap(),
+            ],
+        );
+
+        let branches = list_local_branches(&repo).unwrap();
+        let find = |name: &str| {
+            branches
+                .iter()
+                .find(|branch| branch.name == name)
+                .unwrap_or_else(|| panic!("{name} in {branches:?}"))
+        };
+        assert!(find("base").current);
+        assert_eq!(find("base").worktree_path, None);
+        let feat = find("feat");
+        assert!(!feat.current);
+        assert_eq!(feat.upstream.as_deref(), Some("base"));
+        assert_eq!((feat.ahead, feat.behind), (1, 0));
+        assert!(find("wt").worktree_path.is_some());
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn trusted_repository_git_args_are_request_scoped() {
         assert_eq!(
             repository_git_args(Path::new("/repo/herdr"), false),
@@ -622,6 +728,43 @@ mod tests {
     fn generated_branch_slug_is_worktree_namespaced_and_stable() {
         assert_eq!(generated_branch_slug(0), "worktree/brave-river-0000");
         assert_eq!(generated_branch_slug(9), "worktree/calm-cloud-0009");
+    }
+
+    #[test]
+    fn parses_branch_list_with_tracking_and_other_checkouts() {
+        let output = "*\0master\0origin/master\0ahead 3\0/repo\n \0feat\0origin/feat\0ahead 1, behind 2\0/wt/feat\n \0old\0origin/old\0gone\0\n \0local\0\0\0\n";
+        let branches = parse_branch_list(output);
+        let summary: Vec<_> = branches
+            .iter()
+            .map(|branch| {
+                (
+                    branch.name.as_str(),
+                    branch.current,
+                    branch.upstream.as_deref(),
+                    branch.ahead,
+                    branch.behind,
+                    branch.upstream_gone,
+                    branch.worktree_path.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("master", true, Some("origin/master"), 3, 0, false, None),
+                (
+                    "feat",
+                    false,
+                    Some("origin/feat"),
+                    1,
+                    2,
+                    false,
+                    Some("/wt/feat")
+                ),
+                ("old", false, Some("origin/old"), 0, 0, true, None),
+                ("local", false, None, 0, 0, false, None),
+            ]
+        );
     }
 
     #[test]

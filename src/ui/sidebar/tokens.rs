@@ -20,8 +20,20 @@ pub(crate) enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
-    TabJobs { running: usize, failed: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
+    /// `branch` only when it is shown (not the default branch, not already
+    /// the space's name); `ahead_behind` is `None` without an upstream.
+    PushStatus {
+        branch: Option<String>,
+        ahead_behind: Option<(usize, usize)>,
+    },
+    TabJobs {
+        running: usize,
+        failed: usize,
+    },
     Custom(String),
 }
 
@@ -37,7 +49,10 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } | Self::TabJobs { .. } => None,
+            Self::StateIcon
+            | Self::GitStatus { .. }
+            | Self::PushStatus { .. }
+            | Self::TabJobs { .. } => None,
         }
     }
 }
@@ -162,6 +177,7 @@ pub(crate) fn space_rows(
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
                         SpaceSidebarToken::GitStatus => None,
+                        SpaceSidebarToken::PushStatus => push_status(&context),
                         SpaceSidebarToken::TabJobs => {
                             let (running, failed) = context.tab_jobs;
                             (running > 0 || failed > 0)
@@ -185,11 +201,32 @@ pub(crate) fn space_rows(
         .collect()
 }
 
+/// Branches whose name the push status chip leaves out.
+const DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];
+
+fn push_status(context: &SpaceTokenContext<'_>) -> Option<ResolvedTokenKind> {
+    let branch = context.branch?;
+    // A worktree space is named after its branch already.
+    let named_by_branch = context.suppress_git_details
+        || branch.strip_prefix("worktree/").unwrap_or(branch) == context.workspace;
+    let default = DEFAULT_BRANCHES.contains(&branch);
+    let shown = !named_by_branch && (!default || context.ahead_behind.is_none());
+    if !shown && context.ahead_behind.is_none() {
+        return None;
+    }
+    Some(ResolvedTokenKind::PushStatus {
+        branch: shown.then(|| branch.to_string()),
+        ahead_behind: context.ahead_behind,
+    })
+}
+
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
     if matches!(previous.kind, ResolvedTokenKind::StateIcon)
         || matches!(
             current.kind,
-            ResolvedTokenKind::GitStatus { .. } | ResolvedTokenKind::TabJobs { .. }
+            ResolvedTokenKind::GitStatus { .. }
+                | ResolvedTokenKind::PushStatus { .. }
+                | ResolvedTokenKind::TabJobs { .. }
         )
     {
         " "
@@ -550,8 +587,11 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn grouped_children_suppress_all_builtin_git_details() {
-        let config = SpacesSidebarConfig::default();
+    fn grouped_children_suppress_the_branch_but_keep_their_push_state() {
+        let config: SpacesSidebarConfig = toml::from_str(
+            r#"rows = [["state_icon", "workspace", "push_status"], ["branch", "git_status"]]"#,
+        )
+        .unwrap();
 
         assert_eq!(
             space_rows(
@@ -569,6 +609,11 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
                 ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
+                // The child is named after its branch: only the state.
+                ResolvedToken::unstyled(ResolvedTokenKind::PushStatus {
+                    branch: None,
+                    ahead_behind: Some((2, 1)),
+                }),
             ]]
         );
     }
@@ -626,5 +671,64 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 "2 changes".into()
             ))]]
         );
+    }
+
+    #[test]
+    fn push_status_names_only_a_branch_that_is_not_default_or_already_shown() {
+        let tokens = std::collections::HashMap::new();
+        let chip = |workspace: &str,
+                    branch: Option<&str>,
+                    ahead_behind: Option<(usize, usize)>,
+                    indented: bool| {
+            push_status(&SpaceTokenContext {
+                workspace,
+                branch,
+                state_text: "idle",
+                ahead_behind,
+                tab_jobs: (0, 0),
+                tokens: &tokens,
+                suppress_git_details: indented,
+            })
+        };
+        let kind = |branch: Option<&str>, ahead_behind| {
+            Some(ResolvedTokenKind::PushStatus {
+                branch: branch.map(str::to_string),
+                ahead_behind,
+            })
+        };
+        // The default branch shows only its state; without an upstream its name.
+        assert_eq!(
+            chip("repo", Some("main"), Some((3, 0)), false),
+            kind(None, Some((3, 0)))
+        );
+        assert_eq!(
+            chip("repo", Some("master"), Some((0, 0)), false),
+            kind(None, Some((0, 0)))
+        );
+        assert_eq!(
+            chip("repo", Some("main"), None, false),
+            kind(Some("main"), None)
+        );
+        // Any other branch leads the chip.
+        assert_eq!(
+            chip("repo", Some("feat"), Some((1, 2)), false),
+            kind(Some("feat"), Some((1, 2)))
+        );
+        assert_eq!(
+            chip("repo", Some("feat"), None, false),
+            kind(Some("feat"), None)
+        );
+        // A space named after its branch, or a worktree child, shows the state alone.
+        assert_eq!(
+            chip("feat", Some("worktree/feat"), Some((1, 0)), false),
+            kind(None, Some((1, 0)))
+        );
+        assert_eq!(
+            chip("x", Some("feat"), Some((0, 0)), true),
+            kind(None, Some((0, 0)))
+        );
+        assert_eq!(chip("x", Some("feat"), None, true), None);
+        // Outside Git, or on a detached HEAD, there is no chip.
+        assert_eq!(chip("repo", None, None, false), None);
     }
 }

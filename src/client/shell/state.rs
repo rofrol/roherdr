@@ -113,6 +113,8 @@ pub(super) struct ShellHitMap {
     /// The `+` at the end of a space's name line, with the space it adds a
     /// tab to.
     pub(super) space_new_tab: Vec<(Rect, String)>,
+    /// A space's push status chip, which opens its branch menu.
+    pub(super) space_push_status: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// Disclosure triangles and counts at the end of tab lines, with the
@@ -398,6 +400,7 @@ impl ShellHitMap {
         };
         shift_all(&mut self.space_tabs);
         shift_all(&mut self.space_new_tab);
+        shift_all(&mut self.space_push_status);
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
             .filter_map(|mut target| {
@@ -425,6 +428,7 @@ impl ShellHitMap {
         self.workspaces.extend(block.workspaces);
         self.space_tabs.extend(block.space_tabs);
         self.space_new_tab.extend(block.space_new_tab);
+        self.space_push_status.extend(block.space_push_status);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
         self.space_tab_squares.extend(block.space_tab_squares);
@@ -753,7 +757,12 @@ pub(super) enum ClientContextMenuAction {
     ToggleBookmark,
     /// Sorts the spaces list by this key (a repeat flips the direction).
     SortSpaces(super::space_sort::SpaceSortKey),
+    /// A row that only informs, such as a branch: closes the menu.
+    Dismiss,
 }
+
+/// The branches the server listed for the branch menu, or why it could not.
+pub(super) type BranchListing = Result<Vec<crate::api::schema::GitBranchInfo>, String>;
 
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
@@ -781,6 +790,15 @@ pub(super) enum ClientContextMenuTarget {
     SortSpaces(super::space_sort::SpaceSort),
     /// A row of the bookmarks list: only removing the bookmark.
     Bookmark { tab_id: String },
+    /// A space's other branches with their push state, opened from its push
+    /// status chip, which the menu's title repeats.
+    Branches {
+        workspace_id: String,
+        branch: Option<String>,
+        ahead_behind: Option<(usize, usize)>,
+        /// `None` while the server lists them.
+        branches: Option<BranchListing>,
+    },
     Pane {
         pane_id: String,
         workspace_id: String,
@@ -890,6 +908,9 @@ pub(super) enum PendingEndpointKind {
     },
     NotificationList {
         endpoint_id: ClientEndpointId,
+    },
+    GitBranchList {
+        workspace_id: String,
     },
     IntegrationList,
     IntegrationInstall,

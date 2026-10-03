@@ -377,8 +377,7 @@ rows = [
 [ui.sidebar.spaces]
 row_gap = 0
 rows = [
-  ["state_icon", "workspace", "tab_jobs"],
-  ["branch", "git_status"],
+  ["state_icon", "workspace", "push_status", "tab_jobs"],
 ]
 ```
 
@@ -402,6 +401,7 @@ Space rows accept these built-in tokens:
 - `workspace` — workspace name.
 - `branch` — Git branch when available.
 - `git_status` — Git ahead and behind counts when nonzero.
+- `push_status` — the push status chip: commits to push (`↑3`) and to pull (`↓2`), or `✓` when the branch matches its upstream. It starts with the branch name unless the branch is `main` or `master` or the space is already named after it; without an upstream it shows only the branch name. Clicking it opens a menu of the repository's other local branches with their push state (`gone` for a deleted upstream, `local` for none); the menu's title repeats the chip.
 - `tab_jobs` — counts of the space's tabs whose status (`herdr tab status`) is running (`⧖ 1`) or failed (`!1`), when nonzero. A collapsed worktree group counts all its spaces. It shows background work such as `herdr-job` jobs while the space's agents are idle. With `ui.sidebar.spaces.tabs`, a space that lists its tabs shows the jobs nested under a tab on that tab's line, and here only jobs nested under a tab that is gone.
 - `$name` — custom workspace metadata named `name`.
 
@@ -436,7 +436,7 @@ The first matching rule wins. Its specified style fields override the occurrence
 
 `gt` and `lt` take finite numeric thresholds and compare strictly greater or less, not equal. Values must parse completely as finite numbers; decimal and exponent forms work, but whitespace, units, `NaN`, and infinity do not match. `ignore_case` is not accepted on numeric rules. Comparisons use floating-point numbers, not exact large-integer arithmetic.
 
-Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and the composite `git_status` and `tab_jobs` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
+Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and the composite `git_status`, `push_status` and `tab_jobs` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
 
 `row_gap` controls the blank terminal rows between entries, independently for the Agent and Space panels. It defaults to `0`, which packs entries together; set it to `1` to restore the previous spacing. It does not add spacing between the content lines declared in `rows`. Consecutive indented worktree children remain packed as one Space group.
 

@@ -865,7 +865,7 @@ pub(crate) fn render_sidebar(
             displayed_workspaces(snapshot, workspace, state.collapsed_groups)
                 .any(|shown| shown.workspace_id == agent.workspace_id)
         });
-        render_workspace_rows(
+        let push_status = render_workspace_rows(
             target,
             rect,
             status,
@@ -880,6 +880,18 @@ pub(crate) fn render_sidebar(
                 .map(|name| (name, drag_bg)),
             config,
         );
+        if let Some(chip) = push_status.filter(|_| config.mouse_capture) {
+            block_hits
+                .space_push_status
+                .push((chip, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: chip,
+                id: format!("push-status:{}", workspace.workspace_id),
+                text: push_status_tooltip(workspace),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
         if let Some(color) = grab_color {
             // A grip at the name line's right edge, left of the group
             // chevron (with vertical tabs, left of the new-tab `+`), in the
@@ -1566,7 +1578,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // background, which wins over selected and focused.
     grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
     config: &ClientShellConfig,
-) {
+) -> Option<Rect> {
+    // Where the push status chip was drawn, for its click and tooltip.
+    let mut push_status_rect = None;
     let palette = &config.palette;
     // With vertical tabs (`spaces.tabs`): leave two columns in front of the
     // name for `render_space_disclosure`, and give a focused space no
@@ -1634,12 +1648,17 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             palette.overlay0
         });
-        // The job summary (`◐ 2 !2`) is right-aligned, just left of the
-        // actions at the row's end; the name is cut first, never the counts.
+        // The push status chip and the job summary (`↑3 ◐ 2 !2`) are
+        // right-aligned, just left of the actions at the row's end; the name
+        // is cut first, never the chip or the counts.
         let is_jobs = |token: &crate::ui::ResolvedToken| {
             matches!(token.kind, crate::ui::ResolvedTokenKind::TabJobs { .. })
         };
-        let (jobs, rest): (Vec<_>, Vec<_>) = row.iter().cloned().partition(is_jobs);
+        let is_push = |token: &crate::ui::ResolvedToken| {
+            matches!(token.kind, crate::ui::ResolvedTokenKind::PushStatus { .. })
+        };
+        let (push, rest): (Vec<_>, Vec<_>) = row.iter().cloned().partition(is_push);
+        let (jobs, rest): (Vec<_>, Vec<_>) = rest.into_iter().partition(is_jobs);
         let right_edge = area.right().saturating_sub(reserved(row_index));
         let style_for = |tokens: &[crate::ui::ResolvedToken], width: usize| {
             crate::ui::resolved_token_spans(
@@ -1663,7 +1682,27 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             right_edge
         };
-        let name_end = if jobs_width > 0 {
+        let push_right = if jobs_width > 0 {
+            jobs_x.saturating_sub(1).max(x)
+        } else {
+            right_edge
+        };
+        let push_spans = style_for(&push, usize::from(push_right.saturating_sub(x)));
+        let push_width = push_spans
+            .iter()
+            .map(|span| display_width(&span.content))
+            .sum::<u16>();
+        let push_x = push_right.saturating_sub(push_width).max(x);
+        if push_width > 0 {
+            Paragraph::new(Line::from(push_spans)).render(
+                Rect::new(push_x, y, push_right.saturating_sub(push_x), 1),
+                buffer,
+            );
+            push_status_rect = Some(Rect::new(push_x, y, push_right.saturating_sub(push_x), 1));
+        }
+        let name_end = if push_width > 0 {
+            push_x.saturating_sub(1).max(x)
+        } else if jobs_width > 0 {
             jobs_x.saturating_sub(1).max(x)
         } else {
             right_edge
@@ -1709,6 +1748,20 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
+    push_status_rect
+}
+
+/// What the push status chip says, in words, and that it opens a menu.
+fn push_status_tooltip(workspace: &ClientShellWorkspace) -> String {
+    let branch = workspace.branch.as_deref().unwrap_or("detached HEAD");
+    let status = match workspace.git_ahead_behind {
+        None => "no upstream".to_owned(),
+        Some((0, 0)) => "pushed".to_owned(),
+        Some((ahead, 0)) => format!("{ahead} to push"),
+        Some((0, behind)) => format!("{behind} to pull"),
+        Some((ahead, behind)) => format!("{ahead} to push, {behind} to pull"),
+    };
+    format!("{branch}: {status} · click for branches")
 }
 
 /// Where a tab line is inside its space: the rows above it (the space's own

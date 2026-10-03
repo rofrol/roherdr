@@ -711,9 +711,29 @@ pub(crate) fn render_context_menu(
         .max()
         .unwrap_or(0)
         .max(chips_row_width);
+    let title = menu.title().map(|(branch, ahead_behind)| {
+        crate::ui::push_status_spans(
+            branch,
+            ahead_behind,
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD),
+            palette,
+        )
+    });
+    // A title sits in the top border after the corner and a space, with a
+    // space and at least one border column after it.
+    let title_width = title.as_ref().map_or(0, |spans| {
+        spans
+            .iter()
+            .map(|span| display_width(&span.content))
+            .sum::<u16>()
+            .saturating_add(5)
+    });
     let width = max_item_width
         .saturating_add(4)
         .max(14)
+        .max(title_width)
         .min(screen.width.max(1));
     let row_count = items.len() - chips.len() + usize::from(!chips.is_empty());
     let height = (row_count as u16)
@@ -729,6 +749,17 @@ pub(crate) fn render_context_menu(
     );
     let rect = Rect::new(x, y, width, height);
     let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
+    if let Some(spans) = title {
+        let mut title_x = rect.x.saturating_add(1);
+        let title_end = rect.right().saturating_sub(2);
+        for span in std::iter::once(ratatui::text::Span::raw(" "))
+            .chain(spans)
+            .chain(std::iter::once(ratatui::text::Span::raw(" ")))
+        {
+            let style = Style::default().bg(palette.panel_bg).patch(span.style);
+            title_x = put_segment(buffer, title_x, rect.y, title_end, &span.content, style);
+        }
+    }
     let highlight = Style::default()
         .fg(panel_contrast_fg(palette))
         .bg(palette.accent)

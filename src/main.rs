@@ -382,13 +382,15 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
 
-# Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
+# Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, git_status,
+# push_status (commits to push, led by a non-default branch; click for the other branches)
+# and tab_jobs.
 # Custom values reported through workspace metadata use a $name token, for example $jj_status.
 # Inline token styles accept strict #RGB/#RRGGBB foregrounds plus bold and dim booleans.
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# rows = [["state_icon", "workspace", "push_status", "tab_jobs"]]
 # Experimental: list each space's agents under it, each with its state and
 # task, and a line with its herdr-job counts when it has jobs.
 # agents = false

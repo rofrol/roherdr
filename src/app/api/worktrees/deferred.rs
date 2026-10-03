@@ -32,7 +32,84 @@ impl App {
                 self.start_api_worktree_remove(request.id, params, respond_to);
                 true
             }
+            crate::api::schema::Method::GitBranchList(params) => {
+                self.start_api_git_branch_list(request.id, params, respond_to);
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Lists the branches on a worker: Git must not block the server loop.
+    fn start_api_git_branch_list(
+        &mut self,
+        request_id: String,
+        params: crate::api::schema::GitBranchListParams,
+        respond_to: std::sync::mpsc::Sender<String>,
+    ) {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            Self::send_api_response(
+                respond_to,
+                encode_error(
+                    request_id,
+                    "workspace_not_found",
+                    format!("workspace {} not found", params.workspace_id),
+                ),
+            );
+            return;
+        };
+        let workspace = &self.state.workspaces[ws_idx];
+        let checkout = workspace
+            .git_space()
+            .map(|space| space.repo_root.clone())
+            .or_else(|| {
+                workspace.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+            });
+        let Some(checkout) = checkout else {
+            Self::send_api_response(
+                respond_to,
+                encode_error(
+                    request_id,
+                    "not_git_worktree",
+                    "this workspace is not inside a Git work tree",
+                ),
+            );
+            return;
+        };
+        let Ok(permit) = self.worktree_read_slots.clone().try_acquire_owned() else {
+            Self::send_api_response(
+                respond_to,
+                encode_error(
+                    request_id,
+                    "worktree_busy",
+                    "too many Git checks are pending; retry shortly",
+                ),
+            );
+            return;
+        };
+        let spawn_error_response = respond_to.clone();
+        let spawn_request_id = request_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name("git-branch-list".into())
+            .spawn(move || {
+                let _permit = permit;
+                let response = match crate::worktree::list_local_branches(&checkout) {
+                    Ok(branches) => {
+                        encode_success(request_id, ResponseResult::GitBranchList { branches })
+                    }
+                    Err(message) => encode_error(request_id, "git_branch_list_failed", message),
+                };
+                Self::send_api_response(respond_to, response);
+            });
+        if let Err(err) = spawned {
+            Self::send_api_response(
+                spawn_error_response,
+                encode_error(
+                    spawn_request_id,
+                    "git_branch_list_failed",
+                    format!("could not start the branch listing: {err}"),
+                ),
+            );
         }
     }
 

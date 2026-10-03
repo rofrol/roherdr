@@ -130,6 +130,10 @@ pub enum SpaceSidebarToken {
     Workspace,
     Branch,
     GitStatus,
+    /// The push status chip: commits to push or pull (`✓` when in sync),
+    /// led by the branch when it is not the default one. A click lists the
+    /// other branches.
+    PushStatus,
     TabJobs,
     Custom(String),
     Styled {
@@ -295,6 +299,7 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::Workspace => "workspace".into(),
         SpaceSidebarToken::Branch => "branch".into(),
         SpaceSidebarToken::GitStatus => "git_status".into(),
+        SpaceSidebarToken::PushStatus => "push_status".into(),
         SpaceSidebarToken::TabJobs => "tab_jobs".into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
@@ -392,6 +397,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
                 ("workspace", Self::Workspace),
                 ("branch", Self::Branch),
                 ("git_status", Self::GitStatus),
+                ("push_status", Self::PushStatus),
                 ("tab_jobs", Self::TabJobs),
             ],
         )
@@ -478,14 +484,12 @@ pub struct SpacesSidebarConfig {
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
-            rows: vec![
-                vec![
-                    SpaceSidebarToken::StateIcon,
-                    SpaceSidebarToken::Workspace,
-                    SpaceSidebarToken::TabJobs,
-                ],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
-            ],
+            rows: vec![vec![
+                SpaceSidebarToken::StateIcon,
+                SpaceSidebarToken::Workspace,
+                SpaceSidebarToken::PushStatus,
+                SpaceSidebarToken::TabJobs,
+            ]],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
             tabs: false,
         }
@@ -535,14 +539,12 @@ mod tests {
         assert_eq!(config.agents.row_gap, 0);
         assert_eq!(
             config.spaces.rows,
-            vec![
-                vec![
-                    SpaceSidebarToken::StateIcon,
-                    SpaceSidebarToken::Workspace,
-                    SpaceSidebarToken::TabJobs,
-                ],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
-            ]
+            vec![vec![
+                SpaceSidebarToken::StateIcon,
+                SpaceSidebarToken::Workspace,
+                SpaceSidebarToken::PushStatus,
+                SpaceSidebarToken::TabJobs,
+            ],]
         );
         assert_eq!(config.spaces.row_gap, 0);
     }
