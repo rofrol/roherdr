@@ -3531,7 +3531,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   unlike the other items. Consult the models before fixing (user asked:
   "pytaj modeli"), including which items a row menu in each list should have.
 
-- [ ] A new job tab flashes as a top-level row before it nests (user,
+- [x] A new job tab flashes as a top-level row before it nests (user,
   2026-10-03 ~02:37, screenshot: "something appeared a moment ago, some card
   in try-roguix I think, and quickly disappeared; the spaces panel jumps
   because of it". The job group under the agent's tab was collapsed and the
@@ -3551,6 +3551,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     top-level tab, so herdr-job keeps the `tab parent` call as a fallback
     when the created tab's `parent_tab_id` is not set (or the server
     advertises the field as a capability).
+    Done 2026-10-03 (`ca936c8d`): the shape of `tab.create` is frozen, so it is
+    a new method, `tab.create_child` (`herdr tab create --parent`), which an
+    old server rejects instead of ignoring; herdr-job falls back on a reject.
+    Test: `tab_create_child_creates_the_tab_already_nested`.
   - The first consult round (sol, DeepSeek, MiMo; 2026-10-03) was briefed
     on the wrong premise (child rows of an expanded group closing 10 s
     after the job); its ideas still apply to that case: a fixed-width job
