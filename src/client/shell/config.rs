@@ -26,6 +26,32 @@ impl ClientShellState {
         );
     }
 
+    /// The local server's unfolded tab lines and pinned jobs, sorted, as
+    /// they are saved. Only the local server's: SSH tab ids belong to
+    /// another machine.
+    pub(super) fn saved_job_folds(&self) -> (Vec<String>, Vec<preferences::ClientKeptJob>) {
+        let mut unfolded = self
+            .unfolded_squares
+            .get(&ClientEndpointId::Local)
+            .map(|tabs| tabs.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        unfolded.sort();
+        let mut kept = self
+            .kept_jobs
+            .get(&ClientEndpointId::Local)
+            .map(|kept| {
+                kept.iter()
+                    .map(|(parent, job)| preferences::ClientKeptJob {
+                        parent_tab_id: parent.clone(),
+                        job_tab_id: job.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        kept.sort_by(|left, right| left.parent_tab_id.cmp(&right.parent_tab_id));
+        (unfolded, kept)
+    }
+
     pub(super) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
         let Some(path) = self.config.preferences_path.as_deref() else {
             return;
@@ -48,6 +74,7 @@ impl ClientShellState {
             })
             .collect::<Vec<_>>();
         remote_collapsed_groups.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
+        let (unfolded_job_tabs, kept_jobs) = self.saved_job_folds();
         let preferences = preferences::ClientChromePreferences {
             sidebar_width: self.sidebar_width_manual.then_some(self.sidebar_width),
             sidebar_section_split: self
@@ -63,6 +90,8 @@ impl ClientShellState {
                 .then_some(self.space_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            unfolded_job_tabs,
+            kept_jobs,
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

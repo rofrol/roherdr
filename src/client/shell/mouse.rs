@@ -192,6 +192,7 @@ impl ClientShellState {
                     kept.remove(&tab_id);
                 }
             }
+            self.persist_chrome_preferences(&mut ClientShellInput::default());
             return Some(None);
         }
         if self.on_gone_square(point) {

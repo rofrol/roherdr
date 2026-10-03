@@ -10,7 +10,9 @@ impl super::ClientShellState {
     /// Drops kept jobs that closed, so a new job that reuses the id is not
     /// shown as kept.
     pub(super) fn forget_closed_kept_jobs(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
+        // A snapshot without tabs (a server still starting) says nothing
+        // about which jobs closed.
+        let Some(snapshot) = self.snapshot.as_deref().filter(|s| !s.tabs.is_empty()) else {
             return;
         };
         if let Some(kept) = self.kept_jobs.get_mut(&self.active_endpoint_id) {

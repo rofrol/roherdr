@@ -1395,9 +1395,23 @@ impl ClientShellState {
             last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
-            unfolded_squares: HashMap::new(),
+            unfolded_squares: [(
+                ClientEndpointId::Local,
+                preferences.unfolded_job_tabs.into_iter().collect(),
+            )]
+            .into_iter()
+            .collect(),
             held_squares: HashMap::new(),
-            kept_jobs: HashMap::new(),
+            kept_jobs: [(
+                ClientEndpointId::Local,
+                preferences
+                    .kept_jobs
+                    .into_iter()
+                    .map(|kept| (kept.parent_tab_id, kept.job_tab_id))
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
             workspace_scroll: 0,
@@ -2026,18 +2040,13 @@ impl ClientShellState {
                 Some(_) => {}
             }
         }
-        // A first snapshot or one from a restarted server: the tab ids it
-        // reuses make what was remembered about jobs stale.
-        let reattached = self
-            .snapshot
-            .as_deref()
-            .is_none_or(|previous| previous.boot_id != snapshot.boot_id);
+        let job_folds = self.saved_job_folds();
         self.snapshot = Some(snapshot);
-        if reattached {
-            self.kept_jobs.remove(&self.active_endpoint_id);
-        }
         self.forget_closed_kept_jobs();
         self.remember_focused_group_tab();
+        if self.saved_job_folds() != job_folds {
+            self.persist_chrome_preferences(&mut ClientShellInput::default());
+        }
         self.mark_focused_tab_notifications_read();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();

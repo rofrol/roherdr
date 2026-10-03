@@ -73,7 +73,7 @@
   the mouse and already uses right click in 29 places) and putting the logo
   in the state column.
 
-- [ ] Remember the fold state of job squares across a client restart (user,
+- [x] Remember the fold state of job squares across a client restart (user,
   2026-10-03). Which tab lines are unfolded (`unfolded_squares`) and which
   job is pinned under a folded line (`kept_jobs`) live only in client memory,
   so a new `herdr` client (after an install or a server restart) starts with
@@ -82,6 +82,13 @@
   not in shared server state (two clients would fight over each other's
   sidebar); key it by a stable tab identity plus the server generation
   (`boot_id`), because tab ids are reused; drop entries whose tab is gone.
+  Done, without the generation: public tab ids (`<space>:t<n>`) survive a
+  live handoff and a restore and are never reused within a space
+  (`next_public_tab_number` only grows and is persisted), while `boot_id`
+  changes on every handoff, so keying by it would forget everything on each
+  install. Saved in the client's preferences file for the local server only
+  (`unfolded_job_tabs`, `kept_jobs`); pins of closed jobs are dropped on each
+  snapshot that has tabs. SSH servers are not saved.
 
 - [ ] Attach images quickly from the last chosen directory (user,
   2026-10-03: "some command or something so I add images fast from the
