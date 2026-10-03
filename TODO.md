@@ -2,6 +2,20 @@
 
 ## Next, in order
 
+- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
+  but it did not close the job." Closing a parent tab's last pane (cmd+w)
+  checked only the parent for running work, and the server kept its child
+  job tabs running as top-level tabs. Consulted sol, DeepSeek and MiMo
+  (unanimous): an explicit close of the last pane is a close of the tab;
+  a parent whose shell exits or crashes keeps its jobs (an agent may exit
+  after starting a long build on purpose). Done: close-pane on a parent's
+  last pane asks and closes like closing the tab (test
+  `closing_a_parents_last_pane_closes_the_tab_with_its_children`). Not done:
+  make the kept jobs visible when the parent exits by itself: a notice
+  "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
+  the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
+  button in the parent's close dialog.
+
 - [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
   work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio
   ↓` (21 columns) left room for one indicator, so the working count and the
