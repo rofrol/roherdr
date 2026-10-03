@@ -1,5 +1,6 @@
 //! The launch button left of a space's `+`: a new tab running the agent last
-//! launched there, and a menu of the other installed agents.
+//! launched there, and a menu of the installed agents that teaches their
+//! colours.
 
 use super::*;
 
@@ -122,8 +123,9 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    /// The menu of the other installed agents, under the launch button; the
-    /// server says which are installed.
+    /// The menu of the installed agents, over the launch button: its first
+    /// row's `A` covers the button's (the menu's border and padding sit one
+    /// column left and one row up). The server says which are installed.
     pub(super) fn open_agent_picker(
         &mut self,
         workspace_id: String,
@@ -139,8 +141,8 @@ impl ClientShellState {
                 current,
                 kinds: None,
             },
-            x: button.x,
-            y: button.y.saturating_add(1),
+            x: button.x.saturating_sub(1),
+            y: button.y.saturating_sub(1),
             highlighted: 0,
         }));
         outcome.repaint = true;
@@ -193,11 +195,23 @@ impl ClientShellState {
     }
 }
 
-/// The agents the picker offers: the installed ones but the button's own.
+/// The agents the picker offers: the installed ones, the button's own first.
 pub(super) fn picker_agents<'a>(kinds: &'a [String], current: Option<&str>) -> Vec<&'a str> {
-    kinds
-        .iter()
-        .map(String::as_str)
-        .filter(|kind| Some(*kind) != current)
-        .collect()
+    let mut agents = kinds.iter().map(String::as_str).collect::<Vec<_>>();
+    // Stable: the others keep the server's order.
+    agents.sort_by_key(|kind| Some(*kind) != current);
+    agents
 }
+
+/// A picker row: the button's `A` (coloured when drawn) and the agent; the
+/// button's own agent says so.
+pub(super) fn picker_label(kind: &str, current: Option<&str>) -> String {
+    if Some(kind) == current {
+        format!("{LAUNCH_GLYPH} {kind} · last")
+    } else {
+        format!("{LAUNCH_GLYPH} {kind}")
+    }
+}
+
+/// The letter on the launch button and before each picker row.
+pub(super) const LAUNCH_GLYPH: char = 'A';

@@ -34,6 +34,21 @@ impl ClientContextMenuOverlay {
         }
     }
 
+    /// The agent of the picker row at this index, whose `A` takes its colour.
+    pub(super) fn picker_agent(&self, index: usize) -> Option<&str> {
+        let ClientContextMenuTarget::AgentPicker {
+            current,
+            kinds: Some(Ok(kinds)),
+            ..
+        } = &self.target
+        else {
+            return None;
+        };
+        super::agent_launch::picker_agents(kinds, current.as_deref())
+            .get(index)
+            .copied()
+    }
+
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
@@ -131,12 +146,17 @@ impl ClientContextMenuOverlay {
                 Some(Ok(kinds)) => {
                     let agents = super::agent_launch::picker_agents(kinds, current.as_deref());
                     if agents.is_empty() {
-                        return vec![item("no other agents installed", Action::Dismiss)];
+                        return vec![item("no agents installed", Action::Dismiss)];
                     }
                     agents
                         .into_iter()
                         .enumerate()
-                        .map(|(index, kind)| item(kind, Action::LaunchAgent(index)))
+                        .map(|(index, kind)| {
+                            item(
+                                &super::agent_launch::picker_label(kind, current.as_deref()),
+                                Action::LaunchAgent(index),
+                            )
+                        })
                         .collect()
                 }
             },

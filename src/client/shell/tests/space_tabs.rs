@@ -3567,7 +3567,7 @@ fn launched_agent(outcome: &ClientShellInput) -> Option<(String, String)> {
 }
 
 #[test]
-fn the_launch_button_repeats_the_spaces_agent_and_its_menu_offers_the_others() {
+fn the_launch_button_repeats_the_spaces_agent_and_its_menu_teaches_the_colours() {
     let mut state = state_with_tabs(true);
     let frame = state.compose(106, 30).unwrap();
     let (button, workspace_id) = state.hits.space_launch_agent[0].clone();
@@ -3598,7 +3598,8 @@ fn the_launch_button_repeats_the_spaces_agent_and_its_menu_offers_the_others() {
         Some(("ws_1".into(), "claude".into()))
     );
 
-    // A right click lists the installed agents but claude.
+    // A right click lists the installed agents, claude first, each after an
+    // `A` in its colour.
     let outcome = right_click(&mut state, (button.x, button.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
@@ -3612,14 +3613,33 @@ fn the_launch_button_repeats_the_spaces_agent_and_its_menu_offers_the_others() {
     assert!(repaint);
     state.compose(106, 30).unwrap();
     let rows = state.hits.context_menu_rows.clone();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     let frame = state.compose(106, 30).unwrap();
     let text = frame_rows(&frame);
-    assert!(text[rows[0].0.y as usize].contains(" pi "), "{text:?}");
-    assert!(text[rows[1].0.y as usize].contains(" codex "), "{text:?}");
+    // The first row covers the button: its `A` is the button's.
+    assert_eq!(rows[0].0.y, button.y);
+    let glyph = button.x + 1;
+    assert!(
+        text[rows[0].0.y as usize].contains("A claude · last"),
+        "{text:?}"
+    );
+    assert!(text[rows[1].0.y as usize].contains("A pi "), "{text:?}");
+    assert!(text[rows[2].0.y as usize].contains("A codex "), "{text:?}");
+    let palette = &state.config.palette;
+    for (row, color) in [
+        (rows[0].0.y, palette.peach),
+        (rows[1].0.y, palette.mauve),
+        (rows[2].0.y, palette.green),
+    ] {
+        let cell = &frame.cells[usize::from(row) * usize::from(frame.width) + usize::from(glyph)];
+        assert_eq!(cell.symbol, "A", "{text:?}");
+        assert_eq!(cell.fg, crate::protocol::color_to_u32(color));
+        // Highlighted or not, the `A` keeps the menu's background.
+        assert_eq!(cell.bg, crate::protocol::color_to_u32(palette.panel_bg));
+    }
 
     // Picking codex launches it, and the button repeats it from then on.
-    let outcome = left_click(&mut state, (rows[1].0.x + 1, rows[1].0.y));
+    let outcome = left_click(&mut state, (rows[2].0.x + 1, rows[2].0.y));
     assert_eq!(
         launched_agent(&outcome),
         Some(("ws_1".into(), "codex".into()))

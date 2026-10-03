@@ -164,6 +164,29 @@
   agent's command into a new tab's shell. The remembered agent is client
   memory only (after a restart the space's newest agent tab decides). Not
   done: the remote-machine sidebar has no launch button.
+  The picker teaches the colours (user, 2026-10-03: "teach people the
+  colours in this menu"): every row starts with an `A` in its agent's
+  colour, in the button's `A` column, and the menu opens over the button
+  so its first row's `A` covers the one clicked. The button's own agent
+  is listed again, first, as `A claude · last`, and clicking it launches
+  it like the button. On the highlighted row the `A` keeps the menu's
+  background, so a blue `A` stays visible on the blue highlight.
+  ```
+  ▾ herdr        A  + ⋮        ╭────────────────╮
+                          →    │A claude · last │ ← over the button
+                               │A pi            │
+                               │A codex         │
+                               ╰────────────────╯
+  ```
+  Consulted sol and MiMo (round `20261003-205224-eaff`): both: list the
+  current agent too, but not as "default" (it is a client's memory, not
+  a setting); sol: clicking it launches like every row; keep the
+  coloured cell out of the highlight (sol's option). Rejected: MiMo's
+  "with others only you cannot switch back to claude" (the others are
+  listed), distinct letters per agent (the user chose the `A` after
+  trying badges) and a non-inverting highlight for every menu (breaks
+  the menus' shared look). Open: codex/copilot share green and
+  gemini/agy blue, so a colour alone does not name one agent.
 
 - [x] Remember the fold state of job squares across a client restart (user,
   2026-10-03). Which tab lines are unfolded (`unfolded_squares`) and which
