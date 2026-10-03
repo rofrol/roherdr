@@ -2108,37 +2108,26 @@ fn reopening_skips_a_vanished_space_keeps_ten_and_reuses_nothing_twice() {
 }
 
 #[test]
-fn focusing_a_job_unfolds_its_parents_squares_once() {
+fn focusing_a_job_leaves_its_parents_squares_folded_and_shows_the_job_instead() {
     let mut state = state_with_tabs(true);
     with_job(&mut state, "job_1", TabStatus::Running);
     state.compose(106, 30).unwrap();
     assert!(state.hits.space_tab_squares.is_empty(), "folded by default");
-    // Focus moves to the job (a click on a job link, say): the squares show.
-    focus_tab(&mut state, "job_1");
-    state.compose(106, 30).unwrap();
-    assert_eq!(
-        state
-            .hits
-            .space_tab_squares
-            .iter()
-            .map(|(_, id)| id.as_str())
-            .collect::<Vec<_>>(),
-        ["job_1"]
-    );
-    // Folded by hand while the job stays focused: a fresh snapshot with the
-    // same focus does not open them again.
-    state
-        .unfolded_squares
-        .get_mut(&ClientEndpointId::Local)
-        .expect("unfolded")
-        .clear();
-    focus_tab(&mut state, "job_1");
-    state.compose(106, 30).unwrap();
-    assert!(state.hits.space_tab_squares.is_empty());
-    // Focusing the parent itself leaves them as they are.
-    focus_tab(&mut state, "tab_1");
-    state.compose(106, 30).unwrap();
-    assert!(state.hits.space_tab_squares.is_empty());
+    // Focus moves to the job and back, as clicks between its row and the
+    // parent do: the squares stay folded, the job keeps one row of its own.
+    for tab in ["job_1", "tab_1", "job_1", "tab_1"] {
+        focus_tab(&mut state, tab);
+        state.compose(106, 30).unwrap();
+        assert!(
+            state
+                .unfolded_squares
+                .get(&ClientEndpointId::Local)
+                .is_none_or(|set| set.is_empty()),
+            "{tab}"
+        );
+        assert_eq!(state.hits.space_tab_squares.len(), 1, "{tab}");
+        assert!(state.hits.space_tab_squares[0].0.width > 3, "{tab}");
+    }
 }
 
 #[test]
@@ -3227,83 +3216,6 @@ fn a_tab_line_shows_the_progress_of_the_agents_todo_list() {
 }
 
 #[test]
-fn squares_opened_for_a_focused_job_fold_again_when_the_focus_leaves_the_job() {
-    let mut state = state_with_tabs(true);
-    with_job(&mut state, "job_1", TabStatus::Failed);
-    state.compose(106, 30).unwrap();
-    let unfolded = |state: &ClientShellState| {
-        state
-            .unfolded_squares
-            .get(&ClientEndpointId::Local)
-            .is_some_and(|set| set.contains("tab_1"))
-    };
-    let focus = |state: &mut ClientShellState, tab: &str| {
-        let previous = state.snapshot.as_deref().unwrap().focused_tab_id.clone();
-        let mut projected = state.snapshot.as_deref().unwrap().clone();
-        projected.focused_tab_id = Some(tab.to_owned());
-        for t in &mut projected.tabs {
-            t.focused = t.tab_id == tab;
-        }
-        state.set_snapshot(Box::new(projected));
-        state.unfold_focused_job(previous.as_deref());
-    };
-    // Focus lands on the job: its parent's squares open.
-    focus(&mut state, "job_1");
-    assert!(unfolded(&state));
-    // The job closes and the focus goes back to the parent: they fold again.
-    focus(&mut state, "tab_1");
-    assert!(!unfolded(&state), "the parent folds again");
-
-    // Squares the user opened stay open.
-    let mut outcome = ClientShellInput::default();
-    state
-        .unfolded_squares
-        .entry(ClientEndpointId::Local)
-        .or_default()
-        .insert("tab_1".into());
-    focus(&mut state, "job_1");
-    focus(&mut state, "tab_1");
-    assert!(unfolded(&state), "the user's own unfold sticks");
-    let _ = &mut outcome;
-}
-
-#[test]
-fn focus_that_falls_on_a_job_when_the_focused_tab_closes_unfolds_nothing() {
-    let mut state = state_with_tabs(true);
-    with_job(&mut state, "job_1", TabStatus::Failed);
-    // A plain tab after tab_1's job, focused; it closes and the focus falls
-    // on the job right before it.
-    let mut projected = state.snapshot.as_deref().unwrap().clone();
-    let mut shell = projected.tabs[0].clone();
-    shell.tab_id = "tab_z".into();
-    shell.label = "zsh".into();
-    projected.tabs.push(shell);
-    projected.focused_tab_id = Some("tab_z".into());
-    for tab in &mut projected.tabs {
-        tab.focused = tab.tab_id == "tab_z";
-    }
-    state.set_snapshot(Box::new(projected));
-    state.compose(106, 30).unwrap();
-    let previous = Some("tab_z".to_owned());
-    let mut projected = state.snapshot.as_deref().unwrap().clone();
-    projected.tabs.retain(|tab| tab.tab_id != "tab_z");
-    projected.focused_tab_id = Some("job_1".into());
-    for tab in &mut projected.tabs {
-        tab.focused = tab.tab_id == "job_1";
-    }
-    state.set_snapshot(Box::new(projected));
-    state.unfold_focused_job(previous.as_deref());
-    assert!(
-        state
-            .unfolded_squares
-            .get(&ClientEndpointId::Local)
-            .is_none_or(|set| set.is_empty()),
-        "{:?}",
-        state.unfolded_squares
-    );
-}
-
-#[test]
 fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
     use crate::api::schema::TabActivity;
     let mut state = state_with_tabs(true);
@@ -3327,4 +3239,83 @@ fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
     state.set_snapshot(Box::new(projected));
     let row = icon(&mut state);
     assert!(row.contains('◌'), "{row:?}");
+}
+
+#[test]
+fn a_folded_line_with_the_open_job_under_it_shows_that_job_on_its_own_row() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    focus_tab(&mut state, "job_1");
+    // The jump unfolded the squares; the user folds them by hand.
+    state
+        .unfolded_squares
+        .entry(ClientEndpointId::Local)
+        .or_default()
+        .remove("tab_1");
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let line = state.hits.space_tabs[0].0;
+    assert!(rows[line.y as usize].contains("agent tab"), "{rows:?}");
+    let job_row = &rows[line.y as usize + 1];
+    assert!(job_row.contains("job job_1"), "{job_row:?}");
+    // The row opens the job like its square does.
+    assert!(
+        state
+            .hits
+            .space_tab_squares
+            .iter()
+            .any(|(rect, tab)| rect.y == line.y + 1 && tab == "job_1"),
+        "{:?}",
+        state.hits.space_tab_squares
+    );
+
+    // Focus back on the parent: the job's row stays (see the test below for
+    // how long); the parent is the selection again.
+    focus_tab(&mut state, "tab_1");
+    let frame = state.compose(106, 30).unwrap();
+    assert!(frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
+}
+
+#[test]
+fn the_last_open_job_stays_under_the_folded_line_after_the_focus_returns_to_the_parent() {
+    let mut state = state_with_tabs(true);
+    with_job(&mut state, "job_1", TabStatus::Failed);
+    focus_tab(&mut state, "job_1");
+    state
+        .unfolded_squares
+        .entry(ClientEndpointId::Local)
+        .or_default()
+        .remove("tab_1");
+    focus_tab(&mut state, "tab_1");
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let line = state.hits.space_tabs[0].0;
+    // The parent is selected again; the job's row is still there.
+    assert!(rows[line.y as usize + 1].contains("job job_1"), "{rows:?}");
+    assert!(state
+        .hits
+        .space_tab_squares
+        .iter()
+        .any(|(rect, tab)| rect.y == line.y + 1 && tab == "job_1"));
+
+    // Unfolding by hand shows the squares in its place.
+    state
+        .unfolded_squares
+        .entry(ClientEndpointId::Local)
+        .or_default()
+        .insert("tab_1".into());
+    let frame = state.compose(106, 30).unwrap();
+    assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
+
+    // A restarted server's ids are new: nothing is kept.
+    state
+        .unfolded_squares
+        .entry(ClientEndpointId::Local)
+        .or_default()
+        .remove("tab_1");
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.boot_id = "another boot".into();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    assert!(!frame_rows(&frame)[line.y as usize + 1].contains("job job_1"));
 }

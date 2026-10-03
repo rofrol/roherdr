@@ -182,9 +182,6 @@ impl ClientShellState {
                 .entry(self.active_endpoint_id.clone())
                 .or_default();
             unfolded.retain(|key| live.contains(key));
-            // The user's own toggle: what was opened for a job is theirs now.
-            self.auto_unfolded
-                .remove(&(self.active_endpoint_id.clone(), tab_id.clone()));
             let unfolded = self
                 .unfolded_squares
                 .entry(self.active_endpoint_id.clone())

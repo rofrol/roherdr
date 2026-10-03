@@ -103,7 +103,7 @@
     sidebar header button (rejected for now: `?` already means awaits
     reply); splitting the status axes.
 
-- [ ] Folded jobs hide where the focus is, and a restart unfolds them again
+- [x] Folded jobs hide where the focus is, and a restart unfolds them again
   (user, 2026-10-03, two screenshots). (1) He clicked a job square under the
   `Token utilization…` tab, then folded the parent: the right pane still
   shows the job's output, but the sidebar draws the parent line as selected
@@ -132,6 +132,14 @@
     hidden child shows one extra row for that job (status glyph and label)
     carrying the selection bar; the parent line is dimmed, not blue. The
     squares stay folded. Persistence of the fold is not decided yet.
+  - Done (variant d, then changed by the user's feedback): a folded line
+    shows one row for the open job, and keeps showing the parent's last open
+    job after the focus returns to the parent (client memory `kept_jobs`,
+    cleared when the server restarts; sol, DeepSeek and MiMo, round
+    `20261003-140047-f4be`). Auto-unfold on focus is removed: clicking the
+    job row unfolded the squares, so the user could not click between the
+    job and its parent. Only the arrow and counts unfold. Not done:
+    persisting the fold across a client restart.
   - Persisting the fold: sol and MiMo, per client and keyed by a stable
     tab identity plus a generation (tab ids are reused); DeepSeek: not the
     fix, it hides the reaction bug. Not shared through the server: two

@@ -1187,13 +1187,13 @@ pub(crate) struct ClientShellState {
     /// Tabs whose nested tabs are unfolded as squares under their tab line,
     /// by endpoint; folded by default and not saved.
     pub(super) unfolded_squares: HashMap<ClientEndpointId, HashSet<String>>,
-    /// The unfolded tabs that focusing one of their jobs opened (not the
-    /// user's own toggle): they fold again when the focus leaves the group.
-    pub(super) auto_unfolded: HashSet<(ClientEndpointId, String)>,
     /// The squares' order as last drawn; held while the pointer is over the
     /// spaces list, so a job tab that closes leaves a blank slot instead of
     /// moving the others.
     pub(super) held_squares: super::space_tabs::HeldSquares,
+    /// Each parent tab's last focused job per endpoint, kept under its folded
+    /// line after the focus returns to the parent. Client memory only.
+    pub(super) kept_jobs: HashMap<ClientEndpointId, super::space_tabs::KeptJobs>,
     pub(super) pointer_over_spaces: bool,
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
@@ -1396,8 +1396,8 @@ impl ClientShellState {
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
             unfolded_squares: HashMap::new(),
-            auto_unfolded: HashSet::new(),
             held_squares: HashMap::new(),
+            kept_jobs: HashMap::new(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
             workspace_scroll: 0,
@@ -2026,12 +2026,16 @@ impl ClientShellState {
                 Some(_) => {}
             }
         }
-        let previous_focus = self
+        // A first snapshot or one from a restarted server: the tab ids it
+        // reuses make what was remembered about jobs stale.
+        let reattached = self
             .snapshot
             .as_deref()
-            .and_then(|previous| previous.focused_tab_id.clone());
+            .is_none_or(|previous| previous.boot_id != snapshot.boot_id);
         self.snapshot = Some(snapshot);
-        self.unfold_focused_job(previous_focus.as_deref());
+        if reattached {
+            self.kept_jobs.remove(&self.active_endpoint_id);
+        }
         self.remember_focused_group_tab();
         self.mark_focused_tab_notifications_read();
         self.reconcile_pending_workspace_highlight();

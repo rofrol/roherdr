@@ -242,6 +242,8 @@ pub(super) struct ShellRenderState<'a> {
     /// The active endpoint's tabs whose squares are unfolded.
     pub(super) unfolded_squares: &'a HashSet<String>,
     pub(super) held_squares: &'a super::space_tabs::HeldSquares,
+    /// The active endpoint's last open job per parent tab.
+    pub(super) kept_jobs: &'a super::space_tabs::KeptJobs,
     /// While the pointer is over a sorted list: its spaces' order as last
     /// drawn, kept until the pointer leaves.
     pub(super) held_space_order: Option<&'a [String]>,
