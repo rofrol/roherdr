@@ -26,3 +26,12 @@ Herdr marks the pane with `?` until you type. It adds a named system-prompt
 section (or appends to the system prompt on older Pi), only inside Herdr's
 TUI mode. Set `HERDR_AWAITING_REPLY_INSTRUCTIONS=0` to leave it out. It lives
 beside the managed `herdr-agent-state.ts`, which Herdr overwrites on reinstall.
+
+It also carries the safety net of the Claude Stop hook: on Pi's
+`agent_before_settle` boundary, when the final message looks like a question
+(the heuristic of `scripts/awaiting_reply_audit.py`, kept equal by a test) and
+the turn did not run the command, or wrote it out as text, it appends a hidden
+message and continues one request, once per turn. A model that is not waiting
+just stops. `HERDR_AWAITING_REPLY_STOP=0` turns the check off, `=shadow` only
+logs to `~/.local/state/herdr/awaiting-reply-stop.jsonl` (the same file as the
+Claude hook, with `"agent": "pi"`).
