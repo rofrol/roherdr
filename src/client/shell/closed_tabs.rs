@@ -3,7 +3,9 @@
 //! Closing a tab ends its processes, so this opens a new tab in the same
 //! space, in the same place, with its working directory and its own name; it
 //! is not an undo. A plain shell starts fresh: no command is replayed, no
-//! agent is resumed, no jobs come back.
+//! agent is resumed, no jobs come back. A tab with jobs comes back without
+//! them, and says so. A job tab closed on its own cannot come back: its
+//! entry only says so, so the press never reopens an older, unrelated tab.
 //!
 //! Client-local and in memory: only a close this client made and the server
 //! accepted is remembered (not a process that exited, nor another client's
@@ -26,22 +28,31 @@ pub(super) struct ClosedTab {
     /// The top-level tab that stood before it, to open after; none when it
     /// was first.
     pub(super) after_tab_id: Option<String>,
+    /// How many jobs (child tabs) closed with it; they do not come back.
+    pub(super) jobs: usize,
+    /// The closed tab was itself a job: reopening it only says it cannot.
+    pub(super) job: bool,
 }
 
 impl ClientShellState {
-    /// What reopening `tab_id` needs, taken before it closes. None for a tab
-    /// with a parent or with child tabs (jobs): those do not come back.
+    /// What reopening `tab_id` needs, taken before it closes. Jobs closed
+    /// together with their parent are not recorded: the parent's entry
+    /// counts them.
     pub(super) fn closed_tab_record(&self, tab_id: &str) -> Option<ClosedTab> {
         let snapshot = self.snapshot.as_deref()?;
         let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
-        if tab.parent_tab_id.is_some()
-            || snapshot
-                .tabs
-                .iter()
-                .any(|other| other.parent_tab_id.as_deref() == Some(tab_id))
-        {
-            return None;
+        if tab.parent_tab_id.is_some() {
+            return Some(ClosedTab {
+                endpoint_id: self.active_endpoint_id.clone(),
+                workspace_id: tab.workspace_id.clone(),
+                label: Some(tab.label.clone()),
+                cwd: None,
+                after_tab_id: None,
+                jobs: 0,
+                job: true,
+            });
         }
+        let jobs = super::tab_groups::child_tabs(snapshot, tab_id).len();
         let tops = snapshot
             .tabs
             .iter()
@@ -63,6 +74,8 @@ impl ClientShellState {
                 .checked_sub(1)
                 .and_then(|before| tops.get(before))
                 .map(|before| before.tab_id.clone()),
+            jobs,
+            job: false,
         })
     }
 
@@ -84,13 +97,25 @@ impl ClientShellState {
         }
     }
 
+    /// Says what a reopen press did or could not do. Every press shows it,
+    /// also the same message again (a seen-once notice left a repeated
+    /// press with no answer at all).
+    fn reopen_notice(&mut self, body: &str) {
+        self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Rejected,
+            "reopen_tab",
+            "Reopen tab",
+            body,
+        );
+    }
+
     /// Opens the most recently closed tab again, newest first. Entries whose
     /// space is gone (or on another machine) are skipped; the entry is used
     /// up as soon as the request is sent, so a second press never repeats it.
     pub(super) fn reopen_closed_tab(&mut self, outcome: &mut ClientShellInput) {
         outcome.repaint = true;
         let Some(snapshot) = self.snapshot.as_deref() else {
-            self.receive_endpoint_unavailable("not connected: nothing to reopen yet".to_owned());
+            self.reopen_notice("not connected: nothing to reopen yet");
             return;
         };
         // Spaces of this machine that are gone take their entries with them;
@@ -108,12 +133,19 @@ impl ClientShellState {
             .iter()
             .rposition(|closed| closed.endpoint_id == active)
         else {
-            self.receive_endpoint_unavailable("no closed tab to reopen".to_owned());
+            self.reopen_notice("no closed tab to reopen");
             return;
         };
         let Some(closed) = self.closed_tabs.remove(at) else {
             return;
         };
+        if closed.job {
+            let name = closed.label.unwrap_or_default();
+            self.reopen_notice(&format!(
+                "job {name} cannot be reopened; press again for the tab closed before it"
+            ));
+            return;
+        }
         let params = crate::api::schema::TabCreateParams {
             workspace_id: Some(closed.workspace_id.clone()),
             cwd: closed.cwd.clone(),
@@ -144,6 +176,17 @@ impl ClientShellState {
             self.closed_tabs.push_back(closed);
             return (true, Vec::new());
         };
+        if closed.jobs > 0 {
+            let jobs = if closed.jobs == 1 {
+                "job was"
+            } else {
+                "jobs were"
+            };
+            self.reopen_notice(&format!(
+                "{} reopened with a fresh shell; its {} {jobs} not restored",
+                tab.label, closed.jobs
+            ));
+        }
         let mut outcome = ClientShellInput::default();
         // The machine may have changed since the create was sent: the new
         // tab is on the other one, so leave it where it is.
