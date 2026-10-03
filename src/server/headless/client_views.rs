@@ -234,6 +234,7 @@ impl HeadlessServer {
                 | Method::PaneSplit(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateChild(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorktreeCreate(_)
@@ -301,6 +302,7 @@ impl HeadlessServer {
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateChild(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
@@ -852,6 +854,7 @@ impl HeadlessServer {
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
             api::schema::Method::TabCreate(params) => params.focus,
+            api::schema::Method::TabCreateChild(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 
 use crate::api::schema::{
-    Method, Request, TabCreateParams, TabListParams, TabRenameParams, TabSetParentParams,
-    TabSetStatusParams, TabStatus, TabTarget,
+    Method, Request, TabCreateChildParams, TabCreateParams, TabListParams, TabRenameParams,
+    TabSetParentParams, TabSetStatusParams, TabStatus, TabTarget,
 };
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
@@ -62,6 +62,7 @@ fn tab_list(args: &[String]) -> std::io::Result<i32> {
 
 fn tab_create(args: &[String]) -> std::io::Result<i32> {
     let mut workspace_id = None;
+    let mut parent_tab_id = None;
     let mut cwd = None;
     let mut focus = false;
     let mut label = None;
@@ -76,6 +77,14 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 workspace_id = Some(super::normalize_workspace_id(value));
+                index += 2;
+            }
+            "--parent" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --parent");
+                    return Ok(2);
+                };
+                parent_tab_id = Some(super::normalize_tab_id(value));
                 index += 2;
             }
             "--cwd" => {
@@ -122,6 +131,20 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
                 return Ok(2);
             }
         }
+    }
+
+    if let Some(parent_tab_id) = parent_tab_id {
+        if workspace_id.is_some() {
+            eprintln!("--parent and --workspace cannot be combined: a child tab goes in its parent's workspace");
+            return Ok(2);
+        }
+        return super::runtime::tab_create_child(TabCreateChildParams {
+            parent_tab_id,
+            cwd,
+            focus,
+            label,
+            env,
+        });
     }
 
     super::runtime::tab_create(TabCreateParams {
@@ -384,7 +407,7 @@ fn print_tab_help() {
     eprintln!("  herdr tab job-metadata <tab_id> <JSON|null>");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
     eprintln!(
-        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
+        "  herdr tab create [--workspace <workspace_id> | --parent <tab_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
     );
     eprintln!("  herdr tab get <tab_id>");
     eprintln!("  herdr tab focus <tab_id>");

@@ -41,6 +41,22 @@ class ExecutorFooterTests(unittest.TestCase):
         with patch.dict(top.__globals__, {"herdr": Mock(side_effect=SystemExit("gone"))}):
             self.assertEqual(top("w:t9"), "w:t9")
 
+    def test_job_tab_is_created_nested_and_falls_back_on_older_herdr(self):
+        create_tab = JOB["create_job_tab"]
+        created = json.dumps({"result": {"tab": {"tab_id": "w:t5"}}})
+        call = Mock(return_value=created)
+        nest = Mock(return_value=True)
+        with patch.dict(create_tab.__globals__, {"herdr": call, "herdr_ok": nest}):
+            self.assertEqual(create_tab(["tab", "create"], "w", "w:t1")["tab"]["tab_id"], "w:t5")
+        self.assertEqual(call.call_args.args, ("tab", "create", "--parent", "w:t1"))
+        nest.assert_not_called()
+        # An older herdr rejects --parent: create in the workspace, then nest.
+        call = Mock(side_effect=['{"error": {"code": "invalid_request"}}', created])
+        with patch.dict(create_tab.__globals__, {"herdr": call, "herdr_ok": nest}):
+            self.assertEqual(create_tab(["tab", "create"], "w", "w:t1")["tab"]["tab_id"], "w:t5")
+        self.assertEqual(call.call_args.args, ("tab", "create", "--workspace", "w"))
+        self.assertEqual(nest.call_args.args, ("tab", "parent", "w:t5", "w:t1"))
+
     def test_registration_sanitizes_display_text_without_changing_job_identity(self):
         register = JOB["register_job_metadata"]
         meta = {"id": "probe", "name": "Build\n雪\x1b", "why": "check\noutput\tready",

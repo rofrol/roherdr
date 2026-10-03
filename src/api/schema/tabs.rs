@@ -18,6 +18,23 @@ pub struct TabCreateParams {
     pub env: HashMap<String, String>,
 }
 
+/// Creates a tab already nested under a top-level tab, in that tab's
+/// workspace, so it never shows as a top-level tab first. A separate method
+/// from `tab.create`, whose shape is frozen: an older server rejects this one
+/// instead of ignoring the parent and creating a top-level tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabCreateChildParams {
+    pub parent_tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub focus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct TabListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]

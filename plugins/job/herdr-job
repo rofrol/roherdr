@@ -316,6 +316,29 @@ def top_level_tab(tab_id):
     return tab.get("parent_tab_id") or tab_id
 
 
+def create_job_tab(create, workspace_id, parent_tab):
+    """Create the job's tab already nested under `parent_tab` and return
+    herdr's create result. Nested at creation, it never shows as a top-level
+    tab of the space for the moment before it nests (the rows below it would
+    jump). Herdr builds without `tab create --parent` reject it; there the tab
+    is created in the workspace and nested afterwards."""
+    if parent_tab:
+        out = herdr(*create, "--parent", parent_tab, check=False)
+        try:
+            created = json.loads(out)["result"]
+            created["tab"]["tab_id"]
+            return created
+        except (ValueError, KeyError, TypeError):
+            pass
+    if workspace_id:
+        create = [*create, "--workspace", workspace_id]
+    created = json.loads(herdr(*create))["result"]
+    tab_id = created["tab"]["tab_id"]
+    if parent_tab and not herdr_ok("tab", "parent", tab_id, parent_tab):
+        print(f"herdr-job: could not nest tab {tab_id} under {parent_tab}", file=sys.stderr)
+    return created
+
+
 def cmd_run(args):
     if not args.command:
         raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
@@ -331,22 +354,18 @@ def cmd_run(args):
     owner_is_agent = False
     if owner:
         pane = json.loads(herdr("pane", "get", owner))["result"]["pane"]
-        create += ["--workspace", pane["workspace_id"]]
         workspace = json.loads(herdr("workspace", "get", pane["workspace_id"]))["result"]["workspace"]
         origin = f"from {pane.get('agent') or 'pane ' + owner} in {workspace.get('label') or pane['workspace_id']}"
         owner_is_agent = bool(pane.get("agent"))
-    created = json.loads(herdr(*create))["result"]
+    # herdr nests the tab under the agent's tab (a second tab row with a
+    # summary on the agent's tab) and draws the state icon from the tab status.
+    # Older herdr builds have neither, so the label carries the icon there.
+    parent_tab = top_level_tab(pane["tab_id"]) if owner and pane.get("tab_id") else None
+    created = create_job_tab(create, pane["workspace_id"] if owner else None, parent_tab)
     tab_id = created["tab"]["tab_id"]
-    # herdr draws the state icon from the tab status and nests the tab under the
-    # agent's tab (a second tab row with a summary on the agent's tab). Older
-    # herdr builds have neither, so the label carries the icon there.
     tab_status = herdr_ok("tab", "status", tab_id, "running")
     if not tab_status:
         herdr("tab", "rename", tab_id, f"⧖ {short(args.name, 30)}", check=False)
-    if owner and pane.get("tab_id"):
-        parent_tab = top_level_tab(pane["tab_id"])
-        if not herdr_ok("tab", "parent", tab_id, parent_tab):
-            print(f"herdr-job: could not nest tab {tab_id} under {parent_tab}", file=sys.stderr)
     path = STATE / job_id
     path.mkdir(parents=True, mode=0o700)
     meta = {

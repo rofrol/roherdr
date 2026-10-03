@@ -4456,6 +4456,40 @@
           ],
           "type": "object"
         },
+        "TabCreateChildParams": {
+          "description": "Creates a tab already nested under a top-level tab, in that tab's\nworkspace, so it never shows as a top-level tab first. A separate method\nfrom `tab.create`, whose shape is frozen: an older server rejects this one\ninstead of ignoring the parent and creating a top-level tab.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "parent_tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "parent_tab_id"
+          ],
+          "type": "object"
+        },
         "TabCreateParams": {
           "properties": {
             "cwd": {
@@ -5474,6 +5508,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.create_child",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabCreateChildParams"
             }
           },
           "required": [

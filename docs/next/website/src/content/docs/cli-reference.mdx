@@ -189,7 +189,7 @@ Git rejects repositories owned by another user by default. If you have independe
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id> | --parent <tab_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
@@ -200,7 +200,7 @@ herdr tab status <tab_id> running|succeeded|failed|none
 
 `tab parent` nests a tab under a top-level tab of the same workspace (one level deep); `none` makes it top-level again. While a workspace has child tabs, the TUI shows a second row with the active tab's own entry and its children, and a parent tab summarises its children's statuses, e.g. `⧖ 1 !2 ✓3`. `tab status` sets the status a client shows as an icon. The server refuses to close a tab that has child tabs (`tab_has_children`): in a terminal, `herdr tab close` asks and then closes the children first, and the TUI asks the same way. Closing a parent's last pane instead leaves its children as top-level tabs.
 
-A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
+A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. `--parent` creates the tab already nested under that top-level tab, in its workspace. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
 Closing an active tab focuses the previous tab at the same level, or the next one if there is no previous sibling. Closing an only child returns to its parent. Closing a main tab does not jump into another tab's nested jobs. Closing an inactive tab leaves the active tab unchanged.
 

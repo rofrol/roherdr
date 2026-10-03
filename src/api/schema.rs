@@ -107,6 +107,8 @@ pub enum Method {
     WorktreeRemove(WorktreeRemoveParams),
     #[serde(rename = "tab.create")]
     TabCreate(TabCreateParams),
+    #[serde(rename = "tab.create_child")]
+    TabCreateChild(TabCreateChildParams),
     #[serde(rename = "tab.list")]
     TabList(TabListParams),
     #[serde(rename = "tab.get")]

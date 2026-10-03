@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabSetParentParams, TabSetStatusParams, TabTarget,
+    EventData, EventEnvelope, EventKind, ResponseResult, TabCreateChildParams, TabCreateParams,
+    TabListParams, TabMoveParams, TabRenameParams, TabSetParentParams, TabSetStatusParams,
+    TabTarget,
 };
 use crate::app::{App, Mode};
 
@@ -62,6 +63,51 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
+        self.create_tab_in_workspace(id, ws_idx, None, cwd, focus, label, env)
+    }
+
+    pub(super) fn handle_tab_create_child(
+        &mut self,
+        id: String,
+        params: TabCreateChildParams,
+    ) -> String {
+        let TabCreateChildParams {
+            parent_tab_id,
+            cwd,
+            focus,
+            label,
+            env,
+        } = params;
+        let Some((ws_idx, parent_idx)) = self.parse_tab_id(&parent_tab_id) else {
+            return tab_not_found(id, &parent_tab_id);
+        };
+        // Checked before creating, so a bad parent leaves no stray tab behind.
+        if self.state.workspaces[ws_idx]
+            .tab_parent_index(parent_idx)
+            .is_some()
+        {
+            return encode_error(
+                id,
+                "tab_create_failed",
+                "the parent must be a top-level tab",
+            );
+        }
+        self.create_tab_in_workspace(id, ws_idx, Some(parent_idx), cwd, focus, label, env)
+    }
+
+    /// Creates a tab in a workspace and, with a parent, nests it before any
+    /// client sees it, so it never shows as a top-level tab first.
+    #[allow(clippy::too_many_arguments)] // the fields of the two create requests
+    fn create_tab_in_workspace(
+        &mut self,
+        id: String,
+        ws_idx: usize,
+        parent_idx: Option<usize>,
+        cwd: Option<String>,
+        focus: bool,
+        label: Option<String>,
+        env: std::collections::HashMap<String, String>,
+    ) -> String {
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
@@ -92,7 +138,18 @@ impl App {
                 )
             });
         match result {
-            Ok((tab_idx, terminal, runtime)) => {
+            Ok((mut tab_idx, terminal, runtime)) => {
+                if let Some(parent_idx) = parent_idx {
+                    let ws = &mut self.state.workspaces[ws_idx];
+                    let root_pane = ws.tabs[tab_idx].root_pane;
+                    if let Err(err) = ws.set_tab_parent(tab_idx, Some(parent_idx)) {
+                        tracing::warn!(err, "could not nest a new tab under its parent");
+                    }
+                    // Nesting reorders tabs; find this one again by its identity.
+                    if let Some(idx) = ws.tabs.iter().position(|tab| tab.root_pane == root_pane) {
+                        tab_idx = idx;
+                    }
+                }
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 self.state.remove_alias_shadowed_by_new_pane(
@@ -895,6 +952,60 @@ mod tests {
             crate::worktree::canonical_or_original(created_cwd),
             crate::worktree::canonical_or_original(&cached_cwd)
         );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_child_creates_the_tab_already_nested() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("b"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let parent = app.public_tab_id(0, 0).unwrap();
+        let child_params = |parent_tab_id: &str| TabCreateChildParams {
+            parent_tab_id: parent_tab_id.into(),
+            cwd: Some(std::env::temp_dir().display().to_string()),
+            focus: false,
+            label: Some("job".into()),
+            env: Default::default(),
+        };
+
+        let response = app.handle_tab_create_child("req".into(), child_params(&parent));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab, .. } = success.result else {
+            panic!("unexpected response: {response}");
+        };
+        assert_eq!(tab.parent_tab_id.as_deref(), Some(parent.as_str()));
+        assert_eq!(tab.label, "job");
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), 3);
+        assert_eq!(
+            ws.tab_parent_index(1),
+            Some(0),
+            "the child follows its parent"
+        );
+        assert_eq!(
+            app.public_tab_id(0, 1).as_deref(),
+            Some(tab.tab_id.as_str())
+        );
+
+        // A child cannot be a parent; the request fails without creating a tab.
+        let response = app.handle_tab_create_child("req".into(), child_params(&tab.tab_id));
+        assert!(response.contains("tab_create_failed"), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 3);
         shutdown_test_runtimes(&mut app);
     }
 }
