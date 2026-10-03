@@ -424,7 +424,7 @@
   after a second round (`20261003-014925-9487`, Sol, DeepSeek, MiMo agree):
   numbers only, no rule verdict and no cost column (no price table yet), and
   `--pairs` untouched. It also counts the rounds it leaves out.
-- [ ] Consult stats popup loses the model column when scrolled right (user,
+- [x] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
   127 columns wide; the popup (`width = "90%"`) is narrower, and `less -RS`
@@ -469,6 +469,22 @@
     concatenation), not only what the popup runs.
   - Stderr must still surface when it no longer goes into less (for example to a
     temporary file shown after the pager, or before it on a failed exit).
+  Done (2026-10-03, user: "do it, ask the models"; plan reviewed by Sol, DeepSeek
+  and MiMo, round `20261003-021245-b5c6`): `consult.py stats|recent --width N`
+  (at least 40). `table()` splits a wider table into blank-line separated bands,
+  each with the name column, header and rows in order; `groups` keeps related
+  columns together (main table: counts, rating, latency, tokens; `--vs`: rounds,
+  findings, per-call, cost). Table lines are never text-wrapped; a table whose
+  name leaves no room for any column stays whole for the pager to wrap (the
+  `--vs sol deepseek` name is 75 characters). `say()` reflows legends as
+  paragraphs and wraps item lines (paired lines, `recent`) with an indent,
+  never breaking a word. Without `--width` the output is byte-identical (checked
+  on every mode against a frozen log). Both popups run `page-consult`: width from
+  `stty size </dev/tty` (fallback 100), output to a temp file so the exit code
+  is kept, `less -R` without `-S`, stderr and a non-zero exit shown after the
+  pager, temp files removed by a trap. Rejected from the review: shell quoting
+  (the manifest passes an argv, no outer shell) and display width (labels are
+  ASCII).
 - [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
