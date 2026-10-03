@@ -29,7 +29,7 @@
   when their count is above 0); MiMo's ambiguous-width `◐`/`✓` worry is
   out of scope for this row.
 
-- [ ] Hovering the focused space's active tab until its tooltip shows hides
+- [x] Hovering the focused space's active tab until its tooltip shows hides
   the blue accent bar `▌` left of the label (user screenshot 2026-10-03).
   Cause: the tab tooltip target starts at `text_x` and `render_tooltip`
   (`src/client/shell/tooltip.rs`) draws the box from `target.rect.x - 1`
@@ -50,6 +50,10 @@
   accent colour with the tooltip shown; a label longer than the screen
   keeps icon, gap and bar; an inactive tab or an unfocused space gets no
   bar; the other targets' placement is unchanged.
+  Done: `TooltipTarget::starts_at_target`, set for cut tab labels; test
+  `a_cut_tab_labels_tooltip_keeps_the_accent_bar_and_icon`. The state
+  glyph's tooltip (`tab-state:`) still covers the row from the icon, by
+  design: it explains the icon.
 
 - [x] The purple status spinner (`◓ Kontynuuj`, user screenshot
   2026-10-03) spins slower than the orange one. Cause: by design. Purple

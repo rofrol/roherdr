@@ -1120,6 +1120,58 @@ fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
 }
 
 #[test]
+fn a_cut_tab_labels_tooltip_keeps_the_accent_bar_and_icon() {
+    // One label fits the screen, the other is longer than it: neither
+    // tooltip may cover the active tab's bar or its state icon.
+    for label in [
+        "a tab label much longer than the sidebar".to_owned(),
+        "x".repeat(150),
+    ] {
+        let mut state = state_with_tabs(true);
+        let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+        projected.tabs[0].label = label.clone();
+        projected.tabs[0].custom_label = true;
+        state.set_snapshot(Box::new(projected));
+        let frame = state.compose(106, 30).unwrap();
+        let target = state
+            .hits
+            .tooltips
+            .iter()
+            .find(|target| target.id.starts_with("tab:"))
+            .expect("cut label tooltip")
+            .clone();
+        let left = |frame: &FrameData| {
+            frame_rows(frame)[target.rect.y as usize]
+                .chars()
+                .take(target.rect.x as usize)
+                .collect::<String>()
+        };
+        let before = left(&frame);
+        assert!(before.ends_with('▌'), "{before}");
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: target.rect.x + 1,
+            row: target.rect.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        state.compose(106, 30).unwrap();
+        let deadline = state.tooltip_deadline().expect("pending dwell");
+        state.tick_selection_autoscroll(deadline);
+        let frame = state.compose(106, 30).unwrap();
+        assert!(state.tooltip_visible());
+        assert_eq!(left(&frame), before, "{label}");
+        let row = frame_rows(&frame)[target.rect.y as usize].clone();
+        let shown = row.chars().skip(target.rect.x as usize).collect::<String>();
+        if label.len() < 100 {
+            assert!(shown.starts_with(&label), "{row}");
+        } else {
+            // Cut at the screen edge instead of moving left.
+            assert!(shown.trim_end().ends_with("x…"), "{row}");
+        }
+    }
+}
+
+#[test]
 fn the_spaces_list_keeps_its_top_space_when_squares_above_fold() {
     let mut state = state_with_tabs(true);
     for index in 0..40 {
