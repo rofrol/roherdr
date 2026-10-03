@@ -3,13 +3,40 @@
 ## Next, in order
 
 - [ ] The purple status spinner (`◓ Kontynuuj`, user screenshot
-  2026-10-03) spins slower than the orange one. Find why the two states use
-  different frame rates or frame sets, and decide whether they should match.
-  Not investigated yet.
+  2026-10-03) spins slower than the orange one. Cause: by design. Purple
+  (mauve) is `AgentMark::WaitsOnJob` (agent idle or done while a job it
+  started runs, `agent_icon` in `src/client/shell.rs`); it draws the job
+  glyph, which turns counter-clockwise at `JOB_PERIOD` 320 ms per frame,
+  against `WORKING_PERIOD` 160 ms clockwise (`src/ui/motion.rs`). The same
+  job glyph is yellow on job tabs. Consulted sol, DeepSeek and MiMo (round
+  `20261003-121209-1c2a`): all three say the slower frame rate reads as lag
+  or a stalled thread, and direction is unnoticed without a legend. Equalize
+  the speed; make the distinction by color, shape or a badge, not tempo.
+  MiMo (verified): with `animations = false` the two become the mirror
+  pair `◐`/`◑`, and the dots style shows `●` for both, so only color is
+  left. Sol: one job showing yellow on its tab and purple on the agent row
+  suggests two different states.
 
-- [ ] Add a legend control that explains the status glyphs and colors
-  (purple and orange spinners, squares, etc.). The user wants to consult the
-  models on its design (where it lives, how it opens) before building it.
+- [ ] Add a legend that explains the status glyphs and colors. Same round:
+  - Entry point: sol, a `ⓘ` button in the sidebar header plus a "Status
+    legend" item in the global menu. Not `?`: the glyph `?` already means
+    "agent awaits your reply" (DeepSeek proposed `?` and missed that). MiMo
+    is against permanent header chrome and wants the menu item only.
+  - Tooltips (all three): hovering a status glyph shows its full current
+    meaning, e.g. "Agent idle; job still running", not only "working".
+    `src/client/shell/tooltip.rs` already supports hover targets.
+  - No drift (all three): build the legend from the same functions the
+    sidebar draws with (`status_icon`, `agent_icon`, `agent_color`,
+    `tab_groups::status_icon`) with the user's current style, theme and
+    animation setting; DeepSeek: a test that every status and mark appears.
+    Show color role names as text, because the dots style is color-only.
+  - Include the group counts (`◑ 1 !2 ✓3 •1`): `!` means a failed job
+    and is explained nowhere today.
+  - All three: the vocabulary itself is part of the problem: agent state,
+    need for attention (blocked, awaits reply) and job activity share one
+    cell; `◉`/`●`, `○`/`◌`/`·` are near pairs. A legend documents this; it
+    does not fix it. Open: whether to split those axes first.
+  - Rejected: MiMo's "compositions such as `◐?`": one cell holds one glyph.
 
 - [ ] Folded jobs hide where the focus is, and a restart unfolds them again
   (user, 2026-10-03, two screenshots). (1) He clicked a job square under the
