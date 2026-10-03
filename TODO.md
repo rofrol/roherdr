@@ -83,6 +83,46 @@
   sidebar); key it by a stable tab identity plus the server generation
   (`boot_id`), because tab ids are reused; drop entries whose tab is gone.
 
+- [ ] Attach images quickly from the last chosen directory (user,
+  2026-10-03: "some command or something so I add images fast from the
+  last chosen directory; lately I add a lot from Screenshots"). macOS saves
+  them to `~/Screenshots` (`Screenshot 2026-10-03 at 17.14.38.png`); he
+  sends them to agents to show UI bugs. Today herdr only bridges a
+  clipboard image (`src/client/clipboard_images.rs` →
+  `ClientMessage::ClipboardImage` → `src/server/clipboard_image.rs` stages
+  it under a neutral name and pastes the staged path into the pane).
+  Consulted sol and MiMo (round `20261003-171722-1c69`):
+  - Picker first (both): `Attach image…` in the command palette, an
+    optional key and the pane context menu. Lists the remembered directory
+    newest first with age (thumbnails via kitty graphics later), Enter
+    attaches; multi-select (MiMo: bug reports often need several shots).
+  - `Attach newest image` only as a separate action, never blind (both):
+    it silently sends yesterday's shot or an unrelated private one to a
+    cloud model. Show which file and its age before it goes.
+  - The directory is client state, per installation, not synced (both):
+    the files live on the client's machine. First time: offer the macOS
+    screenshot location (`defaults read com.apple.screencapture location`,
+    else `~/Desktop`); remember it only after an explicit choice. MiMo
+    prefers a config list `image_dirs = [...]` over "last pick".
+  - Delivery: reuse the clipboard-image path byte for byte for every pane
+    (both): client reads the file, size cap, server stages, pastes the
+    path. The client path may not exist on a remote server. Validate image
+    magic bytes, not the extension; report an oversized file, never
+    truncate. Scan only on the user's action (one request lane per machine).
+  - The destination pane is fixed when the picker opens (sol); focus
+    changes must not redirect it.
+  - No CLI in v1 (both): which machine's filesystem and which pane would be
+    ambiguous.
+  - Check first whether it needs building (both): Cmd+Ctrl+Shift+4 puts a
+    screenshot on the clipboard and the existing paste works; dragging from
+    Finder pastes a path (local panes only). MiMo: copying a `.png` in
+    Finder puts a file URL on the pasteboard, and our
+    `read_clipboard_image` (`the clipboard as «class PNGf»`) may get the
+    file's icon or nothing; unverified, cheaper to fix than a picker.
+  Rejected: MiMo's "skip files younger than ~200 ms" (a wait, not a fix;
+  macOS writes a hidden `.Screenshot…` file and renames it, so a listed
+  file is complete; skip dotfiles instead).
+
 - [ ] The tab context menu's `Close jobs:` row starts one column left of
   every other item (user screenshot 2026-10-03). Cause:
   `render_context_menu` (`src/client/shell/overlays.rs`) draws plain items
