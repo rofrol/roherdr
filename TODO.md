@@ -2821,6 +2821,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     not tried with a real key, since there is none on this Mac.
   - Noted 2026-09-28: the footer still has no row for an OpenAI API key
     (platform, pay-as-you-go); only Codex's ChatGPT limits show.
+  - Noted 2026-10-03: show OpenAI API token usage too, not only spend
+    (input, cached and output tokens, month to date), from the Admin API's
+    `GET /v1/organization/usage/completions` with the same opt-in admin key.
+    The user thinks they created an admin key, but it is not stored
+    anywhere herdr could read it (no env var, nothing in `~/.config/herdr`);
+    save it first in the dedicated 0600 file described above.
 - [x] Classify the native-graphics CoW retention benchmark failure.
   - Verified 2026-10-01: this machine is macOS (`uname -s`: Darwin).
     `src/platform/mod.rs::clone_native_image_source` deliberately returns
