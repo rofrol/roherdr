@@ -656,6 +656,14 @@
     over 58), DeepSeek is fastest (p50 16 s). Sonnet, Opus, Gemini, astra
     `-r`: not comparable or too few. Keep sol + DeepSeek and finish the MiMo
     trial; whether MiMo replaces DeepSeek is the trial's question.
+  - Cost (user, 2026-10-03: "and DeepSeek cost-wise? I think it has to be
+    turned off"): negligible. DeepSeek-V4.1 used 0.51M input and 2.52M
+    output tokens over 334 calls, $1.6 to $3.2 at the current off-peak and
+    peak prices (about a cent a call; $7.56 left on the account); MiMo cost
+    $0.22 over 71 calls (OpenRouter's own cost field). MiMo's second trial
+    passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
+    the user replaced DeepSeek with MiMo, default set sol + MiMo, for
+    quality, not cost; DeepSeek on request.
 - [x] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is

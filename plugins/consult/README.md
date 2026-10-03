@@ -12,10 +12,11 @@ statistics on which of those models actually helped.
   `ask_claude.py -m claude-opus-5-5`, via Claude Code CLI. Subscription billing
   requires subscription login; API-key/cloud billing is not a subscription.
 - `openrouter`: an OpenRouter model (default Xiaomi MiMo-V2.6-Pro pinned to the
-  Xiaomi provider), on request or in a trial round, never a default consultant.
+  Xiaomi provider). MiMo is in the default set with sol (DeepSeek left it on
+  2026-10-03); other OpenRouter models only on request.
   Providers may retain what is sent, so the skill never sends secrets: it has no repo mode, `-f` attachments are vetted
   fail-closed outside its sandbox, and the prompt is hard-refused if it contains
-  secret-shaped strings. The MiMo trial is described in its `SKILL.md`; the
+  secret-shaped strings. The MiMo trials are described in its `SKILL.md`; the
   cloaked Space Bunny was removed on 2026-10-03 after failing its trial.
 - `consult-stats`: every call is logged to `~/.local/state/consult/log.jsonl`;
   the agent rates calls after triage (`useful`/`partial`/`useless`, findings,
