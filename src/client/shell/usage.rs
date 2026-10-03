@@ -399,14 +399,31 @@ fn render_provider_row(
             Style::default().fg(palette.overlay0),
         );
     } else if let Some(spend) = provider.spend.first() {
-        // Pay-as-you-go spend is money already used, not credit left.
+        // Pay-as-you-go spend is money already used, not credit left. With a
+        // limit it reads `$4.20/$20`: money first, never a bare percentage
+        // that would look like a subscription window.
+        let (text, color) = match spend_limit_percent(spend) {
+            Some(percent) => (
+                format!(
+                    "{}/{}",
+                    compact_spend(&spend.amount, &spend.currency),
+                    compact_limit(spend.limit.as_deref().unwrap_or_default(), &spend.currency)
+                ),
+                if spend.limit_enforcing {
+                    palette.red
+                } else {
+                    used_color(percent, palette)
+                },
+            ),
+            None => (compact_spend(&spend.amount, &spend.currency), palette.text),
+        };
         let x = put_segment(
             buffer,
             short_x,
             row.y,
             row.right(),
-            &compact_spend(&spend.amount, &spend.currency),
-            Style::default().fg(palette.text),
+            &text,
+            Style::default().fg(color),
         );
         put_segment(
             buffer,
@@ -600,6 +617,21 @@ pub(super) fn compact_spend(amount: &str, currency: &str) -> String {
         }
         _ => compact_balance(amount, currency),
     }
+}
+
+/// Share of the spend limit used, when the provider reports a positive limit.
+pub(super) fn spend_limit_percent(spend: &crate::api::schema::UsageSpend) -> Option<u8> {
+    let limit = spend.limit.as_deref()?.parse::<f64>().ok()?;
+    let amount = spend.amount.parse::<f64>().ok()?;
+    let percent = amount / limit * 100.0;
+    (limit.is_finite() && limit > 0.0 && percent.is_finite())
+        .then(|| percent.round().clamp(0.0, 100.0) as u8)
+}
+
+/// A limit without cents when it is whole: `$20`, else `$20.50`.
+pub(super) fn compact_limit(limit: &str, currency: &str) -> String {
+    let whole = limit.strip_suffix(".00").unwrap_or(limit);
+    format_balance(whole, currency)
 }
 
 /// Token count such as `950`, `12.3k` or `4.1M`.
@@ -819,6 +851,26 @@ mod tests {
             providers: vec![claude],
         };
         assert_eq!(footer_text(&report, 24)[1], " AN!");
+    }
+
+    #[test]
+    fn spend_against_a_limit_is_a_clamped_percent_and_a_whole_limit_drops_cents() {
+        let mut spend = crate::api::schema::UsageSpend {
+            currency: "USD".into(),
+            amount: "4.20".into(),
+            since: 0,
+            limit: Some("20.00".into()),
+            limit_enforcing: false,
+        };
+        assert_eq!(spend_limit_percent(&spend), Some(21));
+        assert_eq!(compact_limit("20.00", "USD"), "$20");
+        assert_eq!(compact_limit("20.50", "USD"), "$20.50");
+        spend.amount = "25".into();
+        assert_eq!(spend_limit_percent(&spend), Some(100));
+        spend.limit = Some("0.00".into());
+        assert_eq!(spend_limit_percent(&spend), None);
+        spend.limit = None;
+        assert_eq!(spend_limit_percent(&spend), None);
     }
 
     #[test]

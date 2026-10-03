@@ -11550,6 +11550,17 @@
             "currency": {
               "type": "string"
             },
+            "limit": {
+              "description": "Spend limit for the same period and currency, as set at the provider.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit_enforcing": {
+              "description": "The provider is rejecting requests because the limit was reached.",
+              "type": "boolean"
+            },
             "since": {
               "description": "Unix seconds where the reported period starts.",
               "format": "uint64",

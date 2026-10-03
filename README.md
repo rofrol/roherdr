@@ -36,7 +36,8 @@ PRs.
   `~/.config/herdr/openai-admin-key` (`openai_admin_key_file`), mode 0600;
   no environment variable is read, so agent panes never inherit it. It is
   organization-wide spend, not prepaid credit left, refreshed at most every
-  15 minutes. The server refreshes every 5 minutes
+  15 minutes. With a monthly spend limit set on the OpenAI platform it reads
+  `$4.20/$20`, coloured by the share used, and red once OpenAI enforces it. The server refreshes every 5 minutes
   (`refresh_interval_secs`); set `claude`, `codex`, `gemini`, `deepseek` or
   `openrouter` to `false` to hide a provider. All herdr instances share one
   cache (`~/.local/state/herdr/usage-cache.json`): a recent observation is
