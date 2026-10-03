@@ -1351,6 +1351,26 @@
     `delivery = "system"` herdr's own toast shows only while the window is
     focused; the overlap checks above are still to do by eye.
 
+- [ ] Toasts back at the bottom right, above the agent's input box (user,
+  2026-10-03: "I don't like the toasts at the top right. I preferred bottom
+  right, but not so low that they cover the input line in Claude Code etc.").
+  Claude Code keeps 5 rows at its pane's bottom: a rule, the prompt, a rule and
+  two status lines. Consulted Sol, DeepSeek and MiMo (round
+  `20261003-020120-c6df`): a static bottom margin, orthogonal to the corner
+  enum, default 0 so `bottom-right` keeps its meaning. Rejected for now:
+  following the focused pane's cursor (Claude Code may hide or park it, and the
+  toast would jump while multi-line input grows; unverified), anchoring to the
+  focused pane (DeepSeek; a toast about another pane would sit in the one you
+  type in) and placing it over an unfocused pane (the click would focus a pane
+  other than the one under it).
+  - Added `[ui.toast.herdr] bottom_margin` (rows); a margin taller than the
+    frame pins the toast to the top. The user's config gets `position =
+    "bottom-right"` and `bottom_margin = 6`. To check by eye: the toast clears
+    Claude Code's input box with multi-line input, in side-by-side splits, on a
+    short terminal, and a click still focuses or dismisses it.
+  - Later, if needed: cap the toast width (a 240-character body spans the
+    frame), and drop the body line when the frame is short (MiMo).
+
 - [ ] Compact job presentation for the agents the user runs: Pi, Claude Code,
   others (asked 2026-10-01). Today only Pi has it: the Pi activity extension
   (`plugins/job/pi`) folds every tool call (bash, read, edit, write,
