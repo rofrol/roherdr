@@ -1756,7 +1756,7 @@ fn push_status_tooltip(workspace: &ClientShellWorkspace) -> String {
     let branch = workspace.branch.as_deref().unwrap_or("detached HEAD");
     let status = match workspace.git_ahead_behind {
         None => "no upstream".to_owned(),
-        Some((0, 0)) => "pushed".to_owned(),
+        Some((0, 0)) => "in sync with its upstream".to_owned(),
         Some((ahead, 0)) => format!("{ahead} to push"),
         Some((0, behind)) => format!("{behind} to pull"),
         Some((ahead, behind)) => format!("{ahead} to push, {behind} to pull"),

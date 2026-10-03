@@ -103,7 +103,7 @@ pub(crate) fn agent_panel_entries_from(
     entries
 }
 
-/// The push status chip as plain text: `feat-x ↑3`, `↑1 ↓4`, `✓`.
+/// The push status chip as plain text: `feat-x ↑3`, `↑1 ↓4`, `main` (in sync).
 pub(crate) fn push_status_text(
     branch: Option<&str>,
     ahead_behind: Option<(usize, usize)>,
@@ -119,7 +119,6 @@ enum PushStatusPart {
     Branch,
     Ahead,
     Behind,
-    InSync,
     Gap,
 }
 
@@ -132,17 +131,13 @@ fn push_status_parts(
         parts.push((branch.to_string(), PushStatusPart::Branch));
     }
     let mut status = Vec::new();
-    match ahead_behind {
-        Some((0, 0)) => status.push(("✓".to_string(), PushStatusPart::InSync)),
-        Some((ahead, behind)) => {
-            if ahead > 0 {
-                status.push((format!("↑{ahead}"), PushStatusPart::Ahead));
-            }
-            if behind > 0 {
-                status.push((format!("↓{behind}"), PushStatusPart::Behind));
-            }
+    if let Some((ahead, behind)) = ahead_behind {
+        if ahead > 0 {
+            status.push((format!("↑{ahead}"), PushStatusPart::Ahead));
         }
-        None => {}
+        if behind > 0 {
+            status.push((format!("↓{behind}"), PushStatusPart::Behind));
+        }
     }
     for part in status {
         if !parts.is_empty() {
@@ -163,12 +158,14 @@ pub(crate) fn push_status_spans(
         .into_iter()
         .map(|(text, part)| {
             let style = match part {
+                // A branch in sync has nothing to say: it is dim.
+                PushStatusPart::Branch if ahead_behind == Some((0, 0)) => {
+                    Style::default().fg(palette.overlay1)
+                }
                 PushStatusPart::Branch => branch_style,
                 PushStatusPart::Ahead => Style::default().fg(palette.green),
                 PushStatusPart::Behind => Style::default().fg(palette.red),
-                PushStatusPart::InSync | PushStatusPart::Gap => {
-                    Style::default().fg(palette.overlay0)
-                }
+                PushStatusPart::Gap => Style::default().fg(palette.overlay0),
             };
             Span::styled(text, style)
         })
