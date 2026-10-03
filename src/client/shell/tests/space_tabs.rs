@@ -1178,7 +1178,7 @@ fn the_spaces_list_keeps_its_top_space_when_squares_above_fold() {
         with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
     }
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
-    for index in 2..=12 {
+    for index in 2..=24 {
         let mut workspace = projected.workspaces[0].clone();
         workspace.workspace_id = format!("ws_{index}");
         workspace.label = format!("space-{index}");
@@ -2477,7 +2477,7 @@ fn the_header_hides_indicators_for_zero_and_keeps_clear_of_the_sort_buttons() {
 #[test]
 fn one_wheel_event_scrolls_the_spaces_list_by_one_row() {
     let mut state = state_with_tabs(true);
-    for index in 0..60 {
+    for index in 0..80 {
         with_job(&mut state, &format!("job_{index}"), TabStatus::Running);
     }
     click_fold(&mut state);
@@ -3419,4 +3419,97 @@ fn a_new_client_restores_the_unfolded_lines_and_the_pinned_jobs() {
         .get(&ClientEndpointId::Local)
         .is_some_and(|tabs| tabs.contains("tab_1")));
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_push_status_chip_opens_a_branch_menu_titled_like_the_chip() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].branch = Some("feat-x".into());
+    projected.workspaces[0].git_ahead_behind = Some((3, 0));
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let (chip, workspace_id) = state.hits.space_push_status[0].clone();
+    assert_eq!(workspace_id, "ws_1");
+    let rows = frame_rows(&frame);
+    let at = |row: &str, rect: Rect| {
+        row.chars()
+            .skip(rect.x as usize)
+            .take(rect.width as usize)
+            .collect::<String>()
+    };
+    // The chip is on the name line; there is no branch line under it.
+    // A narrow sidebar cuts the name, never the chip.
+    assert!(rows[chip.y as usize].contains("client-…"), "{rows:?}");
+    assert_eq!(at(&rows[chip.y as usize], chip), "feat-x ↑3");
+    assert!(!rows[chip.y as usize + 1].contains("feat-x"), "{rows:?}");
+
+    // A click opens the menu at once and asks the server for the branches.
+    let outcome = left_click(&mut state, (chip.x, chip.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::GitBranchList(params)
+                if params.workspace_id == "ws_1"))));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    // The menu's title covers the chip with the same text.
+    assert_eq!(at(&rows[chip.y as usize], chip), "feat-x ↑3", "{rows:?}");
+    assert!(rows[chip.y as usize + 1].contains("loading…"), "{rows:?}");
+
+    let branch = |name: &str, current: bool, ahead, behind, gone: bool, upstream: bool| {
+        crate::api::schema::GitBranchInfo {
+            name: name.into(),
+            current,
+            upstream: upstream.then(|| format!("origin/{name}")),
+            ahead,
+            behind,
+            upstream_gone: gone,
+            worktree_path: None,
+        }
+    };
+    let (repaint, _) = state.complete_git_branch_list(
+        "ws_1".into(),
+        Ok(crate::api::schema::ResponseResult::GitBranchList {
+            branches: vec![
+                branch("feat-x", true, 3, 0, false, true),
+                branch("master", false, 0, 4, false, true),
+                branch("old", false, 0, 0, true, true),
+                branch("spike", false, 0, 0, false, false),
+            ],
+        }),
+    );
+    assert!(repaint);
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let menu_rows = &rows[chip.y as usize + 1..chip.y as usize + 4];
+    assert!(menu_rows[0].contains("master  ↓4"), "{rows:?}");
+    assert!(menu_rows[1].contains("old     gone"), "{rows:?}");
+    assert!(menu_rows[2].contains("spike   local"), "{rows:?}");
+    // The checked-out branch is the title, not a row.
+    assert!(
+        !rows[chip.y as usize + 1..]
+            .iter()
+            .any(|row| row.contains("feat-x")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_branch_list_for_another_space_leaves_the_open_menu_loading() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].git_ahead_behind = Some((1, 0));
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let (chip, _) = state.hits.space_push_status[0].clone();
+    left_click(&mut state, (chip.x, chip.y));
+    let (repaint, _) = state.complete_git_branch_list(
+        "ws_other".into(),
+        Ok(crate::api::schema::ResponseResult::GitBranchList {
+            branches: Vec::new(),
+        }),
+    );
+    assert!(!repaint);
+    let frame = state.compose(106, 30).unwrap();
+    assert!(frame_rows(&frame)[chip.y as usize + 1].contains("loading…"));
 }

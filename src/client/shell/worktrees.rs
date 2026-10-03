@@ -535,6 +535,7 @@ impl ClientShellState {
                 | PendingEndpointKind::ReloadConfig
                 | PendingEndpointKind::UsageRead { .. }
                 | PendingEndpointKind::NotificationList { .. }
+                | PendingEndpointKind::GitBranchList { .. }
                 | PendingEndpointKind::IntegrationList
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::UsageSettings { .. }

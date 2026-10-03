@@ -2259,6 +2259,18 @@
           ],
           "type": "object"
         },
+        "GitBranchListParams": {
+          "description": "The local branches of a workspace's repository, newest commit first.",
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -5531,6 +5543,22 @@
         {
           "properties": {
             "method": {
+              "const": "git.branch_list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GitBranchListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "tab.create",
               "type": "string"
             },
@@ -8064,6 +8092,51 @@
           ],
           "type": "string"
         },
+        "GitBranchInfo": {
+          "properties": {
+            "ahead": {
+              "default": 0,
+              "description": "Commits not on the upstream yet; 0 without an upstream.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "behind": {
+              "default": 0,
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "current": {
+              "description": "Checked out in the workspace's own checkout.",
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "upstream": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "upstream_gone": {
+              "description": "The configured upstream branch no longer exists.",
+              "type": "boolean"
+            },
+            "worktree_path": {
+              "description": "Another checkout (worktree) that has this branch checked out.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -10084,6 +10157,25 @@
                 "type",
                 "source",
                 "worktrees"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "branches": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/GitBranchInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "git_branch_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "branches"
               ],
               "type": "object"
             },

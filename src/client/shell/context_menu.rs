@@ -1,6 +1,36 @@
 use super::*;
 
+/// Branch names longer than this are cut in the branch menu.
+const BRANCH_NAME_MAX_WIDTH: usize = 32;
+
+/// A branch's push state in the branch menu: `↑1 ↓4`, `✓`, `gone`, `local`.
+fn branch_state(branch: &crate::api::schema::GitBranchInfo) -> String {
+    if branch.upstream_gone {
+        "gone".to_owned()
+    } else if branch.upstream.is_none() {
+        "local".to_owned()
+    } else {
+        crate::ui::push_status_text(None, Some((branch.ahead, branch.behind)))
+    }
+}
+
+/// A push status chip as a menu title: the shown branch and the counts.
+pub(super) type ChipTitle<'a> = (Option<&'a str>, Option<(usize, usize)>);
+
 impl ClientContextMenuOverlay {
+    /// The title drawn into the menu's top border: the branch menu repeats
+    /// the chip it opened from.
+    pub(super) fn title(&self) -> Option<ChipTitle<'_>> {
+        match &self.target {
+            ClientContextMenuTarget::Branches {
+                branch,
+                ahead_behind,
+                ..
+            } => Some((branch.as_deref(), *ahead_behind)),
+            _ => None,
+        }
+    }
+
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
@@ -92,6 +122,37 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Bookmark { .. } => {
                 vec![item("Remove from bookmarks", Action::ToggleBookmark)]
             }
+            ClientContextMenuTarget::Branches { branches, .. } => match branches {
+                None => vec![item("loading…", Action::Dismiss)],
+                Some(Err(message)) => vec![item(message, Action::Dismiss)],
+                Some(Ok(branches)) => {
+                    let others = branches
+                        .iter()
+                        .filter(|branch| !branch.current)
+                        .collect::<Vec<_>>();
+                    if others.is_empty() {
+                        return vec![item("no other branches", Action::Dismiss)];
+                    }
+                    let name_width = others
+                        .iter()
+                        .map(|branch| usize::from(super::render::display_width(&branch.name)))
+                        .max()
+                        .unwrap_or(0)
+                        .min(BRANCH_NAME_MAX_WIDTH);
+                    others
+                        .into_iter()
+                        .map(|branch| {
+                            let name = crate::ui::truncate_end(&branch.name, name_width);
+                            let pad = name_width
+                                .saturating_sub(usize::from(super::render::display_width(&name)));
+                            item(
+                                &format!("{name}{}  {}", " ".repeat(pad), branch_state(branch)),
+                                Action::Dismiss,
+                            )
+                        })
+                        .collect()
+                }
+            },
             ClientContextMenuTarget::SortSpaces(sort) => sort
                 .menu_items()
                 .into_iter()
@@ -253,6 +314,87 @@ impl ClientShellState {
         }));
     }
 
+    /// Opens the branch menu of a space over its push status chip, so the
+    /// chip becomes the menu's title, and asks the server for the branches.
+    pub(super) fn open_branch_menu(
+        &mut self,
+        workspace_id: String,
+        chip: Rect,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(workspace) = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+        }) else {
+            return;
+        };
+        let target = ClientContextMenuTarget::Branches {
+            workspace_id: workspace_id.clone(),
+            branch: workspace.branch.clone(),
+            ahead_behind: workspace.git_ahead_behind,
+            branches: None,
+        };
+        // The title starts two columns into the menu, after the corner and
+        // a space: there it covers the chip's text.
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target,
+            x: chip.x.saturating_sub(2),
+            y: chip.y,
+            highlighted: usize::MAX,
+        }));
+        outcome.repaint = true;
+        let sent = self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::GitBranchList(crate::api::schema::GitBranchListParams {
+                workspace_id: workspace_id.clone(),
+            }),
+            PendingEndpointKind::GitBranchList { workspace_id },
+            outcome,
+        );
+        if !sent {
+            if let Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+                target: ClientContextMenuTarget::Branches { branches, .. },
+                ..
+            })) = self.overlay.as_mut()
+            {
+                *branches = Some(Err("this server cannot list branches".to_owned()));
+            }
+        }
+    }
+
+    /// Fills the branch menu, when it is still open for that space.
+    pub(super) fn complete_git_branch_list(
+        &mut self,
+        workspace_id: String,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> (bool, Vec<ClientShellAction>) {
+        let Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target:
+                ClientContextMenuTarget::Branches {
+                    workspace_id: open,
+                    branches,
+                    ..
+                },
+            ..
+        })) = self.overlay.as_mut()
+        else {
+            return (false, Vec::new());
+        };
+        if *open != workspace_id {
+            return (false, Vec::new());
+        }
+        *branches = Some(match result {
+            Ok(crate::api::schema::ResponseResult::GitBranchList { branches }) => Ok(branches),
+            Ok(_) => Err("unexpected response".to_owned()),
+            Err(error) if error.code.as_deref() == Some("endpoint_busy") => {
+                Err("server busy, click again".to_owned())
+            }
+            Err(error) => Err(error.message),
+        });
+        (true, Vec::new())
+    }
+
     pub(super) fn move_context_menu_selection(&mut self, delta: isize) {
         let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.as_mut() else {
             return;
@@ -299,6 +441,7 @@ impl ClientShellState {
                     outcome,
                 );
             }
+            ClientContextMenuTarget::Branches { .. } => {}
             ClientContextMenuTarget::SortSpaces(_) => {
                 if let ClientContextMenuAction::SortSpaces(key) = action {
                     self.space_sort = self.space_sort.clicked(key);

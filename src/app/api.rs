@@ -1107,7 +1107,7 @@ impl App {
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target);
             }
-            Method::WorktreeList(_) | Method::WorktreeOpen(_) => {
+            Method::WorktreeList(_) | Method::WorktreeOpen(_) | Method::GitBranchList(_) => {
                 return responses::encode_error(
                     request.id,
                     "invalid_request",

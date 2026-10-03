@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
-    let config = config_with_sidebar_width(26);
+    let config = with_branch_line(config_with_sidebar_width(26));
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -1994,7 +1994,9 @@ fn a_dragged_space_passes_a_neighbour_at_its_middle_and_says_no_change_at_home()
         workspace.focused = false;
         projected.workspaces.push(workspace);
     }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(with_branch_line(ClientShellConfig::from_config(
+        &Config::default(),
+    )));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 24).expect("three workspaces");

@@ -103,6 +103,78 @@ pub(crate) fn agent_panel_entries_from(
     entries
 }
 
+/// The push status chip as plain text: `feat-x ↑3`, `↑1 ↓4`, `✓`.
+pub(crate) fn push_status_text(
+    branch: Option<&str>,
+    ahead_behind: Option<(usize, usize)>,
+) -> String {
+    push_status_parts(branch, ahead_behind)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum PushStatusPart {
+    Branch,
+    Ahead,
+    Behind,
+    InSync,
+    Gap,
+}
+
+fn push_status_parts(
+    branch: Option<&str>,
+    ahead_behind: Option<(usize, usize)>,
+) -> Vec<(String, PushStatusPart)> {
+    let mut parts = Vec::new();
+    if let Some(branch) = branch {
+        parts.push((branch.to_string(), PushStatusPart::Branch));
+    }
+    let mut status = Vec::new();
+    match ahead_behind {
+        Some((0, 0)) => status.push(("✓".to_string(), PushStatusPart::InSync)),
+        Some((ahead, behind)) => {
+            if ahead > 0 {
+                status.push((format!("↑{ahead}"), PushStatusPart::Ahead));
+            }
+            if behind > 0 {
+                status.push((format!("↓{behind}"), PushStatusPart::Behind));
+            }
+        }
+        None => {}
+    }
+    for part in status {
+        if !parts.is_empty() {
+            parts.push((" ".to_string(), PushStatusPart::Gap));
+        }
+        parts.push(part);
+    }
+    parts
+}
+
+pub(crate) fn push_status_spans(
+    branch: Option<&str>,
+    ahead_behind: Option<(usize, usize)>,
+    branch_style: Style,
+    palette: &Palette,
+) -> Vec<Span<'static>> {
+    push_status_parts(branch, ahead_behind)
+        .into_iter()
+        .map(|(text, part)| {
+            let style = match part {
+                PushStatusPart::Branch => branch_style,
+                PushStatusPart::Ahead => Style::default().fg(palette.green),
+                PushStatusPart::Behind => Style::default().fg(palette.red),
+                PushStatusPart::InSync | PushStatusPart::Gap => {
+                    Style::default().fg(palette.overlay0)
+                }
+            };
+            Span::styled(text, style)
+        })
+        .collect()
+}
+
 pub(crate) fn resolved_token_spans(
     resolved: &[ResolvedToken],
     state_icon: (&str, Style),
@@ -122,6 +194,10 @@ pub(crate) fn resolved_token_spans(
                     + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
                     + usize::from(*ahead > 0 && *behind > 0)
             }
+            ResolvedTokenKind::PushStatus {
+                branch,
+                ahead_behind,
+            } => display_width(&push_status_text(branch.as_deref(), *ahead_behind)),
             ResolvedTokenKind::TabJobs { running, failed } => {
                 usize::from(*running > 0)
                     * display_width(&format!("{} {running}", crate::ui::motion::job_glyph()))
@@ -269,6 +345,17 @@ pub(crate) fn resolved_token_spans(
                     ));
                 }
             }
+            ResolvedTokenKind::PushStatus {
+                branch,
+                ahead_behind,
+            } => spans.extend(
+                push_status_spans(branch.as_deref(), *ahead_behind, secondary_style, palette)
+                    .into_iter()
+                    .map(|span| {
+                        let style = apply_token_style(span.style, token.style);
+                        span.style(style)
+                    }),
+            ),
             ResolvedTokenKind::TabJobs { running, failed } => {
                 // The same icons as the child-tab row: `!` rather than `✗`.
                 if *running > 0 {

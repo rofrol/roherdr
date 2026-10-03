@@ -15,6 +15,17 @@ pub(super) fn config_with_sidebar_width(width: u16) -> ClientShellConfig {
     config
 }
 
+/// Spaces drawn as a name line and a branch line, the layout before
+/// `push_status`, for tests whose rows were written against it.
+pub(super) fn with_branch_line(mut config: ClientShellConfig) -> ClientShellConfig {
+    config.spaces.rows = toml::from_str::<crate::config::SpacesSidebarConfig>(
+        r#"rows = [["state_icon", "workspace", "tab_jobs"], ["branch", "git_status"]]"#,
+    )
+    .expect("two-row space layout")
+    .rows;
+    config
+}
+
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),

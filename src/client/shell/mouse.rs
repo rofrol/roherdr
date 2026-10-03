@@ -2855,6 +2855,17 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
+                // The push status chip opens the space's branch menu.
+                let push_status = self
+                    .hits
+                    .space_push_status
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .cloned();
+                if let Some((chip, workspace_id)) = push_status {
+                    self.open_branch_menu(workspace_id, chip, outcome);
+                    return;
+                }
                 // The `+` on a space's name line opens a tab in that space.
                 let new_tab = self
                     .hits
