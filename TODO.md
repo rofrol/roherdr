@@ -25,22 +25,34 @@
     pane to a stable tab id and never trusts a client-sent tab id (MiMo).
     The UI never infers the owner from the focused tab (sol). Tab ids must
     survive a restart, or the link is lost.
-  - "Creator" is attribution, not truth: agent A may hand the task to B
-    (MiMo). Allow explicit reassignment (drag onto a tab, or a menu
-    "detach from tab"); a drag must never re-parent silently.
+  - No reassignment for now: no drag onto a tab, no `adopt` command (user,
+    2026-10-03: "is there any scenario where I drag worktrees onto
+    agents? I don't think so"). Asked again, sol and MiMo agree drag is
+    YAGNI (round `20261003-182622-466f`). A handoff from agent A to B or
+    a reviewer agent is rare with one agent per task; a client restart or
+    a live handoff keeps the tab and its id, so it needs nothing either.
+    When the owner tab is closed the worktree simply becomes unowned.
+    Rejected: MiMo's automatic re-attachment to a tab whose pane cwd is
+    inside the worktree (sol: a temporary `cd` would reshuffle the
+    sidebar, the worktree's own tabs sit there too, several agents can
+    work in one worktree). If replacing agents ever makes the fallback
+    annoying, sol's cheapest step is `herdr worktree adopt`, run from the
+    new tab with its pane id.
   - Unowned (created from a bare shell or the UI, found on disk, or its
     tab closed) goes after the parent's tabs as today, with a short
     connector, not the long trunk. A closed owner tab never deletes the
     checkout.
+  - A nested worktree is folded by default (user, 2026-10-03), as MiMo
+    proposed: unfolded it pushes the parent's own tabs down.
   - Fold control (the user's question: does the tab line need a button
     next to the job summary?). Split: sol says no button, the worktree's
     own `▾` folds it to its one name line, and the jobs `▸` stays
     jobs-only (a jobs-labelled toggle hiding a checkout surprises); MiMo
     says reuse `▸` for the whole subtree and show `▸ ◐ 1 ⎇ 2` when folded,
-    default folded, since a second chip costs width at ~24 columns. Mine:
-    sol's, a folded worktree already costs only one line; decide with the
-    user. Either way key the fold state by worktree space id, so a
-    reassignment keeps it, and never auto-expand on job events.
+    since a second chip costs width at ~24 columns. Mine: sol's, a folded
+    worktree already costs only one line; still the user's call. Either
+    way key the fold state by worktree space id and never auto-expand on
+    job events.
   - The connector: `└─`, not `└───` (MiMo: 8 columns of prefix leave a
     nested `❑ zsh` indistinguishable from a parent tab at 24 columns); keep
     one gutter column through the nested block.
