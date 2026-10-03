@@ -30,7 +30,7 @@ PRs.
   key spend). DeepSeek and OpenRouter keys come
   from `DEEPSEEK_API_KEY`/`OPENROUTER_API_KEY`, then `auth_file` (default
   `~/.pi/agent/auth.json`, the pi coding agent's logins); OpenRouter is
-  hidden without a key. OpenAI API (`OP`, pay-as-you-go) month-to-date
+  hidden without a key. OpenAI API (a second `OA` row, `$… spend`, pay-as-you-go) month-to-date
   spend and completion tokens are opt-in (`openai_api = true`): they need an
   OpenAI Admin key with read access to usage and costs, one line in
   `~/.config/herdr/openai-admin-key` (`openai_admin_key_file`), mode 0600;
