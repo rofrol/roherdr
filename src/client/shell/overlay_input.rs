@@ -1186,6 +1186,23 @@ impl ClientShellState {
 
     /// Closes a pane, asking first when that would stop running work.
     pub(super) fn request_pane_close(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        // Closing a parent tab's last pane closes the tab, so it asks and
+        // closes the child tabs (jobs) as closing the tab does. The server
+        // would otherwise keep them running as top-level tabs, which is right
+        // only when the parent's shell exits by itself.
+        let parent_tab = self.snapshot.as_deref().and_then(|snapshot| {
+            let pane = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+            let last_pane = !snapshot
+                .panes
+                .iter()
+                .any(|other| other.tab_id == pane.tab_id && other.pane_id != pane_id);
+            (last_pane && !super::tab_groups::child_tabs(snapshot, &pane.tab_id).is_empty())
+                .then(|| pane.tab_id.clone())
+        });
+        if let Some(tab_id) = parent_tab {
+            self.request_tab_close(tab_id, outcome);
+            return;
+        }
         let running = self
             .running_summary(|snapshot| super::close_impact::pane_running_work(snapshot, &pane_id));
         let target = self.snapshot.as_deref().and_then(|snapshot| {
