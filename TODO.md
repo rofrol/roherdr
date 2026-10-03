@@ -715,6 +715,38 @@
     each default-set change (sol). MiMo argued `--vs` already controls for
     companions and this is bookkeeping; true for a two-model verdict, but
     the user wants the history of what was tested.
+- [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple
+  menu: which models are used for consultation now, a checkbox to enable or
+  disable, its rank, uniqueness, error rate, and maybe how much the
+  coordinator's token cost increases"). Narrows the deferred settings >
+  consults page and the auto-consult toggle (both below, under herdr > menu >
+  settings) to a plugin popup, no core change. Consulted sol and MiMo (round
+  `20261003-145404-dae6`). Plan:
+  - A plugin popup (`[[panes]]` in `plugins/consult/herdr-plugin.toml`): a
+    small stdlib Python curses script; popups already forward keys to `less`.
+    Rows `[x] model | uniq/call (n) | wrong% | err% | rated/calls | last
+    used`; Space toggles, a write is shown only after it is persisted.
+  - State: one global file `~/.local/state/consult/models.json`, written
+    atomically. `consult.py models` prints the enabled set and is the single
+    source: it prints the skill's default when the file is missing (MiMo),
+    an empty list means consulting is off, a malformed file is an error, not
+    a silent default (sol). The consult skill runs it at each round instead
+    of the prose default set. An explicit request ("ask DeepSeek") bypasses
+    the checkbox but never the self-consultation rule or a missing key.
+  - `new-round` records the enabled set and whether the round was automatic
+    or explicitly requested, which also feeds "Consult stats by lineup".
+  - No rank column (both models): one number per model moves when another
+    row is toggled (companion effect). Numbers come from rounds of the actual
+    lineup, with n shown and metrics hidden under 5 rated calls; the paired
+    `stats --vs` stays the comparison.
+  - Coordinator cost, stage 1: the answer tokens each round injects into the
+    coordinator's context (already logged as `answer_chars`), labelled a lower
+    bound: they are re-read as cached input on every later turn, and the
+    coordinator's own reasoning is not counted. The full number waits for
+    "Consult cost per model and the coordinator's extra spend". No column
+    that reads "n/a"; subscription models show "included", never `$0`.
+  - Later: a `doctor` mark for an enabled model without a key or CLI, so it
+    does not burn calls into err%.
 - [x] Consult stats popup loses the model column when scrolled right (user,
   2026-10-03 00:47, screenshot of the **Consult stats** popup: the rows start at
   `q/call`, no model names, "and what about this? ask the models"). The table is
