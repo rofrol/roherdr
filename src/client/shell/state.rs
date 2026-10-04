@@ -168,8 +168,8 @@ pub(super) struct ShellHitMap {
     pub(super) asking_list_button: Rect,
     /// The `★` button that lists the bookmarked tabs.
     pub(super) bookmarks_list_button: Rect,
-    /// The item of the bookmark menu open over the bookmarks list.
-    pub(super) bookmark_menu_row: Rect,
+    /// The items of a header list row's menu, open over the list.
+    pub(super) list_menu_rows: Vec<(Rect, usize)>,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.
@@ -818,11 +818,12 @@ pub(super) enum ClientContextMenuTarget {
         /// The tab's bookmark when the menu opened, or none when the server
         /// cannot bookmark (no menu item then).
         bookmarked: Option<bool>,
+        /// Opened on a row of a header list, over the list: no `New tab`,
+        /// which would not act on the row.
+        in_list: bool,
     },
     /// The spaces list's sort choice, opened from the header button.
     SortSpaces(super::space_sort::SpaceSort),
-    /// A row of the bookmarks list: only removing the bookmark.
-    Bookmark { tab_id: String },
     /// The installed agents, the launch button's own first, opened by a
     /// right click on the button (or a left click with nothing to repeat).
     AgentPicker {

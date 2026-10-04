@@ -40,9 +40,10 @@ pub(super) struct ClientNotificationLogOverlay {
     pub(super) highlighted: Option<RowKey>,
     /// What the rows list.
     pub(super) view: NotificationLogView,
-    /// The one-item menu of a bookmark row, open over the list: it closes
-    /// alone, and removing the bookmark leaves the list open.
-    pub(super) menu: Option<BookmarkMenu>,
+    /// A row's tab menu, open over the list: it closes alone, and an
+    /// action that needs no dialog (a bookmark, finished jobs) leaves the
+    /// list open.
+    pub(super) menu: Option<ListRowMenu>,
 }
 
 /// What a dropdown row shows: a past notification, an agent's pane, or a
@@ -66,11 +67,15 @@ impl RowKey {
     }
 }
 
+/// The menu of a header list's row: its tab, where it opened and its
+/// highlighted item. The items come from the snapshot each time, so job
+/// counts are never stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BookmarkMenu {
+pub(super) struct ListRowMenu {
     pub(super) tab_id: String,
     pub(super) x: u16,
     pub(super) y: u16,
+    pub(super) highlighted: usize,
 }
 
 /// The dropdowns behind the header buttons: the past notifications, and
@@ -350,28 +355,92 @@ impl ClientShellState {
         self.remove_bookmark(tab_id, outcome);
     }
 
-    /// Opens the bookmark row's menu over the list, at the pointer.
-    pub(super) fn open_bookmark_row_menu(&mut self, index: usize, x: u16, y: u16) {
+    /// Opens the row's tab menu over the list, at the pointer; nothing for
+    /// a row whose tab is gone (a past notification).
+    pub(super) fn open_list_row_menu(&mut self, index: usize, x: u16, y: u16) -> bool {
         let Some(tab_id) = self
-            .bookmark_rows()
+            .notification_log_rows()
             .into_iter()
             .nth(index)
             .and_then(|row| row.tab_id)
         else {
-            return;
+            return false;
         };
+        if self.tab_context_menu(tab_id.clone(), x, y, true).is_none() {
+            return false;
+        }
         self.highlight_notification_log_row(index);
         if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
-            log.menu = Some(BookmarkMenu { tab_id, x, y });
+            log.menu = Some(ListRowMenu {
+                tab_id,
+                x,
+                y,
+                highlighted: 0,
+            });
+        }
+        true
+    }
+
+    /// The open row menu as a tab menu; none when its tab is gone.
+    pub(super) fn list_row_menu(&self) -> Option<ClientContextMenuOverlay> {
+        let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_ref() else {
+            return None;
+        };
+        let menu = log.menu.as_ref()?;
+        let mut overlay = self.tab_context_menu(menu.tab_id.clone(), menu.x, menu.y, true)?;
+        overlay.highlighted = menu.highlighted;
+        Some(overlay)
+    }
+
+    /// The open row menu, closing it.
+    pub(super) fn take_list_row_menu(&mut self) -> Option<ClientContextMenuOverlay> {
+        let menu = self.list_row_menu();
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            log.menu = None;
+        }
+        menu
+    }
+
+    /// Highlights an item of the open row menu.
+    pub(super) fn highlight_list_row_menu_item(&mut self, index: usize) {
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            if let Some(menu) = log.menu.as_mut() {
+                menu.highlighted = index;
+            }
         }
     }
 
-    /// The open bookmark menu's tab, closing the menu.
-    pub(super) fn take_bookmark_menu(&mut self) -> Option<BookmarkMenu> {
-        match self.overlay.as_mut() {
-            Some(ClientShellOverlay::NotificationLog(log)) => log.menu.take(),
-            _ => None,
+    /// Moves the open row menu's highlight by `delta` items.
+    pub(super) fn move_list_row_menu_selection(&mut self, delta: isize) {
+        let count = self.list_row_menu().map_or(0, |menu| menu.items().len());
+        if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
+            if let Some(menu) = log.menu.as_mut().filter(|_| count > 0) {
+                menu.highlighted =
+                    (menu.highlighted as isize + delta).clamp(0, count as isize - 1) as usize;
+            }
         }
+    }
+
+    /// Runs an item of a row menu taken from the list. A dialog it opens
+    /// (rename, a close confirmation) takes the list's place.
+    pub(super) fn activate_list_row_menu_item(
+        &mut self,
+        menu: ClientContextMenuOverlay,
+        index: usize,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(action) = menu.items().get(index).map(|item| item.action) else {
+            return;
+        };
+        if let ClientContextMenuTarget::Tab {
+            tab_id,
+            workspace_id,
+            ..
+        } = menu.target
+        {
+            self.activate_tab_context_action(tab_id, workspace_id, action, outcome);
+        }
+        outcome.repaint = true;
     }
 
     pub(super) fn remove_bookmark(&mut self, tab_id: String, outcome: &mut ClientShellInput) {

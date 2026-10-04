@@ -294,7 +294,7 @@
   macOS writes a hidden `.Screenshot…` file and renames it, so a listed
   file is complete; skip dotfiles instead).
 
-- [ ] The tab context menu's `Close jobs:` row starts one column left of
+- [x] The tab context menu's `Close jobs:` row starts one column left of
   every other item (user screenshot 2026-10-03). Cause:
   `render_context_menu` (`src/client/shell/overlays.rs`) draws plain items
   at `inner.x + 1` (one padding column) but `JOB_CHIPS_LABEL` at `row.x`.
@@ -320,6 +320,11 @@
   Rejected: DeepSeek's "zero-count chips render" (chips are pushed only
   when their count is above 0); MiMo's ambiguous-width `◐`/`✓` worry is
   out of scope for this row.
+  - Done 2026-10-04: label and chips from `inner.x + 1`, the label muted
+    (`overlay1`), width `sum(label + 2) + (chips - 1)`, chips that do not
+    fit whole are left out; the test checks the label's column against
+    `Rename`, that no hit covers it, and the right padding. Not done:
+    DeepSeek's hovered chip keeping its status colour.
 
 - [x] Hovering the focused space's active tab until its tooltip shows hides
   the blue accent bar `▌` left of the label (user screenshot 2026-10-03).
@@ -4294,7 +4299,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   `clean`, which may only close finished-successful jobs or only this pane's
   jobs). Consult the models before fixing (user asked: "pytaj modeli").
 
-- [ ] Right click in the working list closes the list (user, 2026-10-03,
+- [x] Right click in the working list closes the list (user, 2026-10-03,
   screenshots `~/Screenshots/Screenshot 2026-10-03 at 02.27.26.png`,
   `02.27.34.png`, `02.27.39.png`). In the bookmark list (`★`) a right click on
   a row keeps the list open under its one-item menu ("Remove from
@@ -4305,6 +4310,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   menu. Also seen: the `Close jobs:` row of that menu has no left padding,
   unlike the other items. Consult the models before fixing (user asked:
   "pytaj modeli"), including which items a row menu in each list should have.
+  - Done 2026-10-04 (sol and MiMo, round `20261004-192604-5347`, both: act
+    on the row's tab, drop `New tab`, keep the list): a right click on a
+    row of any header list opens that tab's menu without `New tab` over the
+    list (`ListRowMenu`, items rebuilt from the snapshot so job counts are
+    fresh); a bookmark toggle or finished-jobs chip leaves the list open,
+    Rename and Close open their dialog in its place. A history row whose
+    tab is gone gets no menu. Hover and Up/Down/Enter work in the menu.
+    Later: "Dismiss question" in the asking list's menu (with the `?`
+    dismiss item); keeping the list under the rename and close dialogs
+    (needs stacked overlays).
 
 - [x] A new job tab flashes as a top-level row before it nests (user,
   2026-10-03 ~02:37, screenshot: "something appeared a moment ago, some card

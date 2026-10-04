@@ -101,14 +101,16 @@ impl ClientContextMenuOverlay {
                 succeeded_jobs,
                 failed_jobs,
                 bookmarked,
+                in_list,
                 ..
             } => {
                 // The job actions are chips on one `Close jobs:` row, as the
                 // tab line counts them: `◑ 2` (asks first), `!1`, `✓3`.
-                let mut items = vec![
-                    item("New tab", Action::NewTab),
-                    item("Rename", Action::Rename),
-                ];
+                let mut items = Vec::new();
+                if !*in_list {
+                    items.push(item("New tab", Action::NewTab));
+                }
+                items.push(item("Rename", Action::Rename));
                 if let Some(bookmarked) = bookmarked {
                     items.push(item(
                         if *bookmarked {
@@ -136,9 +138,6 @@ impl ClientContextMenuOverlay {
                 }
                 items.push(item("Close", Action::Close));
                 items
-            }
-            ClientContextMenuTarget::Bookmark { .. } => {
-                vec![item("Remove from bookmarks", Action::ToggleBookmark)]
             }
             ClientContextMenuTarget::AgentPicker { current, kinds, .. } => match kinds {
                 None => vec![item("loading…", Action::Dismiss)],
@@ -286,13 +285,23 @@ impl ClientShellState {
     }
 
     pub(super) fn open_tab_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
-        let Some(tab) = self
+        if let Some(menu) = self.tab_context_menu(tab_id, x, y, false) {
+            self.overlay = Some(ClientShellOverlay::ContextMenu(menu));
+        }
+    }
+
+    /// The tab's menu at `(x, y)`; none when the tab is gone.
+    pub(super) fn tab_context_menu(
+        &self,
+        tab_id: String,
+        x: u16,
+        y: u16,
+        in_list: bool,
+    ) -> Option<ClientContextMenuOverlay> {
+        let tab = self
             .snapshot
             .as_deref()
-            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
-        else {
-            return;
-        };
+            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))?;
         let jobs = |status| {
             self.snapshot.as_deref().map_or(0, |snapshot| {
                 super::tab_groups::child_tabs(snapshot, &tab_id)
@@ -312,7 +321,7 @@ impl ClientShellState {
                 },
             ))
             .then_some(tab.bookmarked);
-        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+        Some(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id: tab.workspace_id.clone(),
@@ -320,11 +329,12 @@ impl ClientShellState {
                 succeeded_jobs,
                 failed_jobs,
                 bookmarked,
+                in_list,
             },
             x,
             y,
             highlighted: 0,
-        }));
+        })
     }
 
     pub(super) fn open_pane_context_menu(&mut self, pane_id: String, x: u16, y: u16) {
@@ -469,17 +479,6 @@ impl ClientShellState {
                 workspace_id,
                 ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
-            ClientContextMenuTarget::Bookmark { tab_id } => {
-                self.push_endpoint_method(
-                    crate::api::schema::Method::TabBookmark(
-                        crate::api::schema::TabBookmarkParams {
-                            tab_id,
-                            bookmarked: false,
-                        },
-                    ),
-                    outcome,
-                );
-            }
             ClientContextMenuTarget::Branches { .. } => {}
             ClientContextMenuTarget::AgentPicker {
                 workspace_id,
@@ -582,7 +581,7 @@ impl ClientShellState {
         }
     }
 
-    fn activate_tab_context_action(
+    pub(super) fn activate_tab_context_action(
         &mut self,
         tab_id: String,
         workspace_id: String,
