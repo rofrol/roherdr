@@ -1833,7 +1833,7 @@
     tab, the agent state icon in the rows, the empty-state hint, a change
     event for other clients (they pick it up with the next snapshot).
 
-- [ ] Space bookmarks (user, 2026-10-02: "besides bookmarks for tabs, make
+- [x] Space bookmarks (user, 2026-10-02: "besides bookmarks for tabs, make
   bookmarks for spaces"). Consulted GPT Sol, DeepSeek, MiMo and Space Bunny.
   - Agreed by all four: mirror the tab bookmark. A persisted `bookmarked` flag
     on the space in the server, optional in the snapshot and `workspace.list`/
@@ -1864,6 +1864,15 @@
     collapsed spaces, a space and its tab both bookmarked, two servers with
     clashing names, 32-column header.
 
+  - Done 2026-10-04: persisted `bookmarked` on the space, in `workspace.*`
+    info and the client snapshot; advertised idempotent
+    `workspace.bookmark`; CLI `herdr workspace bookmark|unbookmark`; the
+    `★N` count and list include spaces, listed first with a `▤` mark
+    (sections without header rows); a click focuses the space (expanding
+    it), middle click, Delete or `x` remove it, a right click opens the
+    space's menu over the list; "Add to bookmarks" / "Remove from bookmarks"
+    is the space menu's last item (the others keep their places). Not done:
+    several servers' clashing names.
 - [x] An agent's own todo list is invisible in herdr (user, 2026-10-01: "an
   instance has a list of things it will do from its todo, and I do not see it").
   Claude Code keeps it as TodoWrite (and newer TaskCreate/TaskUpdate), Pi and

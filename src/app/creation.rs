@@ -417,6 +417,7 @@ impl App {
                     is_linked_worktree: space.is_linked_worktree,
                     creator_tab_id: ws.worktree_creator_tab.clone(),
                 }),
+            bookmarked: ws.bookmarked,
         }
     }
 }

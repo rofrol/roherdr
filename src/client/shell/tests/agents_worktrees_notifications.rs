@@ -158,6 +158,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
         is_linked_worktree: false,
     });
     snapshot.workspaces.push(ClientShellWorkspace {
+        bookmarked: false,
         worktree_creator_tab_id: None,
         workspace_id: "ws_2".into(),
         active_tab_id: "tab_ws2".into(),
@@ -316,7 +317,13 @@ fn duplicate_repo_parents_remain_visible_and_focusable_when_collapsed() {
             let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
                 panic!("repository workspace context menu");
             };
-            assert_eq!(menu.items()[1].label, "Close");
+            assert_eq!(
+                menu.items()
+                    .iter()
+                    .find(|item| item.action == ClientContextMenuAction::Close)
+                    .map(|item| item.label.as_str()),
+                Some("Close")
+            );
             assert_eq!(
                 menu.items()
                     .iter()

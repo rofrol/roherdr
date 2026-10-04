@@ -53,6 +53,7 @@ pub(super) enum RowKey {
     Notification(u64),
     Pane(String),
     Tab(String),
+    Space(String),
 }
 
 impl RowKey {
@@ -62,17 +63,29 @@ impl RowKey {
             NotificationLogView::Working | NotificationLogView::Asking => {
                 row.pane_id.clone().map(Self::Pane)
             }
-            NotificationLogView::Bookmarks => row.tab_id.clone().map(Self::Tab),
+            NotificationLogView::Bookmarks => row
+                .tab_id
+                .clone()
+                .map(Self::Tab)
+                .or_else(|| row.workspace_id.clone().map(Self::Space)),
         }
     }
 }
 
-/// The menu of a header list's row: its tab, where it opened and its
-/// highlighted item. The items come from the snapshot each time, so job
+/// What a header list's row menu acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ListRowTarget {
+    Tab(String),
+    /// A bookmarked space's row.
+    Space(String),
+}
+
+/// The menu of a header list's row: its tab or space, where it opened and
+/// its highlighted item. The items come from the snapshot each time, so job
 /// counts are never stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ListRowMenu {
-    pub(super) tab_id: String,
+    pub(super) target: ListRowTarget,
     pub(super) x: u16,
     pub(super) y: u16,
     pub(super) highlighted: usize,
@@ -215,17 +228,41 @@ impl ClientShellState {
     pub(super) fn bookmark_count(&self) -> usize {
         self.snapshot.as_deref().map_or(0, |snapshot| {
             snapshot.tabs.iter().filter(|tab| tab.bookmarked).count()
+                + snapshot
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.bookmarked)
+                    .count()
         })
     }
 
-    /// Bookmarked tabs as records, in the order of the spaces, then the tabs
-    /// inside each space: computed from the snapshot, so a moved, renamed or
-    /// reordered tab or space shows right away.
+    /// Bookmarked spaces, then bookmarked tabs, as records, in the order of
+    /// the spaces and then the tabs inside each space: computed from the
+    /// snapshot, so a moved, renamed or reordered tab or space shows right
+    /// away.
     fn bookmark_rows(&self) -> Vec<NotificationRecord> {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return Vec::new();
         };
-        snapshot
+        let spaces = snapshot
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.bookmarked)
+            .map(|workspace| NotificationRecord {
+                id: 0,
+                unix_ms: 0,
+                kind: "bookmark-space".into(),
+                title: workspace.label.clone(),
+                body: None,
+                agent: None,
+                workspace_id: Some(workspace.workspace_id.clone()),
+                tab_id: None,
+                pane_id: None,
+                task: None,
+                request: None,
+                repeats: None,
+            });
+        let tabs = snapshot
             .workspaces
             .iter()
             .flat_map(|workspace| {
@@ -249,8 +286,8 @@ impl ClientShellState {
                 task: None,
                 request: None,
                 repeats: None,
-            })
-            .collect()
+            });
+        spaces.chain(tabs).collect()
     }
 
     /// The icon and colour for each row of the open list. A history row shows
@@ -344,41 +381,66 @@ impl ClientShellState {
     }
 
     pub(super) fn remove_bookmark_row(&mut self, index: usize, outcome: &mut ClientShellInput) {
-        let Some(tab_id) = self
-            .bookmark_rows()
-            .into_iter()
-            .nth(index)
-            .and_then(|row| row.tab_id)
-        else {
+        let Some(row) = self.bookmark_rows().into_iter().nth(index) else {
             return;
         };
-        self.remove_bookmark(tab_id, outcome);
+        match (row.tab_id, row.workspace_id) {
+            (Some(tab_id), _) => self.remove_bookmark(tab_id, outcome),
+            (None, Some(workspace_id)) => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::WorkspaceBookmark(
+                        crate::api::schema::WorkspaceBookmarkParams {
+                            workspace_id,
+                            bookmarked: false,
+                        },
+                    ),
+                    outcome,
+                );
+                outcome.repaint = true;
+            }
+            (None, None) => {}
+        }
     }
 
     /// Opens the row's tab menu over the list, at the pointer; nothing for
     /// a row whose tab is gone (a past notification).
     pub(super) fn open_list_row_menu(&mut self, index: usize, x: u16, y: u16) -> bool {
-        let Some(tab_id) = self
-            .notification_log_rows()
-            .into_iter()
-            .nth(index)
-            .and_then(|row| row.tab_id)
-        else {
+        let Some(row) = self.notification_log_rows().into_iter().nth(index) else {
             return false;
         };
-        if self.tab_context_menu(tab_id.clone(), x, y, true).is_none() {
+        // A bookmarked space's row (no tab) gets the space's menu.
+        let target = match (row.tab_id, row.workspace_id, row.kind.as_str()) {
+            (Some(tab_id), _, _) => ListRowTarget::Tab(tab_id),
+            (None, Some(workspace_id), "bookmark-space") => ListRowTarget::Space(workspace_id),
+            _ => return false,
+        };
+        let menu = ListRowMenu {
+            target,
+            x,
+            y,
+            highlighted: 0,
+        };
+        if self.list_row_menu_overlay(&menu).is_none() {
             return false;
         }
         self.highlight_notification_log_row(index);
         if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
-            log.menu = Some(ListRowMenu {
-                tab_id,
-                x,
-                y,
-                highlighted: 0,
-            });
+            log.menu = Some(menu);
         }
         true
+    }
+
+    fn list_row_menu_overlay(&self, menu: &ListRowMenu) -> Option<ClientContextMenuOverlay> {
+        let mut overlay = match &menu.target {
+            ListRowTarget::Tab(tab_id) => {
+                self.tab_context_menu(tab_id.clone(), menu.x, menu.y, true)?
+            }
+            ListRowTarget::Space(workspace_id) => {
+                self.workspace_context_menu(workspace_id.clone(), menu.x, menu.y)?
+            }
+        };
+        overlay.highlighted = menu.highlighted;
+        Some(overlay)
     }
 
     /// The open row menu as a tab menu; none when its tab is gone.
@@ -386,10 +448,7 @@ impl ClientShellState {
         let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_ref() else {
             return None;
         };
-        let menu = log.menu.as_ref()?;
-        let mut overlay = self.tab_context_menu(menu.tab_id.clone(), menu.x, menu.y, true)?;
-        overlay.highlighted = menu.highlighted;
-        Some(overlay)
+        self.list_row_menu_overlay(log.menu.as_ref()?)
     }
 
     /// The open row menu, closing it.
@@ -432,13 +491,18 @@ impl ClientShellState {
         let Some(action) = menu.items().get(index).map(|item| item.action) else {
             return;
         };
-        if let ClientContextMenuTarget::Tab {
-            tab_id,
-            workspace_id,
-            ..
-        } = menu.target
-        {
-            self.activate_tab_context_action(tab_id, workspace_id, action, outcome);
+        match menu.target {
+            ClientContextMenuTarget::Tab {
+                tab_id,
+                workspace_id,
+                ..
+            } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
+            ClientContextMenuTarget::Workspace {
+                workspace_id,
+                close_group,
+                ..
+            } => self.activate_workspace_context_action(workspace_id, close_group, action, outcome),
+            _ => {}
         }
         outcome.repaint = true;
     }
@@ -556,6 +620,7 @@ impl ClientShellState {
             "needs_attention" | "asking" => "?",
             "working" => "◐",
             "bookmark" => "★",
+            "bookmark-space" => return format!("▤ {}", entry.title),
             "finished" => "✓",
             _ => {
                 return match entry.body.as_deref() {

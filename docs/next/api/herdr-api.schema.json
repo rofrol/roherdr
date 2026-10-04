@@ -1190,6 +1190,10 @@
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
+            "bookmarked": {
+              "description": "The user bookmarked the workspace (`workspace.bookmark`).",
+              "type": "boolean"
+            },
             "focused": {
               "type": "boolean"
             },
@@ -4878,6 +4882,22 @@
           ],
           "type": "object"
         },
+        "WorkspaceBookmarkParams": {
+          "properties": {
+            "bookmarked": {
+              "description": "True to bookmark the workspace, false to remove the bookmark;\nrepeating it is harmless. Its tabs' bookmarks are separate.",
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "bookmarked"
+          ],
+          "type": "object"
+        },
         "WorkspaceCloseParams": {
           "properties": {
             "close_group": {
@@ -5704,6 +5724,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.bookmark",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceBookmarkParams"
             }
           },
           "required": [
@@ -12232,6 +12268,10 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "bookmarked": {
+              "description": "The user bookmarked the workspace (`workspace.bookmark`).",
+              "type": "boolean"
             },
             "focused": {
               "type": "boolean"
