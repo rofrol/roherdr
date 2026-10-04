@@ -21,6 +21,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) tab_label: crate::config::TabLabelConfig,
+    pub(super) new_tab_position: crate::config::NewTabPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) show_agents_panel: bool,

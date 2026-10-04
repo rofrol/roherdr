@@ -81,6 +81,8 @@ pub enum Method {
     SessionSnapshot(EmptyParams),
     #[serde(rename = "workspace.create")]
     WorkspaceCreate(WorkspaceCreateParams),
+    #[serde(rename = "workspace.create_after")]
+    WorkspaceCreateAfter(WorkspaceCreateAfterParams),
     #[serde(rename = "workspace.list")]
     WorkspaceList(EmptyParams),
     #[serde(rename = "workspace.get")]
@@ -113,6 +115,8 @@ pub enum Method {
     TabCreate(TabCreateParams),
     #[serde(rename = "tab.create_child")]
     TabCreateChild(TabCreateChildParams),
+    #[serde(rename = "tab.create_after")]
+    TabCreateAfter(TabCreateAfterParams),
     #[serde(rename = "tab.create_agent")]
     TabCreateAgent(TabCreateAgentParams),
     #[serde(rename = "tab.list")]

@@ -2903,18 +2903,8 @@ impl ClientShellState {
                     if self.unfold_space_tabs(&workspace_id) {
                         self.persist_chrome_preferences(outcome);
                     }
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::TabCreate(
-                            crate::api::schema::TabCreateParams {
-                                workspace_id: Some(workspace_id),
-                                cwd: None,
-                                focus: true,
-                                label: None,
-                                env: Default::default(),
-                            },
-                        ),
-                        outcome,
-                    );
+                    let method = self.new_tab_method(workspace_id, None);
+                    self.push_endpoint_method(method, outcome);
                     return;
                 }
                 // A tab line waits for the release: a drag reorders it, a

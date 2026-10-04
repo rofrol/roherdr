@@ -234,10 +234,12 @@ impl HeadlessServer {
                 | Method::PaneSplit(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateAfter(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceCreateAfter(_)
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeCreateFromPane(_)
                 | Method::WorktreeOpen(_)
@@ -271,12 +273,14 @@ impl HeadlessServer {
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateAfter(_)
                 | Method::TabCreateAgent(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
                 | Method::TabRename(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceCreateAfter(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorkspaceMove(_)
                 | Method::WorkspaceMoveBlock(_)
@@ -305,11 +309,13 @@ impl HeadlessServer {
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabCreateAfter(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceCreateAfter(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeCreateFromPane(_)
@@ -858,8 +864,10 @@ impl HeadlessServer {
         };
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
+            api::schema::Method::WorkspaceCreateAfter(params) => params.create.focus,
             api::schema::Method::TabCreate(params) => params.focus,
             api::schema::Method::TabCreateChild(params) => params.focus,
+            api::schema::Method::TabCreateAfter(params) => params.focus,
             api::schema::Method::TabCreateAgent(params) => params.focus,
             _ => false,
         };

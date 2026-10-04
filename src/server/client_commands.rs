@@ -47,6 +47,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.bookmark",
     "tab.close",
     "tab.create",
+    "tab.create_after",
     "tab.create_agent",
     "tab.focus",
     "tab.move",
@@ -58,6 +59,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "usage.settings",
     "workspace.close",
     "workspace.create",
+    "workspace.create_after",
     "workspace.focus",
     "workspace.move",
     "workspace.move_block",
@@ -307,6 +309,10 @@ mod tests {
             Some("6755852f82eb78c061dca4393e3ab21214cfbd4cc27e783212ce7e010b1971b0")
         );
         assert_eq!(
+            actual.remove("tab.create_after").as_deref(),
+            Some("3ef832c6e2062da9344befca6779c393c4efaf897e309ffefee916c795d0ae2f")
+        );
+        assert_eq!(
             actual.remove("tab.create_agent").as_deref(),
             Some("82ed0ac9d04d20facc5b20690cf387437a7a9323148edc60addaa32268afca24")
         );
@@ -345,6 +351,10 @@ mod tests {
         assert_eq!(
             actual.remove("tab.set_job_metadata").as_deref(),
             Some("e3dc32ecde73fad8b157285ecfd53bf0a9a99ad7b2932afc44d6cd56c437c422")
+        );
+        assert_eq!(
+            actual.remove("workspace.create_after").as_deref(),
+            Some("4440da090bd64cdcd159f5b91fc7849888c4a9db7ec6e1601f46be7e56de5ee9")
         );
         assert_eq!(
             actual.remove("usage.read").as_deref(),

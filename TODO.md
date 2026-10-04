@@ -965,7 +965,7 @@
     switches the sort mode by itself.
   - Undo (all four disagreed with "drag back by hand"): offer Undo right after
     the move; skip it when another client reordered meanwhile.
-- [ ] New space goes right after the active space, like new tabs (user,
+- [x] New space goes right after the active space, like new tabs (user,
   2026-10-03: "new space creates it at the end; change it as with tabs"). After
   the active space's whole worktree family. Models (unanimous): only for
   spaces created from the UI, through an optional placement field on create
@@ -973,6 +973,10 @@
   appending, because the server has no single active space and scripts rely on
   the end. Keep the endpoint contract: an older server must not ignore the new
   field and report success (a new method or advertised capability).
+  - Done 2026-10-04: advertised `workspace.create_after {after_workspace_id,
+    ...workspace.create}` puts the space after the focused space and the
+    rest of its worktree group; used for the new-space key, the footer's
+    `new` and the named new space; `workspace.create` keeps appending.
 - [ ] Consult cost per model and the coordinator's extra spend (user,
   2026-10-03: "how much money/tokens a model used on a consult, and how much
   more the coordinator burned by asking it"). Today every call logs normalized
@@ -4260,7 +4264,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     session change, and `Blocked`; resize and repaint do not touch it, so a
     plain detach keeps it. Reopen if a detach loses `?` again.
 
-- [ ] New tab right after the current one (user, 2026-10-02: "should a new tab
+- [x] New tab right after the current one (user, 2026-10-02: "should a new tab
   be created after the current one by default? make it configurable, so it can
   also go at the end of the space"). Today `create_tab_with_runtime`
   (`src/workspace.rs`) always appends. Consulted the same four models (same
@@ -4286,6 +4290,14 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Public tab numbers are stable (never reused), so inserting in the middle
     renumbers nothing.
 
+  - Done 2026-10-04: advertised `tab.create_after {after_tab_id, ...}`
+    places the tab after the group atomically (no create-then-move flash);
+    `ui.new_tab_position = "after_current" | "end_of_space"`, default
+    `after_current`; the client uses it for the new-tab key, a space's `+`,
+    the tab menu's New tab and the named new tab, after the space's active
+    tab from the snapshot, and falls back to `tab.create` on an older
+    server. Not done: the launch-agent button (`tab.create_agent`) and
+    moving a pane out into its own tab still append.
 - [x] Dismiss an agent's question mark `?` without typing into its pane
   (user, 2026-10-03: right click on the agent's tab and turn off the
   question status; "maybe somewhere else too"). Today the report

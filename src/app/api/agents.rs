@@ -120,7 +120,7 @@ impl App {
         let response = self.create_tab_in_workspace(
             id,
             ws_idx,
-            None,
+            super::tabs::NewTabPlace::End,
             None,
             params.focus,
             None,

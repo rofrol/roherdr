@@ -110,18 +110,15 @@ impl ClientShellState {
                     if self.config.prompt_new_workspace_name {
                         self.open_new_workspace_overlay();
                     } else {
-                        self.push_endpoint_method(
-                            crate::api::schema::Method::WorkspaceCreate(
-                                crate::api::schema::WorkspaceCreateParams {
-                                    source_workspace_id: self.workspace_action_id(),
-                                    cwd: None,
-                                    focus: true,
-                                    label: None,
-                                    env: Default::default(),
-                                },
-                            ),
-                            outcome,
-                        );
+                        let method =
+                            self.new_workspace_method(crate::api::schema::WorkspaceCreateParams {
+                                source_workspace_id: self.workspace_action_id(),
+                                cwd: None,
+                                focus: true,
+                                label: None,
+                                env: Default::default(),
+                            });
+                        self.push_endpoint_method(method, outcome);
                     }
                     outcome.repaint = true;
                     return;
@@ -379,6 +376,83 @@ impl ClientShellState {
         true
     }
 
+    /// Creates a focused tab in the space, from the UI: after the space's
+    /// current tab and its jobs (`ui.new_tab_position`), or at its end on a
+    /// server without `tab.create_after`.
+    pub(super) fn new_tab_method(
+        &self,
+        workspace_id: String,
+        label: Option<String>,
+    ) -> crate::api::schema::Method {
+        use crate::api::schema::{Method, TabCreateAfterParams, TabCreateParams};
+        let after_tab_id = (self.config.new_tab_position
+            == crate::config::NewTabPositionConfig::AfterCurrent)
+            .then(|| {
+                self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == workspace_id)
+                        .map(|workspace| workspace.active_tab_id.clone())
+                })
+            })
+            .flatten()
+            .filter(|after_tab_id| {
+                self.supports_endpoint_method(&Method::TabCreateAfter(TabCreateAfterParams {
+                    after_tab_id: after_tab_id.clone(),
+                    cwd: None,
+                    focus: true,
+                    label: None,
+                    env: Default::default(),
+                }))
+            });
+        match after_tab_id {
+            Some(after_tab_id) => Method::TabCreateAfter(TabCreateAfterParams {
+                after_tab_id,
+                cwd: None,
+                focus: true,
+                label,
+                env: Default::default(),
+            }),
+            None => Method::TabCreate(TabCreateParams {
+                workspace_id: Some(workspace_id),
+                cwd: None,
+                focus: true,
+                label,
+                env: Default::default(),
+            }),
+        }
+    }
+
+    /// Creates a space from the UI right after the focused space and its
+    /// worktree group, or at the end on a server without
+    /// `workspace.create_after`.
+    pub(super) fn new_workspace_method(
+        &self,
+        create: crate::api::schema::WorkspaceCreateParams,
+    ) -> crate::api::schema::Method {
+        use crate::api::schema::{Method, WorkspaceCreateAfterParams};
+        let after_workspace_id = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_workspace_id.clone())
+            .filter(|after_workspace_id| {
+                self.supports_endpoint_method(&Method::WorkspaceCreateAfter(
+                    WorkspaceCreateAfterParams {
+                        after_workspace_id: after_workspace_id.clone(),
+                        create: Default::default(),
+                    },
+                ))
+            });
+        match after_workspace_id {
+            Some(after_workspace_id) => Method::WorkspaceCreateAfter(WorkspaceCreateAfterParams {
+                after_workspace_id,
+                create,
+            }),
+            None => Method::WorkspaceCreate(create),
+        }
+    }
+
     pub(super) fn push_endpoint_method_with_kind(
         &mut self,
         method: crate::api::schema::Method,
@@ -391,7 +465,9 @@ impl ClientShellState {
             | crate::api::schema::Method::PaneFocus(_)
             | crate::api::schema::Method::PaneFocusDirection(_) => true,
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
+            crate::api::schema::Method::WorkspaceCreateAfter(params) => params.create.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
+            crate::api::schema::Method::TabCreateAfter(params) => params.focus,
             crate::api::schema::Method::TabCreateAgent(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
@@ -400,11 +476,23 @@ impl ClientShellState {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         // A new tab that takes the focus must show: open its collapsed space.
-        if let crate::api::schema::Method::TabCreate(params) = &method {
-            if params.focus {
-                let workspace_id = params.workspace_id.clone();
-                self.expand_for_jump(workspace_id.as_deref(), outcome);
+        let new_tab_workspace = match &method {
+            crate::api::schema::Method::TabCreate(params) if params.focus => {
+                Some(params.workspace_id.clone())
             }
+            crate::api::schema::Method::TabCreateAfter(params) if params.focus => {
+                Some(self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.tab_id == params.after_tab_id)
+                        .map(|tab| tab.workspace_id.clone())
+                }))
+            }
+            _ => None,
+        };
+        if let Some(workspace_id) = new_tab_workspace {
+            self.expand_for_jump(workspace_id.as_deref(), outcome);
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {
             let label = self.active_endpoint_label().to_owned();
@@ -917,7 +1005,7 @@ impl ClientShellState {
         use crate::api::schema::{
             Method, PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
             PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
-            TabCreateParams, TabMoveParams, TabTarget, WorkspaceTarget,
+            TabMoveParams, TabTarget, WorkspaceTarget,
         };
         use crate::input::KeybindAction;
 
@@ -1134,13 +1222,7 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::NewTab if !self.config.prompt_new_tab_name => {
-                Some(Method::TabCreate(TabCreateParams {
-                    workspace_id: Some(focused_workspace),
-                    cwd: None,
-                    focus: true,
-                    label: None,
-                    env: Default::default(),
-                }))
+                Some(self.new_tab_method(focused_workspace, None))
             }
             KeybindAction::FocusPaneLeft
             | KeybindAction::FocusPaneDown

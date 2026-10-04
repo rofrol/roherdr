@@ -36,10 +36,13 @@ impl App {
         )
     }
 
+    /// Creates a workspace at the end, or right after the workspace at
+    /// `after` and the rest of its worktree group.
     pub(super) fn handle_workspace_create(
         &mut self,
         id: String,
         params: WorkspaceCreateParams,
+        after: Option<usize>,
     ) -> String {
         let source_workspace_index = if params.cwd.is_some() {
             None
@@ -66,7 +69,35 @@ impl App {
             Err((code, message)) => return encode_error(id, &code, message),
         };
         match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
-            Ok(index) => {
+            Ok(mut index) => {
+                if let Some(after) = after.filter(|after| *after < index) {
+                    let key = self.state.workspaces[after]
+                        .worktree_space()
+                        .map(|space| space.key.clone());
+                    let group_end = self
+                        .state
+                        .workspaces
+                        .iter()
+                        .enumerate()
+                        .filter(|(other, workspace)| {
+                            *other != index
+                                && (*other == after
+                                    || key.is_some()
+                                        && workspace.worktree_space().map(|space| &space.key)
+                                            == key.as_ref())
+                        })
+                        .map(|(other, _)| other)
+                        .max()
+                        .unwrap_or(after);
+                    let created = self.state.workspaces[index].id.clone();
+                    self.state.move_workspace(index, group_end + 1);
+                    index = self
+                        .state
+                        .workspaces
+                        .iter()
+                        .position(|workspace| workspace.id == created)
+                        .unwrap_or(index);
+                }
                 if let Some(label) = params.label {
                     if let Some(workspace) = self.state.workspaces.get_mut(index) {
                         workspace.set_custom_name(label);
@@ -390,6 +421,88 @@ mod tests {
     // surface. Splits and tabs already do; a new workspace must follow the
     // focused pane too, not the source workspace's first-tab root pane.
     #[tokio::test]
+    async fn workspace_create_after_puts_the_space_after_the_whole_worktree_group() {
+        use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
+        use crate::config::ShellModeConfig;
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        let membership = |linked: bool| crate::workspace::WorktreeSpaceMembership {
+            key: "repo".into(),
+            label: "repo".into(),
+            repo_root: "/repo".into(),
+            checkout_path: "/repo".into(),
+            is_linked_worktree: linked,
+        };
+        // parent, other, linked child of parent (listed with its parent).
+        let mut parent = Workspace::test_new("parent");
+        parent.worktree_space = Some(membership(false));
+        let other = Workspace::test_new("other");
+        let mut child = Workspace::test_new("child");
+        child.worktree_space = Some(membership(true));
+        app.state.workspaces = vec![parent, other, child];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                source_workspace_id: None,
+                cwd: Some(std::env::temp_dir().display().to_string()),
+                focus: true,
+                label: Some("new".into()),
+                env: Default::default(),
+            },
+            Some(0),
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::WorkspaceCreated { .. }
+        ));
+        let names = app
+            .state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.custom_name.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["parent", "other", "child", "new"]);
+        assert_eq!(app.state.active, Some(3), "the new space has the focus");
+
+        // Without a group, right after the space.
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                source_workspace_id: None,
+                cwd: Some(std::env::temp_dir().display().to_string()),
+                focus: false,
+                label: Some("second".into()),
+                env: Default::default(),
+            },
+            Some(1),
+        );
+        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let names = app
+            .state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.custom_name.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["parent", "other", "second", "child", "new"]);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn workspace_create_follows_focused_pane_cwd_not_first_tab_root() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
         use crate::config::ShellModeConfig;
@@ -449,6 +562,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -510,6 +624,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert!(matches!(
@@ -530,6 +645,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let error: ErrorResponse = serde_json::from_str(&invalid).unwrap();
         assert_eq!(error.error.code, "workspace_not_found");
@@ -543,6 +659,7 @@ mod tests {
                 label: None,
                 env: Default::default(),
             },
+            None,
         );
         let success: SuccessResponse = serde_json::from_str(&captured).unwrap();
         assert!(matches!(

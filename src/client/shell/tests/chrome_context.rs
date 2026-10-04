@@ -596,8 +596,8 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::TabCreate(params)
-            if params.workspace_id.as_deref() == Some("ws_1")
+        crate::api::schema::Method::TabCreateAfter(params)
+            if params.after_tab_id == "tab_1"
                 && params.label.as_deref() == Some("logs")
     ));
     assert!(state.overlay.is_none());
