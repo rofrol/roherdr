@@ -251,7 +251,7 @@
   (`unfolded_job_tabs`, `kept_jobs`); pins of closed jobs are dropped on each
   snapshot that has tabs. SSH servers are not saved.
 
-- [ ] Attach images quickly from the last chosen directory (user,
+- [x] Attach images quickly from the last chosen directory (user,
   2026-10-03: "some command or something so I add images fast from the
   last chosen directory; lately I add a lot from Screenshots"). macOS saves
   them to `~/Screenshots` (`Screenshot 2026-10-03 at 17.14.38.png`); he
@@ -294,6 +294,18 @@
   macOS writes a hidden `.Screenshot…` file and renames it, so a listed
   file is complete; skip dotfiles instead).
 
+  - Done 2026-10-04 (v1): "Attach image…" first in the pane menu opens a
+    list of the images in the screenshot directory (macOS `defaults read
+    com.apple.screencapture location`, else `~/Desktop`; `src/platform/`),
+    newest first with age, hidden files skipped; Space or a click marks, `a`
+    marks the shots newer than the last attach to this pane, Enter or the
+    `attach N` button sends the marked (or the highlighted) image, oldest
+    first, through the clipboard-image path (`ClientMessage::ClipboardImage`,
+    magic bytes checked, size cap), so it works for a remote server too.
+    The pane is fixed when the list opens. Not done: choosing and
+    remembering another directory, a key binding and the global menu entry,
+    thumbnails, one paste for several paths (each image is pasted on its
+    own).
 - [x] The tab context menu's `Close jobs:` row starts one column left of
   every other item (user screenshot 2026-10-03). Cause:
   `render_context_menu` (`src/client/shell/overlays.rs`) draws plain items

@@ -171,6 +171,8 @@ pub(super) struct ShellHitMap {
     pub(super) bookmarks_list_button: Rect,
     /// The items of a header list row's menu, open over the list.
     pub(super) list_menu_rows: Vec<(Rect, usize)>,
+    /// The rows of the image list.
+    pub(super) image_picker_rows: Vec<(Rect, usize)>,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The header button that moves the busy spaces to the top (manual
@@ -474,6 +476,9 @@ pub(crate) enum ClientShellAction {
     },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
+    /// Image files from this machine to paste into a pane, staged by the
+    /// server like a clipboard image.
+    AttachImages(super::image_picker::AttachImages),
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
@@ -519,6 +524,7 @@ pub(super) enum ClientShellOverlayKind {
     NotificationLog,
     Settings,
     Usage,
+    ImagePicker,
 }
 
 #[derive(Debug)]
@@ -791,6 +797,8 @@ pub(super) enum ClientContextMenuAction {
     /// Dismisses the questions of the tab's (or the pane's) agents that
     /// await a reply, without typing into their panes.
     DismissQuestions,
+    /// Opens the image list to attach image files to the pane.
+    AttachImage,
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
@@ -918,6 +926,7 @@ pub(super) enum ClientShellOverlay {
     NotificationLog(super::notification_log::ClientNotificationLogOverlay),
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
+    ImagePicker(super::image_picker::ImagePickerOverlay),
 }
 
 impl ClientShellOverlay {
@@ -938,6 +947,7 @@ impl ClientShellOverlay {
             Self::NotificationLog(_) => ClientShellOverlayKind::NotificationLog,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
+            Self::ImagePicker(_) => ClientShellOverlayKind::ImagePicker,
         }
     }
 }
@@ -1291,6 +1301,8 @@ pub(crate) struct ClientShellState {
     pub(super) held_space_order: Vec<String>,
     /// What the bubble button last moved, to put it back.
     pub(super) space_bubble_undo: Option<super::space_sort::SpaceBubbleUndo>,
+    /// When the last image attached to each pane was taken.
+    pub(super) image_attach_times: super::image_picker::ImageAttachTimes,
     pub(super) workspace_scroll: usize,
     pub(super) workspace_scroll_anchor: Option<ScrollAnchor>,
     pub(super) agent_scroll: usize,
@@ -1514,6 +1526,7 @@ impl ClientShellState {
             workspace_scroll: 0,
             workspace_scroll_anchor: None,
             space_bubble_undo: None,
+            image_attach_times: Default::default(),
             agent_scroll: 0,
             pending_agent_reveal: None,
             tab_scroll: 0,

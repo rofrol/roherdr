@@ -881,6 +881,21 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         .map(Some)
 }
 
+/// Where screenshots usually land: `~/Pictures/Screenshots`, else
+/// `~/Pictures`, else home. The image picker opens there first.
+pub fn screenshot_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    let pictures = home.join("Pictures");
+    let screenshots = pictures.join("Screenshots");
+    Some(if screenshots.is_dir() {
+        screenshots
+    } else if pictures.is_dir() {
+        pictures
+    } else {
+        home
+    })
+}
+
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
     if running_inside_wsl() {
         if let Some(image) = read_wsl_clipboard_image_with_command(|program| Command::new(program))

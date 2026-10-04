@@ -2727,6 +2727,19 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
     }
 }
 
+/// Where Windows saves screenshots: `Pictures\Screenshots` in the user
+/// profile, else `Pictures`. The image picker opens there first.
+pub fn screenshot_dir() -> Option<std::path::PathBuf> {
+    let profile = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)?;
+    let pictures = profile.join("Pictures");
+    let screenshots = pictures.join("Screenshots");
+    Some(if screenshots.is_dir() {
+        screenshots
+    } else {
+        pictures
+    })
+}
+
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
     for attempt in 0..10 {
         if unsafe { OpenClipboard(null_mut()) } != 0 {

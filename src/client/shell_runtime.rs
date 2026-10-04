@@ -1,5 +1,54 @@
 use super::*;
 
+/// Sends picked image files to the server like clipboard images, which
+/// stages each and pastes its path into the pane, oldest first. A file that
+/// is gone, too big or not an image by its first bytes is skipped.
+fn attach_image_files(
+    endpoints: &mut endpoint::EndpointRegistry,
+    attach: shell::AttachImages,
+) -> Result<(), ClientError> {
+    for path in attach.paths {
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase);
+        let extension = match extension.as_deref() {
+            Some("png") => "png",
+            Some("jpg" | "jpeg") => "jpg",
+            Some("gif") => "gif",
+            Some("webp") => "webp",
+            Some("bmp") => "bmp",
+            _ => continue,
+        };
+        let Ok(file) = std::fs::File::open(&path) else {
+            warn!(path = %path.display(), "picked image is gone");
+            continue;
+        };
+        let bytes = match crate::platform::read_limited_reader(
+            file,
+            crate::protocol::MAX_CLIPBOARD_IMAGE_PAYLOAD,
+        ) {
+            Ok(crate::platform::LimitedRead::Complete(bytes)) => bytes,
+            Ok(crate::platform::LimitedRead::Oversized) => {
+                warn!(path = %path.display(), "picked image is too large to attach");
+                continue;
+            }
+            _ => continue,
+        };
+        if !shell::has_image_magic(&bytes) {
+            warn!(path = %path.display(), "picked file is not an image");
+            continue;
+        }
+        clipboard_images::write_remote_image_to_server(
+            endpoints,
+            crate::protocol::ClientClipboardImageTarget::Pane(attach.pane_id.clone()),
+            crate::platform::ClipboardImage { bytes, extension },
+            "image picker",
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
@@ -46,6 +95,9 @@ pub(super) fn dispatch_client_shell_actions(
                         Err(err) => warn!(err = %err, url = %url, "failed to open pane URL"),
                     }
                 }
+            }
+            shell::ClientShellAction::AttachImages(attach) => {
+                attach_image_files(endpoints, attach)?;
             }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
             shell::ClientShellAction::Keybind(action) => {

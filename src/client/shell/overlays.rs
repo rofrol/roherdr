@@ -81,6 +81,9 @@ pub(crate) fn render_client_overlay(
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
         ClientShellOverlay::Usage(v) => render_usage_overlay(b, v, p),
+        ClientShellOverlay::ImagePicker(v) => {
+            super::super::image_picker::render_image_picker(b, v, std::time::SystemTime::now(), p)
+        }
         ClientShellOverlay::ContextMenu(_)
         | ClientShellOverlay::GlobalMenu(_)
         | ClientShellOverlay::NotificationLog(_) => None,
@@ -916,6 +919,22 @@ fn panel(
     }
     Some(Rect::new(a.x + 1, a.y + 1, a.width - 2, a.height - 2))
 }
+/// A centered popup of at most `w` by `h`, for overlays drawn elsewhere.
+pub(in crate::client::shell) fn popup_area(a: Rect, w: u16, h: u16) -> Option<Rect> {
+    popup(a, w, h)
+}
+
+/// Draws a bordered panel and returns its inside, for overlays drawn
+/// elsewhere.
+pub(in crate::client::shell) fn panel_area(
+    b: &mut Buffer,
+    a: Rect,
+    c: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) -> Option<Rect> {
+    panel(b, a, c, bg)
+}
+
 fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
     popup_with_width_cap(a, w, h, 4)
 }

@@ -2417,6 +2417,36 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::ImagePicker(_))) {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let row = self
+                        .hits
+                        .image_picker_rows
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .map(|(_, index)| *index);
+                    if let Some(index) = row {
+                        self.click_image_picker_row(index);
+                    } else if super::contains(self.hits.overlay_primary, point) {
+                        self.attach_picked_images(outcome);
+                    } else {
+                        self.overlay = None;
+                    }
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    let key = if mouse.kind == MouseEventKind::ScrollUp {
+                        crossterm::event::KeyCode::Up
+                    } else {
+                        crossterm::event::KeyCode::Down
+                    };
+                    self.image_picker_key(key, outcome);
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.overlay.is_some() {
             if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
                 return;

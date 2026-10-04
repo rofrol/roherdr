@@ -22,6 +22,7 @@ pub(super) use endpoints::*;
 mod closed_tabs;
 mod global_menu;
 mod graphics;
+mod image_picker;
 mod input;
 mod input_source;
 mod job_footer;
@@ -51,6 +52,7 @@ mod worktrees;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
+pub(crate) use image_picker::{has_image_magic, AttachImages};
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
 #[cfg(test)]

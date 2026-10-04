@@ -686,6 +686,27 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         .map(Some)
 }
 
+/// Where the system saves screenshots: the location set for `screencapture`,
+/// else the Desktop. The image picker opens there first.
+pub fn screenshot_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let configured = Command::new("defaults")
+        .args(["read", "com.apple.screencapture", "location"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|location| location.trim().to_owned())
+        .filter(|location| !location.is_empty())
+        .map(|location| match location.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(location),
+        })
+        .filter(|dir| dir.is_dir());
+    Some(configured.unwrap_or_else(|| home.join("Desktop")))
+}
+
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
     let path = std::env::temp_dir().join(format!(
         "herdr-clipboard-image-{}-{}.png",
