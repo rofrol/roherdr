@@ -173,6 +173,9 @@ pub(super) struct ShellHitMap {
     pub(super) list_menu_rows: Vec<(Rect, usize)>,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
+    /// The header button that moves the busy spaces to the top (manual
+    /// order only), or puts that move back.
+    pub(super) space_bubble_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.
     pub(super) space_filter_bar: Rect,
     pub(super) space_filter_close: Rect,
@@ -1283,6 +1286,8 @@ pub(crate) struct ClientShellState {
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
     pub(super) held_space_order: Vec<String>,
+    /// What the bubble button last moved, to put it back.
+    pub(super) space_bubble_undo: Option<super::space_sort::SpaceBubbleUndo>,
     pub(super) workspace_scroll: usize,
     pub(super) workspace_scroll_anchor: Option<ScrollAnchor>,
     pub(super) agent_scroll: usize,
@@ -1505,6 +1510,7 @@ impl ClientShellState {
             held_space_order: Vec::new(),
             workspace_scroll: 0,
             workspace_scroll_anchor: None,
+            space_bubble_undo: None,
             agent_scroll: 0,
             pending_agent_reveal: None,
             tab_scroll: 0,

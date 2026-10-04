@@ -248,6 +248,8 @@ pub(super) struct ShellRenderState<'a> {
     /// While the pointer is over a sorted list: its spaces' order as last
     /// drawn, kept until the pointer leaves.
     pub(super) held_space_order: Option<&'a [String]>,
+    /// The bubble button would put its last move back.
+    pub(super) space_bubble_undo_ready: bool,
     pub(super) workspace_scroll: &'a mut usize,
     /// Where the local spaces list's first shown row was, see
     /// [`super::state::ScrollAnchor`].
