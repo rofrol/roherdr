@@ -1266,10 +1266,10 @@
     was killed on 2026-09-27 03:47 and rerun a minute later), unverified: its
     claim that the parent is restored by a renumbered tab number.
 
-- [ ] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
+- [x] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
   `/tmp/consult-openrouter`, so in a round with MiMo and Space Bunny launched together
   one failed with `rm: ... Directory not empty` and the other could not find
-  `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`.
+  `ask_openrouter_raw.py` (2026-10-02). Stage into a per-call `mktemp -d`. Done (`fa0117d1`: `mktemp -d` under `/tmp/consult-openrouter`).
 
 - [x] Notification list times look odd without today's date (user, 2026-10-03
   00:10, screenshot of the `✉5` list: "somehow weird without the date today").
@@ -4178,7 +4178,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     terminal below about 120 columns (still "consider"); a dragged width
     is unchanged.
 
-- [ ] Bug (user, 2026-10-02): "it seems that after installing a new herdr
+- [x] Bug (user, 2026-10-02): "it seems that after installing a new herdr
   version, or maybe just after detaching, the questions disappeared; there are
   no asking tabs anymore." Found in the code: the live handoff carries
   `HandoffAgentState { authority, sequence, acquisition_pending }`
@@ -4201,6 +4201,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Full restart from the session file: do not restore the flag, since the
     agent is relaunched and its question is gone (all models: only when the
     same live agent continues).
+  - Done 2026-10-02 (`e45eb206`): the handoff carries the flag, test
+    `awaiting_reply_report_survives_a_live_handoff`. Detach checked in the
+    code 2026-10-04: the report clears only on typed input (`is_typed_input`:
+    keys, text, paste; not focus events or terminal replies), agent exit or
+    session change, and `Blocked`; resize and repaint do not touch it, so a
+    plain detach keeps it. Reopen if a detach loses `?` again.
 
 - [ ] New tab right after the current one (user, 2026-10-02: "should a new tab
   be created after the current one by default? make it configurable, so it can
