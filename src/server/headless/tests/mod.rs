@@ -8378,3 +8378,39 @@ fn notification_list_returns_the_last_notifications_newest_last() {
     assert_eq!(notifications[99].tab_id.as_deref(), Some("w1:t2"));
     assert!(notifications[0].unix_ms <= notifications[99].unix_ms);
 }
+
+#[tokio::test]
+async fn worktree_create_from_pane_takes_the_deferred_worktree_path() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("plain")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    let pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let pane_id = server.app.public_pane_id(0, pane).unwrap();
+
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
+        request: crate::api::schema::Request {
+            id: "create-from-pane".into(),
+            method: crate::api::schema::Method::WorktreeCreateFromPane(
+                crate::api::schema::WorktreeCreateFromPaneParams {
+                    pane_id,
+                    create: crate::api::schema::WorktreeCreateParams {
+                        branch: Some("worktree/from-pane".into()),
+                        ..Default::default()
+                    },
+                },
+            ),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+
+    // The synchronous handler would answer at once that it cannot handle
+    // it; the worktree path answers once git has run.
+    if let Ok(response) = response_rx.try_recv() {
+        assert!(!response.contains("handled asynchronously"), "{response}");
+    }
+    shutdown_test_runtimes(&mut server);
+}

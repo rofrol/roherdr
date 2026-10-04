@@ -415,6 +415,7 @@ impl App {
                     repo_root: space.repo_root.display().to_string(),
                     checkout_path: space.checkout_path.display().to_string(),
                     is_linked_worktree: space.is_linked_worktree,
+                    creator_tab_id: ws.worktree_creator_tab.clone(),
                 }),
         }
     }

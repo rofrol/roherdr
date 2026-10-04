@@ -640,6 +640,7 @@ impl ClientShellState {
             return;
         };
         let mut keys = vec![super::space_tabs::tabs_collapse_key(workspace_id)];
+        let starts_folded = super::space_tabs::starts_folded(workspace);
         if let Some(worktree) = workspace.worktree.as_ref() {
             // The group's parent space holds the group's collapse key.
             for (index, candidate) in snapshot.workspaces.iter().enumerate() {
@@ -653,7 +654,7 @@ impl ClientShellState {
             }
         }
         let endpoint = self.active_endpoint_id.clone();
-        let mut changed = false;
+        let mut changed = starts_folded && self.unfold_space_tabs(workspace_id);
         for key in keys {
             changed |= self.expand_collapsed_group(&endpoint, &key);
         }

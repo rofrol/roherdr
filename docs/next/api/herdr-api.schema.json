@@ -1252,6 +1252,13 @@
             "checkout_path": {
               "type": "string"
             },
+            "creator_tab_id": {
+              "description": "The tab whose pane created this worktree space with `herdr worktree\ncreate`. It is never reassigned, and the tab may have closed since.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "is_linked_worktree": {
               "type": "boolean"
             },
@@ -4944,6 +4951,13 @@
             "checkout_path": {
               "type": "string"
             },
+            "creator_tab_id": {
+              "description": "The tab whose pane created this worktree space with `herdr worktree\ncreate`. It is never reassigned, and the tab may have closed since.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "is_linked_worktree": {
               "type": "boolean"
             },
@@ -4963,6 +4977,61 @@
             "repo_root",
             "checkout_path",
             "is_linked_worktree"
+          ],
+          "type": "object"
+        },
+        "WorktreeCreateFromPaneParams": {
+          "description": "`worktree.create` run on behalf of a pane (the CLI sends its\n`HERDR_PANE_ID`): the pane's tab is recorded as the new worktree space's\ncreator, which clients nest the space under. A separate method, because\n`worktree.create`'s shape is frozen for clients.",
+          "properties": {
+            "base": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trust_repository": {
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
           ],
           "type": "object"
         },
@@ -5521,6 +5590,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorktreeCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worktree.create_from_pane",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorktreeCreateFromPaneParams"
             }
           },
           "required": [
@@ -11992,6 +12077,13 @@
           "properties": {
             "checkout_path": {
               "type": "string"
+            },
+            "creator_tab_id": {
+              "description": "The tab whose pane created this worktree space with `herdr worktree\ncreate`. It is never reassigned, and the tab may have closed since.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "is_linked_worktree": {
               "type": "boolean"

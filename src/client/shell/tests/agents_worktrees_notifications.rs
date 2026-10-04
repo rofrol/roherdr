@@ -158,6 +158,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
         is_linked_worktree: false,
     });
     snapshot.workspaces.push(ClientShellWorkspace {
+        worktree_creator_tab_id: None,
         workspace_id: "ws_2".into(),
         active_tab_id: "tab_ws2".into(),
         new_workspace_cwd: "/repo/feature".into(),
@@ -2248,7 +2249,7 @@ fn worktree_tab_lines_are_indented_under_the_worktree_name() {
             })
             .unwrap_or_else(|| panic!("{needle} is drawn"))
     };
-    assert_eq!(column("child-tab"), column("parent-tab") + 5);
+    assert_eq!(column("child-tab"), column("parent-tab") + 4);
     // The gutter in front of the indented line still selects its tab.
     let (rect, _) = state
         .hits
@@ -2257,8 +2258,8 @@ fn worktree_tab_lines_are_indented_under_the_worktree_name() {
         .find(|(_, tab_id)| tab_id == "tab_ws2")
         .expect("child tab hit");
     assert!(usize::from(rect.x) < column("child-tab"));
-    // The worktree hangs from the parent space's trunk, left of the parent's
-    // tab lines, not from the state icon of the tab above it.
+    // An unowned worktree follows the parent's tab lines with a short
+    // connector; no trunk runs down the parent's block.
     let line = |row: u16| {
         let start = usize::from(row) * usize::from(frame.width);
         frame.cells[start..start + usize::from(frame.width)]
@@ -2269,10 +2270,155 @@ fn worktree_tab_lines_are_indented_under_the_worktree_name() {
     let parent_tab_row = (0..frame.height)
         .find(|row| line(*row).contains("parent-tab"))
         .expect("parent tab line");
-    assert_eq!(line(parent_tab_row).chars().nth(1), Some('│'));
-    assert!(line(parent_tab_row + 1).starts_with(" └─── "));
-    let child_tab_row = (0..frame.height)
-        .find(|row| line(*row).contains("child-tab"))
-        .expect("child tab line");
-    assert_eq!(line(child_tab_row).chars().nth(1), Some(' '));
+    assert_eq!(line(parent_tab_row).chars().nth(1), Some(' '));
+    assert!(line(parent_tab_row + 1).starts_with("  └─ "));
+}
+
+/// A parent space with tabs `first` and `second`, and a worktree space
+/// created by `first` with one tab, `in-worktree`.
+fn nested_worktree_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut child = snapshot.workspaces[0].clone();
+    child.workspace_id = "ws_2".into();
+    child.active_tab_id = "tab_ws2".into();
+    child.number = 2;
+    child.label = "feature-space".into();
+    child.custom_label = true;
+    child.focused = false;
+    child.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    child.worktree_creator_tab_id = Some(snapshot.tabs[0].tab_id.clone());
+    snapshot.workspaces.push(child);
+    snapshot.tabs[0].label = "first".into();
+    snapshot.tabs[0].custom_label = true;
+    let mut second = snapshot.tabs[0].clone();
+    second.tab_id = "tab_second".into();
+    second.number = 2;
+    second.label = "second".into();
+    second.focused = false;
+    snapshot.tabs.push(second);
+    let mut child_tab = snapshot.tabs[0].clone();
+    child_tab.tab_id = "tab_ws2".into();
+    child_tab.workspace_id = "ws_2".into();
+    child_tab.label = "in-worktree".into();
+    child_tab.focused = false;
+    snapshot.tabs.push(child_tab);
+    snapshot
+}
+
+fn frame_lines(frame: &FrameData) -> Vec<String> {
+    (0..frame.height)
+        .map(|row| {
+            let start = usize::from(row) * usize::from(frame.width);
+            frame.cells[start..start + usize::from(frame.width)]
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn a_worktree_space_nests_folded_under_the_tab_that_created_it() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.spaces.tabs = true;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(nested_worktree_snapshot()));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let lines = frame_lines(&frame);
+    let row = |needle: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is drawn:\n{}", lines.join("\n")))
+    };
+    // Right under its creator's tab line, before the parent's next tab.
+    assert_eq!(row("feature-space"), row("first") + 1);
+    assert_eq!(row("second"), row("feature-space") + 1);
+    assert!(lines[row("feature-space")].starts_with("  └─ ►"));
+    // Folded by default: its own tab lines are hidden.
+    assert!(!lines.iter().any(|line| line.contains("in-worktree")));
+    // Its name line selects it, the next row is the parent's tab again.
+    let hit = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_2")
+        .expect("worktree space hit");
+    assert_eq!(usize::from(hit.rect.y), row("feature-space"));
+    assert_eq!(hit.rect.height, 1);
+    assert!(state
+        .hits
+        .space_tabs
+        .iter()
+        .any(|(rect, tab_id)| tab_id == "tab_second" && usize::from(rect.y) == row("second")));
+
+    // Unfolded with its triangle, its tab line shows inside the nesting.
+    let (_, key) = hit.group_toggle.clone().expect("disclosure triangle");
+    state.toggle_collapsed_group(&ClientEndpointId::Local, key);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let lines = frame_lines(&frame);
+    let row = |needle: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is drawn:\n{}", lines.join("\n")))
+    };
+    assert_eq!(row("feature-space"), row("first") + 1);
+    assert_eq!(row("in-worktree"), row("feature-space") + 1);
+    assert_eq!(row("second"), row("in-worktree") + 1);
+    assert!(lines[row("feature-space")].starts_with("  └─ ▼"));
+}
+
+#[test]
+fn a_worktree_space_whose_creator_tab_closed_follows_the_parent_tabs() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.spaces.tabs = true;
+    let mut state = ClientShellState::new(config);
+    let mut snapshot = nested_worktree_snapshot();
+    snapshot.workspaces[1].worktree_creator_tab_id = Some("tab_closed".into());
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let lines = frame_lines(&frame);
+    let row = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    assert_eq!(row("feature-space"), row("second").map(|row| row + 1));
+}
+
+#[test]
+fn nested_worktree_spaces_are_listed_in_the_order_of_their_creator_tabs() {
+    let mut snapshot = nested_worktree_snapshot();
+    // `ws_2` was created by the second tab, `ws_3` later by the first one.
+    snapshot.workspaces[1].worktree_creator_tab_id = Some("tab_second".into());
+    let mut later = snapshot.workspaces[1].clone();
+    later.workspace_id = "ws_3".into();
+    later.number = 3;
+    later.label = "later-space".into();
+    later.worktree_creator_tab_id = Some(snapshot.tabs[0].tab_id.clone());
+    snapshot.workspaces.push(later);
+    let order = super::super::sidebar::workspace_entries(&snapshot, &HashSet::new())
+        .iter()
+        .map(|entry| snapshot.workspaces[entry.index].workspace_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(order, ["ws_1", "ws_3", "ws_2"]);
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.spaces.tabs = true;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let lines = frame_lines(&frame);
+    let row = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    assert!(row("later-space") < row("second"));
+    assert!(row("second") < row("feature-space"));
 }

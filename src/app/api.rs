@@ -1122,6 +1122,14 @@ impl App {
                     "worktree.create is handled asynchronously by the app runtime",
                 );
             }
+            Method::WorktreeCreateFromPane(params) => {
+                let _ = params;
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "worktree.create_from_pane is handled asynchronously by the app runtime",
+                );
+            }
             Method::WorktreeRemove(params) => {
                 let _ = params;
                 return responses::encode_error(

@@ -30,6 +30,17 @@ pub struct WorktreeCreateParams {
     pub trust_repository: bool,
 }
 
+/// `worktree.create` run on behalf of a pane (the CLI sends its
+/// `HERDR_PANE_ID`): the pane's tab is recorded as the new worktree space's
+/// creator, which clients nest the space under. A separate method, because
+/// `worktree.create`'s shape is frozen for clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct WorktreeCreateFromPaneParams {
+    pub pane_id: String,
+    #[serde(flatten)]
+    pub create: WorktreeCreateParams,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct WorktreeOpenParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]

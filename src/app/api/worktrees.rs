@@ -741,6 +741,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_worktree_create_records_the_creator_panes_tab() {
+        let repo = create_committed_repo("api-worktree-creator-repo");
+        let worktree_root = unique_temp_path("api-worktree-creator-root");
+        let mut app = test_app_with_event_hub(crate::api::EventHub::default());
+        let mut parent = Workspace::test_new("main");
+        parent.identity_cwd = repo.clone();
+        let agent_tab = parent.test_add_tab(Some("agent"));
+        app.state.workspaces = vec![parent];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.worktree_directory = worktree_root;
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let agent_pane = app.state.workspaces[0].tabs[agent_tab].root_pane;
+        let agent_pane_id = app.public_pane_id(0, agent_pane).unwrap();
+        let agent_tab_id = app.public_tab_id(0, agent_tab).unwrap();
+
+        let response = run_deferred_api_request(
+            &mut app,
+            Request {
+                id: "req".into(),
+                method: crate::api::schema::Method::WorktreeCreateFromPane(
+                    crate::api::schema::WorktreeCreateFromPaneParams {
+                        pane_id: agent_pane_id,
+                        create: WorktreeCreateParams {
+                            workspace_id: Some(workspace_id),
+                            branch: Some("worktree/api-creator".into()),
+                            ..WorktreeCreateParams::default()
+                        },
+                    },
+                ),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorktreeCreated { workspace, .. } = success.result else {
+            panic!("expected worktree_created response");
+        };
+        assert_eq!(
+            workspace.worktree.unwrap().creator_tab_id.as_deref(),
+            Some(agent_tab_id.as_str())
+        );
+        assert_eq!(
+            app.state.workspaces[1].worktree_creator_tab.as_deref(),
+            Some(agent_tab_id.as_str())
+        );
+        // It is saved with the session.
+        let snapshot = crate::persist::capture(
+            &app.state.workspaces,
+            &app.state.terminals,
+            &app.terminal_runtimes,
+            app.state.active,
+            app.state.selected,
+        );
+        assert_eq!(
+            snapshot.workspaces[1].worktree_creator_tab.as_deref(),
+            Some(agent_tab_id.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn api_worktree_create_opens_workspace_and_marks_membership() {
         let repo = create_committed_repo("api-worktree-create-repo");
         let worktree_root = unique_temp_path("api-worktree-create-root");
@@ -1149,6 +1210,7 @@ mod tests {
                 repo_name: "herdr".into(),
                 label: None,
                 focus: false,
+                creator_tab_id: None,
                 respond_to,
             }),
             result: Ok(()),

@@ -3,7 +3,8 @@ use crate::api::schema::{
     PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
     PaneZoomParams, Request, TabCreateChildParams, TabCreateParams, TabListParams, TabRenameParams,
     TabTarget, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
-    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+    WorktreeCreateFromPaneParams, WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams,
+    WorktreeRemoveParams,
 };
 
 fn print_method_response(id: &'static str, method: Method) -> std::io::Result<i32> {
@@ -79,6 +80,31 @@ pub(super) fn worktree_list(params: WorktreeListParams) -> std::io::Result<i32> 
 }
 
 pub(super) fn worktree_create(params: WorktreeCreateParams) -> std::io::Result<i32> {
+    // From a pane, the server records the pane's tab as the worktree's
+    // creator, which the sidebar nests it under. A server without that method
+    // rejects it as an unknown variant; create the worktree unowned then.
+    if let Some(pane_id) = super::target::caller_pane_id() {
+        let response = super::send_request(&Request {
+            id: "cli:worktree:create".into(),
+            method: Method::WorktreeCreateFromPane(WorktreeCreateFromPaneParams {
+                pane_id,
+                create: params.clone(),
+            }),
+        })?;
+        let unsupported = response
+            .pointer("/error/code")
+            .and_then(serde_json::Value::as_str)
+            == Some("invalid_request")
+            && response
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| {
+                    message.contains("unknown variant `worktree.create_from_pane`")
+                });
+        if !unsupported {
+            return super::print_response(&response);
+        }
+    }
     print_method_response("cli:worktree:create", Method::WorktreeCreate(params))
 }
 

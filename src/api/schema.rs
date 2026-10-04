@@ -101,6 +101,8 @@ pub enum Method {
     WorktreeList(WorktreeListParams),
     #[serde(rename = "worktree.create")]
     WorktreeCreate(WorktreeCreateParams),
+    #[serde(rename = "worktree.create_from_pane")]
+    WorktreeCreateFromPane(WorktreeCreateFromPaneParams),
     #[serde(rename = "worktree.open")]
     WorktreeOpen(WorktreeOpenParams),
     #[serde(rename = "worktree.remove")]

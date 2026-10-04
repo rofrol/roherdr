@@ -104,10 +104,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         // A collapsed space shows the new tab.
-        if self
-            .collapsed_groups
-            .remove(&super::space_tabs::tabs_collapse_key(&workspace_id))
-        {
+        if self.unfold_space_tabs(&workspace_id) {
             self.persist_chrome_preferences(outcome);
         }
         self.launched_agents

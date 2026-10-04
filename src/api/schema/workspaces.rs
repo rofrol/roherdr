@@ -82,4 +82,8 @@ pub struct WorkspaceWorktreeInfo {
     pub repo_root: String,
     pub checkout_path: String,
     pub is_linked_worktree: bool,
+    /// The tab whose pane created this worktree space with `herdr worktree
+    /// create`. It is never reassigned, and the tab may have closed since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_tab_id: Option<String>,
 }

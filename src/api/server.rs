@@ -630,6 +630,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkspaceClose(_) => "workspace.close",
         Method::WorktreeList(_) => "worktree.list",
         Method::WorktreeCreate(_) => "worktree.create",
+        Method::WorktreeCreateFromPane(_) => "worktree.create_from_pane",
         Method::WorktreeOpen(_) => "worktree.open",
         Method::WorktreeRemove(_) => "worktree.remove",
         Method::GitBranchList(_) => "git.branch_list",

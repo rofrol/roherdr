@@ -353,6 +353,7 @@ pub(super) enum ClientChromeDrag {
     },
 }
 
+#[derive(Clone)]
 pub(super) struct WorkspaceHit {
     pub(super) rect: Rect,
     pub(super) endpoint_id: ClientEndpointId,
@@ -423,6 +424,24 @@ impl ShellHitMap {
                 .group_toggle
                 .take()
                 .and_then(|(rect, key)| Some((shift_rect(rect, dy, visible)?, key)));
+        }
+    }
+
+    /// A copy of a space block's positional hits, for one of the pieces the
+    /// block is drawn in when worktree spaces are nested inside it. The
+    /// square order is not positional; the caller merges it once.
+    pub(super) fn space_block_piece(&self) -> ShellHitMap {
+        ShellHitMap {
+            workspaces: self.workspaces.clone(),
+            space_tabs: self.space_tabs.clone(),
+            space_new_tab: self.space_new_tab.clone(),
+            space_push_status: self.space_push_status.clone(),
+            space_launch_agent: self.space_launch_agent.clone(),
+            tooltips: self.tooltips.clone(),
+            space_tab_folds: self.space_tab_folds.clone(),
+            space_tab_squares: self.space_tab_squares.clone(),
+            space_tab_gone: self.space_tab_gone.clone(),
+            ..ShellHitMap::default()
         }
     }
 
