@@ -71,6 +71,10 @@
       task is the user's call.
     - sol's fallback if the exceptions keep growing: no nesting, all
       worktrees as sibling spaces with a "created by" note.
+    - Decided (user, 2026-10-04): no detaching. A new session in the
+      creator tab may be an accident, and `--resume` brings back the old
+      one; a one-way detach would lose the place for good. The worktree
+      stays under its creator tab until that tab closes.
   - The folded worktree line must still show its agents' aggregate status
     and any request for attention (both), as a collapsed space's name line
     already does; folding never hides a blocked or failed agent.
