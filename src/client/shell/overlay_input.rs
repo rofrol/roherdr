@@ -585,13 +585,20 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
-            // A bookmark row's menu is open: Enter removes, Esc or any other
-            // key closes only the menu.
+            // A row's menu is open: Up and Down move in it, Enter runs the
+            // item, Esc or any other key closes only the menu.
             if matches!(&self.overlay, Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some())
             {
-                if let Some(menu) = self.take_bookmark_menu() {
-                    if key.code == KeyCode::Enter {
-                        self.remove_bookmark(menu.tab_id, outcome);
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => self.move_list_row_menu_selection(-1),
+                    KeyCode::Down | KeyCode::Char('j') => self.move_list_row_menu_selection(1),
+                    code => {
+                        if let Some(menu) = self.take_list_row_menu() {
+                            if code == KeyCode::Enter {
+                                let index = menu.highlighted;
+                                self.activate_list_row_menu_item(menu, index, outcome);
+                            }
+                        }
                     }
                 }
                 outcome.repaint = true;

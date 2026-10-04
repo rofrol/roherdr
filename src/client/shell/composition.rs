@@ -899,25 +899,13 @@ impl ClientShellState {
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.notification_log_rows = rendered.menu_rows;
-                self.hits.bookmark_menu_row = Rect::default();
-                // The bookmark row's menu is drawn over the list.
-                if let Some(menu) = log.menu.as_ref() {
-                    let menu = ClientContextMenuOverlay {
-                        target: ClientContextMenuTarget::Bookmark {
-                            tab_id: menu.tab_id.clone(),
-                        },
-                        x: menu.x,
-                        y: menu.y,
-                        highlighted: 0,
-                    };
+                self.hits.list_menu_rows.clear();
+                // A row's menu is drawn over the list.
+                if let Some(menu) = self.list_row_menu() {
                     let menu_render =
                         render::render_context_menu(&mut composed, &menu, &self.config.palette)?;
                     occlusion.cover(menu_render.area);
-                    self.hits.bookmark_menu_row = menu_render
-                        .menu_rows
-                        .first()
-                        .map(|(rect, _)| *rect)
-                        .unwrap_or_default();
+                    self.hits.list_menu_rows = menu_render.menu_rows;
                 }
                 None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {

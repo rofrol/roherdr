@@ -2014,18 +2014,33 @@ impl ClientShellState {
                 return;
             }
         }
-        // A bookmark row's menu is open over the list: it takes the click, and
-        // closes alone.
+        // A row's menu is open over the list: it takes the pointer, and a
+        // click closes it alone.
         if matches!(&self.overlay, Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some())
-            && matches!(mouse.kind, MouseEventKind::Down(_))
         {
-            let on_item = super::contains(self.hits.bookmark_menu_row, point);
-            if let Some(menu) = self.take_bookmark_menu() {
-                if on_item && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    self.remove_bookmark(menu.tab_id, outcome);
+            let item = self
+                .hits
+                .list_menu_rows
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, index)| *index);
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let Some(index) = item {
+                        self.highlight_list_row_menu_item(index);
+                        outcome.repaint = true;
+                    }
                 }
+                MouseEventKind::Down(button) => {
+                    if let Some(menu) = self.take_list_row_menu() {
+                        if let (Some(index), MouseButton::Left) = (item, button) {
+                            self.activate_list_row_menu_item(menu, index, outcome);
+                        }
+                    }
+                    outcome.repaint = true;
+                }
+                _ => {}
             }
-            outcome.repaint = true;
             return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
@@ -2051,23 +2066,10 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
-                // A right click on a row opens its tab's menu, where a
-                // bookmark is removed.
+                // A right click on a row opens its tab's menu over the list.
                 MouseEventKind::Down(MouseButton::Right) => {
                     if let Some((_, index)) = row_hit {
-                        if let Some(tab_id) = self
-                            .notification_log_rows()
-                            .into_iter()
-                            .nth(index)
-                            .and_then(|row| row.tab_id)
-                        {
-                            if self.notification_log_view()
-                                == super::notification_log::NotificationLogView::Bookmarks
-                            {
-                                self.open_bookmark_row_menu(index, point.0, point.1);
-                            } else {
-                                self.open_tab_context_menu(tab_id, point.0, point.1);
-                            }
+                        if self.open_list_row_menu(index, point.0, point.1) {
                             outcome.repaint = true;
                         }
                     }

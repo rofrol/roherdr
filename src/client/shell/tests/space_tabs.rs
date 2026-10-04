@@ -1433,6 +1433,24 @@ fn the_tab_menu_closes_its_jobs_by_state_from_chips() {
         "{}",
         rows[chips_row]
     );
+    // The label starts where the other items' text does, is no target,
+    // and the last chip keeps one column of padding before the border.
+    let column = |row: &str, text: &str| row[..row.find(text).expect(text)].chars().count();
+    let rename_row = rows
+        .iter()
+        .find(|row| row.contains("Rename"))
+        .expect("Rename item");
+    assert_eq!(
+        column(&rows[chips_row], "Close jobs:"),
+        column(rename_row, "Rename")
+    );
+    let label_x = column(&rows[chips_row], "Close jobs:") as u16;
+    assert!(!hits
+        .iter()
+        .any(|(rect, _)| rect.y as usize == chips_row && rect.x <= label_x));
+    let last_chip = chip(&rows, &hits, "✓1");
+    let border = rows[chips_row].chars().nth(last_chip.right() as usize + 1);
+    assert_eq!(border, Some('│'), "{}", rows[chips_row]);
     // A finished state closes at once, only its own jobs.
     let failed = chip(&rows, &hits, "!1");
     assert_eq!(
@@ -2992,13 +3010,16 @@ fn a_bookmark_row_shows_the_tabs_task_and_its_menu_opens_over_the_list() {
         "the list stays: {text}"
     );
     assert!(text.contains("│ Remove from bookmarks "), "{text}");
+    // The tab's menu, without `New tab`, which would not act on the row.
+    assert!(text.contains("│ Rename "), "{text}");
+    assert!(!text.contains("New tab"), "{text}");
     assert!(matches!(
         state.overlay.as_ref(),
         Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some()
     ));
-    let item = state.hits.bookmark_menu_row;
+    let first = state.hits.list_menu_rows[0].0;
     assert_eq!(
-        item.y,
+        first.y,
         row.y + 1,
         "the popup's border is on the clicked row"
     );
@@ -3012,8 +3033,14 @@ fn a_bookmark_row_shows_the_tabs_task_and_its_menu_opens_over_the_list() {
 
     // Choosing the item removes the bookmark and leaves the list open.
     right_click(&mut state);
-    state.compose(106, 30).unwrap();
-    let item = state.hits.bookmark_menu_row;
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let (item, _) = *state
+        .hits
+        .list_menu_rows
+        .iter()
+        .find(|(rect, _)| rows[rect.y as usize].contains("Remove from bookmarks"))
+        .expect("bookmark item");
     let outcome = left_click(&mut state, (item.x + 2, item.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
@@ -3755,4 +3782,51 @@ fn a_tab_lines_job_summary_lights_up_under_the_pointer_with_its_padding() {
     assert!((fold.x..fold.right()).all(|x| bg_at(&frame, x) == lit));
     // The label left of it keeps the line's fill.
     assert_eq!(bg_at(&frame, fold.x - 1), rest);
+}
+
+#[test]
+fn a_right_click_in_the_working_list_opens_the_tab_menu_over_the_list() {
+    use crate::api::schema::AgentStatus::Working;
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = vec![header_agent("pane_1", Working, false, "Session import")];
+    state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    let working = state.hits.working_list_button;
+    left_click(&mut state, (working.x + 1, working.y));
+    state.compose(106, 30).unwrap();
+    let row = state.hits.notification_log_rows[0].0;
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        column: row.x + 3,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    // The list stays under the menu (which covers the clicked row's text).
+    assert!(!state.hits.notification_log_rows.is_empty());
+    assert!(text.contains("│ Rename "), "{text}");
+    assert!(text.contains("│ Close "), "{text}");
+    assert!(!text.contains("New tab"), "{text}");
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::NotificationLog(log)) if log.menu.is_some()
+    ));
+
+    // Rename opens its field in the list's place, for the row's tab.
+    let rows = frame_rows(&frame);
+    let (rename, _) = *state
+        .hits
+        .list_menu_rows
+        .iter()
+        .find(|(rect, _)| rows[rect.y as usize].contains("Rename"))
+        .expect("rename item");
+    left_click(&mut state, (rename.x + 2, rename.y));
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::Rename(rename))
+            if matches!(&rename.target, ClientRenameTarget::Tab { tab_id, .. } if tab_id == "tab_1")
+    ));
 }
