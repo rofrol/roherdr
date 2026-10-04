@@ -35,6 +35,20 @@ pub struct TabCreateChildParams {
     pub env: HashMap<String, String>,
 }
 
+/// Opens a tab closed through `tab.close` again (its id at closing): its
+/// layout, pane directories and names, and its agents resumed where their
+/// sessions can be. The server keeps the last closes in memory only;
+/// `closed_tab_not_found` when it no longer has this one. It goes after
+/// `after_tab_id`'s group, or first without one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabReopenClosedParams {
+    pub tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_tab_id: Option<String>,
+    #[serde(default)]
+    pub focus: bool,
+}
+
 /// Creates a top-level tab right after a tab's group (after its job tabs),
 /// in that tab's workspace, before any client sees it. A separate method
 /// from `tab.create`, whose shape is frozen: an older server rejects it

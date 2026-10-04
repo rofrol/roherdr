@@ -46,6 +46,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabCreate(_)
             | Method::TabCreateChild(_)
             | Method::TabCreateAfter(_)
+            | Method::TabReopenClosed(_)
             | Method::TabCreateAgent(_)
             | Method::TabFocus(_)
             | Method::TabRename(_)

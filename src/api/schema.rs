@@ -117,6 +117,8 @@ pub enum Method {
     TabCreateChild(TabCreateChildParams),
     #[serde(rename = "tab.create_after")]
     TabCreateAfter(TabCreateAfterParams),
+    #[serde(rename = "tab.reopen_closed")]
+    TabReopenClosed(TabReopenClosedParams),
     #[serde(rename = "tab.create_agent")]
     TabCreateAgent(TabCreateAgentParams),
     #[serde(rename = "tab.list")]

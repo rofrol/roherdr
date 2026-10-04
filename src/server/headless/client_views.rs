@@ -235,6 +235,7 @@ impl HeadlessServer {
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabCreateAfter(_)
+                | Method::TabReopenClosed(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
                 | Method::WorkspaceClose(_)
@@ -274,6 +275,7 @@ impl HeadlessServer {
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabCreateAfter(_)
+                | Method::TabReopenClosed(_)
                 | Method::TabCreateAgent(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
@@ -310,6 +312,7 @@ impl HeadlessServer {
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabCreateAfter(_)
+                | Method::TabReopenClosed(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
                 | Method::TabFocus(_)
@@ -868,6 +871,7 @@ impl HeadlessServer {
             api::schema::Method::TabCreate(params) => params.focus,
             api::schema::Method::TabCreateChild(params) => params.focus,
             api::schema::Method::TabCreateAfter(params) => params.focus,
+            api::schema::Method::TabReopenClosed(params) => params.focus,
             api::schema::Method::TabCreateAgent(params) => params.focus,
             _ => false,
         };

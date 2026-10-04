@@ -1235,10 +1235,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        self.push_endpoint_method(
-            crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
-            outcome,
-        );
+        self.push_pane_close(pane_id, outcome);
     }
 
     /// A tab with child tabs (usually jobs) closes only together with them,
@@ -1384,10 +1381,7 @@ impl ClientShellState {
                 );
                 return;
             }
-            self.push_endpoint_method(
-                crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
-                outcome,
-            );
+            self.push_pane_close(pane_id, outcome);
             return;
         }
         let method = if let Some(target) = confirm.tab_target {
