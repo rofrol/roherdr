@@ -21,9 +21,10 @@ fn shell_new_controls_use_the_same_client_action_routes_as_keybinds() {
     let [ClientShellAction::Endpoint { request, .. }] = &create_workspace.actions[..] else {
         panic!("new workspace click should use the endpoint API");
     };
+    // Right after the focused space (`workspace.create_after`).
     assert!(matches!(
         request.method,
-        crate::api::schema::Method::WorkspaceCreate(_)
+        crate::api::schema::Method::WorkspaceCreateAfter(_)
     ));
 
     let new_tab = state.hits.new_tab;
@@ -344,11 +345,12 @@ fn prefix_endpoint_action_uses_public_api_with_stable_ids() {
     };
     assert_eq!(boot_id, "boot-1");
     match &request.method {
-        crate::api::schema::Method::TabCreate(params) => {
-            assert_eq!(params.workspace_id.as_deref(), Some("ws_1"));
+        // After the space's current tab (`ui.new_tab_position`).
+        crate::api::schema::Method::TabCreateAfter(params) => {
+            assert_eq!(params.after_tab_id, "tab_1");
             assert!(params.focus);
         }
-        other => panic!("expected tab.create, got {other:?}"),
+        other => panic!("expected tab.create_after, got {other:?}"),
     }
     assert!(state.pending_requests.contains_key(&request.id));
 }

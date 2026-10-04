@@ -1454,10 +1454,11 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::WorkspaceCreate(params)
-            if params.source_workspace_id.as_deref() == Some("ws_1")
-                && params.cwd.as_deref() == Some("/repo")
-                && params.label.is_none()
+        crate::api::schema::Method::WorkspaceCreateAfter(params)
+            if params.after_workspace_id == "ws_1"
+                && params.create.source_workspace_id.as_deref() == Some("ws_1")
+                && params.create.cwd.as_deref() == Some("/repo")
+                && params.create.label.is_none()
     ));
 }
 

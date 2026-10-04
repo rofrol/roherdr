@@ -1049,8 +1049,8 @@ fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
     let outcome = left_click(&mut state, (plus.x, plus.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::TabCreate(params)
-                if params.workspace_id.as_deref() == Some("ws_1") && params.focus))));
+            if matches!(&request.method, crate::api::schema::Method::TabCreateAfter(params)
+                if params.after_tab_id == "tab_1" && params.focus))));
     // Not a press on the space, which would start a drag or select it.
     assert!(state.workspace_press.is_none());
 }
@@ -3167,7 +3167,7 @@ fn a_new_tab_opens_the_collapsed_space_it_is_created_in() {
     );
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::TabCreate(_)))));
+            if matches!(&request.method, crate::api::schema::Method::TabCreateAfter(_)))));
     assert!(state.collapsed_groups.is_empty(), "the space opened");
 }
 
@@ -3881,4 +3881,26 @@ fn the_tab_menu_dismisses_the_questions_of_its_agents() {
     state.set_endpoint_methods(Some(vec!["tab.close".into()]));
     let rows = open_menu(&mut state);
     assert!(!rows.join("\n").contains("Dismiss"), "{}", rows.join("\n"));
+}
+
+#[test]
+fn a_new_tab_goes_after_the_current_one_unless_configured_or_unsupported() {
+    use crate::api::schema::Method;
+    let mut state = state_with_tabs(true);
+    assert!(matches!(
+        state.new_tab_method("ws_1".into(), None),
+        Method::TabCreateAfter(params) if params.after_tab_id == "tab_1" && params.focus
+    ));
+    state.config.new_tab_position = crate::config::NewTabPositionConfig::EndOfSpace;
+    assert!(matches!(
+        state.new_tab_method("ws_1".into(), None),
+        Method::TabCreate(params) if params.workspace_id.as_deref() == Some("ws_1")
+    ));
+    // A server without `tab.create_after` appends, as before.
+    state.config.new_tab_position = crate::config::NewTabPositionConfig::AfterCurrent;
+    state.set_endpoint_methods(Some(vec!["tab.create".into()]));
+    assert!(matches!(
+        state.new_tab_method("ws_1".into(), None),
+        Method::TabCreate(_)
+    ));
 }

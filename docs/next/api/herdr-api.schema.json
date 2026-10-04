@@ -4508,6 +4508,40 @@
           ],
           "type": "object"
         },
+        "TabCreateAfterParams": {
+          "description": "Creates a top-level tab right after a tab's group (after its job tabs),\nin that tab's workspace, before any client sees it. A separate method\nfrom `tab.create`, whose shape is frozen: an older server rejects it\ninstead of ignoring the place and appending the tab.",
+          "properties": {
+            "after_tab_id": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "after_tab_id"
+          ],
+          "type": "object"
+        },
         "TabCreateAgentParams": {
           "description": "Creates a tab running an interactive agent, typed into its new shell as\nif the user had launched it there.",
           "properties": {
@@ -4833,6 +4867,47 @@
           },
           "required": [
             "workspace_id"
+          ],
+          "type": "object"
+        },
+        "WorkspaceCreateAfterParams": {
+          "description": "`workspace.create` from the UI: the new workspace goes right after this\none and its worktree group, before any client sees it. A separate method,\nbecause `workspace.create`'s shape is frozen for clients: an older server\nrejects it instead of appending the workspace.",
+          "properties": {
+            "after_workspace_id": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_workspace_id": {
+              "description": "Workspace whose focused pane supplies the `follow` cwd policy.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "after_workspace_id"
           ],
           "type": "object"
         },
@@ -5474,6 +5549,22 @@
         {
           "properties": {
             "method": {
+              "const": "workspace.create_after",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceCreateAfterParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "workspace.list",
               "type": "string"
             },
@@ -5719,6 +5810,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabCreateChildParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.create_after",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabCreateAfterParams"
             }
           },
           "required": [

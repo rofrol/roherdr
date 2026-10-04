@@ -333,11 +333,11 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
             };
             let expected = if empty { "" } else { "X  ab" };
             match &request.method {
-                Method::WorkspaceCreate(v) => {
-                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected))
+                Method::WorkspaceCreateAfter(v) => {
+                    assert_eq!(v.create.label.as_deref(), (!empty).then_some(expected))
                 }
                 Method::WorkspaceRename(v) => assert_eq!(v.label, expected),
-                Method::TabCreate(v) => {
+                Method::TabCreateAfter(v) => {
                     assert_eq!(v.label.as_deref(), (!empty).then_some(expected))
                 }
                 Method::TabRename(v) => assert_eq!(v.label, expected),

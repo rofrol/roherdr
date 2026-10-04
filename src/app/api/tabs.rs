@@ -9,6 +9,16 @@ use crate::app::{App, Mode};
 
 use super::responses::{encode_error, encode_success};
 
+/// Where `create_tab_in_workspace` puts the new tab.
+#[derive(Clone, Copy)]
+pub(super) enum NewTabPlace {
+    End,
+    /// Nested under this top-level tab.
+    Child(usize),
+    /// Right after this tab's group.
+    After(usize),
+}
+
 impl App {
     pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> String {
         let tabs = if let Some(workspace_id) = params.workspace_id {
@@ -63,7 +73,33 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
-        self.create_tab_in_workspace(id, ws_idx, None, cwd, focus, label, env)
+        self.create_tab_in_workspace(id, ws_idx, NewTabPlace::End, cwd, focus, label, env)
+    }
+
+    pub(super) fn handle_tab_create_after(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabCreateAfterParams,
+    ) -> String {
+        let crate::api::schema::TabCreateAfterParams {
+            after_tab_id,
+            cwd,
+            focus,
+            label,
+            env,
+        } = params;
+        let Some((ws_idx, after_idx)) = self.parse_tab_id(&after_tab_id) else {
+            return tab_not_found(id, &after_tab_id);
+        };
+        self.create_tab_in_workspace(
+            id,
+            ws_idx,
+            NewTabPlace::After(after_idx),
+            cwd,
+            focus,
+            label,
+            env,
+        )
     }
 
     pub(super) fn handle_tab_create_child(
@@ -92,17 +128,26 @@ impl App {
                 "the parent must be a top-level tab",
             );
         }
-        self.create_tab_in_workspace(id, ws_idx, Some(parent_idx), cwd, focus, label, env)
+        self.create_tab_in_workspace(
+            id,
+            ws_idx,
+            NewTabPlace::Child(parent_idx),
+            cwd,
+            focus,
+            label,
+            env,
+        )
     }
 
-    /// Creates a tab in a workspace and, with a parent, nests it before any
-    /// client sees it, so it never shows as a top-level tab first.
-    #[allow(clippy::too_many_arguments)] // the fields of the two create requests
+    /// Creates a tab in a workspace and puts it in its place (nested under a
+    /// parent, or after a tab's group) before any client sees it, so it never
+    /// shows at the end first.
+    #[allow(clippy::too_many_arguments)] // the fields of the create requests
     pub(super) fn create_tab_in_workspace(
         &mut self,
         id: String,
         ws_idx: usize,
-        parent_idx: Option<usize>,
+        place: NewTabPlace,
         cwd: Option<String>,
         focus: bool,
         label: Option<String>,
@@ -139,16 +184,31 @@ impl App {
             });
         match result {
             Ok((mut tab_idx, terminal, runtime)) => {
-                if let Some(parent_idx) = parent_idx {
-                    let ws = &mut self.state.workspaces[ws_idx];
-                    let root_pane = ws.tabs[tab_idx].root_pane;
-                    if let Err(err) = ws.set_tab_parent(tab_idx, Some(parent_idx)) {
-                        tracing::warn!(err, "could not nest a new tab under its parent");
+                let ws = &mut self.state.workspaces[ws_idx];
+                let root_pane = ws.tabs[tab_idx].root_pane;
+                match place {
+                    NewTabPlace::End => {}
+                    NewTabPlace::Child(parent_idx) => {
+                        if let Err(err) = ws.set_tab_parent(tab_idx, Some(parent_idx)) {
+                            tracing::warn!(err, "could not nest a new tab under its parent");
+                        }
                     }
-                    // Nesting reorders tabs; find this one again by its identity.
-                    if let Some(idx) = ws.tabs.iter().position(|tab| tab.root_pane == root_pane) {
-                        tab_idx = idx;
+                    NewTabPlace::After(after_idx) => {
+                        // After the tab's whole group (from a job tab, its
+                        // parent's), never between a parent and its jobs.
+                        let top = ws.tab_parent_index(after_idx).unwrap_or(after_idx);
+                        let group_end = ws
+                            .tab_children(top)
+                            .into_iter()
+                            .chain(std::iter::once(top))
+                            .max()
+                            .unwrap_or(top);
+                        ws.move_tab(tab_idx, group_end + 1);
                     }
+                }
+                // Placing reorders tabs; find this one again by its identity.
+                if let Some(idx) = ws.tabs.iter().position(|tab| tab.root_pane == root_pane) {
+                    tab_idx = idx;
                 }
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
@@ -1006,6 +1066,93 @@ mod tests {
         let response = app.handle_tab_create_child("req".into(), child_params(&tab.tab_id));
         assert!(response.contains("tab_create_failed"), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_after_puts_the_tab_after_the_whole_group() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        // a, b, c; then a job nested under a.
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("b"));
+        workspace.test_add_tab(Some("c"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let first = app.public_tab_id(0, 0).unwrap();
+        let response = app.handle_tab_create_child(
+            "req".into(),
+            TabCreateChildParams {
+                parent_tab_id: first.clone(),
+                cwd: Some(std::env::temp_dir().display().to_string()),
+                focus: false,
+                label: Some("job".into()),
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab: job, .. } = success.result else {
+            panic!("unexpected response: {response}");
+        };
+        let after = |app: &mut App, after_tab_id: &str| {
+            let response = app.handle_tab_create_after(
+                "req".into(),
+                crate::api::schema::TabCreateAfterParams {
+                    after_tab_id: after_tab_id.into(),
+                    cwd: Some(std::env::temp_dir().display().to_string()),
+                    focus: true,
+                    label: Some("new".into()),
+                    env: Default::default(),
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabCreated { tab, .. } = success.result else {
+                panic!("unexpected response: {response}");
+            };
+            tab
+        };
+        let labels = |app: &App| {
+            app.state.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.custom_name.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+
+        // After `a`'s job, not between `a` and its job; focused, top-level.
+        let created = after(&mut app, &first);
+        assert_eq!(labels(&app)[..4], ["", "job", "new", "b"]);
+        assert_eq!(created.parent_tab_id, None);
+        assert_eq!(
+            app.state.workspaces[0].active_tab, 2,
+            "the new tab has the focus"
+        );
+        // From the job tab, after its parent's group as well.
+        after(&mut app, &job.tab_id);
+        assert_eq!(labels(&app)[..4], ["", "job", "new", "new"]);
+        assert_eq!(labels(&app).len(), 6);
+        assert!(app
+            .handle_tab_create_after(
+                "req".into(),
+                crate::api::schema::TabCreateAfterParams {
+                    after_tab_id: "nope".into(),
+                    cwd: None,
+                    focus: false,
+                    label: None,
+                    env: Default::default(),
+                },
+            )
+            .contains("tab_not_found"));
         shutdown_test_runtimes(&mut app);
     }
 

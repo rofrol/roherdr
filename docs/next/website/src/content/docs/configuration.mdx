@@ -316,7 +316,9 @@ The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
 
-Set `tab_label = "title"` under `[ui]` to show, on tabs you have not renamed, the task title the tab's agent sets as its terminal title (Claude Code summarizes the current task there), cut to 16 columns. A tab without an agent title shows what runs in its focused pane instead: the terminal title the current program set (for example a shell's `preexec` or `precmd` hook), otherwise the program's name, such as `lazygit` or `zsh`. A title left behind by a program that has since exited is ignored. A tab shows its number only until Herdr has seen its program. The default is `"number"`.
+Set `tab_label = "title"` under `[ui]` to show, on tabs you have not renamed, the task title the tab's agent sets as its terminal title (Claude Code summarizes the current task there), cut to 16 columns. A tab without an agent title shows what runs in its focused pane instead: the terminal title the current program set (for example a shell's `preexec` or `precmd` hook), otherwise the program's name, such as `lazygit` or `zsh`. A title left behind by a program that has since exited is ignored. A tab shows its number only until Herdr has seen its program. The default is `"number"`. A task the agent reports with `herdr agent set-task` comes ahead of its terminal title.
+
+`new_tab_position` under `[ui]` sets where a tab you open from the TUI (the new-tab key, a space's `+`, the tab menu) goes: `"after_current"` (the default) puts it right after the space's current tab and its job tabs, `"end_of_space"` at the end of the space, as before. A new space always opens right after the focused space and its worktree group.
 
 Configure an ordered tmux-style status area at the right edge of the tab row:
 

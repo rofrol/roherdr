@@ -926,6 +926,17 @@ pub enum TabLabelConfig {
     Title,
 }
 
+/// Where a new tab opened from the UI goes in its space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NewTabPositionConfig {
+    /// Right after the space's current tab and its job tabs.
+    #[default]
+    AfterCurrent,
+    /// At the end of the space.
+    EndOfSpace,
+}
+
 /// Which top-level tab gets focus when the active one is closed. A closed
 /// child tab always returns to its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -1052,6 +1063,10 @@ pub struct UiConfig {
     /// Which top-level tab is focused after the active one is closed:
     /// "next" or "previous". Default: "next".
     pub focus_after_tab_close: FocusAfterTabCloseConfig,
+    /// Where a tab opened from the UI goes: "after_current" (after the
+    /// space's current tab and its jobs) or "end_of_space". Default:
+    /// "after_current".
+    pub new_tab_position: NewTabPositionConfig,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
     pub tab_bar_right: Vec<TabBarRightEntryConfig>,
     /// Text inserted between visible right-side tab bar entries. Default: one space.
@@ -1299,6 +1314,7 @@ impl Default for UiConfig {
             tab_bar_position: TabBarPositionConfig::Top,
             tab_label: TabLabelConfig::Number,
             focus_after_tab_close: FocusAfterTabCloseConfig::Next,
+            new_tab_position: NewTabPositionConfig::AfterCurrent,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),

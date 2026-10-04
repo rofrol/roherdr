@@ -1087,7 +1087,17 @@ impl App {
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
             Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, target),
             Method::WorkspaceCreate(params) => {
-                return self.handle_workspace_create(request.id, params);
+                return self.handle_workspace_create(request.id, params, None);
+            }
+            Method::WorkspaceCreateAfter(params) => {
+                let Some(after) = self.parse_workspace_id(&params.after_workspace_id) else {
+                    return responses::encode_error(
+                        request.id,
+                        "workspace_not_found",
+                        format!("workspace {} not found", params.after_workspace_id),
+                    );
+                };
+                return self.handle_workspace_create(request.id, params.create, Some(after));
             }
             Method::WorkspaceFocus(target) => {
                 return self.handle_workspace_focus(request.id, target);
@@ -1147,6 +1157,9 @@ impl App {
             Method::AgentKindList(_) => return self.handle_agent_kind_list(request.id),
             Method::TabCreateChild(params) => {
                 return self.handle_tab_create_child(request.id, params);
+            }
+            Method::TabCreateAfter(params) => {
+                return self.handle_tab_create_after(request.id, params);
             }
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
@@ -1279,7 +1292,7 @@ impl App {
             }
             Method::UsageSetProvider(params) => {
                 let Some(key) = crate::usage::provider_config_key(&params.provider) else {
-                    return super::api::responses::encode_error(
+                    return responses::encode_error(
                         request.id,
                         "unknown_provider",
                         format!("unknown usage provider: {}", params.provider),

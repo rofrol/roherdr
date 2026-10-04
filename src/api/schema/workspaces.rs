@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::AgentStatus;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct WorkspaceCreateParams {
     /// Workspace whose focused pane supplies the `follow` cwd policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +56,17 @@ pub struct WorkspaceReportMetadataParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 86_400_000))]
     pub ttl_ms: Option<u64>,
+}
+
+/// `workspace.create` from the UI: the new workspace goes right after this
+/// one and its worktree group, before any client sees it. A separate method,
+/// because `workspace.create`'s shape is frozen for clients: an older server
+/// rejects it instead of appending the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceCreateAfterParams {
+    pub after_workspace_id: String,
+    #[serde(flatten)]
+    pub create: WorkspaceCreateParams,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

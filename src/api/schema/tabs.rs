@@ -35,6 +35,23 @@ pub struct TabCreateChildParams {
     pub env: HashMap<String, String>,
 }
 
+/// Creates a top-level tab right after a tab's group (after its job tabs),
+/// in that tab's workspace, before any client sees it. A separate method
+/// from `tab.create`, whose shape is frozen: an older server rejects it
+/// instead of ignoring the place and appending the tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabCreateAfterParams {
+    pub after_tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub focus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
 /// Creates a tab running an interactive agent, typed into its new shell as
 /// if the user had launched it there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -1005,16 +1005,16 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
-            } => Some(crate::api::schema::Method::WorkspaceCreate(
-                crate::api::schema::WorkspaceCreateParams {
+            } => Some(
+                self.new_workspace_method(crate::api::schema::WorkspaceCreateParams {
                     source_workspace_id,
                     cwd,
                     focus: true,
                     label: (!trimmed.is_empty() && trimmed != suggested_name)
                         .then(|| trimmed.to_owned()),
                     env: Default::default(),
-                },
-            )),
+                }),
+            ),
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
                 crate::api::schema::Method::WorkspaceRename(
                     crate::api::schema::WorkspaceRenameParams {
@@ -1026,15 +1026,9 @@ impl ClientShellState {
             ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,
-            } => Some(crate::api::schema::Method::TabCreate(
-                crate::api::schema::TabCreateParams {
-                    workspace_id: Some(workspace_id),
-                    cwd: None,
-                    focus: true,
-                    label: (!trimmed.is_empty() && trimmed != default_name)
-                        .then(|| trimmed.to_owned()),
-                    env: Default::default(),
-                },
+            } => Some(self.new_tab_method(
+                workspace_id,
+                (!trimmed.is_empty() && trimmed != default_name).then(|| trimmed.to_owned()),
             )),
             ClientRenameTarget::Tab {
                 tab_id,

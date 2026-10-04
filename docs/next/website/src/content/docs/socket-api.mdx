@@ -100,10 +100,10 @@ Raw socket method names use dot notation:
 | Notification | `notification.show`, `notification.show_for_pane`, `notification.list` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
-| Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
+| Workspace | `workspace.create`, `workspace.create_after`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.create_from_pane`, `worktree.open`, `worktree.remove` |
 | Git | `git.branch_list` |
-| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.create_child`, `tab.create_agent`, `tab.set_parent`, `tab.set_status`, `tab.bookmark` |
+| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.create_child`, `tab.create_after`, `tab.create_agent`, `tab.set_parent`, `tab.set_status`, `tab.bookmark` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.clear_awaiting_reply`, `pane.report_task`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
@@ -853,6 +853,13 @@ with `tab_has_children`.
 in that tab's workspace, so it never appears as a top-level tab first; it
 answers like `tab.create`. An older server rejects the method, so a caller can
 fall back to `tab.create` and `tab.set_parent`.
+`tab.create_after` (`after_tab_id`, optional `cwd`, `focus`, `label` and
+`env`) creates a top-level tab right after that tab's group (after its job
+tabs; from a job tab, after its parent's group), before any client sees it; it
+answers like `tab.create`. `workspace.create_after` (`after_workspace_id` plus
+the `workspace.create` params) does the same for a workspace, after that
+workspace and the rest of its worktree group. The TUI uses both for tabs and
+spaces it opens; `tab.create` and `workspace.create` keep appending.
 `tab.set_status` also takes an optional `activity` (`idle`): a job runner reports that a
 running job has produced no output and used almost no CPU for five minutes; tab objects carry
 it as `activity`, and any status change without an activity clears it.
