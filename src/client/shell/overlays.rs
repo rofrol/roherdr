@@ -697,8 +697,9 @@ pub(crate) fn render_context_menu(
     // Each chip is its label with a column of padding each side, a column apart.
     let chips_width = chips
         .iter()
-        .map(|(_, item)| display_width(&item.label) + 3)
-        .sum::<u16>();
+        .map(|(_, item)| display_width(&item.label) + 2)
+        .sum::<u16>()
+        + (chips.len() as u16).saturating_sub(1);
     let chips_row_width = if chips.is_empty() {
         0
     } else {
@@ -779,12 +780,32 @@ pub(crate) fn render_context_menu(
             chips_drawn = true;
             let row = Rect::new(inner.x, row_y, inner.width, 1);
             buffer.set_style(row, plain);
-            put_text(buffer, row.x, row.y, row.width, JOB_CHIPS_LABEL, plain);
-            let mut chip_x = row.x.saturating_add(display_width(JOB_CHIPS_LABEL) + 1);
+            // Padded like the other items' text. The label is not an item:
+            // muted, never highlighted.
+            let content = Rect::new(
+                row.x.saturating_add(1),
+                row.y,
+                row.width.saturating_sub(2),
+                1,
+            );
+            put_text(
+                buffer,
+                content.x,
+                content.y,
+                content.width,
+                JOB_CHIPS_LABEL,
+                plain.fg(palette.overlay1),
+            );
+            let mut chip_x = content.x.saturating_add(display_width(JOB_CHIPS_LABEL) + 1);
             for (chip_index, chip) in &chips {
                 let chip_status = job_chip_status(chip.action).unwrap_or(status);
                 let width = display_width(&chip.label) + 2;
-                let chip_rect = Rect::new(chip_x, row.y, width, 1).intersection(row);
+                let chip_rect = Rect::new(chip_x, row.y, width, 1);
+                // A chip that does not fit whole (a menu clamped to a narrow
+                // screen) is left out, not cut into an unreadable target.
+                if chip_rect.right() > content.right() {
+                    break;
+                }
                 let style = if *chip_index == menu.highlighted {
                     highlight
                 } else {
