@@ -25,7 +25,16 @@ impl App {
                 true
             }
             crate::api::schema::Method::WorktreeCreate(params) => {
-                self.start_api_worktree_create(request.id, params, respond_to);
+                self.start_api_worktree_create(request.id, params, None, respond_to);
+                true
+            }
+            crate::api::schema::Method::WorktreeCreateFromPane(params) => {
+                self.start_api_worktree_create(
+                    request.id,
+                    params.create,
+                    Some(params.pane_id),
+                    respond_to,
+                );
                 true
             }
             crate::api::schema::Method::WorktreeRemove(params) => {
@@ -178,6 +187,8 @@ impl App {
         &mut self,
         id: String,
         params: WorktreeCreateParams,
+        // The pane the request is made for; its tab becomes the creator.
+        creator_pane_id: Option<String>,
         respond_to: std::sync::mpsc::Sender<String>,
     ) {
         let branch = params
@@ -253,6 +264,17 @@ impl App {
                 .find(|ws| &ws.id == workspace_id)
                 .and_then(|ws| ws.worktree_space().cloned())
         });
+        let creator_tab_id = creator_pane_id
+            .as_deref()
+            .and_then(|pane_id| self.parse_pane_id(pane_id))
+            .and_then(|(ws_idx, pane_id)| {
+                let tab_idx = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)?
+                    .find_tab_index_for_pane(pane_id)?;
+                self.public_tab_id(ws_idx, tab_idx)
+            });
         let api_request = ApiWorktreeAddRequest {
             id,
             operation_id,
@@ -265,6 +287,7 @@ impl App {
             repo_name: source.repo_name,
             label: params.label,
             focus: params.focus,
+            creator_tab_id,
             respond_to,
         };
         let source_checkout_path = api_request.source_checkout_path.clone();
@@ -559,6 +582,13 @@ impl App {
         if let Some(label) = api.label {
             if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
                 ws.set_custom_name(label);
+            }
+        }
+        // Only a space this request created gets a creator: an already open
+        // checkout keeps the one it has (no reassignment).
+        if created_workspace {
+            if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                ws.worktree_creator_tab = api.creator_tab_id;
             }
         }
         self.state.mark_session_dirty();

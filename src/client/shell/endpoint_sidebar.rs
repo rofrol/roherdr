@@ -624,18 +624,6 @@ pub(super) fn render_expanded(
                     None,
                     config,
                 );
-                super::sidebar::render_worktree_trunk(
-                    target,
-                    nested,
-                    entry,
-                    matches!(
-                        rows.get(row_index + 1),
-                        Some(Row::Workspace { endpoint: next_endpoint, entry: next })
-                            if state.endpoints[*next_endpoint].endpoint_id == endpoint.endpoint_id
-                                && next.indented
-                    ),
-                    palette,
-                );
                 // Only the active machine's tab lines and squares take clicks:
                 // they act on it; another machine's lines select its space.
                 if endpoint_active && online {

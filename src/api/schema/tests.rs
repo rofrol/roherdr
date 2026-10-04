@@ -819,6 +819,7 @@ fn worktree_request_and_response_round_trip() {
                     repo_root: "/repo/herdr".into(),
                     checkout_path: "/worktrees/herdr/worktree-api".into(),
                     is_linked_worktree: true,
+                    creator_tab_id: None,
                 }),
             },
             tab: TabInfo {
@@ -911,6 +912,7 @@ fn worktree_lifecycle_events_round_trip() {
             repo_root: "/repo/herdr".into(),
             checkout_path: "/worktrees/herdr/worktree-api".into(),
             is_linked_worktree: true,
+            creator_tab_id: None,
         }),
     };
     let worktree = WorktreeInfo {

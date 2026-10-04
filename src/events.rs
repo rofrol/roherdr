@@ -22,6 +22,9 @@ pub struct ApiWorktreeAddRequest {
     pub repo_name: String,
     pub label: Option<String>,
     pub focus: bool,
+    /// Public id of the tab holding `creator_pane_id`, resolved when the
+    /// request arrived, not when `git worktree add` finished.
+    pub creator_tab_id: Option<String>,
     pub respond_to: std::sync::mpsc::Sender<String>,
 }
 

@@ -975,7 +975,9 @@ impl ClientShellState {
     fn workspace_blocks(&self) -> Vec<(String, i32, i32)> {
         let mut blocks = Vec::<(String, i32, i32)>::new();
         let mut push = |id: &str, indented: bool, top: i32, bottom: i32| match blocks.last_mut() {
-            Some(block) if indented => block.2 = bottom,
+            // A worktree space nested under one of the parent's tab lines
+            // ends above the parent's last row.
+            Some(block) if indented => block.2 = block.2.max(bottom),
             _ => blocks.push((id.to_owned(), top, bottom)),
         };
         if self.hits.workspace_layout.is_empty() {
@@ -2896,10 +2898,7 @@ impl ClientShellState {
                     .map(|(_, workspace_id)| workspace_id.clone());
                 if let Some(workspace_id) = new_tab {
                     // A collapsed space shows the new tab.
-                    if self
-                        .collapsed_groups
-                        .remove(&super::space_tabs::tabs_collapse_key(&workspace_id))
-                    {
+                    if self.unfold_space_tabs(&workspace_id) {
                         self.persist_chrome_preferences(outcome);
                     }
                     self.push_endpoint_method(

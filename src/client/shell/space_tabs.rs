@@ -70,9 +70,9 @@ const SQUARE_GAP: u16 = 1;
 /// Squares start where the tab line's fill starts, past its state icon.
 const SQUARES_INDENT: u16 = 5;
 /// Columns a worktree space's tab lines move right, so they sit under the
-/// worktree's name (after its ` └─── ` tree prefix) and not level with the
+/// worktree's name (after its `  └─ ` tree prefix) and not level with the
 /// parent space's tab lines.
-const WORKTREE_TAB_INDENT: u16 = 5;
+const WORKTREE_TAB_INDENT: u16 = 4;
 
 /// The columns an entry's tab lines are indented by; callers take them off
 /// the width they lay squares out in.
@@ -171,7 +171,7 @@ pub(super) fn space_tab_lines_filtered(
 ) -> Vec<SpaceTabLine> {
     if !config.spaces.tabs
         || stands_for_a_group(snapshot, workspace, collapsed_groups)
-        || collapsed_groups.contains(&tabs_collapse_key(&workspace.workspace_id))
+        || space_tabs_folded(collapsed_groups, workspace)
     {
         return Vec::new();
     }
@@ -316,6 +316,59 @@ pub(super) fn tabs_collapse_key(workspace_id: &str) -> String {
     format!("tabs:{workspace_id}")
 }
 
+/// The key that shows the tab lines of a worktree space an agent created.
+/// Such a space starts folded, since it sits among its parent space's tab
+/// lines, so what is saved is the unfolding.
+pub(super) fn tabs_unfold_key(workspace_id: &str) -> String {
+    format!("tabs-open:{workspace_id}")
+}
+
+/// A worktree space with a creator tab starts folded.
+pub(super) fn starts_folded(workspace: &ClientShellWorkspace) -> bool {
+    workspace.worktree_creator_tab_id.is_some()
+        && workspace
+            .worktree
+            .as_ref()
+            .is_some_and(|worktree| worktree.is_linked_worktree)
+}
+
+/// The space's tab lines are folded away (its own disclosure triangle).
+pub(super) fn space_tabs_folded(
+    collapsed_groups: &HashSet<String>,
+    workspace: &ClientShellWorkspace,
+) -> bool {
+    if starts_folded(workspace) {
+        !collapsed_groups.contains(&tabs_unfold_key(&workspace.workspace_id))
+    } else {
+        collapsed_groups.contains(&tabs_collapse_key(&workspace.workspace_id))
+    }
+}
+
+impl super::ClientShellState {
+    /// Shows the tab lines of a space of the active machine (a new tab
+    /// there should be seen). Returns whether that changed anything.
+    pub(super) fn unfold_space_tabs(&mut self, workspace_id: &str) -> bool {
+        let starts_folded = self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == workspace_id && starts_folded(workspace))
+        });
+        let groups = if self.active_endpoint_id.is_local() {
+            &mut self.collapsed_groups
+        } else {
+            self.remote_collapsed_groups
+                .entry(self.active_endpoint_id.clone())
+                .or_default()
+        };
+        if starts_folded {
+            groups.insert(tabs_unfold_key(workspace_id))
+        } else {
+            groups.remove(&tabs_collapse_key(workspace_id))
+        }
+    }
+}
+
 /// A disclosure triangle in front of the space's name, as in tree-style tab
 /// lists: it hides or shows the space's tab lines, and for a worktree parent
 /// its child spaces too (a collapsed group lists no tabs). Returns its hit
@@ -332,14 +385,25 @@ pub(super) fn render_space_disclosure(
     collapsed_groups: &HashSet<String>,
     config: &ClientShellConfig,
 ) -> Option<(Rect, String)> {
-    let key = super::sidebar::parent_group_key(snapshot, entry.index).or_else(|| {
-        top_level_tabs(snapshot, workspace)
-            .next()
-            .is_some()
-            .then(|| tabs_collapse_key(&workspace.workspace_id))
-    })?;
-    // After the tree prefix (` ├─── `) of a worktree child.
-    let x = rect.x.saturating_add(if entry.indented { 6 } else { 1 });
+    let group_key = super::sidebar::parent_group_key(snapshot, entry.index);
+    let (key, folded) = match group_key {
+        Some(key) => {
+            let folded = collapsed_groups.contains(&key);
+            (key, folded)
+        }
+        None => {
+            top_level_tabs(snapshot, workspace).next()?;
+            let folded = space_tabs_folded(collapsed_groups, workspace);
+            let key = if starts_folded(workspace) {
+                tabs_unfold_key(&workspace.workspace_id)
+            } else {
+                tabs_collapse_key(&workspace.workspace_id)
+            };
+            (key, folded)
+        }
+    };
+    // After the tree prefix (`  └─ `) of a worktree child.
+    let x = rect.x.saturating_add(if entry.indented { 5 } else { 1 });
     if x.saturating_add(2) > rect.right() {
         return None;
     }
@@ -348,11 +412,7 @@ pub(super) fn render_space_disclosure(
         x,
         rect.y,
         1,
-        if collapsed_groups.contains(&key) {
-            "►"
-        } else {
-            "▼"
-        },
+        if folded { "►" } else { "▼" },
         Style::default().fg(config.palette.overlay1),
     );
     Some((Rect::new(x, rect.y, 2, 1), key))

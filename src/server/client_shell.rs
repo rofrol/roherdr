@@ -105,6 +105,10 @@ pub(super) fn snapshot_with_completions(
                 branch: state.branch(),
                 git_ahead_behind: state.git_ahead_behind(),
                 tokens,
+                worktree_creator_tab_id: workspace
+                    .worktree
+                    .as_ref()
+                    .and_then(|worktree| worktree.creator_tab_id.clone()),
                 worktree: workspace
                     .worktree
                     .map(|worktree| protocol::ClientShellWorktree {

@@ -553,7 +553,12 @@ pub(crate) fn render_sidebar(
     // Unfolded squares wrap at the block's width, which loses a column to the
     // scrollbar when the list overflows: measure without it first, and again
     // with it if it is needed (narrower only adds rows, so that settles it).
-    let measure = |squares_width: u16| -> Vec<u16> {
+    // Only a worktree space with a creator tab nests inside another block.
+    let any_creator = snapshot
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.worktree_creator_tab_id.is_some());
+    let measure = |squares_width: u16| -> Vec<EntryMeasure> {
         entries
             .iter()
             .map(|entry| {
@@ -588,56 +593,48 @@ pub(crate) fn render_sidebar(
                         )
                         .len()
                         .max(1);
-                        let tab_rows =
-                            tab_lines
-                                .iter()
-                                .map(|line| {
-                                    usize::from(line.height(squares_width.saturating_sub(
-                                        super::space_tabs::tab_indent(entry.indented),
-                                    )))
-                                })
-                                .sum::<usize>();
-                        (rows + tab_rows).min(u16::MAX as usize) as u16
+                        let line_width = squares_width
+                            .saturating_sub(super::space_tabs::tab_indent(entry.indented));
+                        // Where each tab line ends, for worktree spaces nested
+                        // under it: only a group's parent space can hold one.
+                        let hosts_worktrees =
+                            any_creator && !entry.indented && workspace.worktree.is_some();
+                        let mut end = rows;
+                        let mut line_ends = Vec::new();
+                        for line in &tab_lines {
+                            end += usize::from(line.height(line_width));
+                            if hosts_worktrees {
+                                line_ends.push((line.tab_id.clone(), end));
+                            }
+                        }
+                        EntryMeasure {
+                            height: end.min(u16::MAX as usize) as u16,
+                            line_ends,
+                        }
                     })
-                    .unwrap_or(1)
+                    .unwrap_or(EntryMeasure {
+                        height: 1,
+                        line_ends: Vec::new(),
+                    })
             })
             .collect::<Vec<_>>()
     };
-    let gaps = entries
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
-        })
-        .collect::<Vec<_>>();
     let mut squares_width = body.width;
-    let mut row_heights = measure(squares_width);
-    let total = row_heights
-        .iter()
-        .chain(&gaps)
-        .fold(0u16, |sum, rows| sum.saturating_add(*rows));
-    if total > body.height && body.width > 1 {
+    let mut measures = measure(squares_width);
+    let mut layout = SpaceListLayout::new(snapshot, &entries, &measures, config.spaces.row_gap);
+    if layout.content_rows > usize::from(body.height) && body.width > 1 {
         squares_width = body.width - 1;
-        row_heights = measure(squares_width);
+        measures = measure(squares_width);
+        layout = SpaceListLayout::new(snapshot, &entries, &measures, config.spaces.row_gap);
     }
+    let row_heights = measures
+        .iter()
+        .map(|measure| measure.height)
+        .collect::<Vec<_>>();
     // The list scrolls by rows, so a space taller than the list (a tab with
     // many job squares) can be scrolled through; `workspace_scroll` is the
     // first content row shown.
-    let tops = entries
-        .iter()
-        .enumerate()
-        .scan(0usize, |top, (index, _)| {
-            let this = *top;
-            *top += usize::from(row_heights[index]) + usize::from(gaps[index]);
-            Some(this)
-        })
-        .collect::<Vec<_>>();
-    let content_rows = tops
-        .last()
-        .zip(row_heights.last())
-        .map_or(0, |(top, height)| top + usize::from(*height));
+    let content_rows = layout.content_rows;
     let viewport = usize::from(body.height);
     let max_scroll = content_rows.saturating_sub(viewport);
     // Keep the first row shown on the same space when rows above it come or
@@ -656,7 +653,7 @@ pub(crate) fn render_sidebar(
             let inner = anchor
                 .row
                 .min(usize::from(row_heights[index]).saturating_sub(1));
-            *state.workspace_scroll = tops[index] + inner;
+            *state.workspace_scroll = layout.content_row(index, inner);
         }
     }
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
@@ -666,7 +663,7 @@ pub(crate) fn render_sidebar(
         {
             // The name row and the focused tab line (or its open square);
             // when both do not fit, the deeper one.
-            let top = tops[target];
+            let top = layout.content_row(target, 0);
             let depth = snapshot
                 .workspaces
                 .get(entries[target].index)
@@ -680,7 +677,7 @@ pub(crate) fn render_sidebar(
                         config,
                     )
                 });
-            let bottom = top + usize::from(depth);
+            let bottom = layout.content_row(target, usize::from(depth));
             let top = if bottom - top >= viewport {
                 bottom
             } else {
@@ -718,7 +715,7 @@ pub(crate) fn render_sidebar(
                     config,
                     &tab_id,
                 )?;
-                Some((tops[target] + offset, usize::from(height)))
+                Some((layout.content_row(target, offset), usize::from(height)))
             });
         if let Some((top, height)) = found {
             *state.workspace_scroll = if height >= viewport {
@@ -742,15 +739,18 @@ pub(crate) fn render_sidebar(
     hits.workspace_max_scroll = max_scroll;
     hits.workspace_scroll_metrics = Some(metrics);
     let scroll = *state.workspace_scroll;
-    *state.workspace_scroll_anchor = tops
+    *state.workspace_scroll_anchor = layout
+        .pieces
         .iter()
-        .zip(&row_heights)
-        .zip(&entries)
-        .find(|((top, height), _)| **top + usize::from(**height) > scroll)
-        .and_then(|((top, _), entry)| {
+        .find(|piece| piece.top + piece.rows > scroll)
+        .and_then(|piece| {
             Some(ScrollAnchor {
-                workspace_id: snapshot.workspaces.get(entry.index)?.workspace_id.clone(),
-                row: scroll.saturating_sub(*top),
+                workspace_id: snapshot
+                    .workspaces
+                    .get(entries.get(piece.entry)?.index)?
+                    .workspace_id
+                    .clone(),
+                row: piece.block_start + scroll.saturating_sub(piece.top),
                 scroll,
             })
         })
@@ -768,22 +768,25 @@ pub(crate) fn render_sidebar(
             Some(WorkspaceLayout {
                 workspace_id: workspace.workspace_id.clone(),
                 indented: entry.indented,
-                top: screen_row(tops[index]),
-                bottom: screen_row(tops[index] + usize::from(row_heights[index])),
+                top: screen_row(layout.content_row(index, 0)),
+                bottom: screen_row(layout.entry_bottom(index)),
             })
         })
         .collect();
     let mut scratch = None::<Buffer>;
     for (entry_position, entry) in entries.iter().enumerate() {
-        let top = tops[entry_position];
+        let pieces = layout.entry_pieces(entry_position);
         let row_height = row_heights[entry_position];
-        let block_end = top + usize::from(row_height);
-        if block_end <= scroll || row_height == 0 {
+        // A space with worktree spaces nested in it is drawn in pieces, so
+        // entries are not in screen order: look at each one.
+        if row_height == 0
+            || !pieces
+                .iter()
+                .any(|piece| piece.top + piece.rows > scroll && piece.top < scroll + viewport)
+        {
             continue;
         }
-        if top >= scroll + viewport {
-            break;
-        }
+        let top = pieces.first().map_or(0, |piece| piece.top);
         let Some(workspace) = snapshot.workspaces.get(entry.index) else {
             continue;
         };
@@ -812,11 +815,13 @@ pub(crate) fn render_sidebar(
         // Rows of the block above the list's top, and where it starts.
         let cut = scroll.saturating_sub(top);
         let y = body.y + (top + cut - scroll) as u16;
-        let shown = (usize::from(row_height) - cut).min(usize::from(body.bottom() - y)) as u16;
+        let shown = usize::from(row_height)
+            .saturating_sub(cut)
+            .min(usize::from(body.bottom() - y)) as u16;
         let visible = Rect::new(body.x, y, content_width, shown);
         // A block cut at either edge is drawn whole off screen, then its
         // visible rows are copied.
-        let partial = cut > 0 || shown < row_height;
+        let partial = pieces.len() > 1 || cut > 0 || shown < row_height;
         let mut block_hits = ShellHitMap::default();
         let target: &mut Buffer = if partial {
             // Full body width: a tab fill continues under the scrollbar.
@@ -1001,15 +1006,6 @@ pub(crate) fn render_sidebar(
                 .map(|filter| filter.query),
             config,
         );
-        render_worktree_trunk(
-            target,
-            rect,
-            entry,
-            entries
-                .get(entry_position + 1)
-                .is_some_and(|next| next.indented),
-            palette,
-        );
         // The filter's cursor is a bar down the whole block, not a fill.
         if selected && state.space_filter.is_some() {
             for row in rect.y..rect.bottom() {
@@ -1059,16 +1055,38 @@ pub(crate) fn render_sidebar(
             group_toggle,
         });
         if partial {
-            if let Some(scratch) = scratch.as_ref() {
-                for row in 0..shown {
-                    for x in body.left()..body.right() {
-                        buffer[(x, y + row)] = scratch[(x, cut as u16 + row)].clone();
+            // Each piece's rows on screen, from the block drawn whole.
+            let square_order = std::mem::take(&mut block_hits.space_tab_square_order);
+            for piece in &pieces {
+                let start = piece.top.max(scroll);
+                let end = (piece.top + piece.rows).min(scroll + viewport);
+                if start >= end {
+                    continue;
+                }
+                let y = body.y + (start - scroll) as u16;
+                let source = piece.block_start + (start - piece.top);
+                let rows = (end - start) as u16;
+                if let Some(scratch) = scratch.as_ref() {
+                    for row in 0..rows {
+                        for x in body.left()..body.right() {
+                            buffer[(x, y + row)] = scratch[(x, source as u16 + row)].clone();
+                        }
                     }
                 }
+                let mut piece_hits = block_hits.space_block_piece();
+                piece_hits.shift_space_block(
+                    i32::from(y) - source as i32,
+                    Rect::new(body.x, y, content_width, rows),
+                );
+                if pieces.len() > 1 {
+                    piece_hits.workspaces.retain(|hit| !hit.rect.is_empty());
+                }
+                hits.merge_space_block(piece_hits);
             }
-            block_hits.shift_space_block(i32::from(y) - cut as i32, visible);
+            hits.space_tab_square_order.extend(square_order);
+        } else {
+            hits.merge_space_block(block_hits);
         }
-        hits.merge_space_block(block_hits);
     }
 
     if show_scrollbar {
@@ -1176,6 +1194,158 @@ pub(crate) fn render_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// One space block's measure: its rows, and for a group's parent space the
+/// block row where each tab line ends (with its squares).
+struct EntryMeasure {
+    height: u16,
+    line_ends: Vec<(String, usize)>,
+}
+
+/// Rows of a space block drawn together: the whole block, or, when worktree
+/// spaces are nested under its tab lines, the part between two of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlockPiece {
+    /// Position in the entries.
+    entry: usize,
+    /// First block row of the piece.
+    block_start: usize,
+    rows: usize,
+    /// First content row of the list the piece is drawn at.
+    top: usize,
+}
+
+/// Where the space blocks go in the local list's content rows. A worktree
+/// space whose creator tab is listed in its parent space is drawn right
+/// after that tab line (and its squares), splitting the parent's block; the
+/// rest stack in entry order, with a gap before each top-level space.
+struct SpaceListLayout {
+    /// In screen order; they never overlap.
+    pieces: Vec<BlockPiece>,
+    /// Each entry's pieces, in block order.
+    by_entry: Vec<Vec<usize>>,
+    content_rows: usize,
+}
+
+impl SpaceListLayout {
+    fn new(
+        snapshot: &ClientShellSnapshot,
+        entries: &[WorkspaceEntry],
+        measures: &[EntryMeasure],
+        row_gap: u16,
+    ) -> Self {
+        let mut nested = vec![false; entries.len()];
+        // Parent position → (block row it splits at, nested entry).
+        let mut splits = HashMap::<usize, Vec<(usize, usize)>>::new();
+        for (child, entry) in entries.iter().enumerate() {
+            if !entry.indented {
+                continue;
+            }
+            let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+                continue;
+            };
+            let Some(creator) = workspace.worktree_creator_tab_id.as_deref() else {
+                continue;
+            };
+            let key = workspace.worktree.as_ref().map(|worktree| &worktree.key);
+            let host = entries.iter().enumerate().find_map(|(parent, candidate)| {
+                if candidate.indented {
+                    return None;
+                }
+                let candidate = snapshot.workspaces.get(candidate.index)?;
+                if candidate.worktree.as_ref().map(|worktree| &worktree.key) != key {
+                    return None;
+                }
+                measures
+                    .get(parent)?
+                    .line_ends
+                    .iter()
+                    .find(|(tab_id, _)| tab_id == creator)
+                    .map(|(_, end)| (parent, *end))
+            });
+            if let Some((parent, end)) = host {
+                nested[child] = true;
+                splits.entry(parent).or_default().push((end, child));
+            }
+        }
+        for list in splits.values_mut() {
+            list.sort_unstable();
+        }
+        let mut layout = Self {
+            pieces: Vec::new(),
+            by_entry: vec![Vec::new(); entries.len()],
+            content_rows: 0,
+        };
+        // `content_rows` is where the next piece goes until all are placed.
+        let push = |layout: &mut Self, entry: usize, block_start: usize, rows: usize| {
+            layout.by_entry[entry].push(layout.pieces.len());
+            layout.pieces.push(BlockPiece {
+                entry,
+                block_start,
+                rows,
+                top: layout.content_rows,
+            });
+            layout.content_rows += rows;
+        };
+        for (position, entry) in entries.iter().enumerate() {
+            if nested[position] {
+                continue;
+            }
+            if position > 0 && !entry.indented {
+                layout.content_rows += usize::from(row_gap);
+            }
+            let height = measures
+                .get(position)
+                .map_or(0, |measure| usize::from(measure.height));
+            let mut start = 0;
+            for (split, child) in splits.get(&position).into_iter().flatten() {
+                if *split > start {
+                    push(&mut layout, position, start, split - start);
+                    start = *split;
+                }
+                let child_height = measures
+                    .get(*child)
+                    .map_or(0, |measure| usize::from(measure.height));
+                push(&mut layout, *child, 0, child_height);
+            }
+            if height > start || layout.by_entry[position].is_empty() {
+                push(&mut layout, position, start, height.saturating_sub(start));
+            }
+        }
+        layout
+    }
+
+    fn entry_pieces(&self, entry: usize) -> Vec<BlockPiece> {
+        self.by_entry
+            .get(entry)
+            .into_iter()
+            .flatten()
+            .map(|index| self.pieces[*index])
+            .collect()
+    }
+
+    /// The content row an entry's block row is drawn at; past the block's
+    /// end, the row after its last piece.
+    fn content_row(&self, entry: usize, block_row: usize) -> usize {
+        let pieces = self.entry_pieces(entry);
+        pieces
+            .iter()
+            .find(|piece| block_row < piece.block_start + piece.rows)
+            .map(|piece| piece.top + block_row.saturating_sub(piece.block_start))
+            .or_else(|| pieces.last().map(|piece| piece.top + piece.rows))
+            .unwrap_or(0)
+    }
+
+    /// The content row after the entry's last piece; for a parent space with
+    /// nested worktrees, below them too.
+    fn entry_bottom(&self, entry: usize) -> usize {
+        self.entry_pieces(entry)
+            .iter()
+            .map(|piece| piece.top + piece.rows)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// `entries` as the drag would leave them: the dragged space and its
@@ -1311,7 +1481,7 @@ pub(crate) fn workspace_entries(
             }
             continue;
         }
-        let children = group_members
+        let mut children = group_members
             .iter()
             .copied()
             .filter(|member| {
@@ -1321,6 +1491,36 @@ pub(crate) fn workspace_entries(
                     .is_some_and(|worktree| worktree.is_linked_worktree)
             })
             .collect::<Vec<_>>();
+        // In screen order (see `SpaceListLayout`): worktrees nested under a
+        // parent's tab line in the order of those tabs, then the others, so
+        // Up and Down follow what is drawn.
+        let parents = group_members
+            .iter()
+            .filter(|member| {
+                snapshot.workspaces[**member]
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|worktree| !worktree.is_linked_worktree)
+            })
+            .map(|member| snapshot.workspaces[*member].workspace_id.as_str())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|child| {
+            snapshot.workspaces[*child]
+                .worktree_creator_tab_id
+                .as_deref()
+                .and_then(|creator| {
+                    let parent = parents.iter().position(|parent| {
+                        snapshot.tabs.iter().any(|tab| {
+                            tab.tab_id == creator
+                                && tab.workspace_id == *parent
+                                && tab.parent_tab_id.is_none()
+                        })
+                    })?;
+                    let tab = snapshot.tabs.iter().position(|tab| tab.tab_id == creator)?;
+                    Some((parent, tab))
+                })
+                .map_or((1, 0, 0), |(parent, tab)| (0, parent, tab))
+        });
         for (child_index, child) in children.iter().enumerate() {
             entries.push(WorkspaceEntry {
                 index: *child,
@@ -1584,36 +1784,6 @@ fn open_button_style(buffer: &mut Buffer, pill: Rect, style: Style, palette: &Pa
     open
 }
 
-/// Column of the worktree tree's trunk, left of the tab lines' state icons.
-const WORKTREE_TRUNK_COLUMN: u16 = 1;
-
-/// Draws the worktree tree's trunk down a space's block below its name line:
-/// through a parent space's rows and tab lines when worktree spaces follow
-/// it, and through a worktree space that is not the last one. Without it the
-/// first child's connector hangs under the parent's last tab line and reads
-/// as that tab's child.
-pub(in crate::client::shell) fn render_worktree_trunk(
-    buffer: &mut Buffer,
-    area: Rect,
-    entry: &WorkspaceEntry,
-    // The next entry is a worktree space of this group.
-    children_follow: bool,
-    palette: &Palette,
-) {
-    let continues = if entry.indented {
-        !entry.last_child
-    } else {
-        children_follow
-    };
-    if !continues || area.width <= WORKTREE_TRUNK_COLUMN {
-        return;
-    }
-    let x = area.x + WORKTREE_TRUNK_COLUMN;
-    for y in area.y.saturating_add(1)..area.bottom() {
-        put_text(buffer, x, y, 1, "│", Style::default().fg(palette.overlay0));
-    }
-}
-
 /// Columns the name line of a space leaves at its right with vertical tabs:
 /// the new-tab ` + ` (its padding is the gaps) and the drag grip.
 const NAME_LINE_ACTIONS_WIDTH: u16 = 4;
@@ -1685,18 +1855,10 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
         let mut x = area.x;
         if entry.indented {
-            // The connector starts in the trunk's column (see
-            // `render_worktree_trunk`), left of the parent's tab lines, so it
-            // cannot read as a child of the tab above.
-            let prefix = if row_index == 0 {
-                if entry.last_child {
-                    " └─── "
-                } else {
-                    " ├─── "
-                }
-            } else {
-                "        "
-            };
+            // A short connector from the column of the tab lines' icons: a
+            // worktree space an agent created hangs from that agent's tab
+            // line, the others from the parent's last tab line.
+            let prefix = if row_index == 0 { "  └─ " } else { "     " };
             x = put_segment(
                 buffer,
                 x,

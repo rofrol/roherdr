@@ -2,7 +2,7 @@
 
 ## Next, in order
 
-- [ ] Nest a worktree space under the agent tab that created it (user,
+- [x] Nest a worktree space under the agent tab that created it (user,
   2026-10-03; queued first). Today the worktree child sits at the bottom
   of its parent space with a `│` trunk down the parent's whole block, which
   is too invasive. An agent creates a worktree for its own task, so draw it
@@ -100,6 +100,20 @@
   - The tab and its worktrees move together in a drag; the selected tab's
     fill stops at the nested block; hiding a selected row moves the
     selection to the collapsing ancestor; Up/Down follow visual rows (both).
+  - Done 2026-10-04. Server: `worktree.create_from_pane {pane_id, ...}`
+    (a new method: `worktree.create`'s shape is frozen for clients; the CLI
+    uses it when `HERDR_PANE_ID` is set and falls back on an older server),
+    `Workspace.worktree_creator_tab` set only on a newly created space,
+    persisted, `worktree.creator_tab_id` in the API and
+    `worktree_creator_tab_id` in the client snapshot. Client:
+    `SpaceListLayout` (sidebar.rs) splits the parent's block into disjoint
+    pieces around nested worktrees (sol and MiMo, round
+    `20261004-130545-2237`, rejected overlapping block extents); fold key
+    `tabs-open:{id}`, folded by default; nested worktrees are listed in
+    their creator tabs' order so Up/Down follow the screen. Not done: a
+    worktree created from a tab inside another worktree space is not nested
+    (depth 2); it follows the parent's tabs. The multi-machine and mobile
+    sidebars do not nest.
 
 - [x] Push status on the space name line, opening into a branch menu
   (user, 2026-10-03; queued next). Drop the branch row: the name line
