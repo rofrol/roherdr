@@ -311,6 +311,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 failed_jobs: 0,
                 bookmarked: None,
                 in_list: false,
+                awaiting_panes: 0,
             },
             x: 35,
             y: 8,

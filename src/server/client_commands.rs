@@ -22,6 +22,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "layout.set_split_ratio",
     "notification.list",
     "pane.clear",
+    "pane.clear_awaiting_reply",
     "pane.close",
     "pane.copy_motion",
     "pane.copy_search",
@@ -320,6 +321,10 @@ mod tests {
         assert_eq!(
             actual.remove("pane.clear").as_deref(),
             Some("0301d288ba198ddaa427dd7421c71911cccaf4ea03544531efa8b67ca21b08f6")
+        );
+        assert_eq!(
+            actual.remove("pane.clear_awaiting_reply").as_deref(),
+            Some("33ad857ae3d2de510980ac970f6d1e1fac4366c2c6231e9bb015eda2857dfab3")
         );
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),

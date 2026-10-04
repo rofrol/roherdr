@@ -3830,3 +3830,53 @@ fn a_right_click_in_the_working_list_opens_the_tab_menu_over_the_list() {
             if matches!(&rename.target, ClientRenameTarget::Tab { tab_id, .. } if tab_id == "tab_1")
     ));
 }
+
+#[test]
+fn the_tab_menu_dismisses_the_questions_of_its_agents() {
+    use crate::api::schema::AgentStatus::{Done, Idle};
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    // Two agents of the tab await a reply; the tab's icon may show another
+    // agent's state, the item counts the questions.
+    projected.agents = vec![
+        header_agent("pane_1", Done, true, "first"),
+        header_agent("p2", Done, true, "second"),
+        header_agent("p3", Idle, false, "third"),
+    ];
+    state.set_snapshot(Box::new(projected));
+    let open_menu = |state: &mut ClientShellState| {
+        state.compose(106, 30).unwrap();
+        let (line, _) = state.hits.space_tabs[0];
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: line.x + 6,
+            row: line.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        let frame = state.compose(106, 30).unwrap();
+        frame_rows(&frame)
+    };
+    let rows = open_menu(&mut state);
+    let (item, _) = *state
+        .hits
+        .context_menu_rows
+        .iter()
+        .find(|(rect, _)| rows[rect.y as usize].contains("Dismiss 2 questions"))
+        .expect("dismiss item");
+    let outcome = left_click(&mut state, (item.x + 2, item.y));
+    let dismissed = outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::Endpoint { request, .. } => match &request.method {
+            crate::api::schema::Method::PaneClearAwaitingReply(params) => {
+                Some(params.pane_ids.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(dismissed, Some(vec!["pane_1".to_owned(), "p2".to_owned()]));
+
+    // A server without the method gets no item.
+    state.set_endpoint_methods(Some(vec!["tab.close".into()]));
+    let rows = open_menu(&mut state);
+    assert!(!rows.join("\n").contains("Dismiss"), "{}", rows.join("\n"));
+}

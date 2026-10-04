@@ -2624,6 +2624,21 @@
           ],
           "type": "object"
         },
+        "PaneClearAwaitingReplyParams": {
+          "description": "The user dismisses the agents' questions in these panes without typing into them: their\nawaiting-reply reports are forgotten as if the user had typed. A later report shows the\nquestion again.",
+          "properties": {
+            "pane_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "pane_ids"
+          ],
+          "type": "object"
+        },
         "PaneCopyMotion": {
           "enum": [
             "line_end",
@@ -6614,6 +6629,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReportAwaitingReplyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.clear_awaiting_reply",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneClearAwaitingReplyParams"
             }
           },
           "required": [

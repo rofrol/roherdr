@@ -404,6 +404,14 @@ pub struct PaneReportAwaitingReplyParams {
     pub pane_id: String,
 }
 
+/// The user dismisses the agents' questions in these panes without typing into them: their
+/// awaiting-reply reports are forgotten as if the user had typed. A later report shows the
+/// question again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneClearAwaitingReplyParams {
+    pub pane_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReportMetadataParams {
     pub pane_id: String,

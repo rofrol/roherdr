@@ -102,6 +102,7 @@ impl ClientContextMenuOverlay {
                 failed_jobs,
                 bookmarked,
                 in_list,
+                awaiting_panes,
                 ..
             } => {
                 // The job actions are chips on one `Close jobs:` row, as the
@@ -111,6 +112,14 @@ impl ClientContextMenuOverlay {
                     items.push(item("New tab", Action::NewTab));
                 }
                 items.push(item("Rename", Action::Rename));
+                match awaiting_panes {
+                    0 => {}
+                    1 => items.push(item("Dismiss question", Action::DismissQuestions)),
+                    count => items.push(item(
+                        &format!("Dismiss {count} questions"),
+                        Action::DismissQuestions,
+                    )),
+                }
                 if let Some(bookmarked) = bookmarked {
                     items.push(item(
                         if *bookmarked {
@@ -199,9 +208,13 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                awaiting_reply,
                 ..
             } => {
                 let mut items = vec![item("Rename pane", Action::RenamePane)];
+                if *awaiting_reply {
+                    items.push(item("Dismiss question", Action::DismissQuestions));
+                }
                 if *has_manual_label {
                     items.push(item("Clear pane name", Action::ClearPaneName));
                 }
@@ -321,6 +334,9 @@ impl ClientShellState {
                 },
             ))
             .then_some(tab.bookmarked);
+        let awaiting_panes = self
+            .awaiting_reply_panes(|agent| agent.tab_id == tab_id)
+            .len();
         Some(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -330,11 +346,51 @@ impl ClientShellState {
                 failed_jobs,
                 bookmarked,
                 in_list,
+                awaiting_panes,
             },
             x,
             y,
             highlighted: 0,
         })
+    }
+
+    /// Panes whose agent awaits a reply among those `select` picks, when
+    /// the server can dismiss their questions (else none).
+    pub(super) fn awaiting_reply_panes(
+        &self,
+        select: impl Fn(&crate::protocol::ClientShellAgent) -> bool,
+    ) -> Vec<String> {
+        let supported =
+            self.supports_endpoint_method(&crate::api::schema::Method::PaneClearAwaitingReply(
+                crate::api::schema::PaneClearAwaitingReplyParams {
+                    pane_ids: Vec::new(),
+                },
+            ));
+        if !supported {
+            return Vec::new();
+        }
+        self.snapshot.as_deref().map_or_else(Vec::new, |snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .filter(|agent| agent.awaiting_reply && select(agent))
+                .map(|agent| agent.pane_id.clone())
+                .collect()
+        })
+    }
+
+    /// Dismisses these agents' questions with one request.
+    fn dismiss_questions(&mut self, pane_ids: Vec<String>, outcome: &mut ClientShellInput) {
+        if pane_ids.is_empty() {
+            return;
+        }
+        self.push_endpoint_method(
+            crate::api::schema::Method::PaneClearAwaitingReply(
+                crate::api::schema::PaneClearAwaitingReplyParams { pane_ids },
+            ),
+            outcome,
+        );
+        outcome.repaint = true;
     }
 
     pub(super) fn open_pane_context_menu(&mut self, pane_id: String, x: u16, y: u16) {
@@ -348,6 +404,9 @@ impl ClientShellState {
             .focused_pane_id
             .clone()
             .filter(|focused| focused != &pane_id);
+        let awaiting_reply = !self
+            .awaiting_reply_panes(|agent| agent.pane_id == pane_id)
+            .is_empty();
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
@@ -355,6 +414,7 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                awaiting_reply,
             },
             x,
             y,
@@ -594,6 +654,12 @@ impl ClientShellState {
             self.confirm_stop_running_jobs(&tab_id, outcome);
             return;
         }
+        if action == ClientContextMenuAction::DismissQuestions {
+            // The agents that await a reply now, not when the menu opened.
+            let panes = self.awaiting_reply_panes(|agent| agent.tab_id == tab_id);
+            self.dismiss_questions(panes, outcome);
+            return;
+        }
         if action == ClientContextMenuAction::ToggleBookmark {
             // The flag now, not when the menu opened; the focus stays put.
             let bookmarked = self
@@ -721,6 +787,10 @@ impl ClientShellState {
         };
 
         match action {
+            ClientContextMenuAction::DismissQuestions => {
+                let panes = self.awaiting_reply_panes(|agent| agent.pane_id == pane_id);
+                self.dismiss_questions(panes, outcome);
+            }
             ClientContextMenuAction::RenamePane => {
                 let label = self.snapshot.as_deref().and_then(|snapshot| {
                     snapshot

@@ -229,6 +229,8 @@ pub enum Method {
     PaneReportAgentSession(PaneReportAgentSessionParams),
     #[serde(rename = "pane.report_awaiting_reply")]
     PaneReportAwaitingReply(PaneReportAwaitingReplyParams),
+    #[serde(rename = "pane.clear_awaiting_reply")]
+    PaneClearAwaitingReply(PaneClearAwaitingReplyParams),
     #[serde(rename = "pane.report_metadata")]
     PaneReportMetadata(PaneReportMetadataParams),
     #[serde(rename = "pane.clear_agent_authority")]
