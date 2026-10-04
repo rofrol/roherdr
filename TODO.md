@@ -3786,6 +3786,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Pitfalls: truncate labels before status icons; the whole tab including
     padding is the hit target, gaps are not; red/yellow icons must stay
     readable on `surface1` in both light and dark themes.
+  - Skipped 2026-10-04 while going through the list: with
+    `ui.sidebar.spaces.tabs = true` (the user's setup) neither tab row is
+    drawn (`show_tab_bar` in `src/client/shell/config.rs`), so this styling
+    is invisible; do it only if the horizontal rows come back into use.
 - [ ] Tooltips: hovering a tab shows its full text. There is no tooltip
   system yet, so build one small client-side layer first (presentation
   state, no protocol change): target id, anchor rect, lines; ~400-500 ms
