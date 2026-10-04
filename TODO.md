@@ -85,10 +85,11 @@
     own `▾` folds it to its one name line, and the jobs `▸` stays
     jobs-only (a jobs-labelled toggle hiding a checkout surprises); MiMo
     says reuse `▸` for the whole subtree and show `▸ ◐ 1 ⎇ 2` when folded,
-    since a second chip costs width at ~24 columns. Mine: sol's, a folded
-    worktree already costs only one line; still the user's call. Either
-    way key the fold state by worktree space id and never auto-expand on
-    job events.
+    since a second chip costs width at ~24 columns. Decided (user,
+    2026-10-04): the worktree's own `▾`, folded to its one name line; the
+    jobs `▸` stays jobs-only and the tab line gets no extra button. Key
+    the fold state by worktree space id and never auto-expand on job
+    events.
   - The connector: `└─`, not `└───` (MiMo: 8 columns of prefix leave a
     nested `❑ zsh` indistinguishable from a parent tab at 24 columns); keep
     one gutter column through the nested block.
