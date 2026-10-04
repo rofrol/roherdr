@@ -2,7 +2,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=11
+# HERDR_INTEGRATION_VERSION=12
 
 param([string]$Action = "")
 
@@ -10,15 +10,23 @@ if ($Action -ne "session" -and $Action -ne "reminder") { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
 
-# Repeats the awaiting-reply instruction on every prompt, since the SessionStart context is far
-# back in a long session. Printed as is: it needs no hook input and no socket.
+# Repeats the awaiting-reply and task instructions on every prompt, since the SessionStart
+# context is far back in a long session. Printed as is: it needs no hook input and no socket.
 if ($Action -eq "reminder") {
-    if ((Test-Path Env:CURSOR_VERSION) -or $env:HERDR_AWAITING_REPLY_INSTRUCTIONS -eq "0") { exit 0 }
-    $context = "Herdr reminder: if you end this turn needing the user's answer or decision " +
-        "before you can continue (a question, a choice, a confirmation, or a request to check " +
-        "something first, even without a question mark), call the Bash tool with ``herdr agent " +
-        "awaiting-reply`` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not " +
-        "for AskUserQuestion or courtesy offers."
+    if (Test-Path Env:CURSOR_VERSION) { exit 0 }
+    $parts = @()
+    if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
+        $parts += "Herdr reminder: if you end this turn needing the user's answer or decision " +
+            "before you can continue (a question, a choice, a confirmation, or a request to check " +
+            "something first, even without a question mark), call the Bash tool with ``herdr agent " +
+            "awaiting-reply`` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not " +
+            "for AskUserQuestion or courtesy offers."
+    }
+    if ($env:HERDR_AGENT_TASK -ne "0") {
+        $parts += "If this prompt starts a new task (not a follow-up, refinement or side question about the current one), first run ``herdr agent set-task `"<title>`"``."
+    }
+    if ($parts.Count -eq 0) { exit 0 }
+    $context = $parts -join " "
     @{ hookSpecificOutput = @{ hookEventName = "UserPromptSubmit"; additionalContext = $context } } |
         ConvertTo-Json -Compress -Depth 3 | Write-Output
     exit 0
@@ -55,6 +63,10 @@ if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
         "simply finished and ask nothing, or for courtesy offers such as asking " +
         "whether anything else is needed."
     $contexts += $context
+}
+
+if ($env:HERDR_AGENT_TASK -ne "0") {
+    $contexts += "Tab name: in the main agent only, when you start a new task (the session's first request, or a request you would treat as a new task rather than a follow-up, refinement or side question about the work in progress), run ``herdr agent set-task `"<title>`"`` with the Bash tool before other work. The title is 3-6 words in the language of that request, naming the action and its subject (``Fix OAuth callback redirect``, not ``Fix bug``), without quotes, backticks or ```$``. If unsure, keep the current title. Never write the command in your reply."
 }
 
 if ($env:HERDR_AGENT_CONTEXT -ne "0") {

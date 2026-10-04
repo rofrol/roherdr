@@ -3273,6 +3273,24 @@
           ],
           "type": "object"
         },
+        "PaneReportTaskParams": {
+          "description": "The agent in the pane names the task it works on now, in a few words; `None` or an empty\ntext forgets it. Shown as the tab's name, ahead of the terminal title (which agents set once\nper session), until the agent reports another one, exits or changes session.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "task": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneResizeParams": {
           "properties": {
             "amount": {
@@ -6656,6 +6674,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.report_task",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportTaskParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_metadata",
               "type": "string"
             },
@@ -7404,6 +7438,13 @@
             },
             "tab_id": {
               "type": "string"
+            },
+            "task": {
+              "description": "What the agent reported it works on now (`pane.report_task`).",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "terminal_id": {
               "type": "string"

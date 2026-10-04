@@ -199,6 +199,7 @@ mod tests {
 
     fn agent(pane_id: &str, tab_id: &str, status: AgentStatus) -> ClientShellAgent {
         ClientShellAgent {
+            task: None,
             pane_id: pane_id.into(),
             workspace_id: "w1".into(),
             tab_id: tab_id.into(),

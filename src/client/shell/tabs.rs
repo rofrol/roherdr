@@ -700,9 +700,12 @@ fn agent_task_title<'a>(
     } else {
         agents.find(|agent| agent.focused).unwrap_or(first)
     };
+    // The task the agent reported comes first: its terminal title is set
+    // once per session and does not follow a new task.
     agent
-        .terminal_title_stripped
+        .task
         .as_deref()
+        .or(agent.terminal_title_stripped.as_deref())
         .map(str::trim)
         .filter(|title| !title.is_empty())
 }

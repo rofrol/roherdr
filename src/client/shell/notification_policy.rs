@@ -318,8 +318,9 @@ impl ClientShellState {
                 .iter()
                 .find(|agent| agent.pane_id == pane_id)?;
             agent
-                .terminal_title_stripped
+                .task
                 .as_deref()
+                .or(agent.terminal_title_stripped.as_deref())
                 .and_then(notification_detail_text)
         });
         let click_target = event

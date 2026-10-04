@@ -447,7 +447,7 @@
     change must not change this client's line; the counts show no running
     state while the squares do (MiMo, not checked).
 
-- [ ] Do soon: when the agent in a session moves on to a different task, the
+- [x] Do soon: when the agent in a session moves on to a different task, the
   tab name does not follow (user, 2026-10-03). With `ui.tab_label = "title"`
   an unnamed tab shows the focused agent's OSC title without its spinner
   (`agent_task_title` in `src/client/shell/tabs.rs`; precedence in
@@ -482,6 +482,23 @@
   - Rejected: Herdr summarizing prompts with its own model call (cost,
     consent rule); showing the truncated latest prompt (a request is not a
     task, churns every prompt, leaks secrets into screenshots) unless opt-in.
+  - Verified 2026-10-04 on this coordinator's own session: after six
+    different tasks (no `/clear`) its terminal title was still the first
+    prompt's topic, so Claude Code does not retitle within a session.
+  - Done 2026-10-04: `pane.report_task {pane_id, task}` (collapsed
+    whitespace, at most 120 characters, empty forgets it), per terminal,
+    dropped when the agent exits or its session changes, carried over a
+    live handoff, not saved in the session file; `task` in `agent.get` /
+    `agent.list` and the client snapshot; the tab name, the header lists
+    and notification texts prefer it to the terminal title; CLI `herdr
+    agent set-task [--pane] <task>|--clear`. Claude integration v12 (sol
+    and MiMo, round `20261004-201032-b813`, wording merged: sol's "if
+    unsure, keep the current title" and main-agent-only rule, MiMo's
+    concrete example and no quotes/backticks/`$`): a SessionStart
+    paragraph and one sentence in the per-prompt reminder, the allow rule
+    `Bash(herdr agent set-task:*)`, `HERDR_AGENT_TASK=0` turns it off. Not
+    done: Pi, Codex and the other agents; MiMo's source mark on the tab;
+    restoring the task after a cold restart.
 
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
   but it did not close the job." Closing a parent tab's last pane (cmd+w)

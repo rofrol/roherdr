@@ -95,6 +95,12 @@ impl HeadlessServer {
                 .terminals
                 .get(terminal_id)
                 .is_some_and(|terminal| terminal.has_awaiting_reply_report());
+            handoff_runtime.reported_task = self
+                .app
+                .state
+                .terminals
+                .get(terminal_id)
+                .and_then(|terminal| terminal.reported_task().map(str::to_owned));
             let has_agent_session = self
                 .app
                 .state

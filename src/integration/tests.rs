@@ -960,7 +960,11 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert_eq!(hook_content, CLAUDE_HOOK_ASSET);
     assert_eq!(
         settings["permissions"]["allow"],
-        serde_json::json!(["Read", "Bash(herdr agent awaiting-reply)"])
+        serde_json::json!([
+            "Read",
+            "Bash(herdr agent awaiting-reply)",
+            "Bash(herdr agent set-task:*)"
+        ])
     );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["matcher"],
@@ -1031,7 +1035,10 @@ fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
         serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
     assert_eq!(
         settings["permissions"]["allow"],
-        serde_json::json!(["Bash(herdr agent awaiting-reply)"])
+        serde_json::json!([
+            "Bash(herdr agent awaiting-reply)",
+            "Bash(herdr agent set-task:*)"
+        ])
     );
     let reminder = hook_command(&installed.hook_path, Some("reminder"));
     assert_eq!(
@@ -1218,7 +1225,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.expected_version, 12);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1227,7 +1234,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(11));
+    assert_eq!(status.installed_version, Some(12));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1257,7 +1264,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.expected_version, 12);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");

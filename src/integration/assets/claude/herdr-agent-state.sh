@@ -3,21 +3,28 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=11
+# HERDR_INTEGRATION_VERSION=12
 
 set -eu
 
 action="${1:-}"
 
-# Repeats the awaiting-reply instruction on every prompt, since the SessionStart context is far
-# back in a long session. Printed as is: it needs no hook input and no socket.
+# Repeats the awaiting-reply and task instructions on every prompt, since the SessionStart
+# context is far back in a long session. Printed as is: it needs no hook input and no socket.
 if [ "$action" = "reminder" ]; then
   cat >/dev/null 2>&1 || true
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
-  [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || exit 0
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with `herdr agent awaiting-reply` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers."}}'
+  reminder=""
+  if [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ]; then
+    reminder='Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with `herdr agent awaiting-reply` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers.'
+  fi
+  if [ "${HERDR_AGENT_TASK:-1}" != "0" ]; then
+    reminder="${reminder:+$reminder }"'If this prompt starts a new task (not a follow-up, refinement or side question about the current one), first run `herdr agent set-task \"<title>\"`.'
+  fi
+  [ -n "$reminder" ] || exit 0
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' "$reminder"
   exit 0
 fi
 
@@ -344,6 +351,12 @@ if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
                 "it at most once per turn and ignore its failure. Do not run it when you "
                 "simply finished and ask nothing, or for courtesy offers such as asking "
                 "whether anything else is needed."
+    )
+# Ask the agent to name its task, which names its tab: the terminal title Claude sets follows
+# only the session's first prompt. HERDR_AGENT_TASK=0 turns it off.
+if os.environ.get("HERDR_AGENT_TASK", "1") != "0":
+    contexts.append(
+        'Tab name: in the main agent only, when you start a new task (the session\'s first request, or a request you would treat as a new task rather than a follow-up, refinement or side question about the work in progress), run `herdr agent set-task "<title>"` with the Bash tool before other work. The title is 3-6 words in the language of that request, naming the action and its subject (`Fix OAuth callback redirect`, not `Fix bug`), without quotes, backticks or `$`. If unsure, keep the current title. Never write the command in your reply.'
     )
 if os.environ.get("HERDR_AGENT_CONTEXT", "1") != "0":
     contexts.append("""[Herdr behavior context v1]

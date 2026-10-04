@@ -9,6 +9,7 @@ fn state_with_tabs(tabs: bool) -> ClientShellState {
     projected.tabs[0].label = "agent tab".into();
     projected.tabs[0].agent_status = AgentStatus::Working;
     projected.agents.push(ClientShellAgent {
+        task: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -2383,6 +2384,7 @@ fn header_agent(
     title: &str,
 ) -> crate::protocol::ClientShellAgent {
     crate::protocol::ClientShellAgent {
+        task: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

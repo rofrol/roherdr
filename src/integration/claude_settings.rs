@@ -18,9 +18,12 @@ use super::config_edit::{
 // `new`/`load`; filter before it starts an unnecessary hook process.
 const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 
-/// Lets Claude run the one command the SessionStart instruction asks for without a permission
-/// prompt, which would turn the pane blocked while it reports a question.
-const AWAITING_REPLY_PERMISSION: &str = "Bash(herdr agent awaiting-reply)";
+/// Lets Claude run the commands the SessionStart instruction asks for without a permission
+/// prompt, which would turn the pane blocked while it reports a question or names its task.
+const HERDR_PERMISSIONS: &[&str] = &[
+    "Bash(herdr agent awaiting-reply)",
+    "Bash(herdr agent set-task:*)",
+];
 
 /// The hook action that repeats the awaiting-reply instruction on every prompt.
 const REMINDER_ACTION: &str = "reminder";
@@ -82,11 +85,17 @@ pub(crate) fn allow_awaiting_reply_command(
     settings_path: &Path,
 ) -> io::Result<String> {
     let mut desired = parse_value(content, settings_path)?;
-    let allowed = desired
-        .pointer("/permissions/allow")
-        .and_then(Value::as_array)
-        .is_some_and(|rules| rules.iter().any(|rule| rule == AWAITING_REPLY_PERMISSION));
-    if allowed {
+    let missing = HERDR_PERMISSIONS
+        .iter()
+        .copied()
+        .filter(|permission| {
+            !desired
+                .pointer("/permissions/allow")
+                .and_then(Value::as_array)
+                .is_some_and(|rules| rules.iter().any(|rule| rule == permission))
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
         return Ok(content.to_string());
     }
     let settings_error = |what: &str| {
@@ -112,7 +121,11 @@ pub(crate) fn allow_awaiting_reply_command(
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| settings_error("permissions.allow"))?
-        .push(Value::String(AWAITING_REPLY_PERMISSION.into()));
+        .extend(
+            missing
+                .iter()
+                .map(|permission| Value::String((*permission).into())),
+        );
 
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
         io::Error::other(format!(
@@ -142,7 +155,9 @@ pub(crate) fn allow_awaiting_reply_command(
             .array_value()
             .ok_or_else(|| settings_error("permissions.allow"))?,
     };
-    allow.append(json!(AWAITING_REPLY_PERMISSION));
+    for permission in missing {
+        allow.append(json!(permission));
+    }
     verify_updated(root.to_string(), settings_path, &desired)
 }
 
@@ -160,7 +175,11 @@ pub(crate) fn remove_awaiting_reply_permission(
         return Ok(content.to_string());
     };
     let before = rules.len();
-    rules.retain(|rule| rule != AWAITING_REPLY_PERMISSION);
+    rules.retain(|rule| {
+        !rule
+            .as_str()
+            .is_some_and(|rule| HERDR_PERMISSIONS.contains(&rule))
+    });
     if rules.len() == before {
         return Ok(content.to_string());
     }
@@ -179,8 +198,11 @@ pub(crate) fn remove_awaiting_reply_permission(
         .and_then(|property| property.array_value())
     {
         for rule in allow.elements() {
-            if rule.to_serde_value().as_ref().and_then(Value::as_str)
-                == Some(AWAITING_REPLY_PERMISSION)
+            if rule
+                .to_serde_value()
+                .as_ref()
+                .and_then(Value::as_str)
+                .is_some_and(|rule| HERDR_PERMISSIONS.contains(&rule))
             {
                 rule.remove();
             }

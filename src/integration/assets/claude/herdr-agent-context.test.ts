@@ -41,7 +41,27 @@ unixTest("Claude behavior and awaiting-reply opt-outs remain independent", () =>
   const replyOnly = JSON.parse(run(payload, { HERDR_AGENT_CONTEXT: "0" })).hookSpecificOutput.additionalContext;
   expect(replyOnly).not.toContain(marker);
   expect(replyOnly).toContain("herdr agent awaiting-reply");
-  expect(run(payload, { HERDR_AGENT_CONTEXT: "0", HERDR_AWAITING_REPLY_INSTRUCTIONS: "0" })).toBe("");
+  const taskOnly = JSON.parse(run(payload, { HERDR_AGENT_CONTEXT: "0", HERDR_AWAITING_REPLY_INSTRUCTIONS: "0" }))
+    .hookSpecificOutput.additionalContext;
+  expect(taskOnly).toContain("herdr agent set-task");
+  expect(taskOnly).not.toContain("herdr agent awaiting-reply");
+  expect(replyOnly).toContain("herdr agent set-task");
+  expect(
+    run(payload, { HERDR_AGENT_CONTEXT: "0", HERDR_AWAITING_REPLY_INSTRUCTIONS: "0", HERDR_AGENT_TASK: "0" }),
+  ).toBe("");
+});
+
+unixTest("Claude per-prompt reminder asks for the task and can leave it out", () => {
+  const both = JSON.parse(run({}, {}, "reminder")).hookSpecificOutput.additionalContext;
+  expect(both).toContain("herdr agent set-task");
+  expect(both).toContain("herdr agent awaiting-reply");
+  const replyOnly = JSON.parse(run({}, { HERDR_AGENT_TASK: "0" }, "reminder")).hookSpecificOutput.additionalContext;
+  expect(replyOnly).not.toContain("herdr agent set-task");
+  const taskOnly = JSON.parse(run({}, { HERDR_AWAITING_REPLY_INSTRUCTIONS: "0" }, "reminder")).hookSpecificOutput
+    .additionalContext;
+  expect(taskOnly).toContain("herdr agent set-task");
+  expect(taskOnly).not.toContain("herdr agent awaiting-reply");
+  expect(run({}, { HERDR_AWAITING_REPLY_INSTRUCTIONS: "0", HERDR_AGENT_TASK: "0" }, "reminder")).toBe("");
 });
 
 unixTest("Claude context stays silent outside Herdr, in subagents and for other events", () => {

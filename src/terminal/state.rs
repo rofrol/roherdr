@@ -169,6 +169,10 @@ pub struct TerminalState {
     /// The agent reported that its turn ends by asking the user something, and nobody
     /// has typed into the terminal since; shown as `awaiting_reply` while the agent idles.
     awaiting_reply_reported: bool,
+    /// What the agent says it works on now (`pane.report_task`), shown as the
+    /// tab's name ahead of its terminal title, which agents set once per
+    /// session. Dropped when the agent exits or changes session.
+    reported_task: Option<String>,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
@@ -214,6 +218,7 @@ impl TerminalState {
             last_agent_state_change_seq: None,
             last_agent_completion_seq: None,
             awaiting_reply_reported: false,
+            reported_task: None,
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,
@@ -2187,6 +2192,21 @@ impl TerminalState {
         if state == AgentState::Blocked {
             self.awaiting_reply_reported = false;
         }
+    }
+
+    /// What the agent reported it works on now.
+    pub fn reported_task(&self) -> Option<&str> {
+        self.reported_task.as_deref()
+    }
+
+    /// Records (or with `None` forgets) the agent's own short name for its
+    /// current task. Returns whether it changed.
+    pub fn report_task(&mut self, task: Option<String>) -> bool {
+        if self.reported_task == task {
+            return false;
+        }
+        self.reported_task = task;
+        true
     }
 
     /// Forgets any awaiting-reply report: the user typed into the terminal, or the agent

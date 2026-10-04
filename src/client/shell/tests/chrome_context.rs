@@ -859,6 +859,7 @@ fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
             }),
         );
     let agent = |pane: &str, tab: &str, title: Option<&str>, focused: bool| ClientShellAgent {
+        task: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: tab.into(),
@@ -919,6 +920,29 @@ fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
         "a tab without an agent title shows its program"
     );
     assert!(!tab("tab_2").1.contains("lazygit"), "agent titles win");
+
+    // A task the agent reported names the tab ahead of its terminal title,
+    // which follows only the session's first prompt; user names still win.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for agent in &mut projected.agents {
+        agent.task = Some("Rename tabs".into());
+    }
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(160, 20).expect("tab bar");
+    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
+    let tab = |tab_id: &str| {
+        let (rect, _) = *state
+            .hits
+            .tabs
+            .iter()
+            .find(|(_, id)| id == tab_id)
+            .expect("tab hit");
+        (rect.x..rect.right())
+            .map(|x| buffer[(x, rect.y)].symbol().to_string())
+            .collect::<String>()
+    };
+    assert!(tab("tab_1").contains("Rename tabs"), "{}", tab("tab_1"));
+    assert!(tab("tab_3").contains("mine"));
 }
 
 #[test]

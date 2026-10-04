@@ -410,6 +410,18 @@ fn agent_command() -> Command {
                 .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)")),
         )
         .subcommand(
+            Command::new("set-task")
+                .about("Report the task this agent works on now; it names the tab")
+                .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)"))
+                .arg(flag("clear").help("Forget the reported task"))
+                .arg(
+                    Arg::new("task")
+                        .value_name("TASK")
+                        .num_args(0..)
+                        .help("A few words naming the task"),
+                ),
+        )
+        .subcommand(
             Command::new("wait")
                 .about("Wait until an agent reaches one of the requested states")
                 .override_usage("herdr agent wait <TARGET> [OPTIONS]")
