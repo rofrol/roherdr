@@ -1901,6 +1901,49 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_pane_report_task(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneReportTaskParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let task = params
+            .task
+            .as_deref()
+            .map(|task| task.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|task| !task.is_empty());
+        if task
+            .as_deref()
+            .is_some_and(|task| task.chars().count() > 120 || task.chars().any(char::is_control))
+        {
+            return encode_error(
+                id,
+                "invalid_task",
+                "task must be at most 120 characters without control characters",
+            );
+        }
+        let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let changed = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .is_some_and(|terminal| {
+                let changed = terminal.report_task(task);
+                if changed {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
+                changed
+            });
+        if changed {
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_clear_awaiting_reply(
         &mut self,
         id: String,
@@ -3069,6 +3112,44 @@ mod tests {
             assert!(!app.state.terminals[&terminal_id].awaiting_reply());
             assert!(!app.state.terminals[&terminal_id].has_awaiting_reply_report());
         }
+    }
+
+    #[tokio::test]
+    async fn api_pane_report_task_names_the_agents_task() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        let mut report = |task: Option<&str>| {
+            app.handle_api_request(crate::api::schema::Request {
+                id: "req".into(),
+                method: crate::api::schema::Method::PaneReportTask(
+                    crate::api::schema::PaneReportTaskParams {
+                        pane_id: pane_id.clone(),
+                        task: task.map(str::to_owned),
+                    },
+                ),
+            })
+        };
+        assert!(report(Some("  Fix   the\tsidebar  ")).contains("\"ok\""));
+        let response = report(Some(&"x".repeat(121)));
+        assert!(response.contains("invalid_task"), "{response}");
+        let response = report(Some("two\u{7}"));
+        assert!(response.contains("invalid_task"), "{response}");
+        assert_eq!(
+            app.state.terminals[&terminal_id].reported_task(),
+            Some("Fix the sidebar")
+        );
+        // Whitespace only, or none, forgets it.
+        let _ = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneReportTask(
+                crate::api::schema::PaneReportTaskParams {
+                    pane_id,
+                    task: Some("   ".into()),
+                },
+            ),
+        });
+        assert_eq!(app.state.terminals[&terminal_id].reported_task(), None);
     }
 
     #[tokio::test]

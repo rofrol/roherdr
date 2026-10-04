@@ -404,6 +404,16 @@ pub struct PaneReportAwaitingReplyParams {
     pub pane_id: String,
 }
 
+/// The agent in the pane names the task it works on now, in a few words; `None` or an empty
+/// text forgets it. Shown as the tab's name, ahead of the terminal title (which agents set once
+/// per session), until the agent reports another one, exits or changes session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportTaskParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
 /// The user dismisses the agents' questions in these panes without typing into them: their
 /// awaiting-reply reports are forgotten as if the user had typed. A later report shows the
 /// question again.

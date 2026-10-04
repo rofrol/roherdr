@@ -618,6 +618,10 @@ fn restore_tab(
         let handoff_awaiting_reply = imported_runtime
             .as_ref()
             .is_some_and(|imported| imported.state.awaiting_reply_reported);
+        #[cfg(unix)]
+        let handoff_task = imported_runtime
+            .as_ref()
+            .and_then(|imported| imported.state.reported_task.clone());
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -768,6 +772,8 @@ fn restore_tab(
                 if handoff_awaiting_reply {
                     terminal.restore_awaiting_reply_report();
                 }
+                #[cfg(unix)]
+                terminal.report_task(handoff_task);
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);

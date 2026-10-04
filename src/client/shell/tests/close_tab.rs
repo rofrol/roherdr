@@ -593,6 +593,7 @@ fn closing_one_of_a_parents_panes_leaves_its_children() {
 
 fn busy_agent(pane_id: &str, status: AgentStatus) -> ClientShellAgent {
     ClientShellAgent {
+        task: None,
         pane_id: pane_id.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

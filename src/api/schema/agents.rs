@@ -222,6 +222,9 @@ pub struct AgentInfo {
     /// `pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub awaiting_reply: bool,
+    /// What the agent reported it works on now (`pane.report_task`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,

@@ -535,8 +535,9 @@ impl ClientShellState {
                 tab_id: Some(agent.tab_id.clone()),
                 pane_id: Some(agent.pane_id.clone()),
                 task: agent
-                    .terminal_title_stripped
+                    .task
                     .as_deref()
+                    .or(agent.terminal_title_stripped.as_deref())
                     .or(agent.terminal_title.as_deref())
                     .and_then(super::notification_policy::notification_detail_text),
                 request: None,

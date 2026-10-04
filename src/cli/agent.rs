@@ -24,6 +24,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => agent_rename(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "awaiting-reply" => agent_awaiting_reply(&args[1..]),
+        "set-task" => agent_set_task(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
@@ -504,6 +505,46 @@ fn agent_awaiting_reply(args: &[String]) -> std::io::Result<i32> {
     ))
 }
 
+/// Run by the agent itself when it starts a task: a few words that name the
+/// tab while it works on it.
+fn agent_set_task(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent set-task [--pane PANE_ID] <task>|--clear";
+    let mut pane_id = None;
+    let mut words = Vec::new();
+    let mut clear = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--pane" => match args.next() {
+                Some(pane) => pane_id = Some(pane.clone()),
+                None => {
+                    eprintln!("{USAGE}");
+                    return Ok(2);
+                }
+            },
+            "--clear" => clear = true,
+            _ => words.push(arg.as_str()),
+        }
+    }
+    let task = words.join(" ");
+    // Exactly one of a task and `--clear`.
+    let has_task = !task.trim().is_empty();
+    if clear == has_task {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    }
+    let Some(pane_id) = pane_id.or_else(super::target::caller_pane_id) else {
+        eprintln!("herdr agent set-task: no --pane given and HERDR_PANE_ID is not set");
+        return Ok(2);
+    };
+    super::send_ok_request(Method::PaneReportTask(
+        crate::api::schema::PaneReportTaskParams {
+            pane_id,
+            task: (!clear).then_some(task),
+        },
+    ))
+}
+
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
@@ -960,6 +1001,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent awaiting-reply [--pane PANE_ID]");
+    eprintln!("  herdr agent set-task [--pane PANE_ID] <task>|--clear");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(

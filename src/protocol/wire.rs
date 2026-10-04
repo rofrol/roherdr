@@ -1118,6 +1118,11 @@ pub struct ClientShellAgent {
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
+    /// What the agent reported it works on now; older servers do not send
+    /// it. Always serialized: skipping a field breaks the bincode form of
+    /// this type.
+    #[serde(default)]
+    pub task: Option<String>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

@@ -39,6 +39,9 @@ pub(crate) struct HandoffRuntimeState {
     /// lifecycle hooks have; Claude and Pi report just this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_reply_reported: bool,
+    /// The agent's reported task (`pane.report_task`); absent from older senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_task: Option<String>,
 }
 
 #[cfg(unix)]

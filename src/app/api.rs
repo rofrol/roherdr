@@ -1244,6 +1244,9 @@ impl App {
             Method::PaneClearAwaitingReply(params) => {
                 return self.handle_pane_clear_awaiting_reply(request.id, params);
             }
+            Method::PaneReportTask(params) => {
+                return self.handle_pane_report_task(request.id, params);
+            }
             Method::PaneReportMetadata(params) => {
                 return self.handle_pane_report_metadata(request.id, params);
             }

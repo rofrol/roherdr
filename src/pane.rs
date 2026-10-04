@@ -2436,6 +2436,7 @@ impl PaneRuntime {
             alternate_screen_ansi: self.handoff_alternate_screen_ansi(),
             agent_state: None,
             awaiting_reply_reported: false,
+            reported_task: None,
         }
     }
 
@@ -2658,6 +2659,7 @@ impl PaneRuntime {
             alternate_screen_ansi,
             agent_state: _,
             awaiting_reply_reported: _,
+            reported_task: _,
         } = state;
         let pane_id = PaneId::from_raw(pane_id);
         use std::os::fd::FromRawFd;

@@ -1751,6 +1751,12 @@ impl AppState {
             if (mutation.agent_released || completion_reset) && terminal.clear_awaiting_reply() {
                 terminal.revision = terminal.revision.saturating_add(1);
             }
+            // The task belongs to the agent session that reported it.
+            if (mutation.agent_released || mutation.session_ref_changed)
+                && terminal.report_task(None)
+            {
+                terminal.revision = terminal.revision.saturating_add(1);
+            }
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;
@@ -3406,6 +3412,7 @@ mod tests {
         old.report();
         assert!(old.terminal().has_awaiting_reply_report());
         let mut state = crate::handoff_runtime::HandoffRuntimeState {
+            reported_task: None,
             pane_id: 1,
             child_pid: 0,
             rows: 24,
