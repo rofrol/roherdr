@@ -361,8 +361,16 @@ fn restore_workspace(
         .unwrap_or(1)
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
+    // The saved active tab, as an index among the tabs that come back.
+    let mut active_tab = 0;
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
+        if finished_job_without_runtime(tab_snap, imported_panes) {
+            continue;
+        }
+        if idx <= snap.active_tab {
+            active_tab = tabs.len();
+        }
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
         let (restored_tab, tab_failed_imports) = restore_tab(
             tab_snap,
@@ -431,7 +439,7 @@ fn restore_workspace(
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,
-            active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+            active_tab: active_tab.min(tabs.len().saturating_sub(1)),
             tabs,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
@@ -487,6 +495,21 @@ pub(crate) fn restored_worktree_space_membership(
                 || !std::path::Path::new(&current.key).join("objects").is_dir()
         })
     })
+}
+
+/// A herdr-job tab that had finished, coming back without its pane runtimes
+/// (a cold restore, not a live handoff): it would be its status over a fresh
+/// empty shell. Its outcome and log stay with `herdr-job`, so it is left out.
+fn finished_job_without_runtime(
+    snap: &TabSnapshot,
+    imported_panes: &HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
+) -> bool {
+    snap.job.is_some()
+        && matches!(
+            snap.status,
+            Some(crate::api::schema::TabStatus::Succeeded | crate::api::schema::TabStatus::Failed)
+        )
+        && !snap.panes.keys().any(|id| imported_panes.contains_key(id))
 }
 
 fn restore_tab(
@@ -1630,6 +1653,97 @@ mod tests {
         assert_eq!(session.source, "herdr:opencode");
         assert_eq!(session.agent, "opencode");
         assert_eq!(session.session_ref.value, "opencode-session");
+    }
+
+    #[tokio::test]
+    async fn cold_restore_leaves_out_finished_job_tabs() {
+        use crate::api::schema::{TabJobMetadata, TabStatus};
+        let cwd = std::env::current_dir().unwrap();
+        let tab = |pane: u32, parent: Option<usize>, status, job: bool| TabSnapshot {
+            bookmarked: false,
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(pane),
+            panes: HashMap::from([(
+                pane,
+                super::super::snapshot::PaneSnapshot {
+                    cwd: cwd.clone(),
+                    label: None,
+                    agent_name: None,
+                    managed_agent_kind: None,
+                    agent_session: None,
+                    agent_resume: None,
+                    launch_argv: None,
+                },
+            )]),
+            zoomed: false,
+            focused: Some(pane),
+            root_pane: Some(pane),
+            parent_tab_number: parent,
+            status,
+            job: job.then(|| TabJobMetadata {
+                id: format!("job-{pane}"),
+                name: "just check".into(),
+                why: None,
+                origin: "herdr-job".into(),
+                owner_pane: None,
+            }),
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                worktree_creator_tab: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: vec![1, 2, 3, 4, 5],
+                next_public_tab_number: 6,
+                tabs: vec![
+                    tab(1, None, None, false),
+                    tab(2, Some(1), Some(TabStatus::Failed), true),
+                    tab(3, Some(1), Some(TabStatus::Succeeded), true),
+                    tab(4, Some(1), Some(TabStatus::Running), true),
+                    // A failed tab that no job wrapper owns stays.
+                    tab(5, None, Some(TabStatus::Failed), false),
+                ],
+                // The failed job was focused: its parent takes the focus.
+                active_tab: 1,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, _terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let workspace = workspaces.first().expect("workspace should restore");
+        let numbers = workspace
+            .tabs
+            .iter()
+            .map(|tab| tab.number)
+            .collect::<Vec<_>>();
+        // The interrupted job comes back without its stale `running`.
+        assert_eq!(numbers, [1, 4, 5]);
+        assert_eq!(workspace.tabs[1].status, None);
+        assert_eq!(workspace.active_tab, 0);
+        assert_eq!(workspace.next_public_tab_number, 6);
     }
 
     #[tokio::test]

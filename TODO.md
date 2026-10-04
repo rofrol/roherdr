@@ -541,6 +541,10 @@
     the tab goes when its neighbour is gone; bound total payload, not only
     the entry count; history is lost on a server restart (document it, and
     a restart must not restore closed tabs).
+  - Deferred again 2026-10-04 (sol: a separate change; MiMo: a notice
+    reaches only attached clients, so persist `orphaned_from` in the job
+    metadata if it is done, and count only running jobs, from a snapshot
+    taken before the parent is removed).
 
 - [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
   work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio
@@ -1254,7 +1258,7 @@
     would need matplotlib. HTML only for one-off exploration.
   - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
     per week; a version bump answers the question without statistics.
-- [ ] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
+- [x] Empty failed jobs after a reboot (user, 2026-10-03 00:42, screenshot of
   `wioletazyskart`: six red `!` squares under the agent row, "why are there empty
   jobs here? after a computer restart?"). Cause: they are six job tabs that failed
   on 2026-09-27 (four consults that hit a usage limit, `Pond perf A/B trace`
@@ -1284,6 +1288,18 @@
     stay unclassified. Rejected: DeepSeek's "exit 143 is the reboot" (that job
     was killed on 2026-09-27 03:47 and rerun a minute later), unverified: its
     claim that the parent is restored by a renumbered tab number.
+  - Done 2026-10-04 (sol and MiMo, round `20261004-194225-6fcf`): a cold
+    restore leaves out herdr-job tabs (with `tab.job` metadata) that had
+    finished, succeeded or failed, unless their panes come back through a
+    live handoff (`finished_job_without_runtime`, `src/persist/restore.rs`);
+    the saved active tab is remapped. An interrupted job (running at
+    shutdown) still comes back without status, and the wrapper's
+    reconciliation marks it failed. Rejected: MiMo's keep the row without a
+    shell (the user asked why the empty jobs are there; the outcome stays in
+    `herdr-job list`), and both models' "Interrupted" status (a new
+    `TabStatus` variant breaks the frozen client codec). Not done: a seeded
+    "interrupted by the restart" line, `retry_of` superseding a failed
+    attempt.
 
 - [x] Parallel `ask_openrouter.sh` calls clash: both stage into the fixed
   `/tmp/consult-openrouter`, so in a round with MiMo and Space Bunny launched together
@@ -4291,13 +4307,17 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     awaiting agents, a tab whose aggregate icon is not `?`, handoff keeps
     the cleared state, menu item hidden without the advertised method.
 
-- [ ] Bug: failed job tabs stay open after their parent tab closes (user,
+- [x] Bug: failed job tabs stay open after their parent tab closes (user,
   2026-10-03, screenshot `~/Screenshots/Screenshot 2026-10-03 at 01.57.03.png`:
   two `just check: notification …` job tabs still listed after the user
   closed the tab that started them). Expected: closing a tab also closes its
   job child tabs, failed ones included (check `herdr-job _tab-closed` and
   `clean`, which may only close finished-successful jobs or only this pane's
   jobs). Consult the models before fixing (user asked: "pytaj modeli").
+  - Done 2026-10-03 by `2c29b3db` (the screenshot is from 01:57, the fix
+    from 03:07): the user closed the parent with its last pane, which left
+    the jobs as top-level tabs; that path now closes the tab with all its
+    jobs, failed ones included (see the item above about closing a parent).
 
 - [x] Right click in the working list closes the list (user, 2026-10-03,
   screenshots `~/Screenshots/Screenshot 2026-10-03 at 02.27.26.png`,
