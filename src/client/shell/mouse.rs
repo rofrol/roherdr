@@ -2806,6 +2806,10 @@ impl ClientShellState {
                         return;
                     }
                 }
+                if super::contains(self.hits.space_bubble_button, point) {
+                    self.click_space_bubble(outcome);
+                    return;
+                }
                 if super::contains(self.hits.space_filter_button, point) {
                     // The button opens the bar for typing, or closes it.
                     if self.space_filter.open {

@@ -944,7 +944,7 @@
     2.1.288 with a monitor in this session's pane: idle title plus
     `1 shell, 1 monitor` matched it (status working); `1 shell` alone did
     not.
-- [ ] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
+- [x] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
   hand). There is no space pinning: a space bookmark is a jump target only, and
@@ -965,6 +965,13 @@
     switches the sort mode by itself.
   - Undo (all four disagreed with "drag back by hand"): offer Undo right after
     the move; skip it when another client reordered meanwhile.
+  - Done 2026-10-04: a `⤒` button after the filter's `⌕` in the header,
+    shown only in the manual order, sends one `workspace.move_block`
+    (busy spaces with their whole worktree groups, in order, before the
+    first space that is not busy); busy as `prio` counts it plus a running
+    job. Right after, while nothing else reordered the spaces, the button
+    turns into `↶` and puts the previous order back (one `move_block` of
+    every space). Nothing to move shows a short notice.
 - [x] New space goes right after the active space, like new tabs (user,
   2026-10-03: "new space creates it at the end; change it as with tabs"). After
   the active space's whole worktree family. Models (unanimous): only for

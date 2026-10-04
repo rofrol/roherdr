@@ -419,6 +419,35 @@ pub(crate) fn render_sidebar(
                 hits.space_filter_button = Rect::new(limit, workspace_area.y, 3, 1);
                 limit += 2;
             }
+            // Busy spaces to the top of the manual order (for every client),
+            // or that move put back; only where the manual order shows.
+            if config.mouse_capture
+                && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
+                && limit + 3 <= workspace_area.right()
+            {
+                let (glyph, text) = if state.space_bubble_undo_ready {
+                    ("↶", "Undo: put the spaces back in their order")
+                } else {
+                    ("⤒", "Move the busy spaces to the top (for every client)")
+                };
+                put_text(
+                    buffer,
+                    limit + 1,
+                    workspace_area.y,
+                    1,
+                    glyph,
+                    Style::default().fg(palette.overlay1),
+                );
+                hits.space_bubble_button = Rect::new(limit, workspace_area.y, 3, 1);
+                hits.tooltips.push(super::tooltip::TooltipTarget {
+                    rect: hits.space_bubble_button,
+                    id: "space-bubble".into(),
+                    text: text.into(),
+                    bg: None,
+                    starts_at_target: false,
+                });
+                limit += 2;
+            }
             let mut right = workspace_area.right();
             if let Some(unread) = state
                 .notification_log_button

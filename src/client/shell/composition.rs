@@ -68,6 +68,7 @@ impl ClientShellState {
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
         let bookmark_count = self.bookmark_count();
+        let space_bubble_undo_ready = self.space_bubble_undo_ready();
         let open_list = self.open_notification_list();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
@@ -81,6 +82,7 @@ impl ClientShellState {
                 .unfolded_squares
                 .get(&self.active_endpoint_id)
                 .unwrap_or(&NO_UNFOLDED_SQUARES),
+            space_bubble_undo_ready,
             held_space_order: (self.pointer_over_spaces
                 && !self.space_sort.allows_drag()
                 && !self.held_space_order.is_empty())
@@ -309,6 +311,7 @@ impl ClientShellState {
         let notification_log_button = self.notification_log_button();
         let agent_counts = self.agent_indicator_counts();
         let bookmark_count = self.bookmark_count();
+        let space_bubble_undo_ready = self.space_bubble_undo_ready();
         let open_list = self.open_notification_list();
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
@@ -351,6 +354,7 @@ impl ClientShellState {
                     .unfolded_squares
                     .get(&self.active_endpoint_id)
                     .unwrap_or(&NO_UNFOLDED_SQUARES),
+                space_bubble_undo_ready,
                 held_space_order: (self.pointer_over_spaces
                     && !self.space_sort.allows_drag()
                     && !self.held_space_order.is_empty())
