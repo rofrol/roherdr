@@ -39,6 +39,7 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "report-agent" => pane_report_agent(&args[1..]),
         "report-agent-session" => pane_report_agent_session(&args[1..]),
         "release-agent" => pane_release_agent(&args[1..]),
+        "dismiss-question" => pane_dismiss_question(&args[1..]),
         "report-metadata" => pane_report_metadata(&args[1..]),
         "run" => pane_run(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -356,6 +357,29 @@ fn parse_pane_resize_args(args: &[String]) -> Result<PaneResizeParams, String> {
         direction,
         amount,
     })
+}
+
+/// The user's side of `herdr agent awaiting-reply`: forgets the agents'
+/// questions in these panes (default: this pane) without typing into them.
+fn pane_dismiss_question(args: &[String]) -> std::io::Result<i32> {
+    if args.iter().any(|arg| arg.starts_with('-')) {
+        eprintln!("usage: herdr pane dismiss-question [PANE_ID]...");
+        return Ok(2);
+    }
+    let pane_ids = if args.is_empty() {
+        let Some(pane_id) = super::target::caller_pane_id() else {
+            eprintln!("herdr pane dismiss-question: no PANE_ID given and HERDR_PANE_ID is not set");
+            return Ok(2);
+        };
+        vec![pane_id]
+    } else {
+        args.iter()
+            .map(|arg| super::normalize_pane_id(arg))
+            .collect()
+    };
+    super::send_ok_request(crate::api::schema::Method::PaneClearAwaitingReply(
+        crate::api::schema::PaneClearAwaitingReplyParams { pane_ids },
+    ))
 }
 
 fn pane_zoom(args: &[String]) -> std::io::Result<i32> {
@@ -1701,6 +1725,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
+    eprintln!("  herdr pane dismiss-question [PANE_ID]...");
     eprintln!("  herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr pane run <pane_id> <command>");
 }

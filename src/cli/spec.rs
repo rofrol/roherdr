@@ -665,6 +665,16 @@ fn pane_command() -> Command {
         .subcommand(report_agent_command())
         .subcommand(report_agent_session_command())
         .subcommand(release_agent_command())
+        .subcommand(
+            Command::new("dismiss-question")
+                .about("Dismiss the agents' questions in panes without typing into them")
+                .arg(
+                    Arg::new("pane_id")
+                        .value_name("PANE_ID")
+                        .num_args(0..)
+                        .help("Panes (default: $HERDR_PANE_ID)"),
+                ),
+        )
         .subcommand(report_metadata_command())
 }
 

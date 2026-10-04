@@ -1901,6 +1901,25 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_pane_clear_awaiting_reply(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneClearAwaitingReplyParams,
+    ) -> String {
+        // All panes are checked first, so a bad id clears none of them.
+        let mut panes = Vec::with_capacity(params.pane_ids.len());
+        for pane_id in &params.pane_ids {
+            let Some(pane) = self.parse_pane_id(pane_id) else {
+                return pane_not_found(id, pane_id);
+            };
+            panes.push(pane);
+        }
+        for (ws_idx, pane_id) in panes {
+            self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_clear_agent_authority(
         &mut self,
         id: String,
@@ -3050,6 +3069,39 @@ mod tests {
             assert!(!app.state.terminals[&terminal_id].awaiting_reply());
             assert!(!app.state.terminals[&terminal_id].has_awaiting_reply_report());
         }
+    }
+
+    #[tokio::test]
+    async fn api_pane_clear_awaiting_reply_dismisses_the_question_until_the_next_report() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Idle;
+        assert!(terminal.report_awaiting_reply());
+        let clear = |pane_ids: Vec<String>| crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneClearAwaitingReply(
+                crate::api::schema::PaneClearAwaitingReplyParams { pane_ids },
+            ),
+        };
+
+        // A bad id clears nothing.
+        let response = app.handle_api_request(clear(vec![pane_id.clone(), "nope".into()]));
+        assert!(response.contains("pane_not_found"), "{response}");
+        assert!(app.state.terminals[&terminal_id].awaiting_reply());
+
+        let response = app.handle_api_request(clear(vec![pane_id.clone()]));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
+        assert!(!app.state.terminals[&terminal_id].has_awaiting_reply_report());
+        // Idempotent.
+        let response = app.handle_api_request(clear(vec![pane_id]));
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        // The agent's next report shows the question again.
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        assert!(terminal.report_awaiting_reply());
+        assert!(terminal.awaiting_reply());
     }
 
     #[tokio::test]

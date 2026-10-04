@@ -784,6 +784,9 @@ pub(super) enum ClientContextMenuAction {
     Dismiss,
     /// Launches the agent picker's row at this index in a new tab.
     LaunchAgent(usize),
+    /// Dismisses the questions of the tab's (or the pane's) agents that
+    /// await a reply, without typing into their panes.
+    DismissQuestions,
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
@@ -821,6 +824,9 @@ pub(super) enum ClientContextMenuTarget {
         /// Opened on a row of a header list, over the list: no `New tab`,
         /// which would not act on the row.
         in_list: bool,
+        /// Agents of the tab that await a reply, when the server can dismiss
+        /// their questions.
+        awaiting_panes: usize,
     },
     /// The spaces list's sort choice, opened from the header button.
     SortSpaces(super::space_sort::SpaceSort),
@@ -847,6 +853,8 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        /// The pane's agent awaits a reply and the server can dismiss it.
+        awaiting_reply: bool,
     },
 }
 

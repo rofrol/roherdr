@@ -4269,7 +4269,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Public tab numbers are stable (never reused), so inserting in the middle
     renumbers nothing.
 
-- [ ] Dismiss an agent's question mark `?` without typing into its pane
+- [x] Dismiss an agent's question mark `?` without typing into its pane
   (user, 2026-10-03: right click on the agent's tab and turn off the
   question status; "maybe somewhere else too"). Today the report
   (`awaiting_reply_reported`, `src/terminal/state.rs`) clears only on input
@@ -4306,6 +4306,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Tests: clear via the method, re-report after it, a tab with two
     awaiting agents, a tab whose aggregate icon is not `?`, handoff keeps
     the cleared state, menu item hidden without the advertised method.
+  - Done 2026-10-04: `pane.clear_awaiting_reply {pane_ids}` (advertised to
+    clients, shape frozen as an additive method; validates every id before
+    clearing, idempotent, clears like typing), "Dismiss question" / "Dismiss
+    N questions" in the tab menu (so also in the asking list's row menu)
+    and "Dismiss question" in the pane menu, both counted from the agents'
+    `awaiting_reply` and hidden on a server without the method; CLI `herdr
+    pane dismiss-question [PANE_ID]...`. The open question was decided by
+    default as sol and DeepSeek said: dismissing does not mark the tab
+    seen (tell the user; MiMo said it should).
 
 - [x] Bug: failed job tabs stay open after their parent tab closes (user,
   2026-10-03, screenshot `~/Screenshots/Screenshot 2026-10-03 at 01.57.03.png`:
