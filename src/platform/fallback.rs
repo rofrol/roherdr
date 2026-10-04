@@ -269,6 +269,11 @@ pub fn open_url(_url: &str) -> std::io::Result<Option<std::process::Child>> {
 }
 
 /// Unsupported platform stub.
+/// The home directory; the image picker opens there first.
+pub fn screenshot_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }

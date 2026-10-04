@@ -233,7 +233,10 @@ impl ClientContextMenuOverlay {
                 awaiting_reply,
                 ..
             } => {
-                let mut items = vec![item("Rename pane", Action::RenamePane)];
+                let mut items = vec![
+                    item("Attach image…", Action::AttachImage),
+                    item("Rename pane", Action::RenamePane),
+                ];
                 if *awaiting_reply {
                     items.push(item("Dismiss question", Action::DismissQuestions));
                 }
@@ -837,6 +840,10 @@ impl ClientShellState {
             ClientContextMenuAction::DismissQuestions => {
                 let panes = self.awaiting_reply_panes(|agent| agent.pane_id == pane_id);
                 self.dismiss_questions(panes, outcome);
+            }
+            ClientContextMenuAction::AttachImage => {
+                self.open_image_picker(pane_id);
+                outcome.repaint = true;
             }
             ClientContextMenuAction::RenamePane => {
                 let label = self.snapshot.as_deref().and_then(|snapshot| {

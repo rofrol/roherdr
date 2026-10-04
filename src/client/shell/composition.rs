@@ -936,6 +936,7 @@ impl ClientShellState {
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.overlay_primary = rendered.primary;
+                self.hits.image_picker_rows = rendered.menu_rows;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
                 self.hits.navigator_popup = rendered.navigator_popup;

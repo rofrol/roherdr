@@ -572,6 +572,11 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::ImagePicker(_))) {
+            self.image_picker_key(key.code, outcome);
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::Usage(_))) {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
