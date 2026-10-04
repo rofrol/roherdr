@@ -1986,9 +1986,21 @@ fn reopen(state: &mut ClientShellState) -> ClientShellInput {
     outcome
 }
 
+/// A server without `tab.reopen_closed`: reopening opens a fresh shell.
+fn without_server_reopen(state: &mut ClientShellState) {
+    state.set_endpoint_methods(Some(
+        crate::server::client_commands::supported_client_shell_method_names()
+            .iter()
+            .filter(|method| **method != "tab.reopen_closed")
+            .map(|method| (*method).to_owned())
+            .collect(),
+    ));
+}
+
 #[test]
 fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
     let mut state = state_with_named_tabs();
+    without_server_reopen(&mut state);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.panes.push(ClientShellPane {
         pane_id: "pane_2".into(),
@@ -2109,6 +2121,7 @@ fn a_refused_close_is_not_remembered_and_a_parent_counts_its_jobs() {
 #[test]
 fn reopening_skips_a_vanished_space_keeps_ten_and_reuses_nothing_twice() {
     let mut state = state_with_three_tabs();
+    without_server_reopen(&mut state);
     for n in 0..12 {
         state.remember_closed_tab(crate::client::shell::closed_tabs::ClosedTab {
             endpoint_id: ClientEndpointId::Local,
@@ -2118,6 +2131,8 @@ fn reopening_skips_a_vanished_space_keeps_ten_and_reuses_nothing_twice() {
             after_tab_id: None,
             jobs: 0,
             job: false,
+            tab_id: format!("closed_{}", line!()),
+            from_server: false,
         });
     }
     assert_eq!(state.closed_tabs.len(), 10);
@@ -2159,6 +2174,7 @@ fn reopening_a_closed_job_says_so_instead_of_an_older_tab() {
     // unrelated tab came back. Now the first press explains, the second
     // reopens the older tab.
     let mut state = state_with_three_tabs();
+    without_server_reopen(&mut state);
     let entry = |label: &str, job: bool| crate::client::shell::closed_tabs::ClosedTab {
         endpoint_id: ClientEndpointId::Local,
         workspace_id: "ws_1".into(),
@@ -2167,6 +2183,8 @@ fn reopening_a_closed_job_says_so_instead_of_an_older_tab() {
         after_tab_id: None,
         jobs: 0,
         job,
+        tab_id: format!("closed_{label}"),
+        from_server: false,
     };
     state.remember_closed_tab(entry("older", false));
     state.remember_closed_tab(entry("build", true));
@@ -2202,6 +2220,7 @@ fn every_press_with_nothing_to_reopen_answers() {
 #[test]
 fn reopening_keeps_entries_it_cannot_use_yet() {
     let mut state = state_with_three_tabs();
+    without_server_reopen(&mut state);
     let entry = |endpoint: ClientEndpointId, workspace: &str, label: &str| {
         crate::client::shell::closed_tabs::ClosedTab {
             endpoint_id: endpoint,
@@ -2211,6 +2230,8 @@ fn reopening_keeps_entries_it_cannot_use_yet() {
             after_tab_id: None,
             jobs: 0,
             job: false,
+            tab_id: format!("closed_{}", line!()),
+            from_server: false,
         }
     };
     let remote = ClientEndpointId::Ssh(
@@ -3903,4 +3924,57 @@ fn a_new_tab_goes_after_the_current_one_unless_configured_or_unsupported() {
         state.new_tab_method("ws_1".into(), None),
         Method::TabCreate(_)
     ));
+}
+
+#[test]
+fn reopening_asks_the_server_for_the_closed_tab_and_falls_back_when_it_is_gone() {
+    use crate::api::schema::Method;
+    let mut state = state_with_three_tabs();
+    let closed = crate::client::shell::closed_tabs::ClosedTab {
+        endpoint_id: ClientEndpointId::Local,
+        workspace_id: "ws_1".into(),
+        label: Some("agent".into()),
+        cwd: Some("/work".into()),
+        after_tab_id: Some("tab_1".into()),
+        jobs: 0,
+        job: false,
+        tab_id: "tab_9".into(),
+        from_server: false,
+    };
+    state.remember_closed_tab(closed.clone());
+    let mut outcome = ClientShellInput::default();
+    state.reopen_closed_tab(&mut outcome);
+    let methods = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.method.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        methods.as_slice(),
+        [Method::TabReopenClosed(params)]
+            if params.tab_id == "tab_9"
+                && params.after_tab_id.as_deref() == Some("tab_1")
+                && params.focus
+    ));
+
+    // The server no longer keeps it: a fresh shell in its directory, said.
+    let mut sent = closed;
+    sent.from_server = true;
+    let (_, actions) = state.complete_reopen(
+        sent,
+        Err(ClientShellEndpointError {
+            code: Some("closed_tab_not_found".into()),
+            message: "closed tab tab_9 is not kept".into(),
+        }),
+    );
+    assert!(actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, Method::TabCreate(params)
+                if params.cwd.as_deref() == Some("/work")
+                    && params.label.as_deref() == Some("agent")))));
+    let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
+    assert!(notice.body.contains("no longer kept"), "{}", notice.body);
 }

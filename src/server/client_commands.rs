@@ -52,6 +52,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.focus",
     "tab.move",
     "tab.rename",
+    "tab.reopen_closed",
     "tab.set_job_metadata",
     "usage.read",
     "usage.set_enabled",
@@ -347,6 +348,10 @@ mod tests {
         assert_eq!(
             actual.remove("tab.bookmark").as_deref(),
             Some("568d72e7e9fed90cee8a77b70bf55c708677a45970c3ab9a34157a9a0df2da32")
+        );
+        assert_eq!(
+            actual.remove("tab.reopen_closed").as_deref(),
+            Some("51445667fc391cffa557fd80a74666b5143a74bcc338ad9fc789a9d7fafc44ff")
         );
         assert_eq!(
             actual.remove("tab.set_job_metadata").as_deref(),

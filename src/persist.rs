@@ -12,9 +12,11 @@ mod writer;
 
 pub use self::io::{clear_history, load, load_history};
 pub use self::restore::restore;
+pub(crate) use self::restore::restore_closed_tab;
 pub(crate) use self::restore::restored_worktree_space_membership;
 #[cfg(unix)]
 pub use self::restore::{handoff_pane_aliases, restore_handoff};
+pub(crate) use self::snapshot::capture_tab;
 pub use self::snapshot::{
     capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot,

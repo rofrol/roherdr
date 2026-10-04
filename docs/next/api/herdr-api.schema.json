@@ -4707,6 +4707,28 @@
           ],
           "type": "object"
         },
+        "TabReopenClosedParams": {
+          "description": "Opens a tab closed through `tab.close` again (its id at closing): its\nlayout, pane directories and names, and its agents resumed where their\nsessions can be. The server keeps the last closes in memory only;\n`closed_tab_not_found` when it no longer has this one. It goes after\n`after_tab_id`'s group, or first without one.",
+          "properties": {
+            "after_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
         "TabSetJobMetadataParams": {
           "properties": {
             "job": {
@@ -5826,6 +5848,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabCreateAfterParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.reopen_closed",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabReopenClosedParams"
             }
           },
           "required": [

@@ -468,6 +468,7 @@ impl ClientShellState {
             crate::api::schema::Method::WorkspaceCreateAfter(params) => params.create.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
             crate::api::schema::Method::TabCreateAfter(params) => params.focus,
+            crate::api::schema::Method::TabReopenClosed(params) => params.focus,
             crate::api::schema::Method::TabCreateAgent(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
@@ -668,9 +669,11 @@ impl ClientShellState {
                 self.pending_workspace_highlight = None;
             }
             let code = error.code.as_deref().unwrap_or("invalid_response");
+            // A reopen the server no longer has falls back with its own
+            // notice (`complete_reopen`).
             if !matches!(
                 code,
-                "confirmation_required" | "stale_content" | "stale_target"
+                "confirmation_required" | "stale_content" | "stale_target" | "closed_tab_not_found"
             ) {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (

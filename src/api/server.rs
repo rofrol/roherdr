@@ -639,6 +639,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TabCreateAgent(_) => "tab.create_agent",
         Method::TabCreateChild(_) => "tab.create_child",
         Method::TabCreateAfter(_) => "tab.create_after",
+        Method::TabReopenClosed(_) => "tab.reopen_closed",
         Method::TabList(_) => "tab.list",
         Method::TabGet(_) => "tab.get",
         Method::TabFocus(_) => "tab.focus",

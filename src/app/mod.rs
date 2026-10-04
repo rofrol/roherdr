@@ -102,6 +102,17 @@ impl AppPolicy {
     };
 }
 
+/// A tab closed through `tab.close`, kept for `tab.reopen_closed`: what a
+/// session save would keep of it.
+pub(crate) struct ClosedTabRecord {
+    pub(crate) tab_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) snapshot: crate::persist::TabSnapshot,
+}
+
+/// Closed tabs kept for `tab.reopen_closed`; the oldest goes first.
+pub(crate) const MAX_CLOSED_TAB_HISTORY: usize = 20;
+
 pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
@@ -143,6 +154,12 @@ pub struct App {
     pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    /// Tabs closed through `tab.close`, newest last, for `tab.reopen_closed`.
+    /// In memory only: a restart forgets them.
+    pub(crate) closed_tab_history: std::collections::VecDeque<ClosedTabRecord>,
+    /// Whether restored and reopened panes resume their agents
+    /// (`session.resume_agents_on_restore`).
+    pub(crate) resume_agents_on_restore: bool,
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
@@ -694,6 +711,8 @@ impl App {
             loaded_host_cursor: config.ui.host_cursor,
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
+            closed_tab_history: std::collections::VecDeque::new(),
+            resume_agents_on_restore: config.session.resume_agents_on_restore,
             startup_per_agent_delay: Duration::from_millis(
                 config.session.startup_per_agent_delay_ms.into(),
             ),

@@ -524,7 +524,7 @@
   the parent's entry counts its jobs and the reopen says they were not
   restored; a job closed on its own leaves an entry that only says it cannot
   be reopened; every press answers. Also bound `cmd+shift+t` to reopen.
-- [ ] Reopen brings back the agent (user, 2026-10-03): "I close the tab with
+- [x] Reopen brings back the agent (user, 2026-10-03): "I close the tab with
   claude, reopen it with cmd+shift+t: just zsh in the shell". Reopen v1 is
   client-local `tab.create` (fresh shell, focused pane's cwd); the client's
   frozen bincode snapshot has no `agent_session`, and `tab.create`'s params
@@ -562,6 +562,19 @@
     reaches only attached clients, so persist `orphaned_from` in the job
     metadata if it is done, and count only running jobs, from a snapshot
     taken before the parent is removed).
+  - Done 2026-10-04: the server keeps the last 20 tabs closed by
+    `tab.close` or by closing their last pane (`capture_tab`, the session
+    file's own tab snapshot, taken before the panes are torn down; job tabs
+    are not kept); advertised `tab.reopen_closed {tab_id, after_tab_id,
+    focus}` pops the entry and rebuilds the tab through `restore_tab` (the
+    restart path: layout, pane names and directories, agent resume with
+    validated session refs), new public ids, placed after the group. Scope
+    decided as: the client reopens what it closed (its own stack, keyed by
+    the closed tab's id), the server supplies the content, so another
+    client's close never comes back here. When the server no longer has it
+    (`closed_tab_not_found`: a restart, 20 closes since) the client opens a
+    fresh shell as in v1 and says so. Not done: jobs, and a tab whose
+    process exited (not closed by the user).
 
 - [x] Bug (user, 2026-10-01, screenshot: header shows `?1 ✉2`, three agents
   work, no `◐`): at the default 32 columns the sort buttons `manual name ↑ prio

@@ -9,8 +9,13 @@
 //!
 //! Client-local and in memory: only a close this client made and the server
 //! accepted is remembered (not a process that exited, nor another client's
-//! close), at most [`MAX_CLOSED_TABS`] of them, the newest first out. A
-//! server-owned history is the later step for those and for restarts.
+//! close), at most [`MAX_CLOSED_TABS`] of them, the newest first out.
+//!
+//! A server with `tab.reopen_closed` keeps what it closed (in memory, the
+//! last closes): the tab comes back with its layout, the names and
+//! directories of its panes, and its agents resumed where their sessions
+//! can be. When it no longer has the tab (a restart, too many closes since),
+//! the tab opens with a fresh shell as above, and says so.
 
 use super::*;
 
@@ -32,6 +37,11 @@ pub(super) struct ClosedTab {
     pub(super) jobs: usize,
     /// The closed tab was itself a job: reopening it only says it cannot.
     pub(super) job: bool,
+    /// The closed tab's id, which the server keeps it under.
+    pub(super) tab_id: String,
+    /// The reopen was sent as `tab.reopen_closed`, which puts the tab in its
+    /// place itself.
+    pub(super) from_server: bool,
 }
 
 impl ClientShellState {
@@ -50,6 +60,8 @@ impl ClientShellState {
                 after_tab_id: None,
                 jobs: 0,
                 job: true,
+                tab_id: tab_id.to_owned(),
+                from_server: false,
             });
         }
         let jobs = super::tab_groups::child_tabs(snapshot, tab_id).len();
@@ -76,6 +88,8 @@ impl ClientShellState {
                 .map(|before| before.tab_id.clone()),
             jobs,
             job: false,
+            tab_id: tab_id.to_owned(),
+            from_server: false,
         })
     }
 
@@ -85,6 +99,27 @@ impl ClientShellState {
         let closed = self.closed_tab_record(&tab_id).map(Box::new);
         self.push_endpoint_method_with_kind(
             crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { tab_id }),
+            PendingEndpointKind::TabClose { closed },
+            outcome,
+        );
+    }
+
+    /// Closes a pane; the tab's last one closes the tab, which is then
+    /// remembered like a closed tab.
+    pub(super) fn push_pane_close(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        let closed = self.snapshot.as_deref().and_then(|snapshot| {
+            let pane = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+            let last_pane = !snapshot
+                .panes
+                .iter()
+                .any(|other| other.tab_id == pane.tab_id && other.pane_id != pane_id);
+            last_pane.then(|| pane.tab_id.clone())
+        });
+        let closed = closed
+            .and_then(|tab_id| self.closed_tab_record(&tab_id))
+            .map(Box::new);
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
             PendingEndpointKind::TabClose { closed },
             outcome,
         );
@@ -146,6 +181,35 @@ impl ClientShellState {
             ));
             return;
         }
+        let reopen = crate::api::schema::Method::TabReopenClosed(
+            crate::api::schema::TabReopenClosedParams {
+                tab_id: closed.tab_id.clone(),
+                after_tab_id: closed.after_tab_id.clone(),
+                focus: true,
+            },
+        );
+        if self.supports_endpoint_method(&reopen) {
+            let mut closed = closed;
+            closed.from_server = true;
+            // The reopened tab takes the focus: open its collapsed space.
+            let workspace_id = closed.workspace_id.clone();
+            self.expand_for_jump(Some(&workspace_id), outcome);
+            self.push_endpoint_method_with_kind(
+                reopen,
+                PendingEndpointKind::ReopenTab {
+                    closed: Box::new(closed),
+                },
+                outcome,
+            );
+            return;
+        }
+        self.reopen_with_fresh_shell(closed, outcome);
+    }
+
+    /// Reopen without the server's copy: a new tab with a fresh shell in the
+    /// tab's directory, with its name, moved to its place afterwards.
+    fn reopen_with_fresh_shell(&mut self, mut closed: ClosedTab, outcome: &mut ClientShellInput) {
+        closed.from_server = false;
         let params = crate::api::schema::TabCreateParams {
             workspace_id: Some(closed.workspace_id.clone()),
             cwd: closed.cwd.clone(),
@@ -170,13 +234,34 @@ impl ClientShellState {
         closed: ClosedTab,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
+        let result = match result {
+            // The server no longer has it: open it the plain way.
+            Err(error)
+                if closed.from_server && error.code.as_deref() == Some("closed_tab_not_found") =>
+            {
+                let name = closed.label.clone().unwrap_or_else(|| "the tab".into());
+                self.reopen_notice(&format!(
+                    "{name} was no longer kept; reopened with a fresh shell"
+                ));
+                let mut outcome = ClientShellInput::default();
+                self.reopen_with_fresh_shell(closed, &mut outcome);
+                return (true, outcome.actions);
+            }
+            result => result,
+        };
         let Ok(crate::api::schema::ResponseResult::TabCreated { tab, .. }) = result else {
             // The create was refused (a missing directory, say): keep the
             // entry for another try. The notice came from the generic path.
             self.closed_tabs.push_back(closed);
             return (true, Vec::new());
         };
-        if closed.jobs > 0 {
+        if closed.jobs > 0 && closed.from_server {
+            let jobs = if closed.jobs == 1 { "job" } else { "jobs" };
+            self.reopen_notice(&format!(
+                "{} reopened; its {} {jobs} did not come back",
+                tab.label, closed.jobs
+            ));
+        } else if closed.jobs > 0 {
             let jobs = if closed.jobs == 1 {
                 "job was"
             } else {
@@ -189,8 +274,9 @@ impl ClientShellState {
         }
         let mut outcome = ClientShellInput::default();
         // The machine may have changed since the create was sent: the new
-        // tab is on the other one, so leave it where it is.
-        if closed.endpoint_id != self.active_endpoint_id {
+        // tab is on the other one, so leave it where it is. The server put
+        // a reopened tab in its place already.
+        if closed.endpoint_id != self.active_endpoint_id || closed.from_server {
             return (true, Vec::new());
         }
         let insert = self.snapshot.as_deref().and_then(|snapshot| {

@@ -54,7 +54,7 @@ type RestoredWorkspace = (
     Vec<TerminalState>,
     HashMap<TerminalId, TerminalRuntime>,
 );
-type RestoredTab = (
+pub(crate) type RestoredTab = (
     crate::workspace::Tab,
     Vec<TerminalState>,
     HashMap<TerminalId, TerminalRuntime>,
@@ -495,6 +495,55 @@ pub(crate) fn restored_worktree_space_membership(
                 || !std::path::Path::new(&current.key).join("objects").is_dir()
         })
     })
+}
+
+/// Restores one closed tab into the running server (`tab.reopen_closed`):
+/// its layout with fresh shells in the saved directories, and its agents
+/// resumed by the same path as a restart. `public_pane_ids_by_old_raw` gives
+/// each saved pane the public id its new pane gets, for its environment.
+/// `live_sessions` holds the resume keys of every agent session the server
+/// runs or is about to resume, so a reopened pane never resumes one of them
+/// a second time. Returns the tab, its terminals and runtimes, and each new
+/// pane's saved raw id.
+#[allow(clippy::too_many_arguments)] // the restore context of one tab
+pub(crate) fn restore_closed_tab(
+    snap: &TabSnapshot,
+    number: usize,
+    workspace_id: &str,
+    public_pane_ids_by_old_raw: &HashMap<u32, String>,
+    rows: u16,
+    cols: u16,
+    scrollback_limit_bytes: usize,
+    shell_config: crate::pane::PaneShellConfig<'_>,
+    resume_agents: bool,
+    events: mpsc::Sender<AppEvent>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<RenderSignal>,
+    live_sessions: HashSet<String>,
+) -> Option<RestoredTab> {
+    let context = RestoreRuntimeContext {
+        scrollback_limit_bytes,
+        shell_config,
+        resume_agents_on_restore: resume_agents,
+        events,
+        render_notify,
+        render_dirty,
+    };
+    let mut resumed_sessions = live_sessions;
+    let mut imported_panes = HashMap::new();
+    let (tab, _failed_imports) = restore_tab(
+        snap,
+        None,
+        number,
+        workspace_id,
+        rows,
+        cols,
+        &context,
+        &mut resumed_sessions,
+        &mut imported_panes,
+        public_pane_ids_by_old_raw,
+    );
+    tab
 }
 
 /// A herdr-job tab that had finished, coming back without its pane runtimes

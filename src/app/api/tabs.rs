@@ -102,6 +102,199 @@ impl App {
         )
     }
 
+    /// What reopening the tab needs, taken before its panes are torn down. A
+    /// job tab is not kept: it cannot come back without its job.
+    pub(super) fn closed_tab_record(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Option<crate::app::ClosedTabRecord> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        if ws.tab_parent_index(tab_idx).is_some() {
+            return None;
+        }
+        let tab = ws.tabs.get(tab_idx)?;
+        Some(crate::app::ClosedTabRecord {
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            workspace_id: ws.id.clone(),
+            snapshot: crate::persist::capture_tab(
+                tab,
+                &self.state.terminals,
+                &self.terminal_runtimes,
+            ),
+        })
+    }
+
+    /// Keeps a closed tab for `tab.reopen_closed`, the oldest going first.
+    pub(super) fn keep_closed_tab(&mut self, record: Option<crate::app::ClosedTabRecord>) {
+        if let Some(record) = record {
+            self.closed_tab_history.push_back(record);
+            while self.closed_tab_history.len() > crate::app::MAX_CLOSED_TAB_HISTORY {
+                self.closed_tab_history.pop_front();
+            }
+        }
+    }
+
+    /// Opens a tab closed through `tab.close` again: its layout, the
+    /// directories and names of its panes, and its agents resumed where their
+    /// sessions can be. Its entry is used up, so it never comes back twice.
+    pub(super) fn handle_tab_reopen_closed(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabReopenClosedParams,
+    ) -> String {
+        let Some(at) = self
+            .closed_tab_history
+            .iter()
+            .rposition(|record| record.tab_id == params.tab_id)
+        else {
+            return encode_error(
+                id,
+                "closed_tab_not_found",
+                format!("closed tab {} is not kept", params.tab_id),
+            );
+        };
+        let Some(record) = self.closed_tab_history.remove(at) else {
+            return encode_error(id, "closed_tab_not_found", "closed tab is not kept");
+        };
+        let Some(ws_idx) = self.parse_workspace_id(&record.workspace_id) else {
+            return workspace_not_found(id, &record.workspace_id);
+        };
+        let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
+        // Agent sessions running or about to resume anywhere: a reopened
+        // pane must not resume one of them again.
+        let live_sessions = self
+            .state
+            .terminals
+            .values()
+            .flat_map(|terminal| {
+                let pending = terminal
+                    .pending_agent_resume_plan
+                    .as_ref()
+                    .map(|plan| plan.dedupe_key.clone());
+                // The session the agent reports, as a session save reads it.
+                let reported = terminal.hook_authority.as_ref().and_then(|authority| {
+                    let session_ref = authority.session_ref.as_ref()?;
+                    Some(crate::agent_resume::dedupe_key(
+                        &authority.source,
+                        &authority.agent_label,
+                        session_ref,
+                    ))
+                });
+                let persisted = terminal.persisted_agent_session.as_ref().map(|session| {
+                    crate::agent_resume::dedupe_key(
+                        &session.source,
+                        &session.agent,
+                        &session.session_ref,
+                    )
+                });
+                pending.into_iter().chain(reported).chain(persisted)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let ws = &mut self.state.workspaces[ws_idx];
+        let number = ws.next_public_tab_number;
+        ws.next_public_tab_number += 1;
+        // New public pane numbers, in the saved panes' order.
+        let mut old_raw = record.snapshot.panes.keys().copied().collect::<Vec<_>>();
+        old_raw.sort_unstable();
+        let numbers = old_raw
+            .into_iter()
+            .map(|raw| {
+                let number = ws.next_public_pane_number;
+                ws.next_public_pane_number += 1;
+                (raw, number)
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let public_ids = numbers
+            .iter()
+            .map(|(raw, number)| {
+                (
+                    *raw,
+                    crate::workspace::public_pane_id_for_number(&record.workspace_id, *number),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let Some((mut tab, terminals, runtimes, reverse_ids)) = crate::persist::restore_closed_tab(
+            &record.snapshot,
+            number,
+            &record.workspace_id,
+            &public_ids,
+            rows,
+            cols,
+            self.state.pane_scrollback_limit_bytes,
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            self.resume_agents_on_restore,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+            live_sessions,
+        ) else {
+            return encode_error(
+                id,
+                "tab_create_failed",
+                "the closed tab could not be rebuilt",
+            );
+        };
+        tab.number = number;
+        let root_pane = tab.root_pane;
+        let ws = &mut self.state.workspaces[ws_idx];
+        for pane_id in tab.layout.pane_ids() {
+            let public = reverse_ids
+                .get(&pane_id)
+                .and_then(|raw| numbers.get(raw))
+                .copied()
+                .unwrap_or_else(|| {
+                    let number = ws.next_public_pane_number;
+                    ws.next_public_pane_number += 1;
+                    number
+                });
+            ws.public_pane_numbers.insert(pane_id, public);
+        }
+        let pane_ids = tab.layout.pane_ids();
+        ws.tabs.push(tab);
+        let mut tab_idx = ws.tabs.len() - 1;
+        // After the group of the tab that stood before it, else first.
+        let insert = match params.after_tab_id.as_deref().and_then(|after| {
+            ws.tabs.iter().position(|tab| {
+                crate::workspace::public_tab_id_for_number(&ws.id, tab.number) == after
+            })
+        }) {
+            Some(after_idx) => {
+                let top = ws.tab_parent_index(after_idx).unwrap_or(after_idx);
+                ws.tab_children(top)
+                    .into_iter()
+                    .chain(std::iter::once(top))
+                    .max()
+                    .unwrap_or(top)
+                    + 1
+            }
+            None => 0,
+        };
+        ws.move_tab(tab_idx, insert);
+        if let Some(idx) = ws.tabs.iter().position(|tab| tab.root_pane == root_pane) {
+            tab_idx = idx;
+        }
+        for terminal in terminals {
+            self.state.terminals.insert(terminal.id.clone(), terminal);
+        }
+        for pane_id in pane_ids {
+            self.state.remove_alias_shadowed_by_new_pane(pane_id);
+        }
+        for (terminal_id, runtime) in runtimes {
+            self.terminal_runtimes.insert(terminal_id, runtime);
+        }
+        if params.focus {
+            self.state.switch_workspace_tab(ws_idx, tab_idx);
+            self.state.mode = Mode::Terminal;
+        }
+        self.schedule_session_save();
+        self.emit_tab_created_events(ws_idx, tab_idx);
+        match self.tab_created_result(ws_idx, tab_idx) {
+            Some(result) => encode_success(id, result),
+            None => encode_error(id, "tab_create_failed", "the reopened tab is incomplete"),
+        }
+    }
+
     pub(super) fn handle_tab_create_child(
         &mut self,
         id: String,
@@ -398,6 +591,7 @@ impl App {
             return encode_success(id, ResponseResult::Ok {});
         }
 
+        let record = self.closed_tab_record(ws_idx, tab_idx);
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -408,6 +602,7 @@ impl App {
                 format!("tab {} could not be closed", target.tab_id),
             );
         }
+        self.keep_closed_tab(record);
         self.state.remove_plugin_pane_records(pane_ids);
         self.state.remove_unattached_terminal_ids(terminal_ids);
         self.shutdown_detached_terminal_runtimes();
@@ -1066,6 +1261,168 @@ mod tests {
         let response = app.handle_tab_create_child("req".into(), child_params(&tab.tab_id));
         assert!(response.contains("tab_create_failed"), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn a_closed_tab_reopens_with_its_layout_name_and_place_once() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        // a, b (split in two panes, named "agent"), c.
+        let mut workspace = Workspace::test_new("tabs");
+        let b = workspace.test_add_tab(Some("agent"));
+        workspace.active_tab = b;
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.test_add_tab(Some("c"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let first = app.public_tab_id(0, 0).unwrap();
+        let closed = app.public_tab_id(0, b).unwrap();
+        let panes_before = app.state.workspaces[0].tabs[b].layout.pane_ids().len();
+        assert_eq!(panes_before, 2);
+
+        let response = app.handle_tab_close(
+            "req".into(),
+            TabTarget {
+                tab_id: closed.clone(),
+            },
+        );
+        assert!(response.contains("\"ok\""), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+
+        let reopen = |app: &mut App| {
+            app.handle_tab_reopen_closed(
+                "req".into(),
+                crate::api::schema::TabReopenClosedParams {
+                    tab_id: closed.clone(),
+                    after_tab_id: Some(first.clone()),
+                    focus: true,
+                },
+            )
+        };
+        let response = reopen(&mut app);
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab, .. } = success.result else {
+            panic!("unexpected response: {response}");
+        };
+        assert_eq!(tab.label, "agent");
+        assert_ne!(tab.tab_id, closed, "a new id: public ids are never reused");
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), 3);
+        assert_eq!(ws.tabs[1].layout.pane_ids().len(), 2, "the split is back");
+        assert_eq!(ws.tabs[1].custom_name.as_deref(), Some("agent"));
+        assert_eq!(ws.active_tab, 1);
+        for pane_id in ws.tabs[1].layout.pane_ids() {
+            assert!(ws.public_pane_numbers.contains_key(&pane_id));
+        }
+        // Used up: a second reopen cannot bring it twice.
+        assert!(reopen(&mut app).contains("closed_tab_not_found"));
+
+        // Closing a tab's last pane keeps the tab too.
+        let c = app.state.workspaces[0].tabs.len() - 1;
+        let c_id = app.public_tab_id(0, c).unwrap();
+        let c_pane = app.state.workspaces[0].tabs[c].root_pane;
+        let c_pane_id = app.public_pane_id(0, c_pane).unwrap();
+        let response = app.handle_pane_close(
+            "req".into(),
+            crate::api::schema::PaneTarget { pane_id: c_pane_id },
+        );
+        assert!(response.contains("\"ok\""), "{response}");
+        let response = app.handle_tab_reopen_closed(
+            "req".into(),
+            crate::api::schema::TabReopenClosedParams {
+                tab_id: c_id,
+                after_tab_id: None,
+                focus: false,
+            },
+        );
+        assert!(response.contains("tab_created"), "{response}");
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].custom_name.as_deref(),
+            Some("c")
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn a_reopened_tab_resumes_its_agent_unless_that_session_runs_elsewhere() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("agent"));
+        workspace.test_add_tab(Some("agent again"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let session = || crate::agent_resume::PersistedAgentSession {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+        };
+        let set_session = |app: &mut App, tab_idx: usize| {
+            let pane = app.state.workspaces[0].tabs[tab_idx].root_pane;
+            let terminal_id = app.state.terminal_id_for_pane(0, pane).unwrap();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .persisted_agent_session = Some(session());
+        };
+        let close_and_reopen = |app: &mut App, tab_idx: usize| {
+            let tab_id = app.public_tab_id(0, tab_idx).unwrap();
+            let response = app.handle_tab_close(
+                "req".into(),
+                TabTarget {
+                    tab_id: tab_id.clone(),
+                },
+            );
+            assert!(response.contains("\"ok\""), "{response}");
+            let response = app.handle_tab_reopen_closed(
+                "req".into(),
+                crate::api::schema::TabReopenClosedParams {
+                    tab_id,
+                    after_tab_id: None,
+                    focus: false,
+                },
+            );
+            assert!(response.contains("tab_created"), "{response}");
+            // Reopened first.
+            let pane = app.state.workspaces[0].tabs[0].root_pane;
+            let terminal_id = app.state.terminal_id_for_pane(0, pane).unwrap();
+            app.state.terminals[&terminal_id]
+                .pending_agent_resume_plan
+                .is_some()
+        };
+
+        set_session(&mut app, 1);
+        assert!(close_and_reopen(&mut app, 1), "its agent resumes");
+
+        // The same session is live in another tab (the reopened one is
+        // pending already): a second copy must not resume it.
+        set_session(&mut app, 2);
+        assert!(
+            !close_and_reopen(&mut app, 2),
+            "never two agents on one session"
+        );
         shutdown_test_runtimes(&mut app);
     }
 

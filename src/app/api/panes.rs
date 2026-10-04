@@ -2137,6 +2137,13 @@ impl App {
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        // The tab's last pane closes the tab: keep it for reopening, as
+        // `tab.close` does.
+        let closed_tab = self.state.workspaces.get(ws_idx).and_then(|ws| {
+            let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+            (ws.tabs.get(tab_idx)?.panes.len() == 1 && ws.tabs.len() > 1).then_some(tab_idx)
+        });
+        let closed_tab = closed_tab.and_then(|tab_idx| self.closed_tab_record(ws_idx, tab_idx));
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
@@ -2163,6 +2170,7 @@ impl App {
                 },
             });
         } else {
+            self.keep_closed_tab(closed_tab);
             self.state.remove_unattached_terminal_ids(terminal_id);
             self.shutdown_detached_terminal_runtimes();
             self.schedule_session_save();

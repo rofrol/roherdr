@@ -337,7 +337,7 @@ fn capture_workspace(
     }
 }
 
-fn capture_tab(
+pub(crate) fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
         crate::terminal::TerminalId,

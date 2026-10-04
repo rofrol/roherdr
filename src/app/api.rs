@@ -1161,6 +1161,9 @@ impl App {
             Method::TabCreateAfter(params) => {
                 return self.handle_tab_create_after(request.id, params);
             }
+            Method::TabReopenClosed(params) => {
+                return self.handle_tab_reopen_closed(request.id, params);
+            }
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
