@@ -59,6 +59,8 @@ pub struct WorkspaceSnapshot {
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_creator_tab: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bookmarked: bool,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -185,6 +187,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             identity_cwd,
             worktree_space: None,
             worktree_creator_tab: None,
+            bookmarked: false,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -324,6 +327,7 @@ fn capture_workspace(
         identity_cwd,
         worktree_space: ws.worktree_space.clone(),
         worktree_creator_tab: ws.worktree_creator_tab.clone(),
+        bookmarked: ws.bookmarked,
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -750,6 +754,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
                 worktree_creator_tab: None,
+                bookmarked: false,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -1486,6 +1491,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
                 worktree_creator_tab: None,
+                bookmarked: false,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

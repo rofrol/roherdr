@@ -1170,6 +1170,9 @@ impl App {
             Method::TabSetParent(params) => return self.handle_tab_set_parent(request.id, params),
             Method::TabSetStatus(params) => return self.handle_tab_set_status(request.id, params),
             Method::TabBookmark(params) => return self.handle_tab_bookmark(request.id, params),
+            Method::WorkspaceBookmark(params) => {
+                return self.handle_workspace_bookmark(request.id, params);
+            }
             Method::TabSetJobMetadata(params) => {
                 return self.handle_tab_set_job_metadata(request.id, params);
             }

@@ -20,6 +20,14 @@ pub struct WorkspaceCreateParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceBookmarkParams {
+    pub workspace_id: String,
+    /// True to bookmark the workspace, false to remove the bookmark;
+    /// repeating it is harmless. Its tabs' bookmarks are separate.
+    pub bookmarked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceCloseParams {
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "super::is_false")]
@@ -84,6 +92,9 @@ pub struct WorkspaceInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktreeInfo>,
+    /// The user bookmarked the workspace (`workspace.bookmark`).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub bookmarked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

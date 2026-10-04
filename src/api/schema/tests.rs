@@ -804,6 +804,7 @@ fn worktree_request_and_response_round_trip() {
         id: "req_worktree".into(),
         result: ResponseResult::WorktreeCreated {
             workspace: WorkspaceInfo {
+                bookmarked: false,
                 workspace_id: "w_1".into(),
                 number: 2,
                 label: "herdr".into(),
@@ -897,6 +898,7 @@ fn worktree_lifecycle_events_round_trip() {
     assert_eq!(restored, subscription);
 
     let workspace = WorkspaceInfo {
+        bookmarked: false,
         workspace_id: "w_2".into(),
         number: 2,
         label: "herdr".into(),

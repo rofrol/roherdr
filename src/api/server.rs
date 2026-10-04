@@ -629,6 +629,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkspaceMoveBlock(_) => "workspace.move_block",
         Method::WorkspaceReportMetadata(_) => "workspace.report_metadata",
         Method::WorkspaceClose(_) => "workspace.close",
+        Method::WorkspaceBookmark(_) => "workspace.bookmark",
         Method::WorktreeList(_) => "worktree.list",
         Method::WorktreeCreate(_) => "worktree.create",
         Method::WorktreeCreateFromPane(_) => "worktree.create_from_pane",

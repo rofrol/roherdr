@@ -813,6 +813,9 @@ pub(super) enum ClientContextMenuTarget {
         has_worktree_children: bool,
         close_group: bool,
         collapsed: bool,
+        /// The space's bookmark when the menu opened, or none when the
+        /// server cannot bookmark spaces (no menu item then).
+        bookmarked: Option<bool>,
     },
     Tab {
         tab_id: String,

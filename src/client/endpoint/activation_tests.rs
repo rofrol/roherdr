@@ -139,6 +139,7 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
         id: id.into(),
         result: crate::api::schema::ResponseResult::WorkspaceInfo {
             workspace: crate::api::schema::WorkspaceInfo {
+                bookmarked: false,
                 workspace_id: workspace_id.into(),
                 number: 1,
                 label: workspace_id.into(),

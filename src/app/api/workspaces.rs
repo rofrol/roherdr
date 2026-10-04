@@ -115,6 +115,29 @@ impl App {
         }
     }
 
+    pub(super) fn handle_workspace_bookmark(
+        &mut self,
+        id: String,
+        params: crate::api::schema::WorkspaceBookmarkParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let Some(workspace) = self.state.workspaces.get_mut(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        if workspace.bookmarked != params.bookmarked {
+            workspace.bookmarked = params.bookmarked;
+            self.schedule_session_save();
+        }
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(index),
+            },
+        )
+    }
+
     pub(super) fn handle_workspace_focus(&mut self, id: String, target: WorkspaceTarget) -> String {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
@@ -420,6 +443,58 @@ mod tests {
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the
     // focused pane too, not the source workspace's first-tab root pane.
+    #[tokio::test]
+    async fn workspace_bookmark_is_idempotent_and_saved_with_the_session() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("space")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let bookmark = |app: &mut App, bookmarked: bool| {
+            app.handle_workspace_bookmark(
+                "req".into(),
+                crate::api::schema::WorkspaceBookmarkParams {
+                    workspace_id: workspace_id.clone(),
+                    bookmarked,
+                },
+            )
+        };
+        for _ in 0..2 {
+            let response = bookmark(&mut app, true);
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::WorkspaceInfo { workspace } = success.result else {
+                panic!("unexpected response: {response}");
+            };
+            assert!(workspace.bookmarked);
+        }
+        let snapshot = crate::persist::capture(
+            &app.state.workspaces,
+            &app.state.terminals,
+            &app.terminal_runtimes,
+            app.state.active,
+            app.state.selected,
+        );
+        assert!(snapshot.workspaces[0].bookmarked);
+        bookmark(&mut app, false);
+        assert!(!app.state.workspaces[0].bookmarked);
+        assert!(bookmark(&mut app, false).contains("workspace_info"));
+        let missing = app.handle_workspace_bookmark(
+            "req".into(),
+            crate::api::schema::WorkspaceBookmarkParams {
+                workspace_id: "nope".into(),
+                bookmarked: true,
+            },
+        );
+        assert!(missing.contains("workspace_not_found"), "{missing}");
+    }
+
     #[tokio::test]
     async fn workspace_create_after_puts_the_space_after_the_whole_worktree_group() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};

@@ -58,6 +58,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "usage.set_enabled",
     "usage.set_provider",
     "usage.settings",
+    "workspace.bookmark",
     "workspace.close",
     "workspace.create",
     "workspace.create_after",
@@ -356,6 +357,10 @@ mod tests {
         assert_eq!(
             actual.remove("tab.set_job_metadata").as_deref(),
             Some("e3dc32ecde73fad8b157285ecfd53bf0a9a99ad7b2932afc44d6cd56c437c422")
+        );
+        assert_eq!(
+            actual.remove("workspace.bookmark").as_deref(),
+            Some("e948c2ad39d99875a798f49d49d1b3c5566c68e3bab5c73c582c3285585c35b1")
         );
         assert_eq!(
             actual.remove("workspace.create_after").as_deref(),

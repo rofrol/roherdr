@@ -50,6 +50,28 @@ impl ClientContextMenuOverlay {
     }
 
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
+        let mut items = self.target_items();
+        // A space's bookmark toggle, last, so the other items keep their
+        // places.
+        if let ClientContextMenuTarget::Workspace {
+            bookmarked: Some(bookmarked),
+            ..
+        } = &self.target
+        {
+            items.push(ClientContextMenuItem {
+                label: if *bookmarked {
+                    "Remove from bookmarks"
+                } else {
+                    "Add to bookmarks"
+                }
+                .to_owned(),
+                action: ClientContextMenuAction::ToggleBookmark,
+            });
+        }
+        items
+    }
+
+    fn target_items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
         let item = |label: &str, action| ClientContextMenuItem {
@@ -243,16 +265,23 @@ impl ClientContextMenuOverlay {
 
 impl ClientShellState {
     pub(super) fn open_workspace_context_menu(&mut self, workspace_id: String, x: u16, y: u16) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(workspace) = snapshot
+        if let Some(menu) = self.workspace_context_menu(workspace_id, x, y) {
+            self.overlay = Some(ClientShellOverlay::ContextMenu(menu));
+        }
+    }
+
+    /// The space's menu at `(x, y)`; none when the space is gone.
+    pub(super) fn workspace_context_menu(
+        &self,
+        workspace_id: String,
+        x: u16,
+        y: u16,
+    ) -> Option<ClientContextMenuOverlay> {
+        let snapshot = self.snapshot.as_deref()?;
+        let workspace = snapshot
             .workspaces
             .iter()
-            .find(|workspace| workspace.workspace_id == workspace_id)
-        else {
-            return;
-        };
+            .find(|workspace| workspace.workspace_id == workspace_id)?;
         let worktree = workspace.worktree.as_ref();
         let has_worktree_children = worktree.is_some_and(|worktree| {
             !worktree.is_linked_worktree
@@ -266,7 +295,15 @@ impl ClientShellState {
         let collapsed = worktree.is_some_and(|worktree| {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
-        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+        let bookmarked = self
+            .supports_endpoint_method(&crate::api::schema::Method::WorkspaceBookmark(
+                crate::api::schema::WorkspaceBookmarkParams {
+                    workspace_id: String::new(),
+                    bookmarked: true,
+                },
+            ))
+            .then_some(workspace.bookmarked);
+        Some(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace {
                 workspace_id,
                 is_git: worktree.is_some() || workspace.branch.is_some(),
@@ -274,11 +311,12 @@ impl ClientShellState {
                 has_worktree_children,
                 close_group,
                 collapsed,
+                bookmarked,
             },
             x,
             y,
             highlighted: 0,
-        }));
+        })
     }
 
     /// Opens the sort choice under the header button at `(x, y)`.
@@ -581,7 +619,7 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    fn activate_workspace_context_action(
+    pub(super) fn activate_workspace_context_action(
         &mut self,
         workspace_id: String,
         close_group: bool,
@@ -612,6 +650,23 @@ impl ClientShellState {
             }
             ClientContextMenuAction::Close => {
                 self.request_workspace_close(workspace_id, Some(close_group), outcome);
+            }
+            ClientContextMenuAction::ToggleBookmark => {
+                // The flag now, not when the menu opened.
+                let bookmarked = self.snapshot.as_deref().is_some_and(|snapshot| {
+                    snapshot.workspaces.iter().any(|workspace| {
+                        workspace.workspace_id == workspace_id && workspace.bookmarked
+                    })
+                });
+                self.push_endpoint_method(
+                    crate::api::schema::Method::WorkspaceBookmark(
+                        crate::api::schema::WorkspaceBookmarkParams {
+                            workspace_id,
+                            bookmarked: !bookmarked,
+                        },
+                    ),
+                    outcome,
+                );
             }
             ClientContextMenuAction::NewWorktree => {
                 self.begin_worktree_action_for(KeybindAction::NewWorktree, workspace_id, outcome)

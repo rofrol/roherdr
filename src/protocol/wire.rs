@@ -1041,6 +1041,9 @@ pub struct ClientShellWorkspace {
     /// skipping a field breaks the bincode form of this type.
     #[serde(default)]
     pub worktree_creator_tab_id: Option<String>,
+    /// The user bookmarked the space; older servers do not send it.
+    #[serde(default)]
+    pub bookmarked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2858,6 +2861,7 @@ mod tests {
             agent_view_label: None,
             agent_order: Vec::new(),
             workspaces: vec![ClientShellWorkspace {
+                bookmarked: false,
                 worktree_creator_tab_id: None,
                 workspace_id: "w1".into(),
                 active_tab_id: "w1:t1".into(),

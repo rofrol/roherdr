@@ -18,6 +18,8 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => workspace_rename(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "close" => workspace_close(&args[1..]),
+        "bookmark" => workspace_bookmark(&args[1..], true),
+        "unbookmark" => workspace_bookmark(&args[1..], false),
         "help" | "--help" | "-h" => {
             print_workspace_help();
             Ok(0)
@@ -250,4 +252,25 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace rename <workspace_id> <label>");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id> [--group]");
+    eprintln!("  herdr workspace bookmark <workspace_id>");
+    eprintln!("  herdr workspace unbookmark <workspace_id>");
+}
+
+fn workspace_bookmark(args: &[String], bookmarked: bool) -> std::io::Result<i32> {
+    let (Some(workspace_id), 1) = (args.first(), args.len()) else {
+        eprintln!(
+            "usage: herdr workspace {} <workspace_id>",
+            if bookmarked { "bookmark" } else { "unbookmark" }
+        );
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&crate::api::schema::Request {
+        id: "cli:workspace:bookmark".into(),
+        method: crate::api::schema::Method::WorkspaceBookmark(
+            crate::api::schema::WorkspaceBookmarkParams {
+                workspace_id: super::normalize_workspace_id(workspace_id),
+                bookmarked,
+            },
+        ),
+    })?)
 }

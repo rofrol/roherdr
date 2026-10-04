@@ -3978,3 +3978,53 @@ fn reopening_asks_the_server_for_the_closed_tab_and_falls_back_when_it_is_gone()
     let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
     assert!(notice.body.contains("no longer kept"), "{}", notice.body);
 }
+
+#[test]
+fn a_bookmarked_space_is_listed_first_and_its_row_jumps_to_it() {
+    use crate::api::schema::Method;
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].bookmarked = true;
+    projected.tabs[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(state.bookmark_count(), 2, "spaces and tabs count together");
+    state.compose(106, 30).unwrap();
+    let button = state.hits.bookmarks_list_button;
+    left_click(&mut state, (button.x + 1, button.y));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let (first, _) = state.hits.notification_log_rows[0];
+    assert!(
+        rows[first.y as usize].contains("▤"),
+        "the space first: {}",
+        rows[first.y as usize]
+    );
+
+    // Its menu is the space's, with the bookmark toggle.
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+        column: first.x + 3,
+        row: first.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let (remove, _) = *state
+        .hits
+        .list_menu_rows
+        .iter()
+        .find(|(rect, _)| rows[rect.y as usize].contains("Remove from bookmarks"))
+        .expect("the space's bookmark item");
+    let outcome = left_click(&mut state, (remove.x + 2, remove.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, Method::WorkspaceBookmark(params)
+                if params.workspace_id == "ws_1" && !params.bookmarked))));
+
+    // A click on the row focuses the space.
+    let outcome = left_click(&mut state, (first.x + 3, first.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_1"))));
+}
