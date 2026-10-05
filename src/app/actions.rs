@@ -1594,6 +1594,18 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::AgentSessionForgotten {
+                pane_id,
+                source,
+                agent_label,
+                seq,
+                session_ref,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.forget_agent_session(&source, &agent_label, &session_ref, Some(seq))
+                })
+                .into_iter()
+                .collect(),
             AppEvent::HookAuthorityCleared {
                 pane_id,
                 source,

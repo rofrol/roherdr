@@ -304,9 +304,15 @@ herdr pane release-agent <pane_id> \
   --source ID \
   --agent LABEL \
   [--seq N]
+
+herdr pane forget-agent-session <pane_id> \
+  --source ID \
+  --agent LABEL \
+  --seq N \
+  (--agent-session-id ID | --agent-session-path PATH)
 ```
 
-`report-agent-session` updates native session identity without reporting lifecycle state. `release-agent` ends that source's lifecycle authority when its agent process exits.
+`report-agent-session` updates native session identity without reporting lifecycle state. `release-agent` ends that source's lifecycle authority when its agent process exits. `forget-agent-session` tells Herdr the user ended that session, so a server restart does not resume it (see [`pane.forget_agent_session`](/docs/socket-api/)).
 
 Arguments after `--` are the command Herdr runs to resume this session after a server restart. The first argument must be a plain command name on `PATH`, and no argument may contain an apostrophe.
 

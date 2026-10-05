@@ -2779,6 +2779,44 @@
           ],
           "type": "object"
         },
+        "PaneForgetAgentSessionParams": {
+          "description": "The user ended this agent session (for example with `/exit`), so a restart\nmust not resume it. Only the matching session is forgotten, and a report\nolder than the pane's latest session report is ignored.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "agent_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_session_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "agent",
+            "seq"
+          ],
+          "type": "object"
+        },
         "PaneInputSetParams": {
           "properties": {
             "pane_id": {
@@ -6908,6 +6946,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReleaseAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.forget_agent_session",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneForgetAgentSessionParams"
             }
           },
           "required": [

@@ -287,6 +287,63 @@ PY
   exit 0
 fi
 
+# SessionEnd hook: the user ended the session (`/exit`, Ctrl-D, `/logout`), so herdr forgets it
+# and a restart does not resume it. A session that ends any other way, such as a signal when the
+# OS logs out, stays resumable. Runs before Claude exits, so herdr sees it before the exit.
+if [ "$action" = "session-end" ]; then
+  [ "${HERDR_ENV:-}" = "1" ] || exit 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  command -v python3 >/dev/null 2>&1 || exit 0
+  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+import json
+import os
+import random
+import socket
+import time
+
+try:
+    with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
+        hook_input = json.loads(handle.read() or "{}")
+except Exception:
+    raise SystemExit(0)
+if hook_input.get("hook_event_name") != "SessionEnd" or hook_input.get("agent_id"):
+    raise SystemExit(0)
+if hook_input.get("reason") not in ("prompt_input_exit", "logout"):
+    raise SystemExit(0)
+session_id = hook_input.get("session_id")
+if not isinstance(session_id, str) or not session_id:
+    raise SystemExit(0)
+source = "herdr:claude"
+params = {
+    "pane_id": os.environ["HERDR_PANE_ID"],
+    "source": source,
+    "agent": "claude",
+    "seq": time.time_ns(),
+    "agent_session_id": session_id,
+}
+request = {
+    "id": f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}",
+    "method": "pane.forget_agent_session",
+    "params": params,
+}
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    client.connect(os.environ["HERDR_SOCKET_PATH"])
+    client.sendall((json.dumps(request) + "\n").encode())
+    try:
+        client.recv(4096)
+    except Exception:
+        pass
+    client.close()
+except Exception:
+    pass
+PY
+  exit 0
+fi
+
 case "$action" in
   session) ;;
   *) exit 0 ;;

@@ -1275,6 +1275,9 @@ impl App {
             Method::PaneReleaseAgent(params) => {
                 return self.handle_pane_release_agent(request.id, params);
             }
+            Method::PaneForgetAgentSession(params) => {
+                return self.handle_pane_forget_agent_session(request.id, params);
+            }
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
             Method::PaneSendInput(params) => {
                 return self.handle_pane_send_input(request.id, params);
@@ -2355,6 +2358,73 @@ mod tests {
         assert_eq!(tab.layout.focused(), previous_focus);
         assert!(!tab.zoomed);
         assert!(app.overlay_panes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forget_agent_session_request_drops_the_claude_session_from_saves() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("forget")];
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+        let target = app.public_pane_id(0, pane_id).unwrap();
+        let request = |method: &str, params: serde_json::Value| {
+            serde_json::from_value::<crate::api::schema::Request>(serde_json::json!({
+                "id": method,
+                "method": method,
+                "params": params,
+            }))
+            .unwrap()
+        };
+        let session = |seq: u64| {
+            serde_json::json!({
+                "pane_id": target,
+                "source": "herdr:claude",
+                "agent": "claude",
+                "seq": seq,
+                "agent_session_id": "ended-by-user",
+            })
+        };
+        let mut started = session(10);
+        started["session_start_source"] = "startup".into();
+        app.handle_api_request(request("pane.report_agent_session", started));
+        assert!(app.state.terminals[&terminal_id]
+            .persisted_agent_session
+            .is_some());
+        app.state.session_dirty = false;
+
+        let response = app.handle_api_request(request("pane.forget_agent_session", session(20)));
+
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(response.get("error").is_none(), "{response}");
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.persisted_agent_session.is_none());
+        assert!(terminal.exited_agent_session().is_none());
+        assert!(app.state.session_dirty);
+
+        let mut missing_session = session(30);
+        missing_session
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_session_id");
+        let response =
+            app.handle_api_request(request("pane.forget_agent_session", missing_session));
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["error"]["code"], "invalid_agent_session");
     }
 
     #[tokio::test]

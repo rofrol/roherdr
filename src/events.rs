@@ -157,6 +157,14 @@ pub enum AppEvent {
         source: Option<String>,
         seq: Option<u64>,
     },
+    /// The user ended this agent session, so a restart must not resume it.
+    AgentSessionForgotten {
+        pane_id: PaneId,
+        source: String,
+        agent_label: String,
+        seq: u64,
+        session_ref: crate::agent_resume::AgentSessionRef,
+    },
     /// The current detected agent gracefully released this pane back to the shell.
     HookAgentReleased {
         pane_id: PaneId,

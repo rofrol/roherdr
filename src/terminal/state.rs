@@ -141,6 +141,16 @@ pub struct TerminalState {
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// The Claude session whose process left the pane without the user ending
+    /// it: a signal (OS logout or shutdown, `kill`) or a crash. Only session
+    /// saves read it, so a restart resumes the session; live agent tracking
+    /// never sees it. Dropped when the user ends the session (`/exit`), when
+    /// another session or agent takes the pane, or when the pane respawns.
+    exited_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// The latest report sequence of the exited session's run. The process
+    /// exit resets the source's sequence, so this keeps a forget from an
+    /// earlier run of a resumed session from dropping it.
+    exited_agent_session_seq: Option<u64>,
     reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
     reported_resume_revision: u64,
     pub terminal_title: Option<String>,
@@ -195,6 +205,8 @@ impl TerminalState {
             agent_metadata: HashMap::new(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
+            exited_agent_session: None,
+            exited_agent_session_seq: None,
             reported_resume: None,
             reported_resume_revision: 0,
             terminal_title: None,
@@ -507,6 +519,15 @@ impl TerminalState {
             };
         }
         self.detected_agent = agent;
+        let exited_session_replaced = !process_exited
+            && agent.is_some()
+            && self
+                .exited_agent_session
+                .as_ref()
+                .is_some_and(|session| crate::detect::parse_agent_label(&session.agent) != agent);
+        if exited_session_replaced {
+            self.exited_agent_session = None;
+        }
         if process_exited || agent != Some(Agent::Codex) || fallback_state == AgentState::Blocked {
             self.codex_prompt_ready = false;
         }
@@ -538,6 +559,11 @@ impl TerminalState {
             self.recent_agent_process_exit = None;
         }
         if process_exited {
+            // Read before the exit resets the source's report sequence below.
+            let persisted_session_seq = self
+                .persisted_agent_session
+                .as_ref()
+                .and_then(|session| self.hook_report_sequences.get(&session.source).copied());
             let mut reset_sources = Vec::new();
             let mut stale_sessions = Vec::new();
             for (source, suppressed) in &mut self.suppressed_full_lifecycle_hook_reports {
@@ -637,7 +663,14 @@ impl TerminalState {
                         crate::detect::parse_agent_label(&session.agent) == agent
                     })
             {
-                self.persisted_agent_session = None;
+                // Claude ends a session the user closes with a SessionEnd hook
+                // that forgets it before the process exits, so a session still
+                // here was ended by something else and stays resumable.
+                self.exited_agent_session = self
+                    .persisted_agent_session
+                    .take()
+                    .filter(retains_session_after_process_exit);
+                self.exited_agent_session_seq = persisted_session_seq;
             }
             if !newer_custom_authority
                 && agent.is_some()
@@ -732,8 +765,8 @@ impl TerminalState {
         }
         TerminalStateMutation {
             effective_state_change,
-            session_ref_changed: previous_session
-                != self.current_session_identity_for_persistence(),
+            session_ref_changed: exited_session_replaced
+                || previous_session != self.current_session_identity_for_persistence(),
             agent_released,
         }
     }
@@ -882,6 +915,7 @@ impl TerminalState {
             }
         }
         self.persisted_agent_session = None;
+        self.exited_agent_session = None;
         self.hook_authority = Some(HookAuthority {
             source,
             agent_label,
@@ -1319,6 +1353,7 @@ impl TerminalState {
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
             self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
+            self.exited_agent_session = None;
             self.persisted_agent_session = Some(crate::agent_resume::PersistedAgentSession {
                 source: source.clone(),
                 agent: agent_label,
@@ -1527,13 +1562,29 @@ impl TerminalState {
         &mut self,
         session: crate::agent_resume::PersistedAgentSession,
     ) {
+        self.exited_agent_session = None;
         self.persisted_agent_session = Some(session);
+    }
+
+    /// A restored pane whose agent had already exited: the session is saved
+    /// again but nothing resumes it until the server restarts.
+    pub fn set_exited_agent_session(
+        &mut self,
+        session: crate::agent_resume::PersistedAgentSession,
+    ) {
+        self.exited_agent_session = Some(session);
+        self.exited_agent_session_seq = None;
+    }
+
+    pub fn exited_agent_session(&self) -> Option<&crate::agent_resume::PersistedAgentSession> {
+        self.exited_agent_session.as_ref()
     }
 
     pub fn set_managed_agent_launch_session(
         &mut self,
         session: crate::agent_resume::PersistedAgentSession,
     ) {
+        self.exited_agent_session = None;
         self.persisted_agent_session = Some(session.clone());
         self.managed_agent_launch_session = Some(session);
     }
@@ -1776,6 +1827,7 @@ impl TerminalState {
         if self.managed_agent_launch_session.as_ref() == Some(&persisted_session) {
             self.managed_agent_launch_session = None;
         }
+        self.exited_agent_session = None;
         self.persisted_agent_session = Some(persisted_session);
         let current_session = self.current_session_identity_for_persistence();
         if previous_session.is_some() && previous_session != current_session {
@@ -1971,6 +2023,70 @@ impl TerminalState {
             ),
             session_ref_changed: previous_session != current_session,
             agent_released: !process_owns_agent,
+        })
+    }
+
+    /// The user ended this agent session (`/exit`), so a restart must not
+    /// resume it: drop it whether or not its process exit was seen yet. A
+    /// report older than the pane's latest session report belongs to an
+    /// earlier run of a session that was resumed since, and is ignored.
+    pub fn forget_agent_session(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        session_ref: &crate::agent_resume::AgentSessionRef,
+        seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        let matches = |session: &crate::agent_resume::PersistedAgentSession| {
+            session.source == source
+                && session.agent == agent_label
+                && session.session_ref == *session_ref
+        };
+        let live = self.persisted_agent_session.as_ref().is_some_and(matches);
+        let reported = self.hook_authority.as_ref().is_some_and(|authority| {
+            authority.source == source
+                && authority.agent_label == agent_label
+                && authority.session_ref.as_ref() == Some(session_ref)
+        });
+        let exited = self.exited_agent_session.as_ref().is_some_and(matches)
+            && self
+                .exited_agent_session_seq
+                .is_none_or(|exited_seq| seq.is_some_and(|seq| seq > exited_seq));
+        if !live && !reported && !exited {
+            return None;
+        }
+        seq?;
+        if !self.accept_hook_report(source, seq) {
+            return None;
+        }
+        let now = Instant::now();
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        if live {
+            self.persisted_agent_session = None;
+        }
+        if reported {
+            // The agent keeps its lifecycle authority; only the session that
+            // a save would resume goes.
+            if let Some(authority) = self.hook_authority.as_mut() {
+                authority.session_ref = None;
+            }
+        }
+        if exited {
+            self.exited_agent_session = None;
+        }
+        Some(TerminalStateMutation {
+            effective_state_change: self.recompute_effective_state(
+                previous_agent_label,
+                previous_known_agent,
+                previous_state,
+                previous_presentation,
+                now,
+            ),
+            session_ref_changed: true,
+            agent_released: false,
         })
     }
 
@@ -2499,6 +2615,7 @@ impl TerminalState {
         self.fallback_observed_at = None;
         self.hook_authority = None;
         self.persisted_agent_session = None;
+        self.exited_agent_session = None;
         self.agent_metadata.clear();
         self.metadata_report_agents.clear();
         self.suppressed_full_lifecycle_hook_reports.clear();
@@ -2615,6 +2732,15 @@ impl TerminalState {
 
 pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection) -> AgentState {
     detection.state
+}
+
+/// Only Claude reports how a session ends (its SessionEnd hook forgets a
+/// session the user closed), so only its sessions survive a process exit;
+/// other agents keep treating any exit as the user leaving.
+fn retains_session_after_process_exit(
+    session: &crate::agent_resume::PersistedAgentSession,
+) -> bool {
+    (session.source.as_str(), session.agent.as_str()) == ("herdr:claude", "claude")
 }
 
 #[cfg(test)]
@@ -6640,5 +6766,276 @@ mod tests {
             terminal.hook_authority.as_ref().unwrap().source,
             "custom:pi"
         );
+    }
+
+    fn claude_session(id: &str) -> crate::agent_resume::AgentSessionRef {
+        crate::agent_resume::AgentSessionRef::id(id).unwrap()
+    }
+
+    /// A pane running Claude with session `id`, reported at `seq`.
+    fn claude_terminal_with_session(id: &str, seq: u64) -> TerminalState {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:claude".into(),
+                "claude".into(),
+                Some(claude_session(id)),
+                Some(seq),
+                Some("startup".into()),
+            )
+            .is_some());
+        terminal
+    }
+
+    fn exit_agent_process(terminal: &mut TerminalState, agent: Agent) {
+        terminal.set_detected_state_with_visible_blocker(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            false,
+            true,
+        );
+    }
+
+    fn exited_session_value(terminal: &TerminalState) -> Option<&str> {
+        terminal
+            .exited_agent_session()
+            .map(|session| session.session_ref.value.as_str())
+    }
+
+    #[test]
+    fn claude_session_stays_saved_after_its_process_exits() {
+        let mut terminal = claude_terminal_with_session("signal-exit", 10);
+
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert!(terminal.persisted_agent_session.is_none());
+        assert_eq!(terminal.effective_agent_label(), None);
+        assert_eq!(exited_session_value(&terminal), Some("signal-exit"));
+    }
+
+    #[test]
+    fn other_agents_still_forget_their_session_when_the_process_exits() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Hermes), AgentState::Idle);
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:hermes".into(),
+            "hermes".into(),
+            Some(crate::agent_resume::AgentSessionRef::id("hermes-root").unwrap()),
+            Some(10),
+            Some("startup".into()),
+        );
+        assert!(terminal.persisted_agent_session.is_some());
+
+        exit_agent_process(&mut terminal, Agent::Hermes);
+
+        assert!(terminal.persisted_agent_session.is_none());
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn forgetting_a_session_before_its_exit_leaves_nothing_to_resume() {
+        let mut terminal = claude_terminal_with_session("user-exit", 10);
+
+        let forgotten = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("user-exit"),
+            Some(20),
+        );
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert!(forgotten.is_some_and(|mutation| mutation.session_ref_changed));
+        assert!(terminal.persisted_agent_session.is_none());
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn forgetting_a_session_after_its_exit_drops_the_saved_session() {
+        let mut terminal = claude_terminal_with_session("slow-hook", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        let forgotten = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("slow-hook"),
+            Some(20),
+        );
+
+        assert!(forgotten.is_some_and(|mutation| mutation.session_ref_changed));
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn forgetting_another_session_or_without_a_sequence_changes_nothing() {
+        let mut terminal = claude_terminal_with_session("kept", 10);
+
+        let other = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("other"),
+            Some(20),
+        );
+        let unsequenced =
+            terminal.forget_agent_session("herdr:claude", "claude", &claude_session("kept"), None);
+
+        assert!(other.is_none());
+        assert!(unsequenced.is_none());
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("kept")
+        );
+    }
+
+    #[test]
+    fn a_late_forget_does_not_drop_the_session_resumed_since() {
+        let mut terminal = claude_terminal_with_session("resumed", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:claude".into(),
+                "claude".into(),
+                Some(claude_session("resumed")),
+                Some(30),
+                Some("resume".into()),
+            )
+            .is_some());
+        assert!(terminal.exited_agent_session().is_none());
+
+        // The forget of the first run arrives only now.
+        let forgotten = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("resumed"),
+            Some(20),
+        );
+
+        assert!(forgotten.is_none());
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("resumed")
+        );
+    }
+
+    #[test]
+    fn a_new_claude_session_replaces_the_exited_one() {
+        let mut terminal = claude_terminal_with_session("old", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        // The same agent starting again does not drop the old session before
+        // the new one reports, so a save in between still has one to resume.
+        assert_eq!(exited_session_value(&terminal), Some("old"));
+
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:claude".into(),
+            "claude".into(),
+            Some(claude_session("new")),
+            Some(30),
+            Some("startup".into()),
+        );
+
+        assert!(terminal.exited_agent_session().is_none());
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn another_agent_taking_the_pane_drops_the_exited_session() {
+        let mut terminal = claude_terminal_with_session("replaced", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        let mutation =
+            terminal.set_detected_state_with_mutation(Some(Agent::Codex), AgentState::Idle);
+
+        assert!(mutation.session_ref_changed);
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn respawn_drops_the_exited_session() {
+        let mut terminal = claude_terminal_with_session("respawned", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        terminal.clear_agent_runtime_identity_after_respawn();
+
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn a_late_forget_does_not_drop_a_resumed_session_that_exited_again() {
+        let mut terminal = claude_terminal_with_session("resumed-twice", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:claude".into(),
+            "claude".into(),
+            Some(claude_session("resumed-twice")),
+            Some(30),
+            Some("resume".into()),
+        );
+        // The resumed run is stopped by a signal too, which resets the
+        // source's report sequence.
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        // The forget of the first run arrives only now.
+        let forgotten = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("resumed-twice"),
+            Some(20),
+        );
+
+        assert!(forgotten.is_none());
+        assert_eq!(exited_session_value(&terminal), Some("resumed-twice"));
+        let newer = terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("resumed-twice"),
+            Some(40),
+        );
+        assert!(newer.is_some());
+        assert!(terminal.exited_agent_session().is_none());
+    }
+
+    #[test]
+    fn forgetting_a_reported_session_keeps_the_reporter_authority() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
+        let session = crate::agent_resume::AgentSessionRef::id("codex-session").unwrap();
+        terminal.set_hook_authority_with_session_ref(
+            "herdr:codex".into(),
+            "codex".into(),
+            AgentState::Working,
+            None,
+            Some(session.clone()),
+            Some(10),
+        );
+        assert!(terminal
+            .hook_authority
+            .as_ref()
+            .is_some_and(|authority| authority.session_ref.is_some()));
+
+        let forgotten =
+            terminal.forget_agent_session("herdr:codex", "codex", &session, Some(u64::MAX));
+
+        assert!(forgotten.is_some());
+        let authority = terminal
+            .hook_authority
+            .as_ref()
+            .expect("the reporter keeps its authority");
+        assert!(authority.session_ref.is_none());
     }
 }
