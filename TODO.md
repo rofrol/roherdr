@@ -4518,9 +4518,19 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     not coalition, or need private entitlements); `launchctl submit`
     (legacy); MiMo's `waitid` on the agent to log its signal (the agent is
     the shell's child, not herdr's); auto-resume without the user's click.
-  - Recovery: offer a grouped "N agents stopped, resume?" with one click,
-    using the session ids herdr already keeps; never resume automatically
-    (side effects of a half-done tool call, duplicate sessions).
+  - Recovery, decided by the user on 2026-10-06 (overrides the earlier
+    "ask first" plan): resume a Claude agent killed by a signal
+    automatically, in the same pane, without asking, and show a short
+    notice "resumed N agents" with the `?` restored. `claude --resume` only
+    loads the conversation and runs nothing, and herdr already resumes
+    agents on its own after a restart and a logout, so asking only here
+    would be inconsistent. Guards: never when the same session already
+    runs in another pane; at most once per session, then a notice instead
+    (a `claude` that dies on start must not loop); never after `/exit`
+    (the `SessionEnd` hook has forgotten the session by then).
+  - Not done: reproduce the kill with disposable agents (plan above), and
+    explain why ~12 agents in the same coalition survived. The LaunchAgent
+    fix below waits for that reproduction.
   - Until then, the user's side: do not Force Quit a "Ghostty" entry that
     shows up after Ghostty has quit; Cmd+Q is enough.
   - The `?` mark: today it survives a live handoff but not the agent's exit
@@ -4644,6 +4654,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   held in `hook_authority`, and a restore with resuming off put an exited
   session back into the live slot. Checked live on the installed build:
   SIGTERM saves the session with `exited: true`, `/exit` forgets it.
+  Known gap, not fixed (2026-10-06): a forget shares the source's sequence
+  guard with every other report, so a report with a later `seq` processed
+  before the forget makes the forget fail, and the `/exit`ed session
+  resumes after a restart (nothing is lost). Claude sends only `SessionEnd`
+  around `/exit`, so no later report exists today; fix it (a separate
+  sequence for forgets) if an `/exit`ed session ever comes back.
 
 ## Deferred
 
