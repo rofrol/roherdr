@@ -5440,3 +5440,21 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   timing limit under load rather than a regression, but unproven: rerun on a
   quiet machine, and consider a longer wait or a deterministic wait in the
   test.
+  - 2026-10-06: reproduced 2 of 40 under a stress loop (12 `yes`, load
+    average 31-42), at a different assertion: "remote reconnect N must
+    restore visible input". The remote shell sat in a `>` quote
+    continuation: half of one typed line reached it. Cause: the reader
+    thread sends every character of a stdin read as its own
+    `ClientLoopEvent::StdinInput` (`send_unix_input_chunks`), the Unix loop's
+    `biased` select runs endpoint supervisor events before them, and
+    `finish_client_shell_input` drops input per character while the endpoint
+    is not online. A status flip mid-line delivers part of the line. Test
+    fix: Ctrl-C before each retry. The "recovered Local" failure did not
+    show up in these runs.
+- [ ] A reconnect can deliver half of a typed line to a remote pane (found
+  2026-10-06 through the flaky test above). Dropping keys while the endpoint
+  is offline is intended; cutting one stdin read in two is not: the
+  offline decision should be made once per read. Coalescing the chunks in
+  the reader is not enough on its own, because the `StdinInput` handler
+  checks each chunk for the image-paste key and file drops. Upstream code:
+  consider reporting it upstream instead of diverging.
