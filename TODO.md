@@ -4579,6 +4579,33 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     reuse, a shared daemon, tty holders), no sampling without a subscriber,
     the sampler stops after the last subscriber disconnects.
 
+- [ ] A macOS reboot loses the Claude sessions of some tabs (user,
+  2026-10-05). After the restart 7 tabs (6 in the herdr space, 1 in
+  job-seeker) came back as plain zsh; the recovery copy taken right before
+  the shutdown still had their `agent_session`. Cause: at logout macOS
+  stops the `claude` processes about a minute before the herdr server
+  (their transcripts got the exit `cost-state` record at 21:21 UTC, the
+  server got SIGTERM at 21:22:23). Interactive zsh survives SIGTERM, so
+  herdr sees the foreground return to the pane shell, and
+  `ForegroundShellAgentAction::ReportProcessExit` clears `hook_authority`
+  and `persisted_agent_session` exactly as for `/exit`, then the 21:21:24
+  and shutdown saves write the session without them. The "agent changed"
+  log only comes with the later `ClearAgent` probe, so the log showed
+  nothing. Panes whose claude still ran at the final save kept theirs.
+  Consulted sol and MiMo (round `20261005-233934-5f87`):
+  - Keep the last session id after an agent exit instead of dropping it,
+    with an auto-resume flag; drop it only on an explicit user action or
+    a replacement agent (both).
+  - Without an intent signal, `/exit` and a shutdown exit look the same to
+    herdr (sol). Candidate signal: a Claude `SessionEnd` hook, whose
+    `reason` is `prompt_input_exit`/`clear`/`logout` for a user exit and
+    `other` otherwise; integration version bump needed.
+  - Instrument every identity mutation (pane, old/new session, reason)
+    before changing behavior (sol); MiMo: re-derive a lost id from
+    `~/.claude/projects` transcripts as a fallback.
+  The lost sessions were resumed by hand with `herdr pane run <pane>
+  claude --resume <id>` from the recovery copy in `session-snapshots/`.
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
