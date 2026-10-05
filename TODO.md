@@ -4579,7 +4579,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     reuse, a shared daemon, tty holders), no sampling without a subscriber,
     the sampler stops after the last subscriber disconnects.
 
-- [ ] A macOS reboot loses the Claude sessions of some tabs (user,
+- [x] A macOS reboot loses the Claude sessions of some tabs (user,
   2026-10-05). After the restart 7 tabs (6 in the herdr space, 1 in
   job-seeker) came back as plain zsh; the recovery copy taken right before
   the shutdown still had their `agent_session`. Cause: at logout macOS
@@ -4635,6 +4635,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     same-id resume, a replacement SessionStart, a shell command after the
     exit, tab close and reopen, save and restore after SIGTERM versus
     `/exit`, and a live check of `/exit`, Ctrl-D, SIGTERM and SIGKILL.
+  Done in `0ddaa676` (2026-10-06): the session moves to a save-only
+  `exited_agent_session`, `pane.forget_agent_session` and the `session-end`
+  hook forget it. The implementation review (sol and MiMo, round
+  `20261006-003421-bb86`) found three bugs, fixed before the commit: a
+  second signal exit reset the sequence that stops a late forget (the
+  exited session now keeps its run's sequence), forget ignored a session
+  held in `hook_authority`, and a restore with resuming off put an exited
+  session back into the live slot. Checked live on the installed build:
+  SIGTERM saves the session with `exited: true`, `/exit` forgets it.
 
 ## Deferred
 
