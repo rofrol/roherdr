@@ -4654,12 +4654,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   held in `hook_authority`, and a restore with resuming off put an exited
   session back into the live slot. Checked live on the installed build:
   SIGTERM saves the session with `exited: true`, `/exit` forgets it.
-  Known gap, not fixed (2026-10-06): a forget shares the source's sequence
-  guard with every other report, so a report with a later `seq` processed
-  before the forget makes the forget fail, and the `/exit`ed session
-  resumes after a restart (nothing is lost). Claude sends only `SessionEnd`
-  around `/exit`, so no later report exists today; fix it (a separate
-  sequence for forgets) if an `/exit`ed session ever comes back.
+  Checked and kept (2026-10-06): a forget shares the source's sequence
+  guard with the session reports. A separate guard was tried and reverted:
+  metadata reports (`report_metadata`) already have their own sequences, a
+  state report without a session drops the session anyway, and the shared
+  guard is what stops a session report sent before `/exit` but processed
+  after the forget from bringing the session back.
 
 ## Deferred
 
