@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.create_from_pane`, `worktree.open`, `worktree.remove` |
 | Git | `git.branch_list` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.create_child`, `tab.create_after`, `tab.reopen_closed`, `tab.create_agent`, `tab.set_parent`, `tab.set_status`, `tab.bookmark` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.clear_awaiting_reply`, `pane.report_task`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.clear_awaiting_reply`, `pane.report_task`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.forget_agent_session`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
@@ -726,6 +726,22 @@ Both methods accept an optional `resume_argv` array with the command that resume
 }
 ```
 
+When an agent's process leaves the pane, Herdr normally forgets its session. A Claude Code session stays saved instead, so a server restart resumes it even when the OS stopped Claude before Herdr (at logout or shutdown) or Claude crashed. When the user ends the session (`/exit`, Ctrl-D, `/logout`), the Claude integration's `SessionEnd` hook calls `pane.forget_agent_session` before Claude exits, and a restart does not resume it. The method needs `seq` and the session (`agent_session_id` or `agent_session_path`); it forgets only that session, and a request older than the pane's latest session report is ignored, so a late request cannot forget a session that was resumed since. A missing session fails with `invalid_agent_session`.
+
+```json
+{
+  "id": "req_4",
+  "method": "pane.forget_agent_session",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "agent": "claude",
+    "seq": 1791239595599598000,
+    "agent_session_id": "..."
+  }
+}
+```
+
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` expose a read-only `agent_session` object when Herdr has a stored native session reference:
 
 ```json
@@ -739,7 +755,7 @@ Both methods accept an optional `resume_argv` array with the command that resume
 }
 ```
 
-If no native session reference is stored, the field is omitted.
+If no native session reference is stored, the field is omitted. A saved session whose agent has exited is omitted too: nothing runs it until the next restart.
 
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` also expose `foreground_cwd` when Herdr can resolve the cwd of the process currently controlling the pane PTY. The existing `cwd` field remains the pane/workspace cwd used for labels, follow-cwd behavior, and restored session state.
 

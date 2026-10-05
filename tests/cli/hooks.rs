@@ -161,6 +161,50 @@ fn claude_hook_reports_session_id_from_stdin() {
 }
 
 #[test]
+fn claude_hook_forgets_a_session_the_user_ended() {
+    for reason in ["prompt_input_exit", "logout"] {
+        let request = run_claude_hook(
+            "session-end",
+            &format!(
+                r#"{{"hook_event_name":"SessionEnd","session_id":"ended-session","reason":"{reason}"}}"#
+            ),
+        )
+        .expect("a session the user ended should be forgotten");
+
+        assert_eq!(request["method"], "pane.forget_agent_session");
+        assert_eq!(request["params"]["source"], "herdr:claude");
+        assert_eq!(request["params"]["agent"], "claude");
+        assert_eq!(request["params"]["agent_session_id"], "ended-session");
+        assert!(request["params"]["seq"].as_u64().is_some());
+    }
+}
+
+#[test]
+fn claude_hook_keeps_a_session_that_ended_another_way() {
+    // `other` is what a signal gives, e.g. when the OS logs out; `clear` and
+    // `resume` start another session that reports itself.
+    for reason in ["other", "clear", "resume"] {
+        assert!(run_claude_hook(
+            "session-end",
+            &format!(
+                r#"{{"hook_event_name":"SessionEnd","session_id":"kept-session","reason":"{reason}"}}"#
+            ),
+        )
+        .is_none());
+    }
+    assert!(run_claude_hook(
+        "session-end",
+        r#"{"hook_event_name":"SessionEnd","session_id":"sub","reason":"prompt_input_exit","agent_id":"agent-1"}"#,
+    )
+    .is_none());
+    assert!(run_claude_hook(
+        "session",
+        r#"{"hook_event_name":"SessionEnd","session_id":"ended-session","reason":"prompt_input_exit"}"#,
+    )
+    .is_none());
+}
+
+#[test]
 fn claude_hook_ignores_cursor_compatibility_payloads() {
     assert!(run_claude_hook(
         "session",

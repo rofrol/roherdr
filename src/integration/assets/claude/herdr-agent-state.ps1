@@ -6,7 +6,7 @@
 
 param([string]$Action = "")
 
-if ($Action -ne "session" -and $Action -ne "reminder") { exit 0 }
+if ($Action -ne "session" -and $Action -ne "reminder" -and $Action -ne "session-end") { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
 
@@ -41,6 +41,24 @@ try {
 
 $propertyNames = @($payload.PSObject.Properties.Name)
 if ((Test-Path Env:CURSOR_VERSION) -or $propertyNames -ccontains "cursor_version") { exit 0 }
+
+# SessionEnd hook: the user ended the session (`/exit`, Ctrl-D, `/logout`), so herdr forgets it
+# and a restart does not resume it. A session that ends any other way stays resumable.
+if ($Action -eq "session-end") {
+    if ($payload.hook_event_name -cne "SessionEnd") { exit 0 }
+    if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
+    if ($payload.reason -cne "prompt_input_exit" -and $payload.reason -cne "logout") { exit 0 }
+    $endedSessionId = $payload.session_id
+    if ($endedSessionId -isnot [string] -or [string]::IsNullOrWhiteSpace($endedSessionId)) { exit 0 }
+    $endSeq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $endHerdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
+    try {
+        & $endHerdr pane forget-agent-session $env:HERDR_PANE_ID --source "herdr:claude" --agent claude --seq "$endSeq" --agent-session-id "$endedSessionId" 2>$null | Out-Null
+    } catch {
+    }
+    exit 0
+}
+
 if (-not ($propertyNames -ccontains "hook_event_name") -or $payload.hook_event_name -isnot [string] -or $payload.hook_event_name -cne "SessionStart") { exit 0 }
 if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
 

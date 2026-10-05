@@ -461,6 +461,21 @@ pub struct PaneClearAgentAuthorityParams {
     pub seq: Option<u64>,
 }
 
+/// The user ended this agent session (for example with `/exit`), so a restart
+/// must not resume it. Only the matching session is forgotten, and a report
+/// older than the pane's latest session report is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneForgetAgentSessionParams {
+    pub pane_id: String,
+    pub source: String,
+    pub agent: String,
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReleaseAgentParams {
     pub pane_id: String,

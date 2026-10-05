@@ -981,7 +981,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert_only_the_stop_check_hook(&settings);
-    assert!(settings["hooks"].get("SessionEnd").is_none());
+    assert_only_the_session_end_hook(&settings);
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
@@ -1017,6 +1017,20 @@ fn assert_only_the_stop_check_hook(settings: &Value) {
         .as_str()
         .unwrap()
         .ends_with(" stop-check"));
+}
+
+/// Install leaves herdr only its session-end hook on `SessionEnd` (it forgets a session the user
+/// ended); the old release hook is gone.
+fn assert_only_the_session_end_hook(settings: &Value) {
+    let entries = settings["hooks"]["SessionEnd"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(entries[0].get("matcher").is_none());
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" session-end"));
 }
 
 #[test]
@@ -1119,7 +1133,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert_only_the_stop_check_hook(&settings);
-    assert!(settings["hooks"].get("SessionEnd").is_none());
+    assert_only_the_session_end_hook(&settings);
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);

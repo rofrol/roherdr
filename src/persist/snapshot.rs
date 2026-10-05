@@ -139,6 +139,11 @@ pub struct PaneAgentSessionSnapshot {
     pub agent: String,
     pub kind: crate::agent_resume::AgentSessionRefKind,
     pub value: String,
+    /// The agent left the pane without the user ending the session (see
+    /// `TerminalState::exited_agent_session`). A restart resumes it as usual;
+    /// a live handoff keeps it saved without resuming it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exited: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -379,6 +384,7 @@ pub(crate) fn capture_tab(
                         agent: authority.agent_label.clone(),
                         kind: session_ref.kind,
                         value: session_ref.value.clone(),
+                        exited: false,
                     });
                 }
             }
@@ -390,6 +396,18 @@ pub(crate) fn capture_tab(
                     agent: session.agent.clone(),
                     kind: session.session_ref.kind,
                     value: session.session_ref.value.clone(),
+                    exited: false,
+                })
+                .or_else(|| {
+                    terminal
+                        .exited_agent_session()
+                        .map(|session| PaneAgentSessionSnapshot {
+                            source: session.source.clone(),
+                            agent: session.agent.clone(),
+                            kind: session.session_ref.kind,
+                            value: session.session_ref.value.clone(),
+                            exited: true,
+                        })
                 })
         });
         let agent_resume = terminal
@@ -1431,6 +1449,49 @@ mod tests {
             crate::agent_resume::AgentSessionRefKind::Id
         );
         assert_eq!(agent_session.value, "opencode-session");
+    }
+
+    #[test]
+    fn capture_saves_an_exited_claude_session_marked_as_exited() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        state.ensure_test_terminals();
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_exited_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("signal-exit").unwrap(),
+            });
+
+        let snapshot = capture_from_state(&state);
+        let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+            .agent_session
+            .as_ref()
+            .expect("exited agent session should be captured");
+
+        assert_eq!(agent_session.value, "signal-exit");
+        assert!(agent_session.exited);
+        let json = serde_json::to_value(agent_session).unwrap();
+        assert_eq!(json["exited"], true);
+    }
+
+    #[test]
+    fn agent_session_snapshot_without_exited_flag_loads_as_live() {
+        let session: PaneAgentSessionSnapshot = serde_json::from_str(
+            r#"{"source":"herdr:claude","agent":"claude","kind":"id","value":"live"}"#,
+        )
+        .unwrap();
+        assert!(!session.exited);
+        assert!(serde_json::to_value(&session)
+            .unwrap()
+            .get("exited")
+            .is_none());
     }
 
     #[test]

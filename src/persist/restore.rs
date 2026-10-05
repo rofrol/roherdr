@@ -462,7 +462,15 @@ fn unavailable_restored_terminal(
         terminal.manual_label = pane.label.clone();
         terminal.launch_argv = pane.launch_argv.clone();
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
-            terminal.set_persisted_agent_session(session);
+            if pane
+                .agent_session
+                .as_ref()
+                .is_some_and(|saved| saved.exited)
+            {
+                terminal.set_exited_agent_session(session);
+            } else {
+                terminal.set_persisted_agent_session(session);
+            }
         }
         if let Some(resume) = saved_reported_resume(pane) {
             terminal.restore_reported_resume(reported_resume_from_snapshot(resume));
@@ -789,7 +797,14 @@ fn restore_tab(
                     terminal.set_manual_label(label);
                 }
                 if let Some(session) = restored_agent_session {
-                    terminal.set_persisted_agent_session(session);
+                    // Nothing resumes this pane's agent here (a handed-off
+                    // pane keeps its shell, or resuming is off), so a session
+                    // whose agent had exited stays saved, not live.
+                    if saved_agent_session.is_some_and(|saved| saved.exited) {
+                        terminal.set_exited_agent_session(session);
+                    } else {
+                        terminal.set_persisted_agent_session(session);
+                    }
                 }
                 if let Some(resume) = restored_agent_resume {
                     terminal.restore_reported_resume(resume);
@@ -1279,6 +1294,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: pi_session_path.clone(),
+            exited: false,
         };
 
         assert!(restore_plan_for_snapshot(&session, false).is_none());
@@ -1292,6 +1308,7 @@ mod tests {
             agent: "claude".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("claude-session"),
+            exited: false,
         };
         assert!(restore_plan_for_snapshot(&unsupported_path, true).is_none());
     }
@@ -1304,6 +1321,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: pi_session_path.clone(),
+            exited: false,
         };
         let mut resumed = HashSet::new();
 
@@ -1326,6 +1344,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            exited: false,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1357,6 +1376,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            exited: false,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1397,6 +1417,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            exited: false,
         };
         let resume = super::super::snapshot::PaneAgentResumeSnapshot {
             source: "herdr:pi".into(),
@@ -1470,6 +1491,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            exited: false,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1502,6 +1524,7 @@ mod tests {
             agent: "hermes".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Id,
             value: "hermes-session".into(),
+            exited: false,
         };
 
         let preserved = restored_terminal_agent_session(Some(&session), false)
@@ -1518,6 +1541,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            exited: false,
         };
         let mut resumed = HashSet::new();
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_some());
@@ -1560,6 +1584,7 @@ mod tests {
                 agent: "opencode".into(),
                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                 value: "keep-my-session".into(),
+                exited: false,
             });
             let (events, _rx) = mpsc::channel(32);
             let (workspaces, terminals, runtimes) = restore(
@@ -1657,6 +1682,7 @@ mod tests {
                                 agent: "opencode".into(),
                                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                                 value: "opencode-session".into(),
+                                exited: false,
                             }),
                             agent_resume: None,
                             launch_argv: None,
@@ -1710,6 +1736,88 @@ mod tests {
         assert_eq!(session.source, "herdr:opencode");
         assert_eq!(session.agent, "opencode");
         assert_eq!(session.session_ref.value, "opencode-session");
+    }
+
+    #[tokio::test]
+    async fn restore_without_resume_keeps_an_exited_session_saved_only() {
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                worktree_creator_tab: None,
+                bookmarked: false,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    bookmarked: false,
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            managed_agent_kind: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:claude".into(),
+                                agent: "claude".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: "signal-exit".into(),
+                                exited: true,
+                            }),
+                            agent_resume: None,
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                    parent_tab_number: None,
+                    status: None,
+                    job: None,
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (_workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals
+            .values()
+            .next()
+            .expect("restored terminal should exist");
+        assert!(terminal.persisted_agent_session.is_none());
+        assert_eq!(
+            terminal
+                .exited_agent_session()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("signal-exit")
+        );
     }
 
     #[tokio::test]
@@ -1922,6 +2030,7 @@ mod tests {
                 agent: "codex".into(),
                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                 value: "codex-session".into(),
+                exited: false,
             }),
             agent_resume: None,
             launch_argv: None,
@@ -2101,6 +2210,7 @@ mod tests {
                                 agent: "codex".into(),
                                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                                 value: "codex-session".into(),
+                                exited: false,
                             }),
                             agent_resume: None,
                             launch_argv: None,

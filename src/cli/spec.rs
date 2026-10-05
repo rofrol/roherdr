@@ -677,6 +677,7 @@ fn pane_command() -> Command {
         .subcommand(report_agent_command())
         .subcommand(report_agent_session_command())
         .subcommand(release_agent_command())
+        .subcommand(forget_agent_session_command())
         .subcommand(
             Command::new("dismiss-question")
                 .about("Dismiss the agents' questions in panes without typing into them")
@@ -732,6 +733,17 @@ fn release_agent_command() -> Command {
         .arg(option("source", "ID").required(true))
         .arg(option("agent", "LABEL").required(true))
         .arg(option("seq", "N"))
+}
+
+fn forget_agent_session_command() -> Command {
+    Command::new("forget-agent-session")
+        .about("Forget a pane's agent session the user ended, so a restart does not resume it")
+        .arg(required("pane_id", "PANE_ID"))
+        .arg(option("source", "ID").required(true))
+        .arg(option("agent", "LABEL").required(true))
+        .arg(option("seq", "N").required(true))
+        .arg(option("agent-session-id", "ID"))
+        .arg(path_option("agent-session-path", "PATH"))
 }
 
 fn report_metadata_command() -> Command {
@@ -1232,6 +1244,10 @@ mod tests {
                 &["source", "agent"][..],
             ),
             (&["pane", "release-agent"][..], &["source", "agent"][..]),
+            (
+                &["pane", "forget-agent-session"][..],
+                &["source", "agent", "seq"][..],
+            ),
             (&["pane", "report-metadata"][..], &["source"][..]),
         ] {
             let cmd = command_path(&super::command(), path).clone();

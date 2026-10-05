@@ -1,12 +1,12 @@
 use crate::api::schema::{
     Method, OutputMatch, PaneCurrentParams, PaneDirection, PaneEdgesParams,
-    PaneFocusDirectionParams, PaneInputSetParams, PaneLayoutParams, PaneListParams,
-    PaneMoveDestination, PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneRightClickTarget, PaneSendInputParams,
-    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneWaitForOutputParams, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
-    SplitDirection,
+    PaneFocusDirectionParams, PaneForgetAgentSessionParams, PaneInputSetParams, PaneLayoutParams,
+    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams,
+    PaneReadParams, PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams,
+    PaneReportAgentSessionParams, PaneReportMetadataParams, PaneResizeParams, PaneRightClickTarget,
+    PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams,
+    PaneTarget, PaneWaitForOutputParams, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource,
+    Request, SplitDirection,
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
@@ -39,6 +39,7 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "report-agent" => pane_report_agent(&args[1..]),
         "report-agent-session" => pane_report_agent_session(&args[1..]),
         "release-agent" => pane_release_agent(&args[1..]),
+        "forget-agent-session" => pane_forget_agent_session(&args[1..]),
         "dismiss-question" => pane_dismiss_question(&args[1..]),
         "report-metadata" => pane_report_metadata(&args[1..]),
         "run" => pane_run(&args[1..]),
@@ -1502,6 +1503,82 @@ fn pane_release_agent(args: &[String]) -> std::io::Result<i32> {
     }))
 }
 
+fn pane_forget_agent_session(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr pane forget-agent-session <pane_id> --source ID --agent LABEL --seq N (--agent-session-id ID | --agent-session-path PATH)";
+
+    let args = super::expand_equals_args(
+        args,
+        &[
+            "--source",
+            "--agent",
+            "--seq",
+            "--agent-session-id",
+            "--agent-session-path",
+        ],
+    );
+    let mut pane_id = None;
+    let mut source = None;
+    let mut agent = None;
+    let mut seq = None;
+    let mut agent_session_id = None;
+    let mut agent_session_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let option = args[index].as_str();
+        if !option.starts_with('-') {
+            if pane_id.is_some() {
+                eprintln!("unexpected argument: {option}");
+                return Ok(2);
+            }
+            pane_id = Some(super::normalize_pane_id(option));
+            index += 1;
+            continue;
+        }
+        let Some(value) = args.get(index + 1) else {
+            eprintln!("missing value for {option}");
+            return Ok(2);
+        };
+        match option {
+            "--source" => source = Some(value.trim().to_string()),
+            "--agent" => agent = Some(value.clone()),
+            "--seq" => seq = Some(super::parse_u64_flag("--seq", value)?),
+            "--agent-session-id" => agent_session_id = Some(value.clone()),
+            "--agent-session-path" => agent_session_path = Some(value.clone()),
+            _ => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+        }
+        index += 2;
+    }
+
+    let (Some(pane_id), Some(source), Some(agent), Some(seq)) = (
+        pane_id,
+        source.filter(|source| !source.is_empty()),
+        agent,
+        seq,
+    ) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    if agent_session_id.is_none() && agent_session_path.is_none() {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    }
+
+    super::send_ok_request(Method::PaneForgetAgentSession(
+        PaneForgetAgentSessionParams {
+            pane_id,
+            source,
+            agent,
+            seq,
+            agent_session_id,
+            agent_session_path,
+        },
+    ))
+}
+
 fn pane_report_metadata(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_pane_id) = args.first() else {
         eprintln!("usage: herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
@@ -1725,6 +1802,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
+    eprintln!("  herdr pane forget-agent-session <pane_id> --source ID --agent LABEL --seq N (--agent-session-id ID | --agent-session-path PATH)");
     eprintln!("  herdr pane dismiss-question [PANE_ID]...");
     eprintln!("  herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr pane run <pane_id> <command>");

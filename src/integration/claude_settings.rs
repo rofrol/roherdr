@@ -35,6 +35,9 @@ const STOP_CHECK_EVENT: &str = "Stop";
 const PLAN_ACTION: &str = "plan";
 const PLAN_EVENT: &str = "PostToolUse";
 const PLAN_MATCHER: &str = "TodoWrite";
+/// The hook action that forgets a session the user ended, so a restart does not resume it.
+const SESSION_END_ACTION: &str = "session-end";
+const SESSION_END_EVENT: &str = "SessionEnd";
 
 struct HookRemoval {
     event: &'static str,
@@ -212,8 +215,10 @@ pub(crate) fn remove_awaiting_reply_permission(
 }
 
 /// Adds the `UserPromptSubmit` hook that repeats the awaiting-reply instruction on every prompt,
-/// since the `SessionStart` context sits far back in a long session. Kept apart from `install`,
-/// like the permission rule, so the `SessionStart` hook stays the only canonical one.
+/// since the `SessionStart` context sits far back in a long session, and herdr's other event
+/// hooks (the stop check, the plan token, and `SessionEnd`, which forgets a session the user
+/// ended). Kept apart from `install`, like the permission rule, so the `SessionStart` hook stays
+/// the only canonical one.
 pub(crate) fn add_awaiting_reply_reminder(
     content: &str,
     settings_path: &Path,
@@ -235,13 +240,21 @@ pub(crate) fn add_awaiting_reply_reminder(
         STOP_CHECK_ACTION,
         None,
     )?;
-    add_event_hook(
+    let with_plan = add_event_hook(
         &with_stop,
         settings_path,
         hook_path,
         PLAN_EVENT,
         PLAN_ACTION,
         Some(PLAN_MATCHER),
+    )?;
+    add_event_hook(
+        &with_plan,
+        settings_path,
+        hook_path,
+        SESSION_END_EVENT,
+        SESSION_END_ACTION,
+        None,
     )
 }
 
@@ -347,12 +360,19 @@ pub(crate) fn remove_awaiting_reply_reminder(
         STOP_CHECK_EVENT,
         STOP_CHECK_ACTION,
     )?;
-    remove_event_hook(
+    let without_plan = remove_event_hook(
         &without_stop,
         settings_path,
         hook_path,
         PLAN_EVENT,
         PLAN_ACTION,
+    )?;
+    remove_event_hook(
+        &without_plan,
+        settings_path,
+        hook_path,
+        SESSION_END_EVENT,
+        SESSION_END_ACTION,
     )
 }
 
