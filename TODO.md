@@ -4605,6 +4605,36 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `~/.claude/projects` transcripts as a fallback.
   The lost sessions were resumed by hand with `herdr pane run <pane>
   claude --resume <id>` from the recovery copy in `session-snapshots/`.
+  It happened before without a reboot: on 2026-10-03 at 15:17 local time
+  (13:16:27 UTC client detach, no server restart) 4 claude sessions in
+  email-assistant and 2 in job-seeker ended together and lost their ids
+  the same way; what stopped them is unknown. Both times a client detach
+  came about a minute before the exits.
+  Verified on Claude Code 2.1.289: SIGTERM runs the `SessionEnd` hook with
+  `reason: "other"`; `/exit` and Ctrl-D give `prompt_input_exit`.
+  Proposed fix, reviewed by sol and MiMo (round `20261005-235854-7313`):
+  - Claude only (other agents keep today's behavior): when the process
+    exits, move the session id into `persisted_agent_session` instead of
+    dropping it, so it is saved and resumed after a restart.
+  - New Claude `SessionEnd` hook (Unix and PowerShell assets, integration
+    version bump): on `prompt_input_exit` (and probably `logout`) it calls
+    a new API method that forgets the pane's saved session; `other`,
+    `clear`, `resume` send nothing. A new method, not `pane.release_agent`,
+    which has no session guard (sol).
+  - Scope the forget to the pane and a generation that grows on every
+    SessionStart or restore, not to the session id: `claude --resume`
+    reuses the id, so a late forget would erase the resumed run (both).
+  - Forget clears both slots and works before and after the exit is
+    observed; the exit path must not bring back a forgotten id (MiMo).
+  - Cover `clear_agent_name()`, which drops a managed launch session, and
+    reopening a closed tab, whose dedup counts saved sessions as live (sol).
+  - Alternative (MiMo): a zsh `precmd` reporting `$?` (128+N means a
+    signal). herdr has no OSC 133 or shell-side hook today, so it is
+    larger than the hook.
+  - Tests: forget before and after the exit, late and duplicate forgets,
+    same-id resume, a replacement SessionStart, a shell command after the
+    exit, tab close and reopen, save and restore after SIGTERM versus
+    `/exit`, and a live check of `/exit`, Ctrl-D, SIGTERM and SIGKILL.
 
 ## Deferred
 
