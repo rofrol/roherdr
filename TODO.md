@@ -171,7 +171,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   anthropics/claude-code#24751 ("scope Up-arrow history per session") is
   closed; the session-first order is probably its fix, the limit applied
   before the split is what remains. Consulted sol and MiMo (round
-  `20261006-160655-e30d`). Options:
+  `20261006-160655-e30d`).  Second report (user, same day, screenshot `History 97/100`): in a session
+  with two prompts, the third Up showed another session's prompt. That is
+  the designed fallback, not the limit: once the session's own prompts run
+  out, Up goes on to other sessions' prompts with no marker between them.
+  The user remembers it differently "before"; versions 2.1.289-291 have
+  the same code, and older ones are no longer on disk to compare. Ask
+  upstream for a way to stop at the session's own prompts. Options:
   - Report upstream: apply the limit per session, not to the combined
     scan (both models). Ask the user before filing.
   - Check that herdr never resumes one session id in two panes: both
