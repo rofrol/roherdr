@@ -318,6 +318,265 @@ impl App {
     }
 }
 
+/// How often a queued resume checks whether its pane's shell idles again.
+/// Polls process state, which sends no event when the shell finishes.
+const AUTO_RESUME_SHELL_RECHECK: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long a queued resume waits for a busy shell before it gives up with a
+/// notice: long enough for a prompt's `git` status, short enough that a
+/// command the user started meanwhile is not typed into later.
+const AUTO_RESUME_SHELL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoResumeStep {
+    /// Nothing to resume any more.
+    Dropped,
+    /// The pane's shell is busy; try again later.
+    WaitingForShell,
+    /// Resumed, or refused with a notice.
+    Done,
+}
+
+impl App {
+    /// When the next agent stopped by the OS resumes, while any waits.
+    pub(crate) fn auto_resume_deadline(&self) -> Option<Instant> {
+        if self.state.auto_resume_queue.is_empty() {
+            return None;
+        }
+        Some(self.next_auto_resume_at.unwrap_or_else(Instant::now))
+    }
+
+    /// Resumes the next agent the OS stopped by typing its resume command into
+    /// the pane's shell, one per `startup_per_agent_delay`, so a mass stop does
+    /// not start every agent at once. A pane whose shell is still busy (a
+    /// prompt that runs `git` right after the agent exits) goes to the back of
+    /// the queue until its shell idles. Returns whether anything changed.
+    pub(crate) fn run_due_auto_resumes(&mut self, now: Instant) -> bool {
+        if self.state.auto_resume_queue.is_empty() {
+            self.next_auto_resume_at = None;
+            return false;
+        }
+        if self.next_auto_resume_at.is_some_and(|next| now < next) {
+            return false;
+        }
+        let terminal_id = self.state.auto_resume_queue.remove(0);
+        let step = self.auto_resume_terminal(&terminal_id, now);
+        if step == AutoResumeStep::WaitingForShell {
+            self.state.auto_resume_queue.push(terminal_id);
+        } else {
+            self.auto_resume_shell_wait_since.remove(&terminal_id);
+        }
+        if self.state.auto_resume_queue.is_empty() {
+            self.next_auto_resume_at = None;
+            self.auto_resumed_in_batch = 0;
+        } else {
+            let pause = if step == AutoResumeStep::WaitingForShell {
+                self.startup_per_agent_delay.max(AUTO_RESUME_SHELL_RECHECK)
+            } else {
+                self.startup_per_agent_delay
+            };
+            self.next_auto_resume_at = Some(now + pause);
+        }
+        step != AutoResumeStep::Dropped
+    }
+
+    fn auto_resume_terminal(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        now: Instant,
+    ) -> AutoResumeStep {
+        let Some(session) = self
+            .state
+            .terminals
+            .get(terminal_id)
+            .and_then(|terminal| terminal.auto_resume_session())
+            .cloned()
+        else {
+            return AutoResumeStep::Dropped;
+        };
+        let refusal = self.auto_resume_refusal(terminal_id, &session);
+        if refusal.is_none() && !self.pane_shell_idle(terminal_id) {
+            let since = *self
+                .auto_resume_shell_wait_since
+                .entry(terminal_id.clone())
+                .or_insert(now);
+            if now.saturating_duration_since(since) < AUTO_RESUME_SHELL_WAIT {
+                return AutoResumeStep::WaitingForShell;
+            }
+        }
+        if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+            terminal.take_auto_resume_session();
+        }
+        if !self.resume_agents_on_restore {
+            return AutoResumeStep::Dropped;
+        }
+        let Some((ws_idx, pane_id)) = self.pane_of_terminal(terminal_id) else {
+            return AutoResumeStep::Dropped;
+        };
+        let Some(command) =
+            crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
+                .and_then(|plan| shell_command_from_argv(&plan.argv))
+        else {
+            return AutoResumeStep::Dropped;
+        };
+        let refusal = refusal
+            .or_else(|| (!self.pane_shell_idle(terminal_id)).then_some("the shell stayed busy"));
+        if let Some(reason) = refusal {
+            let title = format!("{} stopped, not resumed: {reason}", session.agent);
+            self.show_auto_resume_toast(
+                ws_idx,
+                pane_id,
+                crate::app::state::ToastKind::NeedsAttention,
+                title,
+            );
+            return AutoResumeStep::Done;
+        }
+        let Some(runtime) = self.terminal_runtimes.get(terminal_id) else {
+            return AutoResumeStep::Dropped;
+        };
+        // Ctrl-U first empties the shell's command line, so text typed there
+        // since the agent stopped cannot run with the command.
+        let mut input = String::from("\u{15}");
+        input.push_str(&command);
+        input.push('\r');
+        if let Err(err) = runtime.try_send_bytes(Bytes::from(input)) {
+            tracing::warn!(
+                pane = pane_id.raw(),
+                terminal = %terminal_id,
+                agent = %session.agent,
+                err = %err,
+                "failed to type the resume command of an agent stopped by the OS"
+            );
+            let title = format!(
+                "{} stopped, not resumed: the pane did not take input",
+                session.agent
+            );
+            self.show_auto_resume_toast(
+                ws_idx,
+                pane_id,
+                crate::app::state::ToastKind::NeedsAttention,
+                title,
+            );
+            return AutoResumeStep::Done;
+        }
+        tracing::info!(
+            pane = pane_id.raw(),
+            terminal = %terminal_id,
+            agent = %session.agent,
+            "resuming an agent stopped by the OS"
+        );
+        self.state
+            .auto_resumed_sessions
+            .insert(session.session_ref.clone());
+        self.auto_resumed_in_batch += 1;
+        let count = self.auto_resumed_in_batch;
+        let title = if count == 1 {
+            format!("Resumed {} stopped by the system", session.agent)
+        } else {
+            format!("Resumed {count} agents stopped by the system")
+        };
+        self.show_auto_resume_toast(
+            ws_idx,
+            pane_id,
+            crate::app::state::ToastKind::Finished,
+            title,
+        );
+        AutoResumeStep::Done
+    }
+
+    /// Why the stopped session must not resume in its pane, if it must not.
+    /// A busy shell is not a reason: the queue waits for it.
+    fn auto_resume_refusal(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+        session: &crate::agent_resume::PersistedAgentSession,
+    ) -> Option<&'static str> {
+        if self
+            .state
+            .auto_resumed_sessions
+            .contains(&session.session_ref)
+        {
+            return Some("it stopped again after a resume");
+        }
+        let runs_elsewhere = self.state.terminals.iter().any(|(id, terminal)| {
+            id != terminal_id
+                && terminal
+                    .persisted_agent_session
+                    .as_ref()
+                    .is_some_and(|other| {
+                        other.source == session.source && other.session_ref == session.session_ref
+                    })
+        });
+        runs_elsewhere.then_some("it runs in another pane")
+    }
+
+    /// Whether the pane's shell is at its prompt with nothing running, so a
+    /// typed command reaches the shell and not a program.
+    fn pane_shell_idle(&self, terminal_id: &crate::terminal::TerminalId) -> bool {
+        #[cfg(test)]
+        if let Some(idle) = self.test_pane_shell_idle {
+            return idle && self.terminal_runtimes.get(terminal_id).is_some();
+        }
+        self.terminal_runtimes
+            .get(terminal_id)
+            .and_then(|runtime| runtime.child_pid())
+            .is_some_and(crate::detect::pane_shell_is_idle)
+    }
+
+    fn pane_of_terminal(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                ws.tabs.iter().find_map(|tab| {
+                    tab.panes
+                        .iter()
+                        .find(|(_, pane)| &pane.attached_terminal_id == terminal_id)
+                        .map(|(pane_id, _)| (ws_idx, *pane_id))
+                })
+            })
+    }
+
+    /// Shows a resume notice the way the user's toast setting asks: as
+    /// Herdr's own toast, and queued for the server to send as a system
+    /// notification.
+    fn show_auto_resume_toast(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        kind: crate::app::state::ToastKind,
+        title: String,
+    ) {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let workspace_label = ws.display_name_from_terminals(&self.state.terminals);
+        let context =
+            crate::app::actions::notification_context(ws, &workspace_label, ws_idx, pane_id);
+        let toast = crate::app::state::ToastNotification {
+            kind,
+            title,
+            context,
+            position: None,
+            target: Some(crate::app::state::ToastTarget {
+                workspace_id: ws.id.clone(),
+                pane_id,
+            }),
+        };
+        self.auto_resume_notices.push(toast.clone());
+        if matches!(
+            self.state.toast_config.delivery,
+            crate::config::ToastDelivery::Herdr
+        ) {
+            let previous = self.state.toast.replace(toast);
+            self.sync_toast_deadline(previous);
+        }
+    }
+}
+
 fn derived_pending_agent_resume_pane_infos(
     tab: &crate::workspace::Tab,
     terminal_area: Rect,
@@ -383,6 +642,314 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod auto_resume {
+        use super::*;
+        use crate::detect::{Agent, AgentState};
+        use crate::events::AppEvent;
+
+        struct Pane {
+            pane_id: crate::layout::PaneId,
+            terminal_id: crate::terminal::TerminalId,
+            target: String,
+            typed: tokio::sync::mpsc::Receiver<Bytes>,
+        }
+
+        fn app_with_claude_panes(sessions: &[&str]) -> (App, Vec<Pane>) {
+            let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut app = App::new(
+                &crate::config::Config::default(),
+                crate::app::AppPolicy::TEST,
+                None,
+                api_rx,
+                crate::api::EventHub::default(),
+            );
+            app.state.workspaces = sessions
+                .iter()
+                .map(|_| crate::workspace::Workspace::test_new("auto-resume"))
+                .collect();
+            app.state.ensure_test_terminals();
+            app.state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+            app.test_pane_shell_idle = Some(true);
+            let mut panes = Vec::new();
+            for (ws_idx, session) in sessions.iter().enumerate() {
+                let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+                let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                    .attached_terminal_id
+                    .clone();
+                app.state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .unwrap()
+                    .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+                let (runtime, typed) =
+                    crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 8);
+                app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+                let target = app.public_pane_id(ws_idx, pane_id).unwrap();
+                let pane = Pane {
+                    pane_id,
+                    terminal_id,
+                    target,
+                    typed,
+                };
+                report(
+                    &mut app,
+                    "pane.report_agent_session",
+                    &pane,
+                    session,
+                    10,
+                    true,
+                );
+                panes.push(pane);
+            }
+            (app, panes)
+        }
+
+        fn report(app: &mut App, method: &str, pane: &Pane, session: &str, seq: u64, start: bool) {
+            let mut params = serde_json::json!({
+                "pane_id": pane.target,
+                "source": "herdr:claude",
+                "agent": "claude",
+                "seq": seq,
+                "agent_session_id": session,
+            });
+            if start {
+                params["session_start_source"] = "startup".into();
+            }
+            let request = serde_json::from_value::<crate::api::schema::Request>(
+                serde_json::json!({"id": method, "method": method, "params": params}),
+            )
+            .unwrap();
+            let response: serde_json::Value =
+                serde_json::from_str(&app.handle_api_request(request)).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+        }
+
+        fn exit_claude(app: &mut App, pane: &Pane) {
+            app.handle_internal_event(AppEvent::StateChanged {
+                pane_id: pane.pane_id,
+                agent: Some(Agent::Claude),
+                state: AgentState::Idle,
+                visible_blocker: false,
+                visible_working: false,
+                process_exited: true,
+                observed_at: Instant::now(),
+            });
+        }
+
+        fn typed(pane: &mut Pane) -> Option<String> {
+            pane.typed
+                .try_recv()
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        }
+
+        /// Runs every queued resume, ignoring the spacing between them.
+        fn run_all(app: &mut App) {
+            while app.auto_resume_deadline().is_some() {
+                app.next_auto_resume_at = None;
+                app.run_due_auto_resumes(Instant::now());
+            }
+        }
+
+        #[tokio::test]
+        async fn agents_the_os_stopped_resume_in_their_panes_with_their_question() {
+            let (mut app, mut panes) = app_with_claude_panes(&["first", "second"]);
+            app.state
+                .terminals
+                .get_mut(&panes[0].terminal_id)
+                .unwrap()
+                .report_awaiting_reply(Some("Install now?".into()), 1_000);
+
+            // One pane reports before its exit is seen, the other after.
+            report(
+                &mut app,
+                "pane.report_agent_stopped",
+                &panes[0],
+                "first",
+                20,
+                false,
+            );
+            exit_claude(&mut app, &panes[0]);
+            exit_claude(&mut app, &panes[1]);
+            report(
+                &mut app,
+                "pane.report_agent_stopped",
+                &panes[1],
+                "second",
+                20,
+                false,
+            );
+            run_all(&mut app);
+
+            assert_eq!(
+                typed(&mut panes[0]).as_deref(),
+                Some("\u{15}claude --resume first\r")
+            );
+            assert_eq!(
+                typed(&mut panes[1]).as_deref(),
+                Some("\u{15}claude --resume second\r")
+            );
+            assert_eq!(
+                app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+                Some("Resumed 2 agents stopped by the system")
+            );
+
+            report(
+                &mut app,
+                "pane.report_agent_session",
+                &panes[0],
+                "first",
+                30,
+                false,
+            );
+            let terminal = app.state.terminals.get_mut(&panes[0].terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+            assert_eq!(terminal.awaiting_reply_question(), Some("Install now?"));
+        }
+
+        #[tokio::test]
+        async fn an_exit_without_a_stop_report_or_after_a_forget_does_not_resume() {
+            let (mut app, mut panes) = app_with_claude_panes(&["plain", "ended"]);
+
+            exit_claude(&mut app, &panes[0]);
+            report(
+                &mut app,
+                "pane.forget_agent_session",
+                &panes[1],
+                "ended",
+                20,
+                false,
+            );
+            exit_claude(&mut app, &panes[1]);
+            run_all(&mut app);
+
+            assert_eq!(typed(&mut panes[0]), None);
+            assert_eq!(typed(&mut panes[1]), None);
+            assert!(app.state.toast.is_none());
+        }
+
+        #[tokio::test]
+        async fn a_session_that_stops_again_after_a_resume_is_left_alone() {
+            let (mut app, mut panes) = app_with_claude_panes(&["flaky"]);
+            report(
+                &mut app,
+                "pane.report_agent_stopped",
+                &panes[0],
+                "flaky",
+                20,
+                false,
+            );
+            exit_claude(&mut app, &panes[0]);
+            run_all(&mut app);
+            assert!(typed(&mut panes[0]).is_some());
+
+            report(
+                &mut app,
+                "pane.report_agent_session",
+                &panes[0],
+                "flaky",
+                30,
+                false,
+            );
+            app.state
+                .terminals
+                .get_mut(&panes[0].terminal_id)
+                .unwrap()
+                .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+            // A stale forget from an earlier run does not lift the limit.
+            report(
+                &mut app,
+                "pane.forget_agent_session",
+                &panes[0],
+                "flaky",
+                5,
+                false,
+            );
+            report(
+                &mut app,
+                "pane.report_agent_stopped",
+                &panes[0],
+                "flaky",
+                40,
+                false,
+            );
+            exit_claude(&mut app, &panes[0]);
+            run_all(&mut app);
+
+            assert_eq!(typed(&mut panes[0]), None);
+            assert_eq!(
+                app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+                Some("claude stopped, not resumed: it stopped again after a resume")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_session_running_in_another_pane_is_not_resumed() {
+            // The other pane already runs the same session again.
+            let (mut app, mut panes) = app_with_claude_panes(&["shared", "shared"]);
+            report(
+                &mut app,
+                "pane.report_agent_stopped",
+                &panes[0],
+                "shared",
+                20,
+                false,
+            );
+            exit_claude(&mut app, &panes[0]);
+            run_all(&mut app);
+
+            assert_eq!(typed(&mut panes[0]), None);
+            assert_eq!(
+                app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+                Some("claude stopped, not resumed: it runs in another pane")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_resume_waits_for_a_busy_shell_and_gives_up_after_a_while() {
+            let (mut app, mut panes) = app_with_claude_panes(&["waits", "gives-up"]);
+            app.test_pane_shell_idle = Some(false);
+            for (pane, session) in panes.iter().zip(["waits", "gives-up"]) {
+                report(
+                    &mut app,
+                    "pane.report_agent_stopped",
+                    pane,
+                    session,
+                    20,
+                    false,
+                );
+                exit_claude(&mut app, pane);
+            }
+            let start = Instant::now();
+            for _ in 0..4 {
+                app.next_auto_resume_at = None;
+                app.run_due_auto_resumes(start);
+            }
+            assert_eq!(typed(&mut panes[0]), None);
+            assert!(app.state.toast.is_none());
+            assert!(app.auto_resume_deadline().is_some());
+
+            // The first shell idles; the second stays busy past the wait.
+            app.test_pane_shell_idle = Some(true);
+            app.next_auto_resume_at = None;
+            app.run_due_auto_resumes(start);
+            assert_eq!(
+                typed(&mut panes[0]).as_deref(),
+                Some("\u{15}claude --resume waits\r")
+            );
+            app.test_pane_shell_idle = Some(false);
+            app.next_auto_resume_at = None;
+            app.run_due_auto_resumes(start + AUTO_RESUME_SHELL_WAIT);
+
+            assert_eq!(typed(&mut panes[1]), None);
+            assert_eq!(
+                app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+                Some("claude stopped, not resumed: the shell stayed busy")
+            );
+            assert!(app.auto_resume_deadline().is_none());
+        }
+    }
 
     #[cfg(unix)]
     fn test_app() -> App {

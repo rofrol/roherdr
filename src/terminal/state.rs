@@ -138,6 +138,23 @@ struct RecentAgentProcessExit {
     observed_at: Instant,
 }
 
+/// The agent's own report that the OS stopped one of its sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentStopReport {
+    source: String,
+    agent_label: String,
+    session_ref: crate::agent_resume::AgentSessionRef,
+    seq: u64,
+}
+
+/// The awaiting-reply report an exited session held when its process stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExitedAwaitingReply {
+    session_ref: crate::agent_resume::AgentSessionRef,
+    question: Option<String>,
+    since_ms: Option<u64>,
+}
+
 /// Pure state for a server-owned terminal.
 ///
 /// During the migration this is still one-to-one with a pane-backed PTY, but
@@ -164,6 +181,14 @@ pub struct TerminalState {
     /// exit resets the source's sequence, so this keeps a forget from an
     /// earlier run of a resumed session from dropping it.
     exited_agent_session_seq: Option<u64>,
+    /// The agent reported that the OS stopped this session (Claude's
+    /// `SessionEnd` with reason `other`). With `exited_agent_session` for the
+    /// same run it asks for the session to resume in this pane.
+    agent_stop_report: Option<AgentStopReport>,
+    /// The `?` the exited session showed, put back when that session runs in
+    /// this pane again. Separate from the live report, so typing the resume
+    /// command into the shell does not clear it.
+    exited_awaiting_reply: Option<ExitedAwaitingReply>,
     reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
     reported_resume_revision: u64,
     pub terminal_title: Option<String>,
@@ -229,6 +254,8 @@ impl TerminalState {
             persisted_agent_session: None,
             exited_agent_session: None,
             exited_agent_session_seq: None,
+            agent_stop_report: None,
+            exited_awaiting_reply: None,
             reported_resume: None,
             reported_resume_revision: 0,
             terminal_title: None,
@@ -1606,6 +1633,106 @@ impl TerminalState {
         self.exited_agent_session.as_ref()
     }
 
+    /// Records the agent's report that the OS stopped `session_ref`. Kept only
+    /// when that session runs in this pane or is the run that just exited it;
+    /// a report older than the exited run's last report is ignored. Returns
+    /// whether it was kept.
+    pub fn report_agent_stopped(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        session_ref: &crate::agent_resume::AgentSessionRef,
+        seq: u64,
+    ) -> bool {
+        let matches = |session: &crate::agent_resume::PersistedAgentSession| {
+            session.source == source
+                && session.agent == agent_label
+                && session.session_ref == *session_ref
+        };
+        let live = self.persisted_agent_session.as_ref().is_some_and(matches);
+        let exited = self.exited_agent_session.as_ref().is_some_and(matches)
+            && self
+                .exited_agent_session_seq
+                .is_none_or(|exited_seq| seq > exited_seq);
+        if !live && !exited {
+            return false;
+        }
+        self.agent_stop_report = Some(AgentStopReport {
+            source: source.to_string(),
+            agent_label: agent_label.to_string(),
+            session_ref: session_ref.clone(),
+            seq,
+        });
+        true
+    }
+
+    /// The exited session to resume in this pane: its process has exited and
+    /// the agent reported that the OS stopped this run of it.
+    pub fn auto_resume_session(&self) -> Option<&crate::agent_resume::PersistedAgentSession> {
+        let report = self.agent_stop_report.as_ref()?;
+        let session = self.exited_agent_session.as_ref()?;
+        (session.source == report.source
+            && session.agent == report.agent_label
+            && session.session_ref == report.session_ref
+            && self
+                .exited_agent_session_seq
+                .is_none_or(|exited_seq| report.seq > exited_seq))
+        .then_some(session)
+    }
+
+    /// Takes the session `auto_resume_session` names, so it is resumed once.
+    pub fn take_auto_resume_session(
+        &mut self,
+    ) -> Option<crate::agent_resume::PersistedAgentSession> {
+        let session = self.auto_resume_session()?.clone();
+        self.agent_stop_report = None;
+        Some(session)
+    }
+
+    /// Keeps the `?` of the session whose process just exited, before the
+    /// exit clears the live report.
+    pub fn stash_awaiting_reply_for_exited_session(&mut self) {
+        let Some(session) = self.exited_agent_session.as_ref() else {
+            return;
+        };
+        if !self.awaiting_reply_reported {
+            return;
+        }
+        self.exited_awaiting_reply = Some(ExitedAwaitingReply {
+            session_ref: session.session_ref.clone(),
+            question: self.awaiting_reply_question.clone(),
+            since_ms: self.awaiting_reply_since_ms,
+        });
+    }
+
+    /// Puts the stashed `?` back once its session runs in this pane again, and
+    /// drops it when the session was forgotten or another one took the pane.
+    /// Returns whether it was put back.
+    pub fn restore_stashed_awaiting_reply(&mut self) -> bool {
+        let Some(stash) = self.exited_awaiting_reply.as_ref() else {
+            return false;
+        };
+        let live = self.persisted_agent_session.as_ref();
+        if live.is_none()
+            && self
+                .exited_agent_session
+                .as_ref()
+                .is_some_and(|exited| exited.session_ref == stash.session_ref)
+        {
+            return false;
+        }
+        let Some(stash) = self.exited_awaiting_reply.take() else {
+            return false;
+        };
+        if !live.is_some_and(|live| live.session_ref == stash.session_ref) {
+            return false;
+        }
+        self.awaiting_reply_reported = true;
+        self.awaiting_reply_question = stash.question;
+        self.awaiting_reply_since_ms = stash.since_ms;
+        true
+    }
+
     pub fn set_managed_agent_launch_session(
         &mut self,
         session: crate::agent_resume::PersistedAgentSession,
@@ -2103,6 +2230,8 @@ impl TerminalState {
         if exited {
             self.exited_agent_session = None;
         }
+        self.agent_stop_report = None;
+        self.exited_awaiting_reply = None;
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
                 previous_agent_label,
@@ -7039,6 +7168,181 @@ mod tests {
                 .map(|session| session.session_ref.value.as_str()),
             Some("resumed")
         );
+    }
+
+    fn resume_claude_session(terminal: &mut TerminalState, id: &str, seq: u64) {
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:claude".into(),
+                "claude".into(),
+                Some(claude_session(id)),
+                Some(seq),
+                Some("resume".into()),
+            )
+            .is_some());
+    }
+
+    fn auto_resume_value(terminal: &TerminalState) -> Option<&str> {
+        terminal
+            .auto_resume_session()
+            .map(|session| session.session_ref.value.as_str())
+    }
+
+    #[test]
+    fn an_os_stop_reported_before_the_exit_asks_for_a_resume() {
+        let mut terminal = claude_terminal_with_session("stopped", 10);
+
+        assert!(terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("stopped"),
+            20
+        ));
+        assert_eq!(auto_resume_value(&terminal), None);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert_eq!(auto_resume_value(&terminal), Some("stopped"));
+        assert_eq!(
+            terminal
+                .take_auto_resume_session()
+                .map(|session| session.session_ref.value),
+            Some("stopped".to_string())
+        );
+        assert_eq!(auto_resume_value(&terminal), None);
+        // Taking it does not drop the saved session a restart resumes.
+        assert_eq!(exited_session_value(&terminal), Some("stopped"));
+    }
+
+    #[test]
+    fn an_os_stop_reported_after_the_exit_asks_for_a_resume() {
+        let mut terminal = claude_terminal_with_session("late-hook", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert!(terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("late-hook"),
+            20
+        ));
+
+        assert_eq!(auto_resume_value(&terminal), Some("late-hook"));
+    }
+
+    #[test]
+    fn an_exit_without_an_os_stop_report_does_not_resume() {
+        let mut terminal = claude_terminal_with_session("plain-exit", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert_eq!(exited_session_value(&terminal), Some("plain-exit"));
+        assert_eq!(auto_resume_value(&terminal), None);
+    }
+
+    #[test]
+    fn an_os_stop_of_another_or_an_older_run_does_not_resume() {
+        let mut terminal = claude_terminal_with_session("current", 10);
+
+        assert!(!terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("other"),
+            20
+        ));
+        exit_agent_process(&mut terminal, Agent::Claude);
+        // Older than the exited run's last report: from an earlier run.
+        assert!(!terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("current"),
+            5
+        ));
+
+        assert_eq!(auto_resume_value(&terminal), None);
+    }
+
+    #[test]
+    fn a_stop_report_of_an_earlier_run_does_not_resume_the_next_one() {
+        let mut terminal = claude_terminal_with_session("twice", 10);
+        assert!(terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("twice"),
+            20
+        ));
+        exit_agent_process(&mut terminal, Agent::Claude);
+        assert!(terminal.take_auto_resume_session().is_some());
+
+        resume_claude_session(&mut terminal, "twice", 30);
+        exit_agent_process(&mut terminal, Agent::Claude);
+
+        assert_eq!(auto_resume_value(&terminal), None);
+    }
+
+    #[test]
+    fn forgetting_the_session_cancels_its_resume() {
+        let mut terminal = claude_terminal_with_session("forgotten", 10);
+        exit_agent_process(&mut terminal, Agent::Claude);
+        assert!(terminal.report_agent_stopped(
+            "herdr:claude",
+            "claude",
+            &claude_session("forgotten"),
+            20
+        ));
+
+        terminal.forget_agent_session(
+            "herdr:claude",
+            "claude",
+            &claude_session("forgotten"),
+            Some(30),
+        );
+
+        assert_eq!(auto_resume_value(&terminal), None);
+    }
+
+    #[test]
+    fn the_question_of_a_stopped_session_comes_back_when_it_resumes() {
+        let mut terminal = claude_terminal_with_session("asked", 10);
+        assert!(terminal.report_awaiting_reply(Some("Install now?".into()), 1_000));
+        exit_agent_process(&mut terminal, Agent::Claude);
+        terminal.stash_awaiting_reply_for_exited_session();
+        terminal.clear_awaiting_reply();
+        // Typing the resume command into the shell clears only the live report.
+        terminal.clear_awaiting_reply();
+        assert!(!terminal.restore_stashed_awaiting_reply());
+
+        resume_claude_session(&mut terminal, "asked", 20);
+        terminal.clear_awaiting_reply();
+
+        assert!(terminal.restore_stashed_awaiting_reply());
+        assert!(terminal.awaiting_reply());
+        assert_eq!(terminal.awaiting_reply_question(), Some("Install now?"));
+        assert_eq!(terminal.waiting_since_ms(), Some(1_000));
+        assert!(!terminal.restore_stashed_awaiting_reply());
+    }
+
+    #[test]
+    fn the_question_of_a_stopped_session_is_dropped_for_another_session() {
+        let mut terminal = claude_terminal_with_session("asked", 10);
+        assert!(terminal.report_awaiting_reply(Some("Install now?".into()), 1_000));
+        exit_agent_process(&mut terminal, Agent::Claude);
+        terminal.stash_awaiting_reply_for_exited_session();
+        terminal.clear_awaiting_reply();
+
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:claude".into(),
+                "claude".into(),
+                Some(claude_session("fresh")),
+                Some(20),
+                Some("startup".into()),
+            )
+            .is_some());
+        assert!(!terminal.restore_stashed_awaiting_reply());
+        resume_claude_session(&mut terminal, "asked", 30);
+
+        assert!(!terminal.restore_stashed_awaiting_reply());
+        assert!(!terminal.awaiting_reply());
     }
 
     #[test]

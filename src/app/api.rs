@@ -1281,6 +1281,9 @@ impl App {
             Method::PaneForgetAgentSession(params) => {
                 return self.handle_pane_forget_agent_session(request.id, params);
             }
+            Method::PaneReportAgentStopped(params) => {
+                return self.handle_pane_report_agent_stopped(request.id, params);
+            }
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
             Method::PaneSendInput(params) => {
                 return self.handle_pane_send_input(request.id, params);

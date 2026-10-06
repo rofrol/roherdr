@@ -346,7 +346,8 @@ fi
 
 # SessionEnd hook: the user ended the session (`/exit`, Ctrl-D, `/logout`), so herdr forgets it
 # and a restart does not resume it. A session that ends any other way, such as a signal when the
-# OS logs out, stays resumable. Runs before Claude exits, so herdr sees it before the exit.
+# OS logs out, stays resumable; reason `other` (a signal) also asks herdr to resume it in its pane
+# once Claude has exited. Runs before Claude exits, so herdr sees it before the exit.
 if [ "$action" = "session-end" ]; then
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
@@ -367,7 +368,12 @@ except Exception:
     raise SystemExit(0)
 if hook_input.get("hook_event_name") != "SessionEnd" or hook_input.get("agent_id"):
     raise SystemExit(0)
-if hook_input.get("reason") not in ("prompt_input_exit", "logout"):
+reason = hook_input.get("reason")
+if reason in ("prompt_input_exit", "logout"):
+    method = "pane.forget_agent_session"
+elif reason == "other":
+    method = "pane.report_agent_stopped"
+else:
     raise SystemExit(0)
 session_id = hook_input.get("session_id")
 if not isinstance(session_id, str) or not session_id:
@@ -382,7 +388,7 @@ params = {
 }
 request = {
     "id": f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}",
-    "method": "pane.forget_agent_session",
+    "method": method,
     "params": params,
 }
 try:

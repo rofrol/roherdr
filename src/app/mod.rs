@@ -162,6 +162,17 @@ pub struct App {
     pub(crate) resume_agents_on_restore: bool,
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
+    /// When the next agent stopped by the OS may resume, spaced like restores.
+    next_auto_resume_at: Option<Instant>,
+    /// Agents resumed since the queue was last empty, for one summary toast.
+    auto_resumed_in_batch: usize,
+    /// When each queued resume first found its pane's shell busy.
+    auto_resume_shell_wait_since: HashMap<crate::terminal::TerminalId, Instant>,
+    /// Resume notices for the server to deliver as system notifications.
+    pub(crate) auto_resume_notices: Vec<crate::app::state::ToastNotification>,
+    /// Stands in for the process check of whether a pane's shell is idle.
+    #[cfg(test)]
+    pub(crate) test_pane_shell_idle: Option<bool>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
@@ -582,6 +593,8 @@ impl App {
             config_diagnostic,
             toast: None,
             pending_agent_notifications: std::collections::HashMap::new(),
+            auto_resume_queue: Vec::new(),
+            auto_resumed_sessions: std::collections::HashSet::new(),
             outer_terminal_focus: None,
             prefix_keys,
             headless_size: config.headless_size(),
@@ -717,6 +730,12 @@ impl App {
                 config.session.startup_per_agent_delay_ms.into(),
             ),
             next_agent_resume_at: None,
+            next_auto_resume_at: None,
+            auto_resumed_in_batch: 0,
+            auto_resume_shell_wait_since: HashMap::new(),
+            auto_resume_notices: Vec::new(),
+            #[cfg(test)]
+            test_pane_shell_idle: None,
             session_save_deadline: None,
             session_save_thread: None,
             session_writer,

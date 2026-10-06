@@ -846,6 +846,11 @@ pub struct AppState {
     pub config_diagnostic: Option<String>,
     pub toast: Option<ToastNotification>,
     pub pending_agent_notifications: std::collections::HashMap<PaneId, PendingAgentNotification>,
+    /// Terminals whose agent the OS stopped, waiting to resume in their pane.
+    pub auto_resume_queue: Vec<crate::terminal::TerminalId>,
+    /// Sessions this server already resumed after an OS stop, so one that
+    /// keeps dying is not resumed again. A forget (`/exit`) clears its entry.
+    pub auto_resumed_sessions: std::collections::HashSet<crate::agent_resume::AgentSessionRef>,
     /// Last reported focus state for the outer terminal hosting herdr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
     pub outer_terminal_focus: Option<bool>,
@@ -1091,6 +1096,8 @@ impl AppState {
             config_diagnostic: None,
             toast: None,
             pending_agent_notifications: std::collections::HashMap::new(),
+            auto_resume_queue: Vec::new(),
+            auto_resumed_sessions: std::collections::HashSet::new(),
             outer_terminal_focus: None,
             prefix_keys: vec![(KeyCode::Char('b'), KeyModifiers::CONTROL)],
             headless_size: (

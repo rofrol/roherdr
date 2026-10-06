@@ -251,6 +251,8 @@ pub enum Method {
     PaneReleaseAgent(PaneReleaseAgentParams),
     #[serde(rename = "pane.forget_agent_session")]
     PaneForgetAgentSession(PaneForgetAgentSessionParams),
+    #[serde(rename = "pane.report_agent_stopped")]
+    PaneReportAgentStopped(PaneReportAgentStoppedParams),
     #[serde(rename = "pane.close")]
     PaneClose(PaneTarget),
     #[serde(rename = "popup.close")]

@@ -705,6 +705,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneClearAgentAuthority(_) => "pane.clear_agent_authority",
         Method::PaneReleaseAgent(_) => "pane.release_agent",
         Method::PaneForgetAgentSession(_) => "pane.forget_agent_session",
+        Method::PaneReportAgentStopped(_) => "pane.report_agent_stopped",
         Method::PaneClose(_) => "pane.close",
         Method::PopupClose(_) => "popup.close",
         Method::EventsSubscribe(_) => "events.subscribe",

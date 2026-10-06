@@ -247,6 +247,23 @@ impl HeadlessServer {
         }
     }
 
+    /// Sends the notices of agents resumed (or not) after an OS stop as
+    /// system or terminal notifications when the user's toast setting asks
+    /// for that; Herdr's own toast already shows them otherwise.
+    pub(super) fn forward_auto_resume_notices(&mut self) {
+        let notices = std::mem::take(&mut self.app.auto_resume_notices);
+        let Some(kind) = toast_notify_kind(self.app.state.toast_config.delivery) else {
+            return;
+        };
+        for notice in notices {
+            self.send_notify_to_foreground_client(
+                kind.clone(),
+                &notice.title,
+                non_empty_body(&notice.context),
+            );
+        }
+    }
+
     pub(super) fn send_notify_to_foreground_client(
         &mut self,
         kind: protocol::NotifyKind,

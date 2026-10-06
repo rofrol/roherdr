@@ -180,10 +180,25 @@ fn claude_hook_forgets_a_session_the_user_ended() {
 }
 
 #[test]
+fn claude_hook_reports_a_session_the_os_stopped() {
+    // `other` is what a signal gives, e.g. when the OS logs out.
+    let request = run_claude_hook(
+        "session-end",
+        r#"{"hook_event_name":"SessionEnd","session_id":"stopped-session","reason":"other"}"#,
+    )
+    .expect("a session the OS stopped should be reported");
+
+    assert_eq!(request["method"], "pane.report_agent_stopped");
+    assert_eq!(request["params"]["source"], "herdr:claude");
+    assert_eq!(request["params"]["agent"], "claude");
+    assert_eq!(request["params"]["agent_session_id"], "stopped-session");
+    assert!(request["params"]["seq"].as_u64().is_some());
+}
+
+#[test]
 fn claude_hook_keeps_a_session_that_ended_another_way() {
-    // `other` is what a signal gives, e.g. when the OS logs out; `clear` and
-    // `resume` start another session that reports itself.
-    for reason in ["other", "clear", "resume"] {
+    // `clear` and `resume` start another session that reports itself.
+    for reason in ["clear", "resume"] {
         assert!(run_claude_hook(
             "session-end",
             &format!(

@@ -10,11 +10,11 @@ use crate::api::schema::{
     PaneMoveResult, PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportAwaitingReplyParams, PaneReportMetadataParams, PaneResizeParams, PaneResizeReason,
-    PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams,
-    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
-    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
-    PaneZoomReason, PaneZoomResult, ResponseResult,
+    PaneReportAgentStoppedParams, PaneReportAwaitingReplyParams, PaneReportMetadataParams,
+    PaneResizeParams, PaneResizeReason, PaneResizeResult, PaneScrollParams,
+    PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams,
+    PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint,
+    PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -2071,6 +2071,39 @@ impl App {
             );
         };
         self.handle_internal_event(crate::events::AppEvent::AgentSessionForgotten {
+            pane_id,
+            source: params.source,
+            agent_label,
+            seq: params.seq,
+            session_ref,
+        });
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_pane_report_agent_stopped(
+        &mut self,
+        id: String,
+        params: PaneReportAgentStoppedParams,
+    ) -> String {
+        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
+            return invalid_agent(id);
+        };
+        let Some(session_ref) = crate::agent_resume::session_ref_from_report(
+            &params.source,
+            &agent_label,
+            params.agent_session_id,
+            params.agent_session_path,
+        ) else {
+            return encode_error(
+                id,
+                "invalid_agent_session",
+                "agent_session_id or agent_session_path is required",
+            );
+        };
+        self.handle_internal_event(crate::events::AppEvent::AgentSessionStopped {
             pane_id,
             source: params.source,
             agent_label,

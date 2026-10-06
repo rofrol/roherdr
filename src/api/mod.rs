@@ -88,6 +88,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneClearAgentAuthority(_)
             | Method::PaneReleaseAgent(_)
             | Method::PaneForgetAgentSession(_)
+            | Method::PaneReportAgentStopped(_)
             | Method::PaneClose(_)
             | Method::PopupClose(_)
             | Method::PluginUnlink(_)
