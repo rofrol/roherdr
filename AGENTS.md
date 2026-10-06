@@ -249,7 +249,7 @@ Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.loc
 
 Use lowercase conventional commits, no emojis, and no AI co-author lines. Commit subjects feed preview release notes, so keep them descriptive.
 
-Before committing, propose the commit message and get alignment. The exception is work on an agent-queue item (`aq`, from `~/scripts/aq`; the Stop hook hands items to a worker session): the user adding the item approves its commits, so the worker commits without asking, adds the trailer `Queue-Item: <id>` to each commit, and reports the item with `aq report`, which is where the user reviews it.
+Before committing, propose the commit message and get alignment. The exception is working through `TODO.md` at the user's instruction (for example "do the TODO"): the items in "Next, in order" at that moment are approved together with their commits, so the session takes them from the top and commits each one without asking. Before an item it checks it against the current code, `DECISIONS.md` and the other items. An item that is already done, outdated or contradictory, or that needs the user's choice or action (a decision, a login, a permission, a live test with his accounts), moves to "Needs a decision" at the end of `TODO.md` with the question stated, together with the items that depend on it, and the session goes on with the next one. Items a session adds go to "Proposed" and are not approved until the user moves them. Only one session works through the TODO at a time.
 
 When a normal feature or fix commit relates to a GitHub issue, add a commit body line `refs #<issue-number>` after the subject:
 
