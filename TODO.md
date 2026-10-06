@@ -1117,6 +1117,28 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   prompt box) in the JSON API, then the TUI draws it in the tab line and
   maybe the space header counts. Open: whether a long-lived dev server
   should show the same badge (probably yes: it is true, just not urgent).
+  Consulted sol and MiMo (2026-10-06, calls `557d6c84`, `56fe2bac`):
+  - Both: a footer count shows that something runs, not that the agent
+    waits for it. Split the two: `background_tasks` (observed counts) and
+    an optional "awaiting background" flag only an explicit signal sets.
+    Like `awaiting-reply`, the integration could tell the agent to run
+    `herdr agent awaiting-background "<what>"` when it ends a turn waiting
+    for a task, cleared on the next prompt or working. Only that flag
+    may count as busy (bubble, header); a bare count never does.
+  - MiMo: a badge on every dev-server pane gets tuned out; draw it only
+    for awaited tasks, or dim the detached ones.
+  - sol: report unknown (no footer seen, other agents such as Codex) apart
+    from an observed zero, with source and freshness; show the count next
+    to every state, blocked included; notify only the final done
+    (idle+bg -> working -> done), never on shell exit.
+  - Glyph: not `⧗`/`⧖`, which already marks herdr-job jobs in space
+    squares (`space_tabs.rs`); sol prefers a plain `bg:1`.
+  - Noted: had the agent run `musicdb update` through `herdr-job`, the
+    space would already show `⧖ 1`; this case is a plain
+    `run_in_background` shell.
+  - Dismissed: MiMo's 5 s debounce of working (a delay hides the cause,
+    Rule 10) and its claim that bubble's "running job" covers background
+    shells (it means herdr-job jobs).
 - [x] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
