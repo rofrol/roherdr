@@ -5050,28 +5050,32 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     buckets. Later, if wanted: link `act` findings to the commits that
     landed them (MiMo).
 
-- [ ] Focus mode (user, 2026-10-06: "some focus mode, a button at the top
-  above spaces?, so that in every space all agent sessions that are not
-  doing anything or waiting are collapsed under a button"). A client-local
-  toggle in the sidebar header; each space folds its quiet agent tabs under
-  one `N idle` line, the way job child tabs fold under their parent.
+- [ ] Fold quiet agents (user, 2026-10-06: "some focus mode, a button at the
+  top above spaces?, so that in every space all agent sessions that are not
+  doing anything or waiting are collapsed under a button"; then, so that
+  tabs do not jump: "instead of a focus mode, I press a button and the ones
+  that do nothing or want nothing are folded in every space"). A one-shot
+  action, not a mode: a button in the sidebar header folds, in every space,
+  the agent tabs that are quiet at that moment under one `N idle` line, the
+  way job child tabs fold under their parent. Nothing folds by itself
+  afterwards, so rows never move under the mouse; pressing the button again
+  folds what is quiet now. Client-local state.
   - Quiet means `idle` only (sol, MiMo): working, blocked, awaiting-reply,
-    limited and done-unseen stay visible (done-unseen does nothing but is
-    exactly the row to see), and so does the focused tab. Plain shell tabs:
-    sol leaves them alone, MiMo folds them; undecided.
-  - No reflow while it is on (both): membership is computed when the mode
-    is switched on (or the fold line is clicked) and stays until then; an
-    agent that turns working or asks shows again at once, but an agent that
-    goes idle does not fold away under the mouse.
+    limited and done-unseen are never folded (done-unseen does nothing but
+    is exactly the row to see), nor is the focused tab. Plain shell tabs
+    stay visible (user, 2026-10-06).
+  - A folded agent that starts working or asks leaves the fold at once; one
+    that goes idle again stays out until the next press. Clicking the `N
+    idle` line unfolds that space.
   - Keep the invariants of the earlier "never hide rows by default"
     decision: folded tabs keep their `Alt-1..9` positions, a focused folded
-    tab shows as the parent's suffix (variant d of the job folding), and the
-    space chevron stays authoritative (the mode never opens a collapsed
+    tab shows as the fold line's suffix (variant d of the job folding), and
+    the space chevron stays authoritative (folding never opens a collapsed
     space).
-  - Consulted sol and MiMo (round `20261006-144141-fb4f`): both would start
-    with dimming quiet rows instead of folding (no reflow, nothing hidden),
-    and sol would fold only the agent detail lines, never addressable tab
-    rows. The user asked for folding; decide before building.
+  - Consulted sol and MiMo (round `20261006-144141-fb4f`): both would have
+    started with dimming quiet rows, sol folding only agent detail lines;
+    the user chose folding tab rows (2026-10-06). The snapshot on press is
+    MiMo's "membership computed once, sticky until re-toggled".
 
 - [ ] Back and forward over focus jumps (user, 2026-10-06: "at the very top
   prev, next navigation, so when I jump to some card I can click prev").
@@ -5084,7 +5088,8 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Entries are discontinuous jumps: sidebar and dropdown clicks (`?` list,
     inbox, toasts), cross-space moves, `pane.focus` from an agent. Not
     incidental focus (a closed pane's fallback) or the traversal itself.
-    Open: sol records `Alt-1..9` presses, MiMo skips them as noise.
+    `Alt-1..9` presses are recorded too (user, 2026-10-06: "that is
+    navigation history as well"; sol agreed, MiMo would skip them).
   - Keep the server's single-step `last_pane` toggle as it is (both).
     Keys: mouse back/forward buttons where the terminal reports them, plus
     configurable keys, unbound by default. MiMo would ship Back alone first.
