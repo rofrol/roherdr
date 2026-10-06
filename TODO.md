@@ -1096,6 +1096,27 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     2.1.288 with a monitor in this session's pane: idle title plus
     `1 shell, 1 monitor` matched it (status working); `1 shell` alone did
     not.
+- [ ] The tab state does not show that something runs in the background
+  (user, 2026-10-06, screenshot: "the tab state doesn't show that something
+  is running in the background"). Space `music-mpd`, tab "Testy,
+  ReplayGain, plan j…" shows idle `o` while Claude waits for a finite
+  `musicdb update` (about 2 minutes) and said it would continue when it
+  ends:
+  ```
+  * Worked for 1m 2s · done 12:21 PM · 1 shell still running
+  ❯ ok, czekam
+    ⏵⏵ auto mode on · 1 shell · ← for agents
+  ```
+  This is the case the 2026-10-03 decision above left idle on purpose
+  (a shell alone is not working, no badge: an endless `npm run dev` would
+  pin the pane). The user still wants to see it, so revisit the rejected
+  option: an orthogonal background badge next to the idle state (e.g. a
+  dim `1 shell` or a glyph with the count), not a new `AgentStatus`
+  variant (append-closed in frozen codecs). It needs an optional runtime
+  field (pane background task counts, parsed from the footer below the
+  prompt box) in the JSON API, then the TUI draws it in the tab line and
+  maybe the space header counts. Open: whether a long-lived dev server
+  should show the same badge (probably yes: it is true, just not urgent).
 - [x] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
