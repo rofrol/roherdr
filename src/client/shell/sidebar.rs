@@ -839,6 +839,13 @@ pub(crate) fn render_sidebar(
         } else {
             visible
         };
+        // With vertical tabs the name line runs under the scrollbar column,
+        // like the tab fills, so its buttons end at the list's edge; the
+        // scrollbar, drawn later, keeps that column and its clicks.
+        let wide = Rect {
+            width: rect.width + u16::from(show_scrollbar && config.spaces.tabs),
+            ..rect
+        };
         let selected = state.selected_workspace_id.is_some_and(|target| {
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
@@ -878,10 +885,10 @@ pub(crate) fn render_sidebar(
             && config.spaces.tabs
             && !entry.indented
             && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
-            && rect.width >= LAUNCH_BUTTON_MIN_WIDTH;
+            && wide.width >= LAUNCH_BUTTON_MIN_WIDTH;
         let push_status = render_workspace_rows(
             target,
-            rect,
+            wide,
             status,
             icon,
             entry,
@@ -924,7 +931,7 @@ pub(crate) fn render_sidebar(
                 );
             }
         }
-        if launch_button_shown(config, rect.width) {
+        if launch_button_shown(config, wide.width) {
             // The agent last launched here, at the name line's right end:
             // a click starts it in a new tab, a right click picks another.
             let kind = super::agent_launch::space_launch_agent(
@@ -934,8 +941,8 @@ pub(crate) fn render_sidebar(
             );
             // Right of the `+`: the two ways to open a tab sit together.
             let button = Rect::new(
-                rect.right().saturating_sub(LAUNCH_BUTTON_WIDTH),
-                rect.y,
+                wide.right().saturating_sub(LAUNCH_BUTTON_WIDTH),
+                wide.y,
                 LAUNCH_BUTTON_WIDTH,
                 1,
             );
@@ -966,6 +973,8 @@ pub(crate) fn render_sidebar(
                 LAUNCH_LABEL,
                 style,
             );
+            // Not over the scrollbar column, which takes the click first.
+            let button = button.intersection(rect);
             block_hits
                 .space_launch_agent
                 .push((button, workspace.workspace_id.clone()));
@@ -1009,19 +1018,19 @@ pub(crate) fn render_sidebar(
                 starts_at_target: false,
             });
         }
-        if config.spaces.tabs && config.mouse_capture && rect.width >= 6 {
+        if config.spaces.tabs && config.mouse_capture && wide.width >= 6 {
             // A new tab in this space, whichever space is focused.
             // ` + `: like the launch chip, three columns to click, lit on
             // hover. Left of the launch chip when it shows.
-            let launch = if launch_button_shown(config, rect.width) {
+            let launch = if launch_button_shown(config, wide.width) {
                 LAUNCH_BUTTON_WIDTH
             } else {
                 0
             };
             let button = Rect::new(
-                rect.right()
+                wide.right()
                     .saturating_sub(NAME_LINE_ACTIONS_WIDTH + launch),
-                rect.y,
+                wide.y,
                 3,
                 1,
             );

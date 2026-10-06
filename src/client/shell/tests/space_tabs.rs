@@ -4069,3 +4069,32 @@ fn the_to_top_button_shows_before_a_hovered_space_name() {
                 if params.workspace_ids == ["ws_2"]
                     && params.before_workspace_id.as_deref() == Some("ws_1")))));
 }
+
+#[test]
+fn with_a_scrollbar_the_name_line_buttons_end_at_the_list_edge() {
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for index in 2..=12 {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("space-{index}");
+        workspace.focused = false;
+        projected.workspaces.push(workspace);
+    }
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 16).unwrap();
+    let track = state.hits.workspace_scrollbar;
+    assert!(track.width > 0, "the list overflows");
+    let (launch, _) = state.hits.space_launch_agent[0].clone();
+    let (plus, _) = state.hits.space_new_tab[0].clone();
+    let row = frame_rows(&frame)[launch.y as usize]
+        .chars()
+        .collect::<Vec<_>>();
+    // ` A ` keeps its padding, the last column of which is the scrollbar's:
+    // no gap is left between the button and the list's edge. The scrollbar
+    // keeps that column's clicks.
+    assert_eq!(row[track.x as usize - 1], 'A', "{row:?}");
+    assert_eq!(launch.right(), track.x);
+    assert_eq!(plus.right(), launch.x);
+}
