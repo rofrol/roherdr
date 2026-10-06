@@ -3,6 +3,37 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Add easily accessible advisor checkboxes in Herdr so it injects
+  `Consult with <selected agents>` into coding-agent requests. Let the user
+  select advisors (for example DeepSeek) and disable the instruction easily.
+  Consulted DeepSeek 2026-09-30: start with a per-pane/session picker opened
+  from a visible `Advisors` control, showing the selected advisors. Inject
+  only on an explicit user send, preserve the user's text, preview the added
+  instruction and avoid duplicates; do not trigger background consultations.
+  Verify each CLI's supported injection path; use a visible, copyable prefix
+  rather than silent PTY keystrokes when safe injection is unavailable.
+  Decide scope, persistence, timing (every prompt or first turn), advisor
+  identity/invocation and multi-client ownership before implementation.
+  Make remote-provider privacy and cost implications explicit. These are
+  recommendations, not an approved UI design or implementation.
+  Decided by the user 2026-10-06: parked: scope, privacy and cost of
+  remote providers are open; back when needed.
+
+- [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
+  probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
+  rollback) is the update path of the only user, and the updater is off for fork builds.
+  Trigger to do it: the first outside user relying on the published binaries, or the
+  public announcement. Then in two steps: (1) notify only: compare `(0.9.3, revision)`
+  from the embedded `ROHERDR_VERSION` with the newest `roherdr-v*` release of
+  `rofrol/roherdr`, show "newer release available" and the download command, nothing
+  replaced; local builds (hash instead of a number) do not check. (2) Only when several
+  binary users need it, after the upstream rebase: download `roherdr-<os>-<arch>`, verify
+  `SHA256SUMS`, stage the file and swap it after the process exits, with a tested rollback;
+  if the fork gets a Homebrew tap, leave upgrades to Homebrew instead. Not before the
+  upstream rebase (rebase debt). Done: nothing.
+  Decided by the user 2026-10-06: parked: the fork is not announced and
+  nobody else uses its binaries; back to TODO.md when it is announced.
+
 - [ ] Compact job presentation for the agents the user runs: Pi, Claude Code,
   others (asked 2026-10-01). Today only Pi has it: the Pi activity extension
   (`plugins/job/pi`) folds every tool call (bash, read, edit, write,

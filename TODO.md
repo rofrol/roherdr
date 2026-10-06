@@ -697,51 +697,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   agree on; if not, move the item back under Needs a decision with their
   findings.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
-- [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
-  probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
-  rollback) is the update path of the only user, and the updater is off for fork builds.
-  Trigger to do it: the first outside user relying on the published binaries, or the
-  public announcement. Then in two steps: (1) notify only: compare `(0.9.3, revision)`
-  from the embedded `ROHERDR_VERSION` with the newest `roherdr-v*` release of
-  `rofrol/roherdr`, show "newer release available" and the download command, nothing
-  replaced; local builds (hash instead of a number) do not check. (2) Only when several
-  binary users need it, after the upstream rebase: download `roherdr-<os>-<arch>`, verify
-  `SHA256SUMS`, stage the file and swap it after the process exits, with a tested rollback;
-  if the fork gets a Homebrew tap, leave upgrades to Homebrew instead. Not before the
-  upstream rebase (rebase debt). Done: nothing.
-  Triage 2026-10-06 (decision): Has roherdr been announced, or does anyone else use the binaries? If not, move this to TODO-deferred.md?
-
-- [ ] Add easily accessible advisor checkboxes in Herdr so it injects
-  `Consult with <selected agents>` into coding-agent requests. Let the user
-  select advisors (for example DeepSeek) and disable the instruction easily.
-  Consulted DeepSeek 2026-09-30: start with a per-pane/session picker opened
-  from a visible `Advisors` control, showing the selected advisors. Inject
-  only on an explicit user send, preserve the user's text, preview the added
-  instruction and avoid duplicates; do not trigger background consultations.
-  Verify each CLI's supported injection path; use a visible, copyable prefix
-  rather than silent PTY keystrokes when safe injection is unavailable.
-  Decide scope, persistence, timing (every prompt or first turn), advisor
-  identity/invocation and multi-client ownership before implementation.
-  Make remote-provider privacy and cost implications explicit. These are
-  recommendations, not an approved UI design or implementation.
-  Triage 2026-10-06 (decision): Which advisors, scope, persistence and timing for injections, which agents' injection paths, and is the privacy and cost of remote providers acceptable?
-
 - [ ] Consider adding a subtle gradient in the empty space between the job
   indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
   Show several visual variants in the terminal before choosing one; generate
   the demos with Python, as Claude did previously.
-  Triage 2026-10-06 (decision): After Python demos of several variants, which gradient, if any, between job indicators and the next tab?
+  Decided by the user 2026-10-06: the agent makes demos of a few variants
+  for the user to view in a tab, then moves the item back under Needs a
+  decision with the variants named, so the user picks one with a click.
 
 - [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
   to the right of the "spaces" header (like the agents panel's
@@ -1101,7 +1063,20 @@ user needs to decide or do. Item text is unchanged.
     pointer (a middle-click could stop the wrong job). DeepSeek wanted the
     footer dropped (chosen); Astra wanted the top line and footer to split
     the fields.
-  Triage 2026-10-06 (decision): Remove the old agents panel now (`show_agents_panel` still defaults to true)? Where do the attention counts go? Is white-on-accent at 3.9:1 acceptable?
+  Decided by the user 2026-10-06: remove the panel and
+  `show_agents_panel`; the attention counts move to the sidebar header;
+  raise the white-on-accent contrast from 3.9:1 to at least 4.5:1.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] Add a model-selection review workflow for the consult/ask skills.
   - Use official model announcements, CLI release notes and authentication /
