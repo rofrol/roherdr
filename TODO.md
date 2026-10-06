@@ -1222,6 +1222,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   tab's repository, no new code beyond that; a herdr-native list only if
   that falls short.
 
+- [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06,
+  after a consult round on GLM and Kimi, `20261006-221442-cf9e`, where both
+  models advised checking this before adding any model.) From consult-stats,
+  compare MiMo with Sol over shared rounds (`consult.py stats --vs`):
+  accepted unique findings per call, dismissed share, errors, latency. Then
+  propose keep, replace or drop, with the numbers, under Needs a decision.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1232,99 +1239,6 @@ Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do. Item text is unchanged.
 
 ### Decide
-
-- [ ] Usage footer: show OpenAI API (platform, pay-as-you-go) credits, and
-  consider Kimi, GLM and other popular providers.
-  - Consulted models (DeepSeek, GPT-6 Luna, 2026-09-26; GPT-6 Astra and Gemini
-    hit usage limits): there is no documented way to read the remaining
-    OpenAI prepaid balance, with a project key or an admin key.
-    `/v1/dashboard/billing/credit_grants` is legacy and undocumented; do not
-    build on it. The Admin API (`GET /v1/organization/costs`, needs an
-    `sk-admin` key) gives spend only, so show month-to-date spend, optionally
-    against a budget set in `[usage]`, labeled "spend", never "credits left".
-    An admin key reads org-wide billing: opt-in and disabled by default.
-    Use a dedicated credential file outside the repository, readable only
-    by its owner (0600), containing a restricted Usage Read key. Do not
-    reuse Pi's shared `auth.json`; the server alone reads this credential,
-    and must never expose it in logs, errors, client snapshots or prompts.
-    Separate storage is not a sandbox against agents running as the same
-    OS user. The key has not been created; implementation remains pending
-    an explicit user decision. Label costs as spend, not prepaid balance.
-  - Kimi (Moonshot): documented `GET https://api.moonshot.ai/v1/users/me/balance`
-    (Bearer key) returns `available_balance`, `voucher_balance`,
-    `cash_balance` (cash can go negative). Same shape as `deepseek.rs`; the
-    easiest one. `api.moonshot.cn` accounts are separate and in CNY: make the
-    host configurable, never mix currencies.
-  - GLM (Z.ai / Zhipu): no documented balance API. The GLM Coding Plan quota
-    (5h window and weekly, plan tier) comes from the undocumented
-    `GET https://api.z.ai/api/monitor/usage/quota/limit` (`open.bigmodel.cn`
-    for CN keys; raw key in `Authorization`, no `Bearer`), used by many
-    third-party trackers. Opt-in, off by default, parse defensively (it
-    already changed once: `CREDIT_LIMIT` rows appeared).
-  - Skip for now: MiniMax, Mistral, xAI, Groq (no balance endpoint anyone
-    could vouch for); Qwen/DashScope only through Alibaba Cloud BSS
-    `QueryAccountBalance` with signed AccessKey requests, out of scope.
-  - Order: Kimi balance, then OpenAI spend (admin key), then GLM Coding Plan.
-  - Only Kimi is next; OpenAI spend and GLM wait until there is a real need.
-  - Kimi done 2026-09-26: `usage.kimi` (row `KM`, hidden without a key in
-    `MOONSHOT_API_KEY` or `kimi` in the auth file) and `usage.kimi_host`
-    (`api.moonshot.cn` bills in CNY). Endpoint checked (401 without a key);
-    not tried with a real key, since there is none on this Mac.
-  - Noted 2026-09-28: the footer still has no row for an OpenAI API key
-    (platform, pay-as-you-go); only Codex's ChatGPT limits show.
-  - Noted 2026-10-03: show OpenAI API token usage too, not only spend
-    (input, cached and output tokens, month to date), from the Admin API's
-    `GET /v1/organization/usage/completions` with the same opt-in admin key.
-    Key stored 2026-10-03 in `~/.config/herdr/openai-admin-key` (0600,
-    one line); both `/v1/organization/costs` and
-    `/v1/organization/usage/completions` answer 200 with it.
-  - OpenAI spend and completion tokens done 2026-10-03: `usage.openai_api`
-    (off by default, row `OA` under Codex's), key only from `usage.openai_admin_key_file`
-    (refused unless owner-only), polled at most every 15 min. Consulted Sol,
-    DeepSeek and MiMo (round `20261003-054331-c102`). Accepted: no env var
-    (agent panes would inherit it), explicit opt-in, `input_tokens` already
-    includes cached ones, label tokens "completions only" and spend
-    "organization-wide", sum every result per bucket, a scope hint on
-    401/403. Rejected: decimal crate (f64 over at most 31 buckets is exact
-    to the cent), partial-success status per endpoint (both must succeed,
-    else the last good values stay), a cross-process refresh lease.
-  - Left for later: other usage endpoints (embeddings, images, audio),
-    filtering by project.
-  - Row code (round `20261003-114021-c950`, Sol, DeepSeek, MiMo unanimous):
-    codes name vendors, so the API row is a second `OA` right under Codex,
-    told apart by `$ spend` versus `%`; a future Anthropic API row is a
-    second `AN`. `OP` read as a new vendor; `O$` would start a symbol class.
-  - Budget: do not take a number from `[usage]`. OpenAI has
-    `GET /v1/organization/spend_limit` (Sol; verified 2026-10-03: 404 "No
-    organization spend limit is configured" with our admin key). When a
-    limit is set, show `$4.20/20` (money first, never a bare `%` next to
-    subscription percentages) and in the details "spend limit from OpenAI",
-    budget used and the period end. Built 2026-10-03: the limit is read
-    from OpenAI each refresh (a failed read only adds a note); no config
-    number.
-  - Follow-ups (round `20261003-115359-3a57`, Sol, DeepSeek, MiMo agree):
-    - [x] Done 2026-10-03 (`8d5d016d`): a Usage section in the Settings overlay (reuse `ConfigEdit`
-      and the reload flow) with the master switch and one toggle per
-      provider, mirroring `[usage]` keys exactly. Show credential state next
-      to keyed providers ("on, no key") instead of hiding them silently.
-      Turning `openai_api` on shows the admin-key warning first; never a
-      text field for the key.
-    - [x] Done 2026-10-03 (`8d5d016d`): when `openai_api` is on and the key file is missing, the row
-      says `OA setup needed` and the details say: create an Admin key at
-      platform.openai.com → Organization settings → Admin keys, save it as
-      one line in the configured path, mode 0600. Herdr only reads costs,
-      completions usage and the spend limit. Do not promise a read-only key:
-      the Admin API's key creation takes only a name and expiry (checked in
-      openai-python 2026-10-03), so the key may carry admin authority.
-      Nothing is shown while `openai_api` is off.
-    - [ ] Later, on demand: spend per project (`group_by=project_id`, flat
-      list in the details, org total and limit kept) and per line item
-      (`group_by=line_item`). Never a config project filter: filtered spend
-      would read as the org total next to the org limit.
-    - Never: polling the other usage endpoints (embeddings, images, audio,
-      vector stores, code interpreter; all answer 200) for the footer.
-      Costs already include their dollars; their units do not mix.
-  Triage 2026-10-06 (decision): Kimi and OpenAI spend are done: build GLM Coding Plan quota or OpenAI per-project spend now, or close the item?
 
 - [ ] Build line (bottom left of the sidebar): hover shows the full commit
   message, click opens a modal with the full commit info (full hash,
