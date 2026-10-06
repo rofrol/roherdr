@@ -245,6 +245,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) held_squares: &'a super::space_tabs::HeldSquares,
     /// The active endpoint's last open job per parent tab.
     pub(super) kept_jobs: &'a super::space_tabs::KeptJobs,
+    /// The active endpoint's tabs the fold button put away (see
+    /// [`super::space_tabs::quiet_tab_ids`]).
+    pub(super) quiet_folded: &'a HashSet<String>,
     pub(super) launched_agents: &'a HashMap<String, String>,
     /// While the pointer is over a sorted list: its spaces' order as last
     /// drawn, kept until the pointer leaves.
@@ -292,6 +295,12 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) agent_counts: (usize, usize),
     /// Bookmarked tabs, for the `★` button.
     pub(super) bookmark_count: usize,
+    /// Whether the header's `‹` and `›` have a jump to go to.
+    pub(super) focus_history: (bool, bool),
+    /// The fold button has quiet tabs put away, so it draws lit.
+    pub(super) quiet_folds_active: bool,
+    /// A press of the fold button would put tabs away, not show them.
+    pub(super) quiet_fold_would_fold: bool,
     /// The header button whose list is open, to draw it filled.
     pub(super) open_list: Option<super::notification_log::NotificationLogView>,
 }

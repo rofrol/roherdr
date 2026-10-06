@@ -165,6 +165,10 @@ impl ClientShellState {
                 .map(|(_, tab_id)| tab_id.clone())
         };
         if let Some(tab_id) = hit(&self.hits.space_tab_folds) {
+            if let Some(workspace_id) = super::space_tabs::quiet_fold_workspace(&tab_id) {
+                self.unfold_quiet_tabs(workspace_id);
+                return Some(None);
+            }
             // Tab ids can be reused: forget tabs that are gone.
             let live = self
                 .snapshot
@@ -790,6 +794,16 @@ impl ClientShellState {
             .tabs
             .iter()
             .find(|tab| tab.tab_id == *tab_id)?;
+        // Put-away tabs leave no drag slots either.
+        let quiet_line = super::space_tabs::quiet_fold_id(&tab.workspace_id);
+        if self
+            .hits
+            .space_tab_folds
+            .iter()
+            .any(|(_, id)| *id == quiet_line)
+        {
+            return None;
+        }
         Some(ClientTabPress {
             tab_id: tab.tab_id.clone(),
             workspace_id: tab.workspace_id.clone(),
@@ -2835,6 +2849,21 @@ impl ClientShellState {
                         outcome.repaint = true;
                         return;
                     }
+                }
+                for (rect, direction) in [
+                    (self.hits.focus_back_button, -1),
+                    (self.hits.focus_forward_button, 1),
+                ] {
+                    if super::contains(rect, point) {
+                        self.step_focus_history(direction, outcome);
+                        outcome.repaint = true;
+                        return;
+                    }
+                }
+                if super::contains(self.hits.quiet_fold_button, point) {
+                    self.toggle_quiet_folds();
+                    outcome.repaint = true;
+                    return;
                 }
                 if super::contains(self.hits.space_filter_button, point) {
                     // The button opens the bar for typing, or closes it.

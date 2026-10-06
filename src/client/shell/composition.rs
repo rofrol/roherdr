@@ -29,6 +29,8 @@ static NO_HELD_SQUARES: std::sync::LazyLock<super::space_tabs::HeldSquares> =
 /// No remembered jobs.
 static NO_KEPT_JOBS: std::sync::LazyLock<super::space_tabs::KeptJobs> =
     std::sync::LazyLock::new(super::space_tabs::KeptJobs::new);
+static NO_QUIET_FOLDS: std::sync::LazyLock<HashSet<String>> =
+    std::sync::LazyLock::new(HashSet::new);
 
 impl ClientShellState {
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
@@ -96,6 +98,13 @@ impl ClientShellState {
                 .kept_jobs
                 .get(&self.active_endpoint_id)
                 .unwrap_or(&NO_KEPT_JOBS),
+            focus_history: self.focus_history_state(),
+            quiet_folds_active: self.has_quiet_folds(),
+            quiet_fold_would_fold: self.quiet_fold_would_fold(),
+            quiet_folded: self
+                .quiet_folds
+                .get(&self.active_endpoint_id)
+                .unwrap_or(&NO_QUIET_FOLDS),
             launched_agents: &self.launched_agents,
             workspace_scroll: &mut self.workspace_scroll,
             workspace_scroll_anchor: &mut self.workspace_scroll_anchor,
@@ -368,6 +377,13 @@ impl ClientShellState {
                     .kept_jobs
                     .get(&self.active_endpoint_id)
                     .unwrap_or(&NO_KEPT_JOBS),
+                focus_history: self.focus_history_state(),
+                quiet_folds_active: self.has_quiet_folds(),
+                quiet_fold_would_fold: self.quiet_fold_would_fold(),
+                quiet_folded: self
+                    .quiet_folds
+                    .get(&self.active_endpoint_id)
+                    .unwrap_or(&NO_QUIET_FOLDS),
                 launched_agents: &self.launched_agents,
                 workspace_scroll: &mut self.workspace_scroll,
                 workspace_scroll_anchor: &mut self.workspace_scroll_anchor,

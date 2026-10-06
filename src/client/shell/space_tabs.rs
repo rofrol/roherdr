@@ -50,6 +50,10 @@ pub(super) struct SpaceTabLine {
     /// The open job while the squares are folded: it takes a row of its own
     /// under the line, so the sidebar says where the focus is.
     pub(super) hidden_focus: Option<TabSquare>,
+    /// Set on the `N idle` line that stands for the space's quiet tabs the
+    /// header's fold button put away (see [`quiet_tab_ids`]): their ids.
+    /// Its `tab_id` is [`quiet_fold_id`], never a real tab's.
+    pub(super) quiet: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +128,59 @@ pub(super) type HeldSquares = std::collections::HashMap<String, Vec<(String, Str
 /// a folded line keeps showing after the focus returns to the parent.
 pub(super) type KeptJobs = std::collections::HashMap<String, String>;
 
+/// The `tab_id` of a space's `N idle` line, which its fold hit carries too.
+pub(super) fn quiet_fold_id(workspace_id: &str) -> String {
+    format!("{QUIET_FOLD_PREFIX}{workspace_id}")
+}
+
+/// The space whose `N idle` line a fold hit's id names.
+pub(super) fn quiet_fold_workspace(id: &str) -> Option<&str> {
+    id.strip_prefix(QUIET_FOLD_PREFIX)
+}
+
+const QUIET_FOLD_PREFIX: &str = "quiet:";
+
+/// A top-level tab the fold button may put away: its agents sit idle with
+/// nothing to say (no question, no limit, no unseen result), none of its jobs
+/// runs or failed, and the focus is not on it or a job under it. Tabs without
+/// an agent are never quiet (a shell may be in use), nor are bookmarked ones.
+pub(super) fn tab_is_quiet(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> bool {
+    use crate::api::schema::AgentStatus;
+    if tab.parent_tab_id.is_some()
+        || tab.bookmarked
+        || tab_state(snapshot, tab) != Some((AgentStatus::Idle, AgentMark::None))
+    {
+        return false;
+    }
+    let speaks = snapshot.agents.iter().any(|agent| {
+        agent.tab_id == tab.tab_id && (agent.awaiting_reply || agent.limited.is_some())
+    });
+    let group = |candidate: &&ClientShellTab| {
+        candidate.tab_id == tab.tab_id
+            || candidate.parent_tab_id.as_deref() == Some(tab.tab_id.as_str())
+    };
+    let busy_job = snapshot.tabs.iter().filter(group).any(|candidate| {
+        matches!(
+            candidate.status,
+            Some(TabStatus::Running | TabStatus::Failed)
+        )
+    });
+    let focused = snapshot.tabs.iter().filter(group).any(|candidate| {
+        candidate.focused || snapshot.focused_tab_id.as_deref() == Some(candidate.tab_id.as_str())
+    });
+    !speaks && !busy_job && !focused
+}
+
+/// The tabs the fold button puts away now, in every space.
+pub(super) fn quiet_tab_ids(snapshot: &ClientShellSnapshot) -> HashSet<String> {
+    snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab_is_quiet(snapshot, tab))
+        .map(|tab| tab.tab_id.clone())
+        .collect()
+}
+
 /// Squares that fit on a row of a space block `width` columns wide, from the
 /// indent to the right edge, as the tab fill. Callers pass
 /// the same width to [`SpaceTabLine::height`] and
@@ -152,13 +209,17 @@ pub(super) fn space_tab_lines(
         unfolded_squares,
         held_squares,
         kept_jobs,
+        &HashSet::new(),
         None,
         config,
     )
 }
 
 /// [`space_tab_lines`] narrowed by the spaces filter: only the tabs the query
-/// shows (see [`super::space_filter::FilterView::shows_tab`]).
+/// shows (see [`super::space_filter::FilterView::shows_tab`]). The tabs in
+/// `quiet_folded` that are still quiet give way to one `N idle` line at the
+/// end; the filter shows every tab it matches.
+#[allow(clippy::too_many_arguments)] // The sidebar's per-client fold state, passed as is.
 pub(super) fn space_tab_lines_filtered(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,
@@ -166,6 +227,7 @@ pub(super) fn space_tab_lines_filtered(
     unfolded_squares: &HashSet<String>,
     held_squares: &HeldSquares,
     kept_jobs: &KeptJobs,
+    quiet_folded: &HashSet<String>,
     filter: Option<&super::space_filter::FilterView>,
     config: &ClientShellConfig,
 ) -> Vec<SpaceTabLine> {
@@ -254,6 +316,7 @@ pub(super) fn space_tab_lines_filtered(
                 unfolded,
                 hidden_focus,
                 squares,
+                quiet: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -264,6 +327,33 @@ pub(super) fn space_tab_lines_filtered(
     if agents.all(|agent| Some(agent) == first) {
         for line in &mut lines {
             line.agent = None;
+        }
+    }
+    if filter.is_none() && !quiet_folded.is_empty() {
+        let folds = |line: &SpaceTabLine| {
+            quiet_folded.contains(&line.tab_id)
+                && snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == line.tab_id)
+                    .is_some_and(|tab| tab_is_quiet(snapshot, tab))
+        };
+        let (folded, shown): (Vec<_>, Vec<_>) = lines.into_iter().partition(folds);
+        lines = shown;
+        if !folded.is_empty() {
+            lines.push(SpaceTabLine {
+                tab_id: quiet_fold_id(&workspace.workspace_id),
+                state: None,
+                label: format!("{} idle", folded.len()),
+                agent: None,
+                active: false,
+                jobs: Vec::new(),
+                plan: None,
+                squares: Vec::new(),
+                unfolded: false,
+                hidden_focus: None,
+                quiet: folded.into_iter().map(|line| line.tab_id).collect(),
+            });
         }
     }
     lines
@@ -345,6 +435,81 @@ pub(super) fn space_tabs_folded(
 }
 
 impl super::ClientShellState {
+    /// The header's fold button: puts away every quiet tab of the active
+    /// machine (see [`tab_is_quiet`]), or, when all of them are put away
+    /// already, shows them again.
+    pub(super) fn toggle_quiet_folds(&mut self) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let quiet = quiet_tab_ids(snapshot);
+        let folds = self
+            .quiet_folds
+            .entry(self.active_endpoint_id.clone())
+            .or_default();
+        if quiet.is_subset(folds) {
+            folds.clear();
+        } else {
+            *folds = quiet;
+        }
+    }
+
+    /// Whether a press of the fold button would put tabs away (else it shows
+    /// them again), so its tooltip says which.
+    pub(super) fn quiet_fold_would_fold(&self) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return true;
+        };
+        let quiet = quiet_tab_ids(snapshot);
+        self.quiet_folds
+            .get(&self.active_endpoint_id)
+            .is_none_or(|folds| !quiet.is_subset(folds))
+    }
+
+    /// Whether the fold button has tabs put away on the active machine.
+    pub(super) fn has_quiet_folds(&self) -> bool {
+        self.quiet_folds
+            .get(&self.active_endpoint_id)
+            .is_some_and(|folds| !folds.is_empty())
+    }
+
+    /// Shows the tabs a space's `N idle` line stands for.
+    pub(super) fn unfold_quiet_tabs(&mut self, workspace_id: &str) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        if let Some(folds) = self.quiet_folds.get_mut(&self.active_endpoint_id) {
+            folds.retain(|tab_id| {
+                !snapshot
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.tab_id == *tab_id && tab.workspace_id == workspace_id)
+            });
+        }
+    }
+
+    /// Lets go of put-away tabs that closed or are no longer quiet: they show
+    /// again, and going idle later does not put them back.
+    pub(super) fn release_unquiet_folds(&mut self) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        // A snapshot without tabs (a server still starting) says nothing
+        // about which tabs are quiet.
+        if snapshot.tabs.is_empty() {
+            return;
+        }
+        if let Some(folds) = self.quiet_folds.get_mut(&self.active_endpoint_id) {
+            folds.retain(|tab_id| {
+                snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == *tab_id)
+                    .is_some_and(|tab| tab_is_quiet(snapshot, tab))
+            });
+        }
+    }
+
     /// Shows the tab lines of a space of the active machine (a new tab
     /// there should be seen). Returns whether that changed anything.
     pub(super) fn unfold_space_tabs(&mut self, workspace_id: &str) -> bool {
@@ -670,6 +835,11 @@ pub(super) fn render_space_tab_lines(
         if y >= area.bottom() {
             break;
         }
+        if !line.quiet.is_empty() {
+            render_quiet_fold(buffer, area, x, y, line, pointer, &mut hits, palette);
+            y = y.saturating_add(1);
+            continue;
+        }
         hits.lines
             .push((Rect::new(area.x, y, area.width, 1), line.tab_id.clone()));
         let active_text = Style::default()
@@ -981,6 +1151,46 @@ pub(super) fn render_space_tab_lines(
         }
     }
     hits
+}
+
+/// The `N idle` line: a dim count in the label column, all of it the target
+/// that shows the tabs again, lit while the pointer is over it.
+#[allow(clippy::too_many_arguments)] // One row of render_space_tab_lines' state.
+fn render_quiet_fold(
+    buffer: &mut Buffer,
+    area: Rect,
+    x: u16,
+    y: u16,
+    line: &SpaceTabLine,
+    pointer: TabLinePointer<'_>,
+    hits: &mut SpaceTabHits,
+    palette: &Palette,
+) {
+    let rect = Rect::new(x, y, area.right().saturating_sub(x), 1);
+    if pointer.fold == Some(line.tab_id.as_str()) {
+        buffer.set_style(
+            rect.intersection(buffer.area),
+            Style::default().bg(palette.surface1),
+        );
+    }
+    let style = Style::default().fg(palette.overlay1);
+    super::render::put_text(buffer, x, y, 1, "►", style);
+    super::render::put_text(
+        buffer,
+        x.saturating_add(3),
+        y,
+        rect.width.saturating_sub(3),
+        &line.label,
+        style,
+    );
+    hits.tooltips.push(super::tooltip::TooltipTarget {
+        rect: Rect::new(x, y, 2, 1),
+        id: format!("tab-state:{}", line.tab_id),
+        text: "idle agents folded · click shows them".into(),
+        bg: None,
+        starts_at_target: false,
+    });
+    hits.folds.push((rect, line.tab_id.clone()));
 }
 
 /// A square's fill: the inactive tab fill, or the active tab's tint while
