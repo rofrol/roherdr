@@ -871,7 +871,9 @@ pub(crate) fn render_sidebar(
                 .any(|shown| shown.workspace_id == agent.workspace_id)
         });
         // `⤒` in front of the name moves the space to the top of the manual
-        // order (for every client); right after, `↶` puts it back.
+        // order (for every client); right after, `↶` puts it back. It shows
+        // while the pointer is on the name line; its columns stay reserved,
+        // so the name does not move.
         let to_top_button = config.mouse_capture
             && config.spaces.tabs
             && !entry.indented
@@ -971,11 +973,15 @@ pub(crate) fn render_sidebar(
                 starts_at_target: false,
             });
         }
-        if to_top_button {
+        let to_top_hovered = state.hovered_name_button
+            == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
+        if to_top_button
+            && (to_top_hovered
+                || state.hovered_workspace_id == Some(workspace.workspace_id.as_str()))
+        {
             // After the disclosure triangle (`render_space_disclosure`).
             let button = Rect::new(rect.x.saturating_add(3), rect.y, TO_TOP_BUTTON_WIDTH, 1);
-            let hovered = state.hovered_name_button
-                == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
+            let hovered = to_top_hovered;
             let undo = state.space_to_top_undo == Some(workspace.workspace_id.as_str());
             let (glyph, tooltip) = if undo {
                 ("↶", "Put the spaces back in their order")

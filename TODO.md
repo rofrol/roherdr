@@ -1127,7 +1127,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     previous order back.
   - Changed again 2026-10-06 (user: "works badly; for now always visible,
     left of the space name"): `⤒` / `↶` stands between the disclosure
-    triangle and the name on every top-level space in the manual order.
+    triangle and the name on every top-level space in the manual order. Then (user, same day: "now make the arrows on hover") it shows only
+    while the pointer is on that name line or the button; its two columns
+    stay reserved, so the name does not move.
 - [x] New space goes right after the active space, like new tabs (user,
   2026-10-03: "new space creates it at the end; change it as with tabs"). After
   the active space's whole worktree family. Models (unanimous): only for

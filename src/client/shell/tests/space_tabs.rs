@@ -4030,7 +4030,7 @@ fn a_bookmarked_space_is_listed_first_and_its_row_jumps_to_it() {
 }
 
 #[test]
-fn the_to_top_button_stands_before_each_space_name() {
+fn the_to_top_button_shows_before_a_hovered_space_name() {
     use crate::api::schema::Method;
     let mut state = state_with_tabs(true);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
@@ -4041,8 +4041,11 @@ fn the_to_top_button_stands_before_each_space_name() {
     second.focused = false;
     projected.workspaces.push(second);
     state.set_snapshot(Box::new(projected));
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_to_top.is_empty(), "hidden without hover");
+    state.hovered_workspace_id = Some("ws_2".into());
     let frame = state.compose(106, 30).unwrap();
-    assert_eq!(state.hits.space_to_top.len(), 2, "always shown");
+    assert_eq!(state.hits.space_to_top.len(), 1, "on the hovered space");
     let (button, workspace_id) = state
         .hits
         .space_to_top
