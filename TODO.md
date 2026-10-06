@@ -250,6 +250,29 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     popup, since `herdr pane get` already returns `agent_session`, a
     plugin's context carries `focused_pane_id`, and `herdr pane send-text`
     exists (MiMo; fzf is installed).
+  - Native Up instead of a picker (user, 2026-10-06: "why can't it work
+    with Claude already running in the tab? some proxy that filters by
+    sessionId?"; consulted sol and MiMo, round `20261006-162725-cdd2`).
+    Preferred: a keystroke proxy in herdr, which sees every key before
+    Claude. When the pane's Claude is idle and its prompt box is empty
+    (detection snapshot), herdr swallows Up/Down and cycles through that
+    session's own prompts from `history.jsonl` (resolved pastes): clear
+    the input, bracketed-paste the prompt. Any other key leaves this mode
+    and is forwarded. Clearing is reliable because Claude has a
+    `chat:clearInput` action that `~/.claude/keybindings.json` can bind to
+    a key herdr sends (defaults there: `up` `history:previous`, `down`
+    `history:next`). Risks to test (MiMo): arrows in menus, permission
+    dialogs, completions, Ctrl+R search and `!` mode must pass through;
+    typed or multi-line input must keep Claude's own Up; a redraw must not
+    leave the mode stuck. The load-bearing part is detecting an empty
+    prompt box from the screen. Rejected: a per-pane `CLAUDE_CONFIG_DIR`
+    of symlinks (sol's pick in a copied form): tmp+rename writes of
+    `settings.local.json` (every "always allow") and `~/.claude.json` turn
+    a symlink into a private copy, plus a daemon and lock per directory,
+    and it needs a relaunch; patching the JS in the signed Bun binary
+    (bytecode, re-signing, every update, terms of use); rewriting
+    `project` in the shared file (one file cannot show different views to
+    different panes); a FUSE view (too heavy).
   - Check that herdr never resumes one session id in two panes: both
     panes would then share "own" history and interleave transcripts (sol).
   - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
