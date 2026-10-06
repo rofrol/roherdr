@@ -37,6 +37,13 @@
     shows outcomes ("ready for review") apart from actions, MiMo would not
     show outcomes at all (stale within a day); if outcomes come, show them
     only until the tab is viewed.
+  - More users asking for it (2026-10-06, replies to the post above): "a
+    colored dot tells me something's running, not that it's waiting on me
+    ... most of my lost time with agents is hunting for the chat that's
+    stuck on a yes" (@haonv2); Shika gives every card a second line in
+    words: the CLI, the status, the branch, and the diff stat once it is
+    ready to check (@hieuspringle). Candidate for a done row later: branch
+    and `+N -M`, facts herdr can read itself instead of agent prose.
 
 - [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
   would help, now I have to paste a link to the pi or claude session by
