@@ -2338,6 +2338,19 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     fix below waits for that reproduction.
   - Until then, the user's side: do not Force Quit a "Ghostty" entry that
     shows up after Ghostty has quit; Cmd+Q is enough.
+  - Status 2026-10-06 (after the reboot of 10-05): the server, all 74 zsh
+    and all 48 claude are now in coalition 1206, the coalition of the live
+    Ghostty, so the coupling is unchanged; it will become a "dead Ghostty"
+    group again the next time Ghostty quits. The "mass exit a minute after a
+    client detach, cause unknown" noted by the signal-exit work (`0ddaa676`)
+    is this same 10-03 incident, not a second trigger. Third round (sol,
+    MiMo, `20261006-182514-d451`): do the auto-resume first and keep the
+    LaunchAgent deferred until the reproduction (sol); MiMo's "the live
+    coalition contradicts the premise" and "resume runs on by itself" are
+    wrong. Risks for the auto-resume, accepted from both: SessionEnd
+    `reason: "other"` also covers a deliberate external `kill`, which
+    auto-resume would undo; `claude --resume` runs SessionStart hooks; cap
+    how many agents resume at once.
   - The `?` mark: today it survives a live handoff but not the agent's exit
     and resume. Restore the normal `?` on resume: the question is still the
     last message of the resumed conversation and still unanswered, which is
