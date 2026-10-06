@@ -63,6 +63,37 @@
   - Open: whether the source tab stays (likely yes, idle), a CLI/API form
     (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
     what to do when the session id is unknown (say so, do not guess).
+  - From the Fellowship post (below): keep it a provenance pointer (source
+    agent, session id, transcript, repository, revision, time), not a
+    shared context; the post moves context between sessions only "when it
+    is useful".
+
+Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
+(2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
+session that writes all code and delegates to documenter, reviewer, qa and
+ops-recon through `herdr agent prompt`, one of them on a remote host).
+Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
+and `20261006-030215-b8ca`); both put the first two at the top.
+
+- [ ] Resolve agent names within the caller's workspace first. Today
+  `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
+  `agent_name` in every workspace, so the post names agents
+  `<workspace-id>-<role>` and its main profile has to say "verify that each
+  target belongs to the intended workspace and project. Never substitute an
+  unnamed, focused, or unrelated agent." Keep an explicit way to address a
+  name globally; an ambiguous name stays an error. Risk: callers that rely
+  on global names from another workspace (sol).
+- [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
+  help says "It does not track turns: if the agent is already working, that
+  active turn's completion may match", and the post's whole delegation runs
+  on it. Return a request id and report accepted, working and finished for
+  that request. Screen detection cannot prove a turn ended, so this needs a
+  signal from the integration; say so where an agent has none instead of
+  guessing (sol, MiMo).
+- [ ] Usage summed per workspace. The author asked every session for its
+  `/session` accounting by hand and had an agent record the total. The
+  fork's usage module has the numbers per agent. Risk: totals that disagree
+  with the provider's bill, and resumed sessions counted twice (sol).
 
 - [x] Nest a worktree space under the agent tab that created it (user,
   2026-10-03; queued first). Today the worktree child sits at the bottom
@@ -4736,7 +4767,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     not stop an agent that bypasses the queue (sol); after a rebase compare
     `HEAD^{tree}` with the reviewed tree, not SHAs, and re-review when it
     differs (MiMo). Conflicts with the fork's "work on master in the shared
-    checkout" rule, so decide that first.
+    checkout" rule, so decide that first. The Fellowship post (see the
+    three gaps near the top) avoids concurrent writers by role instead:
+    only the main session writes code, the reviewer never edits, qa works
+    in throwaway worktrees. A cheaper first step is that rule in
+    `AGENTS.md`, though it lives only in prose; the 2026-10-02 incident
+    still justifies deciding on the queue separately (sol, MiMo).
   - Machine-wide slots for builds and tests: extend `herdr-job` (and next to
     `just guard`) with N slots plus an exclusive mode for benchmarks, so
     several sessions do not thrash one `target/` or skew measurements.
