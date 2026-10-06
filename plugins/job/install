@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 COMMANDS = ("herdr-job", "herdr-bg-badge", "herdr-peer-token")
-VERSION = 1
+VERSION = 2
 BEGIN = "<!-- herdr-job agent instructions v{}: written by plugins/job/install, re-run it to update -->"
 END = "<!-- /herdr-job agent instructions -->"
 # Global instruction files, offered when the agent's directory exists.
