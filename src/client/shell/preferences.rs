@@ -38,6 +38,10 @@ pub(super) struct ClientChromePreferences {
     /// The local server's job pinned under each folded tab line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) kept_jobs: Vec<ClientKeptJob>,
+    /// Directories on this machine images were last attached from, the
+    /// latest first; the image list opens in the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) recent_image_dirs: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

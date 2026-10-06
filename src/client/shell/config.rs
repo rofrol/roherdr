@@ -92,6 +92,7 @@ impl ClientShellState {
             remote_collapsed_groups,
             unfolded_job_tabs,
             kept_jobs,
+            recent_image_dirs: self.recent_image_dirs.clone(),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

@@ -5,9 +5,14 @@
 //! server stages it and pastes its path into the pane, which works the same
 //! for a remote server.
 //!
-//! The directory is where the system saves screenshots. The pane is fixed
-//! when the list opens, so moving the focus meanwhile never redirects it.
-//! The directory is read only when the list opens, on the user's action.
+//! The list opens in the directory of the last attach, else where the
+//! system saves screenshots. It is a small file browser: `..` goes up, the
+//! directories images were last attached from (and the screenshot one) are
+//! shortcuts at the top, subdirectories come after the images, which are
+//! what is picked. Marks are cleared on a directory change, so no unseen
+//! file is attached. The pane is fixed when the list opens, so moving the
+//! focus meanwhile never redirects it. A directory is read only on the
+//! user's action.
 //! Space shows the highlighted image in Quick Look, as in Finder; the
 //! runtime owns that panel and closes it when the list closes.
 
@@ -20,8 +25,14 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 use super::render::{display_width, put_text};
 use super::*;
 
-/// Images listed; older ones are left out.
+/// Images listed, and subdirectories; older images and later names are
+/// left out.
 const MAX_IMAGES: usize = 200;
+const MAX_DIRS: usize = 200;
+/// Directories images were attached from, kept in the client preferences,
+/// and how many of them the list offers.
+const MAX_RECENT_DIRS: usize = 8;
+const MAX_SHORTCUTS: usize = 5;
 const PICKER_WIDTH: u16 = 72;
 /// Rows of images shown at once.
 const VISIBLE_ROWS: usize = 14;
@@ -30,8 +41,19 @@ const VISIBLE_ROWS: usize = 14;
 const PREVIEW_WIDTH: u16 = 48;
 const MIN_PREVIEW_WIDTH: u16 = 30;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EntryKind {
+    Image,
+    /// `..`, the directory above.
+    Parent,
+    /// A directory images were attached from, or the screenshot one.
+    Shortcut,
+    Directory,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImageEntry {
+    pub(super) kind: EntryKind,
     pub(super) path: PathBuf,
     pub(super) name: String,
     pub(super) modified: SystemTime,
@@ -45,7 +67,9 @@ pub(super) struct ImagePickerOverlay {
     /// The pane the images go to, fixed when the list opened.
     pub(super) pane_id: String,
     pub(super) dir: PathBuf,
-    /// Newest first.
+    /// The directories offered at the top wherever the list goes.
+    pub(super) shortcuts: Vec<PathBuf>,
+    /// `..`, the shortcuts, the images newest first, the subdirectories.
     pub(super) entries: Vec<ImageEntry>,
     pub(super) highlighted: usize,
     pub(super) marked: BTreeSet<usize>,
@@ -76,30 +100,82 @@ fn image_extension(name: &str) -> bool {
     )
 }
 
-/// The images in `dir`, newest first. Hidden files are left out: macOS
-/// writes a screenshot to a hidden name and renames it when it is complete.
-pub(super) fn list_images(dir: &Path) -> Result<Vec<ImageEntry>, String> {
-    let entries = std::fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-    let mut images = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || !image_extension(&name) {
-                return None;
-            }
-            let metadata = entry.metadata().ok().filter(std::fs::Metadata::is_file)?;
-            let path = entry.path();
-            Some(ImageEntry {
-                size_px: png_size(&path),
-                path,
+/// The rows for `dir`: `..`, the shortcuts other than `dir`, the images
+/// newest first, then the subdirectories by name. Hidden files are left
+/// out: macOS writes a screenshot to a hidden name and renames it when it
+/// is complete. The error says why `dir` could not be read; the rows to
+/// leave it are there anyway.
+pub(super) fn list_entries(dir: &Path, shortcuts: &[PathBuf]) -> (Vec<ImageEntry>, Option<String>) {
+    let navigation = |kind, path: &Path, name: String| ImageEntry {
+        kind,
+        path: path.to_path_buf(),
+        name,
+        modified: SystemTime::UNIX_EPOCH,
+        size_px: None,
+    };
+    let mut rows = Vec::new();
+    if let Some(parent) = dir.parent() {
+        rows.push(navigation(EntryKind::Parent, parent, "..".to_owned()));
+    }
+    rows.extend(
+        shortcuts
+            .iter()
+            .filter(|shortcut| shortcut.as_path() != dir)
+            .map(|shortcut| navigation(EntryKind::Shortcut, shortcut, tilde(shortcut))),
+    );
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => return (rows, Some(format!("{}: {err}", tilde(dir)))),
+    };
+    let mut images = Vec::new();
+    let mut dirs = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_image = image_extension(&name);
+        // Symlinks are followed, so a linked directory opens like one.
+        let Ok(metadata) = std::fs::metadata(entry.path()) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            dirs.push(navigation(EntryKind::Directory, &entry.path(), name));
+        } else if is_image && metadata.is_file() {
+            images.push(ImageEntry {
+                kind: EntryKind::Image,
+                path: entry.path(),
+                size_px: None,
                 name,
                 modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            })
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
     images.sort_by_key(|image| std::cmp::Reverse(image.modified));
     images.truncate(MAX_IMAGES);
-    Ok(images)
+    // Headers of the listed files only: a big directory is not opened file
+    // by file.
+    for image in &mut images {
+        image.size_px = png_size(&image.path);
+    }
+    dirs.sort_by_key(|dir| dir.name.to_lowercase());
+    dirs.truncate(MAX_DIRS);
+    rows.extend(images);
+    rows.extend(dirs);
+    (rows, None)
+}
+
+/// `path` with the home directory as `~`.
+fn tilde(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 /// A PNG file's width and height from its `IHDR` chunk.
@@ -143,28 +219,93 @@ pub(crate) fn has_image_magic(bytes: &[u8]) -> bool {
 }
 
 impl ClientShellState {
-    /// Opens the image list for `pane_id` in the screenshot directory.
+    /// Opens the image list for `pane_id` in the directory of the last
+    /// attach, else the screenshot directory.
     pub(super) fn open_image_picker(&mut self, pane_id: String) {
-        let dir = crate::platform::screenshot_dir().unwrap_or_else(|| PathBuf::from("."));
-        self.open_image_picker_in(pane_id, dir);
+        let screenshots = crate::platform::screenshot_dir();
+        let dir = self
+            .recent_image_dirs
+            .iter()
+            .find(|dir| dir.is_dir())
+            .cloned()
+            .or_else(|| screenshots.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut shortcuts = Vec::new();
+        for shortcut in self.recent_image_dirs.iter().chain(screenshots.as_ref()) {
+            if shortcuts.len() < MAX_SHORTCUTS && !shortcuts.contains(shortcut) && shortcut.is_dir()
+            {
+                shortcuts.push(shortcut.clone());
+            }
+        }
+        self.open_image_picker_in(pane_id, dir, shortcuts);
     }
 
-    pub(super) fn open_image_picker_in(&mut self, pane_id: String, dir: PathBuf) {
-        let (entries, error) = match list_images(&dir) {
-            Ok(entries) => (entries, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
+    pub(super) fn open_image_picker_in(
+        &mut self,
+        pane_id: String,
+        dir: PathBuf,
+        shortcuts: Vec<PathBuf>,
+    ) {
         self.overlay = Some(ClientShellOverlay::ImagePicker(ImagePickerOverlay {
             pane_id,
-            dir,
-            entries,
+            dir: PathBuf::new(),
+            shortcuts,
+            entries: Vec::new(),
             highlighted: 0,
             marked: BTreeSet::new(),
             scroll: 0,
-            error,
+            error: None,
             notice: None,
             preview: self.image_previews,
         }));
+        self.enter_image_dir(dir);
+    }
+
+    /// Lists `dir` in the open image list, the newest image highlighted.
+    fn enter_image_dir(&mut self, dir: PathBuf) {
+        let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() else {
+            return;
+        };
+        let (entries, error) = list_entries(&dir, &picker.shortcuts);
+        picker.highlighted = entries
+            .iter()
+            .position(|entry| entry.kind == EntryKind::Image)
+            .unwrap_or(0);
+        picker.dir = dir;
+        picker.entries = entries;
+        picker.error = error;
+        picker.marked.clear();
+        picker.scroll = 0;
+        self.move_image_picker(0);
+    }
+
+    /// Goes into the highlighted directory row; returns whether it was one.
+    fn open_highlighted_image_dir(&mut self) -> bool {
+        let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_ref() else {
+            return false;
+        };
+        let Some(entry) = picker
+            .entries
+            .get(picker.highlighted)
+            .filter(|entry| entry.kind != EntryKind::Image)
+        else {
+            return false;
+        };
+        let dir = entry.path.clone();
+        self.enter_image_dir(dir);
+        true
+    }
+
+    fn image_parent_dir(&mut self) {
+        let parent = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::ImagePicker(picker)) => {
+                picker.dir.parent().map(Path::to_path_buf)
+            }
+            _ => None,
+        };
+        if let Some(parent) = parent {
+            self.enter_image_dir(parent);
+        }
     }
 
     pub(super) fn image_picker_key(
@@ -179,14 +320,30 @@ impl ClientShellState {
         }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-            KeyCode::Enter => self.attach_picked_images(outcome),
+            KeyCode::Enter => {
+                let marked = matches!(
+                    self.overlay.as_ref(),
+                    Some(ClientShellOverlay::ImagePicker(picker)) if !picker.marked.is_empty()
+                );
+                if marked || !self.open_highlighted_image_dir() {
+                    self.attach_picked_images(outcome);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.open_highlighted_image_dir();
+            }
+            KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => self.image_parent_dir(),
             KeyCode::Up | KeyCode::Char('k') => self.move_image_picker(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_image_picker(1),
             KeyCode::PageUp => self.move_image_picker(-(VISIBLE_ROWS as isize)),
             KeyCode::PageDown => self.move_image_picker(VISIBLE_ROWS as isize),
             KeyCode::Char(' ') => {
                 if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_ref() {
-                    if let Some(entry) = picker.entries.get(picker.highlighted) {
+                    if let Some(entry) = picker
+                        .entries
+                        .get(picker.highlighted)
+                        .filter(|entry| entry.kind == EntryKind::Image)
+                    {
                         outcome
                             .actions
                             .push(ClientShellAction::PreviewImage(entry.path.clone()));
@@ -196,7 +353,11 @@ impl ClientShellState {
             KeyCode::Char('x') => {
                 if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() {
                     let index = picker.highlighted;
-                    if index < picker.entries.len() && !picker.marked.remove(&index) {
+                    let image = picker
+                        .entries
+                        .get(index)
+                        .is_some_and(|entry| entry.kind == EntryKind::Image);
+                    if image && !picker.marked.remove(&index) {
                         picker.marked.insert(index);
                     }
                 }
@@ -233,15 +394,20 @@ impl ClientShellState {
         }
     }
 
-    /// A click on a row marks it, or unmarks it.
+    /// A click on an image marks it, or unmarks it; on a directory it goes
+    /// there.
     pub(super) fn click_image_picker_row(&mut self, index: usize) {
-        if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() {
-            if index < picker.entries.len() {
-                picker.highlighted = index;
-                if !picker.marked.remove(&index) {
-                    picker.marked.insert(index);
-                }
-            }
+        let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() else {
+            return;
+        };
+        let Some(kind) = picker.entries.get(index).map(|entry| entry.kind) else {
+            return;
+        };
+        picker.highlighted = index;
+        if kind != EntryKind::Image {
+            self.open_highlighted_image_dir();
+        } else if !picker.marked.remove(&index) {
+            picker.marked.insert(index);
         }
     }
 
@@ -256,7 +422,9 @@ impl ClientShellState {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| since.is_none_or(|since| entry.modified > since))
+            .filter(|(_, entry)| {
+                entry.kind == EntryKind::Image && since.is_none_or(|since| entry.modified > since)
+            })
             .map(|(index, _)| index)
             .collect();
     }
@@ -281,9 +449,14 @@ impl ClientShellState {
                 .filter_map(|index| picker.entries.get(*index).cloned())
                 .collect()
         };
+        picked.retain(|entry| entry.kind == EntryKind::Image);
         if picked.is_empty() {
             return;
         }
+        self.recent_image_dirs.retain(|dir| *dir != picker.dir);
+        self.recent_image_dirs.insert(0, picker.dir.clone());
+        self.recent_image_dirs.truncate(MAX_RECENT_DIRS);
+        self.persist_chrome_preferences(outcome);
         picked.sort_by_key(|entry| entry.modified);
         if let Some(newest) = picked.last() {
             self.image_attach_times
@@ -307,29 +480,26 @@ pub(super) fn render_image_picker(
     now: SystemTime,
     p: &Palette,
 ) -> Option<super::render::OverlayRender> {
+    let has_images = picker
+        .entries
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Image);
     let with_preview = picker.preview
-        && !picker.entries.is_empty()
+        && has_images
         && b.area.width.saturating_sub(4) >= PICKER_WIDTH + MIN_PREVIEW_WIDTH;
     let (width, rows) = if with_preview {
         (PICKER_WIDTH + PREVIEW_WIDTH, VISIBLE_ROWS as u16)
     } else {
         (
             PICKER_WIDTH,
-            picker.entries.len().clamp(1, VISIBLE_ROWS) as u16,
+            (picker.entries.len() + usize::from(!has_images)).clamp(1, VISIBLE_ROWS) as u16,
         )
     };
     // Border, header, gap, rows, gap, footer, border.
     let outer = super::render::popup_area(b.area, width, rows.saturating_add(6))?;
     let inner = super::render::panel_area(b, outer, p.accent, p.panel_bg)?;
     let base = Style::default().bg(p.panel_bg);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let dir = match home
-        .as_deref()
-        .and_then(|home| picker.dir.strip_prefix(home).ok())
-    {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => picker.dir.display().to_string(),
-    };
+    let dir = tilde(&picker.dir);
     put_text(
         b,
         inner.x.saturating_add(1),
@@ -372,15 +542,6 @@ pub(super) fn render_image_picker(
             error,
             base.fg(p.red),
         );
-    } else if picker.entries.is_empty() {
-        put_text(
-            b,
-            inner.x.saturating_add(1),
-            body_y,
-            inner.width.saturating_sub(2),
-            "no images here",
-            base.fg(p.overlay0),
-        );
     }
     for (row, (index, entry)) in picker
         .entries
@@ -399,12 +560,18 @@ pub(super) fn render_image_picker(
             base.fg(p.subtext0)
         };
         b.set_style(rect, style);
-        let mark = if picker.marked.contains(&index) {
-            "[x]"
-        } else {
-            "[ ]"
+        let (mark, name) = match entry.kind {
+            EntryKind::Image if picker.marked.contains(&index) => ("[x]", entry.name.clone()),
+            EntryKind::Image => ("[ ]", entry.name.clone()),
+            EntryKind::Parent => (" ↑ ", entry.name.clone()),
+            EntryKind::Shortcut => (" ↺ ", entry.name.clone()),
+            EntryKind::Directory => (" ▸ ", format!("{}/", entry.name)),
         };
-        let age = age(entry.modified, now);
+        let age = if entry.kind == EntryKind::Image {
+            age(entry.modified, now)
+        } else {
+            String::new()
+        };
         let age_width = display_width(&age);
         let name_width = list.width.saturating_sub(age_width + 8);
         put_text(b, list.x.saturating_add(1), y, 3, mark, style.fg(p.accent));
@@ -413,7 +580,7 @@ pub(super) fn render_image_picker(
             list.x.saturating_add(5),
             y,
             name_width,
-            &crate::ui::truncate_end(&entry.name, usize::from(name_width)),
+            &crate::ui::truncate_end(&name, usize::from(name_width)),
             style,
         );
         put_text(
@@ -426,11 +593,30 @@ pub(super) fn render_image_picker(
         );
         menu_rows.push((rect, index));
     }
+    if picker.error.is_none() && !has_images {
+        let y = body_y.saturating_add(
+            picker
+                .entries
+                .len()
+                .saturating_sub(picker.scroll)
+                .min(VISIBLE_ROWS) as u16,
+        );
+        if y < inner.bottom().saturating_sub(2) {
+            put_text(
+                b,
+                list.x.saturating_add(5),
+                y,
+                list.width.saturating_sub(6),
+                "no images here",
+                base.fg(p.overlay0),
+            );
+        }
+    }
     if with_preview
         && picker
             .entries
             .get(picker.highlighted)
-            .is_some_and(|entry| entry.size_px.is_none())
+            .is_some_and(|entry| entry.kind == EntryKind::Image && entry.size_px.is_none())
     {
         put_text(
             b,
@@ -442,10 +628,11 @@ pub(super) fn render_image_picker(
         );
     }
     let footer_y = inner.bottom().saturating_sub(1);
-    let count = picker
-        .marked
-        .len()
-        .max(usize::from(!picker.entries.is_empty()));
+    let highlighted_image = picker
+        .entries
+        .get(picker.highlighted)
+        .is_some_and(|entry| entry.kind == EntryKind::Image);
+    let count = picker.marked.len().max(usize::from(highlighted_image));
     let label = format!(" attach {count} ");
     let label_width = display_width(&label).min(inner.width);
     let primary = Rect::new(
@@ -457,7 +644,7 @@ pub(super) fn render_image_picker(
     let (hints, hints_style) = match picker.notice.as_deref() {
         Some(notice) => (notice, base.fg(p.red)),
         None => (
-            "space preview · x mark · a new since last · enter · esc",
+            "space preview · x mark · a new · ← up · enter · esc",
             base.fg(p.overlay0),
         ),
     };
@@ -469,7 +656,7 @@ pub(super) fn render_image_picker(
         hints,
         hints_style,
     );
-    if !picker.entries.is_empty() {
+    if count > 0 {
         put_text(
             b,
             primary.x,
@@ -539,6 +726,7 @@ impl ClientShellState {
                 picker
                     .entries
                     .get(picker.highlighted)
+                    .filter(|entry| entry.kind == EntryKind::Image)
                     .and_then(|entry| Some((entry.path.clone(), entry.size_px?)))
             }
             _ => None,
@@ -613,12 +801,31 @@ mod tests {
         write("new.PNG", 10);
         write(".Screenshot in progress.png", 1);
         write("notes.txt", 5);
-        let names = list_images(&dir)
-            .unwrap()
+        std::fs::create_dir_all(dir.join("Zed")).unwrap();
+        std::fs::create_dir_all(dir.join("archive")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        let shortcut = PathBuf::from("/shots");
+        let (rows, error) = list_entries(&dir, &[dir.clone(), shortcut.clone()]);
+        assert_eq!(error, None);
+        let rows = rows
             .into_iter()
-            .map(|entry| entry.name)
+            .map(|entry| (entry.kind, entry.name))
             .collect::<Vec<_>>();
-        assert_eq!(names, ["new.PNG", "old.png"]);
+        assert_eq!(
+            rows,
+            [
+                (EntryKind::Parent, "..".to_owned()),
+                (EntryKind::Shortcut, tilde(&shortcut)),
+                (EntryKind::Image, "new.PNG".to_owned()),
+                (EntryKind::Image, "old.png".to_owned()),
+                (EntryKind::Directory, "archive".to_owned()),
+                (EntryKind::Directory, "Zed".to_owned()),
+            ]
+        );
+        // An unreadable directory keeps the way out.
+        let (rows, error) = list_entries(&dir.join("missing"), &[]);
+        assert!(error.is_some());
+        assert_eq!(rows.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -669,15 +876,16 @@ mod tests {
                 })
                 .expect("an attach")
         };
-        state.open_image_picker_in("pane_1".into(), dir.clone());
+        state.open_image_picker_in("pane_1".into(), dir.clone(), Vec::new());
         let first = attached(&mut state);
         assert_eq!(first.pane_id, "pane_1");
         assert_eq!(first.paths, [dir.join("a.png"), dir.join("b.png")]);
         assert!(state.overlay.is_none());
+        assert_eq!(state.recent_image_dirs, std::slice::from_ref(&dir));
 
         // A new shot: only it is new since the last attach.
         write("c.png", 10);
-        state.open_image_picker_in("pane_1".into(), dir.clone());
+        state.open_image_picker_in("pane_1".into(), dir.clone(), Vec::new());
         assert_eq!(attached(&mut state).paths, [dir.join("c.png")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -693,15 +901,16 @@ mod tests {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
             &crate::config::Config::default(),
         ));
-        state.open_image_picker_in("pane_1".into(), dir.clone());
+        state.open_image_picker_in("pane_1".into(), dir.clone(), Vec::new());
         let highlighted = |state: &ClientShellState| match state.overlay.as_ref() {
             Some(ClientShellOverlay::ImagePicker(picker)) => {
                 (picker.highlighted, picker.marked.clone())
             }
             _ => panic!("the image list is open"),
         };
+        // Row 0 is `..`; the newest image is highlighted.
         let first = match state.overlay.as_ref() {
-            Some(ClientShellOverlay::ImagePicker(picker)) => picker.entries[0].path.clone(),
+            Some(ClientShellOverlay::ImagePicker(picker)) => picker.entries[1].path.clone(),
             _ => panic!("the image list is open"),
         };
 
@@ -711,12 +920,12 @@ mod tests {
             outcome.actions.as_slice(),
             [ClientShellAction::PreviewImage(path)] if *path == first
         ));
-        assert_eq!(highlighted(&state), (0, BTreeSet::new()));
+        assert_eq!(highlighted(&state), (1, BTreeSet::new()));
 
         let mut outcome = ClientShellInput::default();
         state.image_picker_key(crossterm::event::KeyCode::Char('x'), &mut outcome);
         assert!(outcome.actions.is_empty());
-        assert_eq!(highlighted(&state), (1, BTreeSet::from([0])));
+        assert_eq!(highlighted(&state), (2, BTreeSet::from([1])));
 
         assert!(state.image_preview_failed("no preview".into()));
         assert!(state.image_picker_open());
@@ -751,9 +960,10 @@ mod tests {
         png.extend_from_slice(&1964u32.to_be_bytes());
         std::fs::write(dir.join("shot.png"), &png).unwrap();
         std::fs::write(dir.join("photo.jpg"), b"\xff\xd8\xff\xe0").unwrap();
-        let mut sizes = list_images(&dir)
-            .unwrap()
+        let mut sizes = list_entries(&dir, &[])
+            .0
             .into_iter()
+            .filter(|entry| entry.kind == EntryKind::Image)
             .map(|entry| (entry.name, entry.size_px))
             .collect::<Vec<_>>();
         sizes.sort();
@@ -773,7 +983,7 @@ mod tests {
             &crate::config::Config::default(),
         ));
         state.set_image_previews(true);
-        state.open_image_picker_in("pane_1".into(), std::env::temp_dir());
+        state.open_image_picker_in("pane_1".into(), std::env::temp_dir(), Vec::new());
         let Some(ClientShellOverlay::ImagePicker(picker)) = state.overlay.as_mut() else {
             panic!("the image list is open");
         };
@@ -781,6 +991,7 @@ mod tests {
         picker.entries = ["/shots/a.png", "/shots/b.png"]
             .into_iter()
             .map(|path| ImageEntry {
+                kind: EntryKind::Image,
                 path: PathBuf::from(path),
                 name: path.into(),
                 modified: SystemTime::UNIX_EPOCH,
@@ -817,5 +1028,55 @@ mod tests {
             "\x1b_Ga=d,d=I,i=536870913,q=2;\x1b\\"
         );
         assert!(state.compose_image_preview().is_empty());
+    }
+
+    #[test]
+    fn browses_into_directories_and_back_clearing_marks() {
+        let dir = std::env::temp_dir().join(format!("herdr-image-browse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("top.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(dir.join("sub/inner.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &crate::config::Config::default(),
+        ));
+        state.open_image_picker_in("pane_1".into(), dir.clone(), Vec::new());
+        let picker = |state: &ClientShellState| match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ImagePicker(picker)) => (
+                picker.dir.clone(),
+                picker.highlighted,
+                picker.marked.len(),
+                picker.entries[picker.highlighted].name.clone(),
+            ),
+            _ => panic!("the image list is open"),
+        };
+        let key = |state: &mut ClientShellState, code| {
+            let mut outcome = ClientShellInput::default();
+            state.image_picker_key(code, &mut outcome);
+            outcome
+        };
+        use crossterm::event::KeyCode;
+        // `..`, top.png (highlighted), sub/.
+        key(&mut state, KeyCode::Char('x'));
+        assert_eq!(picker(&state), (dir.clone(), 2, 1, "sub".to_owned()));
+        // A click on a directory goes there; the marks are cleared.
+        state.click_image_picker_row(2);
+        assert_eq!(
+            picker(&state),
+            (dir.join("sub"), 1, 0, "inner.png".to_owned())
+        );
+        key(&mut state, KeyCode::Left);
+        assert_eq!(picker(&state), (dir.clone(), 1, 0, "top.png".to_owned()));
+        key(&mut state, KeyCode::Down);
+        let outcome = key(&mut state, KeyCode::Enter);
+        assert!(outcome.actions.is_empty());
+        assert_eq!(picker(&state).0, dir.join("sub"));
+        let outcome = key(&mut state, KeyCode::Enter);
+        assert!(matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::AttachImages(attach)] if attach.paths == [dir.join("sub/inner.png")]
+        ));
+        assert_eq!(state.recent_image_dirs, [dir.join("sub")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
