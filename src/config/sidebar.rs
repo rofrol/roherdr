@@ -479,6 +479,12 @@ pub struct SpacesSidebarConfig {
     /// own `state_icon`, which the listed tabs make redundant; `tab_jobs` then
     /// counts only jobs no line counts. Default: false.
     pub tabs: bool,
+    /// A command a `T` button on each local space's name line runs in the
+    /// background, e.g. a launcher that starts an agent working through the
+    /// space's TODO. `{space}` is replaced with the space's label, quoted for
+    /// the shell. Its first output line shows as a toast. Needs `tabs`.
+    /// Default: unset, no button.
+    pub todo_command: Option<String>,
 }
 
 impl Default for SpacesSidebarConfig {
@@ -492,6 +498,7 @@ impl Default for SpacesSidebarConfig {
             ]],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
             tabs: false,
+            todo_command: None,
         }
     }
 }

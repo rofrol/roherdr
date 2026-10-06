@@ -192,6 +192,108 @@ impl ClientShellState {
     }
 }
 
+/// `ui.sidebar.spaces.todo_command` for one space: `{space}` becomes its
+/// label, quoted for the shell that runs it.
+pub(super) fn space_command(template: &str, label: &str) -> String {
+    template.replace("{space}", &crate::platform::custom_command_argument(label))
+}
+
+/// The toast for a finished space command: its first output line, or on a
+/// failure the first line of its errors.
+pub(super) fn space_command_notice(
+    result: &Result<SpaceCommandOutput, String>,
+) -> (ClientEndpointNoticeKind, String) {
+    let first_line = |text: &str| {
+        text.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    };
+    match result {
+        Ok(output) if output.success => (
+            ClientEndpointNoticeKind::Info,
+            first_line(&output.stdout).unwrap_or_else(|| "done".to_owned()),
+        ),
+        Ok(output) => (
+            ClientEndpointNoticeKind::Rejected,
+            first_line(&output.stderr)
+                .or_else(|| first_line(&output.stdout))
+                .unwrap_or_else(|| "failed".to_owned()),
+        ),
+        Err(error) => (
+            ClientEndpointNoticeKind::Rejected,
+            format!("could not run todo_command: {error}"),
+        ),
+    }
+}
+
+impl ClientShellState {
+    /// A click on a space's `T`: runs `todo_command` for it on this machine.
+    pub(super) fn click_todo_button(&mut self, workspace_id: &str, outcome: &mut ClientShellInput) {
+        let Some(template) = self.config.spaces.todo_command.clone() else {
+            return;
+        };
+        let Some(label) = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .map(|workspace| workspace.label.clone())
+        }) else {
+            return;
+        };
+        self.show_space_command_notice(
+            &label,
+            ClientEndpointNoticeKind::Info,
+            "starting…".to_owned(),
+        );
+        outcome.actions.push(ClientShellAction::RunSpaceCommand {
+            command: space_command(&template, &label),
+            space: label,
+        });
+        outcome.repaint = true;
+    }
+
+    /// The command started by `click_todo_button` ended: its output as a
+    /// toast, which stays until clicked when the command failed.
+    pub(crate) fn space_command_finished(
+        &mut self,
+        space: &str,
+        result: Result<SpaceCommandOutput, String>,
+    ) -> bool {
+        let (kind, body) = space_command_notice(&result);
+        if kind != ClientEndpointNoticeKind::Info {
+            tracing::warn!(%space, ?result, "space todo_command failed");
+        }
+        self.show_space_command_notice(space, kind, body);
+        true
+    }
+
+    fn show_space_command_notice(
+        &mut self,
+        space: &str,
+        kind: ClientEndpointNoticeKind,
+        body: String,
+    ) {
+        // A failure waits for the user; a day stands in for "until clicked".
+        let duration = if kind == ClientEndpointNoticeKind::Info {
+            std::time::Duration::from_secs(8)
+        } else {
+            std::time::Duration::from_secs(24 * 60 * 60)
+        };
+        self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
+            key: ClientEndpointNoticeKey {
+                boot_id: "local".into(),
+                kind,
+                code: format!("space-command:{space}"),
+            },
+            title: format!("TODO {space}"),
+            body,
+            deadline: std::time::Instant::now() + duration,
+        });
+    }
+}
+
 /// The agents the picker offers: the installed ones, the button's own first.
 pub(super) fn picker_agents<'a>(kinds: &'a [String], current: Option<&str>) -> Vec<&'a str> {
     let mut agents = kinds.iter().map(String::as_str).collect::<Vec<_>>();

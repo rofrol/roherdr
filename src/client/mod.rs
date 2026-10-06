@@ -473,6 +473,7 @@ async fn run_client_loop(
         deferred_local_activation: None,
         draw_host_cursor,
         detached_process_children: Vec::new(),
+        event_tx: None,
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
     let mut federated = endpoint_catalog.has_enabled_ssh();
@@ -516,6 +517,7 @@ async fn run_client_loop(
 
     // Channel for events from the resize and server reader threads.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
+    state.event_tx = Some(event_tx.clone());
     let (supervisor_tx, mut supervisor_rx) =
         tokio::sync::mpsc::channel::<endpoint::EndpointSupervisorEvent>(64);
     // Keep Windows console draining independent of server-frame backpressure.
@@ -1924,6 +1926,7 @@ async fn run_client_loop(
                             &mut write_stream,
                             state.shell.as_mut(),
                             &mut state.detached_process_children,
+                            state.event_tx.as_ref(),
                             &mut scheduled_activation,
                         )?;
                         let repaint = repaint || dispatch_repaint;
@@ -2219,6 +2222,31 @@ async fn run_client_loop(
                     &endpoint_id,
                     io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
                 );
+            }
+            ClientLoopEvent::SpaceCommandFinished { space, result } => {
+                let Some(shell) = state.shell.as_mut() else {
+                    continue;
+                };
+                let outcome = shell::ClientShellInput {
+                    repaint: shell.space_command_finished(&space, result),
+                    ..Default::default()
+                };
+                let frame = outcome
+                    .repaint
+                    .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                    .flatten();
+                if finish_client_shell_input(
+                    &mut state,
+                    outcome,
+                    frame,
+                    &mut write_stream,
+                    &mut pending_activation,
+                    &mut endpoint_commands,
+                    &mut prefix_input_source,
+                    &mut scheduled_activation,
+                )? {
+                    return Ok(());
+                }
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();

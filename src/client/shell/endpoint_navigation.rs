@@ -29,6 +29,7 @@ impl ClientShellState {
                 .chain(&self.hits.space_new_tab)
                 .chain(&self.hits.space_push_status)
                 .chain(&self.hits.space_launch_agent)
+                .chain(&self.hits.space_todo)
                 .chain(&self.hits.space_to_top)
                 .any(|(rect, _)| super::contains(*rect, point)))
         .then(|| {
@@ -70,6 +71,7 @@ impl ClientShellState {
             };
             at(&self.hits.space_push_status, NameLineButton::PushStatus)
                 .or_else(|| at(&self.hits.space_launch_agent, NameLineButton::Launch))
+                .or_else(|| at(&self.hits.space_todo, NameLineButton::Todo))
                 .or_else(|| at(&self.hits.space_new_tab, NameLineButton::NewTab))
                 .or_else(|| at(&self.hits.space_to_top, NameLineButton::ToTop))
         })

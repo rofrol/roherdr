@@ -950,6 +950,8 @@ pub(crate) fn render_sidebar(
             && !entry.indented
             && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
             && wide.width >= LAUNCH_BUTTON_MIN_WIDTH;
+        let todo_button =
+            todo_button_shown(config, wide.width, state.active_endpoint_id.is_local());
         let push_status = render_workspace_rows(
             target,
             wide,
@@ -964,6 +966,7 @@ pub(crate) fn render_sidebar(
                 .filter(|_| dragged || pressed)
                 .map(|name| (name, drag_bg)),
             true,
+            todo_button,
             to_top_button,
             config,
         );
@@ -1050,6 +1053,39 @@ pub(crate) fn render_sidebar(
                 starts_at_target: false,
             });
         }
+        if todo_button {
+            // Left of the launch chip: a worker for this space's TODO, by
+            // the user's own command.
+            let button = Rect::new(
+                wide.right()
+                    .saturating_sub(LAUNCH_BUTTON_WIDTH + TODO_BUTTON_WIDTH),
+                wide.y,
+                TODO_BUTTON_WIDTH,
+                1,
+            );
+            let style = Style::default()
+                .fg(palette.overlay1)
+                .add_modifier(Modifier::BOLD);
+            let style = if state.hovered_name_button
+                == Some((workspace.workspace_id.as_str(), NameLineButton::Todo))
+            {
+                style.bg(palette.surface1)
+            } else {
+                style
+            };
+            put_text(target, button.x, button.y, button.width, TODO_LABEL, style);
+            let button = button.intersection(rect);
+            block_hits
+                .space_todo
+                .push((button, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: button,
+                id: format!("space-todo:{}", workspace.workspace_id),
+                text: "Start a worker on this space's TODO (todo_command)".to_owned(),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
         let to_top_hovered = state.hovered_name_button
             == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
         if to_top_button
@@ -1092,7 +1128,7 @@ pub(crate) fn render_sidebar(
                 LAUNCH_BUTTON_WIDTH
             } else {
                 0
-            };
+            } + if todo_button { TODO_BUTTON_WIDTH } else { 0 };
             let button = Rect::new(
                 wide.right()
                     .saturating_sub(NAME_LINE_ACTIONS_WIDTH + launch),
@@ -1945,6 +1981,20 @@ const LAUNCH_BUTTON_WIDTH: u16 = 3;
 /// The `⤒` in front of a space's name, with the column after it.
 const TO_TOP_BUTTON_WIDTH: u16 = 2;
 
+/// The `T` left of the launch chip: runs `ui.sidebar.spaces.todo_command`.
+const TODO_LABEL: &str = " T ";
+const TODO_BUTTON_WIDTH: u16 = 3;
+
+/// The `T` shows with the launch chip when a `todo_command` is set and the
+/// space is on this machine, where the command runs.
+pub(in crate::client::shell) fn todo_button_shown(
+    config: &ClientShellConfig,
+    width: u16,
+    local: bool,
+) -> bool {
+    local && config.spaces.todo_command.is_some() && launch_button_shown(config, width)
+}
+
 /// Narrower space blocks keep their name rather than show the button.
 const LAUNCH_BUTTON_MIN_WIDTH: u16 = 16;
 
@@ -1973,6 +2023,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
     grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
     // The name line ends in the launch button (the local machine's spaces).
     launch_button: bool,
+    // And in the `T` left of it (`todo_button_shown`).
+    todo_button: bool,
     // The name starts two columns later, after the `⤒` button.
     to_top_button: bool,
     config: &ClientShellConfig,
@@ -1987,6 +2039,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // Columns left free at the right: the grip's; with vertical tabs the
     // name line ends in a new-tab `+` and the launch chip instead.
     let launch_button = launch_button && launch_button_shown(config, area.width);
+    let todo_button = todo_button && launch_button;
     let reserved = |row_index: usize| {
         if vertical_tabs && row_index == 0 {
             NAME_LINE_ACTIONS_WIDTH
@@ -1995,6 +2048,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 } else {
                     0
                 }
+                + if todo_button { TODO_BUTTON_WIDTH } else { 0 }
         } else {
             2
         }

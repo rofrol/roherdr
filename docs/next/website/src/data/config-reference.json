@@ -1260,6 +1260,12 @@
           "description": "Experimental. List each Space's tabs under it as vertical tabs: one line per top-level tab, in tab order, with its agent state, its label and the counts of its running and failed nested job tabs. Nested tabs get no line; clicking a tab enters its group, and the child tab row shows them. The Space's tab_jobs then counts only jobs nested under a tab that is gone. A collapsed worktree group lists no tabs. In a Space whose tabs run different agents, each agent tab line starts with a two-letter badge (CL for claude, CX for codex). Each Space's name line ends in a launch button, an A chip left of its +, in the colour of the agent last launched there (else of its newest agent tab): a click opens a new tab running that agent, and a right click lists the other agents installed on the server's PATH."
         },
         {
+          "key": "ui.sidebar.spaces.todo_command",
+          "type": "string",
+          "default": "unset",
+          "description": "With ui.sidebar.spaces.tabs, a command a T button left of each local Space's A chip runs in the background, e.g. a launcher that starts an agent working through that Space's TODO. {space} is replaced with the Space's label, quoted for the shell. The first line it prints shows as a toast; a failure keeps its message until clicked. Unset means no button."
+        },
+        {
           "key": "ui.sidebar.spaces.rows",
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"workspace\", \"push_status\", \"tab_jobs\"]]",

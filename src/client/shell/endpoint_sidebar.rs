@@ -601,6 +601,7 @@ pub(super) fn render_expanded(
                     None,
                     false,
                     false,
+                    false,
                     config,
                 );
                 let online = endpoint.status == ClientEndpointStatus::Online;

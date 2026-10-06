@@ -2950,6 +2950,17 @@ impl ClientShellState {
                     self.click_launch_button(workspace_id, button, outcome);
                     return;
                 }
+                // The `T` runs the space's `todo_command`.
+                let todo = self
+                    .hits
+                    .space_todo
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| workspace_id.clone());
+                if let Some(workspace_id) = todo {
+                    self.click_todo_button(&workspace_id, outcome);
+                    return;
+                }
                 // The push status chip opens the space's branch menu.
                 let push_status = self
                     .hits

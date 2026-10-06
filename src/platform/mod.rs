@@ -142,6 +142,21 @@ pub(crate) fn detached_custom_command_process(command: &str) -> std::process::Co
     process
 }
 
+/// Quotes one value for a command run by `detached_custom_command_process`.
+pub(crate) fn custom_command_argument(value: &str) -> String {
+    custom_command_argument_platform(value)
+}
+
+#[cfg(unix)]
+fn custom_command_argument_platform(value: &str) -> String {
+    unix_common::remote_reattach_argument(value)
+}
+
+#[cfg(not(unix))]
+fn custom_command_argument_platform(value: &str) -> String {
+    quote_windows_command_line_arg(value)
+}
+
 pub(crate) fn pane_custom_command_pty_builder(command: &str) -> portable_pty::CommandBuilder {
     pane_custom_command_pty_builder_platform(command)
 }
