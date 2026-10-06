@@ -1393,6 +1393,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of
+  clearing it, so the tab shows nothing rather than its automatic name (the
+  agent's task or the terminal title); there is no way to return to the
+  automatic name (2026-10-07: the todo-worker launcher's `--label TODO`
+  hid the coordinator's task, and clearing it left a blank row).
+  `handle_tab_rename` calls `set_custom_name(Some(label))`; an empty or
+  whitespace-only label should clear it (`None`), in the TUI rename too.
+
 - [ ] `herdr-job clean-tree` should refuse a path that matches nothing.
   2026-10-07: from zsh, `clean-tree $PATHS -- just check` with `PATHS="a b"`
   passed one path with spaces (zsh does not split words); the tree got
