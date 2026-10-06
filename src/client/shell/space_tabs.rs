@@ -40,7 +40,7 @@ pub(super) struct SpaceTabLine {
     /// The space's active tab is this one or nested under it.
     pub(super) active: bool,
     /// Running, failed and succeeded counts of the tab and its nested tabs,
-    /// e.g. `⧖ 1 !1 ✓2`.
+    /// e.g. `◑ 1 !1 ✓2` (the running glyph turns, `ui::motion::job_glyph`).
     pub(super) jobs: Vec<(Option<TabStatus>, String)>,
     /// How far the agent's own todo list is (`3/7`), from its `plan` token.
     pub(super) plan: Option<String>,
@@ -64,7 +64,7 @@ pub(super) struct TabSquare {
     pub(super) focused: bool,
 }
 
-/// A square is ` ⧖ `: the glyph with a column of padding on each side.
+/// A square is ` ◑ `: the glyph with a column of padding on each side.
 const SQUARE_WIDTH: u16 = 3;
 const SQUARE_GAP: u16 = 1;
 /// Squares start where the tab line's fill starts, past its state icon.
@@ -760,7 +760,7 @@ pub(super) fn render_space_tab_lines(
             );
         }
         // A tab with nested tabs ends in a disclosure triangle and their
-        // counts, `► ⧖ 1 !1`, which fold and unfold its squares. They keep
+        // counts, `► ◑ 1 !1`, which fold and unfold its squares. They keep
         // their room; the label is cut first, then the counts.
         let available = right.saturating_sub(text_x);
         let foldable = !line.squares.is_empty() && available >= 3;
