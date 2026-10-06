@@ -42,10 +42,16 @@ report. If the same message also asks for a TODO entry, do both and record the o
 3. Every consultation is a round: start the command with
    `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)` and launch all models for that question in the
    same Bash call, so their calls share the round id.
-4. Treat the answers as second opinions, not ground truth: verify each claim against the code and tell the user where
-   you agree and where you do not.
-5. Rate each call (id printed on stderr as `[consult id: ...]`):
-   `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
+4. Treat the answers as second opinions, not ground truth: verify each claim against the code, then report to the user
+   in four buckets, each finding with the models that raised it and a one-line reason:
+   - **Act on**: real issues for correctness, safety or maintainability given the actual goal; you do them.
+   - **Consider**: valid, but you are not sure it is worth its cost now; the user decides.
+   - **Noted**: valid but not actionable now (premature, low impact).
+   - **Dismissed**: wrong, nitpicky or missing context, with why.
+   Say where the models agreed and where they diverged; a finding raised independently by both weighs more.
+5. Rate each call (id printed on stderr as `[consult id: ...]`), with the same buckets:
+   `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N
+   --act N --consider N --noted N --dismissed N --note "..."`
    — `--unique` counts accepted findings the others (and you) missed; see the consult-stats skill for the fields.
    Then score yourself for the round with `consult.py self --round <id>`.
 6. Compare two models over shared rounds with `consult.py stats --vs A B` (a trial's verdict), never from the

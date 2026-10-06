@@ -7,6 +7,7 @@
                 [--error-kind K | --error-text-file PATH|-]                (errors only; the text is classified, never stored)
   consult.py new-round                                                     # prints a round id for CONSULT_ROUND
   consult.py rate ID useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note TEXT]
+                [--act N --consider N --noted N --dismissed N]            # what was done with each finding
   consult.py self (--round R | --calls ID,ID) --model ID [--effort E] [--findings N] [--accepted N] [--refuted N] [--unique N] [--missed N] [--note TEXT]
   consult.py stats [--days N] [--pairs] [--all] [--by-alias] [--width N]
   consult.py stats --vs A B [--since ROUND] [--rounds N] [--by-alias] [--width N]   # head-to-head over shared rounds
@@ -24,6 +25,10 @@ from pathlib import Path
 
 LOG = Path(os.environ.get("CONSULT_LOG", Path.home() / ".local/state/consult/log.jsonl"))
 VERDICTS = {"useful": 1.0, "partial": 0.5, "useless": 0.0}
+# What the coordinator decided about each finding of a call (pstack's $interrogate buckets): act on it, consider it
+# (valid, cost unclear), noted (valid, not actionable now), dismissed (wrong, nitpicky or missing context). They are
+# separate from `accepted`, which says a finding survived verification: a correct nitpick is accepted and dismissed.
+DISPOSITIONS = ("act", "consider", "noted", "dismissed")
 USAGE_KEYS = ("input", "cached", "output", "reasoning")
 PAIR_REF = {"gpt": "gpt-6-astra"}
 MIN_WIDTH = 40  # below this the name column (at least 34 wide) leaves no room for a number  # reference model for --pairs, when it is in the group
@@ -261,13 +266,33 @@ def check_counts(a, keys):
         sys.exit(f"unique ({u}) > accepted ({acc})")
 
 
+def check_dispositions(a):
+    """All four or none, each finding in exactly one bucket, and nothing refuted kept as act/consider/noted."""
+    given = [getattr(a, k) for k in DISPOSITIONS]
+    if all(v is None for v in given):
+        return
+    if any(v is None for v in given):
+        sys.exit("give all of --act --consider --noted --dismissed, or none")
+    if any(v < 0 for v in given):
+        sys.exit("Counts must not be negative")
+    if a.findings is None or sum(given) != a.findings:
+        sys.exit(f"--act + --consider + --noted + --dismissed ({sum(given)}) must equal --findings ({a.findings})")
+    kept = a.act + a.consider + a.noted
+    if a.accepted is not None and kept > a.accepted:
+        sys.exit(f"act + consider + noted ({kept}) > accepted ({a.accepted}): a rejected finding is dismissed")
+
+
 def cmd_rate(a):
     calls, _, _ = load()
     if a.id not in calls:
         sys.exit(f"Unknown id: {a.id} (see: consult.py recent)")
     check_counts(a, ("findings", "accepted", "unique"))
-    append({"type": "rating", "id": a.id, "ts": int(time.time()), "verdict": a.verdict,
-            "findings": a.findings, "accepted": a.accepted, "unique": a.unique, "note": a.note})
+    check_dispositions(a)
+    rec = {"type": "rating", "id": a.id, "ts": int(time.time()), "verdict": a.verdict,
+           "findings": a.findings, "accepted": a.accepted, "unique": a.unique, "note": a.note}
+    if a.act is not None:
+        rec.update({k: getattr(a, k) for k in DISPOSITIONS})
+    append(rec)
 
 
 def coordinator(a):
@@ -435,6 +460,9 @@ def cmd_stats(a):
                 s["findings"] += r["findings"]
                 s["accepted"] += r["accepted"]
             s["unique"] += r.get("unique") or 0
+            if r.get("act") is not None:  # ratings from before 2026-10-06 have no dispositions
+                s["disposed"] += 1
+                s["act"] += r["act"]
     if not a.all:  # high effort is disabled in ask_gpt.sh; its rows are history
         rows = {k: s for k, s in rows.items() if "@high" not in k}
     if not rows:
@@ -444,8 +472,8 @@ def cmd_stats(a):
     names = display_names(calls.values())
     header, groups = ["skill/model", "call dates", "uniq/call", "wrong", "rated", "err"], [5]
     if extra:
-        header += ["score", "acc/find", "unique", "lat n", "p50 s", "p90 s", "out/call"]
-        groups += [3, 3, 1]  # rating, latency, tokens
+        header += ["score", "acc/find", "unique", "act/call", "lat n", "p50 s", "p90 s", "out/call"]
+        groups += [4, 3, 1]  # rating, latency, tokens
     lines = []
     # Anecdotal rows (under 5 rated calls) go last, so a lucky 2/2 does not top the table.
     for k, s in sorted(rows.items(), key=lambda kv: (kv[1]["rated"] < 5,
@@ -460,7 +488,8 @@ def cmd_stats(a):
             score = f'{s["score"] / s["rated"]:.2f}' if s["rated"] else "-"
             acc = f'{int(s["accepted"])}/{int(s["findings"])}' if s["findings"] else "-"
             out = ktok(s["out"] / s["used"]) if s["used"] else "-"
-            line += [score, acc, str(int(s["unique"])), str(len(lat[k])), secs(p50(lat[k])), secs(p90(lat[k])), out]
+            act = f'{s["act"] / s["disposed"]:.2f} ({int(s["disposed"])})' if s["disposed"] else "-"
+            line += [score, acc, str(int(s["unique"])), act, str(len(lat[k])), secs(p50(lat[k])), secs(p90(lat[k])), out]
         lines.append(line)
     print("\n".join(table(header, lines, "<<" + ">" * (len(header) - 2), a.width, groups)))
     say("\ncall dates: first..last day (local time) of the row's calls in the window, failed and unrated ones included;\n"
@@ -474,6 +503,8 @@ def cmd_stats(a):
           "the model's author (`via Xiaomi` on xiaomi/...) is not shown.", a.width)
     if extra:
         say("score: useful=1, partial=0.5, useless=0; out/call: mean output tokens incl. reasoning, over ok calls with usage.\n"
+              "act/call: findings the coordinator decided to act on, per call rated with dispositions (that count in\n"
+              "brackets); an intent at rating time, not proof the change landed.\n"
               "lat n, p50 s, p90 s: wrapper wall-clock seconds of ok calls (median; nearest-rank p90, shown from 10 calls on).\n"
               "Failed calls are left out of the latency columns; their time counts in the rounds table (--all).", a.width)
     if a.pairs:
@@ -628,6 +659,8 @@ def cmd_recent(a):
     for c in latest:
         r = ratings.get(c["id"])
         rated = f'{r["verdict"]} {r.get("accepted") or 0}/{r.get("findings") or 0} u{r.get("unique") or 0}' if r else "unrated"
+        if r and r.get("act") is not None:
+            rated += f' a{r["act"]}'
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["ts"]))
         status = c["status"] if c["status"] == "ok" else f'{c["status"]}:{c.get("error_kind") or "unknown"}'
         say(f'{c["id"]}  {when}  {names[label(c)]:{w}} {status:13}  {ktok(out_tokens(c)):>6}  {rated}  '
@@ -660,6 +693,8 @@ def main():
     r.add_argument("id"); r.add_argument("verdict", choices=list(VERDICTS))
     for k in ("--findings", "--accepted", "--unique"):
         r.add_argument(k, type=int)
+    for k in DISPOSITIONS:
+        r.add_argument(f"--{k}", type=int, help="findings in this bucket (all four or none; they add up to --findings)")
     r.add_argument("--note", default="")
     c = sub.add_parser("self")
     g = c.add_mutually_exclusive_group(required=True)

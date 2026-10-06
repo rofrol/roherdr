@@ -175,6 +175,51 @@ class LogCliTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+class DispositionTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.log = Path(self.dir.name) / "log.jsonl"
+        recs = [{"type": "call", "id": f"c{i}", "ts": 1000 + i, "skill": "gpt", "model": "gpt-6.1-sol",
+                 "status": "ok", "seconds": 30, "round": f"r{i}"} for i in range(3)]
+        recs.append({"type": "rating", "id": "c0", "verdict": "useful", "findings": 3, "accepted": 3, "unique": 1})
+        self.log.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        self.env = {**os.environ, "CONSULT_LOG": str(self.log)}
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def rate(self, cid, *args):
+        return subprocess.run([sys.executable, str(CONSULT), "rate", cid, "useful", *args], text=True,
+                              capture_output=True, env=self.env)
+
+    def test_buckets_are_all_or_none_add_up_and_keep_rejected_findings_dismissed(self):
+        bad = {
+            "only some": ["--findings", "3", "--act", "1"],
+            "sum differs": ["--findings", "3", "--act", "1", "--consider", "0", "--noted", "0", "--dismissed", "1"],
+            "no findings": ["--act", "1", "--consider", "0", "--noted", "0", "--dismissed", "0"],
+            "rejected kept": ["--findings", "3", "--accepted", "1", "--act", "2", "--consider", "0", "--noted", "0",
+                              "--dismissed", "1"],
+        }
+        for case, args in bad.items():
+            with self.subTest(case=case):
+                r = self.rate("c1", *args)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertNotIn("Traceback", r.stderr)
+        r = self.rate("c1", "--findings", "4", "--accepted", "3", "--act", "1", "--consider", "1", "--noted", "1",
+                      "--dismissed", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        last = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertEqual([last[k] for k in ("act", "consider", "noted", "dismissed")], [1, 1, 1, 1])
+
+    def test_act_per_call_counts_only_calls_rated_with_buckets(self):
+        self.rate("c1", "--findings", "4", "--accepted", "4", "--act", "3", "--consider", "0", "--noted", "1",
+                  "--dismissed", "0")
+        out = subprocess.run([sys.executable, str(CONSULT), "stats", "--all"], text=True, capture_output=True,
+                             env=self.env).stdout
+        row = next(line for line in out.splitlines() if line.startswith("gpt/gpt-6.1-sol"))
+        self.assertIn("3.00 (1)", row)
+
+
 LONG = "openrouter/stealth/space-bunny-alpha via Stealth"
 
 
@@ -259,7 +304,8 @@ class WidthCliTests(unittest.TestCase):
             recs.append({"type": "call", "id": cid, "ts": 1000 + i, "skill": skill, "model": model, "status": "ok",
                          "seconds": 30 + i, "round": f"20261003-0000{i // 3:02d}-aaaa", "cwd": "/tmp/run.x",
                          "usage": {"output": 1000 + 100 * i}})
-            recs.append({"type": "rating", "id": cid, "verdict": "useful", "findings": 4, "accepted": 3, "unique": 1})
+            recs.append({"type": "rating", "id": cid, "verdict": "useful", "findings": 4, "accepted": 3, "unique": 1,
+                         **({"act": 2, "consider": 1, "noted": 0, "dismissed": 1} if i % 2 else {})})
         log.write_text("".join(json.dumps(r) + "\n" for r in recs))
         self.env = {**os.environ, "CONSULT_LOG": str(log)}
 
