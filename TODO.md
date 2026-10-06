@@ -5509,7 +5509,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     manifest as the feature index.
   - Done: nothing yet (recommended: not before a feature goes upstream).
 
-- [ ] The flaky `federated_client_starts_without_local_and_survives_its_restart`
+- [x] The flaky `federated_client_starts_without_local_and_survives_its_restart`
   fails more often now (2026-10-01): three full `just check` runs in a row
   at about 07:00 failed it ("recovered Local must be selectable", after
   about 25 s) while the machine had a load average of 18-31 (Chrome helpers
@@ -5527,8 +5527,9 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `biased` select runs endpoint supervisor events before them, and
     `finish_client_shell_input` drops input per character while the endpoint
     is not online. A status flip mid-line delivers part of the line. Test
-    fix: Ctrl-C before each retry. The "recovered Local" failure did not
-    show up in these runs.
+    fix: Ctrl-C before each retry (`f082d7e1`): 80 of 80 under load. The
+    "recovered Local" failure did not show up in about 400 stress runs on
+    2026-10-06; reopen if it comes back.
 - [ ] A reconnect can deliver half of a typed line to a remote pane (found
   2026-10-06 through the flaky test above). Dropping keys while the endpoint
   is offline is intended; cutting one stdin read in two is not: the
@@ -5536,7 +5537,8 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   the reader is not enough on its own, because the `StdinInput` handler
   checks each chunk for the image-paste key and file drops. Upstream code:
   consider reporting it upstream instead of diverging.
-  - Fix (2026-10-06, uncommitted until its stress run passes): the reader
+  - Fix (`e1402580`, 2026-10-06; 120 of 120 under load on the original
+    test, which failed 2 of 40 before; installed): the reader
     sends the events of one read as one `StdinBatch`, and the loop drains
     it through a queue before `select!`, so each key still goes through its
     own handler in order (sol, round `20261006-014726-fde7`: handling the
