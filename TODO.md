@@ -52,6 +52,20 @@ Parked ideas live in `TODO-deferred.md`.
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
   guidance, as a belt-and-braces for servers without the fix above.
 
+- [ ] Mark a pane whose agent ended its turn waiting for the user even when
+  it could not run `herdr agent awaiting-reply` (user, 2026-10-06: why was
+  the window not marked after the agent stopped with "I stopped halfway: the
+  automatic permission check stopped answering and blocks every edit and
+  command"). A Claude session in music-mpd ended its turn asking the user to
+  write "dalej" (continue); Claude Code's auto-mode classifier gave no verdict
+  for every Bash/Edit call, so the agent could not run the awaiting-reply
+  command and the pane looked finished. The marker today depends on a tool
+  call the agent makes; it needs a path that does not: e.g. the Stop hook
+  (already installed by `herdr integration install claude`) marking the pane
+  when the turn ended right after failed or blocked tool calls, or showing
+  such a pane as "stopped with an error" instead of idle. Check what the hook
+  input carries about the last tool results before choosing.
+
 - [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
   where I see what the agent asks? now I only have a question mark"; queued
   next). Inspired by posts praising the T3 Code and Devin sidebars
