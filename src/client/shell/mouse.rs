@@ -2836,10 +2836,6 @@ impl ClientShellState {
                         return;
                     }
                 }
-                if super::contains(self.hits.space_bubble_button, point) {
-                    self.click_space_bubble(outcome);
-                    return;
-                }
                 if super::contains(self.hits.space_filter_button, point) {
                     // The button opens the bar for typing, or closes it.
                     if self.space_filter.open {
@@ -2901,6 +2897,17 @@ impl ClientShellState {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     outcome.repaint = true;
                     self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                // A hovered space's `⤒` moves it to the top.
+                let to_top = self
+                    .hits
+                    .space_to_top
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, workspace_id)| workspace_id.clone());
+                if let Some(workspace_id) = to_top {
+                    self.click_space_to_top(workspace_id, outcome);
                     return;
                 }
                 // The launch button starts its agent in a new tab.
