@@ -175,6 +175,8 @@ pub(super) struct ShellHitMap {
     pub(super) list_menu_rows: Vec<(Rect, usize)>,
     /// The rows of the image list.
     pub(super) image_picker_rows: Vec<(Rect, usize)>,
+    /// Where the image list shows the highlighted image.
+    pub(super) image_preview: Rect,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
     /// The header button that puts away the quiet tabs of every space.
@@ -486,6 +488,9 @@ pub(crate) enum ClientShellAction {
     /// Image files from this machine to paste into a pane, staged by the
     /// server like a clipboard image.
     AttachImages(super::image_picker::AttachImages),
+    /// An image file from this machine to show in Quick Look, or to close
+    /// when it is already shown.
+    PreviewImage(std::path::PathBuf),
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
@@ -1322,6 +1327,10 @@ pub(crate) struct ClientShellState {
     pub(super) space_to_top_undo: Option<super::space_sort::SpaceToTopUndo>,
     /// When the last image attached to each pane was taken.
     pub(super) image_attach_times: super::image_picker::ImageAttachTimes,
+    /// The image list may show the highlighted image as a kitty image.
+    pub(super) image_previews: bool,
+    /// The file sent to the host terminal as the image list's preview.
+    pub(super) image_preview_sent: Option<std::path::PathBuf>,
     pub(super) workspace_scroll: usize,
     pub(super) workspace_scroll_anchor: Option<ScrollAnchor>,
     pub(super) agent_scroll: usize,
@@ -1548,6 +1557,8 @@ impl ClientShellState {
             workspace_scroll_anchor: None,
             space_to_top_undo: None,
             image_attach_times: Default::default(),
+            image_previews: false,
+            image_preview_sent: None,
             agent_scroll: 0,
             pending_agent_reveal: None,
             tab_scroll: 0,

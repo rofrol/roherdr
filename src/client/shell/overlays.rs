@@ -31,6 +31,8 @@ pub(crate) struct OverlayRender {
     pub(crate) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) release_notes_max_scroll: usize,
     pub(crate) cursor: Option<crate::protocol::CursorState>,
+    /// Where the image list shows the highlighted image.
+    pub(crate) image_preview: Rect,
 }
 
 pub(crate) fn render_client_overlay(

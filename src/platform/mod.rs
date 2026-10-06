@@ -436,6 +436,12 @@ pub(crate) fn read_keychain_generic_password(_service: &str) -> Option<String> {
     None
 }
 
+/// Quick Look exists only on macOS.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn quick_look(_path: &std::path::Path) -> Option<std::io::Result<std::process::Child>> {
+    None
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

@@ -8,6 +8,8 @@
 //! The directory is where the system saves screenshots. The pane is fixed
 //! when the list opens, so moving the focus meanwhile never redirects it.
 //! The directory is read only when the list opens, on the user's action.
+//! Space shows the highlighted image in Quick Look, as in Finder; the
+//! runtime owns that panel and closes it when the list closes.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,12 +25,19 @@ const MAX_IMAGES: usize = 200;
 const PICKER_WIDTH: u16 = 72;
 /// Rows of images shown at once.
 const VISIBLE_ROWS: usize = 14;
+/// Columns the preview of the highlighted image adds, and the fewest it
+/// is shown with.
+const PREVIEW_WIDTH: u16 = 48;
+const MIN_PREVIEW_WIDTH: u16 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImageEntry {
     pub(super) path: PathBuf,
     pub(super) name: String,
     pub(super) modified: SystemTime,
+    /// Width and height in pixels, read from a PNG's header; the preview
+    /// shows PNG files only, which the terminal decodes itself.
+    pub(super) size_px: Option<(u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -43,6 +52,10 @@ pub(super) struct ImagePickerOverlay {
     pub(super) scroll: usize,
     /// Why the directory could not be listed.
     pub(super) error: Option<String>,
+    /// Why the last preview failed, shown in place of the key hints.
+    pub(super) notice: Option<String>,
+    /// The highlighted image is shown beside the list.
+    pub(super) preview: bool,
 }
 
 /// The images to attach to a pane.
@@ -75,8 +88,10 @@ pub(super) fn list_images(dir: &Path) -> Result<Vec<ImageEntry>, String> {
                 return None;
             }
             let metadata = entry.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            let path = entry.path();
             Some(ImageEntry {
-                path: entry.path(),
+                size_px: png_size(&path),
+                path,
                 name,
                 modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             })
@@ -85,6 +100,22 @@ pub(super) fn list_images(dir: &Path) -> Result<Vec<ImageEntry>, String> {
     images.sort_by_key(|image| std::cmp::Reverse(image.modified));
     images.truncate(MAX_IMAGES);
     Ok(images)
+}
+
+/// A PNG file's width and height from its `IHDR` chunk.
+fn png_size(path: &Path) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut header = [0u8; 24];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    if !header.starts_with(b"\x89PNG\r\n\x1a\n") || &header[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(header[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(header[20..24].try_into().ok()?);
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 /// `12s`, `5m`, `3h`, `2d`: how long ago.
@@ -131,6 +162,8 @@ impl ClientShellState {
             marked: BTreeSet::new(),
             scroll: 0,
             error,
+            notice: None,
+            preview: self.image_previews,
         }));
     }
 
@@ -141,6 +174,9 @@ impl ClientShellState {
     ) {
         use crossterm::event::KeyCode;
         outcome.repaint = true;
+        if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() {
+            picker.notice = None;
+        }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
             KeyCode::Enter => self.attach_picked_images(outcome),
@@ -149,6 +185,15 @@ impl ClientShellState {
             KeyCode::PageUp => self.move_image_picker(-(VISIBLE_ROWS as isize)),
             KeyCode::PageDown => self.move_image_picker(VISIBLE_ROWS as isize),
             KeyCode::Char(' ') => {
+                if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_ref() {
+                    if let Some(entry) = picker.entries.get(picker.highlighted) {
+                        outcome
+                            .actions
+                            .push(ClientShellAction::PreviewImage(entry.path.clone()));
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
                 if let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() {
                     let index = picker.highlighted;
                     if index < picker.entries.len() && !picker.marked.remove(&index) {
@@ -160,6 +205,19 @@ impl ClientShellState {
             KeyCode::Char('a') => self.mark_images_since_last_attach(),
             _ => {}
         }
+    }
+
+    pub(crate) fn image_picker_open(&self) -> bool {
+        matches!(self.overlay, Some(ClientShellOverlay::ImagePicker(_)))
+    }
+
+    /// Shows why a preview could not open; returns whether to repaint.
+    pub(crate) fn image_preview_failed(&mut self, notice: String) -> bool {
+        let Some(ClientShellOverlay::ImagePicker(picker)) = self.overlay.as_mut() else {
+            return false;
+        };
+        picker.notice = Some(notice);
+        true
     }
 
     fn move_image_picker(&mut self, delta: isize) {
@@ -249,9 +307,19 @@ pub(super) fn render_image_picker(
     now: SystemTime,
     p: &Palette,
 ) -> Option<super::render::OverlayRender> {
-    let rows = picker.entries.len().clamp(1, VISIBLE_ROWS) as u16;
+    let with_preview = picker.preview
+        && !picker.entries.is_empty()
+        && b.area.width.saturating_sub(4) >= PICKER_WIDTH + MIN_PREVIEW_WIDTH;
+    let (width, rows) = if with_preview {
+        (PICKER_WIDTH + PREVIEW_WIDTH, VISIBLE_ROWS as u16)
+    } else {
+        (
+            PICKER_WIDTH,
+            picker.entries.len().clamp(1, VISIBLE_ROWS) as u16,
+        )
+    };
     // Border, header, gap, rows, gap, footer, border.
-    let outer = super::render::popup_area(b.area, PICKER_WIDTH, rows.saturating_add(6))?;
+    let outer = super::render::popup_area(b.area, width, rows.saturating_add(6))?;
     let inner = super::render::panel_area(b, outer, p.accent, p.panel_bg)?;
     let base = Style::default().bg(p.panel_bg);
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -272,6 +340,29 @@ pub(super) fn render_image_picker(
     );
     let mut menu_rows = Vec::new();
     let body_y = inner.y.saturating_add(2);
+    // The list keeps its own width; the preview takes the rest, a column
+    // apart, as high as the rows.
+    let list = if with_preview {
+        Rect::new(
+            inner.x,
+            inner.y,
+            PICKER_WIDTH.saturating_sub(2),
+            inner.height,
+        )
+    } else {
+        inner
+    };
+    let image_preview = if with_preview {
+        let x = list.right().saturating_add(1);
+        Rect::new(
+            x,
+            body_y,
+            inner.right().saturating_sub(x).saturating_sub(1),
+            rows.min(inner.bottom().saturating_sub(body_y).saturating_sub(2)),
+        )
+    } else {
+        Rect::default()
+    };
     if let Some(error) = picker.error.as_deref() {
         put_text(
             b,
@@ -300,7 +391,7 @@ pub(super) fn render_image_picker(
         .enumerate()
     {
         let y = body_y.saturating_add(row as u16);
-        let rect = Rect::new(inner.x, y, inner.width, 1);
+        let rect = Rect::new(list.x, y, list.width, 1);
         let highlighted = index == picker.highlighted;
         let style = if highlighted {
             base.bg(p.surface1).fg(p.text)
@@ -315,11 +406,11 @@ pub(super) fn render_image_picker(
         };
         let age = age(entry.modified, now);
         let age_width = display_width(&age);
-        let name_width = inner.width.saturating_sub(age_width + 8);
-        put_text(b, inner.x.saturating_add(1), y, 3, mark, style.fg(p.accent));
+        let name_width = list.width.saturating_sub(age_width + 8);
+        put_text(b, list.x.saturating_add(1), y, 3, mark, style.fg(p.accent));
         put_text(
             b,
-            inner.x.saturating_add(5),
+            list.x.saturating_add(5),
             y,
             name_width,
             &crate::ui::truncate_end(&entry.name, usize::from(name_width)),
@@ -327,13 +418,28 @@ pub(super) fn render_image_picker(
         );
         put_text(
             b,
-            inner.right().saturating_sub(age_width + 1),
+            list.right().saturating_sub(age_width + 1),
             y,
             age_width,
             &age,
             style.fg(p.overlay1),
         );
         menu_rows.push((rect, index));
+    }
+    if with_preview
+        && picker
+            .entries
+            .get(picker.highlighted)
+            .is_some_and(|entry| entry.size_px.is_none())
+    {
+        put_text(
+            b,
+            image_preview.x,
+            image_preview.y,
+            image_preview.width,
+            "no preview (PNG only)",
+            base.fg(p.overlay0),
+        );
     }
     let footer_y = inner.bottom().saturating_sub(1);
     let count = picker
@@ -348,13 +454,20 @@ pub(super) fn render_image_picker(
         label_width,
         1,
     );
+    let (hints, hints_style) = match picker.notice.as_deref() {
+        Some(notice) => (notice, base.fg(p.red)),
+        None => (
+            "space preview · x mark · a new since last · enter · esc",
+            base.fg(p.overlay0),
+        ),
+    };
     put_text(
         b,
         inner.x.saturating_add(1),
         footer_y,
         inner.width.saturating_sub(label_width + 2),
-        "space mark · a new since last · enter attach · esc",
-        base.fg(p.overlay0),
+        hints,
+        hints_style,
     );
     if !picker.entries.is_empty() {
         put_text(
@@ -373,8 +486,107 @@ pub(super) fn render_image_picker(
         area: outer,
         menu_rows,
         primary,
+        image_preview,
         ..Default::default()
     })
+}
+
+/// Kitty image id of the image list's preview: outside the ranges pane
+/// images use (10 000..910 000 and 0x4000_0000..0x6000_0000).
+const PREVIEW_IMAGE_ID: u32 = 0x2000_0001;
+
+/// The cells an image of `image` pixels covers, scaled to fit `area` with
+/// its aspect kept, centred in it.
+pub(super) fn fit_preview(
+    area: Rect,
+    image: (u32, u32),
+    cell: crate::kitty_graphics::HostCellSize,
+) -> Rect {
+    let (cell_w, cell_h) = if cell.is_known() {
+        (f64::from(cell.width_px), f64::from(cell.height_px))
+    } else {
+        (8.0, 16.0)
+    };
+    let (image_w, image_h) = (f64::from(image.0.max(1)), f64::from(image.1.max(1)));
+    let scale =
+        (f64::from(area.width) * cell_w / image_w).min(f64::from(area.height) * cell_h / image_h);
+    let cols = ((image_w * scale / cell_w).round() as u16).clamp(1, area.width.max(1));
+    let rows = ((image_h * scale / cell_h).round() as u16).clamp(1, area.height.max(1));
+    Rect::new(
+        area.x + (area.width.saturating_sub(cols)) / 2,
+        area.y + (area.height.saturating_sub(rows)) / 2,
+        cols,
+        rows,
+    )
+}
+
+impl ClientShellState {
+    /// Lets the image list show the highlighted image: the host terminal
+    /// takes kitty images and reads them from this machine's files.
+    pub(crate) fn set_image_previews(&mut self, enabled: bool) {
+        self.image_previews = enabled;
+    }
+
+    /// The kitty commands that show the highlighted image beside the list,
+    /// or take the last one away. The file goes by path (`t=f`), so the
+    /// terminal reads and scales it; it is sent once per file and placed
+    /// again each frame, as pane images are.
+    pub(super) fn compose_image_preview(&mut self) -> Vec<u8> {
+        let wanted = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::ImagePicker(picker))
+                if !self.hits.image_preview.is_empty() =>
+            {
+                picker
+                    .entries
+                    .get(picker.highlighted)
+                    .and_then(|entry| Some((entry.path.clone(), entry.size_px?)))
+            }
+            _ => None,
+        };
+        let mut out = Vec::new();
+        let path = wanted
+            .as_ref()
+            .and_then(|(path, _)| path.to_str().map(str::to_owned));
+        if self.image_preview_sent.is_some()
+            && self.image_preview_sent.as_ref() != wanted.as_ref().map(|(path, _)| path)
+        {
+            crate::kitty_graphics::encode_delete_image(&mut out, PREVIEW_IMAGE_ID);
+            self.image_preview_sent = None;
+        }
+        let (Some((file, size)), Some(path)) = (wanted, path) else {
+            return out;
+        };
+        let cells = fit_preview(self.hits.image_preview, size, self.graphics_cell_size);
+        let place = format!(
+            "i={PREVIEW_IMAGE_ID},p=1,c={},r={},z=1,C=1,q=2",
+            cells.width, cells.height
+        );
+        let leading = format!("\x1b[{};{}H", cells.y + 1, cells.x + 1);
+        if self.image_preview_sent.is_none() {
+            encode_kitty_file(
+                &mut out,
+                leading.as_bytes(),
+                &format!("a=T,f=100,{place}"),
+                &path,
+            );
+            self.image_preview_sent = Some(file);
+        } else {
+            out.extend_from_slice(b"\x1b7");
+            out.extend_from_slice(leading.as_bytes());
+            out.extend_from_slice(format!("\x1b_Ga=p,{place};\x1b\\\x1b8").as_bytes());
+        }
+        out
+    }
+}
+
+/// `encode_kitty_regular_file` with the file's path as the payload.
+fn encode_kitty_file(out: &mut Vec<u8>, leading: &[u8], control: &str, path: &str) {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(path.as_bytes());
+    out.extend_from_slice(b"\x1b7");
+    out.extend_from_slice(leading);
+    out.extend_from_slice(format!("\x1b_G{control},t=f;{payload}\x1b\\").as_bytes());
+    out.extend_from_slice(b"\x1b8");
 }
 
 #[cfg(test)]
@@ -468,5 +680,142 @@ mod tests {
         state.open_image_picker_in("pane_1".into(), dir.clone());
         assert_eq!(attached(&mut state).paths, [dir.join("c.png")]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn space_previews_the_highlighted_image_and_x_marks_it() {
+        let dir = std::env::temp_dir().join(format!("herdr-image-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.png", "b.png"] {
+            std::fs::write(dir.join(name), b"\x89PNG\r\n\x1a\n").unwrap();
+        }
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &crate::config::Config::default(),
+        ));
+        state.open_image_picker_in("pane_1".into(), dir.clone());
+        let highlighted = |state: &ClientShellState| match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ImagePicker(picker)) => {
+                (picker.highlighted, picker.marked.clone())
+            }
+            _ => panic!("the image list is open"),
+        };
+        let first = match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ImagePicker(picker)) => picker.entries[0].path.clone(),
+            _ => panic!("the image list is open"),
+        };
+
+        let mut outcome = ClientShellInput::default();
+        state.image_picker_key(crossterm::event::KeyCode::Char(' '), &mut outcome);
+        assert!(matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::PreviewImage(path)] if *path == first
+        ));
+        assert_eq!(highlighted(&state), (0, BTreeSet::new()));
+
+        let mut outcome = ClientShellInput::default();
+        state.image_picker_key(crossterm::event::KeyCode::Char('x'), &mut outcome);
+        assert!(outcome.actions.is_empty());
+        assert_eq!(highlighted(&state), (1, BTreeSet::from([0])));
+
+        assert!(state.image_preview_failed("no preview".into()));
+        assert!(state.image_picker_open());
+        state.image_picker_key(crossterm::event::KeyCode::Esc, &mut outcome);
+        assert!(!state.image_picker_open());
+        assert!(!state.image_preview_failed("no preview".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fits_the_preview_keeping_the_aspect_and_reads_png_sizes() {
+        let cell = crate::kitty_graphics::HostCellSize {
+            width_px: 10,
+            height_px: 20,
+        };
+        // 1600x1000 px in 40x14 cells (400x280 px): width bound, 400x250 px.
+        assert_eq!(
+            fit_preview(Rect::new(10, 5, 40, 14), (1600, 1000), cell),
+            Rect::new(10, 5, 40, 13)
+        );
+        // A tall image: width is not the limit, it stays centred.
+        assert_eq!(
+            fit_preview(Rect::new(0, 0, 40, 14), (500, 2000), cell),
+            Rect::new(16, 0, 7, 14)
+        );
+
+        let dir = std::env::temp_dir().join(format!("herdr-image-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend_from_slice(&3024u32.to_be_bytes());
+        png.extend_from_slice(&1964u32.to_be_bytes());
+        std::fs::write(dir.join("shot.png"), &png).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"\xff\xd8\xff\xe0").unwrap();
+        let mut sizes = list_images(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.size_px))
+            .collect::<Vec<_>>();
+        sizes.sort();
+        assert_eq!(
+            sizes,
+            [
+                ("photo.jpg".to_owned(), None),
+                ("shot.png".to_owned(), Some((3024, 1964)))
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sends_the_preview_once_places_it_each_frame_and_deletes_it_on_close() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &crate::config::Config::default(),
+        ));
+        state.set_image_previews(true);
+        state.open_image_picker_in("pane_1".into(), std::env::temp_dir());
+        let Some(ClientShellOverlay::ImagePicker(picker)) = state.overlay.as_mut() else {
+            panic!("the image list is open");
+        };
+        assert!(picker.preview);
+        picker.entries = ["/shots/a.png", "/shots/b.png"]
+            .into_iter()
+            .map(|path| ImageEntry {
+                path: PathBuf::from(path),
+                name: path.into(),
+                modified: SystemTime::UNIX_EPOCH,
+                size_px: Some((800, 600)),
+            })
+            .collect();
+        picker.highlighted = 0;
+        state.hits.image_preview = Rect::new(70, 3, 40, 14);
+        let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
+        let path = |file: &str| {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(file)
+        };
+
+        let sent = text(state.compose_image_preview());
+        assert!(sent.contains("a=T,f=100,i=536870913,p=1,"), "{sent}");
+        assert!(
+            sent.contains(&format!("t=f;{}", path("/shots/a.png"))),
+            "{sent}"
+        );
+        let placed = text(state.compose_image_preview());
+        assert!(placed.contains("\x1b_Ga=p,i=536870913,p=1,"), "{placed}");
+        assert!(!placed.contains("t=f"), "{placed}");
+
+        let mut outcome = ClientShellInput::default();
+        state.image_picker_key(crossterm::event::KeyCode::Down, &mut outcome);
+        let moved = text(state.compose_image_preview());
+        assert!(moved.starts_with("\x1b_Ga=d,d=I,i=536870913,"), "{moved}");
+        assert!(moved.contains(&path("/shots/b.png")), "{moved}");
+
+        state.image_picker_key(crossterm::event::KeyCode::Esc, &mut outcome);
+        assert_eq!(
+            text(state.compose_image_preview()),
+            "\x1b_Ga=d,d=I,i=536870913,q=2;\x1b\\"
+        );
+        assert!(state.compose_image_preview().is_empty());
     }
 }

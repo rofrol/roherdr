@@ -49,6 +49,58 @@ fn attach_image_files(
     Ok(())
 }
 
+/// The Quick Look panel opened from the image list and the file it shows.
+/// One per client process, like the list it belongs to.
+static IMAGE_PREVIEW: std::sync::Mutex<Option<(std::path::PathBuf, std::process::Child)>> =
+    std::sync::Mutex::new(None);
+
+fn close_image_preview(preview: &mut Option<(std::path::PathBuf, std::process::Child)>) {
+    if let Some((_, mut child)) = preview.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Shows `path` in Quick Look, replacing the panel shown before. The same
+/// file again closes it, as Space does in Finder. Returns why it failed.
+fn toggle_image_preview(path: std::path::PathBuf) -> Option<String> {
+    let Ok(mut preview) = IMAGE_PREVIEW.lock() else {
+        return None;
+    };
+    let same = preview
+        .as_mut()
+        .is_some_and(|(shown, child)| *shown == path && child.try_wait().ok().flatten().is_none());
+    close_image_preview(&mut preview);
+    if same {
+        return None;
+    }
+    match crate::platform::quick_look(&path) {
+        Some(Ok(child)) => {
+            *preview = Some((path, child));
+            None
+        }
+        Some(Err(err)) => {
+            warn!(err = %err, path = %path.display(), "failed to open Quick Look");
+            Some(format!("preview failed: {err}"))
+        }
+        None => Some("no preview on this system".to_owned()),
+    }
+}
+
+/// Closes the preview once the image list is gone, and reaps a panel the
+/// user closed.
+pub(super) fn reap_image_preview(picker_open: bool) {
+    let Ok(mut preview) = IMAGE_PREVIEW.lock() else {
+        return;
+    };
+    let exited = preview
+        .as_mut()
+        .is_some_and(|(_, child)| child.try_wait().ok().flatten().is_some());
+    if exited || !picker_open {
+        close_image_preview(&mut preview);
+    }
+}
+
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
@@ -99,6 +151,13 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::AttachImages(attach) => {
                 attach_image_files(endpoints, attach)?;
             }
+            shell::ClientShellAction::PreviewImage(path) => {
+                if let (Some(notice), Some(shell)) =
+                    (toggle_image_preview(path), shell.as_deref_mut())
+                {
+                    repaint |= shell.image_preview_failed(notice);
+                }
+            }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
             shell::ClientShellAction::Keybind(action) => {
                 debug!(
@@ -108,6 +167,11 @@ pub(super) fn dispatch_client_shell_actions(
             }
         }
     }
+    reap_image_preview(
+        shell
+            .as_deref()
+            .is_some_and(shell::ClientShellState::image_picker_open),
+    );
     // A source-off-first handoff leaves the registry's committed identity pointing at a
     // deliberately surface-inactive source. Do not drain its retained queue into a server that
     // must reject it; completion below resumes the committed owner's lane.

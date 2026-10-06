@@ -3,6 +3,13 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Attach image preview for JPEG/HEIC: the panel shows PNG only (read
+  from the file's header; the terminal decodes it). `qlmanage -t -s 512 -o
+  <tmp dir> <file>` makes a small PNG of any format without a window or a
+  new dependency (MiMo, 2026-10-06), but takes ~100-300 ms, so it needs a
+  background run that wakes the client loop and drops results for a row no
+  longer highlighted. Parked: screenshots on macOS are PNG.
+
 - [ ] REPL in a sibling pane as an agent tool (idea from the HN thread
   "Why Common Lisp is now the best programming language", 2026-10-06,
   item 49973598; the strongest report is a Pi extension that gives the agent

@@ -6,39 +6,6 @@ Parked ideas live in `TODO-deferred.md`.
 
 ## Next, in order
 
-- [ ] Preview images in `Attach image…` (user, 2026-10-06: "I can't press
-  Space there to show a preview with the system magnifier"; "maybe also show
-  thumbnails graphically, since we run in Ghostty which has the kitty image
-  protocol? ask the models"). Today Space marks a row
-  (`src/client/shell/image_picker.rs`).
-  - Keys: Space opens Quick Look on the highlighted file (Finder habit, the
-    user's ask); marking moves to `x` (mark and move down), click unchanged,
-    `a` stays. Footer names both. Tab stays free for focus.
-  - Quick Look: `qlmanage -p <path>` from `src/platform/macos.rs`, args not a
-    shell string, stdout/stderr to null, one owned child killed and reaped
-    when replaced or the overlay closes (never `killall`). It is a test
-    utility, not an API, and takes keyboard focus: herdr gets no keys while
-    it is up, so no "Space again closes it" or follow-the-highlight; check
-    by hand that killing the child closes the panel and focus returns to
-    Ghostty. Other platforms: a notice, not `xdg-open`.
-  - Thumbnail, second slice: one preview panel beside the list for the
-    highlighted image, not per-row thumbnails (unreadable at 1-2 cells, N
-    transfers). Make it with `qlmanage -t -s 512 -o <tmp dir> <file>`: a
-    small PNG for PNG/JPEG/HEIC alike, no new dependency, no window; run it
-    on the selection change (event, not render), cache by path+mtime+size,
-    drop results for a row no longer highlighted. Send it through the
-    existing client-surface kitty graphics path (own image ids, deleted with
-    `d=I` when the overlay closes, under the overlay text, occlusion crops
-    pane images), only when `kitty_graphics` is on. Side by side only when
-    about 40 list + 30 preview columns fit, else list alone. `t=f` resolves
-    on the terminal's machine: fine for a local client, so fall back to
-    inline data or no preview when the client runs over SSH.
-  - Consulted Sol and MiMo (round 20261006-161143-4de3): both said one
-    panel, not per-row; both flagged qlmanage focus stealing and reaping;
-    MiMo proposed `qlmanage -t` for thumbnails (Sol as a later step) and
-    `p` for preview keeping Space for marking (rejected: the user asked for
-    Space).
-
 - [ ] `herdr tab create` without `--workspace` from inside a pane should
   create the tab in the caller's workspace (`$HERDR_WORKSPACE_ID`), not in
   the workspace the user is looking at. On 2026-10-06 a Claude session in
