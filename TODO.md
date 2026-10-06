@@ -5106,10 +5106,14 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     "New shell tab".
   - Consulted sol and MiMo (round `20261006-153926-f695`): both warn that a
     bare `❏` reads as an existing empty tab, not an action, and would keep a
-    `+` cue (`+❏`, four columns) or label the agent chip instead. The user's
-    choice is `❏`; keep the button's colour and hover distinct from the dim
-    tab-line icon and try `+❏` if it still reads as a tab. Both also flag
-    that the chip's right-click agent picker is hard to discover.
+    `+` cue (`+❏`, four columns) or label the agent chip instead. Both also
+    flag that the chip's right-click agent picker is hard to discover.
+  - Colour, not shape, tells the button from a tab (user, 2026-10-06:
+    "maybe just a colour other than grey, so it differs from a tab"): tab
+    lines draw `❏` in dim grey `overlay0`, the button draws it in a colour
+    of its own (e.g. the palette's accent), never grey and never an agent's
+    badge colour, so it passes for neither a tab nor the launch chip. Fall
+    back to `+❏` only if the colour is not enough.
 
 - [ ] Keep the model context small: clean up what agents load and search
   (user, 2026-10-06: "plan for cleaning unneeded files from the repo, so the
@@ -5118,17 +5122,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   `AGENTS.md` 44 KB loaded into every session (31 KB upstream, 13 KB fork
   sections at the end), `vendor/` 1365 files, `docs/versions/` 806 files
   (8.5 MB), `CHANGELOG.md` and `docs/next/CHANGELOG.md` identical 142 KB.
-  1. `AGENTS.md` first, a real bug: Codex reads at most 32 KiB of project
-     instructions by default (`project_doc_max_bytes`, not set in
-     `~/.codex/config.toml`), so it never sees the fork sections appended
-     past that. Options: a short root `AGENTS.override.md` for Codex (it
-     replaces `AGENTS.md` in the same directory; check what Claude Code and
-     pi load), or raise `project_doc_max_bytes`, or move the fork sections
-     to the top. Keep upstream's text untouched for rebase safety; do not
-     use `merge=ours`/`union` drivers (they drop upstream edits silently).
-     A pointer line alone ("see docs/fork/...") is not enough: rules behind
-     a link stop being followed.
-  2. `TODO.md` is fork-only (upstream has none), so splitting it causes no
+  1. `AGENTS.md` stays as it is (user, 2026-10-06: keep it so the fork
+     writes like upstream): upstream's text untouched, the fork sections
+     appended at the end, no override file, no move. One fix outside the
+     repository: Codex reads at most 32 KiB of project instructions by
+     default, so it never sees the fork sections past that; raise
+     `project_doc_max_bytes` in `~/.codex/config.toml` (not set there) above
+     the file's size, and check that Claude Code and pi load it whole.
+  2. Clean up `TODO.md` (user, 2026-10-06: "clean it up"); the main step.
+     It is fork-only (upstream has none), so splitting it causes no
      rebase conflicts. Keep "Next, in order" with open items only; a done
      item leaves the file, its durable decisions (why a design was chosen
      or rejected) go to a short `docs/fork/decisions.md` first. Move
@@ -5140,7 +5142,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
      only: `/docs/versions/`, `/docs/preview/`, `/docs/next/CHANGELOG.md`
      (one changelog stays searchable). Keep `vendor/` searchable: terminal
      bugs live in libghostty-vt (both models); at most exclude its test
-     data and third-party `pkg/`. Note `rg --no-ignore` in `AGENTS.md`.
+     data and third-party `pkg/`.
   - Not needed: `.playwright-mcp/` is already in the global gitignore and,
     being hidden, skipped by ripgrep; `.DS_Store` is in `.gitignore`;
     `.local/` is ignored.
