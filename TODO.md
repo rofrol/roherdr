@@ -4779,12 +4779,29 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       code, the reviewer never edits, qa works in throwaway worktrees. A
       cheaper first step is that rule in `AGENTS.md`, though it lives only
       in prose.
-  - Machine-wide slots for builds and tests: extend `herdr-job` (and next to
+  - [x] Machine-wide slots for builds and tests: extend `herdr-job` (and next to
     `just guard`) with N slots plus an exclusive mode for benchmarks, so
     several sessions do not thrash one `target/` or skew measurements.
-  - Structured dispositions in `consult`: classify each finding Act on /
+    Done 2026-10-06 (round `20261006-030357-bd7d`, sol and MiMo):
+    `herdr-job slot [--exclusive] -- CMD`, `run --slot/--exclusive`,
+    `herdr-job slots`; the `just` build, test and clippy lines take a slot,
+    benchmarks every slot. One slot by default (both: cargo and nextest each
+    use every core, so two slots let two full-machine loads run); MiMo: cargo's
+    `target/` lock does not cover it, nextest runs tests after releasing it;
+    an exclusive request inside a slot fails at once (it would wait for its
+    own ancestor); no gate lock (moot with one slot). Not done: re-run
+    `just guard` after a long slot wait (sol), and the CPU and output idle
+    detector still cannot tell a job blocked on cargo's lock (MiMo).
+  - [x] Structured dispositions in `consult`: classify each finding Act on /
     Consider / Noted / Dismissed (pstack's `$interrogate`), with evidence and
     whether it was verified, next to the existing per-call ratings.
+    Done 2026-10-06 as counts, not per-finding records (sol and MiMo: records
+    keep the same judgment and cost much more bookkeeping):
+    `rate --act --consider --noted --dismissed` (all four, adding up to
+    `--findings`; a rejected finding is dismissed), `act/call` in
+    `stats --all`, and the `consult` skill reports to the user in the four
+    buckets. Later, if wanted: link `act` findings to the commits that
+    landed them (MiMo).
 
 ## Deferred
 
