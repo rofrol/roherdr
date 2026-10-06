@@ -157,17 +157,6 @@ work through the TODO (AGENTS.md, Commit Style).
     `TODO.md` was skipped: the maintenance test list is upstream's justfile
     line, a rebase conflict magnet.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
 - [ ] Mark a pane whose agent ended its turn waiting for the user even when
   it could not run `herdr agent awaiting-reply` (user, 2026-10-06: why was
   the window not marked after the agent stopped with "I stopped halfway: the
@@ -181,7 +170,9 @@ user needs to decide or do. Item text is unchanged.
   when the turn ended right after failed or blocked tool calls, or showing
   such a pane as "stopped with an error" instead of idle. Check what the hook
   input carries about the last tool results before choosing.
-  Triage 2026-10-06 (decision): When a turn ends after blocked or failed tool calls, should the Stop hook mark the pane as awaiting a reply, or show a separate "stopped with an error" state?
+  Decided by the user 2026-10-06: a turn that ends right after failed or
+  blocked tool calls marks the pane as awaiting a reply (the `?` list),
+  through the Stop hook; no separate error state.
 
 - [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
   where I see what the agent asks? now I only have a question mark"; queued
@@ -253,7 +244,9 @@ user needs to decide or do. Item text is unchanged.
     `GIT_INDEX_FILE`) and takes `git diff --numstat` between consecutive
     snapshots, so the stat is per turn, not the whole tree. In the shared
     checkout it would still count concurrent sessions' edits.
-  Triage 2026-10-06 (decision): The first slice is done. Which follow-up comes next: a header count for limited agents, the sidebar second line, Codex/pi limits, or outcome rows like "ready for review"?
+  Decided by the user 2026-10-06: next comes the second line under asking
+  tab lines in the sidebar (the ask, as in the `?` list); the other
+  follow-ups wait.
 
 - [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
   would help, now I have to paste a link to the pi or claude session by
@@ -297,7 +290,9 @@ session that writes all code and delegates to documenter, reviewer, qa and
 ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
-  Triage 2026-10-06 (decision): Should the source tab stay, should there be a `herdr agent handoff --to` CLI/API, and is it a tab menu item only?
+  Decided by the user 2026-10-06: a tab menu item plus a CLI/API form
+  (`herdr agent handoff <pane> --to <agent>`); the source tab stays, idle;
+  an unknown session id is reported, never guessed.
 
 - [ ] Resolve agent names within the caller's workspace first. Today
   `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
@@ -307,7 +302,20 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   unnamed, focused, or unrelated agent." Keep an explicit way to address a
   name globally; an ambiguous name stays an error. Risk: callers that rely
   on global names from another workspace (sol).
-  Triage 2026-10-06 (decision): This changes the public target-resolution contract: accept breaking callers that use global names, and what is the explicit global form (flag or syntax)?
+  Decided by the user 2026-10-06: names resolve in the caller's workspace
+  first; a `--global` flag addresses a name in every workspace; an
+  ambiguous name stays an error.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
   help says "It does not track turns: if the agent is already working, that
