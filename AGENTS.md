@@ -496,7 +496,9 @@ then build the file from `git show HEAD:<path>` with only your paragraph
 replaced instead. Never run a bare `git commit` (no paths) on the shared
 index: a `M` in the first column of `git status --short` (`M `, `MM`) is
 another session's staged change, and it would go into your commit (this
-happened on 2026-10-02).
+happened on 2026-10-02). Set `GIT_INDEX_FILE` per command, never `export`
+it: a test run under it (the plugin tests run `git` in temporary repos) writes
+their entries into your temporary index (2026-10-06).
 
 ### Installing a fix into the running Herdr
 
