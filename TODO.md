@@ -24,6 +24,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Run it in the background; show its one-line output as a toast; a
     failure keeps the message.
   - Set it in the user's own config; nothing ships a default.
+  - Mark the worker's tab (user, 2026-10-07, chose `⚒` from mockups; consult
+    rounds `20261007-010734-4c57` and `20261007-011027-5c82`, MiMo): a
+    server-owned `worker` flag on the tab, set by the launcher when it
+    creates the tab (e.g. a `herdr tab create` option), never derived from
+    the agent's name or the title the agent sets. Draw `⚒` in a marker
+    column before the state glyph; no reordering and no pin (pinning is the
+    user's choice; a pinned worker tab stays possible, so pin needs its own
+    place or is ordering only). The flag ends with the tab. No progress line
+    (`?` and `↳` already mean other things; TODO.md counts are unreliable).
+    Then `~/scripts/todo-worker` passes the flag.
 
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
