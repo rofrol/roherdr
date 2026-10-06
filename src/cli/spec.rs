@@ -407,7 +407,31 @@ fn agent_command() -> Command {
         .subcommand(
             Command::new("awaiting-reply")
                 .about("Report that this agent ends its turn by asking the user something")
-                .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)")),
+                .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)"))
+                .arg(
+                    Arg::new("question")
+                        .value_name("QUESTION")
+                        .num_args(0..)
+                        .help("The question in a few words, shown in the list of waiting agents"),
+                ),
+        )
+        .subcommand(
+            Command::new("limited")
+                .about("Report that a usage limit or missing credits ended this agent's turn")
+                .arg(option("pane", "PANE_ID").help("Agent pane (default: $HERDR_PANE_ID)"))
+                .arg(
+                    Arg::new("kind")
+                        .value_name("KIND")
+                        .required(true)
+                        .value_parser(["usage", "credits"])
+                        .help("usage: resets on its own; credits: waiting does not help"),
+                )
+                .arg(
+                    Arg::new("message")
+                        .value_name("MESSAGE")
+                        .num_args(0..)
+                        .help("The agent's error text"),
+                ),
         )
         .subcommand(
             Command::new("set-task")

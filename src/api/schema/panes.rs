@@ -402,6 +402,23 @@ pub struct PaneReportAgentSessionParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReportAwaitingReplyParams {
     pub pane_id: String,
+    /// The question in a few words (`Install now?`), shown under the agent in the list of
+    /// agents waiting on the user. Cut to about 40 characters on a character boundary, control
+    /// characters dropped; without it the list shows only that the agent waits for a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+/// The agent's turn ended on a limit (a usage limit, out of credits) and it waits until the
+/// user acts or the limit resets. Shown, with the reset time when herdr knows it, until the
+/// user types into the pane or dismisses it, like an awaiting-reply report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportLimitParams {
+    pub pane_id: String,
+    pub kind: super::AgentLimitKind,
+    /// The agent's own error text; cut to one short line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// The agent in the pane names the task it works on now, in a few words; `None` or an empty

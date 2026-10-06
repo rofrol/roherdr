@@ -6,7 +6,7 @@
 
 param([string]$Action = "")
 
-if ($Action -ne "session" -and $Action -ne "reminder" -and $Action -ne "session-end") { exit 0 }
+if ($Action -ne "session" -and $Action -ne "reminder" -and $Action -ne "session-end" -and $Action -ne "stop-failure") { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
 
@@ -19,7 +19,7 @@ if ($Action -eq "reminder") {
         $parts += "Herdr reminder: if you end this turn needing the user's answer or decision " +
             "before you can continue (a question, a choice, a confirmation, or a request to check " +
             "something first, even without a question mark), call the Bash tool with ``herdr agent " +
-            "awaiting-reply`` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not " +
+            "awaiting-reply `"<question>`"`` (the question in at most 6 words; never write the command in your reply) on its own as the last command of the turn, right before your final message. Not " +
             "for AskUserQuestion or courtesy offers."
     }
     if ($env:HERDR_AGENT_TASK -ne "0") {
@@ -41,6 +41,28 @@ try {
 
 $propertyNames = @($payload.PSObject.Properties.Name)
 if ((Test-Path Env:CURSOR_VERSION) -or $propertyNames -ccontains "cursor_version") { exit 0 }
+
+# StopFailure hook (matched to rate_limit and billing_error): a usage limit or missing credits
+# ended the turn, so herdr lists the agent as waiting on the user, with the reset time it knows.
+if ($Action -eq "stop-failure") {
+    if ($payload.hook_event_name -cne "StopFailure") { exit 0 }
+    if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
+    $limitKind = switch ($payload.error) { "rate_limit" { "usage" } "billing_error" { "credits" } default { $null } }
+    if ($null -eq $limitKind) { exit 0 }
+    $limitMessage = @($payload.error_details, $payload.last_assistant_message) |
+        Where-Object { $_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+    $limitHerdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
+    try {
+        if ($null -ne $limitMessage) {
+            if ($limitMessage.Length -gt 1000) { $limitMessage = $limitMessage.Substring(0, 1000) }
+            & $limitHerdr agent limited --pane $env:HERDR_PANE_ID $limitKind -- $limitMessage 2>$null | Out-Null
+        } else {
+            & $limitHerdr agent limited --pane $env:HERDR_PANE_ID $limitKind 2>$null | Out-Null
+        }
+    } catch {
+    }
+    exit 0
+}
 
 # SessionEnd hook: the user ended the session (`/exit`, Ctrl-D, `/logout`), so herdr forgets it
 # and a restart does not resume it. A session that ends any other way stays resumable.
@@ -68,10 +90,12 @@ $contexts = @()
 if ($env:HERDR_AWAITING_REPLY_INSTRUCTIONS -ne "0") {
     $context = "You run inside a Herdr pane. When you end a turn needing the user's answer " +
         "or decision before you can continue the work, run the shell command " +
-        "``herdr agent awaiting-reply`` (call the Bash tool; never write the command in your " +
-        "reply) on its own, as the last command of the turn, " +
+        "``herdr agent awaiting-reply `"<question>`"`` (call the Bash tool; never write the " +
+        "command in your reply) on its own, as the last command of the turn, " +
         "right before your final message, so Herdr keeps your pane marked until the " +
-        "user replies. This covers a plain-text question, a choice between options, a " +
+        "user replies and lists your question. The question is what you ask in at most " +
+        "6 words, in the language of the conversation (``Install now?``, ``Which " +
+        "variant?``), without quotes, backticks or ```$``. This covers a plain-text question, a choice between options, a " +
         "confirmation before you proceed, and a request to check something before you " +
         "go on (`"let me know how it looks, then I will commit`"), even without a " +
         "question mark. Never append it to another command, never run it earlier in the " +

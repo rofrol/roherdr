@@ -222,6 +222,17 @@ pub struct AgentInfo {
     /// `pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub awaiting_reply: bool,
+    /// What the agent asks while it waits on the user: the question it reported with
+    /// `pane.report_awaiting_reply`, or while blocked its hook's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// Unix milliseconds since when the agent waits on the user: blocked, awaiting a reply,
+    /// or stopped by a limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since_ms: Option<u64>,
+    /// The limit the agent's last turn ended on (`pane.report_limit`), while it idles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited: Option<AgentLimit>,
     /// What the agent reported it works on now (`pane.report_task`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -233,6 +244,29 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+}
+
+/// Which limit ended an agent's turn; the remedies differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentLimitKind {
+    /// A usage or rate limit that resets on its own.
+    Usage,
+    /// Out of credits or a billing problem: waiting does not help.
+    Credits,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentLimit {
+    pub kind: AgentLimitKind,
+    /// Unix seconds when the limit resets, from herdr's usage report of the agent's provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+    /// The agent's own error text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

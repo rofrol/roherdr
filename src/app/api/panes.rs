@@ -1884,17 +1884,62 @@ impl App {
         else {
             return pane_not_found(id, &params.pane_id);
         };
+        let question = params.question.as_deref().and_then(|question| {
+            super::super::api_helpers::one_short_line(question, AWAITING_REPLY_QUESTION_MAX)
+        });
+        let now_ms = super::super::api_helpers::unix_ms_now();
         let changed = self
             .state
             .terminals
             .get_mut(&terminal_id)
             .is_some_and(|terminal| {
-                let changed = terminal.report_awaiting_reply();
+                let changed = terminal.report_awaiting_reply(question, now_ms);
                 if changed {
                     terminal.revision = terminal.revision.saturating_add(1);
                 }
                 changed
             });
+        if changed {
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_pane_report_limit(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneReportLimitParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        if params.kind == crate::api::schema::AgentLimitKind::Unknown {
+            return encode_error(id, "invalid_limit", "kind must be usage or credits");
+        }
+        let Some(terminal_id) = self.state.terminal_id_for_pane(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let message = params.message.as_deref().and_then(|message| {
+            super::super::api_helpers::one_short_line(message, LIMIT_MESSAGE_MAX)
+        });
+        let now_ms = super::super::api_helpers::unix_ms_now();
+        let changed = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .is_some_and(|terminal| {
+                let changed = terminal.report_limit(params.kind, message, now_ms);
+                if changed {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
+                changed
+            });
+        // The reset time comes from the usage report, which may predate the limit.
+        if params.kind == crate::api::schema::AgentLimitKind::Usage {
+            if let Some(poller) = self.usage_poller.as_ref() {
+                poller.refresh();
+            }
+        }
         if changed {
             self.emit_pane_updated(ws_idx, pane_id);
         }
@@ -2520,6 +2565,11 @@ fn validate_optional_resume_argv(argv: Option<&[String]>) -> Result<(), String> 
     argv.map_or(Ok(()), crate::agent_resume::validate_resume_argv)
 }
 
+/// Grapheme clusters an awaiting-reply question keeps: a few words for a list row.
+const AWAITING_REPLY_QUESTION_MAX: usize = 40;
+/// Grapheme clusters a limit report's message keeps.
+const LIMIT_MESSAGE_MAX: usize = 120;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3141,7 +3191,7 @@ mod tests {
             let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
             let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
             terminal.state = AgentState::Idle;
-            assert!(terminal.report_awaiting_reply());
+            assert!(terminal.report_awaiting_reply(None, 1));
 
             let response = app.handle_api_request(crate::api::schema::Request {
                 id: "req".into(),
@@ -3200,7 +3250,7 @@ mod tests {
         let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
         let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
         terminal.state = AgentState::Idle;
-        assert!(terminal.report_awaiting_reply());
+        assert!(terminal.report_awaiting_reply(None, 1));
         let clear = |pane_ids: Vec<String>| crate::api::schema::Request {
             id: "req".into(),
             method: crate::api::schema::Method::PaneClearAwaitingReply(
@@ -3222,8 +3272,107 @@ mod tests {
         assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
         // The agent's next report shows the question again.
         let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
-        assert!(terminal.report_awaiting_reply());
+        assert!(terminal.report_awaiting_reply(None, 1));
         assert!(terminal.awaiting_reply());
+    }
+
+    #[tokio::test]
+    async fn api_pane_report_awaiting_reply_keeps_a_short_question_with_the_report() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Idle;
+        let report = |app: &mut App, question: &str| {
+            app.handle_api_request(crate::api::schema::Request {
+                id: "req".into(),
+                method: crate::api::schema::Method::PaneReportAwaitingReply(
+                    PaneReportAwaitingReplyParams {
+                        pane_id: pane_id.clone(),
+                        question: Some(question.to_owned()),
+                    },
+                ),
+            })
+        };
+        assert!(report(&mut app, "\x1b[31mInstall\x1b[0m\tnow?\n").contains("\"ok\""));
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(terminal.awaiting_reply_question(), Some("Install now?"));
+        let since = terminal.waiting_since_ms().unwrap();
+        assert!(since > 0);
+        // A longer question is cut at ingest; a repeated report keeps the start.
+        let _ = report(&mut app, &"x".repeat(60));
+        let terminal = &app.state.terminals[&terminal_id];
+        let question = terminal.awaiting_reply_question().unwrap();
+        assert_eq!(question.chars().count(), 40);
+        assert!(question.ends_with('…'));
+        assert_eq!(terminal.waiting_since_ms(), Some(since));
+        // Working hides it, typing forgets it with the report.
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Working;
+        assert_eq!(terminal.awaiting_reply_question(), None);
+        assert_eq!(terminal.waiting_since_ms(), None);
+        terminal.state = AgentState::Idle;
+        assert!(terminal.clear_awaiting_reply());
+        assert_eq!(terminal.awaiting_reply_question(), None);
+        assert!(terminal.report_awaiting_reply(None, 5));
+        assert_eq!(terminal.awaiting_reply_question(), None);
+    }
+
+    #[tokio::test]
+    async fn api_pane_report_limit_shows_while_idle_until_input() {
+        let (mut app, pane_id, _rx) = app_with_send_key_runtime(4);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.terminal_id_for_pane(0, internal_pane_id).unwrap();
+        app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Working;
+        let mut report = |kind: crate::api::schema::AgentLimitKind| {
+            app.handle_api_request(crate::api::schema::Request {
+                id: "req".into(),
+                method: crate::api::schema::Method::PaneReportLimit(
+                    crate::api::schema::PaneReportLimitParams {
+                        pane_id: pane_id.clone(),
+                        kind,
+                        message: Some("You've hit your limit\n· resets 3pm".into()),
+                    },
+                ),
+            })
+        };
+        let response = report(crate::api::schema::AgentLimitKind::Unknown);
+        assert!(response.contains("invalid_limit"), "{response}");
+        assert!(report(crate::api::schema::AgentLimitKind::Usage).contains("\"ok\""));
+        // Reported before the screen shows the turn's end: it shows once idle.
+        assert!(app.state.terminals[&terminal_id].limit().is_none());
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.state = AgentState::Idle;
+        let limit = terminal.limit().unwrap();
+        assert_eq!(limit.kind, crate::api::schema::AgentLimitKind::Usage);
+        assert_eq!(
+            limit.message.as_deref(),
+            Some("You've hit your limit · resets 3pm")
+        );
+        assert_eq!(terminal.waiting_since_ms(), Some(limit.since_ms));
+        assert!(terminal.has_awaiting_reply_report());
+        // Typing into the pane (resuming it) forgets it.
+        app.clear_awaiting_reply_on_pane_input(0, internal_pane_id);
+        assert!(app.state.terminals[&terminal_id].limit().is_none());
+    }
+
+    #[test]
+    fn a_blocked_agent_waits_since_it_became_blocked() {
+        let mut terminal = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            "/tmp".into(),
+        );
+        terminal.state = AgentState::Idle;
+        assert!(terminal.report_awaiting_reply(Some("Which?".into()), 10));
+        terminal.state = AgentState::Blocked;
+        terminal.advance_awaiting_reply(AgentState::Blocked, 20);
+        // A prompt after the report means the report was not the turn's end.
+        assert!(!terminal.has_awaiting_reply_report());
+        assert_eq!(terminal.waiting_since_ms(), Some(20));
+        terminal.advance_awaiting_reply(AgentState::Blocked, 30);
+        assert_eq!(terminal.waiting_since_ms(), Some(20));
+        terminal.state = AgentState::Working;
+        terminal.advance_awaiting_reply(AgentState::Working, 40);
+        assert_eq!(terminal.waiting_since_ms(), None);
     }
 
     #[tokio::test]

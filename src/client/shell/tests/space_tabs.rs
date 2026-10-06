@@ -10,6 +10,9 @@ fn state_with_tabs(tabs: bool) -> ClientShellState {
     projected.tabs[0].agent_status = AgentStatus::Working;
     projected.agents.push(ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -2410,6 +2413,9 @@ fn header_agent(
 ) -> crate::protocol::ClientShellAgent {
     crate::protocol::ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -2485,6 +2491,87 @@ fn the_header_counts_agents_working_and_asking_and_lists_them_on_click() {
         "{text}"
     );
     assert!(!text.contains("Which database?"), "{text}");
+}
+
+#[test]
+fn the_asking_list_ranks_by_waiting_time_and_shows_what_each_agent_asks() {
+    use crate::api::schema::AgentStatus::{Blocked, Idle};
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 40;
+    let now_ms = crate::usage::now_unix() * 1000;
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut asks = header_agent("p1", Idle, true, "Fix OAuth callback");
+    asks.question = Some("Install now?".into());
+    asks.waiting_since_ms = Some(now_ms - 2 * 60_000);
+    let mut blocked = header_agent("p2", Blocked, false, "Read the X post");
+    blocked.waiting_since_ms = Some(now_ms - 3 * 3_600_000);
+    let mut limited = header_agent("p3", Idle, false, "Write the docs");
+    limited.limited = Some(crate::api::schema::AgentLimit {
+        kind: crate::api::schema::AgentLimitKind::Usage,
+        resets_at: None,
+        message: Some("You've hit your limit".into()),
+    });
+    limited.waiting_since_ms = Some(now_ms - 30 * 60_000);
+    projected.agents = vec![asks, blocked, limited];
+    state.set_snapshot(Box::new(projected));
+    // A limited agent waits on the user too.
+    assert_eq!(state.agent_indicator_counts(), (0, 3));
+
+    state.compose(106, 30).unwrap();
+    let asking = state.hits.asking_list_button;
+    left_click(&mut state, (asking.x + 1, asking.y));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let line = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {}", rows.join("\n")))
+    };
+    // The longest wait first, its time in the time column.
+    assert!(line("Read the X post") < line("Write the docs"));
+    assert!(line("Write the docs") < line("Fix OAuth callback"));
+    assert!(rows[line("Read the X post")].contains("3h"));
+    assert!(rows[line("Fix OAuth callback")].contains("2m"));
+    // What each asks, on the line under it.
+    assert_eq!(line("↳ approval"), line("Read the X post") + 1);
+    assert_eq!(
+        line("↳ limited · You've hit your limit"),
+        line("Write the docs") + 1
+    );
+    assert_eq!(line("↳ Install now?"), line("Fix OAuth callback") + 1);
+    // A row and its second line are one target.
+    assert_eq!(state.hits.notification_log_rows.len(), 3);
+    let (row, index) = state.hits.notification_log_rows[0];
+    assert_eq!((row.height, index), (2, 0));
+}
+
+#[test]
+fn a_limit_says_when_it_resets() {
+    use crate::api::schema::{AgentLimit, AgentLimitKind};
+    use crate::client::shell::notification_log::limit_detail;
+    // 2026-09-28 22:05:00 UTC.
+    let now = 1_790_633_100;
+    let limit = |kind, resets_at| AgentLimit {
+        kind,
+        resets_at,
+        message: Some("ignored with a reset time".into()),
+    };
+    assert_eq!(
+        limit_detail(&limit(AgentLimitKind::Usage, Some(now + 3_600)), now, 0),
+        "limited · resets 23:05"
+    );
+    assert_eq!(
+        limit_detail(&limit(AgentLimitKind::Usage, Some(now + 86_400)), now, 0),
+        "limited · resets Sep 29 22:05"
+    );
+    assert_eq!(
+        limit_detail(&limit(AgentLimitKind::Usage, Some(now - 60)), now, 0),
+        "limited · reset 22:04, resume it"
+    );
+    assert_eq!(
+        limit_detail(&limit(AgentLimitKind::Credits, None), now, 0),
+        "out of credits · ignored with a reset time"
+    );
 }
 
 #[test]

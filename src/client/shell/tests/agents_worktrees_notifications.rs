@@ -867,6 +867,9 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     initial.agents = vec![
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -885,6 +888,9 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
         },
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -961,6 +967,9 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     projected.agents = vec![
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -979,6 +988,9 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         },
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -1104,6 +1116,9 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
     projected.tabs[0].custom_label = true;
     projected.agents = vec![ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1173,6 +1188,9 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     projected.agents = vec![
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -1191,6 +1209,9 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -1209,6 +1230,9 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_3".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -1285,6 +1309,9 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1853,6 +1880,9 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: "pane_2".into(),
         workspace_id: "ws_2".into(),
         tab_id: "tab_2".into(),

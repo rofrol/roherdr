@@ -1798,7 +1798,7 @@ impl AppState {
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
         if change.previous_state != change.state {
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
-                terminal.advance_awaiting_reply(change.state);
+                terminal.advance_awaiting_reply(change.state, super::api_helpers::unix_ms_now());
             }
         }
         if change.previous_state != change.state {
@@ -3382,7 +3382,7 @@ mod tests {
         }
 
         fn report(&mut self) -> bool {
-            self.terminal().report_awaiting_reply()
+            self.terminal().report_awaiting_reply(None, 1)
         }
 
         fn type_input(&mut self) -> bool {
@@ -3425,6 +3425,9 @@ mod tests {
         assert!(old.terminal().has_awaiting_reply_report());
         let mut state = crate::handoff_runtime::HandoffRuntimeState {
             reported_task: None,
+            awaiting_reply_question: None,
+            awaiting_reply_since_ms: None,
+            limit_report: None,
             pane_id: 1,
             child_pid: 0,
             rows: 24,
@@ -3449,7 +3452,7 @@ mod tests {
         new.change(AgentState::Idle);
         assert!(!new.awaiting());
         if state.awaiting_reply_reported {
-            new.terminal().restore_awaiting_reply_report();
+            new.terminal().restore_awaiting_reply_report(None, None);
         }
         assert!(new.awaiting(), "the mark is back once the agent is idle");
         // Typing still clears it.
@@ -3576,7 +3579,7 @@ mod tests {
         app.terminals
             .get_mut(&terminal_id)
             .unwrap()
-            .report_awaiting_reply();
+            .report_awaiting_reply(None, 1);
         assert!(app.terminals[&terminal_id].awaiting_reply());
 
         report_session(&mut app, 2, "new-session");

@@ -963,6 +963,7 @@ fn install_claude_writes_hook_and_updates_settings() {
         serde_json::json!([
             "Read",
             "Bash(herdr agent awaiting-reply)",
+            "Bash(herdr agent awaiting-reply:*)",
             "Bash(herdr agent set-task:*)"
         ])
     );
@@ -982,6 +983,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert_only_the_stop_check_hook(&settings);
     assert_only_the_session_end_hook(&settings);
+    assert_only_the_stop_failure_hook(&settings);
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
@@ -1033,6 +1035,19 @@ fn assert_only_the_session_end_hook(settings: &Value) {
         .ends_with(" session-end"));
 }
 
+/// Install adds herdr's limit report on `StopFailure`, for the limit errors alone.
+fn assert_only_the_stop_failure_hook(settings: &Value) {
+    let entries = settings["hooks"]["StopFailure"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["matcher"], "^(rate_limit|billing_error)$");
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" stop-failure"));
+}
+
 #[test]
 fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
     let _lock = integration_env_lock();
@@ -1051,6 +1066,7 @@ fn claude_awaiting_reply_permission_is_added_once_and_removed_alone() {
         settings["permissions"]["allow"],
         serde_json::json!([
             "Bash(herdr agent awaiting-reply)",
+            "Bash(herdr agent awaiting-reply:*)",
             "Bash(herdr agent set-task:*)"
         ])
     );

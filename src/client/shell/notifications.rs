@@ -303,6 +303,9 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -389,6 +392,9 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -519,6 +525,9 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.agents.push(crate::protocol::ClientShellAgent {
             task: None,
+            question: None,
+            waiting_since_ms: None,
+            limited: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_2".into(),

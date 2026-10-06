@@ -24,6 +24,18 @@
     characters on a grapheme boundary, control and ANSI sequences stripped),
     never per frame. The `?` list draws it as a dim second row. Bump the
     Claude integration version once from the latest release.
+    Done 2026-10-06 together with the inbox and Limited from "Orchestration
+    direction": `pane.report_awaiting_reply` takes `question`; agents
+    report `waiting_since_ms` (blocked, asked, limited) and the `?` list
+    ranks by it, longest first, the wait (`3h`, `2m`) in the time column,
+    the ask as a dim `↳` line (blocked: the hook message or `approval`).
+    `pane.report_limit {kind: usage|credits, message}` (CLI `herdr agent
+    limited`) from Claude's `StopFailure` hook (`rate_limit`,
+    `billing_error`); shown like an awaiting-reply report and counted in
+    `?N`; `resets_at` is the latest reset of the provider's full windows
+    in the usage report (a limit report refreshes it). Integration stays v12
+    (unreleased since v11). Open: a separate header count for limited
+    agents, the second line under sidebar tab lines, limits for Codex/pi.
   - Later: the same second line under `?` tab lines in the sidebar (only
     for asking rows; working rows stay one line), and a "needs me" filter
     in the planned sidebar filter bar, never hiding rows by default
