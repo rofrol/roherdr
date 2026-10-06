@@ -1162,17 +1162,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   moves the item back under Needs a decision with the variants named, so
   the user picks with a click.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
@@ -1205,7 +1194,44 @@ user needs to decide or do. Item text is unchanged.
     shell, then `claude --resume <id>` / `pi --session <path>`. Tested live
     on a throwaway Claude session. Still to do: version detection, the
     restart-pending queue, a preview/picker, pi's draft check.
-  Triage 2026-10-06 (decision): When an agent CLI update is detected, restart idle agents automatically or only mark them "restart pending"? Testing needs live sessions.
+  Decided by the user 2026-10-06: when an update is detected, only mark
+  the agents "restart pending"; the user restarts them from the menu; no
+  automatic restart.
+
+- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
+  ends with new commits, list them as "to review" until I acknowledge them.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
+    popup, no new core state. Uncommitted changes in the shared checkout
+    cannot be attributed to one agent (neither HEAD nor file mtimes tell who
+    changed what), so the unit is the commit.
+  - At turn start record the session id and HEAD; at turn end find new
+    commits carrying `Claude-Session: <id>`. Enqueue only when there are
+    commits, not on every finished turn. Viewing the pane clears "done" as
+    today; only an explicit acknowledgement clears "to review".
+  - Show each commit's own patch (delta or lazygit), never
+    `git diff first^..last`: with other agents committing to master the range
+    includes their commits. Leftover uncommitted files get one line:
+    "N uncommitted (unattributed)".
+  - Sidebar token like `review 3c / 5f`; on the phone one item at a time
+    with next/previous, no side-by-side diffs.
+  - Open questions: the trailer is per session, not per turn, and only
+    Claude adds it; Codex and pi need an equivalent (or hook-reported
+    commits). Prototype a plain commit list first: maybe lazygit in a popup
+    is already enough.
+  Decided by the user 2026-10-06: start with lazygit in a popup on the
+  tab's repository, no new code beyond that; a herdr-native list only if
+  that falls short.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] Usage footer: show OpenAI API (platform, pay-as-you-go) credits, and
   consider Kimi, GLM and other popular providers.
@@ -1299,74 +1325,6 @@ user needs to decide or do. Item text is unchanged.
       vector stores, code interpreter; all answer 200) for the footer.
       Costs already include their dollars; their units do not mix.
   Triage 2026-10-06 (decision): Kimi and OpenAI spend are done: build GLM Coding Plan quota or OpenAI per-project spend now, or close the item?
-
-- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
-  ends with new commits, list them as "to review" until I acknowledge them.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
-    popup, no new core state. Uncommitted changes in the shared checkout
-    cannot be attributed to one agent (neither HEAD nor file mtimes tell who
-    changed what), so the unit is the commit.
-  - At turn start record the session id and HEAD; at turn end find new
-    commits carrying `Claude-Session: <id>`. Enqueue only when there are
-    commits, not on every finished turn. Viewing the pane clears "done" as
-    today; only an explicit acknowledgement clears "to review".
-  - Show each commit's own patch (delta or lazygit), never
-    `git diff first^..last`: with other agents committing to master the range
-    includes their commits. Leftover uncommitted files get one line:
-    "N uncommitted (unattributed)".
-  - Sidebar token like `review 3c / 5f`; on the phone one item at a time
-    with next/previous, no side-by-side diffs.
-  - Open questions: the trailer is per session, not per turn, and only
-    Claude adds it; Codex and pi need an equivalent (or hook-reported
-    commits). Prototype a plain commit list first: maybe lazygit in a popup
-    is already enough.
-  Triage 2026-10-06 (decision): How are Codex/pi commits attributed (they add no session trailer)? A plain list first, or is lazygit in a popup enough?
-
-- [ ] Child tab row styled like the main row. Now the main row has separate
-  tabs (`surface1` background, a 1-column `panel_bg` gap between them),
-  while the child row is one continuous accent-tint band with plain text
-  entries split by `│` (`render_child_tab_bar` in
-  `src/client/shell/tabs.rs`), so it looks like a different widget.
-  - Decided (2026-09-28, after mockups): copy the main row exactly. Drop
-    the band: the row background and the 1-column gaps are `panel_bg`;
-    each unfocused child is drawn like an inactive main tab (`surface1`
-    background, `overlay1` text, same padding); drop the `│` dividers. The
-    focused child stays the only full-accent block, and the tinted parent
-    above plus the `◆` entry keep the link between the rows.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28) both preferred
-    keeping the band behind the tabs, so the row stays visibly tied to the
-    tinted parent; I chose full consistency with the main row instead. Both
-    rejected tabs in a stronger accent tint: they read as "half selected"
-    and weaken the red/yellow status icons.
-  - Pitfalls: truncate labels before status icons; the whole tab including
-    padding is the hit target, gaps are not; red/yellow icons must stay
-    readable on `surface1` in both light and dark themes.
-  - Skipped 2026-10-04 while going through the list: with
-    `ui.sidebar.spaces.tabs = true` (the user's setup) neither tab row is
-    drawn (`show_tab_bar` in `src/client/shell/config.rs`), so this styling
-    is invisible; do it only if the horizontal rows come back into use.
-  Triage 2026-10-06 (decision): Skipped 2026-10-04 as invisible with `ui.sidebar.spaces.tabs = true`: build it anyway, or drop it until horizontal tab rows return?
-
-- [ ] Tooltips: hovering a tab shows its full text. There is no tooltip
-  system yet, so build one small client-side layer first (presentation
-  state, no protocol change): target id, anchor rect, lines; ~400-500 ms
-  dwell, not restarted by motion within the same target; drawn last,
-  clamped to the screen, display-width aware, never intercepting clicks;
-  hidden on key, click, scroll, drag, modal, resize, target removal, and
-  after a maximum time (a lost leave event must not leave it stuck).
-  - Tabs, both the main and the child row: only when the label is
-    actually truncated.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): hover must not be
-    the only way to see the full text, since tmux and some terminals drop
-    plain motion events (mode 1003); the rename dialog already shows it.
-    Sanitize control characters in tooltip text.
-  - Done 2026-09-29: the layer (`src/client/shell/tooltip.rs`: 450 ms
-    dwell, drawn last on the target's row and shifted left to stay on
-    screen, no hits, gone on a key, a click, a scroll, a drag, an overlay,
-    when its target is not drawn, and after 10 s), used by the sidebar's
-    vertical tab lines whose label is cut. Still open: the horizontal tab
-    rows (shown only without vertical tabs).
-  Triage 2026-10-06 (decision): The tooltip layer is done; only the horizontal tab rows remain, hidden in your setup: build it anyway or drop it?
 
 - [ ] Build line (bottom left of the sidebar): hover shows the full commit
   message, click opens a modal with the full commit info (full hash,
