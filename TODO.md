@@ -1369,6 +1369,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   counters vs. anything sent out, where to store them, how to show the
   never-clicked list), then propose the design.
 
+- [ ] A standing self-improvement process over agent sessions (user,
+  2026-10-07: "today's analysis of all Claude sessions was good, that most of
+  the time is waiting for my decision. Also include pi in the analysis, and
+  maybe other agents when I use them. A standing self-improvement process,
+  but that's probably a separate TODO. Ask the models"). Find today's
+  analysis and its script first, add pi's session files
+  (`~/.pi/agent/sessions/`) and a per-agent reader so other agents can join,
+  then consult the default set on making it a recurring process (how often,
+  what it reports, where findings go).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
