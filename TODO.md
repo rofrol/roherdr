@@ -1379,6 +1379,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   then consult the default set on making it a recurring process (how often,
   what it reports, where findings go).
 
+- [ ] No tab line is lit for the focused tab of a collapsed worktree space
+  (user, 2026-10-07, three screenshots: "why does this session have no
+  highlighted tab? probably opened by Claude as a todo-worker; ask the
+  models"). The focused pane was `worker: shuffle prev`, a worktree space a
+  coordinator created (`herdr worktree create --no-focus`) nested under
+  `rormpc-tools`; its name line shows `▶` (collapsed), so no tab line and no
+  highlight anywhere in the sidebar marks where the user is. Check how
+  collapse is chosen for API-created worktree spaces and what a collapsed
+  space should show when it holds the focused tab; consult the default set.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
