@@ -1,0 +1,7 @@
+# Read by ripgrep (and the agents' search tools built on it), not by git:
+# keeps generated or duplicated text out of searches. Search it anyway with
+# `rg --no-ignore`.
+/docs/versions/
+/docs/preview/
+/docs/next/CHANGELOG.md
+/vendor/libghostty-vt/**/testdata/

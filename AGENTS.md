@@ -485,6 +485,11 @@ notes commit is pushed on its own. Never end a session with your own edits
 left uncommitted: commit them or say in your final message that they are
 there.
 
+`TODO.md` holds open work only, so it stays small enough to read: when an
+item is finished, delete it instead of ticking `[x]`, and first add its
+durable decisions (what was chosen or rejected and why, what the user asked
+for) to `DECISIONS.md` in a few lines. Parked ideas go to `TODO-deferred.md`.
+
 When the file you edited also holds another session's uncommitted hunks,
 `git commit -- <path>` would take theirs too. Commit only your hunk through a
 temporary index: save it as a patch, then `GIT_INDEX_FILE=<tmp> git read-tree
