@@ -4723,6 +4723,27 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   guard is what stops a session report sent before `/exit` but processed
   after the forget from bringing the session back.
 
+- [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
+  a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
+  installed: its orchestration only runs inside T3 Code, and 55 skill
+  descriptions cost about 3k tokens per session). Consulted sol and MiMo
+  (round of 2026-10-06, both: skip the install, borrow these):
+  - Landing queue for the shared `master`: one writer to trunk under a lock,
+    path leases claimed before editing (overlaps refused), writers commit in
+    their own worktree and never integrate. Addresses sessions sweeping each
+    other's staged hunks (2026-10-02). Its `land.py` uses `flock` (released
+    when the process dies) and SQLite `BEGIN IMMEDIATE`. Caveats: leases do
+    not stop an agent that bypasses the queue (sol); after a rebase compare
+    `HEAD^{tree}` with the reviewed tree, not SHAs, and re-review when it
+    differs (MiMo). Conflicts with the fork's "work on master in the shared
+    checkout" rule, so decide that first.
+  - Machine-wide slots for builds and tests: extend `herdr-job` (and next to
+    `just guard`) with N slots plus an exclusive mode for benchmarks, so
+    several sessions do not thrash one `target/` or skew measurements.
+  - Structured dispositions in `consult`: classify each finding Act on /
+    Consider / Noted / Dismissed (pstack's `$interrogate`), with evidence and
+    whether it was verified, next to the existing per-call ratings.
+
 ## Deferred
 
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
