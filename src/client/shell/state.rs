@@ -1327,6 +1327,8 @@ pub(crate) struct ClientShellState {
     pub(super) space_to_top_undo: Option<super::space_sort::SpaceToTopUndo>,
     /// When the last image attached to each pane was taken.
     pub(super) image_attach_times: super::image_picker::ImageAttachTimes,
+    /// Directories images were last attached from, the latest first.
+    pub(super) recent_image_dirs: Vec<std::path::PathBuf>,
     /// The image list may show the highlighted image as a kitty image.
     pub(super) image_previews: bool,
     /// The file sent to the host terminal as the image list's preview.
@@ -1557,6 +1559,7 @@ impl ClientShellState {
             workspace_scroll_anchor: None,
             space_to_top_undo: None,
             image_attach_times: Default::default(),
+            recent_image_dirs: preferences.recent_image_dirs.clone(),
             image_previews: false,
             image_preview_sent: None,
             agent_scroll: 0,
