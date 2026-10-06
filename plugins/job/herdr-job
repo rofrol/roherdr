@@ -952,7 +952,9 @@ def cmd_exec(args):
         except SystemExit as err:
             # Fail like the command would, so the reason reaches the log and `wait`.
             command = f"echo {shlex.quote(str(err))} >&2; exit 1"
-    env = dict(os.environ, HERDR_JOB_ID=meta["id"])
+    # The name labels what the job builds (herdr's build.rs shows it for a
+    # release build with uncommitted changes).
+    env = dict(os.environ, HERDR_JOB_ID=meta["id"], HERDR_JOB_NAME=meta["name"])
     env.pop("HISTORY_IGNORE", None)
     try:
         # The job has no controlling terminal (its own session, output piped to
