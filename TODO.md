@@ -326,6 +326,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   agent's command into a new tab's shell. The remembered agent is client
   memory only (after a restart the space's newest agent tab decides). Not
   done: the remote-machine sidebar has no launch button.
+  Reordered 2026-10-06 (user: from the right the agent button, then new
+  tab, then git; remove the drag grip): the name line ends in
+  `[git chip]  +  A `; with vertical tabs it has no grip (the name still
+  turns accent on press and while dragged). The sidebar without vertical
+  tabs keeps its hover grip.
   The picker teaches the colours (user, 2026-10-03: "teach people the
   colours in this menu"): every row starts with an `A` in its agent's
   colour, in the button's `A` column, and the menu opens over the button
