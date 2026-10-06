@@ -1266,6 +1266,9 @@ impl App {
             Method::PaneReportTask(params) => {
                 return self.handle_pane_report_task(request.id, params);
             }
+            Method::PaneReportLimit(params) => {
+                return self.handle_pane_report_limit(request.id, params);
+            }
             Method::PaneReportMetadata(params) => {
                 return self.handle_pane_report_metadata(request.id, params);
             }

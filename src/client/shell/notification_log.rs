@@ -520,11 +520,14 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    /// Agents that ask for the user (blocked on an approval or awaiting a
-    /// reply) and agents working, one pane in at most one of them: attention
-    /// wins. Counted from the snapshot the client already has.
+    /// Agents that wait on the user (blocked on an approval, awaiting a
+    /// reply, or stopped by a limit) and agents working, one pane in at most
+    /// one of them: attention wins. Counted from the snapshot the client
+    /// already has.
     fn agent_is_asking(agent: &crate::protocol::ClientShellAgent) -> bool {
-        agent.agent_status == crate::api::schema::AgentStatus::Blocked || agent.awaiting_reply
+        agent.agent_status == crate::api::schema::AgentStatus::Blocked
+            || agent.awaiting_reply
+            || agent.limited.is_some()
     }
 
     /// Working as the sidebar shows it: the agent works, or it waits on a
@@ -559,17 +562,30 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return Vec::new();
         };
-        snapshot
+        let mut agents = snapshot
             .agents
             .iter()
             .filter(|agent| match view {
                 NotificationLogView::Asking => Self::agent_is_asking(agent),
                 _ => Self::agent_is_working(snapshot, agent),
             })
+            .collect::<Vec<_>>();
+        // The agent that has waited longest first; one with no known start
+        // (an older server) after them, in the sidebar's order.
+        if view == NotificationLogView::Asking {
+            agents.sort_by_key(|agent| agent.waiting_since_ms.unwrap_or(u64::MAX));
+        }
+        agents
+            .into_iter()
             .take(MAX_ROWS)
             .map(|agent| NotificationRecord {
                 id: 0,
-                unix_ms: 0,
+                // An asking row's time is when the agent started waiting.
+                unix_ms: if view == NotificationLogView::Asking {
+                    agent.waiting_since_ms.unwrap_or(0)
+                } else {
+                    0
+                },
                 kind: if view == NotificationLogView::Asking {
                     "asking"
                 } else {
@@ -582,13 +598,7 @@ impl ClientShellState {
                     .or(agent.agent.clone())
                     .unwrap_or_default(),
                 body: if view == NotificationLogView::Asking {
-                    Some(
-                        if agent.agent_status == crate::api::schema::AgentStatus::Blocked {
-                            "approval".to_owned()
-                        } else {
-                            "reply".to_owned()
-                        },
-                    )
+                    Some(Self::asking_detail(agent))
                 } else if agent.agent_status != crate::api::schema::AgentStatus::Working {
                     Some("waits on a job".to_owned())
                 } else {
@@ -608,6 +618,30 @@ impl ClientShellState {
                 repeats: None,
             })
             .collect()
+    }
+
+    /// What an agent waiting on the user asks, for the second line of its
+    /// row: its question, the approval it waits for, or the limit that
+    /// stopped it and when that resets (`limited · resets 14:32`).
+    fn asking_detail(agent: &crate::protocol::ClientShellAgent) -> String {
+        use crate::api::schema::AgentStatus;
+        if agent.agent_status == AgentStatus::Blocked {
+            return agent
+                .question
+                .clone()
+                .unwrap_or_else(|| "approval".to_owned());
+        }
+        if agent.awaiting_reply {
+            return agent.question.clone().unwrap_or_else(|| "reply".to_owned());
+        }
+        let Some(limit) = agent.limited.as_ref() else {
+            return "reply".to_owned();
+        };
+        limit_detail(
+            limit,
+            crate::usage::now_unix(),
+            super::usage::local_utc_offset_secs(),
+        )
     }
 
     /// One history row: `✓ Fix the login test · claude · herdr ×3`. The task is
@@ -671,8 +705,9 @@ impl ClientShellState {
             },
         }
         parts.extend(workspace);
-        // A live row says what it waits for (an approval or a reply).
-        if matches!(entry.kind.as_str(), "asking" | "working") {
+        // A working row says what it waits for (a job); an asking row says
+        // it on a second line of its own (`notification_row_detail`).
+        if entry.kind == "working" {
             parts.extend(entry.body.clone());
         }
         let mut text = parts.join(" · ");
@@ -683,6 +718,13 @@ impl ClientShellState {
             text.push_str(&format!(" ×{repeats}"));
         }
         text
+    }
+
+    /// The second line of an asking row: what the agent asks.
+    pub(super) fn notification_row_detail(entry: &NotificationRecord) -> Option<String> {
+        (entry.kind == "asking")
+            .then(|| entry.body.clone())
+            .flatten()
     }
 
     /// Which rows are unread: the first (newest) row of each tab that still
@@ -876,6 +918,49 @@ pub(super) fn notification_day(unix_ms: u64, now_unix: u64, utc_offset_secs: i64
         format!("{month} {}", at.day())
     } else {
         format!("{month} {} {}", at.day(), at.year())
+    }
+}
+
+/// What stopped an agent and when it can go on: `limited · resets 14:32`,
+/// `limited · resets Oct 7 09:00` on another day, `limited · reset 14:32,
+/// resume it` once passed, `out of credits`. Without a known reset time the
+/// agent's own message follows instead.
+pub(super) fn limit_detail(
+    limit: &crate::api::schema::AgentLimit,
+    now_unix: u64,
+    utc_offset_secs: i64,
+) -> String {
+    use crate::api::schema::AgentLimitKind;
+    let mut text = match limit.kind {
+        AgentLimitKind::Credits => "out of credits".to_owned(),
+        AgentLimitKind::Usage | AgentLimitKind::Unknown => "limited".to_owned(),
+    };
+    if let Some(resets_at) = limit.resets_at {
+        let millis = resets_at.saturating_mul(1000);
+        let time = notification_time(millis, utc_offset_secs);
+        let day = notification_day(millis, now_unix, utc_offset_secs);
+        if resets_at <= now_unix {
+            text.push_str(&format!(" · reset {time}, resume it"));
+        } else if day == "Today" {
+            text.push_str(&format!(" · resets {time}"));
+        } else {
+            text.push_str(&format!(" · resets {day} {time}"));
+        }
+    } else if let Some(message) = limit.message.as_deref() {
+        text.push_str(&format!(" · {message}"));
+    }
+    text
+}
+
+/// How long an agent has waited, for the time column of its row: `now`,
+/// `4m`, `2h`, `3d`.
+pub(super) fn wait_duration(since_ms: u64, now_unix: u64) -> String {
+    let secs = now_unix.saturating_sub(since_ms / 1000);
+    match secs {
+        0..=59 => "now".to_owned(),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
     }
 }
 

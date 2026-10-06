@@ -24,6 +24,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => agent_rename(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "awaiting-reply" => agent_awaiting_reply(&args[1..]),
+        "limited" => agent_limited(&args[1..]),
         "set-task" => agent_set_task(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
@@ -485,24 +486,73 @@ fn agent_focus(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-/// Run by the agent itself right before it ends a turn with a question for the user.
+/// Run by the agent itself right before it ends a turn with a question for the user,
+/// optionally with the question in a few words.
 fn agent_awaiting_reply(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: herdr agent awaiting-reply [--pane PANE_ID]";
-    let pane_id = match args {
-        [] => super::target::caller_pane_id(),
-        [flag, pane] if flag == "--pane" => Some(pane.clone()),
+    const USAGE: &str = "usage: herdr agent awaiting-reply [--pane PANE_ID] [QUESTION]";
+    let Some((pane_id, words)) = pane_and_words(args) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let Some(pane_id) = pane_id.or_else(super::target::caller_pane_id) else {
+        eprintln!("herdr agent awaiting-reply: no --pane given and HERDR_PANE_ID is not set");
+        return Ok(2);
+    };
+    let question = words.join(" ");
+    super::send_ok_request(Method::PaneReportAwaitingReply(
+        crate::api::schema::PaneReportAwaitingReplyParams {
+            pane_id,
+            question: (!question.trim().is_empty()).then_some(question),
+        },
+    ))
+}
+
+/// Run by an agent's hook when a limit ended its turn: `usage` (it resets on its own) or
+/// `credits` (waiting does not help), with the agent's error text.
+fn agent_limited(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent limited [--pane PANE_ID] usage|credits [MESSAGE]";
+    let Some((pane_id, words)) = pane_and_words(args) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let kind = match words.first().copied() {
+        Some("usage") => crate::api::schema::AgentLimitKind::Usage,
+        Some("credits") => crate::api::schema::AgentLimitKind::Credits,
         _ => {
             eprintln!("{USAGE}");
             return Ok(2);
         }
     };
-    let Some(pane_id) = pane_id else {
-        eprintln!("herdr agent awaiting-reply: no --pane given and HERDR_PANE_ID is not set");
+    let Some(pane_id) = pane_id.or_else(super::target::caller_pane_id) else {
+        eprintln!("herdr agent limited: no --pane given and HERDR_PANE_ID is not set");
         return Ok(2);
     };
-    super::send_ok_request(Method::PaneReportAwaitingReply(
-        crate::api::schema::PaneReportAwaitingReplyParams { pane_id },
+    let message = words[1..].join(" ");
+    super::send_ok_request(Method::PaneReportLimit(
+        crate::api::schema::PaneReportLimitParams {
+            pane_id,
+            kind,
+            message: (!message.trim().is_empty()).then_some(message),
+        },
     ))
+}
+
+/// Splits `[--pane PANE_ID] [WORDS...]`, all words after `--`; None when `--pane` has no
+/// value.
+fn pane_and_words(args: &[String]) -> Option<(Option<String>, Vec<&str>)> {
+    let mut pane_id = None;
+    let mut words = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--pane" => pane_id = Some(args.next()?.clone()),
+            "--" => {
+                words.extend(args.by_ref().map(String::as_str));
+            }
+            word => words.push(word),
+        }
+    }
+    Some((pane_id, words))
 }
 
 /// Run by the agent itself when it starts a task: a few words that name the
@@ -1000,7 +1050,8 @@ fn print_agent_help() {
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
-    eprintln!("  herdr agent awaiting-reply [--pane PANE_ID]");
+    eprintln!("  herdr agent awaiting-reply [--pane PANE_ID] [QUESTION]");
+    eprintln!("  herdr agent limited [--pane PANE_ID] usage|credits [MESSAGE]");
     eprintln!("  herdr agent set-task [--pane PANE_ID] <task>|--clear");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");

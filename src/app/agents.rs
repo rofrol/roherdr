@@ -396,6 +396,31 @@ impl App {
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             awaiting_reply: terminal.awaiting_reply(),
+            question: terminal
+                .awaiting_reply_question()
+                .map(str::to_owned)
+                .or_else(|| {
+                    (terminal.state == crate::detect::AgentState::Blocked)
+                        .then(|| terminal.hook_authority.as_ref()?.message.as_deref())
+                        .flatten()
+                        .and_then(|message| super::api_helpers::one_short_line(message, 80))
+                }),
+            waiting_since_ms: terminal.waiting_since_ms(),
+            limited: terminal
+                .limit()
+                .map(|report| crate::api::schema::AgentLimit {
+                    kind: report.kind,
+                    resets_at: (report.kind == crate::api::schema::AgentLimitKind::Usage)
+                        .then(|| {
+                            limit_resets_at(
+                                &self.state.usage,
+                                terminal.effective_agent_label()?,
+                                report.since_ms / 1000,
+                            )
+                        })
+                        .flatten(),
+                    message: report.message.clone(),
+                }),
             task: terminal.reported_task().map(str::to_owned),
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
@@ -495,5 +520,78 @@ mod tests {
         ] {
             assert!(!valid_agent_name(name), "expected {name:?} to be invalid");
         }
+    }
+}
+
+/// When the usage limit that stopped an agent at `limited_at` (unix seconds) resets: the
+/// latest reset among its provider's full windows, since every full window must reset
+/// before the agent can work. None when the report has no full window, such as a report
+/// older than the limit.
+fn limit_resets_at(
+    usage: &crate::api::schema::UsageReport,
+    agent: &str,
+    limited_at: u64,
+) -> Option<u64> {
+    usage
+        .providers
+        .iter()
+        .find(|provider| provider.provider == agent)?
+        .windows
+        .iter()
+        .filter(|window| window.used_percent >= 100)
+        .filter_map(|window| window.resets_at)
+        .filter(|resets_at| *resets_at > limited_at)
+        .max()
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::limit_resets_at;
+    use crate::api::schema::{ProviderUsage, ProviderUsageStatus, UsageReport, UsageWindow};
+
+    fn report(windows: &[(u8, Option<u64>)]) -> UsageReport {
+        UsageReport {
+            enabled: true,
+            providers: vec![ProviderUsage {
+                provider: "claude".into(),
+                label: "Claude".into(),
+                status: ProviderUsageStatus::Ok,
+                message: None,
+                plan: None,
+                observed_at: None,
+                windows: windows
+                    .iter()
+                    .map(|(used_percent, resets_at)| UsageWindow {
+                        id: "w".into(),
+                        label: "w".into(),
+                        used_percent: *used_percent,
+                        resets_at: *resets_at,
+                    })
+                    .collect(),
+                balances: Vec::new(),
+                notes: Vec::new(),
+                reset_credits: Vec::new(),
+                spend: Vec::new(),
+                completion_tokens: None,
+                setup: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_limit_resets_when_the_last_full_window_does() {
+        let usage = report(&[(100, Some(500)), (40, Some(900)), (100, Some(700))]);
+        assert_eq!(limit_resets_at(&usage, "claude", 100), Some(700));
+        // Another agent's provider, or a report with no full window, knows nothing.
+        assert_eq!(limit_resets_at(&usage, "codex", 100), None);
+        assert_eq!(
+            limit_resets_at(&report(&[(99, Some(500))]), "claude", 100),
+            None
+        );
+        // A full window that reset before the limit is an older report's.
+        assert_eq!(
+            limit_resets_at(&report(&[(100, Some(50))]), "claude", 100),
+            None
+        );
     }
 }

@@ -89,12 +89,14 @@ impl HeadlessServer {
                 .terminals
                 .get(terminal_id)
                 .and_then(|terminal| terminal.handoff_agent_state());
-            handoff_runtime.awaiting_reply_reported = self
-                .app
-                .state
-                .terminals
-                .get(terminal_id)
-                .is_some_and(|terminal| terminal.has_awaiting_reply_report());
+            if let Some(terminal) = self.app.state.terminals.get(terminal_id) {
+                if let Some((question, since_ms)) = terminal.awaiting_reply_report() {
+                    handoff_runtime.awaiting_reply_reported = true;
+                    handoff_runtime.awaiting_reply_question = question.map(str::to_owned);
+                    handoff_runtime.awaiting_reply_since_ms = since_ms;
+                }
+                handoff_runtime.limit_report = terminal.limit_report().cloned();
+            }
             handoff_runtime.reported_task = self
                 .app
                 .state

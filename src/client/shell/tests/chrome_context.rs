@@ -860,6 +860,9 @@ fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
         );
     let agent = |pane: &str, tab: &str, title: Option<&str>, focused: bool| ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: tab.into(),

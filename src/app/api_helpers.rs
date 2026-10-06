@@ -314,3 +314,91 @@ mod metadata_token_tests {
         assert!(normalize_metadata_tokens(too_many).is_err());
     }
 }
+
+/// One line of text an agent reported, cut once here and never per frame: escape
+/// sequences and control characters dropped, whitespace collapsed, at most `max`
+/// grapheme clusters with an ellipsis when cut. None when nothing is left.
+pub(crate) fn one_short_line(text: &str, max: usize) -> Option<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            // CSI (`ESC [ ... final`) or OSC (`ESC ] ... BEL` or `ESC \`); any other
+            // escape drops only its next character.
+            match chars.next() {
+                Some('[') => {
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}'
+                            || (next == '\u{1b}' && chars.next_if_eq(&'\\').is_some())
+                        {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        plain.push(if character.is_control() {
+            ' '
+        } else {
+            character
+        });
+    }
+    let line = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    let graphemes = line.graphemes(true).collect::<Vec<_>>();
+    if graphemes.len() <= max {
+        return Some(line);
+    }
+    let mut cut = graphemes[..max.saturating_sub(1)].concat();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    Some(cut)
+}
+
+/// Unix milliseconds now, for the times agents' reports start.
+pub(crate) fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+#[cfg(test)]
+mod one_short_line_tests {
+    use super::one_short_line;
+
+    #[test]
+    fn reported_text_becomes_one_plain_line_cut_on_a_grapheme() {
+        assert_eq!(
+            one_short_line("\x1b[1mInstall\x1b[0m\n  now?\x07", 40).as_deref(),
+            Some("Install now?")
+        );
+        assert_eq!(
+            one_short_line("\x1b]0;title\x07Ask\x1b]8;;x\x1b\\ me", 40).as_deref(),
+            Some("Ask me")
+        );
+        assert_eq!(one_short_line(" \t\n", 40), None);
+        assert_eq!(one_short_line("abcdef", 4).as_deref(), Some("abc…"));
+        // A family emoji is one grapheme of several chars and is never split.
+        let family = "👨\u{200d}👩\u{200d}👧";
+        assert_eq!(
+            one_short_line(&format!("{family}{family}{family}{family}"), 3).as_deref(),
+            Some(format!("{family}{family}…").as_str())
+        );
+        // No space before the ellipsis.
+        assert_eq!(one_short_line("ab cd", 4).as_deref(), Some("ab…"));
+    }
+}

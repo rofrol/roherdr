@@ -867,6 +867,12 @@ impl ClientShellState {
                         }
                         let (day, time) = if entry.unix_ms == 0 {
                             (None, String::new())
+                        } else if entry.kind == "asking" {
+                            // How long it has waited; the rows are ranked by it.
+                            (
+                                None,
+                                super::notification_log::wait_duration(entry.unix_ms, now),
+                            )
                         } else {
                             (
                                 Some(super::notification_log::notification_day(
@@ -877,7 +883,8 @@ impl ClientShellState {
                                 super::notification_log::notification_time(entry.unix_ms, offset),
                             )
                         };
-                        (day, time, text, unread, icon)
+                        let detail = Self::notification_row_detail(entry);
+                        (day, time, text, unread, icon, detail)
                     })
                     .collect::<Vec<_>>();
                 let anchor = match log.view {

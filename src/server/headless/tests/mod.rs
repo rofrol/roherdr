@@ -8306,7 +8306,7 @@ async fn client_typing_into_a_pane_clears_its_awaiting_reply_report() {
     let terminal_id = server.app.state.terminal_id_for_pane(0, pane).unwrap();
     let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
     terminal.state = crate::detect::AgentState::Idle;
-    assert!(terminal.report_awaiting_reply());
+    assert!(terminal.report_awaiting_reply(None, 1));
     let (control, _render) = connect_test_shell(&mut server, 31, 100, 30);
     let _ = control.recv().expect("snapshot");
 

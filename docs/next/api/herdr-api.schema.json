@@ -1347,6 +1347,27 @@
     },
     "request": {
       "$defs": {
+        "AgentLimitKind": {
+          "description": "Which limit ended an agent's turn; the remedies differ.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "usage",
+              "description": "A usage or rate limit that resets on its own.",
+              "type": "string"
+            },
+            {
+              "const": "credits",
+              "description": "Out of credits or a billing problem: waiting does not help.",
+              "type": "string"
+            }
+          ]
+        },
         "AgentPromptParams": {
           "properties": {
             "target": {
@@ -3221,10 +3242,40 @@
           "properties": {
             "pane_id": {
               "type": "string"
+            },
+            "question": {
+              "description": "The question in a few words (`Install now?`), shown under the agent in the list of\nagents waiting on the user. Cut to about 40 characters on a character boundary, control\ncharacters dropped; without it the list shows only that the agent waits for a reply.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
             "pane_id"
+          ],
+          "type": "object"
+        },
+        "PaneReportLimitParams": {
+          "description": "The agent's turn ended on a limit (a usage limit, out of credits) and it waits until the\nuser acts or the limit resets. Shown, with the reset time when herdr knows it, until the\nuser types into the pane or dismisses it, like an awaiting-reply report.",
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/request/$defs/AgentLimitKind"
+            },
+            "message": {
+              "description": "The agent's own error text; cut to one short line.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "kind"
           ],
           "type": "object"
         },
@@ -6909,6 +6960,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.report_limit",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportLimitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_metadata",
               "type": "string"
             },
@@ -7642,6 +7709,17 @@
             "launch_pending": {
               "type": "boolean"
             },
+            "limited": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentLimit"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The limit the agent's last turn ended on (`pane.report_limit`), while it idles."
+            },
             "name": {
               "type": [
                 "string",
@@ -7650,6 +7728,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "question": {
+              "description": "What the agent asks while it waits on the user: the question it reported with\n`pane.report_awaiting_reply`, or while blocked its hook's message.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",
@@ -7712,6 +7797,15 @@
               },
               "type": "object"
             },
+            "waiting_since_ms": {
+              "description": "Unix milliseconds since when the agent waits on the user: blocked, awaiting a reply,\nor stopped by a limit.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "workspace_id": {
               "type": "string"
             }
@@ -7726,6 +7820,54 @@
             "revision"
           ],
           "type": "object"
+        },
+        "AgentLimit": {
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentLimitKind"
+            },
+            "message": {
+              "description": "The agent's own error text.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resets_at": {
+              "description": "Unix seconds when the limit resets, from herdr's usage report of the agent's provider.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "AgentLimitKind": {
+          "description": "Which limit ended an agent's turn; the remedies differ.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "usage",
+              "description": "A usage or rate limit that resets on its own.",
+              "type": "string"
+            },
+            {
+              "const": "credits",
+              "description": "Out of credits or a billing problem: waiting does not help.",
+              "type": "string"
+            }
+          ]
         },
         "AgentManifestInfo": {
           "properties": {

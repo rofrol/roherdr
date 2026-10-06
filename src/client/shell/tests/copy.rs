@@ -1129,6 +1129,9 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
         task: None,
+        question: None,
+        waiting_since_ms: None,
+        limited: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

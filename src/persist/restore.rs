@@ -675,7 +675,17 @@ fn restore_tab(
         #[cfg(unix)]
         let handoff_awaiting_reply = imported_runtime
             .as_ref()
-            .is_some_and(|imported| imported.state.awaiting_reply_reported);
+            .filter(|imported| imported.state.awaiting_reply_reported)
+            .map(|imported| {
+                (
+                    imported.state.awaiting_reply_question.clone(),
+                    imported.state.awaiting_reply_since_ms,
+                )
+            });
+        #[cfg(unix)]
+        let handoff_limit = imported_runtime
+            .as_ref()
+            .and_then(|imported| imported.state.limit_report.clone());
         #[cfg(unix)]
         let handoff_task = imported_runtime
             .as_ref()
@@ -834,9 +844,11 @@ fn restore_tab(
                     terminal.restore_handoff_agent_state(agent_state);
                 }
                 #[cfg(unix)]
-                if handoff_awaiting_reply {
-                    terminal.restore_awaiting_reply_report();
+                if let Some((question, since_ms)) = handoff_awaiting_reply {
+                    terminal.restore_awaiting_reply_report(question, since_ms);
                 }
+                #[cfg(unix)]
+                terminal.restore_limit_report(handoff_limit);
                 #[cfg(unix)]
                 terminal.report_task(handoff_task);
                 panes.insert(*id, PaneState::new(terminal_id.clone()));

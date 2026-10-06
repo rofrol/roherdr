@@ -42,6 +42,15 @@ pub(crate) struct HandoffRuntimeState {
     /// The agent's reported task (`pane.report_task`); absent from older senders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_task: Option<String>,
+    /// The question reported with `awaiting_reply_reported`; absent from older senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_reply_question: Option<String>,
+    /// Unix milliseconds of the awaiting-reply report; absent from older senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_reply_since_ms: Option<u64>,
+    /// The limit the agent's last turn ended on (`pane.report_limit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_report: Option<crate::terminal::state::LimitReport>,
 }
 
 #[cfg(unix)]

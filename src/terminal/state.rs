@@ -18,6 +18,19 @@ const FOREGROUND_PROGRAM_TITLE_GRACE: Duration = Duration::from_secs(1);
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 
+/// Which limit stopped an agent's turn; the remedies differ.
+pub use crate::api::schema::AgentLimitKind as LimitKind;
+
+/// The agent's report that a limit ended its turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LimitReport {
+    pub kind: LimitKind,
+    /// The agent's own error text, one short line.
+    pub message: Option<String>,
+    /// Unix milliseconds of the first report.
+    pub since_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookAuthority {
     pub source: String,
@@ -179,6 +192,15 @@ pub struct TerminalState {
     /// The agent reported that its turn ends by asking the user something, and nobody
     /// has typed into the terminal since; shown as `awaiting_reply` while the agent idles.
     awaiting_reply_reported: bool,
+    /// The question in a few words, reported with the awaiting-reply report and dropped with it.
+    awaiting_reply_question: Option<String>,
+    /// Unix milliseconds of the awaiting-reply report.
+    awaiting_reply_since_ms: Option<u64>,
+    /// Unix milliseconds of the last transition into `Blocked`, while it lasts.
+    blocked_since_ms: Option<u64>,
+    /// The agent's turn ended on a usage or credit limit; held like the awaiting-reply
+    /// report (hidden while working, dropped on input) and shown while the agent idles.
+    limit_report: Option<LimitReport>,
     /// What the agent says it works on now (`pane.report_task`), shown as the
     /// tab's name ahead of its terminal title, which agents set once per
     /// session. Dropped when the agent exits or changes session.
@@ -230,6 +252,10 @@ impl TerminalState {
             last_agent_state_change_seq: None,
             last_agent_completion_seq: None,
             awaiting_reply_reported: false,
+            awaiting_reply_question: None,
+            awaiting_reply_since_ms: None,
+            blocked_since_ms: None,
+            limit_report: None,
             reported_task: None,
             revision: 0,
             launch_argv: None,
@@ -2276,38 +2302,127 @@ impl TerminalState {
     /// Whether an awaiting-reply report is held, shown or not. Lets input handling skip
     /// classifying input when there is nothing to clear.
     pub fn has_awaiting_reply_report(&self) -> bool {
-        self.awaiting_reply_reported
+        self.awaiting_reply_reported || self.limit_report.is_some()
     }
 
-    /// Records the agent's report that it is ending its turn with a question for the user.
-    /// It holds until the user types into the terminal (`clear_awaiting_reply`) or the
-    /// agent shows a prompt (`advance_awaiting_reply`). Returns whether `awaiting_reply`
-    /// changed.
-    pub fn report_awaiting_reply(&mut self) -> bool {
+    /// Records the agent's report that it is ending its turn with a question for the user,
+    /// with the question in a few words when it gave one. It holds until the user types into
+    /// the terminal (`clear_awaiting_reply`) or the agent shows a prompt
+    /// (`advance_awaiting_reply`). Returns whether what the pane shows changed.
+    pub fn report_awaiting_reply(&mut self, question: Option<String>, now_ms: u64) -> bool {
         if self.state == AgentState::Unknown {
             return false;
         }
         let was_awaiting = self.awaiting_reply();
+        let question_changed = self.awaiting_reply_question != question;
         self.awaiting_reply_reported = true;
-        self.awaiting_reply() != was_awaiting
+        self.awaiting_reply_question = question;
+        // A repeated report keeps the time the agent started waiting.
+        if !was_awaiting || self.awaiting_reply_since_ms.is_none() {
+            self.awaiting_reply_since_ms = Some(now_ms);
+        }
+        self.awaiting_reply() != was_awaiting || (self.awaiting_reply() && question_changed)
+    }
+
+    /// The question the agent reported with its awaiting-reply report, while it shows.
+    pub fn awaiting_reply_question(&self) -> Option<&str> {
+        self.awaiting_reply()
+            .then_some(self.awaiting_reply_question.as_deref())
+            .flatten()
+    }
+
+    /// The awaiting-reply report as a live handoff carries it: the question and the
+    /// time it was reported.
+    #[cfg(unix)]
+    pub(crate) fn awaiting_reply_report(&self) -> Option<(Option<&str>, Option<u64>)> {
+        self.awaiting_reply_reported.then_some((
+            self.awaiting_reply_question.as_deref(),
+            self.awaiting_reply_since_ms,
+        ))
     }
 
     /// Puts back a report carried over a live handoff, without the state
     /// check of `report_awaiting_reply`: the new server has not detected the
     /// agent's state yet, and the mark shows once it is idle again.
     #[cfg(unix)]
-    pub(crate) fn restore_awaiting_reply_report(&mut self) {
+    pub(crate) fn restore_awaiting_reply_report(
+        &mut self,
+        question: Option<String>,
+        since_ms: Option<u64>,
+    ) {
         self.awaiting_reply_reported = true;
+        self.awaiting_reply_question = question;
+        self.awaiting_reply_since_ms = since_ms;
     }
 
     /// Applies an agent state transition to the awaiting-reply report. Entering
     /// `Blocked` drops it: a form or permission prompt after the report means the report
     /// was not the turn's last action (e.g. an in-turn question tool that the user
-    /// answers without the turn ending), and the pane already shows as blocked.
-    pub fn advance_awaiting_reply(&mut self, state: AgentState) {
+    /// answers without the turn ending), and the pane already shows as blocked. It also
+    /// keeps the time the agent became blocked.
+    pub fn advance_awaiting_reply(&mut self, state: AgentState, now_ms: u64) {
         if state == AgentState::Blocked {
-            self.awaiting_reply_reported = false;
+            self.forget_awaiting_reply();
+            self.blocked_since_ms.get_or_insert(now_ms);
+        } else {
+            self.blocked_since_ms = None;
         }
+    }
+
+    /// Records that the agent's turn ended on a limit. Held and shown like an
+    /// awaiting-reply report. Returns whether what the pane shows changed.
+    pub fn report_limit(&mut self, kind: LimitKind, message: Option<String>, now_ms: u64) -> bool {
+        if self.state == AgentState::Unknown {
+            return false;
+        }
+        let before = self.limit().cloned();
+        let since_ms = self
+            .limit_report
+            .as_ref()
+            .filter(|report| report.kind == kind)
+            .map_or(now_ms, |report| report.since_ms);
+        self.limit_report = Some(LimitReport {
+            kind,
+            message,
+            since_ms,
+        });
+        self.limit().cloned() != before
+    }
+
+    /// The limit the agent's turn ended on, while the agent idles.
+    pub fn limit(&self) -> Option<&LimitReport> {
+        self.limit_report
+            .as_ref()
+            .filter(|_| self.state == AgentState::Idle)
+    }
+
+    /// The limit report a live handoff carries, shown or not.
+    #[cfg(unix)]
+    pub(crate) fn limit_report(&self) -> Option<&LimitReport> {
+        self.limit_report.as_ref()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn restore_limit_report(&mut self, report: Option<LimitReport>) {
+        self.limit_report = report;
+    }
+
+    /// When the agent started waiting on the user, while it does: blocked on a prompt,
+    /// asking a question, or stopped by a limit.
+    pub fn waiting_since_ms(&self) -> Option<u64> {
+        if self.state == AgentState::Blocked {
+            return self.blocked_since_ms;
+        }
+        if self.awaiting_reply() {
+            return self.awaiting_reply_since_ms;
+        }
+        self.limit().map(|report| report.since_ms)
+    }
+
+    fn forget_awaiting_reply(&mut self) {
+        self.awaiting_reply_reported = false;
+        self.awaiting_reply_question = None;
+        self.awaiting_reply_since_ms = None;
     }
 
     /// What the agent reported it works on now.
@@ -2325,12 +2440,13 @@ impl TerminalState {
         true
     }
 
-    /// Forgets any awaiting-reply report: the user typed into the terminal, or the agent
-    /// exited or changed session. Returns whether `awaiting_reply` changed.
+    /// Forgets any awaiting-reply and limit report: the user typed into the terminal, or the
+    /// agent exited or changed session. Returns whether what the pane shows changed.
     pub fn clear_awaiting_reply(&mut self) -> bool {
-        let was_awaiting = self.awaiting_reply();
-        self.awaiting_reply_reported = false;
-        was_awaiting
+        let was_shown = self.awaiting_reply() || self.limit().is_some();
+        self.forget_awaiting_reply();
+        self.limit_report = None;
+        was_shown
     }
 
     pub fn effective_known_agent(&self) -> Option<Agent> {

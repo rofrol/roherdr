@@ -485,13 +485,15 @@ pub(crate) fn render_global_menu(
 }
 
 /// One row of the dropdown: its day group (`Today`, `Oct 2`), the time, the
-/// text, whether it is unread, and the tab's state icon with its colour.
+/// text, whether it is unread, the tab's state icon with its colour, and a
+/// dim second line under the text (what a waiting agent asks).
 pub(crate) type LogRow = (
     Option<String>,
     String,
     String,
     bool,
     Option<(&'static str, ratatui::style::Color)>,
+    Option<String>,
 );
 
 /// The notification history dropdown under its button, over the panes:
@@ -537,13 +539,20 @@ pub(crate) fn render_notification_log(
         2 + if time_width > 0 { time_width + 1 } else { 0 } + if has_icons { 2 } else { 1 };
     let widest = rows
         .iter()
-        .map(|(_, _, text, ..)| {
-            text_offset + display_width(&text.replace(|c: char| c.is_control(), " ")) + 1
+        .map(|(_, _, text, .., detail)| {
+            let detail = detail.as_deref().map_or(0, |detail| {
+                display_width(&format!("↳ {detail}").replace(|c: char| c.is_control(), " "))
+            });
+            text_offset
+                + display_width(&text.replace(|c: char| c.is_control(), " ")).max(detail)
+                + 1
         })
         .max()
         .unwrap_or(0);
     let width = widest.saturating_add(2).clamp(min_width, max_width);
-    let lines = rows.len() + separators.iter().flatten().count();
+    let lines = rows.len()
+        + separators.iter().flatten().count()
+        + rows.iter().filter(|(.., detail)| detail.is_some()).count();
     let height = (lines.max(1) as u16)
         .saturating_add(2)
         .min(screen.height.saturating_sub(button.bottom()).max(3));
@@ -562,7 +571,7 @@ pub(crate) fn render_notification_log(
         );
     }
     let mut row_y = inner.y;
-    for (index, (_, time, text, unread, icon)) in rows.iter().enumerate() {
+    for (index, (_, time, text, unread, icon, detail)) in rows.iter().enumerate() {
         if let Some(day) = separators[index] {
             if row_y >= inner.bottom() {
                 break;
@@ -580,7 +589,14 @@ pub(crate) fn render_notification_log(
         if row_y >= inner.bottom() {
             break;
         }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
+        // A row with a second line takes both lines, as one hit target, when
+        // both fit.
+        let height = if detail.is_some() && row_y.saturating_add(1) < inner.bottom() {
+            2
+        } else {
+            1
+        };
+        let row = Rect::new(inner.x, row_y, inner.width, height);
         let selected = Some(index) == highlighted;
         // The highlighted row is a light accent tint with a bar in the first
         // column, so the state icons keep their own colours (a solid accent
@@ -609,7 +625,9 @@ pub(crate) fn render_notification_log(
         // The selection bar and the unread mark have columns of their own, so
         // the highlighted row still shows whether it is unread.
         if selected && !solid {
-            put_text(buffer, row.x, row.y, 1, "▌", base.fg(palette.accent));
+            for y in row.y..row.bottom() {
+                put_text(buffer, row.x, y, 1, "▌", base.fg(palette.accent));
+            }
         }
         if *unread {
             let mark_style = if solid {
@@ -661,8 +679,25 @@ pub(crate) fn render_notification_log(
             &text,
             base,
         );
+        if let Some(detail) = detail.as_deref().filter(|_| height == 2) {
+            let detail = crate::ui::truncate_end(
+                &format!(
+                    "↳ {}",
+                    detail.replace(|character: char| character.is_control(), " ")
+                ),
+                usize::from(row.right().saturating_sub(text_x)),
+            );
+            put_text(
+                buffer,
+                text_x,
+                row.y.saturating_add(1),
+                row.right().saturating_sub(text_x),
+                &detail,
+                time_style,
+            );
+        }
         hits.push((row, index));
-        row_y = row_y.saturating_add(1);
+        row_y = row_y.saturating_add(height);
     }
     Some(OverlayRender {
         area: rect,
@@ -2026,6 +2061,7 @@ mod tests {
                 time.to_owned(),
                 text.to_owned(),
                 false,
+                None,
                 None,
             )
         };

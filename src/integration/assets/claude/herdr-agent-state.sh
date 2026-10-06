@@ -18,7 +18,7 @@ if [ "$action" = "reminder" ]; then
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
   reminder=""
   if [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ]; then
-    reminder='Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with `herdr agent awaiting-reply` (never write the command in your reply) on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers.'
+    reminder='Herdr reminder: if you end this turn needing the user'"'"'s answer or decision before you can continue (a question, a choice, a confirmation, or a request to check something first, even without a question mark), call the Bash tool with `herdr agent awaiting-reply \"<question>\"` (the question in at most 6 words; never write the command in your reply) on its own as the last command of the turn, right before your final message. Not for AskUserQuestion or courtesy offers.'
   fi
   if [ "${HERDR_AGENT_TASK:-1}" != "0" ]; then
     reminder="${reminder:+$reminder }"'If this prompt starts a new task (not a follow-up, refinement or side question about the current one), first run `herdr agent set-task \"<title>\"`.'
@@ -92,6 +92,11 @@ def looks_like_question(text):
     return "?" in last and bool(ASK_PHRASES.search(last))
 
 
+def is_command(text):
+    """The awaiting-reply command, with or without its question."""
+    return text == COMMAND or text.startswith(COMMAND + " ")
+
+
 def printed_command(text):
     """The final paragraph is the command written out, not run (small models do this)."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -99,7 +104,7 @@ def printed_command(text):
         return False
     last = paragraphs[-1].replace("`", "").strip()
     last = re.sub(r"^\$\s*", "", last).strip()
-    return last == COMMAND
+    return is_command(last)
 
 
 def text_of(content):
@@ -159,7 +164,7 @@ if isinstance(transcript, str) and transcript:
                     isinstance(block, dict)
                     and block.get("type") == "tool_use"
                     and block.get("name") == "Bash"
-                    and (block.get("input") or {}).get("command", "").strip() == COMMAND
+                    and is_command((block.get("input") or {}).get("command", "").strip())
                 ):
                     reported = True
             text = text_of(message.get("content")).strip()
@@ -203,8 +208,8 @@ if block and mode != "shadow" and printed:
                 "reason": (
                     "Herdr: you wrote `herdr agent awaiting-reply` in your message instead of "
                     "running it. Call the Bash tool with the command `herdr agent "
-                    "awaiting-reply` now, as the only command, then stop without repeating "
-                    "your message."
+                    "awaiting-reply \"<question in at most 6 words>\"` now, as the only "
+                    "command, then stop without repeating your message."
                 ),
             }
         )
@@ -217,8 +222,9 @@ elif block and mode != "shadow":
                 "reason": (
                     "Herdr: your last message looks like a question for the user, but you did "
                     "not run `herdr agent awaiting-reply`. If you are waiting for the user's "
-                    "answer or decision, run `herdr agent awaiting-reply` now as the only "
-                    "command, then stop without repeating your message. If you are not "
+                    "answer or decision, run `herdr agent awaiting-reply \"<question in at most "
+                    "6 words>\"` now as the only command, then stop without repeating your "
+                    "message. If you are not "
                     "waiting for the user, just stop."
                 ),
             }
@@ -270,6 +276,57 @@ request = {
         # Kept for six hours; every TodoWrite renews it, a new session in the pane lets it lapse.
         "ttl_ms": 21_600_000,
     },
+}
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    client.connect(os.environ["HERDR_SOCKET_PATH"])
+    client.sendall((json.dumps(request) + "\n").encode())
+    try:
+        client.recv(4096)
+    except Exception:
+        pass
+    client.close()
+except Exception:
+    pass
+PY
+  exit 0
+fi
+
+# StopFailure hook (matched to rate_limit and billing_error): a usage limit or missing credits
+# ended the turn, so herdr lists the agent as waiting on the user, with the reset time it knows.
+if [ "$action" = "stop-failure" ]; then
+  [ "${HERDR_ENV:-}" = "1" ] || exit 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  command -v python3 >/dev/null 2>&1 || exit 0
+  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+import json
+import os
+import socket
+import time
+
+try:
+    with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
+        hook_input = json.loads(handle.read() or "{}")
+except Exception:
+    raise SystemExit(0)
+if hook_input.get("hook_event_name") != "StopFailure" or hook_input.get("agent_id"):
+    raise SystemExit(0)
+kind = {"rate_limit": "usage", "billing_error": "credits"}.get(hook_input.get("error"))
+if kind is None:
+    raise SystemExit(0)
+params = {"pane_id": os.environ["HERDR_PANE_ID"], "kind": kind}
+for field in ("error_details", "last_assistant_message"):
+    message = hook_input.get(field)
+    if isinstance(message, str) and message.strip():
+        params["message"] = message[:1000]
+        break
+request = {
+    "id": f"herdr:claude:limit:{int(time.time() * 1000)}",
+    "method": "pane.report_limit",
+    "params": params,
 }
 try:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -396,10 +453,12 @@ if os.environ.get("HERDR_AWAITING_REPLY_INSTRUCTIONS", "1") != "0":
     contexts.append(
                 "You run inside a Herdr pane. When you end a turn needing the user's answer "
                 "or decision before you can continue the work, run the shell command "
-                "`herdr agent awaiting-reply` (call the Bash tool; never write the command in "
-                "your reply) on its own, as the last command of the turn, "
+                "`herdr agent awaiting-reply \"<question>\"` (call the Bash tool; never write the "
+                "command in your reply) on its own, as the last command of the turn, "
                 "right before your final message, so Herdr keeps your pane marked until the "
-                "user replies. This covers a plain-text question, a choice between options, a "
+                "user replies and lists your question. The question is what you ask in at most "
+                "6 words, in the language of the conversation (`Install now?`, `Which "
+                "variant?`), without quotes, backticks or `$`. This covers a plain-text question, a choice between options, a "
                 "confirmation before you proceed, and a request to check something before you "
                 "go on (\"let me know how it looks, then I will commit\"), even without a "
                 "question mark. Never append it to another command, never run it earlier in the "

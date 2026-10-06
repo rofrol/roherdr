@@ -1126,6 +1126,16 @@ pub struct ClientShellAgent {
     /// this type.
     #[serde(default)]
     pub task: Option<String>,
+    /// What the agent asks while it waits on the user (see `AgentInfo`); older servers do
+    /// not send it, nor the two fields below. Always serialized, like `task`.
+    #[serde(default)]
+    pub question: Option<String>,
+    /// Unix milliseconds since when the agent waits on the user.
+    #[serde(default)]
+    pub waiting_since_ms: Option<u64>,
+    /// The limit the agent's last turn ended on, while it idles.
+    #[serde(default)]
+    pub limited: Option<crate::api::schema::AgentLimit>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
