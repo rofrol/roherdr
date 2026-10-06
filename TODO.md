@@ -2,6 +2,42 @@
 
 ## Next, in order
 
+- [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
+  where I see what the agent asks? now I only have a question mark"; queued
+  next). Inspired by posts praising the T3 Code and Devin sidebars
+  (https://x.com/kr0der/status/2107037327575208337: rows like "Approve
+  phase 1" or "PR is ready" instead of a title and a coloured dot). Today the
+  header's `?N` list names the tabs that wait for a reply, not the question.
+  ```
+   ⇅ manual        ◐3 [?2] ✉1
+   ┌───────────────────────────┐
+   │ ? Read the X post         │
+   │   ↳ add it to TODO?       │
+   │ ? Fix OAuth callback      │
+   │   ↳ Install now?          │
+   └───────────────────────────┘
+  ```
+  - First slice: `herdr agent awaiting-reply` takes an optional short text
+    (the question in a few words); the integration hook asks for it. The
+    text lives and is cleared with the `awaiting_reply` flag (the next user
+    prompt), so no stale questions. The server caps it at ingest (about 40
+    characters on a grapheme boundary, control and ANSI sequences stripped),
+    never per frame. The `?` list draws it as a dim second row. Bump the
+    Claude integration version once from the latest release.
+  - Later: the same second line under `?` tab lines in the sidebar (only
+    for asking rows; working rows stay one line), and a "needs me" filter
+    in the planned sidebar filter bar, never hiding rows by default
+    (hiding breaks positional `Alt-1…9`, focus, and job child tabs).
+  - Consulted sol and MiMo (round `20261006-021127-0eb7`). Agreed: keep the
+    task title as the row's identity and put the ask in a second line (sol;
+    rejected MiMo's ask replacing the title: three OAuth tabs become
+    indistinguishable); explicit reporting, not a heuristic over
+    `last_assistant_message` (preambles, the question in paragraph four,
+    raw text landing in server metadata); server-side expiry. Open: sol
+    shows outcomes ("ready for review") apart from actions, MiMo would not
+    show outcomes at all (stale within a day); if outcomes come, show them
+    only until the tab is viewed.
+
 - [x] Nest a worktree space under the agent tab that created it (user,
   2026-10-03; queued first). Today the worktree child sits at the bottom
   of its parent space with a `│` trunk down the parent's whole block, which
