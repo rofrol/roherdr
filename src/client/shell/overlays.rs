@@ -536,7 +536,9 @@ pub(crate) fn render_notification_log(
         .map(|(_, time, ..)| display_width(time))
         .max()
         .unwrap_or(0);
-    let has_icons = rows.iter().any(|(.., icon)| icon.is_some());
+    let has_icons = rows
+        .iter()
+        .any(|(_day, _time, _text, _unread, icon, _detail)| icon.is_some());
     let text_offset =
         2 + if time_width > 0 { time_width + 1 } else { 0 } + if has_icons { 2 } else { 1 };
     let widest = rows
@@ -2054,6 +2056,63 @@ fn render_confirm_close_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_notification_row_rendered(icon: Option<&'static str>, detail: Option<&str>) {
+        let palette = Palette::catppuccin();
+        let rows = vec![(
+            None,
+            String::new(),
+            "agent tab".to_owned(),
+            false,
+            icon.map(|glyph| (glyph, palette.yellow)),
+            detail.map(str::to_owned),
+        )];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 70, 12));
+        let rendered =
+            render_notification_log(&mut buffer, Rect::new(0, 0, 4, 1), None, &rows, &palette)
+                .expect("the list fits");
+        let (row, index) = rendered.menu_rows[0];
+        assert_eq!(index, 0);
+        assert_eq!(row.height, if detail.is_some() { 2 } else { 1 });
+        let icon_x = row.x + 2;
+        let text_x = if let Some(glyph) = icon {
+            assert_eq!(buffer[(icon_x, row.y)].symbol(), glyph);
+            assert_eq!(buffer[(icon_x, row.y)].fg, palette.yellow);
+            assert_eq!(buffer[(icon_x + 1, row.y)].symbol(), " ");
+            icon_x + 2
+        } else {
+            // Detail alone must not move the text into an icon column.
+            assert_eq!(buffer[(icon_x, row.y)].symbol(), "a");
+            icon_x
+        };
+        let text = (text_x..text_x + 9)
+            .map(|x| buffer[(x, row.y)].symbol())
+            .collect::<String>();
+        assert_eq!(text, "agent tab");
+        if let Some(detail) = detail {
+            let line = (text_x..row.right())
+                .map(|x| buffer[(x, row.y + 1)].symbol())
+                .collect::<String>();
+            assert_eq!(line.trim_end(), format!("↳ {detail}"));
+        } else {
+            assert_eq!(buffer[(text_x, row.y + 1)].symbol(), "─");
+        }
+    }
+
+    #[test]
+    fn notification_list_renders_icon_without_detail() {
+        assert_notification_row_rendered(Some("●"), None);
+    }
+
+    #[test]
+    fn notification_list_renders_detail_without_icon() {
+        assert_notification_row_rendered(None, Some("Continue?"));
+    }
+
+    #[test]
+    fn notification_list_renders_icon_and_detail() {
+        assert_notification_row_rendered(Some("?"), Some("Continue?"));
+    }
 
     #[test]
     fn notification_list_names_each_day_once_above_its_rows() {
