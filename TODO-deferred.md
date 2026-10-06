@@ -3,6 +3,36 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Compact job presentation for the agents the user runs: Pi, Claude Code,
+  others (asked 2026-10-01). Today only Pi has it: the Pi activity extension
+  (`plugins/job/pi`) folds every tool call (bash, read, edit, write,
+  codemode) into one row, whatever the model, and a job's row is a Ctrl+click
+  link to the job tab. Claude Code has no tool-rendering API: its Bash result
+  is collapsed by Claude Code itself (Ctrl+O expands), but the model still
+  receives the whole output, and `herdr-job wait` used to stream the job log
+  into it. Other agents (codex, cursor, gemini, opencode, ...) are not used.
+  - Consulted DeepSeek, Opus, GPT and Gemini 2026-10-01: all rank the same
+    first: make `herdr-job wait` compact at the source, which helps every
+    agent without per-agent code, then advice in the agent instructions; a
+    PreToolUse hook rewriting `wait` is a brittle fallback; PostToolUse
+    cannot change what the UI shows; Monitor is for sparse state changes, not
+    log tails; do not build per-agent renderers for unused agents.
+  - Done 2026-10-01 (committed, not installed): `herdr-job wait <id>` prints
+    one start line (with `herdr tab focus <tab>`), nothing while the job
+    runs, and the unchanged final line `herdr-job <id> (<name>): <state>,
+    exit <code>`; a failure adds the last 40 lines (at most 8 KiB, escapes
+    removed) before it. `--stream` (or `HERDR_JOB_WAIT_STREAM=1`) restores
+    the old whole-log streaming; `--quiet` prints only the final line. Exit
+    codes are unchanged. Tests: `WaitTests` in `plugins/job/test_herdr_job.py`.
+  - Open: tell Claude Code and Pi to prefer the compact `wait` and to read the
+    log path only on failure (the user's global instructions already say to
+    wait with `herdr-job wait`); a Claude Code `PreToolUse` hook is optional;
+    an OSC 8 job link in the Claude output was not added (Claude Code may not
+    pass it through); per-agent rows for codex, cursor, gemini and opencode
+    stay deferred until the user runs one.
+  Moved from TODO.md on 2026-10-06: `herdr-job wait` is compact by default;
+  the rest waits until the user runs these other agents.
+
 - [ ] Attach image preview for JPEG/HEIC: the panel shows PNG only (read
   from the file's header; the terminal decodes it). `qlmanage -t -s 512 -o
   <tmp dir> <file>` makes a small PNG of any format without a window or a
