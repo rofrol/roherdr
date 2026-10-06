@@ -306,17 +306,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   first; a `--global` flag addresses a name in every workspace; an
   ambiguous name stays an error.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
 - [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
   help says "It does not track turns: if the agent is already working, that
   active turn's completion may match", and the post's whole delegation runs
@@ -324,134 +313,17 @@ user needs to decide or do. Item text is unchanged.
   that request. Screen detection cannot prove a turn ended, so this needs a
   signal from the integration; say so where an agent has none instead of
   guessing (sol, MiMo).
-  Triage 2026-10-06 (decision): Needs a new API contract (request id, states) and a new integration signal: approve the design, and which agents get it versus "unsupported"?
+  Decided by the user 2026-10-06: return a request id and report accepted,
+  working and finished for that request, from the Claude and pi
+  integration hooks; other agents answer `unsupported`, never a guess.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
   with the provider's bill, and resumed sessions counted twice (sol).
-  Triage 2026-10-06 (decision): Where is the total shown (CLI, TUI, API), how are resumed sessions de-duplicated, and is a mismatch with the provider bill acceptable?
-
-- [ ] Up arrow in a Claude pane recalls other panes' prompts (user,
-  2026-10-06: "when I press up in some Claude instance, commands from the
-  history of other instances show up instead of this one"). Cause, read
-  from the Claude Code 2.1.291 binary (`readForProject`): every prompt goes
-  to the global `~/.claude/history.jsonl` with `project` and `sessionId`;
-  Up takes the 100 newest entries of the project (all sessions), then
-  lists the current session's first and the others after them. With ~15
-  panes in one checkout those 100 entries span 13.6 hours (measured
-  2026-10-06), so a pane quiet for half a day has none of its own left,
-  and a busy one reaches others' after its few. Not herdr's bug: herdr's
-  `claude --resume <id>` keeps the session id (60 recent transcripts, one
-  id each), and the history file has no corrupt lines. `/clear` starts a
-  new id, so prompts before it count as another session's. Upstream
-  anthropics/claude-code#24751 ("scope Up-arrow history per session") is
-  closed; the session-first order is probably its fix, the limit applied
-  before the split is what remains. Consulted sol and MiMo (round
-  `20261006-160655-e30d`).  Second report (user, same day, screenshot `History 97/100`): in a session
-  with two prompts, the third Up showed another session's prompt. That is
-  the designed fallback, not the limit: once the session's own prompts run
-  out, Up goes on to other sessions' prompts with no marker between them.
-  The user remembers it differently "before"; versions 2.1.289-291 have
-  the same code, and older ones are no longer on disk to compare.
-  Upstream already tracks it: anthropics/claude-code#15631 ("Option to
-  disable cross-session command history in up-arrow"), open since
-  2025-12-29 with many +1s (user, 2026-10-06, linked it); no new issue,
-  at most a thumbs-up there. Options:
-  - Workaround in herdr: herdr already stores each Claude pane's session
-    id (`session_ref` in `src/agent_resume.rs`), so a popup could list only
-    that pane's prompts from `history.jsonl`, newest first, and type the
-    chosen one into the pane. Prior art from that issue:
-    https://github.com/pjs7678/claude-session-history (tmux `prefix + H`,
-    a SessionStart hook records the session, fzf popup, Enter copies).
-    Read the file read-only and skip malformed lines.
-    Design (consulted sol and MiMo, round `20261006-162148-0704`;
-    mockups shown to the user 2026-10-06): an overlay like the image
-    picker, newest first, filter as you type, rows `time  first line
-    (+N lines) [paste]`, groups `Previous session · <date>` below the
-    current one. The text inserted is the resolved prompt: pastes come
-    from `pastedContents` (inline `content`) or `~/.claude/paste-cache/`
-    (by hash), and an entry that cannot be resolved is shown as
-    incomplete, never typed as `[Pasted text #1]` (both). Enter types it
-    at the cursor without Enter only when the pane's agent is idle
-    (`agent_status`); while it works or asks, Enter copies instead (sol).
-    The server reads the file for a pane id, never a client-sent session
-    id or path (sol). Cheapest first step, no core change: a plugin
-    popup, since `herdr pane get` already returns `agent_session`, a
-    plugin's context carries `focused_pane_id`, and `herdr pane send-text`
-    exists (MiMo; fzf is installed).
-  - Native Up instead of a picker (user, 2026-10-06: "why can't it work
-    with Claude already running in the tab? some proxy that filters by
-    sessionId?"; consulted sol and MiMo, round `20261006-162725-cdd2`).
-    Preferred: a keystroke proxy in herdr, which sees every key before
-    Claude. When the pane's Claude is idle and its prompt box is empty
-    (detection snapshot), herdr swallows Up/Down and cycles through that
-    session's own prompts from `history.jsonl` (resolved pastes): clear
-    the input, bracketed-paste the prompt. Any other key leaves this mode
-    and is forwarded. Clearing is reliable because Claude has a
-    `chat:clearInput` action that `~/.claude/keybindings.json` can bind to
-    a key herdr sends (defaults there: `up` `history:previous`, `down`
-    `history:next`). Risks to test (MiMo): arrows in menus, permission
-    dialogs, completions, Ctrl+R search and `!` mode must pass through;
-    typed or multi-line input must keep Claude's own Up; a redraw must not
-    leave the mode stuck. The load-bearing part is detecting an empty
-    prompt box from the screen. Rejected: a per-pane `CLAUDE_CONFIG_DIR`
-    of symlinks (sol's pick in a copied form): tmp+rename writes of
-    `settings.local.json` (every "always allow") and `~/.claude.json` turn
-    a symlink into a private copy, plus a daemon and lock per directory,
-    and it needs a relaunch; patching the JS in the signed Bun binary
-    (bytecode, re-signing, every update, terms of use); rewriting
-    `project` in the shared file (one file cannot show different views to
-    different panes); a FUSE view (too heavy).
-  - Better, and proven live (user, 2026-10-06: "another claude binary in
-    $PATH that intercepts the requests, so the real claude gets only its
-    session's history"): Claude's Bun binary honours the `BUN_OPTIONS` env
-    var, so a `claude` wrapper can run it with `--preload <filter.js>`,
-    without touching the signed binary. Up reads `history.jsonl` through
-    `open(path, "r")` from `fs/promises`; the preload wraps that open and
-    hands Claude a filtered copy holding only its own sessions' lines. The
-    call stack names the caller (method names survive minification):
-    `readForProject` (Up) and `countForProject` (the `History N/M`
-    counter) get the filtered view, `readTimestamped` (Ctrl+R, "Search
-    prompts · everywhere") keeps the whole file. Own sessions: the id
-    from `--resume`/`--session-id`, plus every `sessionId` this process
-    appends (a `/clear` starts a new id). Tested in a throwaway tab on
-    2.1.291: a fresh session's Up showed nothing, after one prompt
-    `History 1/1`, after `/clear` and another prompt both of this pane's
-    prompts and no others. Consulted sol and MiMo (round
-    `20261006-163930-a40c`). Built as its own project (user, 2026-10-06:
-    it must also work outside herdr): `~/personal_projects/claude-own-history`;
-    session ids come from argv, a `SessionStart` hook the wrapper adds with
-    `--settings` (covers `--continue` and the resume picker; round
-    `20261006-164924-9465`) and the appended records. Live-tested: two
-    sessions in one directory and `--continue` each see only their own
-    prompts, plain `claude` sees both. Left for herdr: nothing, unless it
-    should offer installing that wrapper. pi needs nothing: its Up history
-    lives in each process's editor, seeded from the current session's
-    messages, with no shared file (round `20261006-170039-5739`). The
-    review notes that went into it:
-    - Bail out unless `process.argv[1]` is Claude's `/$bunfs/root/cli`,
-      and delete `BUN_OPTIONS` from `process.env` at once, so the Bash
-      tool's `bun` and other Bun programs never load it (both).
-    - Match the exact history path, not the basename; learn ids only
-      from appends, never from rewrites such as retention pruning (sol).
-    - Whole body in try/catch; on any error hand back the real file
-      (native behaviour), never crash Claude (MiMo; sol preferred empty
-      history, but today's behaviour is the safe fallback).
-    - The filtered copy lives in a private 0700 directory, 0600, removed
-      on exit, orphans swept at start (both); cache it by size and mtime.
-    - The id for `--continue` or a re-exec: ask herdr (`herdr pane get
-      $HERDR_PANE_ID` has `agent_session`) or learn it from the
-      transcript this process appends to (sol: SessionStart identity).
-    - Known limits: two panes resuming one id share their history (sol);
-      a Claude update that reads the file another way silently restores
-      the shared history, so log which call sites open it.
-  - Check that herdr never resumes one session id in two panes: both
-    panes would then share "own" history and interleave transcripts (sol).
-  - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
-    transcripts, plugins and login), or a worktree per pane only for this
-    (and only if Claude keys `project` by the worktree root, unverified).
-  Triage 2026-10-06 (decision): Solved outside herdr (claude-own-history): should herdr offer to install that wrapper, or only add a read-only check that one session id is never resumed in two panes?
+  Decided by the user 2026-10-06: CLI first (`herdr usage --workspace` or
+  similar), resumed sessions counted once by session id, labelled an
+  estimate, not the bill; no sidebar total yet.
 
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
   but it did not close the job." Closing a parent tab's last pane (cmd+w)
@@ -466,7 +338,20 @@ user needs to decide or do. Item text is unchanged.
   "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
   the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
   button in the parent's close dialog.
-  Triage 2026-10-06 (decision): The close-path fix is done. Should a parent exiting on its own show the "N jobs kept running" notice and a `was <name>` mark, and should there be a "Close tab, keep jobs" button?
+  Decided by the user 2026-10-06: when a parent exits on its own, show the
+  "N jobs kept running" notice and a `was <name>` mark; no new "Close tab,
+  keep jobs" button.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] The tab state does not show that something runs in the background
   (user, 2026-10-06, screenshot: "the tab state doesn't show that something
