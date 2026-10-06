@@ -3,6 +3,180 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
+  a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
+  installed: its orchestration only runs inside T3 Code, and 55 skill
+  descriptions cost about 3k tokens per session). Consulted sol and MiMo
+  (round of 2026-10-06, both: skip the install, borrow these):
+  - Not the full landing queue: it needs a worktree per writer, against the
+    fork's "work on master in the shared checkout" rule (user, 2026-10-06:
+    keep the rule). Take only what fixes the real incident (2026-10-02: a
+    bare `git commit` swept another session's staged hunks):
+    - A commit lock: `flock` on a file under `.git/`, so one session commits
+      at a time, in a script that does what AGENTS.md describes (a patch of
+      only its own hunks, a temporary index) and refuses a commit without
+      paths.
+    - Light path claims: a session announces the files it edits; another
+      session gets a warning before editing the same file, not a refusal.
+    - Notes from pstack's `land.py`: `flock` is released when the process
+      dies, so no stale lock; after a rebase compare `HEAD^{tree}` with the
+      reviewed tree (MiMo); claims do not stop an agent that bypasses them
+      (sol). The full queue with worktrees stays for long or risky work,
+      where AGENTS.md already asks for a worktree.
+    - The Fellowship post (see the three gaps near the top) avoids
+      concurrent writers by role instead: only the main session writes
+      code, the reviewer never edits, qa works in throwaway worktrees. A
+      cheaper first step is that rule in `AGENTS.md`, though it lives only
+      in prose.
+  - [x] Machine-wide slots for builds and tests: extend `herdr-job` (and next to
+    `just guard`) with N slots plus an exclusive mode for benchmarks, so
+    several sessions do not thrash one `target/` or skew measurements.
+    Done 2026-10-06 (round `20261006-030357-bd7d`, sol and MiMo):
+    `herdr-job slot [--exclusive] -- CMD`, `run --slot/--exclusive`,
+    `herdr-job slots`; the `just` build, test and clippy lines take a slot,
+    benchmarks every slot. One slot by default (both: cargo and nextest each
+    use every core, so two slots let two full-machine loads run); MiMo: cargo's
+    `target/` lock does not cover it, nextest runs tests after releasing it;
+    an exclusive request inside a slot fails at once (it would wait for its
+    own ancestor); no gate lock (moot with one slot). Not done: re-run
+    `just guard` after a long slot wait (sol), and the CPU and output idle
+    detector still cannot tell a job blocked on cargo's lock (MiMo).
+  - [x] Structured dispositions in `consult`: classify each finding Act on /
+    Consider / Noted / Dismissed (pstack's `$interrogate`), with evidence and
+    whether it was verified, next to the existing per-call ratings.
+    Done 2026-10-06 as counts, not per-finding records (sol and MiMo: records
+    keep the same judgment and cost much more bookkeeping):
+    `rate --act --consider --noted --dismissed` (all four, adding up to
+    `--findings`; a rejected finding is dismissed), `act/call` in
+    `stats --all`, and the `consult` skill reports to the user in the four
+    buckets. Later, if wanted: link `act` findings to the commits that
+    landed them (MiMo).
+  Decided by the user 2026-10-06: parked: one swept-hunk incident in 276
+  commits, and AGENTS.md now lets only one session work through the TODO
+  at a time.
+
+- [ ] Orchestration direction (user, 2026-10-06: "analyse how to do this
+  orchestration best ... is there a point in using the Claude SDK etc., how
+  does T3 Code do it?"). Read T3 Code `4df84a7d`; consulted sol and MiMo
+  (round `20261006-033911-ff97`). Decision pending with the user.
+  - T3 Code has no PTY for agents: Claude through `@anthropic-ai/claude-agent-sdk`
+    (spawns the user's `claude`, uses the subscription login, `canUseTool`
+    for approvals and questions, `rate_limit_event` for a Limited state
+    with auto-resume), `codex app-server`, `pi --mode rpc`, ACP. One local
+    HTTP MCP server with per-session tokens (`delegate_task` async|wait,
+    `task_status`, `task_cancel` depth-first); a finished child wakes the
+    parent with an injected message; children get a brief, not history; no
+    agent concurrency cap. Its gap: a child stuck on a permission request
+    looks idle.
+  - Terms: Anthropic's Agent SDK docs forbid unapproved third-party products
+    from offering claude.ai login; on 2026-06-15 Anthropic paused moving SDK
+    and `claude -p` use to separate credits, so both still draw on the
+    subscription. Wrapping `claude -p` instead of the SDK is no loophole
+    (sol). An interactive `claude` in a PTY is plain terminal use.
+  - Both models: stay PTY-first; no SDK in herdr. Headless only for bounded
+    child tasks nobody watches (`claude -p --output-format stream-json`,
+    `codex exec --json`, `pi --mode rpc`), one adapter proven before the
+    next, and one state record fed by both screen detection and stream or
+    hook events (MiMo), so hybrid does not double the state machine.
+  - Order: (1) a truthful task state: idle is not done; awaiting permission,
+    awaiting answer, limited, failed, with question text and reset time from
+    hooks where available (user, 2026-10-06: "looks ok"); (2) clean
+    validation, not worktrees per child (see below); (3) a child-task primitive: parent link, brief,
+    completion that wakes the parent at a safe input boundary (never typed
+    into a permission dialog), subtree cancel, recursion bounds; (4)
+    handoff; (5) MCP only as a thin facade over the API.
+  - Worktrees for children? (user, 2026-10-06: "what do we need them for;
+    if they slow things down, is manual handoff not better?"; round
+    `20261006-035159-d484`, sol and MiMo agree): no, the shared master stays.
+    Measured: one swept-hunk incident in 276 commits over 8 days, but every
+    `just check` and install builds whatever another session left half done
+    in `src/` (it was the case while asking). Worktree checks: median 3.0
+    min against 1.9 (7 runs, 7.8 cold). So:
+    - Build and test from a clean tree: a reusable detached worktree at the
+      `master` SHA plus only this session's own patch (the fix is not
+      committed before the user tries it), sharing `CARGO_TARGET_DIR` with
+      the main checkout under one lock; install from there. Measure two
+      builds sharing the target first (cargo rebuilds local crates per
+      source path).
+    - Handoff has nothing to do with worktrees (same task, one after the
+      other): automate only the pointer (session id, transcript, task,
+      SHA); ownership moves once the first agent stops writing.
+    - Children: read-only ones (review, research) in the shared checkout,
+      reviews of a committed snapshot; writing ones sequential on master
+      with path claims; a worktree only when two writers really run at
+      once or the work is long or exploratory, as AGENTS.md already says.
+    - A pre-commit hook that refuses a commit without paths (MiMo); note
+      `git commit -- <path>` also takes others' unstaged edits in that file.
+  - Order and praise (user, 2026-10-06: "would these changes make people
+    praise roherdr like T3 Code?"; round `20261006-035823-bbe8`, sol and
+    MiMo): the praise is less supervision, not looks: "who needs me now",
+    ranked by how long they have waited, one click to the question. So:
+    - [x] First the clean build tree, time-boxed to an evening: one persistent
+      check worktree (not a fresh one per run: cold Rust builds) reset to
+      the `master` SHA, plus a patch of explicitly named paths of this
+      session (`git diff` of the shared checkout carries other sessions'
+      edits, so it cannot be the input), then the existing checks there.
+      Done 2026-10-06: `herdr-job clean-tree [PATHS] -- CMD` (any repository;
+      first as `scripts/clean_tree.py`, generalized the same day at the
+      user's request, with a rule in the global Claude and pi instructions:
+      use it when `git status` shows changes that are not yours),
+      `just clean-check <paths>`, `just clean-release <paths>`, AGENTS.md
+      install flow. Own `target/`;
+      a shared one is not measured (cargo keys local and vendored path
+      crates by source path, so they may rebuild on every switch): cold `just clean-check` 6.0 min and 3.6 GB, warm 1.8 min.
+    - Then the task state as an attention inbox: waiting agents ranked by
+      when they started waiting, the question text inline, jump to it;
+      mark hook-confirmed states apart from screen-inferred ones; never
+      call silence "done".
+    - Limited: only an agent stopped by a limit gets the state (not an
+      account that is nearly used up); say which limit (rate, credits,
+      context full: different remedies); `limited · resets 14:32` as the
+      second line and in the header counts next to `?N`; no implied
+      auto-resume. Herdr already reads the reset times (`src/usage/`).
+    - Beyond features (user decides): a demo with six agents, two needing
+      the user and one limited, solved without hunting; README positioning
+      "run your real agent CLIs, find every agent waiting on you", one
+      install path; both models call the name "roherdr" hard to say and
+      search; MiMo: signed releases, since a one-person fork that replaces
+      its server binary live reads as a supply-chain risk.
+    - Child tasks, MCP: deferred until supervision is trustworthy.
+  - OptMem and OptChat (user, 2026-10-06; github.com/VictorTaelin/OptMem, no
+    license; rounds `20261006-042739-ce28`, `20261006-044634-0c2b`, sol and
+    MiMo): do not adopt it for our agents. One global log mixes projects into
+    mushy summaries, "age" counts later notes rather than time, agents
+    compress inline (about one compression per note) and every session pays
+    about 8k tokens at wake, and `forget` never erases raw notes. Project
+    lessons stay in AGENTS.md. John Ash ran the same tree for two years and
+    dropped it: errors stack up and temporal reasoning is weak.
+    - If herdr ever keeps an event log (handoff, child briefs): provenance
+      first (who, when, pane, transcript link), validity times for
+      decisions that can be revoked, summaries last, per task and off the
+      agent's turn (like activegraph.ai's replay and explain, Apache 2.0,
+      as an idea, not a dependency). After the attention inbox.
+      CorpusMap (arXiv 2609.37226, preprint) measured it: summary layers
+      (LLM wiki, topic trees) often lose to the raw corpus, while entity pages
+      that link to untouched documents beat it with 34-57% fewer tokens, for a
+      plain find/grep agent.
+    - Child context (step 3): a brief by default, not inherited history
+      (Taelin's spawn-by-inherit assumes a single writer). A child that
+      continues the same work may get a native fork (`claude --resume <id>
+      --fork-session`, `codex fork <id>`), always by explicit id and never
+      resumed in place or via `--last`. Writing children re-read only the
+      files they edit; reviewers get acceptance criteria and the diff but
+      not the parent's diagnosis. Completion returns changed paths, tests,
+      blockers and what remains; cancel never blindly reverts. Defer a
+      read-files ledger with hashes; a short list of relevant files in the
+      brief is enough.
+  - Not to build: a chat GUI, a universal conversation schema, a scheduler
+    or quotas, auto-approval, auto-merge, default auto-resume after a limit.
+  - Slots: freeze them (6 min of overlap in 14 days); what contends is the
+    shared checkout and the subscription limits, not CPU. Measure harm
+    (failed or slowed runs), not overlap.
+  Decided by the user 2026-10-06: steps 1 and 2 are done (truthful state,
+  inbox and limits in 7f55e2c5; clean-tree) and handoff is decided in
+  TODO.md; child tasks (step 3) and the rest wait until they are missed in
+  practice.
+
 - [ ] Build line (bottom left of the sidebar): hover shows the full commit
   message, click opens a modal with the full commit info (full hash,
   subject, body, author, date, dirty flag, version and channel), scrollable,
