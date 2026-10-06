@@ -1400,6 +1400,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] `workspace list` shows a space's repository only when the space is in a
+  worktree family (its `worktree` object), so tools read `.worktree` as "the
+  space's repo" and fail for plain git spaces (2026-10-07: the todo launcher
+  found no repo for job-seeker). Expose the cached `git_space()` on every
+  space as its own object (`repo_root`, `repo_name`, explicit null for a
+  non-git space) and document `worktree` as worktree-family membership only
+  (consult round `20261007-015141-b75b`, MiMo).
+
 - [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of
   clearing it, so the tab shows nothing rather than its automatic name (the
   agent's task or the terminal title); there is no way to return to the
