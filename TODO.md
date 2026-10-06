@@ -4759,20 +4759,26 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   installed: its orchestration only runs inside T3 Code, and 55 skill
   descriptions cost about 3k tokens per session). Consulted sol and MiMo
   (round of 2026-10-06, both: skip the install, borrow these):
-  - Landing queue for the shared `master`: one writer to trunk under a lock,
-    path leases claimed before editing (overlaps refused), writers commit in
-    their own worktree and never integrate. Addresses sessions sweeping each
-    other's staged hunks (2026-10-02). Its `land.py` uses `flock` (released
-    when the process dies) and SQLite `BEGIN IMMEDIATE`. Caveats: leases do
-    not stop an agent that bypasses the queue (sol); after a rebase compare
-    `HEAD^{tree}` with the reviewed tree, not SHAs, and re-review when it
-    differs (MiMo). Conflicts with the fork's "work on master in the shared
-    checkout" rule, so decide that first. The Fellowship post (see the
-    three gaps near the top) avoids concurrent writers by role instead:
-    only the main session writes code, the reviewer never edits, qa works
-    in throwaway worktrees. A cheaper first step is that rule in
-    `AGENTS.md`, though it lives only in prose; the 2026-10-02 incident
-    still justifies deciding on the queue separately (sol, MiMo).
+  - Not the full landing queue: it needs a worktree per writer, against the
+    fork's "work on master in the shared checkout" rule (user, 2026-10-06:
+    keep the rule). Take only what fixes the real incident (2026-10-02: a
+    bare `git commit` swept another session's staged hunks):
+    - A commit lock: `flock` on a file under `.git/`, so one session commits
+      at a time, in a script that does what AGENTS.md describes (a patch of
+      only its own hunks, a temporary index) and refuses a commit without
+      paths.
+    - Light path claims: a session announces the files it edits; another
+      session gets a warning before editing the same file, not a refusal.
+    - Notes from pstack's `land.py`: `flock` is released when the process
+      dies, so no stale lock; after a rebase compare `HEAD^{tree}` with the
+      reviewed tree (MiMo); claims do not stop an agent that bypasses them
+      (sol). The full queue with worktrees stays for long or risky work,
+      where AGENTS.md already asks for a worktree.
+    - The Fellowship post (see the three gaps near the top) avoids
+      concurrent writers by role instead: only the main session writes
+      code, the reviewer never edits, qa works in throwaway worktrees. A
+      cheaper first step is that rule in `AGENTS.md`, though it lives only
+      in prose.
   - Machine-wide slots for builds and tests: extend `herdr-job` (and next to
     `just guard`) with N slots plus an exclusive mode for benchmarks, so
     several sessions do not thrash one `target/` or skew measurements.
