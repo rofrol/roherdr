@@ -4789,6 +4789,43 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   guard is what stops a session report sent before `/exit` but processed
   after the forget from bringing the session back.
 
+- [ ] Orchestration direction (user, 2026-10-06: "analyse how to do this
+  orchestration best ... is there a point in using the Claude SDK etc., how
+  does T3 Code do it?"). Read T3 Code `4df84a7d`; consulted sol and MiMo
+  (round `20261006-033911-ff97`). Decision pending with the user.
+  - T3 Code has no PTY for agents: Claude through `@anthropic-ai/claude-agent-sdk`
+    (spawns the user's `claude`, uses the subscription login, `canUseTool`
+    for approvals and questions, `rate_limit_event` for a Limited state
+    with auto-resume), `codex app-server`, `pi --mode rpc`, ACP. One local
+    HTTP MCP server with per-session tokens (`delegate_task` async|wait,
+    `task_status`, `task_cancel` depth-first); a finished child wakes the
+    parent with an injected message; children get a brief, not history; no
+    agent concurrency cap. Its gap: a child stuck on a permission request
+    looks idle.
+  - Terms: Anthropic's Agent SDK docs forbid unapproved third-party products
+    from offering claude.ai login; on 2026-06-15 Anthropic paused moving SDK
+    and `claude -p` use to separate credits, so both still draw on the
+    subscription. Wrapping `claude -p` instead of the SDK is no loophole
+    (sol). An interactive `claude` in a PTY is plain terminal use.
+  - Both models: stay PTY-first; no SDK in herdr. Headless only for bounded
+    child tasks nobody watches (`claude -p --output-format stream-json`,
+    `codex exec --json`, `pi --mode rpc`), one adapter proven before the
+    next, and one state record fed by both screen detection and stream or
+    hook events (MiMo), so hybrid does not double the state machine.
+  - Order: (1) a truthful task state: idle is not done; awaiting permission,
+    awaiting answer, limited, failed, with question text and reset time from
+    hooks where available; (2) checkout ownership (worktrees for writing
+    children per both models, against the fork's shared-master rule: the
+    user decides); (3) a child-task primitive: parent link, brief,
+    completion that wakes the parent at a safe input boundary (never typed
+    into a permission dialog), subtree cancel, recursion bounds; (4)
+    handoff; (5) MCP only as a thin facade over the API.
+  - Not to build: a chat GUI, a universal conversation schema, a scheduler
+    or quotas, auto-approval, auto-merge, default auto-resume after a limit.
+  - Slots: freeze them (6 min of overlap in 14 days); what contends is the
+    shared checkout and the subscription limits, not CPU. Measure harm
+    (failed or slowed runs), not overlap.
+
 - [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
   a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
   installed: its orchestration only runs inside T3 Code, and 55 skill
