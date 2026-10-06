@@ -4844,6 +4844,31 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       once or the work is long or exploratory, as AGENTS.md already says.
     - A pre-commit hook that refuses a commit without paths (MiMo); note
       `git commit -- <path>` also takes others' unstaged edits in that file.
+  - Order and praise (user, 2026-10-06: "would these changes make people
+    praise roherdr like T3 Code?"; round `20261006-035823-bbe8`, sol and
+    MiMo): the praise is less supervision, not looks: "who needs me now",
+    ranked by how long they have waited, one click to the question. So:
+    - First the clean build tree, time-boxed to an evening: one persistent
+      check worktree (not a fresh one per run: cold Rust builds) reset to
+      the `master` SHA, plus a patch of explicitly named paths of this
+      session (`git diff` of the shared checkout carries other sessions'
+      edits, so it cannot be the input), then the existing checks there.
+    - Then the task state as an attention inbox: waiting agents ranked by
+      when they started waiting, the question text inline, jump to it;
+      mark hook-confirmed states apart from screen-inferred ones; never
+      call silence "done".
+    - Limited: only an agent stopped by a limit gets the state (not an
+      account that is nearly used up); say which limit (rate, credits,
+      context full: different remedies); `limited · resets 14:32` as the
+      second line and in the header counts next to `?N`; no implied
+      auto-resume. Herdr already reads the reset times (`src/usage/`).
+    - Beyond features (user decides): a demo with six agents, two needing
+      the user and one limited, solved without hunting; README positioning
+      "run your real agent CLIs, find every agent waiting on you", one
+      install path; both models call the name "roherdr" hard to say and
+      search; MiMo: signed releases, since a one-person fork that replaces
+      its server binary live reads as a supply-chain risk.
+    - Child tasks, MCP: deferred until supervision is trustworthy.
   - Not to build: a chat GUI, a universal conversation schema, a scheduler
     or quotas, auto-approval, auto-merge, default auto-resume after a limit.
   - Slots: freeze them (6 min of overlap in 14 days); what contends is the
