@@ -2,7 +2,11 @@ use super::*;
 use crate::api::schema::TabStatus;
 
 fn state_with_tabs(tabs: bool) -> ClientShellState {
-    let mut config = config_with_sidebar_width(26);
+    state_with_tabs_and_width(tabs, 26)
+}
+
+fn state_with_tabs_and_width(tabs: bool, sidebar_width: u16) -> ClientShellState {
+    let mut config = config_with_sidebar_width(sidebar_width);
     config.spaces.tabs = tabs;
     let mut state = ClientShellState::new(config);
     let mut projected = snapshot();
@@ -4184,4 +4188,206 @@ fn with_a_scrollbar_the_name_line_buttons_end_at_the_list_edge() {
     assert_eq!(row[track.x as usize - 1], 'A', "{row:?}");
     assert_eq!(launch.right(), track.x);
     assert_eq!(plus.right(), launch.x);
+}
+
+/// Adds a top-level tab to the first space, with an agent in `status` unless
+/// `status` is `None` (a shell).
+fn with_tab(state: &mut ClientShellState, tab_id: &str, status: Option<AgentStatus>) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = tab_id.into();
+    tab.label = format!("label {tab_id}");
+    tab.focused = false;
+    tab.agent_status = status.unwrap_or(AgentStatus::Unknown);
+    projected.tabs.push(tab);
+    if let Some(status) = status {
+        let mut agent = projected.agents[0].clone();
+        agent.tab_id = tab_id.into();
+        agent.pane_id = format!("pane_{tab_id}");
+        agent.agent_status = status;
+        agent.focused = false;
+        projected.agents.push(agent);
+    }
+    state.set_snapshot(Box::new(projected));
+}
+
+fn set_tab_status(state: &mut ClientShellState, tab_id: &str, status: AgentStatus) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for tab in projected.tabs.iter_mut().filter(|tab| tab.tab_id == tab_id) {
+        tab.agent_status = status;
+    }
+    for agent in projected
+        .agents
+        .iter_mut()
+        .filter(|agent| agent.tab_id == tab_id)
+    {
+        agent.agent_status = status;
+    }
+    state.set_snapshot(Box::new(projected));
+}
+
+fn shown_tab_lines(state: &mut ClientShellState) -> Vec<String> {
+    state.compose(106, 30).unwrap();
+    state
+        .hits
+        .space_tabs
+        .iter()
+        .map(|(_, tab_id)| tab_id.clone())
+        .collect()
+}
+
+fn click_rect(state: &mut ClientShellState, rect: ratatui::layout::Rect) -> ClientShellInput {
+    left_click(state, (rect.x + rect.width / 2, rect.y))
+}
+
+#[test]
+fn the_fold_button_puts_away_idle_agents_until_they_stir_and_never_folds_by_itself() {
+    let mut state = state_with_tabs_and_width(true, 32);
+    with_tab(&mut state, "tab_2", Some(AgentStatus::Idle));
+    with_tab(&mut state, "tab_3", Some(AgentStatus::Idle));
+    with_tab(&mut state, "tab_4", None);
+    // Seen working, then idle: a result not looked at yet (done).
+    with_tab(&mut state, "tab_5", Some(AgentStatus::Working));
+    set_tab_status(&mut state, "tab_5", AgentStatus::Idle);
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_3", "tab_4", "tab_5"]
+    );
+
+    // Working, a shell and an unseen result stay; the idle ones fold under
+    // one line at the end of the space.
+    let button = state.hits.quiet_fold_button;
+    click_rect(&mut state, button);
+    assert_eq!(shown_tab_lines(&mut state), ["tab_1", "tab_4", "tab_5"]);
+    let rows = frame_rows(&state.compose(106, 30).unwrap());
+    let (fold, id) = state
+        .hits
+        .space_tab_folds
+        .last()
+        .expect("the idle line")
+        .clone();
+    assert_eq!(id, super::super::space_tabs::quiet_fold_id("ws_1"));
+    assert!(
+        rows[fold.y as usize].contains("2 idle"),
+        "{}",
+        rows[fold.y as usize]
+    );
+
+    // An agent that stirs (here it asks for approval) shows at once and
+    // does not fold again when it goes idle: nothing moves by itself.
+    set_tab_status(&mut state, "tab_2", AgentStatus::Blocked);
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_4", "tab_5"]
+    );
+    set_tab_status(&mut state, "tab_2", AgentStatus::Idle);
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_4", "tab_5"]
+    );
+
+    // The idle line shows its tabs again.
+    let (fold, _) = state
+        .hits
+        .space_tab_folds
+        .last()
+        .expect("the idle line")
+        .clone();
+    click_rect(&mut state, fold);
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_3", "tab_4", "tab_5"]
+    );
+
+    // A press folds what is idle now, also tabs a space's idle line showed;
+    // pressing it again with nothing new to fold shows them all.
+    let button = state.hits.quiet_fold_button;
+    click_rect(&mut state, button);
+    assert_eq!(shown_tab_lines(&mut state), ["tab_1", "tab_4", "tab_5"]);
+    let button = state.hits.quiet_fold_button;
+    click_rect(&mut state, button);
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_3", "tab_4", "tab_5"]
+    );
+}
+
+#[test]
+fn the_focused_tab_a_bookmark_and_an_agent_with_a_limit_never_fold() {
+    let mut state = state_with_tabs_and_width(true, 32);
+    with_tab(&mut state, "tab_2", Some(AgentStatus::Idle));
+    with_tab(&mut state, "tab_3", Some(AgentStatus::Idle));
+    with_tab(&mut state, "tab_4", Some(AgentStatus::Idle));
+    set_tab_status(&mut state, "tab_1", AgentStatus::Idle);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected
+        .tabs
+        .iter_mut()
+        .find(|tab| tab.tab_id == "tab_4")
+        .expect("tab")
+        .bookmarked = true;
+    projected
+        .agents
+        .iter_mut()
+        .find(|agent| agent.tab_id == "tab_3")
+        .expect("agent")
+        .limited = Some(crate::api::schema::AgentLimit {
+        kind: crate::api::schema::AgentLimitKind::Usage,
+        message: None,
+        resets_at: None,
+    });
+    state.set_snapshot(Box::new(projected));
+    shown_tab_lines(&mut state);
+    let button = state.hits.quiet_fold_button;
+    click_rect(&mut state, button);
+    assert_eq!(shown_tab_lines(&mut state), ["tab_1", "tab_3", "tab_4"]);
+
+    // Focusing a folded tab shows it.
+    focus_tab(&mut state, "tab_2");
+    assert_eq!(
+        shown_tab_lines(&mut state),
+        ["tab_1", "tab_2", "tab_3", "tab_4"]
+    );
+}
+
+fn focuses_pane(outcome: &ClientShellInput, pane: &str) -> bool {
+    outcome.actions.iter().any(|action| {
+        matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(target)
+                if target.pane_id == pane))
+    })
+}
+
+#[test]
+fn back_and_forward_in_the_header_return_to_the_tabs_jumped_from() {
+    let mut state = state_with_tabs_and_width(true, 32);
+    with_tab(&mut state, "tab_2", Some(AgentStatus::Idle));
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut pane = projected.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.tab_id = "tab_2".into();
+    pane.focused = false;
+    projected.panes.push(pane);
+    state.set_snapshot(Box::new(projected));
+    let jump = |state: &mut ClientShellState, tab: &str, pane: &str| {
+        let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+        for candidate in &mut projected.tabs {
+            candidate.focused = candidate.tab_id == tab;
+        }
+        projected.focused_tab_id = Some(tab.into());
+        projected.focused_pane_id = Some(pane.into());
+        state.set_snapshot(Box::new(projected));
+    };
+    jump(&mut state, "tab_2", "pane_2");
+    state.compose(106, 30).unwrap();
+    let back = state.hits.focus_back_button;
+    assert!(back.width > 0, "the header has room for the buttons");
+    let outcome = click_rect(&mut state, back);
+    assert!(focuses_pane(&outcome, "pane_1"), "{:?}", outcome.actions);
+    jump(&mut state, "tab_1", "pane_1");
+    state.compose(106, 30).unwrap();
+    let forward = state.hits.focus_forward_button;
+    let outcome = click_rect(&mut state, forward);
+    assert!(focuses_pane(&outcome, "pane_2"), "{:?}", outcome.actions);
 }

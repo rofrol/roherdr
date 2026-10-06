@@ -706,6 +706,11 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
+            PendingEndpointKind::FocusStep { endpoint_id } => {
+                if result.is_err() {
+                    self.focus_step_refused(&endpoint_id);
+                }
+            }
             PendingEndpointKind::TabClose { closed } => {
                 if let (Some(closed), true) = (closed, result.is_ok()) {
                     self.remember_closed_tab(*closed);

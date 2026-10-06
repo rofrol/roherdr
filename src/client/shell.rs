@@ -18,6 +18,7 @@ mod endpoint_navigation;
 mod endpoint_notices;
 mod endpoint_sidebar;
 mod endpoints;
+mod focus_history;
 pub(super) use endpoints::*;
 mod closed_tabs;
 mod global_menu;

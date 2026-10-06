@@ -177,6 +177,11 @@ pub(super) struct ShellHitMap {
     pub(super) image_picker_rows: Vec<(Rect, usize)>,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
+    /// The header button that puts away the quiet tabs of every space.
+    pub(super) quiet_fold_button: Rect,
+    /// The header's back and forward buttons over focus jumps.
+    pub(super) focus_back_button: Rect,
+    pub(super) focus_forward_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.
     pub(super) space_filter_bar: Rect,
     pub(super) space_filter_close: Rect,
@@ -958,6 +963,11 @@ impl ClientShellOverlay {
 #[derive(Debug)]
 pub(super) enum PendingEndpointKind {
     Generic,
+    /// A back or forward step over focus jumps; a refusal puts the history
+    /// back where the focus is.
+    FocusStep {
+        endpoint_id: ClientEndpointId,
+    },
     /// A tab close; a close the server accepts is remembered for reopening.
     TabClose {
         closed: Option<Box<super::closed_tabs::ClosedTab>>,
@@ -1298,6 +1308,12 @@ pub(crate) struct ClientShellState {
     /// The focused tab the last snapshot had, by endpoint: a job is pinned
     /// only when the focus moves to it, so unfolding unpins it for good.
     pub(super) last_focused_tab: HashMap<ClientEndpointId, String>,
+    /// The tabs the header's fold button put away, by endpoint: the quiet
+    /// ones at the press. A tab leaves for good once it is no longer quiet,
+    /// so nothing folds by itself. Client memory only.
+    pub(super) quiet_folds: HashMap<ClientEndpointId, HashSet<String>>,
+    /// Back and forward over this client's focus jumps, by endpoint.
+    pub(super) focus_history: HashMap<ClientEndpointId, super::focus_history::FocusHistory>,
     pub(super) pointer_over_spaces: bool,
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
@@ -1524,6 +1540,8 @@ impl ClientShellState {
             .into_iter()
             .collect(),
             last_focused_tab: HashMap::new(),
+            quiet_folds: HashMap::new(),
+            focus_history: HashMap::new(),
             pointer_over_spaces: false,
             held_space_order: Vec::new(),
             workspace_scroll: 0,
@@ -2160,6 +2178,8 @@ impl ClientShellState {
         self.snapshot = Some(snapshot);
         self.forget_closed_kept_jobs();
         self.remember_focused_group_tab();
+        self.release_unquiet_folds();
+        self.observe_focus_history();
         if self.saved_job_folds() != job_folds {
             self.persist_chrome_preferences(&mut ClientShellInput::default());
         }

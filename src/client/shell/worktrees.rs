@@ -527,6 +527,7 @@ impl ClientShellState {
             }
             (
                 PendingEndpointKind::Generic
+                | PendingEndpointKind::FocusStep { .. }
                 | PendingEndpointKind::TabClose { .. }
                 | PendingEndpointKind::ReopenTab { .. }
                 | PendingEndpointKind::ProductAnnouncementDismiss { .. }

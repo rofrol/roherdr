@@ -497,6 +497,68 @@ pub(crate) fn render_sidebar(
                     right = x.saturating_sub(1);
                 }
             }
+            // Back and forward over focus jumps, then the button that puts
+            // away the quiet tabs; each takes its glyph and a gap on each side.
+            // They give way to the indicators on a narrow sidebar.
+            if config.mouse_capture && limit + 7 <= right {
+                let (back, forward) = state.focus_history;
+                let enabled = |on: bool| {
+                    Style::default().fg(if on {
+                        palette.overlay1
+                    } else {
+                        palette.surface1
+                    })
+                };
+                put_text(buffer, limit + 1, workspace_area.y, 1, "‹", enabled(back));
+                hits.focus_back_button = Rect::new(limit, workspace_area.y, 2, 1);
+                put_text(
+                    buffer,
+                    limit + 3,
+                    workspace_area.y,
+                    1,
+                    "›",
+                    enabled(forward),
+                );
+                hits.focus_forward_button = Rect::new(limit + 2, workspace_area.y, 2, 1);
+                let fold_style = if state.quiet_folds_active {
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette.overlay1)
+                };
+                put_text(buffer, limit + 5, workspace_area.y, 1, "⊟", fold_style);
+                hits.quiet_fold_button = Rect::new(limit + 4, workspace_area.y, 3, 1);
+                for (rect, id, text) in [
+                    (
+                        hits.focus_back_button,
+                        "focus-back",
+                        "back to the previous tab",
+                    ),
+                    (
+                        hits.focus_forward_button,
+                        "focus-forward",
+                        "forward to the next tab",
+                    ),
+                    (
+                        hits.quiet_fold_button,
+                        "quiet-fold",
+                        if state.quiet_fold_would_fold {
+                            "fold idle agents in every space"
+                        } else {
+                            "show the idle agents again"
+                        },
+                    ),
+                ] {
+                    hits.tooltips.push(super::tooltip::TooltipTarget {
+                        rect,
+                        id: id.into(),
+                        text: text.into(),
+                        bg: None,
+                        starts_at_target: false,
+                    });
+                }
+            }
         }
     }
     let mut dragged_family = HashSet::new();
@@ -573,6 +635,7 @@ pub(crate) fn render_sidebar(
                             state.unfolded_squares,
                             state.held_squares,
                             state.kept_jobs,
+                            state.quiet_folded,
                             state
                                 .space_filter
                                 .as_ref()
@@ -798,6 +861,7 @@ pub(crate) fn render_sidebar(
             state.unfolded_squares,
             state.held_squares,
             state.kept_jobs,
+            state.quiet_folded,
             state
                 .space_filter
                 .as_ref()
@@ -2097,6 +2161,7 @@ fn tab_line_extent(
         state.unfolded_squares,
         state.held_squares,
         state.kept_jobs,
+        state.quiet_folded,
         state
             .space_filter
             .as_ref()
@@ -2146,6 +2211,7 @@ fn focus_depth(
         state.unfolded_squares,
         state.held_squares,
         state.kept_jobs,
+        state.quiet_folded,
         state
             .space_filter
             .as_ref()

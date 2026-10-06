@@ -5050,7 +5050,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     buckets. Later, if wanted: link `act` findings to the commits that
     landed them (MiMo).
 
-- [ ] Fold quiet agents (user, 2026-10-06: "some focus mode, a button at the
+- [x] Fold quiet agents (user, 2026-10-06: "some focus mode, a button at the
   top above spaces?, so that in every space all agent sessions that are not
   doing anything or waiting are collapsed under a button"; then, so that
   tabs do not jump: "instead of a focus mode, I press a button and the ones
@@ -5076,8 +5076,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     started with dimming quiet rows, sol folding only agent detail lines;
     the user chose folding tab rows (2026-10-06). The snapshot on press is
     MiMo's "membership computed once, sticky until re-toggled".
+  - Done 2026-10-06: `⊟` in the spaces header (after `‹ ›`), `N idle` line
+    at the end of a space (click shows them), bookmarked tabs never fold, a
+    press folds whenever some quiet tab is still shown, else shows all (the
+    tooltip says which). Review round `20261006-153026-7a2a` (sol, MiMo).
+    Open: the multi-machine sidebar ignores the folds and has no button; keyboard
+    navigation in the spaces list may still select a folded tab; dragging a
+    tab line is refused in a space with an `N idle` line, with no hint why;
+    folds are client memory and do not survive a reattach.
 
-- [ ] Back and forward over focus jumps (user, 2026-10-06: "at the very top
+- [x] Back and forward over focus jumps (user, 2026-10-06: "at the very top
   prev, next navigation, so when I jump to some card I can click prev").
   Browser-style `‹ ›` at the top of the sidebar.
   - Client-local history of pane ids, never in the server (each client has
@@ -5093,6 +5101,11 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Keep the server's single-step `last_pane` toggle as it is (both).
     Keys: mouse back/forward buttons where the terminal reports them, plus
     configurable keys, unbound by default. MiMo would ship Back alone first.
+  - Done 2026-10-06: `‹ ›` in the spaces header (`focus_history.rs`), per
+    client and machine, 50 entries; a step sent before the last arrived
+    ignores snapshots showing any tab on the way; a refused step puts the
+    cursor back on the tab shown. Open: mouse back/forward buttons (crossterm
+    reports none) and keys.
 
 - [ ] New plain tab button: the program icon instead of `+` (user,
   2026-10-06: "instead of the + button use the same icon as tabs that are not
