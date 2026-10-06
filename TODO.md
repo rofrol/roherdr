@@ -2452,27 +2452,6 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     buckets. Later, if wanted: link `act` findings to the commits that
     landed them (MiMo).
 
-- [ ] New plain tab button: the program icon instead of `+` (user,
-  2026-10-06: "instead of the + button use the same icon as tabs that are not
-  an agent session; the plus gets mixed up with the A button"). The space's
-  name line draws ` + ` (`src/client/shell/sidebar.rs`, `NameLineButton::NewTab`)
-  right next to the agent launch chip; draw `PROGRAM_ICON` (`❏`,
-  `space_tabs.rs`) there instead, so the button names what it opens: a tab
-  without an agent, the same mark its tab line will show.
-  - The tab bar's ` + ` (`src/client/shell/tabs.rs`, `NEW_TAB_WIDTH`) follows
-    for consistency; same three columns, same hover background, tooltip
-    "New shell tab".
-  - Consulted sol and MiMo (round `20261006-153926-f695`): both warn that a
-    bare `❏` reads as an existing empty tab, not an action, and would keep a
-    `+` cue (`+❏`, four columns) or label the agent chip instead. Both also
-    flag that the chip's right-click agent picker is hard to discover.
-  - Colour, not shape, tells the button from a tab (user, 2026-10-06:
-    "maybe just a colour other than grey, so it differs from a tab"): tab
-    lines draw `❏` in dim grey `overlay0`, the button draws it in a colour
-    of its own (e.g. the palette's accent), never grey and never an agent's
-    badge colour, so it passes for neither a tab nor the launch chip. Fall
-    back to `+❏` only if the colour is not enough.
-
 - [ ] Keep the model context small, second pass (user, 2026-10-06: "plan
   for cleaning unneeded files from the repo, so the model's context doesn't
   swell too much"). Done on 2026-10-06: finished items left `TODO.md`

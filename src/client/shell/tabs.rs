@@ -243,8 +243,8 @@ pub(crate) fn render_tab_bar(
             hits.new_tab.x,
             area.y,
             hits.new_tab.width,
-            " + ",
-            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+            crate::client::shell::space_tabs::NEW_PROGRAM_TAB_BUTTON,
+            Style::default().fg(palette.accent).bg(palette.panel_bg),
         );
     }
 
