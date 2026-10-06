@@ -9,6 +9,22 @@ Parked ideas live in `TODO-deferred.md`.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A `T` button next to `A` on a space's name line starts a TODO worker
+  for that space (user, 2026-10-07: "add a button next to A on the space
+  title line, T as todo-worker, that runs this skill for that space").
+  - The button runs a command from config, e.g. `[ui.sidebar.spaces]
+    todo_command = "~/scripts/todo-worker {space}"`, with the space's
+    label; unset means no button, so roherdr users without the user's TODO
+    convention never get an agent that commits through an unknown TODO
+    (consult round `20261007-010106-c5ac`, MiMo; Sol hit its limit).
+  - herdr does not start the agent itself and does not go through an
+    agent or a skill: the command (the user's dotfiles launcher, also
+    behind the `todo-worker` skill) opens the tab, reuses an existing
+    `todo-<space>` worker, and starts Claude with Remote Control or pi.
+  - Run it in the background; show its one-line output as a toast; a
+    failure keeps the message.
+  - Set it in the user's own config; nothing ships a default.
+
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
   guidance, as a belt-and-braces for servers without the fix above.
