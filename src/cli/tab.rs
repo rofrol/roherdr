@@ -147,6 +147,8 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         });
     }
 
+    let env_workspace_id = super::target::caller_workspace_id();
+    let workspace_id = tab_create_workspace_id(workspace_id, env_workspace_id.as_deref());
     super::runtime::tab_create(TabCreateParams {
         workspace_id,
         cwd,
@@ -154,6 +156,13 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         label,
         env,
     })
+}
+
+fn tab_create_workspace_id(
+    explicit_workspace_id: Option<String>,
+    env_workspace_id: Option<&str>,
+) -> Option<String> {
+    explicit_workspace_id.or_else(|| env_workspace_id.map(super::normalize_workspace_id))
 }
 
 fn tab_get(args: &[String]) -> std::io::Result<i32> {
@@ -417,4 +426,30 @@ fn print_tab_help() {
     eprintln!("  herdr tab status <tab_id> running|succeeded|failed|none [--activity idle]");
     eprintln!("  herdr tab bookmark <tab_id>");
     eprintln!("  herdr tab unbookmark <tab_id>");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_create_workspace_id;
+
+    #[test]
+    fn tab_create_defaults_to_caller_workspace() {
+        assert_eq!(
+            tab_create_workspace_id(None, Some("ws_7")),
+            Some("ws_7".to_string())
+        );
+    }
+
+    #[test]
+    fn tab_create_explicit_workspace_overrides_caller() {
+        assert_eq!(
+            tab_create_workspace_id(Some("ws_3".to_string()), Some("ws_7")),
+            Some("ws_3".to_string())
+        );
+    }
+
+    #[test]
+    fn tab_create_without_caller_keeps_active_workspace_fallback() {
+        assert_eq!(tab_create_workspace_id(None, None), None);
+    }
 }

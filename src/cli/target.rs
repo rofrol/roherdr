@@ -209,6 +209,17 @@ pub(super) fn caller_pane_id() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+pub(super) fn caller_workspace_id() -> Option<String> {
+    if is_remote() {
+        return None;
+    }
+    nonempty_workspace_id(std::env::var("HERDR_WORKSPACE_ID").ok())
+}
+
+fn nonempty_workspace_id(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
 fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>, String> {
     let mut index = 1;
     let mut machine = None;
@@ -336,6 +347,26 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
+    }
+
+    #[test]
+    fn caller_workspace_ignores_empty_or_whitespace_values() {
+        for value in ["", " ", "\t\n"] {
+            assert_eq!(nonempty_workspace_id(Some(value.into())), None);
+        }
+        assert_eq!(nonempty_workspace_id(None), None);
+        assert_eq!(
+            nonempty_workspace_id(Some("ws_7".into())),
+            Some("ws_7".into())
+        );
+    }
+
+    #[test]
+    fn caller_workspace_is_ignored_for_remote_target() {
+        with_test_client(ApiClient::local(), || {
+            assert!(is_remote());
+            assert_eq!(caller_workspace_id(), None);
+        });
     }
 
     #[test]
