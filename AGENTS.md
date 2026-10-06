@@ -511,10 +511,23 @@ cargo build --release --locked
 scripts/herdr_live.sh install
 ```
 
-Run the build as `herdr-job run --slot --name "release build" -- cargo build
---release --locked`: the slot keeps it from running alongside another
-session's build or test suite (the `just` recipes take one themselves; see
-`plugins/job/README.md`, "Slots").
+Check and build in the clean tree, not in the shared checkout: another
+session's half-done edits in `src/` would go into your test run and your
+install. `scripts/clean_tree.py` resets one persistent worktree
+(`../herdr-worktrees/clean-check`, its `target/` stays warm) to this
+checkout's `HEAD` and applies only the paths you name:
+
+```bash
+just clean-check <your paths>      # just check there
+just clean-release <your paths>    # cargo build --release --locked there
+"$(scripts/clean_tree.py path)"/scripts/herdr_live.sh install   # installs that build
+```
+
+Run them through `herdr-job run --slot --name "<what>" -- ...`; the slot keeps
+the run from overlapping another session's build or test suite (see
+`plugins/job/README.md`, "Slots"). The first run in a new clean tree builds
+from cold. A file another session also edits brings their hunks along: check
+`git diff -- <path>` first.
 
 Standing approval (the user, 2026-10-02: "ta", to the proposal below; he had
 answered yes to every install question): after `just check` is green, build
@@ -533,11 +546,9 @@ where multiple-choice prompts may not work, ask in plain text. Run
 that they can install it later with `scripts/herdr_live.sh install` or by
 asking you.
 
-Right before building, check that `git status` lists only your changes and
-save `git diff HEAD` to your scratchpad. After the build and again before
-`install`, check that `HEAD` has no new commits touching the build inputs and
-that the diff is unchanged; otherwise rebuild. Such a build is labelled
-`<HEAD>-dirty`. Commit your files by explicit path (`git commit -- <paths>`),
+Before `install`, check that `HEAD` has no new commits touching the build
+inputs since the clean-tree build and that your paths' diff is unchanged;
+otherwise rebuild. Such a build is labelled `<HEAD>-dirty`. Commit your files by explicit path (`git commit -- <paths>`),
 never with `-a`.
 
 `install` copies `target/release/herdr` to a staging file, backs up the
