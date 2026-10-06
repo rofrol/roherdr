@@ -1362,6 +1362,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   computed from `ps` and each pane's process tree, with no new API
   contract; the native sampler and `resources.snapshot` wait.
 
+- [ ] Track which buttons the user never clicks, to drop them from roherdr
+  (user, 2026-10-07: "it would be useful to somehow track which buttons I
+  never click at all, so maybe I can throw them out of roherdr? like
+  telemetry? ask the models"). Consult the default set first (local-only
+  counters vs. anything sent out, where to store them, how to show the
+  never-clicked list), then propose the design.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
