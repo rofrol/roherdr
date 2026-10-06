@@ -387,3 +387,107 @@ class ReconcileTests(unittest.TestCase):
 
     def test_a_tab_that_already_shows_an_outcome_is_left_alone(self):
         self.assertEqual(self.reconcile("failed"), [])
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class SlotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        take = JOB["take_slot"]
+        patcher = patch.dict(take.__globals__, {"SLOTS": Path(self.tmp.name) / "slots", "SLOT_POLL_S": 0.01})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = patch.dict(os.environ, {"HERDR_JOB_SLOTS": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("HERDR_JOB_SLOT", None)
+
+    def take(self, name, exclusive=False, on_wait=None):
+        """take_slot as a separate requester: its env mark must not make the next one nest."""
+        held = JOB["take_slot"](name, exclusive, on_wait=on_wait)
+        os.environ.pop("HERDR_JOB_SLOT", None)
+        return held
+
+    def take_in_thread(self, name, exclusive=False):
+        import threading
+        heard, result = [], []
+        waiting = threading.Event()
+
+        def on_wait(text):
+            heard.append(text)
+            waiting.set()
+
+        thread = threading.Thread(target=lambda: result.append(self.take(name, exclusive, on_wait)))
+        thread.start()
+        self.assertTrue(waiting.wait(5), "the second request did not wait")
+        return thread, heard, result
+
+    def release(self, held):
+        for handle in held:
+            handle.close()
+
+    def test_a_second_request_waits_and_names_the_holder_until_the_slot_is_free(self):
+        first = self.take("cargo build")
+        thread, heard, result = self.take_in_thread("just test")
+        self.assertIn("cargo build", heard[0])
+        self.assertTrue(thread.is_alive())
+        self.release(first)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(result[0]), 1)
+        self.assertIn("just test", JOB["describe_holder"](JOB["slot_holder"](JOB["slot_files"]()[0])))
+        self.release(result[0])
+        self.assertIsNone(JOB["slot_holder"](JOB["slot_files"]()[0]))
+
+    def test_exclusive_takes_every_slot_and_waits_for_a_shared_holder(self):
+        os.environ["HERDR_JOB_SLOTS"] = "2"
+        shared = self.take("tests")
+        thread, heard, result = self.take_in_thread("bench", exclusive=True)
+        self.assertIn("tests", heard[0])
+        self.release(shared)
+        thread.join(5)
+        self.assertEqual(len(result[0]), 2)
+        late, heard, late_result = self.take_in_thread("late")
+        self.assertEqual(heard[0].count("bench"), 2)
+        self.release(result[0])
+        late.join(5)
+        self.release(late_result[0])
+
+    def test_inside_a_slot_shared_needs_nothing_and_exclusive_fails_at_once(self):
+        os.environ["HERDR_JOB_SLOT"] = "shared"
+        self.assertEqual(JOB["take_slot"]("nested"), [])
+        with self.assertRaises(SystemExit):
+            JOB["take_slot"]("bench", exclusive=True)
+        os.environ["HERDR_JOB_SLOT"] = "exclusive"
+        self.assertEqual(JOB["take_slot"]("bench", exclusive=True), [])
+
+    def test_zero_slots_turns_them_off(self):
+        os.environ["HERDR_JOB_SLOTS"] = "0"
+        self.assertEqual(JOB["take_slot"]("anything", exclusive=True), [])
+
+    def test_the_slot_command_marks_the_child_and_keeps_its_exit_code(self):
+        import subprocess
+        env = dict(os.environ, XDG_STATE_HOME=self.tmp.name)
+        env.pop("HERDR_JOB_SLOT", None)
+        out = subprocess.run([str(Path(__file__).with_name("herdr-job")), "slot", "--", "sh", "-c",
+                              'echo "$HERDR_JOB_SLOT"; exit 3'], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual((out.returncode, out.stdout.strip()), (3, "shared"))
+        out = subprocess.run([str(Path(__file__).with_name("herdr-job")), "slots"], env=env,
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.stdout.strip(), "slot 0: free")
+
+    def test_a_slot_job_holds_its_slot_while_the_command_runs(self):
+        import subprocess
+        job = Path(__file__).with_name("herdr-job")
+        state = Path(self.tmp.name) / "herdr-job"
+        (state / "j1").mkdir(parents=True)
+        meta = {"id": "j1", "name": "slot job", "command": f"{job} slots", "cwd": self.tmp.name, "keep": True,
+                "notify": "never", "owner_pane": None, "tab_id": "t1", "tab_status": False, "pane_id": "p1",
+                "client_footer": True, "slot": "shared", "created": time.time()}
+        (state / "j1" / "meta.json").write_text(json.dumps(meta))
+        env = dict(os.environ, XDG_STATE_HOME=self.tmp.name, HERDR_BIN_PATH="/usr/bin/true")
+        env.pop("HERDR_JOB_SLOT", None)
+        out = subprocess.run([str(job), "_exec", "j1"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("slot 0: job j1 slot job", out.stdout)

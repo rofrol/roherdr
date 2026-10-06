@@ -511,6 +511,11 @@ cargo build --release --locked
 scripts/herdr_live.sh install
 ```
 
+Run the build as `herdr-job run --slot --name "release build" -- cargo build
+--release --locked`: the slot keeps it from running alongside another
+session's build or test suite (the `just` recipes take one themselves; see
+`plugins/job/README.md`, "Slots").
+
 Standing approval (the user, 2026-10-02: "ta", to the proposal below; he had
 answered yes to every install question): after `just check` is green, build
 and install without asking, and push with a plain fast-forward `git push

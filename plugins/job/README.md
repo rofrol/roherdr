@@ -243,6 +243,40 @@ until it finishes, so agents can wrap it: `herdr-job run -- ./vm-run make`.
 The `Jobs` popup lists all jobs: open it from the plugin pane list, or bind a
 key to `herdr-job list` with `[[keys.command]] type = "popup"`.
 
+## Slots
+
+Several agent sessions on one machine each start builds and test suites, and
+cargo and nextest each use every core, so two at once are slower than one
+after the other and skew benchmarks. A slot is admission for such work:
+
+```sh
+herdr-job run --slot --name "release build" -- cargo build --release --locked
+herdr-job slot -- cargo nextest run       # in the foreground, for scripts and just recipes
+herdr-job slot --exclusive -- ./bench.sh  # every slot: nothing else heavy runs meanwhile
+herdr-job slots                           # who holds them: job, name, pid, since when
+```
+
+- One slot by default; `HERDR_JOB_SLOTS=N` sets the number, `0` turns slots
+  off (a CI runner). A slot is an `flock` on a file in
+  `~/.local/state/herdr-job/slots/`, so a holder that dies frees it.
+- Opt-in, never the default for a job: network-bound jobs such as the
+  consult scripts must not wait behind a build. In this repository the
+  `just` recipes that build or test take a slot themselves (the benchmarks an
+  exclusive one), so agents need no flag for them.
+- A job with `--slot` waits in its own tab: the tab says who it waits for and
+  shows as idle until it gets the slot.
+- Inside a slot (`HERDR_JOB_SLOT` is set), a shared request takes nothing, so
+  `just check` under `herdr-job run --slot` does not wait for itself. An
+  exclusive request inside a shared slot fails at once instead of waiting
+  forever for its own ancestor. Background children inherit the mark too,
+  so do not start detached heavy work from inside a slot.
+- Cargo's lock on `target/` is not enough: nextest runs the tests after
+  cargo has released it, and worktrees have their own `target/`.
+- Slots only order work that asks for them, and a hung holder keeps its slot
+  until it is stopped: `herdr-job slots` names it. An exclusive request does
+  not stop newcomers from taking slots it has not reached yet; with one slot
+  that cannot happen.
+
 ## Idle jobs
 
 While a job runs, `herdr-job` samples the CPU time of its process tree every 15 seconds and
