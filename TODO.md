@@ -1390,6 +1390,19 @@ Items agents add. Not approved until the user moves them up.
   working i…`: three levels of indent for one delegation, and the
   worktree's own line shows no job count until its agent starts a job.
 
+- [ ] Header `?` list: tell the kinds of waiting apart and use the row's
+  agent, not the tab (user, 2026-10-06: "now you cannot tell which tab is
+  a plain `?` question and which is a question with a choice"; agreed to
+  the mockup). Rows draw `tab_state_icon`, the tab's dominant state, so in
+  a split tab a pi asking a plain question shows the `×` of a Claude
+  blocked on a choice next to it. Proposal (Sol, 2026-10-06): the icon of
+  the row's own agent, with `?` awaiting reply, `×` blocked on an
+  approval or choice (existing glyph, `src/client/shell.rs:206`) and `!`
+  limited, plus the text detail so colour is not required. The sidebar
+  tab line keeps the aggregate icon. Separate from the icon column bug
+  fixed on branch `pi/list-icons` (`(.., icon)` bound `detail` after
+  7f55e2c5).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
