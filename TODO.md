@@ -1139,6 +1139,35 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Dismissed: MiMo's 5 s debounce of working (a delay hides the cause,
     Rule 10) and its claim that bubble's "running job" covers background
     shells (it means herdr-job jobs).
+  Why no herdr-job here (user, 2026-10-06: "why didn't the agent open this
+  background task as a herdr job? I want visibility"): `musicdb update` was
+  started by the hourly launchd job, not by the agent. The agent (which
+  used `herdr-job` for its own long commands in the same session) only
+  waited for that pid with a native background shell
+  (`until ! ps -p 95192 …`), reading the rule "run work that takes more
+  than a minute with herdr-job" as covering its own work, not waits.
+  Herdr jobs are drawn as a counter-rotating circle (`◑ 1`,
+  `src/ui/motion.rs` `JOB_FRAMES`), not `⧖`; the `⧖` in the doc comments
+  of `src/client/shell/space_tabs.rs` is stale.
+  Second round, sol and MiMo (calls `f2132f2c`, `9c834783`):
+  - Both rank: instruction change plus footer badge (A+D) first; a
+    PostToolUse registry of native shells without an exit hook leaves
+    ghost jobs; a PreToolUse deny of `run_in_background` trains
+    workarounds (worst, MiMo).
+  - Instruction by intent, not minutes (sol): "use herdr-job for
+    background work or waits whose end gates your next step, including
+    processes you did not start". MiMo: make that path cheaper than a
+    native shell, e.g. `herdr-job watch --pid N --name …`. Both: its
+    success means "the process disappeared", not "it succeeded" (no exit
+    status of a foreign process; pid reuse), so show it as such.
+  - Do not reuse `◑` for native shells (both): it promises a tab, a log
+    and an exit code. "Dimmed" must be carried by text, not colour
+    (16-colour themes, `NO_COLOR`): sol `bg1` (observed) vs `wait1`
+    (declared awaited), secondary foreground on top. Dismissed MiMo's
+    `○N`: `○` is the idle glyph in every state-icon theme.
+  - Agent waiting on a herdr job with its turn ended: sol keeps idle plus
+    the job circle (today's behaviour), MiMo wants working with a frozen
+    spinner. Undecided.
 - [x] Bubble the busy spaces to the top (user, 2026-10-03: "a button above the
   spaces: one click bubbles up the spaces where something is happening, but
   their relative position does not change"; today the user drags them up by
