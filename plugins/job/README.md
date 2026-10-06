@@ -192,11 +192,16 @@ later `/rename`.
 ## Setup
 
 ```sh
-herdr plugin link ~/personal_projects/herdr/plugins/job   # or: herdr plugin install rofrol/herdr/plugins/job
-ln -s ~/personal_projects/herdr/plugins/job/herdr-job ~/.local/bin/
-ln -s ~/personal_projects/herdr/plugins/job/herdr-bg-badge ~/.local/bin/
-ln -s ~/personal_projects/herdr/plugins/job/herdr-peer-token ~/.local/bin/
+herdr plugin install rofrol/herdr/plugins/job   # or from a checkout: herdr plugin link plugins/job
 ```
+
+Then open the plugin's "Jobs: set up for agents" popup from herdr's plugin
+pane list, or run `./install` in the plugin's directory (`herdr plugin list`
+shows it). `install` links `herdr-job`, `herdr-bg-badge` and `herdr-peer-token` into
+`~/.local/bin` (`--bin DIR` elsewhere), and asks per agent whether to add the
+instructions below to its global instruction file (see
+[Tell your agents to use it](#tell-your-agents-to-use-it)). Re-run it after an
+update: it changes only what is missing or older.
 
 Show the tokens in the sidebar (`~/.config/herdr/config.toml`):
 
@@ -214,8 +219,10 @@ then apply it to the running server with `herdr server reload-config`.
 
 ## Tell your agents to use it
 
-Agents only use `herdr-job` if their instructions say so. Add this to the
-global instruction file of each agent, so it applies in every project:
+Agents only use `herdr-job` if their instructions say so. `install` adds
+this block (from `agent-instructions.md`, between markers so a re-run can
+update it) to the global instruction file of each agent you have, after
+asking; or paste it yourself:
 
 | Agent | Global instructions |
 |---|---|

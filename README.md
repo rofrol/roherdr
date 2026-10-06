@@ -147,8 +147,14 @@ or link it from a checkout with `herdr plugin link plugins/<name>`.
   started it; `herdr-job wait <id>` prints a start line, then the final line (a failure adds the log's
   last lines; `--stream` follows the whole log) and exits with the
   command's code. It keeps state in files, so it works for any agent (Claude
-  Code, pi, ...) or by hand. Also has `herdr-bg-badge`, a Claude Code hook
-  that shows Claude's own background tasks in the sidebar.
+  Code, pi, ...) or by hand. `herdr-job clean-tree <paths> -- <test command>`
+  builds and tests one session's change on `HEAD` plus only those paths, so
+  other sessions' half-done edits in a shared checkout stay out;
+  `herdr-job run --slot` keeps heavy builds from running at once. Its
+  `install` (also a "Jobs: set up for agents" popup) links the commands and
+  adds the instructions to your agents' global instruction files. Also has
+  `herdr-bg-badge`, a Claude Code hook that shows Claude's own background
+  tasks in the sidebar.
 - [**relaunch**](plugins/relaunch/README.md): reruns the programs panes were
   running (lazygit, editors, ...) after a server restart or reboot; herdr
   itself brings them back as empty shells. zsh only; after installing, add its
