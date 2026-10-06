@@ -1229,42 +1229,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   accepted unique findings per call, dismissed share, errors, latency. Then
   propose keep, replace or drop, with the numbers, under Needs a decision.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
-- [ ] Build line (bottom left of the sidebar): hover shows the full commit
-  message, click opens a modal with the full commit info (full hash,
-  subject, body, author, date, dirty flag, version and channel), scrollable,
-  Esc closes.
-  - The data does not exist yet: `HERDR_GIT_COMMIT_LINE` holds only
-    `<short hash> <subject>`. Embed structured commit metadata at build
-    time (handle builds without git); never ask the git repo of the
-    current space, which is another project.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): the client and
-    the server builds can differ after a live handoff, so the modal shows
-    both, labelled "server" and "client", and marks a mismatch. Server
-    details come from a new advertised build-info method (the snapshot's
-    `build_commit` stays as is); an old server shows "details unavailable",
-    never the client's data in its place. Astra: the tooltip shows the
-    subject only, the body belongs in the modal.
-  - Done 2026-09-29: hovering the build line shows its whole commit line
-    (hash and subject) in a tooltip, and both builds when the client's
-    differs (`server <line> · client <hash>`). Still open: the modal and
-    the build metadata it needs.
-  Triage 2026-10-06 (decision): Hover is done; the modal needs build-time commit metadata and a new advertised build-info API method (a public contract): approve adding it?
-
 - [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in
   the tab bar and stay at its start, before the unpinned tabs, like
   pinned tabs in Chrome or Firefox.
-  Triage 2026-10-06 (decision): Server-owned or client-only pins, persistence, keybinding, menu, and drag across the pinned boundary?
+  Decided by the user 2026-10-06: like pinned spaces: pinned tabs come
+  first in their space's vertical tab list; server-owned state; Pin/Unpin
+  in the tab menu plus a keybinding; a 1-cell glyph in a fixed column; no
+  drag across the pinned boundary.
 
 - [ ] Pin a space, like a pinned tab: a pin icon on the space row, and
   pinned spaces stay at the top of the spaces list. Consulted (GPT-6 Astra,
@@ -1288,7 +1259,10 @@ user needs to decide or do. Item text is unchanged.
   - Cost to weigh: in prio an idle pinned space sits above an unpinned
     blocked one; urgent unpinned agents need another cue (the header
     attention counts, still without a place).
-  Triage 2026-10-06 (decision): The consulted models disagree: refuse or unpin on drag, the separator line, and the prio-sort cost?
+  Decided by the user 2026-10-06: dragging a pinned space out of the
+  pinned group is refused, and a separator line divides pinned from
+  unpinned spaces; unpin from the menu. Pinned spaces come first in every
+  sort mode, as consulted.
 
 - [ ] Audit whether colours and symbols are consistent across the UI
   (sidebar, mobile layout, tabs, toasts, job statuses `⧖ ✓ !`, state dots).
@@ -1326,7 +1300,21 @@ user needs to decide or do. Item text is unchanged.
     and colour together. Next: one `status_style` module per domain (agent,
     job, endpoint, notification) and semantic palette roles, decided
     together with the state-shape redesign.
-  Triage 2026-10-06 (decision): The audit is done; choose the semantic palette roles (e.g. Done teal vs blue), to be decided with the state-shape redesign.
+  Decided by the user 2026-10-06: the agent makes demos of a few palette-
+  role variants (e.g. Done teal vs blue) for the user to view in a tab,
+  then moves the item back under Needs a decision with the variants named,
+  so the user picks with a click; the legend item waits for that choice.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint

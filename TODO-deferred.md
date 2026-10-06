@@ -3,6 +3,29 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Build line (bottom left of the sidebar): hover shows the full commit
+  message, click opens a modal with the full commit info (full hash,
+  subject, body, author, date, dirty flag, version and channel), scrollable,
+  Esc closes.
+  - The data does not exist yet: `HERDR_GIT_COMMIT_LINE` holds only
+    `<short hash> <subject>`. Embed structured commit metadata at build
+    time (handle builds without git); never ask the git repo of the
+    current space, which is another project.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): the client and
+    the server builds can differ after a live handoff, so the modal shows
+    both, labelled "server" and "client", and marks a mismatch. Server
+    details come from a new advertised build-info method (the snapshot's
+    `build_commit` stays as is); an old server shows "details unavailable",
+    never the client's data in its place. Astra: the tooltip shows the
+    subject only, the body belongs in the modal.
+  - Done 2026-09-29: hovering the build line shows its whole commit line
+    (hash and subject) in a tooltip, and both builds when the client's
+    differs (`server <line> · client <hash>`). Still open: the modal and
+    the build metadata it needs.
+  Decided by the user 2026-10-06: parked: the hover with hash and subject
+  is enough; the modal and its build-info API method come back when it
+  falls short.
+
 - [ ] Run the untrusted/cloaked OpenRouter consult (`ask-bunny`, Space Bunny /
   MiMo) so a secret can never reach the logging provider (user, 2026-10-02).
   - Done so far (committed `1d71dabf`): `ask-bunny` runs `ask_openrouter.py`
