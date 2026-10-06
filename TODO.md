@@ -6,6 +6,9 @@ Parked ideas live in `TODO-deferred.md`.
 
 ## Next, in order
 
+Agents may do these from the top without asking when the user tells them to
+work through the TODO (AGENTS.md, Commit Style).
+
 - [ ] `herdr tab create` without `--workspace` from inside a pane should
   create the tab in the caller's workspace (`$HERDR_WORKSPACE_ID`), not in
   the workspace the user is looking at. On 2026-10-06 a Claude session in
@@ -15,662 +18,10 @@ Parked ideas live in `TODO-deferred.md`.
   the CLI (`src/cli/tab.rs`), so calls from outside Herdr keep today's
   behaviour; this departs from upstream. Check the other create commands
   that fall back to the active workspace the same way.
+
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
   guidance, as a belt-and-braces for servers without the fix above.
-
-- [ ] Mark a pane whose agent ended its turn waiting for the user even when
-  it could not run `herdr agent awaiting-reply` (user, 2026-10-06: why was
-  the window not marked after the agent stopped with "I stopped halfway: the
-  automatic permission check stopped answering and blocks every edit and
-  command"). A Claude session in music-mpd ended its turn asking the user to
-  write "dalej" (continue); Claude Code's auto-mode classifier gave no verdict
-  for every Bash/Edit call, so the agent could not run the awaiting-reply
-  command and the pane looked finished. The marker today depends on a tool
-  call the agent makes; it needs a path that does not: e.g. the Stop hook
-  (already installed by `herdr integration install claude`) marking the pane
-  when the turn ended right after failed or blocked tool calls, or showing
-  such a pane as "stopped with an error" instead of idle. Check what the hook
-  input carries about the last tool results before choosing.
-
-- [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
-  where I see what the agent asks? now I only have a question mark"; queued
-  next). Inspired by posts praising the T3 Code and Devin sidebars
-  (https://x.com/kr0der/status/2107037327575208337: rows like "Approve
-  phase 1" or "PR is ready" instead of a title and a coloured dot). Today the
-  header's `?N` list names the tabs that wait for a reply, not the question.
-  ```
-   ⇅ manual        ◐3 [?2] ✉1
-   ┌───────────────────────────┐
-   │ ? Read the X post         │
-   │   ↳ add it to TODO?       │
-   │ ? Fix OAuth callback      │
-   │   ↳ Install now?          │
-   └───────────────────────────┘
-  ```
-  - First slice: `herdr agent awaiting-reply` takes an optional short text
-    (the question in a few words); the integration hook asks for it. The
-    text lives and is cleared with the `awaiting_reply` flag (the next user
-    prompt), so no stale questions. The server caps it at ingest (about 40
-    characters on a grapheme boundary, control and ANSI sequences stripped),
-    never per frame. The `?` list draws it as a dim second row. Bump the
-    Claude integration version once from the latest release.
-    Done 2026-10-06 together with the inbox and Limited from "Orchestration
-    direction": `pane.report_awaiting_reply` takes `question`; agents
-    report `waiting_since_ms` (blocked, asked, limited) and the `?` list
-    ranks by it, longest first, the wait (`3h`, `2m`) in the time column,
-    the ask as a dim `↳` line (blocked: the hook message or `approval`).
-    `pane.report_limit {kind: usage|credits, message}` (CLI `herdr agent
-    limited`) from Claude's `StopFailure` hook (`rate_limit`,
-    `billing_error`); shown like an awaiting-reply report and counted in
-    `?N`; `resets_at` is the latest reset of the provider's full windows
-    in the usage report (a limit report refreshes it). Integration stays v12
-    (unreleased since v11). Open: a separate header count for limited
-    agents, the second line under sidebar tab lines, limits for Codex/pi.
-  - Later: the same second line under `?` tab lines in the sidebar (only
-    for asking rows; working rows stay one line), and a "needs me" filter
-    in the planned sidebar filter bar, never hiding rows by default
-    (hiding breaks positional `Alt-1…9`, focus, and job child tabs).
-  - Consulted sol and MiMo (round `20261006-021127-0eb7`). Agreed: keep the
-    task title as the row's identity and put the ask in a second line (sol;
-    rejected MiMo's ask replacing the title: three OAuth tabs become
-    indistinguishable); explicit reporting, not a heuristic over
-    `last_assistant_message` (preambles, the question in paragraph four,
-    raw text landing in server metadata); server-side expiry. Open: sol
-    shows outcomes ("ready for review") apart from actions, MiMo would not
-    show outcomes at all (stale within a day); if outcomes come, show them
-    only until the tab is viewed.
-  - More users asking for it (2026-10-06, replies to the post above): "a
-    colored dot tells me something's running, not that it's waiting on me
-    ... most of my lost time with agents is hunting for the chat that's
-    stuck on a yes" (@haonv2); Shika gives every card a second line in
-    words: the CLI, the status, the branch, and the diff stat once it is
-    ready to check (@hieuspringle). Candidate for a done row later: branch
-    and `+N -M`, facts herdr can read itself instead of agent prose.
-  - How T3 Code does it (read 2026-10-06, pingdotgg/t3code `4df84a7d`): a
-    three-line card (project and status word, title, branch/PR/providers);
-    status words Working, Waiting, Approval, Input, Limited (a usage limit,
-    apart from Failed), Failed, Done (`resolveSidebarThreadStatus`,
-    `apps/web/src/components/Sidebar.logic.ts:977`). The question text is
-    not in the sidebar, only the label; it shows in a panel above the
-    composer. Working rows are dimmed, an optional "working shelf" folds
-    them away, and the inbox sorts by when a thread last came back to the
-    user. Its diff stat is a stub (`latestRunDiff()` returns null,
-    `Sidebar.tsx:2161`). Worth taking: a `Limited` state, which also tells
-    when to hand a session over (see below).
-  - Diff stat source, if it comes: T3 snapshots the tree at each turn end
-    into hidden refs (`refs/t3/checkpoints`, through a temporary
-    `GIT_INDEX_FILE`) and takes `git diff --numstat` between consecutive
-    snapshots, so the stat is per turn, not the whole tree. In the shared
-    checkout it would still count concurrent sessions' edits.
-
-- [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
-  would help, now I have to paste a link to the pi or claude session by
-  hand"; queued after the `?` list above). Inspired by
-  https://x.com/MahyadGhassemi/status/2107190376692056222 (T3 Code switches
-  models mid-chat, useful when a usage limit runs out).
-  - Idea: a tab menu item "Hand over to… Claude / Pi / Codex" opens a new
-    tab in the same cwd with the chosen agent and a first prompt naming the
-    source agent, its session id, its transcript path and the task title:
-    "Continue the work from <agent> session <id>, transcript <path>, task
-    <title>; read it first". Herdr already keeps agent session ids for
-    resume (`src/agent_resume.rs`); the transcript path is derived per agent
-    (Claude `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file;
-    verify both). The new agent reads the transcript itself, so herdr never
-    parses private transcript formats, and it works after the source agent
-    hit its limit.
-  - Open: whether the source tab stays (likely yes, idle), a CLI/API form
-    (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
-    what to do when the session id is unknown (say so, do not guess).
-  - How T3 Code does it (2026-10-06): it drives agents through their
-    protocols (Claude Agent SDK, `codex app-server`, `pi --mode rpc`, ACP),
-    so it owns the event stream. On a provider switch it replays selected
-    items, not a model-written summary: user and assistant text, commands
-    with output, errors, changed file names, plans, within a 16k-token
-    budget (`T3CODE_CONTEXT_HANDOFF_TOKEN_CAP`), only the delta since the
-    target last saw the thread; natively for Codex (`thread/inject_items`),
-    else as text before the user's message. Herdr has no event stream, so
-    the new agent reading the transcript stays cheaper; reuse T3's list of
-    what to carry over as the instruction in the first prompt. Subagents:
-    T3 hides them from the sidebar too (shown in the parent's lineage
-    panel; a terminal child wakes the parent with a synthetic message), so
-    showing them in herdr is not urgent.
-  - From the Fellowship post (below): keep it a provenance pointer (source
-    agent, session id, transcript, repository, revision, time), not a
-    shared context; the post moves context between sessions only "when it
-    is useful".
-
-Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
-(2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
-session that writes all code and delegates to documenter, reviewer, qa and
-ops-recon through `herdr agent prompt`, one of them on a remote host).
-Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
-and `20261006-030215-b8ca`); both put the first two at the top.
-
-- [ ] Resolve agent names within the caller's workspace first. Today
-  `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
-  `agent_name` in every workspace, so the post names agents
-  `<workspace-id>-<role>` and its main profile has to say "verify that each
-  target belongs to the intended workspace and project. Never substitute an
-  unnamed, focused, or unrelated agent." Keep an explicit way to address a
-  name globally; an ambiguous name stays an error. Risk: callers that rely
-  on global names from another workspace (sol).
-
-- [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
-  help says "It does not track turns: if the agent is already working, that
-  active turn's completion may match", and the post's whole delegation runs
-  on it. Return a request id and report accepted, working and finished for
-  that request. Screen detection cannot prove a turn ended, so this needs a
-  signal from the integration; say so where an agent has none instead of
-  guessing (sol, MiMo).
-
-- [ ] Usage summed per workspace. The author asked every session for its
-  `/session` accounting by hand and had an agent record the total. The
-  fork's usage module has the numbers per agent. Risk: totals that disagree
-  with the provider's bill, and resumed sessions counted twice (sol).
-
-- [ ] Up arrow in a Claude pane recalls other panes' prompts (user,
-  2026-10-06: "when I press up in some Claude instance, commands from the
-  history of other instances show up instead of this one"). Cause, read
-  from the Claude Code 2.1.291 binary (`readForProject`): every prompt goes
-  to the global `~/.claude/history.jsonl` with `project` and `sessionId`;
-  Up takes the 100 newest entries of the project (all sessions), then
-  lists the current session's first and the others after them. With ~15
-  panes in one checkout those 100 entries span 13.6 hours (measured
-  2026-10-06), so a pane quiet for half a day has none of its own left,
-  and a busy one reaches others' after its few. Not herdr's bug: herdr's
-  `claude --resume <id>` keeps the session id (60 recent transcripts, one
-  id each), and the history file has no corrupt lines. `/clear` starts a
-  new id, so prompts before it count as another session's. Upstream
-  anthropics/claude-code#24751 ("scope Up-arrow history per session") is
-  closed; the session-first order is probably its fix, the limit applied
-  before the split is what remains. Consulted sol and MiMo (round
-  `20261006-160655-e30d`).  Second report (user, same day, screenshot `History 97/100`): in a session
-  with two prompts, the third Up showed another session's prompt. That is
-  the designed fallback, not the limit: once the session's own prompts run
-  out, Up goes on to other sessions' prompts with no marker between them.
-  The user remembers it differently "before"; versions 2.1.289-291 have
-  the same code, and older ones are no longer on disk to compare.
-  Upstream already tracks it: anthropics/claude-code#15631 ("Option to
-  disable cross-session command history in up-arrow"), open since
-  2025-12-29 with many +1s (user, 2026-10-06, linked it); no new issue,
-  at most a thumbs-up there. Options:
-  - Workaround in herdr: herdr already stores each Claude pane's session
-    id (`session_ref` in `src/agent_resume.rs`), so a popup could list only
-    that pane's prompts from `history.jsonl`, newest first, and type the
-    chosen one into the pane. Prior art from that issue:
-    https://github.com/pjs7678/claude-session-history (tmux `prefix + H`,
-    a SessionStart hook records the session, fzf popup, Enter copies).
-    Read the file read-only and skip malformed lines.
-    Design (consulted sol and MiMo, round `20261006-162148-0704`;
-    mockups shown to the user 2026-10-06): an overlay like the image
-    picker, newest first, filter as you type, rows `time  first line
-    (+N lines) [paste]`, groups `Previous session · <date>` below the
-    current one. The text inserted is the resolved prompt: pastes come
-    from `pastedContents` (inline `content`) or `~/.claude/paste-cache/`
-    (by hash), and an entry that cannot be resolved is shown as
-    incomplete, never typed as `[Pasted text #1]` (both). Enter types it
-    at the cursor without Enter only when the pane's agent is idle
-    (`agent_status`); while it works or asks, Enter copies instead (sol).
-    The server reads the file for a pane id, never a client-sent session
-    id or path (sol). Cheapest first step, no core change: a plugin
-    popup, since `herdr pane get` already returns `agent_session`, a
-    plugin's context carries `focused_pane_id`, and `herdr pane send-text`
-    exists (MiMo; fzf is installed).
-  - Native Up instead of a picker (user, 2026-10-06: "why can't it work
-    with Claude already running in the tab? some proxy that filters by
-    sessionId?"; consulted sol and MiMo, round `20261006-162725-cdd2`).
-    Preferred: a keystroke proxy in herdr, which sees every key before
-    Claude. When the pane's Claude is idle and its prompt box is empty
-    (detection snapshot), herdr swallows Up/Down and cycles through that
-    session's own prompts from `history.jsonl` (resolved pastes): clear
-    the input, bracketed-paste the prompt. Any other key leaves this mode
-    and is forwarded. Clearing is reliable because Claude has a
-    `chat:clearInput` action that `~/.claude/keybindings.json` can bind to
-    a key herdr sends (defaults there: `up` `history:previous`, `down`
-    `history:next`). Risks to test (MiMo): arrows in menus, permission
-    dialogs, completions, Ctrl+R search and `!` mode must pass through;
-    typed or multi-line input must keep Claude's own Up; a redraw must not
-    leave the mode stuck. The load-bearing part is detecting an empty
-    prompt box from the screen. Rejected: a per-pane `CLAUDE_CONFIG_DIR`
-    of symlinks (sol's pick in a copied form): tmp+rename writes of
-    `settings.local.json` (every "always allow") and `~/.claude.json` turn
-    a symlink into a private copy, plus a daemon and lock per directory,
-    and it needs a relaunch; patching the JS in the signed Bun binary
-    (bytecode, re-signing, every update, terms of use); rewriting
-    `project` in the shared file (one file cannot show different views to
-    different panes); a FUSE view (too heavy).
-  - Better, and proven live (user, 2026-10-06: "another claude binary in
-    $PATH that intercepts the requests, so the real claude gets only its
-    session's history"): Claude's Bun binary honours the `BUN_OPTIONS` env
-    var, so a `claude` wrapper can run it with `--preload <filter.js>`,
-    without touching the signed binary. Up reads `history.jsonl` through
-    `open(path, "r")` from `fs/promises`; the preload wraps that open and
-    hands Claude a filtered copy holding only its own sessions' lines. The
-    call stack names the caller (method names survive minification):
-    `readForProject` (Up) and `countForProject` (the `History N/M`
-    counter) get the filtered view, `readTimestamped` (Ctrl+R, "Search
-    prompts · everywhere") keeps the whole file. Own sessions: the id
-    from `--resume`/`--session-id`, plus every `sessionId` this process
-    appends (a `/clear` starts a new id). Tested in a throwaway tab on
-    2.1.291: a fresh session's Up showed nothing, after one prompt
-    `History 1/1`, after `/clear` and another prompt both of this pane's
-    prompts and no others. Consulted sol and MiMo (round
-    `20261006-163930-a40c`). Built as its own project (user, 2026-10-06:
-    it must also work outside herdr): `~/personal_projects/claude-own-history`;
-    session ids come from argv, a `SessionStart` hook the wrapper adds with
-    `--settings` (covers `--continue` and the resume picker; round
-    `20261006-164924-9465`) and the appended records. Live-tested: two
-    sessions in one directory and `--continue` each see only their own
-    prompts, plain `claude` sees both. Left for herdr: nothing, unless it
-    should offer installing that wrapper. pi needs nothing: its Up history
-    lives in each process's editor, seeded from the current session's
-    messages, with no shared file (round `20261006-170039-5739`). The
-    review notes that went into it:
-    - Bail out unless `process.argv[1]` is Claude's `/$bunfs/root/cli`,
-      and delete `BUN_OPTIONS` from `process.env` at once, so the Bash
-      tool's `bun` and other Bun programs never load it (both).
-    - Match the exact history path, not the basename; learn ids only
-      from appends, never from rewrites such as retention pruning (sol).
-    - Whole body in try/catch; on any error hand back the real file
-      (native behaviour), never crash Claude (MiMo; sol preferred empty
-      history, but today's behaviour is the safe fallback).
-    - The filtered copy lives in a private 0700 directory, 0600, removed
-      on exit, orphans swept at start (both); cache it by size and mtime.
-    - The id for `--continue` or a re-exec: ask herdr (`herdr pane get
-      $HERDR_PANE_ID` has `agent_session`) or learn it from the
-      transcript this process appends to (sol: SessionStart identity).
-    - Known limits: two panes resuming one id share their history (sol);
-      a Claude update that reads the file another way silently restores
-      the shared history, so log which call sites open it.
-  - Check that herdr never resumes one session id in two panes: both
-    panes would then share "own" history and interleave transcripts (sol).
-  - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
-    transcripts, plugins and login), or a worktree per pane only for this
-    (and only if Claude keys `project` by the worktree root, unverified).
-
-- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
-  but it did not close the job." Closing a parent tab's last pane (cmd+w)
-  checked only the parent for running work, and the server kept its child
-  job tabs running as top-level tabs. Consulted sol, DeepSeek and MiMo
-  (unanimous): an explicit close of the last pane is a close of the tab;
-  a parent whose shell exits or crashes keeps its jobs (an agent may exit
-  after starting a long build on purpose). Done: close-pane on a parent's
-  last pane asks and closes like closing the tab (test
-  `closing_a_parents_last_pane_closes_the_tab_with_its_children`). Not done:
-  make the kept jobs visible when the parent exits by itself: a notice
-  "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
-  the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
-  button in the parent's close dialog.
-
-- [ ] The tab state does not show that something runs in the background
-  (user, 2026-10-06, screenshot: "the tab state doesn't show that something
-  is running in the background"). Space `music-mpd`, tab "Testy,
-  ReplayGain, plan j…" shows idle `o` while Claude waits for a finite
-  `musicdb update` (about 2 minutes) and said it would continue when it
-  ends:
-  ```
-  * Worked for 1m 2s · done 12:21 PM · 1 shell still running
-  ❯ ok, czekam
-    ⏵⏵ auto mode on · 1 shell · ← for agents
-  ```
-  This is the case the 2026-10-03 decision above left idle on purpose
-  (a shell alone is not working, no badge: an endless `npm run dev` would
-  pin the pane). The user still wants to see it, so revisit the rejected
-  option: an orthogonal background badge next to the idle state (e.g. a
-  dim `1 shell` or a glyph with the count), not a new `AgentStatus`
-  variant (append-closed in frozen codecs). It needs an optional runtime
-  field (pane background task counts, parsed from the footer below the
-  prompt box) in the JSON API, then the TUI draws it in the tab line and
-  maybe the space header counts. Open: whether a long-lived dev server
-  should show the same badge (probably yes: it is true, just not urgent).
-  Consulted sol and MiMo (2026-10-06, calls `557d6c84`, `56fe2bac`):
-  - Both: a footer count shows that something runs, not that the agent
-    waits for it. Split the two: `background_tasks` (observed counts) and
-    an optional "awaiting background" flag only an explicit signal sets.
-    Like `awaiting-reply`, the integration could tell the agent to run
-    `herdr agent awaiting-background "<what>"` when it ends a turn waiting
-    for a task, cleared on the next prompt or working. Only that flag
-    may count as busy (bubble, header); a bare count never does.
-  - MiMo: a badge on every dev-server pane gets tuned out; draw it only
-    for awaited tasks, or dim the detached ones.
-  - sol: report unknown (no footer seen, other agents such as Codex) apart
-    from an observed zero, with source and freshness; show the count next
-    to every state, blocked included; notify only the final done
-    (idle+bg -> working -> done), never on shell exit.
-  - Glyph: not `⧗`/`⧖`, which already marks herdr-job jobs in space
-    squares (`space_tabs.rs`); sol prefers a plain `bg:1`.
-  - Noted: had the agent run `musicdb update` through `herdr-job`, the
-    space would already show `⧖ 1`; this case is a plain
-    `run_in_background` shell.
-  - Dismissed: MiMo's 5 s debounce of working (a delay hides the cause,
-    Rule 10) and its claim that bubble's "running job" covers background
-    shells (it means herdr-job jobs).
-  Why no herdr-job here (user, 2026-10-06: "why didn't the agent open this
-  background task as a herdr job? I want visibility"): `musicdb update` was
-  started by the hourly launchd job, not by the agent. The agent (which
-  used `herdr-job` for its own long commands in the same session) only
-  waited for that pid with a native background shell
-  (`until ! ps -p 95192 …`), reading the rule "run work that takes more
-  than a minute with herdr-job" as covering its own work, not waits.
-  Herdr jobs are drawn as a counter-rotating circle (`◑ 1`,
-  `src/ui/motion.rs` `JOB_FRAMES`), not `⧖`; the `⧖` in the doc comments
-  of `src/client/shell/space_tabs.rs` is stale.
-  Second round, sol and MiMo (calls `f2132f2c`, `9c834783`):
-  - Both rank: instruction change plus footer badge (A+D) first; a
-    PostToolUse registry of native shells without an exit hook leaves
-    ghost jobs; a PreToolUse deny of `run_in_background` trains
-    workarounds (worst, MiMo).
-  - Instruction by intent, not minutes (sol): "use herdr-job for
-    background work or waits whose end gates your next step, including
-    processes you did not start". MiMo: make that path cheaper than a
-    native shell, e.g. `herdr-job watch --pid N --name …`. Both: its
-    success means "the process disappeared", not "it succeeded" (no exit
-    status of a foreign process; pid reuse), so show it as such.
-  - Do not reuse `◑` for native shells (both): it promises a tab, a log
-    and an exit code. "Dimmed" must be carried by text, not colour
-    (16-colour themes, `NO_COLOR`): sol `bg1` (observed) vs `wait1`
-    (declared awaited), secondary foreground on top. Dismissed MiMo's
-    `○N`: `○` is the idle glyph in every state-icon theme.
-  - Agent waiting on a herdr job with its turn ended: sol keeps idle plus
-    the job circle (today's behaviour), MiMo wants working with a frozen
-    spinner. Undecided.
-
-- [ ] Consult cost per model and the coordinator's extra spend (user,
-  2026-10-03: "how much money/tokens a model used on a consult, and how much
-  more the coordinator burned by asking it"). Today every call logs normalized
-  usage, but no money, and the coordinator's own tokens are not logged at all.
-  Consulted Sol, DeepSeek, MiMo and Space Bunny (round `20261003-013157-b88d`,
-  agree on the shape):
-  - Money only where money exists: a versioned, dated price table (input,
-    cached input, output; reasoning billed as output, never twice since output
-    already includes it), `$` per call for DeepSeek and OpenRouter. Subscription
-    models (GPT, Claude, Gemini) show tokens and "included in subscription", not
-    a made-up per-token price; an API-list-price equivalent only as a separately
-    labelled column. A free preview model is `$0` for now, not for good.
-  - Coordinator: log the Claude Code session id and the round's start and end
-    (`new-round` to the last `rate`/`self`), then sum that window's per-message
-    usage from the session transcript, keeping cache reads apart. Label it
-    "consult-associated usage", not "extra": those turns also carry the existing
-    context (Sol, Space Bunny). Keep it per round, not split per model. Do not
-    add the answers again: they are already in the tool-result input (Space
-    Bunny). `answer_chars` is only a fallback proxy: it misses reasoning tokens.
-  - The true "how much more" needs a few matched tasks with and without a
-    consult; a one-off audit, not a stats column.
-  - DeepSeek: a later trial could score coordinator tokens per accepted unique
-    finding, which is what a shorter answer saves.
-
-- [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
-  (user, 2026-10-03: "do we need to unify ask in one place and consult in
-  another?"). All four consulted models (same round): leave it. `consult` names
-  the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
-  skills would split the log keys (`skill` field) and break muscle memory. At
-  most one README line stating the convention. Awaiting the user's decision.
-
-- [ ] Consult stats default view: mixed rows, too much data, and why `astra
-  -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
-  how do you rate these models now? The table is mixed up, deepseek is third;
-  maybe show last week as the first table. Very much data; is it needed? ask
-  the models"). Consulted sol, DeepSeek and MiMo (round
-  `20261003-124630-aaf5`).
-  - `astra -r` is not better (all three agree, verified in the log): 11 rated
-    calls, mostly code reviews, three of them beside only `luna -r`. In the
-    same window plain astra had 115 rated calls with uniq 1.57 versus 1.82,
-    the same 6.7 findings per call, but more accepted (5.1 versus 4.1) and
-    fewer rejected (24% versus 39%). Only paired rounds (same prompt, astra
-    and astra -r, same companions) could show a repo-mode gain.
-  - The mix-up: the default table pools all time and sorts by uniq/call, but
-    unique depends on who else was asked. The `deepseek-flash` alias row
-    (pre-2026-09-28, beside gpt-6-sol, terra, gemini) sits third; the current
-    DeepSeek-V4.1 row (0.86) is depressed by stronger companions (sol, MiMo).
-    `--days 7` alone does not fix it: it still shows the 09-26..09-28 rows.
-  - Proposed default (sol's framing; DeepSeek and MiMo close): current
-    configurations first (the default set and running trials, in configured
-    order), last 7 days with the dates printed; retired models, alias rows of
-    unknown version and rows under 5 rated calls collapse into one footer
-    line. Do not merge the unknown-version alias into V4.1 (sol; DeepSeek and
-    MiMo would merge with a footnote). MiMo: put the head-to-head of the
-    current set first, since only shared rounds control for companions.
-    Rows from another coordinator (Sonnet, asked by a DeepSeek-run agent)
-    are marked or split. Keep: rated/calls, uniq/call, rejected share, err,
-    p50. Cut from the default: call dates, the 8-line legend (two lines plus
-    `--legend`), anecdotal rows. All of it stays behind `--all`.
-  - Model ranking from shared rounds: sol 6.1 and MiMo tie on unique (60
-    rounds, -0.07, CI -0.28..+0.13, W/T/L 15/29/16), sol rejects 7 points
-    less, is faster (p50 38 s versus 47 s) and uses a quarter of the output
-    tokens. Both beat DeepSeek-V4.1 (sol +0.67 over 161 rounds, MiMo +0.48
-    over 58), DeepSeek is fastest (p50 16 s). Sonnet, Opus, Gemini, astra
-    `-r`: not comparable or too few. Keep sol + DeepSeek and finish the MiMo
-    trial; whether MiMo replaces DeepSeek is the trial's question.
-  - Cost (user, 2026-10-03: "and DeepSeek cost-wise? I think it has to be
-    turned off"): negligible. DeepSeek-V4.1 used 0.51M input and 2.52M
-    output tokens over 334 calls, $1.6 to $3.2 at the current off-peak and
-    peak prices (about a cent a call; $7.56 left on the account); MiMo cost
-    $0.22 over 71 calls (OpenRouter's own cost field). MiMo's second trial
-    passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
-    the user replaced DeepSeek with MiMo, default set sol + MiMo, for
-    quality, not cost; DeepSeek on request.
-
-- [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
-  show which models were tested together, e.g. sol ds mimo, and now a new
-  stage sol mimo? ask the models"). Unique per call only compares models
-  asked beside the same companions. Lineups derived from the log's rounds
-  (all calls, failed ones included): 32 distinct, led by astra+ds 116 rounds
-  (09-26..09-28), ds+sol 90 (09-30..10-03), ds alone 63, ds+mimo+sol 42,
-  ds+luna 31, astra+ds+luna 29, sonnet alone 27, bunny+ds+mimo+sol 22.
-  Consulted sol and MiMo (round `20261003-130240-6583`). Plan:
-  - `new-round` records the requested lineup (`--models sol,mimo`, the
-    consult skill passes the default set), because dates cannot assign
-    stages: the MiMo and Space Bunny trials ran inside the sol+ds period
-    (MiMo). Older rounds get a lineup derived from their calls, marked
-    derived.
-  - `stats --lineups`: one block per lineup with dates, coordinator, rounds,
-    full rounds; per model calls ok/failed, findings, accepted, rejected,
-    unique per answered call, p50. Lineups under 5 rounds fold into one line.
-  - Default `stats`: the current lineup's block first; no ranking across
-    lineups.
-  - Kept apart, each with a count so nothing is silently dropped: one-model
-    asks (unique is near tautological there), rounds where a companion
-    failed (its outage inflates the other's unique, sol), rounds run by
-    another coordinator, and rounds with an extra model asked on request.
-  - Named stages with a reason (`stage start sol+mimo --note ...`): only if
-    the why is worth keeping in the tool; the consult skill already records
-    each default-set change (sol). MiMo argued `--vs` already controls for
-    companions and this is bookkeeping; true for a two-model verdict, but
-    the user wants the history of what was tested.
-
-- [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple
-  menu: which models are used for consultation now, a checkbox to enable or
-  disable, its rank, uniqueness, error rate, and maybe how much the
-  coordinator's token cost increases"). Narrows the deferred settings >
-  consults page and the auto-consult toggle (both below, under herdr > menu >
-  settings). Consulted sol and MiMo (round `20261003-145404-dae6`). Not
-  started: another session is working nearby (user, 2026-10-03: "don't do it
-  for now, another session is on it; only the TODO"). Plan:
-  - A native herdr modal in Rust (user, 2026-10-03: "a script? I want it in
-    Rust"; chose the native modal over a ratatui binary in the plugin), in
-    the existing dialog style, mouse-first: clickable checkboxes. It replaces
-    the menu's **consult stats** item. The server reads the log and the state
-    file and exposes them through new advertised API methods (neutral names,
-    e.g. `consult.models.list`, `consult.models.set`), so the modal also
-    works against a remote server; an older server without them disables
-    only this item. Rows `[x] model | uniq/call (n) | wrong% | err% |
-    rated/calls | last used`; a toggle shows only after the server confirms
-    it is persisted. The statistics logic lives in `consult.py` today: decide
-    whether the server ports it or calls `consult.py ... --json`.
-  - State: one global file `~/.local/state/consult/models.json`, written
-    atomically. `consult.py models` prints the enabled set and is the single
-    source: it prints the skill's default when the file is missing (MiMo),
-    an empty list means consulting is off, a malformed file is an error, not
-    a silent default (sol). The consult skill runs it at each round instead
-    of the prose default set. An explicit request ("ask DeepSeek") bypasses
-    the checkbox but never the self-consultation rule or a missing key.
-  - `new-round` records the enabled set and whether the round was automatic
-    or explicitly requested, which also feeds "Consult stats by lineup".
-  - No rank column (both models): one number per model moves when another
-    row is toggled (companion effect). Numbers come from rounds of the actual
-    lineup, with n shown and metrics hidden under 5 rated calls; the paired
-    `stats --vs` stays the comparison.
-  - Coordinator cost, stage 1: the answer tokens each round injects into the
-    coordinator's context (already logged as `answer_chars`), labelled a lower
-    bound: they are re-read as cached input on every later turn, and the
-    coordinator's own reasoning is not counted. The full number waits for
-    "Consult cost per model and the coordinator's extra spend". No column
-    that reads "n/a"; subscription models show "included", never `$0`.
-  - Later: a `doctor` mark for an enabled model without a key or CLI, so it
-    does not burn calls into err%.
-
-- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
-  consult stats? we have Rust. ask the models"). `page-consult` pages
-  `consult.py` output with `less -R`; a popup is a real PTY pane
-  (`spawn_popup_command`, `src/app/popup.rs`). Consulted Sol, DeepSeek and MiMo
-  (round `20261003-022724-693a`), unanimous: keep `less` for now; "we have Rust"
-  is not a reason by itself, since the problem is viewing text, not the language.
-  - Reject a herdr pager subcommand (`herdr pager FILE`): it rebuilds `less`
-    (search, keys, ANSI, resize, mouse) and still runs inside a PTY, so it
-    gains nothing at the runtime/client boundary.
-  - Reject rewriting `consult.py stats` in Rust inside herdr: orthogonal, and it
-    couples personal analytics to the multiplexer.
-  - First step, a spike: a temporary popup with `command = ["seq", "1", "300"]`.
-    Does the popup keep scrollback, scroll with the mouse wheel and start at the
-    top? Does it get SIGWINCH on resize? If yes, drop `less` from
-    `page-consult` (print, then wait for Enter): mouse-first, no external pager,
-    but no `/` search. `less` runs on the alternate screen, so herdr's
-    scrollback sees nothing while it runs. If popups do not scroll, that is a
-    herdr defect worth fixing on its own.
-  - Later, only if several plugins want it (DeepSeek, MiMo): a manifest text
-    popup whose command's stdout herdr renders itself (no PTY, works on Windows
-    and remote clients). It is a new pane type: server-owned content,
-    client-owned viewport, reflow on resize, output limits, stderr and exit
-    status.
-  - Known limit either way: the tables are fitted to the width at launch; a
-    resized popup does not regenerate them.
-
-- [ ] Consult stats per model over time, to spot a silently "nerfed" model
-  (user, 2026-10-03: "what if we showed stats for a model over time? we could
-  detect a nerfed model. How to display those graphs then? ask the models").
-  Log on 2026-10-03: about 7.5 days, DeepSeek ~460 calls, Sol ~175, MiMo 39.
-  `model_version` exists for DeepSeek (`DeepSeek-V4.1-Flash`, one fingerprint),
-  MiMo and Claude, never for the GPT models (Codex does not report it); `usage`
-  has `reasoning` tokens for every vendor. Consulted Sol, DeepSeek and MiMo
-  (round `20261003-023646-4385`), agreeing on:
-  - A drift report, not a "nerf detector": the data can show a change, not
-    its cause. No composite score, no alerts, no all-pairs dashboard.
-  - Primary series: the paired difference against a reference model over
-    shared rounds (reuses `--vs` and its round bootstrap), since pooled rates
-    move with the question mix. My addition: a pair alone cannot say which side
-    moved; rounds with three models (Sol, DeepSeek, MiMo) can, because the side
-    shared by both shifted differences is the one that changed.
-  - Objective companions: output and reasoning tokens per 1k prompt chars
-    (missing is not zero), error rate, latency only as a hint. Version and
-    fingerprint changes are markers on the time axis, not a series.
-  - Demote `unique` per call (depends on who else answered) and pooled useful
-    share (the rater is an LLM and drifts too; MiMo: check whether verdicts
-    correlate with answer length).
-  - Buckets: equal-n blocks (Sol: 50 rated calls; MiMo: rolling 50 shared
-    rounds, at least 30), labelled with their date span, with `n`, rating
-    coverage and a CI (Wilson for rates, round bootstrap for paired
-    differences). Below the minimum print "insufficient n", do not draw.
-    Fix the rule in advance (MiMo: |Δ| >= 15 points with the CI excluding 0 in
-    two consecutive blocks); no change-point detection yet.
-  - Display: text first, as `consult.py trend [--vs A B]` in the existing
-    `page-consult` popup, width-aware like `stats`: one row per block
-    (`span | n | Δ useful [CI] | coverage | errors | tokens | latency`), with
-    version changes marked. Sparklines at most as an extra column (they hide
-    the CI). No kitty-graphics PNG: `less -R` strips graphics escapes, and it
-    would need matplotlib. HTML only for one-off exploration.
-  - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
-    per week; a version bump answers the question without statistics.
-
-- [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
-  of this very session: the tab showed the idle green ring after a turn that
-  ended "Install this build, push the commits, or fix the flaky test first?").
-  Cause, verified: the `?` mark comes only from the agent running `herdr agent
-  awaiting-reply` as the last command of its turn (the hook reminder asks for
-  it); the agent in that turn did not run it. Nothing in herdr infers a
-  question. Consulted DeepSeek, Opus and GPT; they agree the explicit command
-  stays authoritative and that screen scraping is out; they differ on the
-  fallback:
-  - DeepSeek: a Claude Code `Stop` hook reads `last_assistant_message`
-    (or `transcript_path`), strips code, quotes and URLs, and when the final
-    paragraph is a direct question and nothing was reported it either marks
-    the pane itself with a high-confidence rule or, if ambiguous, blocks the
-    stop once (`stop_hook_active` false) with "if you are waiting for the user,
-    run `herdr agent awaiting-reply`".
-  - Opus: only the blocking reminder (the agent decides; no inference, no
-    model calls); a false alarm costs one short extra turn and sets no mark.
-  - GPT: the hook marks the pane itself as an inferred state (`source =
-    stop-heuristic`, with the matched evidence), conservative bilingual rules
-    (a direct request for a choice, confirmation or information, not just a
-    `?`), ambiguous means idle; no blocking, because it restarts the agent for
-    bookkeeping.
-  - Common: per-turn generation so a stale report cannot stick; clear on
-    `UserPromptSubmit`, typing, the next tool use or turn; run in shadow mode
-    first (log the would-be marks next to the real reports), then enable per
-    integration behind a flag; fixtures in English and Polish with code,
-    quotes, rhetorical questions, "let me know if", lists of options, and the
-    reported sentence as a positive case.
-  - Decision (the user said "choose yourself", 2026-10-01): order V1 shadow
-    logging, then V5 a stronger instruction, then V2 the blocking Stop-hook
-    reminder as a canary, V3 inference only if V2 is not enough (all three
-    models, second round). The offline audit made V1 unnecessary: it measures
-    the misses from existing transcripts.
-  - Audit (`scripts/awaiting_reply_audit.py`, tests in
-    `scripts/test_awaiting_reply_audit.py`; read only; Claude Code and Pi
-    transcripts; a bilingual question heuristic; per model: question-like
-    turns, reported, missed, false reports, order violations, Wilson interval).
-    First numbers, turns since 2026-10-01 12:40 (when every integration sent
-    the instruction): Claude Sonnet 5.5 (this session): 15 question-like turns,
-    11 missed (73%, CI 48-89%); Claude Opus 5.5: 8 question-like, 1 missed
-    (12%, CI 2-47%); Claude Haiku 4.5: 8 question-like, 7 missed (88%). Older
-    turns, before the instruction, are 90-100% misses for every model, so they
-    prove nothing about compliance. No Pi turn since the extension was
-    installed was in the transcripts yet (rerun after some Pi use). Caveats: the
-    heuristic gives false reports too (reported but the last paragraph is not a
-    question: 12-28 per model), it is a screen to review, not ground truth.
-  - Models' thresholds for moving on: V2 when the lower bound of the miss rate
-    is above 2-5% and the heuristic's false positive rate is at most 2%; V3 only
-    when the inferred precision's lower bound is above 98-99% and V2 is not
-    enough; rubric for an LLM judge: "does the final message ask the user for
-    a decision or an answer before work can continue" (not courtesy offers,
-    rhetorical or quoted questions), two judges, blind to the report status.
-  - Other variants kept here for when it happens again: V1 shadow log from a
-    Stop hook (`last_assistant_message`, else `transcript_path`); V2 block once
-    (`stop_hook_active`, "if you wait for the user run `herdr agent
-    awaiting-reply`, otherwise just stop"); V3 the hook marks the pane itself
-    (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
-    typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
-    an `agent_end` extension that does the same.
-  - Done 2026-10-01 (V2 for Claude Code; installed into `~/.claude` the same day with
-    `herdr integration install claude`, committed in the dotfiles repo; sessions
-    started before that keep their old hooks until restarted): a `Stop` hook
-    (`herdr-agent-state.sh stop-check`, added and removed with the reminder in
-    `claude_settings.rs`): when the final message's last paragraph looks like a
-    question for the user (the audit's bilingual heuristic, a parity test keeps
-    them equal) and the turn ran no `herdr agent awaiting-reply`, it blocks the
-    stop once (`stop_hook_active` guards the loop) with "run `herdr agent
-    awaiting-reply` now as the only command, then stop without repeating your
-    message; if you are not waiting for the user just stop"; every decision is
-    logged to `~/.local/state/herdr/awaiting-reply-stop.jsonl`;
-    `HERDR_AWAITING_REPLY_STOP=0` turns it off, `=shadow` only logs. Tests: the
-    install/uninstall tests, and `StopHook` in `scripts/test_awaiting_reply_
-    audit.py` (block once, reported and statement pass, an earlier turn's
-    report does not count). The integration version stays 11 (not yet
-    released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
-    extension), V3 inference, an LLM judge for the audit.
-
-- [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
-  probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
-  rollback) is the update path of the only user, and the updater is off for fork builds.
-  Trigger to do it: the first outside user relying on the published binaries, or the
-  public announcement. Then in two steps: (1) notify only: compare `(0.9.3, revision)`
-  from the embedded `ROHERDR_VERSION` with the newest `roherdr-v*` release of
-  `rofrol/roherdr`, show "newer release available" and the download command, nothing
-  replaced; local builds (hash instead of a number) do not check. (2) Only when several
-  binary users need it, after the upstream rebase: download `roherdr-<os>-<arch>`, verify
-  `SHA256SUMS`, stage the file and swap it after the process exits, with a tested rollback;
-  if the fork gets a Homebrew tap, leave upgrades to Homebrew instead. Not before the
-  upstream rebase (rebase debt). Done: nothing.
 
 - [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
   a name for the herdr fork, I already have roguix, maybe follow similar
@@ -793,6 +144,30 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     prerelease download on the Mac.
   - Done: nothing yet.
 
+- [ ] Keep the model context small, second pass (user, 2026-10-06: "plan
+  for cleaning unneeded files from the repo, so the model's context doesn't
+  swell too much"). Done on 2026-10-06: finished items left `TODO.md`
+  (402 KB to about 170 KB), their decisions went to `DECISIONS.md`, Deferred
+  to `TODO-deferred.md`; a root `.ignore` hides published doc snapshots and
+  the duplicate changelog from ripgrep; Codex's `project_doc_max_bytes` was
+  raised so it reads the fork sections of `AGENTS.md`, which stays as
+  upstream writes it (user).
+  - Left: open items still carry long histories of their finished slices;
+    condense each to its open part plus decisions. A lint against `[x]` in
+    `TODO.md` was skipped: the maintenance test list is upstream's justfile
+    line, a rebase conflict magnet.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Confirm done
+
 - [ ] Diagnose four sidebar tab-tree oddities (2026-10-01).
   - Screenshot: `/Users/romanfrolow/Screenshots/Screenshot 2026-10-01 at 01.41.46.png`
     (workspace `herdr`, branch `master`). Rows in order: `lazygit`,
@@ -849,28 +224,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
       (`src/ui`) for worktree-workspace rows before judging.
   - Consulted DeepSeek (generic hypotheses, nothing the data above did not
     settle better); GPT sol hit the Plus usage limit this round.
-
-- [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
-  - User reports Claude CLI selection copies as expected, whereas Pi inserts
-    newline characters into copied multiline text. Determine whether these
-    are extra breaks at visual wraps rather than intentional paragraph/code
-    breaks. No exact reproduction or clipboard-byte comparison yet.
-  - Installed Pi 0.99.1 fullscreen `getActiveSelectionText()` reads rendered
-    rows and joins them with `\n` in `pi-tui/dist/tui-alt-screen.js`.
-    This is a plausible mechanism in fullscreen, not proof for regular mode.
-    Global settings currently omit `tuiMode` (default regular); CLI/project
-    overrides and the user's actual gesture remain unknown. Do not assume
-    Claude's selection implementation without inspecting/reproducing it.
-  - Consulted DeepSeek and Gemini (low/medium/high): compare the same
-    synthetic paragraph, real-newline code block, unwrapped control and
-    Unicode text at 80/120 columns, in Pi regular/fullscreen and Claude CLI.
-    Record terminal/version, resize geometry, mouse modifiers and whether
-    copying uses terminal selection, Pi copy-on-select or OSC 52/native
-    clipboard. Compare exact LF/CRLF bytes, not just pasted appearance.
-    Preserve real newlines, indentation, graphemes and trailing spaces;
-    never fix this by blindly joining every selected row. Do not inspect or
-    overwrite the user's existing clipboard without permission; use a
-    disposable synthetic reproduction. No upstream issue without reproduction.
+  Triage 2026-10-06 (done): All four sub-items are checked and the worktree drawing was redone (42a8b8af). Remove the item? The left-edge alignment nit could become a new item.
 
 - [ ] Compact job presentation for the agents the user runs: Pi, Claude Code,
   others (asked 2026-10-01). Today only Pi has it: the Pi activity extension
@@ -899,6 +253,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     an OSC 8 job link in the Claude output was not added (Claude Code may not
     pass it through); per-agent rows for codex, cursor, gemini and opencode
     stay deferred until the user runs one.
+  Triage 2026-10-06 (done): `herdr-job wait` is compact by default (plugins/job/herdr-job:1149, AGENTS.md); the rest waits until you run other agents. Remove the item?
 
 - [ ] Compact Pi activity rows with click-through to herdr-job details. (implemented and merged 2026-10-01, opt-in, not activated: see the last bullet)
   - User request and screenshot, 2026-10-01:
@@ -970,48 +325,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     API call to the focus change measured 0.12-0.25 s. The physical
     Ctrl+click on macOS: confirmed by the user ("działa", 2026-10-01) on
     the installed build `47ba72b8`.
-
-- [ ] Add easily accessible advisor checkboxes in Herdr so it injects
-  `Consult with <selected agents>` into coding-agent requests. Let the user
-  select advisors (for example DeepSeek) and disable the instruction easily.
-  Consulted DeepSeek 2026-09-30: start with a per-pane/session picker opened
-  from a visible `Advisors` control, showing the selected advisors. Inject
-  only on an explicit user send, preserve the user's text, preview the added
-  instruction and avoid duplicates; do not trigger background consultations.
-  Verify each CLI's supported injection path; use a visible, copyable prefix
-  rather than silent PTY keystrokes when safe injection is unavailable.
-  Decide scope, persistence, timing (every prompt or first turn), advisor
-  identity/invocation and multi-client ownership before implementation.
-  Make remote-provider privacy and cost implications explicit. These are
-  recommendations, not an approved UI design or implementation.
-
-- [ ] Update automatic terminal/tab titles to reflect current activity, as
-  in other terminals (screenshot, 2026-09-30 02:14). The selected sidebar
-  tab says `env` while its pane runs `brew update` / `brew upgrade --formula`.
-  Investigate the source of `env` and title precedence before assigning a
-  cause: launch label, shell-emitted OSC 0/2, explicit name, or stale state.
-  Consulted DeepSeek 2026-09-30: honor shell-provided titles first; do not
-  assume every terminal infers foreground commands. Preserve explicit user
-  names. Consider a foreground-command fallback only when reliable and no
-  meaningful emitted title is available; launch wrappers must not remain
-  the automatic label when a better source exists. Verify command-to-prompt
-  restoration, consecutive commands, empty OSC titles, explicit names and
-  shells with/without title emission. Sanitize and bound title text; avoid
-  flicker, output-driven churn and per-render process-tree polling. Check
-  many-pane idle overhead if fallback detection is added. No root cause
-  verified and no implementation approved yet.
-  - Probable cause found 2026-10-01 (not reproduced live): the tab label comes
-    from the program leading the pane's foreground group (`TerminalState::
-    running_label`), and `ForegroundProgramTracker` looks that name up once
-    per new group. A command like `env VAR=1 brew upgrade` starts as `env`,
-    which then execs the real program inside the same group, so the group
-    kept the name `env`. Mitigation committed (not installed): wrappers
-    (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `timeout`, `sudo`,
-    `doas`) are looked up again for up to six ticks per group, then believed.
-    Bounded extra work, only for panes running a wrapper. Not done: the rest
-    of this item (a title or foreground-command fallback beyond the program
-    name, OSC title precedence), and the user should say whether `env` still
-    appears after the next install.
+  Triage 2026-10-06 (done): Merged in 430f8b13 and aca70c3c, Ctrl+click confirmed by you on 47ba72b8. Remove the item?
 
 - [ ] Explore a subtle animated indicator while an agent instance is working,
   instead of a static status glyph (screenshots, 2026-09-30 01:09). The
@@ -1090,11 +404,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Installed as `b4c56cec` and the speeds confirmed by the user on a live
     demo job ("ok", 2026-10-01): installed build, working clockwise at 160 ms
     and job counter-clockwise at 320 ms.
-
-- [ ] Consider adding a subtle gradient in the empty space between the job
-  indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
-  Show several visual variants in the terminal before choosing one; generate
-  the demos with Python, as Claude did previously.
+  Triage 2026-10-06 (done): Built (`ui.animations`, src/ui/motion.rs), installed as b4c56cec, speeds confirmed by you on 2026-10-01. Remove the item?
 
 - [ ] Handoff 2026-09-29 (from the Claude session; its limit ran out). Read
   AGENTS.md first: consult GPT-6 Astra + DeepSeek on design choices,
@@ -1155,6 +465,674 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      new ones as needed (run them with `herdr-job run --keep`).
 
 Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
+  Triage 2026-10-06 (done): Points 1-2 done and confirmed; point 3's items are separate entries. Remove the handoff?
+
+### Decide
+
+- [ ] Mark a pane whose agent ended its turn waiting for the user even when
+  it could not run `herdr agent awaiting-reply` (user, 2026-10-06: why was
+  the window not marked after the agent stopped with "I stopped halfway: the
+  automatic permission check stopped answering and blocks every edit and
+  command"). A Claude session in music-mpd ended its turn asking the user to
+  write "dalej" (continue); Claude Code's auto-mode classifier gave no verdict
+  for every Bash/Edit call, so the agent could not run the awaiting-reply
+  command and the pane looked finished. The marker today depends on a tool
+  call the agent makes; it needs a path that does not: e.g. the Stop hook
+  (already installed by `herdr integration install claude`) marking the pane
+  when the turn ended right after failed or blocked tool calls, or showing
+  such a pane as "stopped with an error" instead of idle. Check what the hook
+  input carries about the last tool results before choosing.
+  Triage 2026-10-06 (decision): When a turn ends after blocked or failed tool calls, should the Stop hook mark the pane as awaiting a reply, or show a separate "stopped with an error" state?
+
+- [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
+  where I see what the agent asks? now I only have a question mark"; queued
+  next). Inspired by posts praising the T3 Code and Devin sidebars
+  (https://x.com/kr0der/status/2107037327575208337: rows like "Approve
+  phase 1" or "PR is ready" instead of a title and a coloured dot). Today the
+  header's `?N` list names the tabs that wait for a reply, not the question.
+  ```
+   ⇅ manual        ◐3 [?2] ✉1
+   ┌───────────────────────────┐
+   │ ? Read the X post         │
+   │   ↳ add it to TODO?       │
+   │ ? Fix OAuth callback      │
+   │   ↳ Install now?          │
+   └───────────────────────────┘
+  ```
+  - First slice: `herdr agent awaiting-reply` takes an optional short text
+    (the question in a few words); the integration hook asks for it. The
+    text lives and is cleared with the `awaiting_reply` flag (the next user
+    prompt), so no stale questions. The server caps it at ingest (about 40
+    characters on a grapheme boundary, control and ANSI sequences stripped),
+    never per frame. The `?` list draws it as a dim second row. Bump the
+    Claude integration version once from the latest release.
+    Done 2026-10-06 together with the inbox and Limited from "Orchestration
+    direction": `pane.report_awaiting_reply` takes `question`; agents
+    report `waiting_since_ms` (blocked, asked, limited) and the `?` list
+    ranks by it, longest first, the wait (`3h`, `2m`) in the time column,
+    the ask as a dim `↳` line (blocked: the hook message or `approval`).
+    `pane.report_limit {kind: usage|credits, message}` (CLI `herdr agent
+    limited`) from Claude's `StopFailure` hook (`rate_limit`,
+    `billing_error`); shown like an awaiting-reply report and counted in
+    `?N`; `resets_at` is the latest reset of the provider's full windows
+    in the usage report (a limit report refreshes it). Integration stays v12
+    (unreleased since v11). Open: a separate header count for limited
+    agents, the second line under sidebar tab lines, limits for Codex/pi.
+  - Later: the same second line under `?` tab lines in the sidebar (only
+    for asking rows; working rows stay one line), and a "needs me" filter
+    in the planned sidebar filter bar, never hiding rows by default
+    (hiding breaks positional `Alt-1…9`, focus, and job child tabs).
+  - Consulted sol and MiMo (round `20261006-021127-0eb7`). Agreed: keep the
+    task title as the row's identity and put the ask in a second line (sol;
+    rejected MiMo's ask replacing the title: three OAuth tabs become
+    indistinguishable); explicit reporting, not a heuristic over
+    `last_assistant_message` (preambles, the question in paragraph four,
+    raw text landing in server metadata); server-side expiry. Open: sol
+    shows outcomes ("ready for review") apart from actions, MiMo would not
+    show outcomes at all (stale within a day); if outcomes come, show them
+    only until the tab is viewed.
+  - More users asking for it (2026-10-06, replies to the post above): "a
+    colored dot tells me something's running, not that it's waiting on me
+    ... most of my lost time with agents is hunting for the chat that's
+    stuck on a yes" (@haonv2); Shika gives every card a second line in
+    words: the CLI, the status, the branch, and the diff stat once it is
+    ready to check (@hieuspringle). Candidate for a done row later: branch
+    and `+N -M`, facts herdr can read itself instead of agent prose.
+  - How T3 Code does it (read 2026-10-06, pingdotgg/t3code `4df84a7d`): a
+    three-line card (project and status word, title, branch/PR/providers);
+    status words Working, Waiting, Approval, Input, Limited (a usage limit,
+    apart from Failed), Failed, Done (`resolveSidebarThreadStatus`,
+    `apps/web/src/components/Sidebar.logic.ts:977`). The question text is
+    not in the sidebar, only the label; it shows in a panel above the
+    composer. Working rows are dimmed, an optional "working shelf" folds
+    them away, and the inbox sorts by when a thread last came back to the
+    user. Its diff stat is a stub (`latestRunDiff()` returns null,
+    `Sidebar.tsx:2161`). Worth taking: a `Limited` state, which also tells
+    when to hand a session over (see below).
+  - Diff stat source, if it comes: T3 snapshots the tree at each turn end
+    into hidden refs (`refs/t3/checkpoints`, through a temporary
+    `GIT_INDEX_FILE`) and takes `git diff --numstat` between consecutive
+    snapshots, so the stat is per turn, not the whole tree. In the shared
+    checkout it would still count concurrent sessions' edits.
+  Triage 2026-10-06 (decision): The first slice is done. Which follow-up comes next: a header count for limited agents, the sidebar second line, Codex/pi limits, or outcome rows like "ready for review"?
+
+- [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
+  would help, now I have to paste a link to the pi or claude session by
+  hand"; queued after the `?` list above). Inspired by
+  https://x.com/MahyadGhassemi/status/2107190376692056222 (T3 Code switches
+  models mid-chat, useful when a usage limit runs out).
+  - Idea: a tab menu item "Hand over to… Claude / Pi / Codex" opens a new
+    tab in the same cwd with the chosen agent and a first prompt naming the
+    source agent, its session id, its transcript path and the task title:
+    "Continue the work from <agent> session <id>, transcript <path>, task
+    <title>; read it first". Herdr already keeps agent session ids for
+    resume (`src/agent_resume.rs`); the transcript path is derived per agent
+    (Claude `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file;
+    verify both). The new agent reads the transcript itself, so herdr never
+    parses private transcript formats, and it works after the source agent
+    hit its limit.
+  - Open: whether the source tab stays (likely yes, idle), a CLI/API form
+    (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
+    what to do when the session id is unknown (say so, do not guess).
+  - How T3 Code does it (2026-10-06): it drives agents through their
+    protocols (Claude Agent SDK, `codex app-server`, `pi --mode rpc`, ACP),
+    so it owns the event stream. On a provider switch it replays selected
+    items, not a model-written summary: user and assistant text, commands
+    with output, errors, changed file names, plans, within a 16k-token
+    budget (`T3CODE_CONTEXT_HANDOFF_TOKEN_CAP`), only the delta since the
+    target last saw the thread; natively for Codex (`thread/inject_items`),
+    else as text before the user's message. Herdr has no event stream, so
+    the new agent reading the transcript stays cheaper; reuse T3's list of
+    what to carry over as the instruction in the first prompt. Subagents:
+    T3 hides them from the sidebar too (shown in the parent's lineage
+    panel; a terminal child wakes the parent with a synthetic message), so
+    showing them in herdr is not urgent.
+  - From the Fellowship post (below): keep it a provenance pointer (source
+    agent, session id, transcript, repository, revision, time), not a
+    shared context; the post moves context between sessions only "when it
+    is useful".
+
+Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
+(2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
+session that writes all code and delegates to documenter, reviewer, qa and
+ops-recon through `herdr agent prompt`, one of them on a remote host).
+Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
+and `20261006-030215-b8ca`); both put the first two at the top.
+  Triage 2026-10-06 (decision): Should the source tab stay, should there be a `herdr agent handoff --to` CLI/API, and is it a tab menu item only?
+
+- [ ] Resolve agent names within the caller's workspace first. Today
+  `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
+  `agent_name` in every workspace, so the post names agents
+  `<workspace-id>-<role>` and its main profile has to say "verify that each
+  target belongs to the intended workspace and project. Never substitute an
+  unnamed, focused, or unrelated agent." Keep an explicit way to address a
+  name globally; an ambiguous name stays an error. Risk: callers that rely
+  on global names from another workspace (sol).
+  Triage 2026-10-06 (decision): This changes the public target-resolution contract: accept breaking callers that use global names, and what is the explicit global form (flag or syntax)?
+
+- [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
+  help says "It does not track turns: if the agent is already working, that
+  active turn's completion may match", and the post's whole delegation runs
+  on it. Return a request id and report accepted, working and finished for
+  that request. Screen detection cannot prove a turn ended, so this needs a
+  signal from the integration; say so where an agent has none instead of
+  guessing (sol, MiMo).
+  Triage 2026-10-06 (decision): Needs a new API contract (request id, states) and a new integration signal: approve the design, and which agents get it versus "unsupported"?
+
+- [ ] Usage summed per workspace. The author asked every session for its
+  `/session` accounting by hand and had an agent record the total. The
+  fork's usage module has the numbers per agent. Risk: totals that disagree
+  with the provider's bill, and resumed sessions counted twice (sol).
+  Triage 2026-10-06 (decision): Where is the total shown (CLI, TUI, API), how are resumed sessions de-duplicated, and is a mismatch with the provider bill acceptable?
+
+- [ ] Up arrow in a Claude pane recalls other panes' prompts (user,
+  2026-10-06: "when I press up in some Claude instance, commands from the
+  history of other instances show up instead of this one"). Cause, read
+  from the Claude Code 2.1.291 binary (`readForProject`): every prompt goes
+  to the global `~/.claude/history.jsonl` with `project` and `sessionId`;
+  Up takes the 100 newest entries of the project (all sessions), then
+  lists the current session's first and the others after them. With ~15
+  panes in one checkout those 100 entries span 13.6 hours (measured
+  2026-10-06), so a pane quiet for half a day has none of its own left,
+  and a busy one reaches others' after its few. Not herdr's bug: herdr's
+  `claude --resume <id>` keeps the session id (60 recent transcripts, one
+  id each), and the history file has no corrupt lines. `/clear` starts a
+  new id, so prompts before it count as another session's. Upstream
+  anthropics/claude-code#24751 ("scope Up-arrow history per session") is
+  closed; the session-first order is probably its fix, the limit applied
+  before the split is what remains. Consulted sol and MiMo (round
+  `20261006-160655-e30d`).  Second report (user, same day, screenshot `History 97/100`): in a session
+  with two prompts, the third Up showed another session's prompt. That is
+  the designed fallback, not the limit: once the session's own prompts run
+  out, Up goes on to other sessions' prompts with no marker between them.
+  The user remembers it differently "before"; versions 2.1.289-291 have
+  the same code, and older ones are no longer on disk to compare.
+  Upstream already tracks it: anthropics/claude-code#15631 ("Option to
+  disable cross-session command history in up-arrow"), open since
+  2025-12-29 with many +1s (user, 2026-10-06, linked it); no new issue,
+  at most a thumbs-up there. Options:
+  - Workaround in herdr: herdr already stores each Claude pane's session
+    id (`session_ref` in `src/agent_resume.rs`), so a popup could list only
+    that pane's prompts from `history.jsonl`, newest first, and type the
+    chosen one into the pane. Prior art from that issue:
+    https://github.com/pjs7678/claude-session-history (tmux `prefix + H`,
+    a SessionStart hook records the session, fzf popup, Enter copies).
+    Read the file read-only and skip malformed lines.
+    Design (consulted sol and MiMo, round `20261006-162148-0704`;
+    mockups shown to the user 2026-10-06): an overlay like the image
+    picker, newest first, filter as you type, rows `time  first line
+    (+N lines) [paste]`, groups `Previous session · <date>` below the
+    current one. The text inserted is the resolved prompt: pastes come
+    from `pastedContents` (inline `content`) or `~/.claude/paste-cache/`
+    (by hash), and an entry that cannot be resolved is shown as
+    incomplete, never typed as `[Pasted text #1]` (both). Enter types it
+    at the cursor without Enter only when the pane's agent is idle
+    (`agent_status`); while it works or asks, Enter copies instead (sol).
+    The server reads the file for a pane id, never a client-sent session
+    id or path (sol). Cheapest first step, no core change: a plugin
+    popup, since `herdr pane get` already returns `agent_session`, a
+    plugin's context carries `focused_pane_id`, and `herdr pane send-text`
+    exists (MiMo; fzf is installed).
+  - Native Up instead of a picker (user, 2026-10-06: "why can't it work
+    with Claude already running in the tab? some proxy that filters by
+    sessionId?"; consulted sol and MiMo, round `20261006-162725-cdd2`).
+    Preferred: a keystroke proxy in herdr, which sees every key before
+    Claude. When the pane's Claude is idle and its prompt box is empty
+    (detection snapshot), herdr swallows Up/Down and cycles through that
+    session's own prompts from `history.jsonl` (resolved pastes): clear
+    the input, bracketed-paste the prompt. Any other key leaves this mode
+    and is forwarded. Clearing is reliable because Claude has a
+    `chat:clearInput` action that `~/.claude/keybindings.json` can bind to
+    a key herdr sends (defaults there: `up` `history:previous`, `down`
+    `history:next`). Risks to test (MiMo): arrows in menus, permission
+    dialogs, completions, Ctrl+R search and `!` mode must pass through;
+    typed or multi-line input must keep Claude's own Up; a redraw must not
+    leave the mode stuck. The load-bearing part is detecting an empty
+    prompt box from the screen. Rejected: a per-pane `CLAUDE_CONFIG_DIR`
+    of symlinks (sol's pick in a copied form): tmp+rename writes of
+    `settings.local.json` (every "always allow") and `~/.claude.json` turn
+    a symlink into a private copy, plus a daemon and lock per directory,
+    and it needs a relaunch; patching the JS in the signed Bun binary
+    (bytecode, re-signing, every update, terms of use); rewriting
+    `project` in the shared file (one file cannot show different views to
+    different panes); a FUSE view (too heavy).
+  - Better, and proven live (user, 2026-10-06: "another claude binary in
+    $PATH that intercepts the requests, so the real claude gets only its
+    session's history"): Claude's Bun binary honours the `BUN_OPTIONS` env
+    var, so a `claude` wrapper can run it with `--preload <filter.js>`,
+    without touching the signed binary. Up reads `history.jsonl` through
+    `open(path, "r")` from `fs/promises`; the preload wraps that open and
+    hands Claude a filtered copy holding only its own sessions' lines. The
+    call stack names the caller (method names survive minification):
+    `readForProject` (Up) and `countForProject` (the `History N/M`
+    counter) get the filtered view, `readTimestamped` (Ctrl+R, "Search
+    prompts · everywhere") keeps the whole file. Own sessions: the id
+    from `--resume`/`--session-id`, plus every `sessionId` this process
+    appends (a `/clear` starts a new id). Tested in a throwaway tab on
+    2.1.291: a fresh session's Up showed nothing, after one prompt
+    `History 1/1`, after `/clear` and another prompt both of this pane's
+    prompts and no others. Consulted sol and MiMo (round
+    `20261006-163930-a40c`). Built as its own project (user, 2026-10-06:
+    it must also work outside herdr): `~/personal_projects/claude-own-history`;
+    session ids come from argv, a `SessionStart` hook the wrapper adds with
+    `--settings` (covers `--continue` and the resume picker; round
+    `20261006-164924-9465`) and the appended records. Live-tested: two
+    sessions in one directory and `--continue` each see only their own
+    prompts, plain `claude` sees both. Left for herdr: nothing, unless it
+    should offer installing that wrapper. pi needs nothing: its Up history
+    lives in each process's editor, seeded from the current session's
+    messages, with no shared file (round `20261006-170039-5739`). The
+    review notes that went into it:
+    - Bail out unless `process.argv[1]` is Claude's `/$bunfs/root/cli`,
+      and delete `BUN_OPTIONS` from `process.env` at once, so the Bash
+      tool's `bun` and other Bun programs never load it (both).
+    - Match the exact history path, not the basename; learn ids only
+      from appends, never from rewrites such as retention pruning (sol).
+    - Whole body in try/catch; on any error hand back the real file
+      (native behaviour), never crash Claude (MiMo; sol preferred empty
+      history, but today's behaviour is the safe fallback).
+    - The filtered copy lives in a private 0700 directory, 0600, removed
+      on exit, orphans swept at start (both); cache it by size and mtime.
+    - The id for `--continue` or a re-exec: ask herdr (`herdr pane get
+      $HERDR_PANE_ID` has `agent_session`) or learn it from the
+      transcript this process appends to (sol: SessionStart identity).
+    - Known limits: two panes resuming one id share their history (sol);
+      a Claude update that reads the file another way silently restores
+      the shared history, so log which call sites open it.
+  - Check that herdr never resumes one session id in two panes: both
+    panes would then share "own" history and interleave transcripts (sol).
+  - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
+    transcripts, plugins and login), or a worktree per pane only for this
+    (and only if Claude keys `project` by the worktree root, unverified).
+  Triage 2026-10-06 (decision): Solved outside herdr (claude-own-history): should herdr offer to install that wrapper, or only add a read-only check that one session id is never resumed in two panes?
+
+- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
+  but it did not close the job." Closing a parent tab's last pane (cmd+w)
+  checked only the parent for running work, and the server kept its child
+  job tabs running as top-level tabs. Consulted sol, DeepSeek and MiMo
+  (unanimous): an explicit close of the last pane is a close of the tab;
+  a parent whose shell exits or crashes keeps its jobs (an agent may exit
+  after starting a long build on purpose). Done: close-pane on a parent's
+  last pane asks and closes like closing the tab (test
+  `closing_a_parents_last_pane_closes_the_tab_with_its_children`). Not done:
+  make the kept jobs visible when the parent exits by itself: a notice
+  "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
+  the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
+  button in the parent's close dialog.
+  Triage 2026-10-06 (decision): The close-path fix is done. Should a parent exiting on its own show the "N jobs kept running" notice and a `was <name>` mark, and should there be a "Close tab, keep jobs" button?
+
+- [ ] The tab state does not show that something runs in the background
+  (user, 2026-10-06, screenshot: "the tab state doesn't show that something
+  is running in the background"). Space `music-mpd`, tab "Testy,
+  ReplayGain, plan j…" shows idle `o` while Claude waits for a finite
+  `musicdb update` (about 2 minutes) and said it would continue when it
+  ends:
+  ```
+  * Worked for 1m 2s · done 12:21 PM · 1 shell still running
+  ❯ ok, czekam
+    ⏵⏵ auto mode on · 1 shell · ← for agents
+  ```
+  This is the case the 2026-10-03 decision above left idle on purpose
+  (a shell alone is not working, no badge: an endless `npm run dev` would
+  pin the pane). The user still wants to see it, so revisit the rejected
+  option: an orthogonal background badge next to the idle state (e.g. a
+  dim `1 shell` or a glyph with the count), not a new `AgentStatus`
+  variant (append-closed in frozen codecs). It needs an optional runtime
+  field (pane background task counts, parsed from the footer below the
+  prompt box) in the JSON API, then the TUI draws it in the tab line and
+  maybe the space header counts. Open: whether a long-lived dev server
+  should show the same badge (probably yes: it is true, just not urgent).
+  Consulted sol and MiMo (2026-10-06, calls `557d6c84`, `56fe2bac`):
+  - Both: a footer count shows that something runs, not that the agent
+    waits for it. Split the two: `background_tasks` (observed counts) and
+    an optional "awaiting background" flag only an explicit signal sets.
+    Like `awaiting-reply`, the integration could tell the agent to run
+    `herdr agent awaiting-background "<what>"` when it ends a turn waiting
+    for a task, cleared on the next prompt or working. Only that flag
+    may count as busy (bubble, header); a bare count never does.
+  - MiMo: a badge on every dev-server pane gets tuned out; draw it only
+    for awaited tasks, or dim the detached ones.
+  - sol: report unknown (no footer seen, other agents such as Codex) apart
+    from an observed zero, with source and freshness; show the count next
+    to every state, blocked included; notify only the final done
+    (idle+bg -> working -> done), never on shell exit.
+  - Glyph: not `⧗`/`⧖`, which already marks herdr-job jobs in space
+    squares (`space_tabs.rs`); sol prefers a plain `bg:1`.
+  - Noted: had the agent run `musicdb update` through `herdr-job`, the
+    space would already show `⧖ 1`; this case is a plain
+    `run_in_background` shell.
+  - Dismissed: MiMo's 5 s debounce of working (a delay hides the cause,
+    Rule 10) and its claim that bubble's "running job" covers background
+    shells (it means herdr-job jobs).
+  Why no herdr-job here (user, 2026-10-06: "why didn't the agent open this
+  background task as a herdr job? I want visibility"): `musicdb update` was
+  started by the hourly launchd job, not by the agent. The agent (which
+  used `herdr-job` for its own long commands in the same session) only
+  waited for that pid with a native background shell
+  (`until ! ps -p 95192 …`), reading the rule "run work that takes more
+  than a minute with herdr-job" as covering its own work, not waits.
+  Herdr jobs are drawn as a counter-rotating circle (`◑ 1`,
+  `src/ui/motion.rs` `JOB_FRAMES`), not `⧖`; the `⧖` in the doc comments
+  of `src/client/shell/space_tabs.rs` is stale.
+  Second round, sol and MiMo (calls `f2132f2c`, `9c834783`):
+  - Both rank: instruction change plus footer badge (A+D) first; a
+    PostToolUse registry of native shells without an exit hook leaves
+    ghost jobs; a PreToolUse deny of `run_in_background` trains
+    workarounds (worst, MiMo).
+  - Instruction by intent, not minutes (sol): "use herdr-job for
+    background work or waits whose end gates your next step, including
+    processes you did not start". MiMo: make that path cheaper than a
+    native shell, e.g. `herdr-job watch --pid N --name …`. Both: its
+    success means "the process disappeared", not "it succeeded" (no exit
+    status of a foreign process; pid reuse), so show it as such.
+  - Do not reuse `◑` for native shells (both): it promises a tab, a log
+    and an exit code. "Dimmed" must be carried by text, not colour
+    (16-colour themes, `NO_COLOR`): sol `bg1` (observed) vs `wait1`
+    (declared awaited), secondary foreground on top. Dismissed MiMo's
+    `○N`: `○` is the idle glyph in every state-icon theme.
+  - Agent waiting on a herdr job with its turn ended: sol keeps idle plus
+    the job circle (today's behaviour), MiMo wants working with a frozen
+    spinner. Undecided.
+  Triage 2026-10-06 (decision): A `bg:N` observed-count badge, an `awaiting-background` flag, or both? Do dev servers get the badge, and is a herdr-job wait shown as idle or working?
+
+- [ ] Consult cost per model and the coordinator's extra spend (user,
+  2026-10-03: "how much money/tokens a model used on a consult, and how much
+  more the coordinator burned by asking it"). Today every call logs normalized
+  usage, but no money, and the coordinator's own tokens are not logged at all.
+  Consulted Sol, DeepSeek, MiMo and Space Bunny (round `20261003-013157-b88d`,
+  agree on the shape):
+  - Money only where money exists: a versioned, dated price table (input,
+    cached input, output; reasoning billed as output, never twice since output
+    already includes it), `$` per call for DeepSeek and OpenRouter. Subscription
+    models (GPT, Claude, Gemini) show tokens and "included in subscription", not
+    a made-up per-token price; an API-list-price equivalent only as a separately
+    labelled column. A free preview model is `$0` for now, not for good.
+  - Coordinator: log the Claude Code session id and the round's start and end
+    (`new-round` to the last `rate`/`self`), then sum that window's per-message
+    usage from the session transcript, keeping cache reads apart. Label it
+    "consult-associated usage", not "extra": those turns also carry the existing
+    context (Sol, Space Bunny). Keep it per round, not split per model. Do not
+    add the answers again: they are already in the tool-result input (Space
+    Bunny). `answer_chars` is only a fallback proxy: it misses reasoning tokens.
+  - The true "how much more" needs a few matched tasks with and without a
+    consult; a one-off audit, not a stats column.
+  - DeepSeek: a later trial could score coordinator tokens per accepted unique
+    finding, which is what a shorter answer saves.
+  Triage 2026-10-06 (decision): Approve the shape: a dated price table with `$` only for DeepSeek and OpenRouter, and coordinator usage summed per round from the transcript, labelled "consult-associated"?
+
+- [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
+  (user, 2026-10-03: "do we need to unify ask in one place and consult in
+  another?"). All four consulted models (same round): leave it. `consult` names
+  the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
+  skills would split the log keys (`skill` field) and break muscle memory. At
+  most one README line stating the convention. Awaiting the user's decision.
+  Triage 2026-10-06 (decision): Leave the `ask_*` names as they are and add one README line, or unify them?
+
+- [ ] Consult stats default view: mixed rows, too much data, and why `astra
+  -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
+  how do you rate these models now? The table is mixed up, deepseek is third;
+  maybe show last week as the first table. Very much data; is it needed? ask
+  the models"). Consulted sol, DeepSeek and MiMo (round
+  `20261003-124630-aaf5`).
+  - `astra -r` is not better (all three agree, verified in the log): 11 rated
+    calls, mostly code reviews, three of them beside only `luna -r`. In the
+    same window plain astra had 115 rated calls with uniq 1.57 versus 1.82,
+    the same 6.7 findings per call, but more accepted (5.1 versus 4.1) and
+    fewer rejected (24% versus 39%). Only paired rounds (same prompt, astra
+    and astra -r, same companions) could show a repo-mode gain.
+  - The mix-up: the default table pools all time and sorts by uniq/call, but
+    unique depends on who else was asked. The `deepseek-flash` alias row
+    (pre-2026-09-28, beside gpt-6-sol, terra, gemini) sits third; the current
+    DeepSeek-V4.1 row (0.86) is depressed by stronger companions (sol, MiMo).
+    `--days 7` alone does not fix it: it still shows the 09-26..09-28 rows.
+  - Proposed default (sol's framing; DeepSeek and MiMo close): current
+    configurations first (the default set and running trials, in configured
+    order), last 7 days with the dates printed; retired models, alias rows of
+    unknown version and rows under 5 rated calls collapse into one footer
+    line. Do not merge the unknown-version alias into V4.1 (sol; DeepSeek and
+    MiMo would merge with a footnote). MiMo: put the head-to-head of the
+    current set first, since only shared rounds control for companions.
+    Rows from another coordinator (Sonnet, asked by a DeepSeek-run agent)
+    are marked or split. Keep: rated/calls, uniq/call, rejected share, err,
+    p50. Cut from the default: call dates, the 8-line legend (two lines plus
+    `--legend`), anecdotal rows. All of it stays behind `--all`.
+  - Model ranking from shared rounds: sol 6.1 and MiMo tie on unique (60
+    rounds, -0.07, CI -0.28..+0.13, W/T/L 15/29/16), sol rejects 7 points
+    less, is faster (p50 38 s versus 47 s) and uses a quarter of the output
+    tokens. Both beat DeepSeek-V4.1 (sol +0.67 over 161 rounds, MiMo +0.48
+    over 58), DeepSeek is fastest (p50 16 s). Sonnet, Opus, Gemini, astra
+    `-r`: not comparable or too few. Keep sol + DeepSeek and finish the MiMo
+    trial; whether MiMo replaces DeepSeek is the trial's question.
+  - Cost (user, 2026-10-03: "and DeepSeek cost-wise? I think it has to be
+    turned off"): negligible. DeepSeek-V4.1 used 0.51M input and 2.52M
+    output tokens over 334 calls, $1.6 to $3.2 at the current off-peak and
+    peak prices (about a cent a call; $7.56 left on the account); MiMo cost
+    $0.22 over 71 calls (OpenRouter's own cost field). MiMo's second trial
+    passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
+    the user replaced DeepSeek with MiMo, default set sol + MiMo, for
+    quality, not cost; DeepSeek on request.
+  Triage 2026-10-06 (decision): Adopt the proposed current-set/7-day default view? Should the unknown-version DeepSeek alias row merge into V4.1?
+
+- [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
+  show which models were tested together, e.g. sol ds mimo, and now a new
+  stage sol mimo? ask the models"). Unique per call only compares models
+  asked beside the same companions. Lineups derived from the log's rounds
+  (all calls, failed ones included): 32 distinct, led by astra+ds 116 rounds
+  (09-26..09-28), ds+sol 90 (09-30..10-03), ds alone 63, ds+mimo+sol 42,
+  ds+luna 31, astra+ds+luna 29, sonnet alone 27, bunny+ds+mimo+sol 22.
+  Consulted sol and MiMo (round `20261003-130240-6583`). Plan:
+  - `new-round` records the requested lineup (`--models sol,mimo`, the
+    consult skill passes the default set), because dates cannot assign
+    stages: the MiMo and Space Bunny trials ran inside the sol+ds period
+    (MiMo). Older rounds get a lineup derived from their calls, marked
+    derived.
+  - `stats --lineups`: one block per lineup with dates, coordinator, rounds,
+    full rounds; per model calls ok/failed, findings, accepted, rejected,
+    unique per answered call, p50. Lineups under 5 rounds fold into one line.
+  - Default `stats`: the current lineup's block first; no ranking across
+    lineups.
+  - Kept apart, each with a count so nothing is silently dropped: one-model
+    asks (unique is near tautological there), rounds where a companion
+    failed (its outage inflates the other's unique, sol), rounds run by
+    another coordinator, and rounds with an extra model asked on request.
+  - Named stages with a reason (`stage start sol+mimo --note ...`): only if
+    the why is worth keeping in the tool; the consult skill already records
+    each default-set change (sol). MiMo argued `--vs` already controls for
+    companions and this is bookkeeping; true for a two-model verdict, but
+    the user wants the history of what was tested.
+  Triage 2026-10-06 (decision): Approve `new-round --models`, `stats --lineups` with the current lineup first; are named stages (`stage start --note`) wanted?
+
+- [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple
+  menu: which models are used for consultation now, a checkbox to enable or
+  disable, its rank, uniqueness, error rate, and maybe how much the
+  coordinator's token cost increases"). Narrows the deferred settings >
+  consults page and the auto-consult toggle (both below, under herdr > menu >
+  settings). Consulted sol and MiMo (round `20261003-145404-dae6`). Not
+  started: another session is working nearby (user, 2026-10-03: "don't do it
+  for now, another session is on it; only the TODO"). Plan:
+  - A native herdr modal in Rust (user, 2026-10-03: "a script? I want it in
+    Rust"; chose the native modal over a ratatui binary in the plugin), in
+    the existing dialog style, mouse-first: clickable checkboxes. It replaces
+    the menu's **consult stats** item. The server reads the log and the state
+    file and exposes them through new advertised API methods (neutral names,
+    e.g. `consult.models.list`, `consult.models.set`), so the modal also
+    works against a remote server; an older server without them disables
+    only this item. Rows `[x] model | uniq/call (n) | wrong% | err% |
+    rated/calls | last used`; a toggle shows only after the server confirms
+    it is persisted. The statistics logic lives in `consult.py` today: decide
+    whether the server ports it or calls `consult.py ... --json`.
+  - State: one global file `~/.local/state/consult/models.json`, written
+    atomically. `consult.py models` prints the enabled set and is the single
+    source: it prints the skill's default when the file is missing (MiMo),
+    an empty list means consulting is off, a malformed file is an error, not
+    a silent default (sol). The consult skill runs it at each round instead
+    of the prose default set. An explicit request ("ask DeepSeek") bypasses
+    the checkbox but never the self-consultation rule or a missing key.
+  - `new-round` records the enabled set and whether the round was automatic
+    or explicitly requested, which also feeds "Consult stats by lineup".
+  - No rank column (both models): one number per model moves when another
+    row is toggled (companion effect). Numbers come from rounds of the actual
+    lineup, with n shown and metrics hidden under 5 rated calls; the paired
+    `stats --vs` stays the comparison.
+  - Coordinator cost, stage 1: the answer tokens each round injects into the
+    coordinator's context (already logged as `answer_chars`), labelled a lower
+    bound: they are re-read as cached input on every later turn, and the
+    coordinator's own reasoning is not counted. The full number waits for
+    "Consult cost per model and the coordinator's extra spend". No column
+    that reads "n/a"; subscription models show "included", never `$0`.
+  - Later: a `doctor` mark for an enabled model without a key or CLI, so it
+    does not burn calls into err%.
+  Triage 2026-10-06 (decision): You said "don't do it for now": is it unblocked, and should the server port the stats logic to Rust or call `consult.py --json`?
+
+- [ ] Consult stats per model over time, to spot a silently "nerfed" model
+  (user, 2026-10-03: "what if we showed stats for a model over time? we could
+  detect a nerfed model. How to display those graphs then? ask the models").
+  Log on 2026-10-03: about 7.5 days, DeepSeek ~460 calls, Sol ~175, MiMo 39.
+  `model_version` exists for DeepSeek (`DeepSeek-V4.1-Flash`, one fingerprint),
+  MiMo and Claude, never for the GPT models (Codex does not report it); `usage`
+  has `reasoning` tokens for every vendor. Consulted Sol, DeepSeek and MiMo
+  (round `20261003-023646-4385`), agreeing on:
+  - A drift report, not a "nerf detector": the data can show a change, not
+    its cause. No composite score, no alerts, no all-pairs dashboard.
+  - Primary series: the paired difference against a reference model over
+    shared rounds (reuses `--vs` and its round bootstrap), since pooled rates
+    move with the question mix. My addition: a pair alone cannot say which side
+    moved; rounds with three models (Sol, DeepSeek, MiMo) can, because the side
+    shared by both shifted differences is the one that changed.
+  - Objective companions: output and reasoning tokens per 1k prompt chars
+    (missing is not zero), error rate, latency only as a hint. Version and
+    fingerprint changes are markers on the time axis, not a series.
+  - Demote `unique` per call (depends on who else answered) and pooled useful
+    share (the rater is an LLM and drifts too; MiMo: check whether verdicts
+    correlate with answer length).
+  - Buckets: equal-n blocks (Sol: 50 rated calls; MiMo: rolling 50 shared
+    rounds, at least 30), labelled with their date span, with `n`, rating
+    coverage and a CI (Wilson for rates, round bootstrap for paired
+    differences). Below the minimum print "insufficient n", do not draw.
+    Fix the rule in advance (MiMo: |Δ| >= 15 points with the CI excluding 0 in
+    two consecutive blocks); no change-point detection yet.
+  - Display: text first, as `consult.py trend [--vs A B]` in the existing
+    `page-consult` popup, width-aware like `stats`: one row per block
+    (`span | n | Δ useful [CI] | coverage | errors | tokens | latency`), with
+    version changes marked. Sparklines at most as an extra column (they hide
+    the CI). No kitty-graphics PNG: `less -R` strips graphics escapes, and it
+    would need matplotlib. HTML only for one-off exploration.
+  - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
+    per week; a version bump answers the question without statistics.
+  Triage 2026-10-06 (decision): Build `consult.py trend` now, or only a weekly list of `model_version` per model first? Which bucket rule and threshold?
+
+- [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
+  of this very session: the tab showed the idle green ring after a turn that
+  ended "Install this build, push the commits, or fix the flaky test first?").
+  Cause, verified: the `?` mark comes only from the agent running `herdr agent
+  awaiting-reply` as the last command of its turn (the hook reminder asks for
+  it); the agent in that turn did not run it. Nothing in herdr infers a
+  question. Consulted DeepSeek, Opus and GPT; they agree the explicit command
+  stays authoritative and that screen scraping is out; they differ on the
+  fallback:
+  - DeepSeek: a Claude Code `Stop` hook reads `last_assistant_message`
+    (or `transcript_path`), strips code, quotes and URLs, and when the final
+    paragraph is a direct question and nothing was reported it either marks
+    the pane itself with a high-confidence rule or, if ambiguous, blocks the
+    stop once (`stop_hook_active` false) with "if you are waiting for the user,
+    run `herdr agent awaiting-reply`".
+  - Opus: only the blocking reminder (the agent decides; no inference, no
+    model calls); a false alarm costs one short extra turn and sets no mark.
+  - GPT: the hook marks the pane itself as an inferred state (`source =
+    stop-heuristic`, with the matched evidence), conservative bilingual rules
+    (a direct request for a choice, confirmation or information, not just a
+    `?`), ambiguous means idle; no blocking, because it restarts the agent for
+    bookkeeping.
+  - Common: per-turn generation so a stale report cannot stick; clear on
+    `UserPromptSubmit`, typing, the next tool use or turn; run in shadow mode
+    first (log the would-be marks next to the real reports), then enable per
+    integration behind a flag; fixtures in English and Polish with code,
+    quotes, rhetorical questions, "let me know if", lists of options, and the
+    reported sentence as a positive case.
+  - Decision (the user said "choose yourself", 2026-10-01): order V1 shadow
+    logging, then V5 a stronger instruction, then V2 the blocking Stop-hook
+    reminder as a canary, V3 inference only if V2 is not enough (all three
+    models, second round). The offline audit made V1 unnecessary: it measures
+    the misses from existing transcripts.
+  - Audit (`scripts/awaiting_reply_audit.py`, tests in
+    `scripts/test_awaiting_reply_audit.py`; read only; Claude Code and Pi
+    transcripts; a bilingual question heuristic; per model: question-like
+    turns, reported, missed, false reports, order violations, Wilson interval).
+    First numbers, turns since 2026-10-01 12:40 (when every integration sent
+    the instruction): Claude Sonnet 5.5 (this session): 15 question-like turns,
+    11 missed (73%, CI 48-89%); Claude Opus 5.5: 8 question-like, 1 missed
+    (12%, CI 2-47%); Claude Haiku 4.5: 8 question-like, 7 missed (88%). Older
+    turns, before the instruction, are 90-100% misses for every model, so they
+    prove nothing about compliance. No Pi turn since the extension was
+    installed was in the transcripts yet (rerun after some Pi use). Caveats: the
+    heuristic gives false reports too (reported but the last paragraph is not a
+    question: 12-28 per model), it is a screen to review, not ground truth.
+  - Models' thresholds for moving on: V2 when the lower bound of the miss rate
+    is above 2-5% and the heuristic's false positive rate is at most 2%; V3 only
+    when the inferred precision's lower bound is above 98-99% and V2 is not
+    enough; rubric for an LLM judge: "does the final message ask the user for
+    a decision or an answer before work can continue" (not courtesy offers,
+    rhetorical or quoted questions), two judges, blind to the report status.
+  - Other variants kept here for when it happens again: V1 shadow log from a
+    Stop hook (`last_assistant_message`, else `transcript_path`); V2 block once
+    (`stop_hook_active`, "if you wait for the user run `herdr agent
+    awaiting-reply`, otherwise just stop"); V3 the hook marks the pane itself
+    (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
+    typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
+    an `agent_end` extension that does the same.
+  - Done 2026-10-01 (V2 for Claude Code; installed into `~/.claude` the same day with
+    `herdr integration install claude`, committed in the dotfiles repo; sessions
+    started before that keep their old hooks until restarted): a `Stop` hook
+    (`herdr-agent-state.sh stop-check`, added and removed with the reminder in
+    `claude_settings.rs`): when the final message's last paragraph looks like a
+    question for the user (the audit's bilingual heuristic, a parity test keeps
+    them equal) and the turn ran no `herdr agent awaiting-reply`, it blocks the
+    stop once (`stop_hook_active` guards the loop) with "run `herdr agent
+    awaiting-reply` now as the only command, then stop without repeating your
+    message; if you are not waiting for the user just stop"; every decision is
+    logged to `~/.local/state/herdr/awaiting-reply-stop.jsonl`;
+    `HERDR_AWAITING_REPLY_STOP=0` turns it off, `=shadow` only logs. Tests: the
+    install/uninstall tests, and `StopHook` in `scripts/test_awaiting_reply_
+    audit.py` (block once, reported and statement pass, an earlier turn's
+    report does not count). The integration version stays 11 (not yet
+    released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
+    extension), V3 inference, an LLM judge for the audit.
+  Triage 2026-10-06 (decision): V2 is done for Claude Code. Should Pi get an `agent_end` nudge although it cannot block a stop, or close this with V3 and leave the LLM judge until data demands it?
+
+- [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
+  probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
+  rollback) is the update path of the only user, and the updater is off for fork builds.
+  Trigger to do it: the first outside user relying on the published binaries, or the
+  public announcement. Then in two steps: (1) notify only: compare `(0.9.3, revision)`
+  from the embedded `ROHERDR_VERSION` with the newest `roherdr-v*` release of
+  `rofrol/roherdr`, show "newer release available" and the download command, nothing
+  replaced; local builds (hash instead of a number) do not check. (2) Only when several
+  binary users need it, after the upstream rebase: download `roherdr-<os>-<arch>`, verify
+  `SHA256SUMS`, stage the file and swap it after the process exits, with a tested rollback;
+  if the fork gets a Homebrew tap, leave upgrades to Homebrew instead. Not before the
+  upstream rebase (rebase debt). Done: nothing.
+  Triage 2026-10-06 (decision): Has roherdr been announced, or does anyone else use the binaries? If not, move this to TODO-deferred.md?
+
+- [ ] Add easily accessible advisor checkboxes in Herdr so it injects
+  `Consult with <selected agents>` into coding-agent requests. Let the user
+  select advisors (for example DeepSeek) and disable the instruction easily.
+  Consulted DeepSeek 2026-09-30: start with a per-pane/session picker opened
+  from a visible `Advisors` control, showing the selected advisors. Inject
+  only on an explicit user send, preserve the user's text, preview the added
+  instruction and avoid duplicates; do not trigger background consultations.
+  Verify each CLI's supported injection path; use a visible, copyable prefix
+  rather than silent PTY keystrokes when safe injection is unavailable.
+  Decide scope, persistence, timing (every prompt or first turn), advisor
+  identity/invocation and multi-client ownership before implementation.
+  Make remote-provider privacy and cost implications explicit. These are
+  recommendations, not an approved UI design or implementation.
+  Triage 2026-10-06 (decision): Which advisors, scope, persistence and timing for injections, which agents' injection paths, and is the privacy and cost of remote providers acceptable?
+
+- [ ] Consider adding a subtle gradient in the empty space between the job
+  indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
+  Show several visual variants in the terminal before choosing one; generate
+  the demos with Python, as Claude did previously.
+  Triage 2026-10-06 (decision): After Python demos of several variants, which gradient, if any, between job indicators and the next tab?
 
 - [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
   to the right of the "spaces" header (like the agents panel's
@@ -1514,6 +1492,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     pointer (a middle-click could stop the wrong job). DeepSeek wanted the
     footer dropped (chosen); Astra wanted the top line and footer to split
     the fields.
+  Triage 2026-10-06 (decision): Remove the old agents panel now (`show_agents_panel` still defaults to true)? Where do the attention counts go? Is white-on-accent at 3.9:1 acceptable?
 
 - [ ] Add a model-selection review workflow for the consult/ask skills.
   - Use official model announcements, CLI release notes and authentication /
@@ -1627,6 +1606,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       lab, like DeepSeek). Worth an A/B only through a route that pins the exact
       model id, and only after deciding what code it may see; never the default,
       never for `-r` with secrets.
+  Triage 2026-10-06 (decision): No paid model calls until the workflow is approved, and it belongs to the consult skills, not herdr: which design and evaluation budget?
 
 - [ ] Run the untrusted/cloaked OpenRouter consult (`ask-bunny`, Space Bunny /
   MiMo) so a secret can never reach the logging provider (user, 2026-10-02).
@@ -1662,6 +1642,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     removing read access (B), not policy-only (C).
   - Sources: specstory agent-secrets; dev.to "never see your API keys"; DZone
     "4 ways agents exfiltrate secrets"; github.com/fabriziosalmi/aidlp.
+  Triage 2026-10-06 (decision): Separate macOS user or a Linux VM? DECISIONS.md dropped Space Bunny: is this still needed for MiMo?
 
 - [ ] Dragging a space does not show where it will land (screenshot
   2026-09-26, dragging `herdr`). The dragged space keeps a grey background
@@ -1753,6 +1734,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Keyboard reorder (move space up/down, whole family); none exists now.
   - The move is sent by ids (`move X before Y`); if another client changed
     the order or the anchor vanished, cancel with a notice.
+  Triage 2026-10-06 (decision): Redo the collapsed one-line space spec, and what "focus inside" cue for worktree parents? (A git chip already moved onto the name line in b008f68c.)
 
 - [ ] The space's name line gives no feedback that it can be dragged
   (2026-09-28). Now: pressing it changes nothing until the pointer moves;
@@ -1808,6 +1790,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Then, also at my request: one colour, accent blue, while pressed and
     while dragged (mauve read as a git branch; a darker grey and a darker
     blue were tried and dropped).
+  Triage 2026-10-06 (decision): The grip parts are obsolete with vertical tabs (DECISIONS.md, b008f68c): build the optional OSC 22 pointer shapes, or drop the item?
 
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
@@ -1841,39 +1824,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     shell, then `claude --resume <id>` / `pi --session <path>`. Tested live
     on a throwaway Claude session. Still to do: version detection, the
     restart-pending queue, a preview/picker, pi's draft check.
-
-- [ ] Telegram notifications when I am away from the Mac (agent blocked,
-  agent done, herdr-job finished).
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): Telegram
-    is a good fit: a bot sends to my private chat (`chat_id`), free, reliable
-    Android push, no Meta-style restrictions (Instagram was rejected: no API
-    for broadcast channels, DMs need app review and a 24h reply window).
-    Bot chats are not end-to-end encrypted. ntfy or Pushover as alternatives.
-  - A plugin subscribing to the socket API events, not core; bot token and
-    `chat_id` in the plugin config, never in payloads. Check whether
-    herdr-job completion reaches that event stream. Transitions only: to
-    blocked, to done, job finished/failed; dedup per pane and approval
-    request, coalesce bursts, drop an alert that is stale (agent resumed).
-  - Send only when away: no attached client or all clients idle for N
-    minutes, plus an explicit away/mute toggle.
-  - Content: the same text as the toast (`claude finished` plus
-    `workspace · 1 · tab`, see `notification_context`); it has no paths,
-    prompts or agent output, which is fine for a private bot chat.
-  - Later: inline keyboard buttons (approve / deny) answered through the
-    herdr socket, accepting callbacks only from my own user id.
-  - Start with a spike (consulted 2026-09-26): does herdr-job completion
-    reach the event stream, and can "away" be detected without core
-    changes? Then the plugin.
-  - Spike done 2026-09-26, no core change needed: agent blocked/done comes
-    as `pane.agent_status_changed`, which runs plugin `[[events]]` hooks (no
-    daemon). herdr-job completion has no event (tab status changes emit
-    none), but herdr-job already runs `notify()` at the end, so it can call
-    the plugin's sender itself. The API knows nothing about attached
-    clients or their idleness; "away from the Mac" is better read from the
-    OS: macOS `ioreg -c IOHIDSystem` `HIDIdleTime` (keyboard/mouse idle),
-    on Linux logind's `IdleHint` or `xprintidle`, plus a manual away/mute
-    action writing a state file. Blocked on: a bot token and `chat_id` from
-    me, to test sending.
+  Triage 2026-10-06 (decision): When an agent CLI update is detected, restart idle agents automatically or only mark them "restart pending"? Testing needs live sessions.
 
 - [ ] Usage footer: show OpenAI API (platform, pay-as-you-go) credits, and
   consider Kimi, GLM and other popular providers.
@@ -1966,6 +1917,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     - Never: polling the other usage endpoints (embeddings, images, audio,
       vector stores, code interpreter; all answer 200) for the footer.
       Costs already include their dollars; their units do not mix.
+  Triage 2026-10-06 (decision): Kimi and OpenAI spend are done: build GLM Coding Plan quota or OpenAI per-project spend now, or close the item?
 
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
   ends with new commits, list them as "to review" until I acknowledge them.
@@ -1987,39 +1939,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Claude adds it; Codex and pi need an equivalent (or hook-reported
     commits). Prototype a plain commit list first: maybe lazygit in a popup
     is already enough.
-
-- [ ] Run the Windows checks for fork commits. Nobody does today: the
-  Windows SDK for `just windows-lint` is not set up on the Mac (no `xwin`),
-  so `just check` fails there and agents run narrower checks, and the fork
-  has never had a GitHub Actions run although `ci.yml` has a
-  `windows-latest` job (`just check` in pwsh plus the ConPTY smoke test).
-  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`,
-    integration v11): the awaiting-reply instruction it prints from
-    `SessionStart` and the `Bash(herdr agent awaiting-reply)` rule are
-    untested there (Claude may run commands through PowerShell).
-  - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
-    (the user accepts Microsoft's SDK license), and prove a full
-    `just check` passes before the fork section of AGENTS.md requires it.
-    Cross-clippy only catches compile and lint errors in `cfg(windows)`
-    code; it runs no Windows tests.
-  - CI: activate Actions in the fork's Actions tab and verify that a push
-    to `master` really starts a CI run. Native Windows CI is the only
-    runtime check (tests, ConPTY, paths), and shared TUI code can break
-    there without touching `cfg` code.
-  - Before activating, disable the workflows that would fail or misfire on
-    the fork with `gh workflow disable` (UI state, so no rebase conflicts
-    with upstream): `label-next-release-issues.yml` and
-    `website-deploy.yml` have no `github.repository == 'herdrdev/herdr'`
-    gate and need upstream secrets. `preview`, `release` and `pr-gate` are
-    gated; the rest are PR- or path-triggered. After each upstream rebase,
-    check for new workflows.
-  - Ownership: the agent that pushes a commit watches that SHA's run
-    (`herdr-job run -- gh run watch <id> --exit-status`) and fixes a red
-    run before pushing more.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both say local
-    cross-lint is necessary but not sufficient; Astra added verifying the
-    activation and the per-SHA ownership, DeepSeek the post-rebase workflow
-    check and that a fresh machine without the SDK fails `just check`.
+  Triage 2026-10-06 (decision): How are Codex/pi commits attributed (they add no session trailer)? A plain list first, or is lazygit in a popup enough?
 
 - [ ] Child tab row styled like the main row. Now the main row has separate
   tabs (`surface1` background, a 1-column `panel_bg` gap between them),
@@ -2044,6 +1964,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `ui.sidebar.spaces.tabs = true` (the user's setup) neither tab row is
     drawn (`show_tab_bar` in `src/client/shell/config.rs`), so this styling
     is invisible; do it only if the horizontal rows come back into use.
+  Triage 2026-10-06 (decision): Skipped 2026-10-04 as invisible with `ui.sidebar.spaces.tabs = true`: build it anyway, or drop it until horizontal tab rows return?
 
 - [ ] Tooltips: hovering a tab shows its full text. There is no tooltip
   system yet, so build one small client-side layer first (presentation
@@ -2064,6 +1985,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     when its target is not drawn, and after 10 s), used by the sidebar's
     vertical tab lines whose label is cut. Still open: the horizontal tab
     rows (shown only without vertical tabs).
+  Triage 2026-10-06 (decision): The tooltip layer is done; only the horizontal tab rows remain, hidden in your setup: build it anyway or drop it?
 
 - [ ] Build line (bottom left of the sidebar): hover shows the full commit
   message, click opens a modal with the full commit info (full hash,
@@ -2084,10 +2006,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     (hash and subject) in a tooltip, and both builds when the client's
     differs (`server <line> · client <hash>`). Still open: the modal and
     the build metadata it needs.
+  Triage 2026-10-06 (decision): Hover is done; the modal needs build-time commit metadata and a new advertised build-info API method (a public contract): approve adding it?
 
 - [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in
   the tab bar and stay at its start, before the unpinned tabs, like
   pinned tabs in Chrome or Firefox.
+  Triage 2026-10-06 (decision): Server-owned or client-only pins, persistence, keybinding, menu, and drag across the pinned boundary?
 
 - [ ] Pin a space, like a pinned tab: a pin icon on the space row, and
   pinned spaces stay at the top of the spaces list. Consulted (GPT-6 Astra,
@@ -2111,26 +2035,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   - Cost to weigh: in prio an idle pinned space sits above an unpinned
     blocked one; urgent unpinned agents need another cue (the header
     attention counts, still without a place).
-
-- [ ] Awaiting reply for agents other than Claude (pi done 2026-10-01; the rest open), the same way as their
-  integrations (user, 2026-09-28): each integration that can add session
-  context (a session-start hook, an extension, a plugin) injects the same
-  instruction, and where the agent has a command allowlist the install
-  adds `herdr agent awaiting-reply` to it, so reporting never stops at a
-  permission prompt. Integrations today: antigravity_cli, codex, copilot,
-  cursor, devin, droid, grok, hermes, kilo, kimi, letta, mastracode, omp,
-  opencode, pi, qodercli, qwen. Check per agent what it offers; bump each
-  changed integration's version once; try each live.
-  - Pi done 2026-10-01 (committed; linked into `~/.pi/agent/extensions/` by
-    `plugins/pi-title/install`, active after `/reload` or a new session):
-    `pi-awaiting-reply.ts` adds the instruction as a named system-prompt
-    section in Herdr's TUI mode, since Pi has no command allowlist to edit and
-    the managed `herdr-agent-state.ts` is overwritten on reinstall (an
-    integration-version bump would also drift from upstream's numbering).
-    Not verified in a live Pi session. The other integrations (antigravity,
-    codex, copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
-    mastracode, omp, opencode, qodercli, qwen) are untouched: each needs its
-    own live check, which I cannot do here.
+  Triage 2026-10-06 (decision): The consulted models disagree: refuse or unpin on drag, the separator line, and the prio-sort cost?
 
 - [ ] Audit whether colours and symbols are consistent across the UI
   (sidebar, mobile layout, tabs, toasts, job statuses `⧖ ✓ !`, state dots).
@@ -2168,6 +2073,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     and colour together. Next: one `status_style` module per domain (agent,
     job, endpoint, notification) and semantic palette roles, decided
     together with the state-shape redesign.
+  Triage 2026-10-06 (decision): The audit is done; choose the semantic palette roles (e.g. Done teal vs blue), to be decided with the state-shape redesign.
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
@@ -2199,6 +2105,385 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     redesign. Astra: together with the consolidation, not waiting for the
     redesign. Astra's, I think: a generated legend follows the redesign
     for free, and it helps now, while the glyphs are most confusing.
+  Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
+
+- [ ] No view of how much memory and CPU spaces, tabs and jobs use (user,
+  2026-10-03). Consulted sol and MiMo (round `20261003-163010-4ae0`); both
+  keep a server-owned sampler and "CLI first, modal later". Plan:
+  - Sampler in the server, running only while someone subscribed (a CLI
+    `--watch` or an open view), pushing `resources.sampled` events; no
+    always-on cost, no client timer requests on the command lane. One worker,
+    no overlapping scans, cached snapshots with timestamp, interval, metric
+    kind and partial/error status; measure its own cost.
+  - One process enumeration per tick for the whole machine (macOS
+    `proc_listallpids` + `proc_pidinfo`, Linux `/proc`), one parent graph,
+    each `(pid, start time)` assigned once; never one walk per pane (sol).
+  - Attribution: the pane's PTY child tree, plus processes still holding the
+    pane's controlling tty (MiMo); process groups and sessions are no use
+    (`setsid` resets both). Daemons that escaped (cargo build server,
+    rust-analyzer, docker, a detached qemu) go into a `shared / unattributed`
+    row, not onto a pane, or the totals lie. The `HERDR_PANE_ID` env marker
+    (already set in `src/pane.rs`) needs `KERN_PROCARGS2` per pid on macOS:
+    later, benchmark first, never show env contents. Linux cgroups per pane:
+    later. herdr's own server and clients get their own row.
+  - CPU: per-process deltas of native counters (macOS task info ns, Linux
+    utime+stime) before summing, never a difference of changing tree totals;
+    label "% of one core" (sums above 100% are normal). Not `ps cputime` on
+    Linux (whole seconds; macOS `ps` has centiseconds).
+  - Memory: macOS `phys_footprint` labelled "footprint"; Linux RSS labelled
+    "RSS" by default (MiMo: `smaps_rollup` is costly on large processes),
+    PSS only on an explicit refresh; never mix metrics in one total, and
+    never call a sum "memory freed by closing this space".
+  - Jobs are tabs flagged as jobs, not a separate bucket.
+  - First slice: API method `resources.snapshot` + subscription, and
+    `herdr top` (space > tab > pane totals, process count, CPU, memory, sample
+    age; `--sort cpu|mem`, `--json`, `--watch`). A cheaper prototype (sol):
+    one `ps` per tick in the server plus the same graph aggregation, RSS
+    labelled as an estimate. Later: a Resources modal (sortable tree), top
+    processes per pane, tab tooltips (they force sampling on hover).
+  - Tests: aggregation over a synthetic process graph (reparenting, pid
+    reuse, a shared daemon, tty holders), no sampling without a subscriber,
+    the sampler stops after the last subscriber disconnects.
+  Triage 2026-10-06 (decision): New public API (`resources.snapshot`, a subscription) and `herdr top`: approve the contract, and the cheap `ps` prototype or the native sampler?
+
+- [ ] Orchestration direction (user, 2026-10-06: "analyse how to do this
+  orchestration best ... is there a point in using the Claude SDK etc., how
+  does T3 Code do it?"). Read T3 Code `4df84a7d`; consulted sol and MiMo
+  (round `20261006-033911-ff97`). Decision pending with the user.
+  - T3 Code has no PTY for agents: Claude through `@anthropic-ai/claude-agent-sdk`
+    (spawns the user's `claude`, uses the subscription login, `canUseTool`
+    for approvals and questions, `rate_limit_event` for a Limited state
+    with auto-resume), `codex app-server`, `pi --mode rpc`, ACP. One local
+    HTTP MCP server with per-session tokens (`delegate_task` async|wait,
+    `task_status`, `task_cancel` depth-first); a finished child wakes the
+    parent with an injected message; children get a brief, not history; no
+    agent concurrency cap. Its gap: a child stuck on a permission request
+    looks idle.
+  - Terms: Anthropic's Agent SDK docs forbid unapproved third-party products
+    from offering claude.ai login; on 2026-06-15 Anthropic paused moving SDK
+    and `claude -p` use to separate credits, so both still draw on the
+    subscription. Wrapping `claude -p` instead of the SDK is no loophole
+    (sol). An interactive `claude` in a PTY is plain terminal use.
+  - Both models: stay PTY-first; no SDK in herdr. Headless only for bounded
+    child tasks nobody watches (`claude -p --output-format stream-json`,
+    `codex exec --json`, `pi --mode rpc`), one adapter proven before the
+    next, and one state record fed by both screen detection and stream or
+    hook events (MiMo), so hybrid does not double the state machine.
+  - Order: (1) a truthful task state: idle is not done; awaiting permission,
+    awaiting answer, limited, failed, with question text and reset time from
+    hooks where available (user, 2026-10-06: "looks ok"); (2) clean
+    validation, not worktrees per child (see below); (3) a child-task primitive: parent link, brief,
+    completion that wakes the parent at a safe input boundary (never typed
+    into a permission dialog), subtree cancel, recursion bounds; (4)
+    handoff; (5) MCP only as a thin facade over the API.
+  - Worktrees for children? (user, 2026-10-06: "what do we need them for;
+    if they slow things down, is manual handoff not better?"; round
+    `20261006-035159-d484`, sol and MiMo agree): no, the shared master stays.
+    Measured: one swept-hunk incident in 276 commits over 8 days, but every
+    `just check` and install builds whatever another session left half done
+    in `src/` (it was the case while asking). Worktree checks: median 3.0
+    min against 1.9 (7 runs, 7.8 cold). So:
+    - Build and test from a clean tree: a reusable detached worktree at the
+      `master` SHA plus only this session's own patch (the fix is not
+      committed before the user tries it), sharing `CARGO_TARGET_DIR` with
+      the main checkout under one lock; install from there. Measure two
+      builds sharing the target first (cargo rebuilds local crates per
+      source path).
+    - Handoff has nothing to do with worktrees (same task, one after the
+      other): automate only the pointer (session id, transcript, task,
+      SHA); ownership moves once the first agent stops writing.
+    - Children: read-only ones (review, research) in the shared checkout,
+      reviews of a committed snapshot; writing ones sequential on master
+      with path claims; a worktree only when two writers really run at
+      once or the work is long or exploratory, as AGENTS.md already says.
+    - A pre-commit hook that refuses a commit without paths (MiMo); note
+      `git commit -- <path>` also takes others' unstaged edits in that file.
+  - Order and praise (user, 2026-10-06: "would these changes make people
+    praise roherdr like T3 Code?"; round `20261006-035823-bbe8`, sol and
+    MiMo): the praise is less supervision, not looks: "who needs me now",
+    ranked by how long they have waited, one click to the question. So:
+    - [x] First the clean build tree, time-boxed to an evening: one persistent
+      check worktree (not a fresh one per run: cold Rust builds) reset to
+      the `master` SHA, plus a patch of explicitly named paths of this
+      session (`git diff` of the shared checkout carries other sessions'
+      edits, so it cannot be the input), then the existing checks there.
+      Done 2026-10-06: `herdr-job clean-tree [PATHS] -- CMD` (any repository;
+      first as `scripts/clean_tree.py`, generalized the same day at the
+      user's request, with a rule in the global Claude and pi instructions:
+      use it when `git status` shows changes that are not yours),
+      `just clean-check <paths>`, `just clean-release <paths>`, AGENTS.md
+      install flow. Own `target/`;
+      a shared one is not measured (cargo keys local and vendored path
+      crates by source path, so they may rebuild on every switch): cold `just clean-check` 6.0 min and 3.6 GB, warm 1.8 min.
+    - Then the task state as an attention inbox: waiting agents ranked by
+      when they started waiting, the question text inline, jump to it;
+      mark hook-confirmed states apart from screen-inferred ones; never
+      call silence "done".
+    - Limited: only an agent stopped by a limit gets the state (not an
+      account that is nearly used up); say which limit (rate, credits,
+      context full: different remedies); `limited · resets 14:32` as the
+      second line and in the header counts next to `?N`; no implied
+      auto-resume. Herdr already reads the reset times (`src/usage/`).
+    - Beyond features (user decides): a demo with six agents, two needing
+      the user and one limited, solved without hunting; README positioning
+      "run your real agent CLIs, find every agent waiting on you", one
+      install path; both models call the name "roherdr" hard to say and
+      search; MiMo: signed releases, since a one-person fork that replaces
+      its server binary live reads as a supply-chain risk.
+    - Child tasks, MCP: deferred until supervision is trustworthy.
+  - OptMem and OptChat (user, 2026-10-06; github.com/VictorTaelin/OptMem, no
+    license; rounds `20261006-042739-ce28`, `20261006-044634-0c2b`, sol and
+    MiMo): do not adopt it for our agents. One global log mixes projects into
+    mushy summaries, "age" counts later notes rather than time, agents
+    compress inline (about one compression per note) and every session pays
+    about 8k tokens at wake, and `forget` never erases raw notes. Project
+    lessons stay in AGENTS.md. John Ash ran the same tree for two years and
+    dropped it: errors stack up and temporal reasoning is weak.
+    - If herdr ever keeps an event log (handoff, child briefs): provenance
+      first (who, when, pane, transcript link), validity times for
+      decisions that can be revoked, summaries last, per task and off the
+      agent's turn (like activegraph.ai's replay and explain, Apache 2.0,
+      as an idea, not a dependency). After the attention inbox.
+      CorpusMap (arXiv 2609.37226, preprint) measured it: summary layers
+      (LLM wiki, topic trees) often lose to the raw corpus, while entity pages
+      that link to untouched documents beat it with 34-57% fewer tokens, for a
+      plain find/grep agent.
+    - Child context (step 3): a brief by default, not inherited history
+      (Taelin's spawn-by-inherit assumes a single writer). A child that
+      continues the same work may get a native fork (`claude --resume <id>
+      --fork-session`, `codex fork <id>`), always by explicit id and never
+      resumed in place or via `--last`. Writing children re-read only the
+      files they edit; reviewers get acceptance criteria and the diff but
+      not the parent's diagnosis. Completion returns changed paths, tests,
+      blockers and what remains; cancel never blindly reverts. Defer a
+      read-files ledger with hashes; a short list of relevant files in the
+      brief is enough.
+  - Not to build: a chat GUI, a universal conversation schema, a scheduler
+    or quotas, auto-approval, auto-merge, default auto-resume after a limit.
+  - Slots: freeze them (6 min of overlap in 14 days); what contends is the
+    shared checkout and the subscription limits, not CPU. Measure harm
+    (failed or slowed runs), not overlap.
+  Triage 2026-10-06 (decision): The item says the decision is pending with you: approve the next step, the attention inbox (waiting agents ranked by wait time, question inline)?
+
+- [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
+  a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
+  installed: its orchestration only runs inside T3 Code, and 55 skill
+  descriptions cost about 3k tokens per session). Consulted sol and MiMo
+  (round of 2026-10-06, both: skip the install, borrow these):
+  - Not the full landing queue: it needs a worktree per writer, against the
+    fork's "work on master in the shared checkout" rule (user, 2026-10-06:
+    keep the rule). Take only what fixes the real incident (2026-10-02: a
+    bare `git commit` swept another session's staged hunks):
+    - A commit lock: `flock` on a file under `.git/`, so one session commits
+      at a time, in a script that does what AGENTS.md describes (a patch of
+      only its own hunks, a temporary index) and refuses a commit without
+      paths.
+    - Light path claims: a session announces the files it edits; another
+      session gets a warning before editing the same file, not a refusal.
+    - Notes from pstack's `land.py`: `flock` is released when the process
+      dies, so no stale lock; after a rebase compare `HEAD^{tree}` with the
+      reviewed tree (MiMo); claims do not stop an agent that bypasses them
+      (sol). The full queue with worktrees stays for long or risky work,
+      where AGENTS.md already asks for a worktree.
+    - The Fellowship post (see the three gaps near the top) avoids
+      concurrent writers by role instead: only the main session writes
+      code, the reviewer never edits, qa works in throwaway worktrees. A
+      cheaper first step is that rule in `AGENTS.md`, though it lives only
+      in prose.
+  - [x] Machine-wide slots for builds and tests: extend `herdr-job` (and next to
+    `just guard`) with N slots plus an exclusive mode for benchmarks, so
+    several sessions do not thrash one `target/` or skew measurements.
+    Done 2026-10-06 (round `20261006-030357-bd7d`, sol and MiMo):
+    `herdr-job slot [--exclusive] -- CMD`, `run --slot/--exclusive`,
+    `herdr-job slots`; the `just` build, test and clippy lines take a slot,
+    benchmarks every slot. One slot by default (both: cargo and nextest each
+    use every core, so two slots let two full-machine loads run); MiMo: cargo's
+    `target/` lock does not cover it, nextest runs tests after releasing it;
+    an exclusive request inside a slot fails at once (it would wait for its
+    own ancestor); no gate lock (moot with one slot). Not done: re-run
+    `just guard` after a long slot wait (sol), and the CPU and output idle
+    detector still cannot tell a job blocked on cargo's lock (MiMo).
+  - [x] Structured dispositions in `consult`: classify each finding Act on /
+    Consider / Noted / Dismissed (pstack's `$interrogate`), with evidence and
+    whether it was verified, next to the existing per-call ratings.
+    Done 2026-10-06 as counts, not per-finding records (sol and MiMo: records
+    keep the same judgment and cost much more bookkeeping):
+    `rate --act --consider --noted --dismissed` (all four, adding up to
+    `--findings`; a rejected finding is dismissed), `act/call` in
+    `stats --all`, and the `consult` skill reports to the user in the four
+    buckets. Later, if wanted: link `act` findings to the commits that
+    landed them (MiMo).
+  Triage 2026-10-06 (decision): Which first: a `flock` commit-lock script, warn-only path claims, or a writer-role rule in AGENTS.md?
+
+### Needs you to act or watch
+
+- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
+  consult stats? we have Rust. ask the models"). `page-consult` pages
+  `consult.py` output with `less -R`; a popup is a real PTY pane
+  (`spawn_popup_command`, `src/app/popup.rs`). Consulted Sol, DeepSeek and MiMo
+  (round `20261003-022724-693a`), unanimous: keep `less` for now; "we have Rust"
+  is not a reason by itself, since the problem is viewing text, not the language.
+  - Reject a herdr pager subcommand (`herdr pager FILE`): it rebuilds `less`
+    (search, keys, ANSI, resize, mouse) and still runs inside a PTY, so it
+    gains nothing at the runtime/client boundary.
+  - Reject rewriting `consult.py stats` in Rust inside herdr: orthogonal, and it
+    couples personal analytics to the multiplexer.
+  - First step, a spike: a temporary popup with `command = ["seq", "1", "300"]`.
+    Does the popup keep scrollback, scroll with the mouse wheel and start at the
+    top? Does it get SIGWINCH on resize? If yes, drop `less` from
+    `page-consult` (print, then wait for Enter): mouse-first, no external pager,
+    but no `/` search. `less` runs on the alternate screen, so herdr's
+    scrollback sees nothing while it runs. If popups do not scroll, that is a
+    herdr defect worth fixing on its own.
+  - Later, only if several plugins want it (DeepSeek, MiMo): a manifest text
+    popup whose command's stdout herdr renders itself (no PTY, works on Windows
+    and remote clients). It is a new pane type: server-owned content,
+    client-owned viewport, reflow on resize, output limits, stderr and exit
+    status.
+  - Known limit either way: the tables are fitted to the width at launch; a
+    resized popup does not regenerate them.
+  Triage 2026-10-06 (manual): The first step is a live popup spike (scrollback, wheel scroll, start at the top, SIGWINCH) that needs you watching the real UI; a popup steals focus.
+
+- [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
+  - User reports Claude CLI selection copies as expected, whereas Pi inserts
+    newline characters into copied multiline text. Determine whether these
+    are extra breaks at visual wraps rather than intentional paragraph/code
+    breaks. No exact reproduction or clipboard-byte comparison yet.
+  - Installed Pi 0.99.1 fullscreen `getActiveSelectionText()` reads rendered
+    rows and joins them with `\n` in `pi-tui/dist/tui-alt-screen.js`.
+    This is a plausible mechanism in fullscreen, not proof for regular mode.
+    Global settings currently omit `tuiMode` (default regular); CLI/project
+    overrides and the user's actual gesture remain unknown. Do not assume
+    Claude's selection implementation without inspecting/reproducing it.
+  - Consulted DeepSeek and Gemini (low/medium/high): compare the same
+    synthetic paragraph, real-newline code block, unwrapped control and
+    Unicode text at 80/120 columns, in Pi regular/fullscreen and Claude CLI.
+    Record terminal/version, resize geometry, mouse modifiers and whether
+    copying uses terminal selection, Pi copy-on-select or OSC 52/native
+    clipboard. Compare exact LF/CRLF bytes, not just pasted appearance.
+    Preserve real newlines, indentation, graphemes and trailing spaces;
+    never fix this by blindly joining every selected row. Do not inspect or
+    overwrite the user's existing clipboard without permission; use a
+    disposable synthetic reproduction. No upstream issue without reproduction.
+  Triage 2026-10-06 (manual): Needs your real gesture, terminal, Pi mode and copy path for a live reproduction; the item forbids touching your clipboard without permission.
+
+- [ ] Update automatic terminal/tab titles to reflect current activity, as
+  in other terminals (screenshot, 2026-09-30 02:14). The selected sidebar
+  tab says `env` while its pane runs `brew update` / `brew upgrade --formula`.
+  Investigate the source of `env` and title precedence before assigning a
+  cause: launch label, shell-emitted OSC 0/2, explicit name, or stale state.
+  Consulted DeepSeek 2026-09-30: honor shell-provided titles first; do not
+  assume every terminal infers foreground commands. Preserve explicit user
+  names. Consider a foreground-command fallback only when reliable and no
+  meaningful emitted title is available; launch wrappers must not remain
+  the automatic label when a better source exists. Verify command-to-prompt
+  restoration, consecutive commands, empty OSC titles, explicit names and
+  shells with/without title emission. Sanitize and bound title text; avoid
+  flicker, output-driven churn and per-render process-tree polling. Check
+  many-pane idle overhead if fallback detection is added. No root cause
+  verified and no implementation approved yet.
+  - Probable cause found 2026-10-01 (not reproduced live): the tab label comes
+    from the program leading the pane's foreground group (`TerminalState::
+    running_label`), and `ForegroundProgramTracker` looks that name up once
+    per new group. A command like `env VAR=1 brew upgrade` starts as `env`,
+    which then execs the real program inside the same group, so the group
+    kept the name `env`. Mitigation committed (not installed): wrappers
+    (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `timeout`, `sudo`,
+    `doas`) are looked up again for up to six ticks per group, then believed.
+    Bounded extra work, only for panes running a wrapper. Not done: the rest
+    of this item (a title or foreground-command fallback beyond the program
+    name, OSC title precedence), and the user should say whether `env` still
+    appears after the next install.
+  Triage 2026-10-06 (manual): Tell whether `env` still shows in the title after the next install.
+
+- [ ] Telegram notifications when I am away from the Mac (agent blocked,
+  agent done, herdr-job finished).
+  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): Telegram
+    is a good fit: a bot sends to my private chat (`chat_id`), free, reliable
+    Android push, no Meta-style restrictions (Instagram was rejected: no API
+    for broadcast channels, DMs need app review and a 24h reply window).
+    Bot chats are not end-to-end encrypted. ntfy or Pushover as alternatives.
+  - A plugin subscribing to the socket API events, not core; bot token and
+    `chat_id` in the plugin config, never in payloads. Check whether
+    herdr-job completion reaches that event stream. Transitions only: to
+    blocked, to done, job finished/failed; dedup per pane and approval
+    request, coalesce bursts, drop an alert that is stale (agent resumed).
+  - Send only when away: no attached client or all clients idle for N
+    minutes, plus an explicit away/mute toggle.
+  - Content: the same text as the toast (`claude finished` plus
+    `workspace · 1 · tab`, see `notification_context`); it has no paths,
+    prompts or agent output, which is fine for a private bot chat.
+  - Later: inline keyboard buttons (approve / deny) answered through the
+    herdr socket, accepting callbacks only from my own user id.
+  - Start with a spike (consulted 2026-09-26): does herdr-job completion
+    reach the event stream, and can "away" be detected without core
+    changes? Then the plugin.
+  - Spike done 2026-09-26, no core change needed: agent blocked/done comes
+    as `pane.agent_status_changed`, which runs plugin `[[events]]` hooks (no
+    daemon). herdr-job completion has no event (tab status changes emit
+    none), but herdr-job already runs `notify()` at the end, so it can call
+    the plugin's sender itself. The API knows nothing about attached
+    clients or their idleness; "away from the Mac" is better read from the
+    OS: macOS `ioreg -c IOHIDSystem` `HIDIdleTime` (keyboard/mouse idle),
+    on Linux logind's `IdleHint` or `xprintidle`, plus a manual away/mute
+    action writing a state file. Blocked on: a bot token and `chat_id` from
+    me, to test sending.
+  Triage 2026-10-06 (manual): The spike is done; give a bot token and `chat_id` so sending can be tested.
+
+- [ ] Run the Windows checks for fork commits. Nobody does today: the
+  Windows SDK for `just windows-lint` is not set up on the Mac (no `xwin`),
+  so `just check` fails there and agents run narrower checks, and the fork
+  has never had a GitHub Actions run although `ci.yml` has a
+  `windows-latest` job (`just check` in pwsh plus the ConPTY smoke test).
+  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`,
+    integration v11): the awaiting-reply instruction it prints from
+    `SessionStart` and the `Bash(herdr agent awaiting-reply)` rule are
+    untested there (Claude may run commands through PowerShell).
+  - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
+    (the user accepts Microsoft's SDK license), and prove a full
+    `just check` passes before the fork section of AGENTS.md requires it.
+    Cross-clippy only catches compile and lint errors in `cfg(windows)`
+    code; it runs no Windows tests.
+  - CI: activate Actions in the fork's Actions tab and verify that a push
+    to `master` really starts a CI run. Native Windows CI is the only
+    runtime check (tests, ConPTY, paths), and shared TUI code can break
+    there without touching `cfg` code.
+  - Before activating, disable the workflows that would fail or misfire on
+    the fork with `gh workflow disable` (UI state, so no rebase conflicts
+    with upstream): `label-next-release-issues.yml` and
+    `website-deploy.yml` have no `github.repository == 'herdrdev/herdr'`
+    gate and need upstream secrets. `preview`, `release` and `pr-gate` are
+    gated; the rest are PR- or path-triggered. After each upstream rebase,
+    check for new workflows.
+  - Ownership: the agent that pushes a commit watches that SHA's run
+    (`herdr-job run -- gh run watch <id> --exit-status`) and fixes a red
+    run before pushing more.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both say local
+    cross-lint is necessary but not sufficient; Astra added verifying the
+    activation and the per-SHA ownership, DeepSeek the post-rebase workflow
+    check and that a fresh machine without the SDK fails `just check`.
+  Triage 2026-10-06 (manual): Accept Microsoft's SDK license for xwin and turn on Actions in the fork; the Windows hook needs a live test on Windows.
+
+- [ ] Awaiting reply for agents other than Claude (pi done 2026-10-01; the rest open), the same way as their
+  integrations (user, 2026-09-28): each integration that can add session
+  context (a session-start hook, an extension, a plugin) injects the same
+  instruction, and where the agent has a command allowlist the install
+  adds `herdr agent awaiting-reply` to it, so reporting never stops at a
+  permission prompt. Integrations today: antigravity_cli, codex, copilot,
+  cursor, devin, droid, grok, hermes, kilo, kimi, letta, mastracode, omp,
+  opencode, pi, qodercli, qwen. Check per agent what it offers; bump each
+  changed integration's version once; try each live.
+  - Pi done 2026-10-01 (committed; linked into `~/.pi/agent/extensions/` by
+    `plugins/pi-title/install`, active after `/reload` or a new session):
+    `pi-awaiting-reply.ts` adds the instruction as a named system-prompt
+    section in Herdr's TUI mode, since Pi has no command allowlist to edit and
+    the managed `herdr-agent-state.ts` is overwritten on reinstall (an
+    integration-version bump would also drift from upstream's numbering).
+    Not verified in a live Pi session. The other integrations (antigravity,
+    codex, copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
+    mastracode, omp, opencode, qodercli, qwen) are untouched: each needs its
+    own live check, which I cannot do here.
+  Triage 2026-10-06 (manual): Pi is done but not checked live; each of the 16 other integrations needs a live check in that agent with your accounts.
 
 - [ ] Refresh the README's "Fork changes" so it says how the fork differs
   now, with a small looping animation under each change.
@@ -2234,6 +2519,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     history; if that grows, move them to an orphan `assets` branch.
   - Risk: seven loops at once are distracting and ignore reduced-motion;
     if it looks busy, use a static frame per bullet linking to its clip.
+  Triage 2026-10-06 (manual): The text is done; the clips need a recording session in a real terminal and a pilot in Chrome, Safari and the GitHub mobile app.
 
 - [ ] Open a herdr tab with Cmd+T (macOS), as Cmd+W closes panes.
   - Set up 2026-09-28: dotfiles Ghostty config has `cmd+t=unbind`, with no
@@ -2259,6 +2545,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `close_surface` then `close_tab:this`, and the later put wins, so it
     closes the tab.
   - Verify on Linux: plain Ctrl+T/W still reach the shell inside herdr.
+  Triage 2026-10-06 (manual): Config is set; live checks after reloading Ghostty on macOS and on Linux remain.
 
 - [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
   and their `?` marks did not come back after `claude --resume` (user,
@@ -2396,221 +2683,4 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   a distinct mark" (see above); MiMo's "survivors are those spawned after the handoffs"
   (it mixed UTC and local time; the start times contradict it) and its
   reading of `?` as "agent mid-turn".
-
-- [ ] No view of how much memory and CPU spaces, tabs and jobs use (user,
-  2026-10-03). Consulted sol and MiMo (round `20261003-163010-4ae0`); both
-  keep a server-owned sampler and "CLI first, modal later". Plan:
-  - Sampler in the server, running only while someone subscribed (a CLI
-    `--watch` or an open view), pushing `resources.sampled` events; no
-    always-on cost, no client timer requests on the command lane. One worker,
-    no overlapping scans, cached snapshots with timestamp, interval, metric
-    kind and partial/error status; measure its own cost.
-  - One process enumeration per tick for the whole machine (macOS
-    `proc_listallpids` + `proc_pidinfo`, Linux `/proc`), one parent graph,
-    each `(pid, start time)` assigned once; never one walk per pane (sol).
-  - Attribution: the pane's PTY child tree, plus processes still holding the
-    pane's controlling tty (MiMo); process groups and sessions are no use
-    (`setsid` resets both). Daemons that escaped (cargo build server,
-    rust-analyzer, docker, a detached qemu) go into a `shared / unattributed`
-    row, not onto a pane, or the totals lie. The `HERDR_PANE_ID` env marker
-    (already set in `src/pane.rs`) needs `KERN_PROCARGS2` per pid on macOS:
-    later, benchmark first, never show env contents. Linux cgroups per pane:
-    later. herdr's own server and clients get their own row.
-  - CPU: per-process deltas of native counters (macOS task info ns, Linux
-    utime+stime) before summing, never a difference of changing tree totals;
-    label "% of one core" (sums above 100% are normal). Not `ps cputime` on
-    Linux (whole seconds; macOS `ps` has centiseconds).
-  - Memory: macOS `phys_footprint` labelled "footprint"; Linux RSS labelled
-    "RSS" by default (MiMo: `smaps_rollup` is costly on large processes),
-    PSS only on an explicit refresh; never mix metrics in one total, and
-    never call a sum "memory freed by closing this space".
-  - Jobs are tabs flagged as jobs, not a separate bucket.
-  - First slice: API method `resources.snapshot` + subscription, and
-    `herdr top` (space > tab > pane totals, process count, CPU, memory, sample
-    age; `--sort cpu|mem`, `--json`, `--watch`). A cheaper prototype (sol):
-    one `ps` per tick in the server plus the same graph aggregation, RSS
-    labelled as an estimate. Later: a Resources modal (sortable tree), top
-    processes per pane, tab tooltips (they force sampling on hover).
-  - Tests: aggregation over a synthetic process graph (reparenting, pid
-    reuse, a shared daemon, tty holders), no sampling without a subscriber,
-    the sampler stops after the last subscriber disconnects.
-
-- [ ] Orchestration direction (user, 2026-10-06: "analyse how to do this
-  orchestration best ... is there a point in using the Claude SDK etc., how
-  does T3 Code do it?"). Read T3 Code `4df84a7d`; consulted sol and MiMo
-  (round `20261006-033911-ff97`). Decision pending with the user.
-  - T3 Code has no PTY for agents: Claude through `@anthropic-ai/claude-agent-sdk`
-    (spawns the user's `claude`, uses the subscription login, `canUseTool`
-    for approvals and questions, `rate_limit_event` for a Limited state
-    with auto-resume), `codex app-server`, `pi --mode rpc`, ACP. One local
-    HTTP MCP server with per-session tokens (`delegate_task` async|wait,
-    `task_status`, `task_cancel` depth-first); a finished child wakes the
-    parent with an injected message; children get a brief, not history; no
-    agent concurrency cap. Its gap: a child stuck on a permission request
-    looks idle.
-  - Terms: Anthropic's Agent SDK docs forbid unapproved third-party products
-    from offering claude.ai login; on 2026-06-15 Anthropic paused moving SDK
-    and `claude -p` use to separate credits, so both still draw on the
-    subscription. Wrapping `claude -p` instead of the SDK is no loophole
-    (sol). An interactive `claude` in a PTY is plain terminal use.
-  - Both models: stay PTY-first; no SDK in herdr. Headless only for bounded
-    child tasks nobody watches (`claude -p --output-format stream-json`,
-    `codex exec --json`, `pi --mode rpc`), one adapter proven before the
-    next, and one state record fed by both screen detection and stream or
-    hook events (MiMo), so hybrid does not double the state machine.
-  - Order: (1) a truthful task state: idle is not done; awaiting permission,
-    awaiting answer, limited, failed, with question text and reset time from
-    hooks where available (user, 2026-10-06: "looks ok"); (2) clean
-    validation, not worktrees per child (see below); (3) a child-task primitive: parent link, brief,
-    completion that wakes the parent at a safe input boundary (never typed
-    into a permission dialog), subtree cancel, recursion bounds; (4)
-    handoff; (5) MCP only as a thin facade over the API.
-  - Worktrees for children? (user, 2026-10-06: "what do we need them for;
-    if they slow things down, is manual handoff not better?"; round
-    `20261006-035159-d484`, sol and MiMo agree): no, the shared master stays.
-    Measured: one swept-hunk incident in 276 commits over 8 days, but every
-    `just check` and install builds whatever another session left half done
-    in `src/` (it was the case while asking). Worktree checks: median 3.0
-    min against 1.9 (7 runs, 7.8 cold). So:
-    - Build and test from a clean tree: a reusable detached worktree at the
-      `master` SHA plus only this session's own patch (the fix is not
-      committed before the user tries it), sharing `CARGO_TARGET_DIR` with
-      the main checkout under one lock; install from there. Measure two
-      builds sharing the target first (cargo rebuilds local crates per
-      source path).
-    - Handoff has nothing to do with worktrees (same task, one after the
-      other): automate only the pointer (session id, transcript, task,
-      SHA); ownership moves once the first agent stops writing.
-    - Children: read-only ones (review, research) in the shared checkout,
-      reviews of a committed snapshot; writing ones sequential on master
-      with path claims; a worktree only when two writers really run at
-      once or the work is long or exploratory, as AGENTS.md already says.
-    - A pre-commit hook that refuses a commit without paths (MiMo); note
-      `git commit -- <path>` also takes others' unstaged edits in that file.
-  - Order and praise (user, 2026-10-06: "would these changes make people
-    praise roherdr like T3 Code?"; round `20261006-035823-bbe8`, sol and
-    MiMo): the praise is less supervision, not looks: "who needs me now",
-    ranked by how long they have waited, one click to the question. So:
-    - [x] First the clean build tree, time-boxed to an evening: one persistent
-      check worktree (not a fresh one per run: cold Rust builds) reset to
-      the `master` SHA, plus a patch of explicitly named paths of this
-      session (`git diff` of the shared checkout carries other sessions'
-      edits, so it cannot be the input), then the existing checks there.
-      Done 2026-10-06: `herdr-job clean-tree [PATHS] -- CMD` (any repository;
-      first as `scripts/clean_tree.py`, generalized the same day at the
-      user's request, with a rule in the global Claude and pi instructions:
-      use it when `git status` shows changes that are not yours),
-      `just clean-check <paths>`, `just clean-release <paths>`, AGENTS.md
-      install flow. Own `target/`;
-      a shared one is not measured (cargo keys local and vendored path
-      crates by source path, so they may rebuild on every switch): cold `just clean-check` 6.0 min and 3.6 GB, warm 1.8 min.
-    - Then the task state as an attention inbox: waiting agents ranked by
-      when they started waiting, the question text inline, jump to it;
-      mark hook-confirmed states apart from screen-inferred ones; never
-      call silence "done".
-    - Limited: only an agent stopped by a limit gets the state (not an
-      account that is nearly used up); say which limit (rate, credits,
-      context full: different remedies); `limited · resets 14:32` as the
-      second line and in the header counts next to `?N`; no implied
-      auto-resume. Herdr already reads the reset times (`src/usage/`).
-    - Beyond features (user decides): a demo with six agents, two needing
-      the user and one limited, solved without hunting; README positioning
-      "run your real agent CLIs, find every agent waiting on you", one
-      install path; both models call the name "roherdr" hard to say and
-      search; MiMo: signed releases, since a one-person fork that replaces
-      its server binary live reads as a supply-chain risk.
-    - Child tasks, MCP: deferred until supervision is trustworthy.
-  - OptMem and OptChat (user, 2026-10-06; github.com/VictorTaelin/OptMem, no
-    license; rounds `20261006-042739-ce28`, `20261006-044634-0c2b`, sol and
-    MiMo): do not adopt it for our agents. One global log mixes projects into
-    mushy summaries, "age" counts later notes rather than time, agents
-    compress inline (about one compression per note) and every session pays
-    about 8k tokens at wake, and `forget` never erases raw notes. Project
-    lessons stay in AGENTS.md. John Ash ran the same tree for two years and
-    dropped it: errors stack up and temporal reasoning is weak.
-    - If herdr ever keeps an event log (handoff, child briefs): provenance
-      first (who, when, pane, transcript link), validity times for
-      decisions that can be revoked, summaries last, per task and off the
-      agent's turn (like activegraph.ai's replay and explain, Apache 2.0,
-      as an idea, not a dependency). After the attention inbox.
-      CorpusMap (arXiv 2609.37226, preprint) measured it: summary layers
-      (LLM wiki, topic trees) often lose to the raw corpus, while entity pages
-      that link to untouched documents beat it with 34-57% fewer tokens, for a
-      plain find/grep agent.
-    - Child context (step 3): a brief by default, not inherited history
-      (Taelin's spawn-by-inherit assumes a single writer). A child that
-      continues the same work may get a native fork (`claude --resume <id>
-      --fork-session`, `codex fork <id>`), always by explicit id and never
-      resumed in place or via `--last`. Writing children re-read only the
-      files they edit; reviewers get acceptance criteria and the diff but
-      not the parent's diagnosis. Completion returns changed paths, tests,
-      blockers and what remains; cancel never blindly reverts. Defer a
-      read-files ledger with hashes; a short list of relevant files in the
-      brief is enough.
-  - Not to build: a chat GUI, a universal conversation schema, a scheduler
-    or quotas, auto-approval, auto-merge, default auto-resume after a limit.
-  - Slots: freeze them (6 min of overlap in 14 days); what contends is the
-    shared checkout and the subscription limits, not CPU. Measure harm
-    (failed or slowed runs), not overlap.
-
-- [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
-  a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
-  installed: its orchestration only runs inside T3 Code, and 55 skill
-  descriptions cost about 3k tokens per session). Consulted sol and MiMo
-  (round of 2026-10-06, both: skip the install, borrow these):
-  - Not the full landing queue: it needs a worktree per writer, against the
-    fork's "work on master in the shared checkout" rule (user, 2026-10-06:
-    keep the rule). Take only what fixes the real incident (2026-10-02: a
-    bare `git commit` swept another session's staged hunks):
-    - A commit lock: `flock` on a file under `.git/`, so one session commits
-      at a time, in a script that does what AGENTS.md describes (a patch of
-      only its own hunks, a temporary index) and refuses a commit without
-      paths.
-    - Light path claims: a session announces the files it edits; another
-      session gets a warning before editing the same file, not a refusal.
-    - Notes from pstack's `land.py`: `flock` is released when the process
-      dies, so no stale lock; after a rebase compare `HEAD^{tree}` with the
-      reviewed tree (MiMo); claims do not stop an agent that bypasses them
-      (sol). The full queue with worktrees stays for long or risky work,
-      where AGENTS.md already asks for a worktree.
-    - The Fellowship post (see the three gaps near the top) avoids
-      concurrent writers by role instead: only the main session writes
-      code, the reviewer never edits, qa works in throwaway worktrees. A
-      cheaper first step is that rule in `AGENTS.md`, though it lives only
-      in prose.
-  - [x] Machine-wide slots for builds and tests: extend `herdr-job` (and next to
-    `just guard`) with N slots plus an exclusive mode for benchmarks, so
-    several sessions do not thrash one `target/` or skew measurements.
-    Done 2026-10-06 (round `20261006-030357-bd7d`, sol and MiMo):
-    `herdr-job slot [--exclusive] -- CMD`, `run --slot/--exclusive`,
-    `herdr-job slots`; the `just` build, test and clippy lines take a slot,
-    benchmarks every slot. One slot by default (both: cargo and nextest each
-    use every core, so two slots let two full-machine loads run); MiMo: cargo's
-    `target/` lock does not cover it, nextest runs tests after releasing it;
-    an exclusive request inside a slot fails at once (it would wait for its
-    own ancestor); no gate lock (moot with one slot). Not done: re-run
-    `just guard` after a long slot wait (sol), and the CPU and output idle
-    detector still cannot tell a job blocked on cargo's lock (MiMo).
-  - [x] Structured dispositions in `consult`: classify each finding Act on /
-    Consider / Noted / Dismissed (pstack's `$interrogate`), with evidence and
-    whether it was verified, next to the existing per-call ratings.
-    Done 2026-10-06 as counts, not per-finding records (sol and MiMo: records
-    keep the same judgment and cost much more bookkeeping):
-    `rate --act --consider --noted --dismissed` (all four, adding up to
-    `--findings`; a rejected finding is dismissed), `act/call` in
-    `stats --all`, and the `consult` skill reports to the user in the four
-    buckets. Later, if wanted: link `act` findings to the commits that
-    landed them (MiMo).
-
-- [ ] Keep the model context small, second pass (user, 2026-10-06: "plan
-  for cleaning unneeded files from the repo, so the model's context doesn't
-  swell too much"). Done on 2026-10-06: finished items left `TODO.md`
-  (402 KB to about 170 KB), their decisions went to `DECISIONS.md`, Deferred
-  to `TODO-deferred.md`; a root `.ignore` hides published doc snapshots and
-  the duplicate changelog from ripgrep; Codex's `project_doc_max_bytes` was
-  raised so it reads the fork sections of `AGENTS.md`, which stays as
-  upstream writes it (user).
-  - Left: open items still carry long histories of their finished slices;
-    condense each to its open part plus decisions. A lint against `[x]` in
-    `TODO.md` was skipped: the maintenance test list is upstream's justfile
-    line, a rebase conflict magnet.
+  Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
