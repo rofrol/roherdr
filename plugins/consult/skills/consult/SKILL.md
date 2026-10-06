@@ -41,7 +41,9 @@ report. If the same message also asks for a TODO entry, do both and record the o
    the questions, and a length cap. The models have no context of this conversation and no access to it.
 3. Every consultation is a round: start the command with
    `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)` and launch all models for that question in the
-   same Bash call, so their calls share the round id.
+   same Bash call, so their calls share the round id. A `herdr-job run` tab does not inherit that shell's exports:
+   pass the id on the command, `herdr-job run ... -- env CONSULT_ROUND="$R" <ask command>`, or the calls get no
+   round and `consult.py self --round` finds none (2026-10-06).
 4. Treat the answers as second opinions, not ground truth: verify each claim against the code, then report to the user
    in four buckets, each finding with the models that raised it and a one-line reason:
    - **Act on**: real issues for correctness, safety or maintainability given the actual goal; you do them.
