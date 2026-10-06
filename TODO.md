@@ -34,6 +34,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     place or is ordering only). The flag ends with the tab. No progress line
     (`?` and `↳` already mean other things; TODO.md counts are unreliable).
     Then `~/scripts/todo-worker` passes the flag.
+  - A role, not a yes/no flag (user, 2026-10-07, next): instead of
+    `tab.set_worker`, `tab.set_role` with `coordinator` or `worker`
+    (server-side state, set by whoever opens the tab, never derived from the
+    agent's name or title). Two marks in the marker column: `⚒` for a worker
+    (does one item in a worktree), another glyph for a coordinator, chosen
+    by the user from mockups (to "Needs a decision" if he does not answer).
+    A coordinator sets role `worker` on the worker tabs it opens.
 
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
