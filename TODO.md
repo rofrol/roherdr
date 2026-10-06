@@ -4879,6 +4879,29 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       search; MiMo: signed releases, since a one-person fork that replaces
       its server binary live reads as a supply-chain risk.
     - Child tasks, MCP: deferred until supervision is trustworthy.
+  - OptMem and OptChat (user, 2026-10-06; github.com/VictorTaelin/OptMem, no
+    license; rounds `20261006-042739-ce28`, `20261006-044634-0c2b`, sol and
+    MiMo): do not adopt it for our agents. One global log mixes projects into
+    mushy summaries, "age" counts later notes rather than time, agents
+    compress inline (about one compression per note) and every session pays
+    about 8k tokens at wake, and `forget` never erases raw notes. Project
+    lessons stay in AGENTS.md. John Ash ran the same tree for two years and
+    dropped it: errors stack up and temporal reasoning is weak.
+    - If herdr ever keeps an event log (handoff, child briefs): provenance
+      first (who, when, pane, transcript link), validity times for
+      decisions that can be revoked, summaries last, per task and off the
+      agent's turn (like activegraph.ai's replay and explain, Apache 2.0,
+      as an idea, not a dependency). After the attention inbox.
+    - Child context (step 3): a brief by default, not inherited history
+      (Taelin's spawn-by-inherit assumes a single writer). A child that
+      continues the same work may get a native fork (`claude --resume <id>
+      --fork-session`, `codex fork <id>`), always by explicit id and never
+      resumed in place or via `--last`. Writing children re-read only the
+      files they edit; reviewers get acceptance criteria and the diff but
+      not the parent's diagnosis. Completion returns changed paths, tests,
+      blockers and what remains; cancel never blindly reverts. Defer a
+      read-files ledger with hashes; a short list of relevant files in the
+      brief is enough.
   - Not to build: a chat GUI, a universal conversation schema, a scheduler
     or quotas, auto-approval, auto-merge, default auto-resume after a limit.
   - Slots: freeze them (6 min of overlap in 14 days); what contends is the
