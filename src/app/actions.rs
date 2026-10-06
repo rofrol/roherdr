@@ -1600,9 +1600,34 @@ impl AppState {
                 agent_label,
                 seq,
                 session_ref,
+            } => {
+                let mut forgotten = false;
+                let update = self.update_terminal_state(pane_id, |terminal| {
+                    let mutation = terminal.forget_agent_session(
+                        &source,
+                        &agent_label,
+                        &session_ref,
+                        Some(seq),
+                    );
+                    forgotten = mutation.is_some();
+                    mutation
+                });
+                // The user ended the session, so a later OS stop of it is a new one.
+                if forgotten {
+                    self.auto_resumed_sessions.remove(&session_ref);
+                }
+                update.into_iter().collect()
+            }
+            AppEvent::AgentSessionStopped {
+                pane_id,
+                source,
+                agent_label,
+                seq,
+                session_ref,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.forget_agent_session(&source, &agent_label, &session_ref, Some(seq))
+                    terminal.report_agent_stopped(&source, &agent_label, &session_ref, seq);
+                    None
                 })
                 .into_iter()
                 .collect(),
@@ -1744,6 +1769,11 @@ impl AppState {
             let had_completion = terminal.last_agent_completion_seq.is_some() || !previous_seen;
             let resume_revision = terminal.reported_resume_revision();
             let mutation = update(terminal);
+            if terminal.auto_resume_session().is_some()
+                && !self.auto_resume_queue.contains(&terminal_id)
+            {
+                self.auto_resume_queue.push(terminal_id.clone());
+            }
             terminal.reconcile_reported_resume();
             // Resume-only changes return no mutation but must still be saved.
             if terminal.reported_resume_revision() != resume_revision {
@@ -1760,7 +1790,13 @@ impl AppState {
             }
             // Before any early return below: a session change without an effective state
             // change must still drop the old session's report.
+            if mutation.agent_released {
+                terminal.stash_awaiting_reply_for_exited_session();
+            }
             if (mutation.agent_released || completion_reset) && terminal.clear_awaiting_reply() {
+                terminal.revision = terminal.revision.saturating_add(1);
+            }
+            if terminal.restore_stashed_awaiting_reply() {
                 terminal.revision = terminal.revision.saturating_add(1);
             }
             // The task belongs to the agent session that reported it.

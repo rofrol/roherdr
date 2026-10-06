@@ -3403,6 +3403,8 @@ impl HeadlessServer {
                 .app
                 .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));
         }
+        changed |= self.app.run_due_auto_resumes(now);
+        self.forward_auto_resume_notices();
         changed
     }
 }

@@ -157,6 +157,15 @@ pub enum AppEvent {
         source: Option<String>,
         seq: Option<u64>,
     },
+    /// The OS stopped this agent session, so it resumes in its pane once its
+    /// process has left.
+    AgentSessionStopped {
+        pane_id: PaneId,
+        source: String,
+        agent_label: String,
+        seq: u64,
+        session_ref: crate::agent_resume::AgentSessionRef,
+    },
     /// The user ended this agent session, so a restart must not resume it.
     AgentSessionForgotten {
         pane_id: PaneId,

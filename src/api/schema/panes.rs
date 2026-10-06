@@ -493,6 +493,22 @@ pub struct PaneForgetAgentSessionParams {
     pub agent_session_path: Option<String>,
 }
 
+/// The OS stopped this agent session (Claude reports a `SessionEnd` with
+/// reason `other`, for example after a signal). Once its process has left the
+/// pane, Herdr resumes the session there. Ignored unless the session runs in
+/// or just exited the pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportAgentStoppedParams {
+    pub pane_id: String,
+    pub source: String,
+    pub agent: String,
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReleaseAgentParams {
     pub pane_id: String,

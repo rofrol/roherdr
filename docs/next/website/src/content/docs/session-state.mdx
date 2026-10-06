@@ -87,6 +87,8 @@ After a client attaches and provides terminal size and theme context, Herdr resu
 
 When an agent exits, Herdr forgets its session, so a restart does not bring back an agent you quit. Claude Code is the exception: its session stays saved until you end it yourself (`/exit`, Ctrl-D, `/logout`), which the Claude integration's `SessionEnd` hook reports. A Claude session stopped any other way, such as by the OS at logout or shutdown before Herdr saved, by `kill`, or by a crash, is resumed after the next restart. A new agent or session in the pane replaces the saved one.
 
+When Claude reports that the OS stopped it with a signal, Herdr does not wait for a restart: it resumes the session in the same pane as soon as the pane's shell is back at its prompt, and shows a notice. A session that stops again after such a resume is left for you to resume, with a notice. If Claude was waiting for your reply, the pane shows that again once the session is back.
+
 Native session restore requires these Herdr integration versions or newer:
 
 | Agent | Minimum Herdr integration version | Resume command |

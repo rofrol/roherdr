@@ -104,7 +104,7 @@ Raw socket method names use dot notation:
 | Worktree | `worktree.list`, `worktree.create`, `worktree.create_from_pane`, `worktree.open`, `worktree.remove` |
 | Git | `git.branch_list` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.create_child`, `tab.create_after`, `tab.reopen_closed`, `tab.create_agent`, `tab.set_parent`, `tab.set_status`, `tab.bookmark` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.clear_awaiting_reply`, `pane.report_task`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.forget_agent_session`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_awaiting_reply`, `pane.clear_awaiting_reply`, `pane.report_task`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.forget_agent_session`, `pane.report_agent_stopped`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
@@ -736,6 +736,22 @@ When an agent's process leaves the pane, Herdr normally forgets its session. A C
 {
   "id": "req_4",
   "method": "pane.forget_agent_session",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "agent": "claude",
+    "seq": 1791239595599598000,
+    "agent_session_id": "..."
+  }
+}
+```
+
+When the OS stops Claude with a signal (for example when the terminal's leftover processes are force-quit), the `SessionEnd` hook calls `pane.report_agent_stopped` with the same parameters instead. Once Claude's process has left the pane and the pane's shell is at its prompt, Herdr types the session's resume command into that shell, spaced by `session.startup_per_agent_delay_ms` when many stop at once, and shows a notice. It does not resume a session that already runs in another pane, one it resumed before that stopped again, or any session when `session.resume_agents_on_restore` is `false`. A question the agent was waiting on (`pane.report_awaiting_reply`) shows again once the same session runs in the pane. The report is ignored unless the session runs in or just exited the pane, and when it is older than that run's last report.
+
+```json
+{
+  "id": "req_5",
+  "method": "pane.report_agent_stopped",
   "params": {
     "pane_id": "w1:p1",
     "source": "herdr:claude",

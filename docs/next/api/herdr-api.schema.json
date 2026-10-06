@@ -3237,6 +3237,44 @@
           ],
           "type": "object"
         },
+        "PaneReportAgentStoppedParams": {
+          "description": "The OS stopped this agent session (Claude reports a `SessionEnd` with\nreason `other`, for example after a signal). Once its process has left the\npane, Herdr resumes the session there. Ignored unless the session runs in\nor just exited the pane.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "agent_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_session_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "agent",
+            "seq"
+          ],
+          "type": "object"
+        },
         "PaneReportAwaitingReplyParams": {
           "description": "The agent in the pane ends its current turn by asking the user something: a question or a\ndecision the user must make. Shown until the agent starts working again.",
           "properties": {
@@ -7029,6 +7067,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneForgetAgentSessionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.report_agent_stopped",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportAgentStoppedParams"
             }
           },
           "required": [
