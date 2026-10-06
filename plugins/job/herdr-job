@@ -493,6 +493,20 @@ def cmd_slots(_args):
         print(f"slot {index}: " + ("free" if holder is None else describe_holder(holder)))
 
 
+def job_slot(args):
+    """The slot a new job waits for. A job started from inside a slot runs in a
+    new tab that does not inherit the mark, so it would wait for the slot its
+    own waiting parent holds: it shares the parent's admission instead."""
+    wanted = "exclusive" if args.exclusive else "shared" if args.slot else None
+    inside = os.environ.get(SLOT_ENV)
+    if wanted and inside:
+        if wanted == "exclusive" and inside != "exclusive":
+            raise SystemExit("herdr-job: an exclusive slot cannot be taken inside a shared one; "
+                             "run the exclusive command on its own")
+        return None
+    return wanted
+
+
 def cmd_run(args):
     if not args.command:
         raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
@@ -529,7 +543,7 @@ def cmd_run(args):
         "cwd": cwd,
         "why": args.why,
         "keep": args.keep,
-        "slot": "exclusive" if args.exclusive else "shared" if args.slot else None,
+        "slot": job_slot(args),
         # An agent reports its own jobs when `herdr-job wait` wakes it; a person
         # who started a job by hand has nobody else to tell them.
         "notify": args.notify or ("never" if owner_is_agent else "always"),

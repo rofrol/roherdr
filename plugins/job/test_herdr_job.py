@@ -491,3 +491,15 @@ class SlotTests(unittest.TestCase):
         out = subprocess.run([str(job), "_exec", "j1"], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("slot 0: job j1 slot job", out.stdout)
+
+    def test_a_job_started_inside_a_slot_shares_it_instead_of_waiting_for_its_parent(self):
+        job_slot = JOB["job_slot"]
+        args = lambda slot=False, exclusive=False: SimpleNamespace(slot=slot, exclusive=exclusive)
+        self.assertEqual((job_slot(args(slot=True)), job_slot(args(exclusive=True)), job_slot(args())),
+                         ("shared", "exclusive", None))
+        os.environ["HERDR_JOB_SLOT"] = "shared"
+        self.assertIsNone(job_slot(args(slot=True)))
+        with self.assertRaises(SystemExit):
+            job_slot(args(exclusive=True))
+        os.environ["HERDR_JOB_SLOT"] = "exclusive"
+        self.assertIsNone(job_slot(args(exclusive=True)))
