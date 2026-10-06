@@ -2333,6 +2333,25 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     runs in another pane; at most once per session, then a notice instead
     (a `claude` that dies on start must not loop); never after `/exit`
     (the `SessionEnd` hook has forgotten the session by then).
+    Implemented 2026-10-06 (uncommitted while the user tries the build):
+    the Claude `SessionEnd` hook calls the new `pane.report_agent_stopped`
+    on reason `other`; the terminal joins that report with the exit of the
+    same run (report `seq` above the run's last report), the server types
+    Ctrl-U plus `claude --resume <id>` into the idle shell, spaced by
+    `startup_per_agent_delay_ms`, and toasts "Resumed N agents stopped by
+    the system". Refused with a toast: the session runs in another pane, it
+    already auto-resumed in this server run (an accepted forget lifts
+    that), the shell is busy. Off with `resume_agents_on_restore = false`.
+    The `?` is stashed at the exit and put back when the same session runs
+    in the pane again, also after a manual `claude --resume`. Rounds:
+    design `20261006-185542-a111`, implementation review
+    `20261006-191356-247c` (sol, MiMo). Rejected there: skipping the hook
+    and resuming every exited session (races `/exit`), resuming only on a
+    mass stop (against the user's decision), MiMo's "the TUI loop never
+    drains the queue" (only the headless server runs `App`). Gaps: Windows
+    (the PowerShell hook does not report the stop), SIGKILL (no hook runs;
+    a restart still resumes it), the limit and the `?` are not saved across
+    a server restart, and a live check with a real SIGTERM is still to do.
   - Not done: reproduce the kill with disposable agents (plan above), and
     explain why ~12 agents in the same coalition survived. The LaunchAgent
     fix below waits for that reproduction.
