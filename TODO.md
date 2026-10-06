@@ -5052,6 +5052,29 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
 
 ## Deferred
 
+- [ ] REPL in a sibling pane as an agent tool (idea from the HN thread
+  "Why Common Lisp is now the best programming language", 2026-10-06,
+  item 49973598; the strongest report is a Pi extension that gives the agent
+  a Clojure nREPL eval tool, clj-reload and named subsystem restarts).
+  Parked: the user works mostly in Rust (Herdr, rmpc) and rarely in Python,
+  so a live image buys little; Rust's feedback lever is build latency, which
+  the warm clean-tree build already covers.
+  - Revisit only after 3 real occasions within a week where rebuilding
+    process state (fixtures, imports, services) dominated an iteration.
+    Then try a skill recipe for one language before any API.
+  - Pitfalls found when consulting sol and MiMo (checked against
+    `herdr pane wait-output --help`): `wait-output` searches existing output,
+    so a sentinel matches its own echoed input; build the marker at runtime
+    and match a whole output line. A sentinel does not prove the output is
+    complete (scrolled away, skipped by an exception, late background
+    output). A timeout means "completion unknown": never retry side effects.
+    Autoreload leaves stale state (decorators, re-exports, class
+    attributes): verify in a fresh process. The REPL pane must be owned by
+    the agent; prompt detection is less reliable than sentinels.
+  - If an API is ever needed: a server-owned output cursor (capture armed
+    before sending, explicit truncation, timeout and pane-exit states), not a
+    `pane eval` that promises language-neutral evaluation.
+
 - [ ] Live handoff can garble a primary-screen pane (user, 2026-10-02,
   screenshot 10 s after installing `bcf83e77`; rare, fix only if it happens
   again): in a Claude Code pane the caret sat one row below the prompt, a
