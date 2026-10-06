@@ -221,6 +221,21 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     https://github.com/pjs7678/claude-session-history (tmux `prefix + H`,
     a SessionStart hook records the session, fzf popup, Enter copies).
     Read the file read-only and skip malformed lines.
+    Design (consulted sol and MiMo, round `20261006-162148-0704`;
+    mockups shown to the user 2026-10-06): an overlay like the image
+    picker, newest first, filter as you type, rows `time  first line
+    (+N lines) [paste]`, groups `Previous session · <date>` below the
+    current one. The text inserted is the resolved prompt: pastes come
+    from `pastedContents` (inline `content`) or `~/.claude/paste-cache/`
+    (by hash), and an entry that cannot be resolved is shown as
+    incomplete, never typed as `[Pasted text #1]` (both). Enter types it
+    at the cursor without Enter only when the pane's agent is idle
+    (`agent_status`); while it works or asks, Enter copies instead (sol).
+    The server reads the file for a pane id, never a client-sent session
+    id or path (sol). Cheapest first step, no core change: a plugin
+    popup, since `herdr pane get` already returns `agent_session`, a
+    plugin's context carries `focused_pane_id`, and `herdr pane send-text`
+    exists (MiMo; fzf is installed).
   - Check that herdr never resumes one session id in two panes: both
     panes would then share "own" history and interleave transcripts (sol).
   - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
