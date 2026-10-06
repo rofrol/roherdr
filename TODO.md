@@ -38,6 +38,25 @@
     show outcomes at all (stale within a day); if outcomes come, show them
     only until the tab is viewed.
 
+- [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
+  would help, now I have to paste a link to the pi or claude session by
+  hand"; queued after the `?` list above). Inspired by
+  https://x.com/MahyadGhassemi/status/2107190376692056222 (T3 Code switches
+  models mid-chat, useful when a usage limit runs out).
+  - Idea: a tab menu item "Hand over to… Claude / Pi / Codex" opens a new
+    tab in the same cwd with the chosen agent and a first prompt naming the
+    source agent, its session id, its transcript path and the task title:
+    "Continue the work from <agent> session <id>, transcript <path>, task
+    <title>; read it first". Herdr already keeps agent session ids for
+    resume (`src/agent_resume.rs`); the transcript path is derived per agent
+    (Claude `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file;
+    verify both). The new agent reads the transcript itself, so herdr never
+    parses private transcript formats, and it works after the source agent
+    hit its limit.
+  - Open: whether the source tab stays (likely yes, idle), a CLI/API form
+    (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
+    what to do when the session id is unknown (say so, do not guess).
+
 - [x] Nest a worktree space under the agent tab that created it (user,
   2026-10-03; queued first). Today the worktree child sits at the bottom
   of its parent space with a `│` trunk down the parent's whole block, which
