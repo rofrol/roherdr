@@ -118,6 +118,8 @@ pub(super) struct ShellHitMap {
     pub(super) space_push_status: Vec<(Rect, String)>,
     /// A space's launch button, left of its `+`.
     pub(super) space_launch_agent: Vec<(Rect, String)>,
+    /// The `⤒` on a hovered space's name line: that space to the top.
+    pub(super) space_to_top: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
     pub(super) tooltips: Vec<super::tooltip::TooltipTarget>,
     /// Disclosure triangles and counts at the end of tab lines, with the
@@ -175,9 +177,6 @@ pub(super) struct ShellHitMap {
     pub(super) image_picker_rows: Vec<(Rect, usize)>,
     /// The `/ filter` button in the sidebar's bottom row that opens the filter bar.
     pub(super) space_filter_button: Rect,
-    /// The header button that moves the busy spaces to the top (manual
-    /// order only), or puts that move back.
-    pub(super) space_bubble_button: Rect,
     /// The filter bar, and the `×` at its right end that closes it.
     pub(super) space_filter_bar: Rect,
     pub(super) space_filter_close: Rect,
@@ -411,6 +410,7 @@ impl ShellHitMap {
         shift_all(&mut self.space_new_tab);
         shift_all(&mut self.space_push_status);
         shift_all(&mut self.space_launch_agent);
+        shift_all(&mut self.space_to_top);
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
             .filter_map(|mut target| {
@@ -443,6 +443,7 @@ impl ShellHitMap {
             space_new_tab: self.space_new_tab.clone(),
             space_push_status: self.space_push_status.clone(),
             space_launch_agent: self.space_launch_agent.clone(),
+            space_to_top: self.space_to_top.clone(),
             tooltips: self.tooltips.clone(),
             space_tab_folds: self.space_tab_folds.clone(),
             space_tab_squares: self.space_tab_squares.clone(),
@@ -458,6 +459,7 @@ impl ShellHitMap {
         self.space_new_tab.extend(block.space_new_tab);
         self.space_push_status.extend(block.space_push_status);
         self.space_launch_agent.extend(block.space_launch_agent);
+        self.space_to_top.extend(block.space_to_top);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
         self.space_tab_squares.extend(block.space_tab_squares);
@@ -810,6 +812,7 @@ pub(super) enum NameLineButton {
     PushStatus,
     Launch,
     NewTab,
+    ToTop,
 }
 
 #[derive(Debug)]
@@ -1299,8 +1302,8 @@ pub(crate) struct ClientShellState {
     /// The sorted spaces' order as last drawn, held while the pointer is
     /// over the list so a re-sort cannot move a space under it.
     pub(super) held_space_order: Vec<String>,
-    /// What the bubble button last moved, to put it back.
-    pub(super) space_bubble_undo: Option<super::space_sort::SpaceBubbleUndo>,
+    /// What the last `⤒` click moved, to put it back.
+    pub(super) space_to_top_undo: Option<super::space_sort::SpaceToTopUndo>,
     /// When the last image attached to each pane was taken.
     pub(super) image_attach_times: super::image_picker::ImageAttachTimes,
     pub(super) workspace_scroll: usize,
@@ -1525,7 +1528,7 @@ impl ClientShellState {
             held_space_order: Vec::new(),
             workspace_scroll: 0,
             workspace_scroll_anchor: None,
-            space_bubble_undo: None,
+            space_to_top_undo: None,
             image_attach_times: Default::default(),
             agent_scroll: 0,
             pending_agent_reveal: None,

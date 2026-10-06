@@ -1119,6 +1119,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     job. Right after, while nothing else reordered the spaces, the button
     turns into `↶` and puts the previous order back (one `move_block` of
     every space). Nothing to move shows a short notice.
+  - Changed 2026-10-06 (user: "these two buttons belong on the space's
+    title line, maybe shown on hover"; chose per space): the header button
+    is gone; a hovered space's name line shows `⤒` left of the launch `A`,
+    which moves that space with its worktree group to the top of the manual
+    order (`workspace.move_block`), and `↶` on it right after puts the
+    previous order back.
 - [x] New space goes right after the active space, like new tabs (user,
   2026-10-03: "new space creates it at the end; change it as with tabs"). After
   the active space's whole worktree family. Models (unanimous): only for

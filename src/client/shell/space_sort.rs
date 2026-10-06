@@ -226,48 +226,31 @@ pub(super) fn sorted_entries(
     keyed.into_iter().flat_map(|(_, family)| family).collect()
 }
 
-/// What one click on the bubble button moved: the server's space order
-/// before it and the order it asked for. While the order is still the one
-/// asked for, the button offers to put it back.
+/// What the last `⤒` click moved: the space, the server's space order before
+/// it and the order it asked for. While the order is still the one asked
+/// for, that space's button offers to put it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SpaceBubbleUndo {
+pub(super) struct SpaceToTopUndo {
+    pub(super) workspace_id: String,
     pub(super) before: Vec<String>,
     pub(super) after: Vec<String>,
 }
 
-/// A space where something happens, as `prio` ranks it: an agent working,
-/// blocked or done and not yet seen, or a job running in one of its tabs.
-fn workspace_is_busy(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> bool {
-    matches!(
-        super::sidebar::displayed_workspace_status(snapshot, workspace, &HashSet::new()),
-        crate::api::schema::AgentStatus::Working
-            | crate::api::schema::AgentStatus::Blocked
-            | crate::api::schema::AgentStatus::Done
-    ) || snapshot.tabs.iter().any(|tab| {
-        tab.workspace_id == workspace.workspace_id
-            && tab.status == Some(crate::api::schema::TabStatus::Running)
-    })
-}
-
-/// The `workspace.move_block` that puts the busy spaces first, each with its
-/// worktree group, keeping the order among them and among the rest: the ids
-/// to move, the space they go before, and the order that leaves. None when
-/// the busy spaces are first already (or there are none).
-pub(super) fn bubble_busy_spaces(
+/// The `workspace.move_block` that puts a space first in the manual order,
+/// with its worktree group: the ids to move, the space they go before, and
+/// the order that leaves. None when it is first already.
+pub(super) fn move_space_to_top(
     snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
 ) -> Option<(Vec<String>, Option<String>, Vec<String>)> {
-    let busy_keys = snapshot
+    let workspace = snapshot
         .workspaces
         .iter()
-        .filter(|workspace| workspace_is_busy(snapshot, workspace))
-        .filter_map(|workspace| workspace.worktree.as_ref().map(|worktree| &worktree.key))
-        .collect::<HashSet<_>>();
-    let busy = |workspace: &ClientShellWorkspace| {
-        workspace_is_busy(snapshot, workspace)
-            || workspace
-                .worktree
-                .as_ref()
-                .is_some_and(|worktree| busy_keys.contains(&worktree.key))
+        .find(|workspace| workspace.workspace_id == workspace_id)?;
+    let key = workspace.worktree.as_ref().map(|worktree| &worktree.key);
+    let in_family = |other: &ClientShellWorkspace| {
+        other.workspace_id == workspace_id
+            || key.is_some() && other.worktree.as_ref().map(|worktree| &worktree.key) == key
     };
     let order = snapshot
         .workspaces
@@ -277,45 +260,49 @@ pub(super) fn bubble_busy_spaces(
     let moved = snapshot
         .workspaces
         .iter()
-        .filter(|workspace| busy(workspace))
-        .map(|workspace| workspace.workspace_id.clone())
+        .filter(|other| in_family(other))
+        .map(|other| other.workspace_id.clone())
         .collect::<Vec<_>>();
     let rest = snapshot
         .workspaces
         .iter()
-        .filter(|workspace| !busy(workspace))
-        .map(|workspace| workspace.workspace_id.clone())
+        .filter(|other| !in_family(other))
+        .map(|other| other.workspace_id.clone())
         .collect::<Vec<_>>();
     let after = moved.iter().chain(&rest).cloned().collect::<Vec<_>>();
-    if moved.is_empty() || after == order {
+    if after == order {
         return None;
     }
     Some((moved, rest.first().cloned(), after))
 }
 
 impl ClientShellState {
-    /// The last bubble can still be put back: nothing reordered the spaces
-    /// since.
-    pub(super) fn space_bubble_undo_ready(&self) -> bool {
-        let Some(undo) = self.space_bubble_undo.as_ref() else {
-            return false;
-        };
-        self.active_endpoint_id.is_local()
+    /// The space whose last move to the top can still be put back: nothing
+    /// reordered the spaces since.
+    pub(super) fn space_to_top_undo(&self) -> Option<&str> {
+        let undo = self.space_to_top_undo.as_ref()?;
+        (self.active_endpoint_id.is_local()
             && self.snapshot.as_deref().is_some_and(|snapshot| {
                 snapshot
                     .workspaces
                     .iter()
                     .map(|workspace| workspace.workspace_id.as_str())
                     .eq(undo.after.iter().map(String::as_str))
-            })
+            }))
+        .then_some(undo.workspace_id.as_str())
     }
 
-    /// The bubble button: moves the busy spaces to the top of the manual
-    /// order, for every client, or puts the last move back.
-    pub(super) fn click_space_bubble(&mut self, outcome: &mut ClientShellInput) {
+    /// A space's `⤒`: moves it to the top of the manual order, for every
+    /// client, or puts the last such move back.
+    pub(super) fn click_space_to_top(
+        &mut self,
+        workspace_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
         use crate::api::schema::{Method, WorkspaceMoveBlockParams};
-        if self.space_bubble_undo_ready() {
-            if let Some(undo) = self.space_bubble_undo.take() {
+        outcome.repaint = true;
+        if self.space_to_top_undo() == Some(workspace_id.as_str()) {
+            if let Some(undo) = self.space_to_top_undo.take() {
                 self.push_endpoint_method(
                     Method::WorkspaceMoveBlock(WorkspaceMoveBlockParams {
                         workspace_ids: undo.before,
@@ -324,7 +311,6 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            outcome.repaint = true;
             return;
         }
         let Some(snapshot) = self.snapshot.as_deref() else {
@@ -335,14 +321,9 @@ impl ClientShellState {
             .iter()
             .map(|workspace| workspace.workspace_id.clone())
             .collect::<Vec<_>>();
-        let Some((workspace_ids, before_workspace_id, after)) = bubble_busy_spaces(snapshot) else {
-            self.push_endpoint_notice(
-                ClientEndpointNoticeKind::Rejected,
-                "space_bubble",
-                "Nothing to move",
-                "the busy spaces are at the top already",
-            );
-            outcome.repaint = true;
+        let Some((workspace_ids, before_workspace_id, after)) =
+            move_space_to_top(snapshot, &workspace_id)
+        else {
             return;
         };
         if self.push_endpoint_method_with_kind(
@@ -353,10 +334,13 @@ impl ClientShellState {
             PendingEndpointKind::Generic,
             outcome,
         ) {
-            self.space_bubble_undo = Some(SpaceBubbleUndo { before, after });
+            self.space_to_top_undo = Some(SpaceToTopUndo {
+                workspace_id,
+                before,
+                after,
+            });
         }
         self.workspace_scroll = 0;
-        outcome.repaint = true;
     }
 }
 
@@ -434,46 +418,35 @@ mod tests {
     }
 
     #[test]
-    fn bubbling_puts_busy_spaces_and_their_worktree_groups_first_in_order() {
+    fn a_space_moves_to_the_top_with_its_worktree_group() {
         use crate::protocol::ClientShellWorktree;
         let mut snapshot = snapshot_with(&[
-            ("idle", AgentStatus::Idle),
-            ("working", AgentStatus::Working),
+            ("a", AgentStatus::Idle),
             ("parent", AgentStatus::Idle),
-            ("done", AgentStatus::Done),
-            ("child", AgentStatus::Blocked),
+            ("b", AgentStatus::Idle),
+            ("child", AgentStatus::Idle),
         ]);
         let worktree = |linked| ClientShellWorktree {
             key: "repo".into(),
             label: "repo".into(),
             is_linked_worktree: linked,
         };
-        snapshot.workspaces[2].worktree = Some(worktree(false));
-        snapshot.workspaces[4].worktree = Some(worktree(true));
-        let (moved, before, after) = bubble_busy_spaces(&snapshot).expect("a move");
-        // The idle parent moves with its blocked worktree.
-        assert_eq!(moved, ["ws_1", "ws_2", "ws_3", "ws_4"]);
+        snapshot.workspaces[1].worktree = Some(worktree(false));
+        snapshot.workspaces[3].worktree = Some(worktree(true));
+        let (moved, before, after) = move_space_to_top(&snapshot, "ws_1").expect("a move");
+        assert_eq!(moved, ["ws_1", "ws_3"]);
         assert_eq!(before.as_deref(), Some("ws_0"));
-        assert_eq!(after, ["ws_1", "ws_2", "ws_3", "ws_4", "ws_0"]);
-
-        // Busy spaces first already: nothing to do.
-        let first = snapshot_with(&[
-            ("working", AgentStatus::Working),
-            ("idle", AgentStatus::Idle),
-        ]);
-        assert_eq!(bubble_busy_spaces(&first), None);
-        let none = snapshot_with(&[("a", AgentStatus::Idle), ("b", AgentStatus::Idle)]);
-        assert_eq!(bubble_busy_spaces(&none), None);
+        assert_eq!(after, ["ws_1", "ws_3", "ws_0", "ws_2"]);
+        assert_eq!(move_space_to_top(&snapshot, "ws_0"), None, "first already");
     }
 
     #[test]
-    fn the_bubble_button_moves_busy_spaces_up_and_can_put_them_back() {
+    fn the_to_top_button_moves_a_space_up_and_can_put_it_back() {
         use crate::api::schema::Method;
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
             &crate::config::Config::default(),
         ));
-        let snapshot =
-            snapshot_with(&[("idle", AgentStatus::Idle), ("busy", AgentStatus::Working)]);
+        let snapshot = snapshot_with(&[("a", AgentStatus::Idle), ("b", AgentStatus::Idle)]);
         state.set_snapshot(Box::new(snapshot.clone()));
         let moves = |outcome: &ClientShellInput| {
             outcome
@@ -489,23 +462,22 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut outcome = ClientShellInput::default();
-        state.click_space_bubble(&mut outcome);
+        state.click_space_to_top("ws_1".into(), &mut outcome);
         let sent = moves(&outcome);
-        assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].workspace_ids, ["ws_1"]);
         assert_eq!(sent[0].before_workspace_id.as_deref(), Some("ws_0"));
-        assert!(!state.space_bubble_undo_ready(), "not moved yet");
+        assert_eq!(state.space_to_top_undo(), None, "not moved yet");
 
-        // The server moved them: the button puts the old order back.
+        // The server moved it: its button puts the old order back.
         let mut moved = snapshot;
         moved.workspaces.swap(0, 1);
-        state.set_snapshot(Box::new(moved.clone()));
-        assert!(state.space_bubble_undo_ready());
+        state.set_snapshot(Box::new(moved));
+        assert_eq!(state.space_to_top_undo(), Some("ws_1"));
         let mut outcome = ClientShellInput::default();
-        state.click_space_bubble(&mut outcome);
+        state.click_space_to_top("ws_1".into(), &mut outcome);
         let sent = moves(&outcome);
         assert_eq!(sent[0].workspace_ids, ["ws_0", "ws_1"]);
         assert_eq!(sent[0].before_workspace_id, None);
-        assert!(state.space_bubble_undo.is_none());
+        assert!(state.space_to_top_undo.is_none());
     }
 }

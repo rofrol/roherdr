@@ -419,35 +419,6 @@ pub(crate) fn render_sidebar(
                 hits.space_filter_button = Rect::new(limit, workspace_area.y, 3, 1);
                 limit += 2;
             }
-            // Busy spaces to the top of the manual order (for every client),
-            // or that move put back; only where the manual order shows.
-            if config.mouse_capture
-                && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
-                && limit + 3 <= workspace_area.right()
-            {
-                let (glyph, text) = if state.space_bubble_undo_ready {
-                    ("↶", "Undo: put the spaces back in their order")
-                } else {
-                    ("⤒", "Move the busy spaces to the top (for every client)")
-                };
-                put_text(
-                    buffer,
-                    limit + 1,
-                    workspace_area.y,
-                    1,
-                    glyph,
-                    Style::default().fg(palette.overlay1),
-                );
-                hits.space_bubble_button = Rect::new(limit, workspace_area.y, 3, 1);
-                hits.tooltips.push(super::tooltip::TooltipTarget {
-                    rect: hits.space_bubble_button,
-                    id: "space-bubble".into(),
-                    text: text.into(),
-                    bg: None,
-                    starts_at_target: false,
-                });
-                limit += 2;
-            }
             let mut right = workspace_area.right();
             if let Some(unread) = state
                 .notification_log_button
@@ -988,6 +959,45 @@ pub(crate) fn render_sidebar(
                 rect: button,
                 id: format!("launch-agent:{}", workspace.workspace_id),
                 text: tooltip,
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        // On hover, `⤒` moves the space to the top of the manual order (for
+        // every client); right after, `↶` puts it back. Left of the launch
+        // button, over the end of a long name while it shows.
+        let to_top_hovered = state.hovered_name_button
+            == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
+        if config.mouse_capture
+            && !entry.indented
+            && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
+            && launch_button_shown(config, rect.width)
+            && rect.width >= LAUNCH_BUTTON_MIN_WIDTH + 3
+            && !dragged
+            && (to_top_hovered
+                || state.hovered_workspace_id == Some(workspace.workspace_id.as_str()))
+        {
+            let button = Rect::new(rect.right().saturating_sub(10), rect.y, 3, 1);
+            let undo = state.space_to_top_undo == Some(workspace.workspace_id.as_str());
+            let (label, tooltip) = if undo {
+                (" ↶ ", "Put the spaces back in their order")
+            } else {
+                (" ⤒ ", "Move this space to the top (for every client)")
+            };
+            let style = Style::default().fg(palette.overlay1);
+            let style = if to_top_hovered {
+                style.bg(palette.surface1)
+            } else {
+                style
+            };
+            put_text(target, button.x, button.y, button.width, label, style);
+            block_hits
+                .space_to_top
+                .push((button, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: button,
+                id: format!("space-to-top:{}", workspace.workspace_id),
+                text: tooltip.into(),
                 bg: None,
                 starts_at_target: false,
             });
