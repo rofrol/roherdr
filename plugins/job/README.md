@@ -266,7 +266,9 @@ herdr-job slots                           # who holds them: job, name, pid, sinc
 - A job with `--slot` waits in its own tab: the tab says who it waits for and
   shows as idle until it gets the slot.
 - Inside a slot (`HERDR_JOB_SLOT` is set), a shared request takes nothing, so
-  `just check` under `herdr-job run --slot` does not wait for itself. An
+  `just check` under `herdr-job run --slot` does not wait for itself, and a
+  `herdr-job run --slot` started from inside a slot shares its parent's
+  instead of waiting for it in a new tab. An
   exclusive request inside a shared slot fails at once instead of waiting
   forever for its own ancestor. Background children inherit the mark too,
   so do not start detached heavy work from inside a slot.
