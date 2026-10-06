@@ -1350,6 +1350,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] Replace job pinning and folding with an explicit pin (user,
+  2026-10-06: "I don't like this pinning of herdr jobs and the whole
+  folding logic. Throw it out."). Remove the automatic attachment of job
+  rows to their parent and the fold/unfold logic for job squares (see
+  `DECISIONS.md`: "Unfolding job squares near the bottom", "Auto-unfolded
+  job squares", "Fold state of job squares across client restart",
+  "Folded job squares and focus"). Add only: right click on a job, "Pin"
+  in its context menu. A pinned job stays visible the way it is shown now,
+  perhaps with an icon that acts as an unpin button, and "Unpin" in the
+  same context menu. Before starting, record in `DECISIONS.md` which
+  earlier fold decisions this supersedes.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
