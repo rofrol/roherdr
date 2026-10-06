@@ -4969,6 +4969,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       decisions that can be revoked, summaries last, per task and off the
       agent's turn (like activegraph.ai's replay and explain, Apache 2.0,
       as an idea, not a dependency). After the attention inbox.
+      CorpusMap (arXiv 2609.37226, preprint) measured it: summary layers
+      (LLM wiki, topic trees) often lose to the raw corpus, while entity pages
+      that link to untouched documents beat it with 34-57% fewer tokens, for a
+      plain find/grep agent.
     - Child context (step 3): a brief by default, not inherited history
       (Taelin's spawn-by-inherit assumes a single writer). A child that
       continues the same work may get a native fork (`claude --resume <id>
