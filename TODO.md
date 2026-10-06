@@ -4850,11 +4850,15 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     praise roherdr like T3 Code?"; round `20261006-035823-bbe8`, sol and
     MiMo): the praise is less supervision, not looks: "who needs me now",
     ranked by how long they have waited, one click to the question. So:
-    - First the clean build tree, time-boxed to an evening: one persistent
+    - [x] First the clean build tree, time-boxed to an evening: one persistent
       check worktree (not a fresh one per run: cold Rust builds) reset to
       the `master` SHA, plus a patch of explicitly named paths of this
       session (`git diff` of the shared checkout carries other sessions'
       edits, so it cannot be the input), then the existing checks there.
+      Done 2026-10-06: `scripts/clean_tree.py`, `just clean-check <paths>`,
+      `just clean-release <paths>`, AGENTS.md install flow. Own `target/`;
+      a shared one is not measured (cargo keys local and vendored path
+      crates by source path, so they may rebuild on every switch): cold `just clean-check` 6.0 min and 3.6 GB, warm 1.8 min.
     - Then the task state as an attention inbox: waiting agents ranked by
       when they started waiting, the question text inline, jump to it;
       mark hook-confirmed states apart from screen-inferred ones; never
