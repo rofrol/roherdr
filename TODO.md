@@ -44,6 +44,22 @@
     words: the CLI, the status, the branch, and the diff stat once it is
     ready to check (@hieuspringle). Candidate for a done row later: branch
     and `+N -M`, facts herdr can read itself instead of agent prose.
+  - How T3 Code does it (read 2026-10-06, pingdotgg/t3code `4df84a7d`): a
+    three-line card (project and status word, title, branch/PR/providers);
+    status words Working, Waiting, Approval, Input, Limited (a usage limit,
+    apart from Failed), Failed, Done (`resolveSidebarThreadStatus`,
+    `apps/web/src/components/Sidebar.logic.ts:977`). The question text is
+    not in the sidebar, only the label; it shows in a panel above the
+    composer. Working rows are dimmed, an optional "working shelf" folds
+    them away, and the inbox sorts by when a thread last came back to the
+    user. Its diff stat is a stub (`latestRunDiff()` returns null,
+    `Sidebar.tsx:2161`). Worth taking: a `Limited` state, which also tells
+    when to hand a session over (see below).
+  - Diff stat source, if it comes: T3 snapshots the tree at each turn end
+    into hidden refs (`refs/t3/checkpoints`, through a temporary
+    `GIT_INDEX_FILE`) and takes `git diff --numstat` between consecutive
+    snapshots, so the stat is per turn, not the whole tree. In the shared
+    checkout it would still count concurrent sessions' edits.
 
 - [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
   would help, now I have to paste a link to the pi or claude session by
@@ -63,6 +79,19 @@
   - Open: whether the source tab stays (likely yes, idle), a CLI/API form
     (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
     what to do when the session id is unknown (say so, do not guess).
+  - How T3 Code does it (2026-10-06): it drives agents through their
+    protocols (Claude Agent SDK, `codex app-server`, `pi --mode rpc`, ACP),
+    so it owns the event stream. On a provider switch it replays selected
+    items, not a model-written summary: user and assistant text, commands
+    with output, errors, changed file names, plans, within a 16k-token
+    budget (`T3CODE_CONTEXT_HANDOFF_TOKEN_CAP`), only the delta since the
+    target last saw the thread; natively for Codex (`thread/inject_items`),
+    else as text before the user's message. Herdr has no event stream, so
+    the new agent reading the transcript stays cheaper; reuse T3's list of
+    what to carry over as the instruction in the first prompt. Subagents:
+    T3 hides them from the sidebar too (shown in the parent's lineage
+    panel; a terminal child wakes the parent with a synthetic message), so
+    showing them in herdr is not urgent.
   - From the Fellowship post (below): keep it a provenance pointer (source
     agent, session id, transcript, repository, revision, time), not a
     shared context; the post moves context between sessions only "when it
