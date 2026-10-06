@@ -1084,8 +1084,10 @@ pub(crate) fn render_sidebar(
         }
         if config.spaces.tabs && config.mouse_capture && wide.width >= 6 {
             // A new tab in this space, whichever space is focused.
-            // ` + `: like the launch chip, three columns to click, lit on
-            // hover. Left of the launch chip when it shows.
+            // ` ❏ `: the mark of a tab without an agent, which is what it
+            // opens; in the accent, not the tab lines' dim grey, so it does
+            // not pass for a tab. Like the launch chip, three columns to
+            // click, lit on hover. Left of the launch chip when it shows.
             let launch = if launch_button_shown(config, wide.width) {
                 LAUNCH_BUTTON_WIDTH
             } else {
@@ -1098,7 +1100,7 @@ pub(crate) fn render_sidebar(
                 3,
                 1,
             );
-            let style = Style::default().fg(palette.overlay1);
+            let style = Style::default().fg(palette.accent);
             let style = if state.hovered_name_button
                 == Some((workspace.workspace_id.as_str(), NameLineButton::NewTab))
             {
@@ -1106,10 +1108,24 @@ pub(crate) fn render_sidebar(
             } else {
                 style
             };
-            put_text(target, button.x, button.y, button.width, " + ", style);
+            put_text(
+                target,
+                button.x,
+                button.y,
+                button.width,
+                super::space_tabs::NEW_PROGRAM_TAB_BUTTON,
+                style,
+            );
             block_hits
                 .space_new_tab
                 .push((button, workspace.workspace_id.clone()));
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: button,
+                id: format!("space-new-tab:{}", workspace.workspace_id),
+                text: "New shell tab".into(),
+                bg: None,
+                starts_at_target: false,
+            });
         }
         let tab_hits = super::space_tabs::render_space_tab_lines(
             target,

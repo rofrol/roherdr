@@ -1048,10 +1048,10 @@ fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
     let row = frame_rows(&frame)[plus.y as usize]
         .chars()
         .collect::<Vec<_>>();
-    // ` + `, all three columns clickable, left of the launch chip that
-    // ends the line; no grip.
+    // ` ❏ `, the mark of a tab without an agent, all three columns
+    // clickable, left of the launch chip that ends the line; no grip.
     assert_eq!(plus.width, 3);
-    assert_eq!(row[plus.x as usize + 1], '+');
+    assert_eq!(row[plus.x as usize + 1], '❏');
     let (launch, _) = state.hits.space_launch_agent[0].clone();
     assert_eq!(plus.right(), launch.x);
     assert_eq!(launch.right(), space.right());

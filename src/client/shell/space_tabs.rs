@@ -713,6 +713,9 @@ fn top_level_tabs<'a>(
 
 /// U+274F: one cell, no emoji form, in the system symbol fonts.
 pub(super) const PROGRAM_ICON: &str = "❏";
+/// The new-tab buttons: [`PROGRAM_ICON`] padded to three columns, since a
+/// new tab opens without an agent.
+pub(super) const NEW_PROGRAM_TAB_BUTTON: &str = " ❏ ";
 
 /// The fills of the tab lines. Only the focused space's active tab is blue,
 /// a light accent tint so its job counts keep their colours; the active
@@ -1489,6 +1492,11 @@ mod tests {
             space_row_tab_jobs(&snapshot, &workspace, &collapsed, &lines),
             (0, 1)
         );
+    }
+
+    #[test]
+    fn new_tab_button_shows_the_program_icon() {
+        assert_eq!(NEW_PROGRAM_TAB_BUTTON, format!(" {PROGRAM_ICON} "));
     }
 
     #[test]

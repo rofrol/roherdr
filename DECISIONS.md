@@ -286,3 +286,7 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 
 ### `claude` consult skill
 - Uses `claude -p --model` (subscription login, not API billing); Sonnet default, Opus explicit; never silently substitute a model when a limit rejects it.
+
+### New tab button
+- Draws `❏`, the mark of a tab without an agent, not `+`, which the user mixed up with the agent launch chip (user, 2026-10-06).
+- Colour, not shape, tells it from a tab line: the accent, never the tab lines' dim grey nor an agent's badge colour (user, 2026-10-06: "maybe just a colour other than grey"). Fallback if that is not enough: `+❏`.
