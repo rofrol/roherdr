@@ -88,6 +88,7 @@ Removing or disabling the machine you are viewing returns you to Local. If Local
 ## Connection problems
 
 - **Reconnecting:** Herdr retries automatically after a network interruption, sleep, or SSH failure. Repeated failures increase the delay up to two minutes; brief successful connections do not reset it. A connection must remain healthy for a minute before the next interruption gets a fast retry. SSH connections are checked for application-level activity and probed when quiet, so a broken connection does not stay Online indefinitely. Local detects native connection closure or failure instead of using remote health probes.
+- **Keys typed as a connection drops:** Keys typed for a machine that is offline are discarded, and a line typed just as its connection drops can reach the shell incomplete, for example leaving an open quote with a `>` prompt. Herdr does not resend them after reconnecting, so stale keys never land at a new prompt. If the prompt looks stuck, press Ctrl-C and type the line again.
 - **Attention:** The target needs an action such as authentication, host-key approval, or a compatible server. Other machines remain usable. **`! auth`** means authentication failed; **`! error`** indicates another issue. Click the badge for the error and a CLI command. In a collapsed sidebar, either appears as `!`.
 - **Saved-machine file error:** An unreadable or invalid catalog leaves current connections unchanged. Herdr shows a notice and automatically retries reading it.
 

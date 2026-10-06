@@ -6,6 +6,10 @@ pub(super) enum ClientLoopEvent {
     StdinInput(Vec<u8>),
     #[cfg(unix)]
     PixelMouse(Vec<u8>, crate::input::mouse::HostGeometry),
+    /// The input events of one stdin read, handled one after another before any
+    /// endpoint event, so a reconnect cannot deliver part of a typed line.
+    #[cfg(unix)]
+    StdinBatch(Vec<ClientLoopEvent>),
     #[cfg(unix)]
     DirectGraphicsResponse(direct_graphics::Response),
     #[cfg(windows)]

@@ -846,6 +846,10 @@ pub(super) fn finish_client_shell_input(
             }
             continue;
         }
+        // Input is dropped while offline on purpose: replaying it after a
+        // reconnect could land stale keys at a new prompt. A stdin read is
+        // all-or-nothing, but a typed line can span reads, and frames queued
+        // to a dying SSH bridge are lost, so a line can still arrive cut.
         if !active_endpoint_online {
             continue;
         }
