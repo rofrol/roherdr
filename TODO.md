@@ -342,17 +342,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   "N jobs kept running" notice and a `was <name>` mark; no new "Close tab,
   keep jobs" button.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
 - [ ] The tab state does not show that something runs in the background
   (user, 2026-10-06, screenshot: "the tab state doesn't show that something
   is running in the background"). Space `music-mpd`, tab "Testy,
@@ -425,7 +414,9 @@ user needs to decide or do. Item text is unchanged.
   - Agent waiting on a herdr job with its turn ended: sol keeps idle plus
     the job circle (today's behaviour), MiMo wants working with a frozen
     spinner. Undecided.
-  Triage 2026-10-06 (decision): A `bg:N` observed-count badge, an `awaiting-background` flag, or both? Do dev servers get the badge, and is a herdr-job wait shown as idle or working?
+  Decided by the user 2026-10-06: a `bg:N` observed-count badge on the
+  tab, dev servers included; a `herdr-job wait` counts as work; no
+  separate awaiting-background flag.
 
 - [ ] Consult cost per model and the coordinator's extra spend (user,
   2026-10-03: "how much money/tokens a model used on a consult, and how much
@@ -450,7 +441,10 @@ user needs to decide or do. Item text is unchanged.
     consult; a one-off audit, not a stats column.
   - DeepSeek: a later trial could score coordinator tokens per accepted unique
     finding, which is what a shorter answer saves.
-  Triage 2026-10-06 (decision): Approve the shape: a dated price table with `$` only for DeepSeek and OpenRouter, and coordinator usage summed per round from the transcript, labelled "consult-associated"?
+  Decided by the user 2026-10-06: approved as proposed: a dated price
+  table with `$` only for DeepSeek and OpenRouter, and the coordinator's
+  usage summed per round from the transcript, labelled "consult-
+  associated".
 
 - [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
   (user, 2026-10-03: "do we need to unify ask in one place and consult in
@@ -458,7 +452,8 @@ user needs to decide or do. Item text is unchanged.
   the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
   skills would split the log keys (`skill` field) and break muscle memory. At
   most one README line stating the convention. Awaiting the user's decision.
-  Triage 2026-10-06 (decision): Leave the `ask_*` names as they are and add one README line, or unify them?
+  Decided by the user 2026-10-06: keep the names; add one README line
+  explaining them.
 
 - [ ] Consult stats default view: mixed rows, too much data, and why `astra
   -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
@@ -503,7 +498,19 @@ user needs to decide or do. Item text is unchanged.
     passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
     the user replaced DeepSeek with MiMo, default set sol + MiMo, for
     quality, not cost; DeepSeek on request.
-  Triage 2026-10-06 (decision): Adopt the proposed current-set/7-day default view? Should the unknown-version DeepSeek alias row merge into V4.1?
+  Decided by the user 2026-10-06: default to the current set over the last
+  7 days; merge the unknown-version DeepSeek alias row into V4.1.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
   show which models were tested together, e.g. sol ds mimo, and now a new
