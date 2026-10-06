@@ -118,6 +118,8 @@ pub(super) struct ShellHitMap {
     pub(super) space_push_status: Vec<(Rect, String)>,
     /// A space's launch button, left of its `+`.
     pub(super) space_launch_agent: Vec<(Rect, String)>,
+    /// A space's `T`, which runs `ui.sidebar.spaces.todo_command` for it.
+    pub(super) space_todo: Vec<(Rect, String)>,
     /// The `⤒` on a hovered space's name line: that space to the top.
     pub(super) space_to_top: Vec<(Rect, String)>,
     /// Drawn targets whose text is cut, for tooltips.
@@ -417,6 +419,7 @@ impl ShellHitMap {
         shift_all(&mut self.space_new_tab);
         shift_all(&mut self.space_push_status);
         shift_all(&mut self.space_launch_agent);
+        shift_all(&mut self.space_todo);
         shift_all(&mut self.space_to_top);
         self.tooltips = std::mem::take(&mut self.tooltips)
             .into_iter()
@@ -450,6 +453,7 @@ impl ShellHitMap {
             space_new_tab: self.space_new_tab.clone(),
             space_push_status: self.space_push_status.clone(),
             space_launch_agent: self.space_launch_agent.clone(),
+            space_todo: self.space_todo.clone(),
             space_to_top: self.space_to_top.clone(),
             tooltips: self.tooltips.clone(),
             space_tab_folds: self.space_tab_folds.clone(),
@@ -466,6 +470,7 @@ impl ShellHitMap {
         self.space_new_tab.extend(block.space_new_tab);
         self.space_push_status.extend(block.space_push_status);
         self.space_launch_agent.extend(block.space_launch_agent);
+        self.space_todo.extend(block.space_todo);
         self.space_to_top.extend(block.space_to_top);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
@@ -497,6 +502,19 @@ pub(crate) enum ClientShellAction {
     },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
+    /// Run a space's `todo_command` on this machine, in the background.
+    RunSpaceCommand {
+        space: String,
+        command: String,
+    },
+}
+
+/// What a space's `todo_command` printed and how it ended.
+#[derive(Debug)]
+pub(crate) struct SpaceCommandOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Default)]
@@ -821,6 +839,7 @@ pub(super) type BranchListing = Result<Vec<crate::api::schema::GitBranchInfo>, S
 pub(super) enum NameLineButton {
     PushStatus,
     Launch,
+    Todo,
     NewTab,
     ToTop,
 }
@@ -1066,6 +1085,8 @@ pub(super) enum ClientEndpointNoticeKind {
     Rejected,
     Timeout,
     Unavailable,
+    /// Not a failure: what a command this client ran said.
+    Info,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -101,12 +101,44 @@ pub(super) fn reap_image_preview(picker_open: bool) {
     }
 }
 
+/// Runs a space's `todo_command` on its own thread, so a slow launcher never
+/// blocks the client; its result comes back as a loop event.
+fn run_space_command(
+    space: String,
+    command: String,
+    event_tx: Option<&tokio::sync::mpsc::Sender<ClientLoopEvent>>,
+) {
+    let Some(event_tx) = event_tx.cloned() else {
+        warn!(%space, "no client event queue for the space command");
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("herdr-space-command".into())
+        .spawn(move || {
+            let result = crate::platform::detached_custom_command_process(&command)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|err| err.to_string())
+                .map(|output| shell::SpaceCommandOutput {
+                    success: output.status.success(),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                });
+            // The client may have quit meanwhile; nothing is left to tell.
+            let _ = event_tx.blocking_send(ClientLoopEvent::SpaceCommandFinished { space, result });
+        });
+    if let Err(err) = spawned {
+        warn!(err = %err, "failed to start the space command thread");
+    }
+}
+
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
     mut shell: Option<&mut shell::ClientShellState>,
     detached_process_children: &mut Vec<std::process::Child>,
+    event_tx: Option<&tokio::sync::mpsc::Sender<ClientLoopEvent>>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
@@ -157,6 +189,9 @@ pub(super) fn dispatch_client_shell_actions(
                 {
                     repaint |= shell.image_preview_failed(notice);
                 }
+            }
+            shell::ClientShellAction::RunSpaceCommand { space, command } => {
+                run_space_command(space, command, event_tx);
             }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
             shell::ClientShellAction::Keybind(action) => {
@@ -400,6 +435,7 @@ pub(super) fn begin_endpoint_activation(
                 endpoints,
                 Some(shell),
                 &mut state.detached_process_children,
+                state.event_tx.as_ref(),
                 scheduled_activation,
             )?;
             if repaint {
@@ -850,6 +886,7 @@ pub(super) fn finish_client_shell_input(
         endpoints,
         state.shell.as_mut(),
         &mut state.detached_process_children,
+        state.event_tx.as_ref(),
         scheduled_activation,
     )?;
     let frame = if dispatch_repaint {

@@ -87,6 +87,11 @@ PRs.
   land and the header says which tab moves and where (`2 → 4 · build · before
   review`), Esc or a drop outside the space cancels. Worktree spaces indent
   their tab lines under the worktree's name.
+  With `todo_command = "~/scripts/todo-worker {space}"` under
+  `[ui.sidebar.spaces]`, each space on this machine gets a `T` button left
+  of its `A`: a click runs that command in the background with the space's
+  label (quoted for the shell) and shows its first output line as a toast;
+  a failure stays until clicked. Unset, there is no button.
 - **Spaces filter.** The `/ filter` button between `new` and `menu` opens a
   bar under the spaces header, like fzf: type to narrow the list to the
   spaces and tabs that match (a smart-case subsequence of a space's name,

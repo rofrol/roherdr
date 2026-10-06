@@ -13,7 +13,7 @@ pub(super) fn render_mobile_banner(
         area,
         &notice.title,
         Some(&notice.body),
-        palette.red,
+        notice_color(notice.key.kind, palette),
         offset_for_warning,
         palette,
     )
@@ -67,14 +67,15 @@ pub(super) fn render_notice(
         &notice.body,
         crate::config::ToastHerdrPosition::TopRight,
         top_offset,
-        match notice.key.kind {
-            ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => {
-                palette.red
-            }
-            ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {
-                palette.yellow
-            }
-        },
+        notice_color(notice.key.kind, palette),
         palette,
     )
+}
+
+fn notice_color(kind: ClientEndpointNoticeKind, palette: &Palette) -> ratatui::style::Color {
+    match kind {
+        ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => palette.red,
+        ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => palette.yellow,
+        ClientEndpointNoticeKind::Info => palette.green,
+    }
 }

@@ -4391,3 +4391,85 @@ fn back_and_forward_in_the_header_return_to_the_tabs_jumped_from() {
     let outcome = click_rect(&mut state, forward);
     assert!(focuses_pane(&outcome, "pane_2"), "{:?}", outcome.actions);
 }
+
+#[test]
+fn the_todo_button_shows_only_with_a_todo_command_and_runs_it_for_the_space() {
+    let mut state = state_with_tabs(true);
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.space_todo.is_empty());
+
+    let mut state = state_with_tabs(true);
+    state.config.spaces.todo_command = Some("~/scripts/todo-worker {space}".into());
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].label = "my repo".into();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let (todo, workspace_id) = state.hits.space_todo[0].clone();
+    let (launch, _) = state.hits.space_launch_agent[0].clone();
+    let (plus, _) = state.hits.space_new_tab[0].clone();
+    assert_eq!(workspace_id, "ws_1");
+    // `+`, `T`, `A`, left to right, at the name line's end.
+    assert_eq!(todo.y, launch.y);
+    assert_eq!(todo.right(), launch.x);
+    assert_eq!(plus.right(), todo.x);
+    let at = |rect: Rect| {
+        rows[rect.y as usize]
+            .chars()
+            .skip(rect.x as usize)
+            .take(rect.width as usize)
+            .collect::<String>()
+    };
+    assert_eq!(at(todo), " T ", "{rows:?}");
+
+    let outcome = left_click(&mut state, (todo.x, todo.y));
+    let command = outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::RunSpaceCommand { space, command } => Some((space, command)),
+        _ => None,
+    });
+    let expected = format!(
+        "~/scripts/todo-worker {}",
+        crate::platform::custom_command_argument("my repo")
+    );
+    assert_eq!(command, Some((&"my repo".to_owned(), &expected)));
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("starting notice");
+    assert_eq!(notice.title, "TODO my repo");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Info);
+}
+
+#[test]
+fn a_finished_space_command_shows_its_first_line_and_a_failure_stays() {
+    let mut state = state_with_tabs(true);
+    assert!(state.space_command_finished(
+        "repo",
+        Ok(SpaceCommandOutput {
+            success: true,
+            stdout: "\nstarted claude as todo-repo in pane w1:p2\nmore\n".into(),
+            stderr: String::new(),
+        }),
+    ));
+    let notice = state.visible_endpoint_notice.as_ref().expect("notice");
+    assert_eq!(notice.body, "started claude as todo-repo in pane w1:p2");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Info);
+    let short = notice.deadline;
+
+    state.space_command_finished(
+        "repo",
+        Ok(SpaceCommandOutput {
+            success: false,
+            stdout: "partial\n".into(),
+            stderr: "todo-worker: no space named repo\n".into(),
+        }),
+    );
+    let notice = state.visible_endpoint_notice.as_ref().expect("notice");
+    assert_eq!(notice.body, "todo-worker: no space named repo");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Rejected);
+    assert!(notice.deadline > short + std::time::Duration::from_secs(60 * 60));
+
+    state.space_command_finished("repo", Err("No such file or directory".into()));
+    let notice = state.visible_endpoint_notice.as_ref().expect("notice");
+    assert!(notice.body.contains("No such file"), "{}", notice.body);
+}

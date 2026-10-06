@@ -36,5 +36,10 @@ pub(super) enum ClientLoopEvent {
         /// latest target have the same identity after restoration.
         force: bool,
     },
+    /// A space's `todo_command` ended (or could not start).
+    SpaceCommandFinished {
+        space: String,
+        result: Result<shell::SpaceCommandOutput, String>,
+    },
     Timer,
 }
