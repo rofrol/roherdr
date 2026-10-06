@@ -256,8 +256,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     2.1.291: a fresh session's Up showed nothing, after one prompt
     `History 1/1`, after `/clear` and another prompt both of this pane's
     prompts and no others. Consulted sol and MiMo (round
-    `20261006-163930-a40c`). To do before shipping it as an opt-in fork
-    plugin that installs the wrapper:
+    `20261006-163930-a40c`). Built as its own project (user, 2026-10-06:
+    it must also work outside herdr): `~/personal_projects/claude-own-history`;
+    session ids come from argv, a `SessionStart` hook the wrapper adds with
+    `--settings` (covers `--continue` and the resume picker; round
+    `20261006-164924-9465`) and the appended records. Live-tested: two
+    sessions in one directory and `--continue` each see only their own
+    prompts, plain `claude` sees both. Left for herdr: nothing, unless it
+    should offer installing that wrapper. pi needs nothing: its Up history
+    lives in each process's editor, seeded from the current session's
+    messages, with no shared file (round `20261006-170039-5739`). The
+    review notes that went into it:
     - Bail out unless `process.argv[1]` is Claude's `/$bunfs/root/cli`,
       and delete `BUN_OPTIONS` from `process.env` at once, so the Bash
       tool's `bun` and other Bun programs never load it (both).
