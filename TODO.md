@@ -1422,8 +1422,10 @@ Items agents add. Not approved until the user moves them up.
     re-layout; repaint only when the hovered button changes
     (`endpoint_navigation.rs:91`); without motion reporting only hover is
     lost. Pointer exit without an event cannot be detected.
-  - Overflow, when the padded buttons do not fit: shorten sort to `⇅`
-    first, then move disabled navigation, fold and zero-count history into
+  - Overflow, when the padded buttons do not fit: shorten the sort key to
+    its first letter (`⇅ m↑` for manual, `n` name, `p` prior…; user,
+    2026-10-07: the full name shows on click, in the sort menu), then to
+    `⇅` alone, then move disabled navigation, fold and zero-count history into
     an overflow menu, a second row as last resort. Bug found on the way:
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
