@@ -550,7 +550,9 @@ asking you.
 
 Before `install`, check that `HEAD` has no new commits touching the build
 inputs since the clean-tree build and that your paths' diff is unchanged;
-otherwise rebuild. Such a build is labelled `<HEAD>-dirty`. Commit your files by explicit path (`git commit -- <paths>`),
+otherwise rebuild. Such a build is labelled `<HEAD>~<tree> <job name>` in the
+sidebar footer and `--build-commit` (the tree hash tells two dirty builds
+apart), and its backup `<HEAD>-dirty-<tree>_<job name>`. Commit your files by explicit path (`git commit -- <paths>`),
 never with `-a`.
 
 `install` copies `target/release/herdr` to a staging file, backs up the

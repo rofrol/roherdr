@@ -63,9 +63,10 @@ handoff() {
   "$1" server live-handoff --import-exe "$installed"
 }
 
-# "<short hash>_<subject slug>" from the commit a binary was built from, with
-# "-dirty" when it had uncommitted changes. The binary itself says it, since
-# other sessions may move the checkout's HEAD between build and install.
+# "<short hash>_<subject slug>" from the commit a binary was built from; a
+# build with uncommitted changes is "<short hash>-dirty-<tree>_<label slug>"
+# (build.rs). The binary itself says it, since other sessions may move the
+# checkout's HEAD between build and install.
 describe() {
   local line hash subject
   if ! line="$("$1" --build-commit 2>/dev/null)" || [[ -z "$line" ]]; then
@@ -73,8 +74,10 @@ describe() {
     return
   fi
   hash="${line%% *}"
+  hash="${hash/\~/-dirty-}"
   hash="${hash/+/-dirty}"
-  subject="$(printf '%s' "${line#* }" | sed -E 's/^[a-z]+(\([^)]*\))?!?: //' |
+  subject="${line#* }"
+  subject="$(printf '%s' "${subject%% · base: *}" | sed -E 's/^[a-z]+(\([^)]*\))?!?: //' |
     LC_ALL=C tr -c 'a-zA-Z0-9' '-' | tr -s '-' | cut -c1-40 | sed 's/-$//')"
   echo "${hash}_${subject:-no-subject}"
 }
