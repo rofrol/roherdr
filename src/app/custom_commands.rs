@@ -742,7 +742,12 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         let mut command = binding(crate::config::CustomCommandAction::Shell);
-        command.command = format!("printf invoked > {}", path.display());
+        // Published whole with `mv`: the poll below must never see the file
+        // the redirection created before `printf` wrote to it.
+        command.command = format!(
+            "printf invoked > {path}.tmp && mv {path}.tmp {path}",
+            path = path.display()
+        );
         install(&mut app, command);
         let command_id = app.client_shell_command_manifest()[0].command_id.clone();
 
