@@ -643,6 +643,9 @@ async fn run_client_loop(
     let mut next_surface_serial = 1_u64;
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
+    // The rest of a stdin read, handled before the loop waits for anything else.
+    #[cfg(unix)]
+    let mut pending_stdin_events = std::collections::VecDeque::new();
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
     if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
         catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
@@ -769,6 +772,12 @@ async fn run_client_loop(
                 shell.timer_delay(std::time::Instant::now())
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
+        #[cfg(unix)]
+        let immediate_event = match pending_stdin_events.pop_front() {
+            Some(event) => Some(event),
+            None => scheduled_activation.take(),
+        };
+        #[cfg(windows)]
         let immediate_event = scheduled_activation.take();
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
@@ -1050,6 +1059,11 @@ async fn run_client_loop(
                     success: accepted,
                 };
                 write_stream.send_to(&owner, &message);
+            }
+            #[cfg(unix)]
+            ClientLoopEvent::StdinBatch(events) => {
+                pending_stdin_events.extend(events);
+                continue;
             }
             #[cfg(unix)]
             ClientLoopEvent::PixelMouse(data, geometry) => {

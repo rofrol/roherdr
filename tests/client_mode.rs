@@ -1121,8 +1121,9 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
                     return true;
                 }
                 // The client drops keys while the endpoint is offline and
-                // decides per key, so a reconnect can deliver half a line and
-                // leave the shell inside an open quote. Ctrl-C clears it.
+                // decides per stdin read, and a read can end mid-line, so a
+                // reconnect can deliver half a line and leave the shell inside
+                // an open quote. Ctrl-C clears it.
                 write!(
                     input,
                     "\x03printf 'REMOTE_%s_INPUT_{cycle}\\n' \"$reconnect_survivor\"\r"

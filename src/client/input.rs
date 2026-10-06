@@ -305,6 +305,9 @@ fn send_unix_input_chunks(
     sgr_pixels: bool,
     geometry: Option<crate::input::mouse::HostGeometry>,
 ) -> bool {
+    // The framer splits a read into one chunk per key. They go out together,
+    // so the loop handles a typed line as a whole while an endpoint reconnects.
+    let mut batch = Vec::new();
     for data in chunks {
         let palette_response = std::str::from_utf8(&data)
             .ok()
@@ -312,7 +315,8 @@ fn send_unix_input_chunks(
             .is_some();
         if palette_response {
             pending_palette.push(data);
-            if pending_palette.len() == 256 && !flush_unix_palette_input(event_tx, pending_palette)
+            if pending_palette.len() == 256
+                && !flush_unix_batch_then_palette(event_tx, &mut batch, pending_palette)
             {
                 return false;
             }
@@ -322,17 +326,42 @@ fn send_unix_input_chunks(
             .ok()
             .and_then(crate::terminal_theme::parse_default_color_response)
             .is_some();
-        if !default_color_response && !flush_unix_palette_input(event_tx, pending_palette) {
+        if !default_color_response
+            && !pending_palette.is_empty()
+            && !flush_unix_batch_then_palette(event_tx, &mut batch, pending_palette)
+        {
             return false;
         }
-        let Some(event) = classify_unix_input(data, sgr_pixels, geometry) else {
-            continue;
-        };
-        if event_tx.blocking_send(event).is_err() {
-            return false;
+        if let Some(event) = classify_unix_input(data, sgr_pixels, geometry) {
+            batch.push(event);
         }
     }
-    true
+    send_unix_input_batch(event_tx, &mut batch)
+}
+
+/// Keeps the input before the palette replies ahead of them.
+#[cfg(unix)]
+fn flush_unix_batch_then_palette(
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    batch: &mut Vec<ClientLoopEvent>,
+    pending_palette: &mut Vec<Vec<u8>>,
+) -> bool {
+    send_unix_input_batch(event_tx, batch) && flush_unix_palette_input(event_tx, pending_palette)
+}
+
+#[cfg(unix)]
+fn send_unix_input_batch(
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    batch: &mut Vec<ClientLoopEvent>,
+) -> bool {
+    let event = if batch.len() > 1 {
+        ClientLoopEvent::StdinBatch(std::mem::take(batch))
+    } else if let Some(event) = batch.pop() {
+        event
+    } else {
+        return true;
+    };
+    event_tx.blocking_send(event).is_ok()
 }
 
 #[cfg(unix)]
@@ -533,6 +562,50 @@ mod tests {
     fn transient_geometry_failure_keeps_last_real_value() {
         let geometry = crate::input::mouse::HostGeometry::new(80, 24, 800, 480).unwrap();
         assert_eq!(retain_geometry(Some(geometry), None), Some(geometry));
+    }
+
+    #[test]
+    fn the_keys_of_one_read_go_out_as_one_event() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut pending = Vec::new();
+        assert!(send_unix_input_chunks(
+            vec![b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()],
+            &tx,
+            &mut pending,
+            false,
+            None,
+        ));
+
+        let Ok(ClientLoopEvent::StdinBatch(events)) = rx.try_recv() else {
+            panic!("expected one batch for the read");
+        };
+        let keys: Vec<Vec<u8>> = events
+            .into_iter()
+            .map(|event| match event {
+                ClientLoopEvent::StdinInput(data) => data,
+                _ => panic!("expected raw keys"),
+            })
+            .collect();
+        assert_eq!(keys, [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_single_key_is_not_wrapped_in_a_batch() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut pending = Vec::new();
+        assert!(send_unix_input_chunks(
+            vec![b"q".to_vec()],
+            &tx,
+            &mut pending,
+            false,
+            None,
+        ));
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientLoopEvent::StdinInput(data)) if data == b"q"
+        ));
     }
 
     #[test]
