@@ -7,7 +7,7 @@ Parked ideas live in `TODO-deferred.md`.
 ## Next, in order
 
 Agents may do these from the top without asking when the user tells them to
-work through the TODO (AGENTS.md, Commit Style).
+work through the TODO (the user's global agent rules, "Working through TODO.md").
 
 - [ ] `herdr tab create` without `--workspace` from inside a pane should
   create the tab in the caller's workspace (`$HERDR_WORKSPACE_ID`), not in
