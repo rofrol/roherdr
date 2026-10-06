@@ -13,6 +13,16 @@ width = "80%"
 height = 20
 command = ["sh", "-c", "./herdr-job list; printf '\\nEnter closes. '; read -r _"]
 
+# Links the commands into ~/.local/bin and asks whether to add the herdr-job
+# instructions to each agent's global instruction file (see ./install).
+[[panes]]
+id = "setup"
+title = "Jobs: set up for agents"
+placement = "popup"
+width = "80%"
+height = 20
+command = ["sh", "-c", "./install; printf '\\nEnter closes. '; read -r _"]
+
 # Recount the `$jobs` token of the pane that started a job when its tab closes.
 [[events]]
 on = "tab.closed"

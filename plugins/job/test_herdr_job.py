@@ -561,3 +561,59 @@ class CleanTreeTests(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("outside", out.stderr)
 
+
+
+@unittest.skipUnless(os.name == "posix", "the job plugin supports Unix only")
+class InstallTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.env = dict(os.environ, HOME=str(self.home), PATH=f"{self.home}/.local/bin:/usr/bin:/bin")
+
+    def install(self, *args):
+        return subprocess.run([str(Path(__file__).with_name("install")), *args], env=self.env,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+
+    def test_links_commands_and_adds_one_block_per_present_agent(self):
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude" / "CLAUDE.md").write_text("# Mine\n")
+        (self.home / ".pi" / "agent").mkdir(parents=True)
+        out = self.install("--yes")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue((self.home / ".local/bin/herdr-job").resolve().samefile(Path(__file__).with_name("herdr-job")))
+        claude = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertTrue(claude.startswith("# Mine\n\n<!-- herdr-job agent instructions v1"))
+        self.assertIn("herdr-job clean-tree", claude)
+        self.assertIn("herdr-job run", (self.home / ".pi/agent/AGENTS.md").read_text())
+        self.assertFalse((self.home / ".codex").exists())
+        # A re-run changes nothing.
+        out = self.install("--yes")
+        self.assertEqual((self.home / ".claude/CLAUDE.md").read_text(), claude)
+        self.assertIn("ok       " + str(self.home / ".claude/CLAUDE.md"), out.stdout)
+
+    def test_an_older_block_is_replaced_and_hand_written_instructions_are_kept(self):
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude/CLAUDE.md").write_text(
+            "a\n<!-- herdr-job agent instructions v0: old -->\nold text\n<!-- /herdr-job agent instructions -->\nb\n")
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/AGENTS.md").write_text("Use `herdr-job run` for builds.\n")
+        self.assertEqual(self.install("--yes").returncode, 0)
+        claude = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertNotIn("old text", claude)
+        self.assertTrue(claude.startswith("a\n<!-- herdr-job agent instructions v1") and claude.endswith("-->\nb\n"))
+        self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), "Use `herdr-job run` for builds.\n")
+
+    def test_without_a_terminal_or_yes_nothing_is_written_and_foreign_files_are_kept(self):
+        (self.home / ".claude").mkdir()
+        (self.home / ".local/bin").mkdir(parents=True)
+        (self.home / ".local/bin/herdr-job").write_text("someone else's\n")
+        out = self.install()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("skipped", out.stderr)
+        self.assertFalse((self.home / ".claude/CLAUDE.md").exists())
+        self.assertEqual((self.home / ".local/bin/herdr-job").read_text(), "someone else's\n")
+
+    def test_the_readme_shows_the_block_the_installer_writes(self):
+        here = Path(__file__).parent
+        self.assertIn((here / "agent-instructions.md").read_text().strip(), (here / "README.md").read_text())

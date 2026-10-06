@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Sets up the job plugin for your agents: links its commands into your PATH and,
+if you agree, adds the herdr-job instructions to each agent's global instructions.
+
+  install [--yes] [--bin DIR] [--no-instructions]
+
+Safe to re-run. An existing link to a file here is left alone; anything else under
+the same name is reported and kept. The instructions go in a marked block
+(agent-instructions.md), asked about per file unless --yes; a re-run updates an
+older block. A file that already mentions `herdr-job run` without the block is
+left alone. Only agents whose config directory exists are offered.
+"""
+import argparse
+import os
+import shutil
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+COMMANDS = ("herdr-job", "herdr-bg-badge", "herdr-peer-token")
+VERSION = 1
+BEGIN = "<!-- herdr-job agent instructions v{}: written by plugins/job/install, re-run it to update -->"
+END = "<!-- /herdr-job agent instructions -->"
+# Global instruction files, offered when the agent's directory exists.
+AGENTS = ((".claude", "CLAUDE.md", "Claude Code"), (".pi/agent", "AGENTS.md", "pi"),
+          (".codex", "AGENTS.md", "Codex"))
+
+
+def link_commands(bin_dir):
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for name in COMMANDS:
+        src, target = HERE / name, bin_dir / name
+        if target.is_symlink() and target.resolve() == src.resolve():
+            print(f"ok       {target}")
+        elif target.exists() or target.is_symlink():
+            print(f"skipped  {target} exists and is not a link to {src}; move it away and re-run", file=sys.stderr)
+            ok = False
+        else:
+            target.symlink_to(src)
+            print(f"linked   {target} -> {src}")
+    if str(bin_dir) not in os.environ.get("PATH", "").split(os.pathsep):
+        print(f"note     {bin_dir} is not on your PATH; agents will not find herdr-job", file=sys.stderr)
+    return ok
+
+
+def block():
+    text = (HERE / "agent-instructions.md").read_text().strip()
+    return f"{BEGIN.format(VERSION)}\n{text}\n{END}\n"
+
+
+def ask(question, assume_yes):
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"skipped  {question} (no terminal to ask; use --yes)", file=sys.stderr)
+        return False
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def write(path, text):
+    """Through a symlinked file to its target, replaced atomically."""
+    real = path.resolve()
+    real.parent.mkdir(parents=True, exist_ok=True)
+    tmp = real.with_name(real.name + ".herdr-job.tmp")
+    tmp.write_text(text)
+    if real.exists():
+        shutil.copymode(real, tmp)
+    tmp.replace(real)
+
+
+def update_instructions(home, assume_yes):
+    wanted = block()
+    for directory, name, agent in AGENTS:
+        if not (home / directory).is_dir():
+            continue
+        path = home / directory / name
+        current = path.read_text() if path.exists() else ""
+        start = current.find(BEGIN.split("{}")[0])
+        if start >= 0:
+            end = current.find(END, start)
+            if end < 0:
+                print(f"skipped  {path}: its herdr-job block has no end marker; fix it by hand", file=sys.stderr)
+                continue
+            end += len(END) + (1 if current[end + len(END):end + len(END) + 1] == "\n" else 0)
+            if current[start:end] == wanted:
+                print(f"ok       {path}")
+            elif ask(f"Update the herdr-job instructions in {path} ({agent})?", assume_yes):
+                write(path, current[:start] + wanted + current[end:])
+                print(f"updated  {path}")
+        elif "herdr-job run" in current:
+            print(f"kept     {path} has its own herdr-job instructions; delete them and re-run for the managed block")
+        elif ask(f"Add the herdr-job instructions to {path} ({agent})?", assume_yes):
+            separator = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
+            write(path, current + separator + wanted)
+            print(f"added    {path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--yes", action="store_true", help="add or update the instructions without asking")
+    parser.add_argument("--bin", type=Path, default=Path.home() / ".local/bin", help="where the commands are linked")
+    parser.add_argument("--no-instructions", action="store_true", help="only link the commands")
+    args = parser.parse_args()
+    ok = link_commands(args.bin.expanduser())
+    if not args.no_instructions:
+        update_instructions(Path.home(), args.yes)
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
