@@ -5474,3 +5474,21 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
   the reader is not enough on its own, because the `StdinInput` handler
   checks each chunk for the image-paste key and file drops. Upstream code:
   consider reporting it upstream instead of diverging.
+  - Fix (2026-10-06, uncommitted until its stress run passes): the reader
+    sends the events of one read as one `StdinBatch`, and the loop drains
+    it through a queue before `select!`, so each key still goes through its
+    own handler in order (sol, round `20261006-014726-fde7`: handling the
+    special keys first and the rest in one call would reorder input).
+  - Not fixed, by decision (user, 2026-10-06, after sol and MiMo, round
+    `20261006-020529-3310`): a line split by the kernel across two reads,
+    and frames queued to a dying SSH bridge, can still arrive cut. An acked
+    sequence protocol cannot give exactly-once keystrokes (a lost ack
+    resends `y` as `yy`, seq and payload are two messages, drops must
+    advance the seq), and queueing input while offline lands stale keys at
+    a new prompt; 800-1500 lines for little. Documented instead (round
+    `20261006-020858-b22a`): a "Keys typed as a connection drops" item in
+    `connecting-machines.mdx` and a comment at the drop site in
+    `finish_client_shell_input`.
+  - Upstream report: not filed yet. Upstream has the same code, but 60 of 60
+    stress runs passed there; a 120-run retry is running. The upstream
+    rules allow an issue only for a bug reproduced on the reported version.
