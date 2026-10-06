@@ -908,16 +908,15 @@ pub(crate) fn render_sidebar(
                 .space_push_status
                 .push((chip, workspace.workspace_id.clone()));
         }
-        if let Some(color) = grab_color {
+        if let Some(color) = grab_color.filter(|_| !config.spaces.tabs) {
             // A grip at the name line's right edge, left of the group
-            // chevron (with vertical tabs, the last column, right of the
-            // new-tab `+`), in a spacer column the name never reaches.
+            // chevron, in a spacer column the name never reaches. With
+            // vertical tabs the name line ends in buttons and has none.
             let hovered = state.hovered_workspace_id == Some(workspace.workspace_id.as_str());
             if (dragged || pressed || hovered) && rect.width >= 6 {
                 put_text(
                     target,
-                    rect.right()
-                        .saturating_sub(if config.spaces.tabs { 1 } else { 2 }),
+                    rect.right().saturating_sub(2),
                     rect.y,
                     1,
                     "⋮",
@@ -926,15 +925,20 @@ pub(crate) fn render_sidebar(
             }
         }
         if launch_button_shown(config, rect.width) {
-            // The agent last launched here, left of the `+`: a click starts
-            // it in a new tab, a right click picks another.
+            // The agent last launched here, at the name line's right end:
+            // a click starts it in a new tab, a right click picks another.
             let kind = super::agent_launch::space_launch_agent(
                 snapshot,
                 state.launched_agents,
                 &workspace.workspace_id,
             );
-            // Next to the `+`: the two ways to open a tab sit together.
-            let button = Rect::new(rect.right().saturating_sub(7), rect.y, 3, 1);
+            // Right of the `+`: the two ways to open a tab sit together.
+            let button = Rect::new(
+                rect.right().saturating_sub(LAUNCH_BUTTON_WIDTH),
+                rect.y,
+                LAUNCH_BUTTON_WIDTH,
+                1,
+            );
             // The chip starts an agent, unlike the plain `+`; its colour is
             // the agent's, which the tooltip names.
             let hovered = state.hovered_name_button
@@ -1008,8 +1012,19 @@ pub(crate) fn render_sidebar(
         if config.spaces.tabs && config.mouse_capture && rect.width >= 6 {
             // A new tab in this space, whichever space is focused.
             // ` + `: like the launch chip, three columns to click, lit on
-            // hover.
-            let button = Rect::new(rect.right().saturating_sub(4), rect.y, 3, 1);
+            // hover. Left of the launch chip when it shows.
+            let launch = if launch_button_shown(config, rect.width) {
+                LAUNCH_BUTTON_WIDTH
+            } else {
+                0
+            };
+            let button = Rect::new(
+                rect.right()
+                    .saturating_sub(NAME_LINE_ACTIONS_WIDTH + launch),
+                rect.y,
+                3,
+                1,
+            );
             let style = Style::default().fg(palette.overlay1);
             let style = if state.hovered_name_button
                 == Some((workspace.workspace_id.as_str(), NameLineButton::NewTab))
@@ -1827,15 +1842,15 @@ fn open_button_style(buffer: &mut Buffer, pill: Rect, style: Style, palette: &Pa
 }
 
 /// Columns the name line of a space leaves at its right with vertical tabs:
-/// the new-tab ` + ` (its padding is the gaps) and the drag grip.
-const NAME_LINE_ACTIONS_WIDTH: u16 = 4;
+/// the new-tab ` + ` (its padding is the gaps).
+const NAME_LINE_ACTIONS_WIDTH: u16 = 3;
 
 /// The launch button: a bold `A` (agent) padded to three columns, all of
 /// them the click target. ASCII, so it keeps its
 /// width in every terminal.
 const LAUNCH_LABEL: &str = " A ";
 
-/// The launch chip, left of the `+`; its padding is the gaps around it.
+/// The launch chip, right of the `+`; its padding is the gaps around it.
 const LAUNCH_BUTTON_WIDTH: u16 = 3;
 
 /// The `⤒` in front of a space's name, with the column after it.
@@ -1844,7 +1859,7 @@ const TO_TOP_BUTTON_WIDTH: u16 = 2;
 /// Narrower space blocks keep their name rather than show the button.
 const LAUNCH_BUTTON_MIN_WIDTH: u16 = 16;
 
-/// The launch button shows on a space's name line next to its `+`.
+/// The launch button ends a space's name line, right of its `+`.
 pub(in crate::client::shell) fn launch_button_shown(
     config: &ClientShellConfig,
     width: u16,
@@ -1881,7 +1896,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // background; only its tab lines have one.
     let vertical_tabs = config.spaces.tabs;
     // Columns left free at the right: the grip's; with vertical tabs the
-    // name line also ends in a new-tab `+`, a column apart from the grip.
+    // name line ends in a new-tab `+` and the launch chip instead.
     let launch_button = launch_button && launch_button_shown(config, area.width);
     let reserved = |row_index: usize| {
         if vertical_tabs && row_index == 0 {

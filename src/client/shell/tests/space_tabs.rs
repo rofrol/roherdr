@@ -1041,10 +1041,14 @@ fn the_plus_on_a_spaces_name_line_opens_a_tab_there() {
     let row = frame_rows(&frame)[plus.y as usize]
         .chars()
         .collect::<Vec<_>>();
-    // ` + `, all three columns clickable, before the grip at the edge.
+    // ` + `, all three columns clickable, left of the launch chip that
+    // ends the line; no grip.
     assert_eq!(plus.width, 3);
     assert_eq!(row[plus.x as usize + 1], '+');
-    assert_eq!(plus.right(), space.right() - 1);
+    let (launch, _) = state.hits.space_launch_agent[0].clone();
+    assert_eq!(plus.right(), launch.x);
+    assert_eq!(launch.right(), space.right());
+    assert!(!row.contains(&'⋮'));
 
     let outcome = left_click(&mut state, (plus.x, plus.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
@@ -3521,7 +3525,7 @@ fn the_push_status_chip_opens_a_branch_menu_titled_like_the_chip() {
     };
     // The chip is on the name line; there is no branch line under it.
     // A narrow sidebar cuts the name, never the chip.
-    assert!(rows[chip.y as usize].contains("c…"), "{rows:?}");
+    assert!(rows[chip.y as usize].contains("cl…"), "{rows:?}");
     assert_eq!(at(&rows[chip.y as usize], chip), " feat-x ↑3 ");
     assert!(!rows[chip.y as usize + 1].contains("feat-x"), "{rows:?}");
 
