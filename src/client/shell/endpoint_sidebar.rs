@@ -600,6 +600,7 @@ pub(super) fn render_expanded(
                     state.selected_workspace_id.is_some(),
                     None,
                     false,
+                    false,
                     config,
                 );
                 let online = endpoint.status == ClientEndpointStatus::Online;

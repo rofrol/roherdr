@@ -870,6 +870,13 @@ pub(crate) fn render_sidebar(
             displayed_workspaces(snapshot, workspace, state.collapsed_groups)
                 .any(|shown| shown.workspace_id == agent.workspace_id)
         });
+        // `⤒` in front of the name moves the space to the top of the manual
+        // order (for every client); right after, `↶` puts it back.
+        let to_top_button = config.mouse_capture
+            && config.spaces.tabs
+            && !entry.indented
+            && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
+            && rect.width >= LAUNCH_BUTTON_MIN_WIDTH;
         let push_status = render_workspace_rows(
             target,
             rect,
@@ -884,6 +891,7 @@ pub(crate) fn render_sidebar(
                 .filter(|_| dragged || pressed)
                 .map(|name| (name, drag_bg)),
             true,
+            to_top_button,
             config,
         );
         if let Some(chip) = push_status.filter(|_| config.mouse_capture) {
@@ -963,34 +971,23 @@ pub(crate) fn render_sidebar(
                 starts_at_target: false,
             });
         }
-        // On hover, `⤒` moves the space to the top of the manual order (for
-        // every client); right after, `↶` puts it back. Left of the launch
-        // button, over the end of a long name while it shows.
-        let to_top_hovered = state.hovered_name_button
-            == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
-        if config.mouse_capture
-            && !entry.indented
-            && state.space_sort.key == super::space_sort::SpaceSortKey::Custom
-            && launch_button_shown(config, rect.width)
-            && rect.width >= LAUNCH_BUTTON_MIN_WIDTH + 3
-            && !dragged
-            && (to_top_hovered
-                || state.hovered_workspace_id == Some(workspace.workspace_id.as_str()))
-        {
-            let button = Rect::new(rect.right().saturating_sub(10), rect.y, 3, 1);
+        if to_top_button {
+            // After the disclosure triangle (`render_space_disclosure`).
+            let button = Rect::new(rect.x.saturating_add(3), rect.y, TO_TOP_BUTTON_WIDTH, 1);
+            let hovered = state.hovered_name_button
+                == Some((workspace.workspace_id.as_str(), NameLineButton::ToTop));
             let undo = state.space_to_top_undo == Some(workspace.workspace_id.as_str());
-            let (label, tooltip) = if undo {
-                (" ↶ ", "Put the spaces back in their order")
+            let (glyph, tooltip) = if undo {
+                ("↶", "Put the spaces back in their order")
             } else {
-                (" ⤒ ", "Move this space to the top (for every client)")
+                ("⤒", "Move this space to the top (for every client)")
             };
-            let style = Style::default().fg(palette.overlay1);
-            let style = if to_top_hovered {
-                style.bg(palette.surface1)
+            let style = Style::default().fg(if hovered {
+                palette.accent
             } else {
-                style
-            };
-            put_text(target, button.x, button.y, button.width, label, style);
+                palette.overlay1
+            });
+            put_text(target, button.x, button.y, 1, glyph, style);
             block_hits
                 .space_to_top
                 .push((button, workspace.workspace_id.clone()));
@@ -1835,6 +1832,9 @@ const LAUNCH_LABEL: &str = " A ";
 /// The launch chip, left of the `+`; its padding is the gaps around it.
 const LAUNCH_BUTTON_WIDTH: u16 = 3;
 
+/// The `⤒` in front of a space's name, with the column after it.
+const TO_TOP_BUTTON_WIDTH: u16 = 2;
+
 /// Narrower space blocks keep their name rather than show the button.
 const LAUNCH_BUTTON_MIN_WIDTH: u16 = 16;
 
@@ -1863,6 +1863,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
     grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
     // The name line ends in the launch button (the local machine's spaces).
     launch_button: bool,
+    // The name starts two columns later, after the `⤒` button.
+    to_top_button: bool,
     config: &ClientShellConfig,
 ) -> Option<Rect> {
     // Where the push status chip was drawn, for its click and tooltip.
@@ -1913,6 +1915,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
         if vertical_tabs && row_index == 0 {
             x = x.saturating_add(2);
+        }
+        if to_top_button && row_index == 0 {
+            x = x.saturating_add(TO_TOP_BUTTON_WIDTH);
         }
         let highlighted = focused || grabbed.is_some();
         let grabbed = grabbed.map(|(name, _)| name);

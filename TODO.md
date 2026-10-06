@@ -1125,6 +1125,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     which moves that space with its worktree group to the top of the manual
     order (`workspace.move_block`), and `↶` on it right after puts the
     previous order back.
+  - Changed again 2026-10-06 (user: "works badly; for now always visible,
+    left of the space name"): `⤒` / `↶` stands between the disclosure
+    triangle and the name on every top-level space in the manual order.
 - [x] New space goes right after the active space, like new tabs (user,
   2026-10-03: "new space creates it at the end; change it as with tabs"). After
   the active space's whole worktree family. Models (unanimous): only for

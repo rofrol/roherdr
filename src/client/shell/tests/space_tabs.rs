@@ -3521,7 +3521,7 @@ fn the_push_status_chip_opens_a_branch_menu_titled_like_the_chip() {
     };
     // The chip is on the name line; there is no branch line under it.
     // A narrow sidebar cuts the name, never the chip.
-    assert!(rows[chip.y as usize].contains("cli…"), "{rows:?}");
+    assert!(rows[chip.y as usize].contains("c…"), "{rows:?}");
     assert_eq!(at(&rows[chip.y as usize], chip), " feat-x ↑3 ");
     assert!(!rows[chip.y as usize + 1].contains("feat-x"), "{rows:?}");
 
@@ -4030,25 +4030,32 @@ fn a_bookmarked_space_is_listed_first_and_its_row_jumps_to_it() {
 }
 
 #[test]
-fn the_to_top_button_shows_on_a_hovered_space_name_line() {
+fn the_to_top_button_stands_before_each_space_name() {
     use crate::api::schema::Method;
     let mut state = state_with_tabs(true);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     let mut second = projected.workspaces[0].clone();
     second.workspace_id = "ws_2".into();
     second.label = "second".into();
+    second.custom_label = true;
     second.focused = false;
     projected.workspaces.push(second);
     state.set_snapshot(Box::new(projected));
-    state.compose(106, 30).unwrap();
-    assert!(state.hits.space_to_top.is_empty(), "hidden without hover");
-
-    state.hovered_workspace_id = Some("ws_2".into());
     let frame = state.compose(106, 30).unwrap();
-    let (button, workspace_id) = state.hits.space_to_top[0].clone();
+    assert_eq!(state.hits.space_to_top.len(), 2, "always shown");
+    let (button, workspace_id) = state
+        .hits
+        .space_to_top
+        .iter()
+        .find(|(_, id)| id == "ws_2")
+        .cloned()
+        .expect("second space's button");
     assert_eq!(workspace_id, "ws_2");
-    assert!(frame_rows(&frame)[button.y as usize].contains("⤒"));
-    let outcome = left_click(&mut state, (button.x + 1, button.y));
+    let row = &frame_rows(&frame)[button.y as usize];
+    let arrow = row.find("⤒").expect("the arrow");
+    let name = row.find("second").expect("the name");
+    assert!(arrow < name, "{row}");
+    let outcome = left_click(&mut state, (button.x, button.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, Method::WorkspaceMoveBlock(params)
