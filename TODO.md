@@ -1403,6 +1403,31 @@ Items agents add. Not approved until the user moves them up.
   fixed on branch `pi/list-icons` (`(.., icon)` bound `detail` after
   7f55e2c5).
 
+- [ ] Every header button looks like a button (user, 2026-10-06: "all
+  buttons in the top bar should be like buttons: a space on the left and
+  right, a highlight on hover"). Consulted Sol (read the code) and MiMo.
+  - Padding: one space each side, both cells part of the button's paint
+    and click rectangle; always reserved, never only on hover (the row
+    would jitter). Agent indicators already reserve two cells
+    (`sidebar.rs:496`); sort has a glyph-only hitbox (`space_sort.rs:121`),
+    so this is partly a consistency fix. Rejected: one space shared by
+    two neighbours (MiMo; Sol: a cell cannot belong predictably to two
+    buttons).
+  - Styles: hover a subtle neutral background; an open list keeps its
+    accent tint and glyph colour (`DECISIONS.md`, header sort button);
+    open and hovered a slightly stronger tint. Not bold alone (asking
+    counts are already bold). Check indexed-colour themes, where the open
+    style falls back to solid accent (`sidebar.rs:1910`).
+  - Hover: clear it on focus loss (`input.rs:256`), overlay change and
+    re-layout; repaint only when the hovered button changes
+    (`endpoint_navigation.rs:91`); without motion reporting only hover is
+    lost. Pointer exit without an event cannot be detected.
+  - Overflow, when the padded buttons do not fit: shorten sort to `⇅`
+    first, then move disabled navigation, fold and zero-count history into
+    an overflow menu, a second row as last resort. Bug found on the way:
+    `sidebar.rs:482` silently skips a non-zero indicator when it does not
+    fit, against "never hide a non-zero indicator".
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
