@@ -3,6 +3,8 @@
 
   herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] -- COMMAND...
                                  print job id, return at once
+  herdr-job watch --pid PID [--name NAME] [--why TEXT]
+                                 a job that waits for a process you did not start; print job id
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
   herdr-job list                 show jobs and their state
   herdr-job log ID               print the log path
@@ -1045,6 +1047,77 @@ def log_tail(log_path):
     return tail[-FAILURE_TAIL_BYTES:]
 
 
+def process_identity(pid):
+    """The command line and start time of a live process, or None.
+
+    The start time tells the process apart from a later one that reuses its
+    pid between `watch` and the job starting to wait."""
+    out = subprocess.run(["ps", "-o", "lstart=,command=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    if not out:
+        return None
+    # `lstart` is a fixed five-word date: "Tue Oct  6 12:19:01 2026".
+    parts = out.split()
+    return " ".join(parts[:5]), " ".join(parts[5:])
+
+
+def wait_for_exit(pid):
+    """Block until the process exits, on its exit event where the OS has one."""
+    if hasattr(os, "pidfd_open"):  # Linux
+        import select
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        select.select([fd], [], [])
+        os.close(fd)
+        return
+    import select
+    if hasattr(select, "kqueue"):  # macOS, BSD
+        kq = select.kqueue()
+        event = select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                              select.KQ_NOTE_EXIT)
+        try:
+            kq.control([event], 1, None)
+        except ProcessLookupError:
+            pass
+        kq.close()
+        return
+    # No exit event for a process that is not our child: poll it (external
+    # polling, once a second is enough for work that takes minutes).
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        time.sleep(1)
+
+
+def cmd_watch_pid(args):
+    identity = process_identity(args.pid)
+    if identity is None or identity[0] != args.started:
+        print(f"herdr-job: pid {args.pid} is gone already (or now belongs to another process)")
+        return
+    print(f"waiting for pid {args.pid}: {identity[1]}")
+    wait_for_exit(args.pid)
+    # Its exit status belongs to its own parent; this job only saw it end.
+    print(f"pid {args.pid} exited; its exit status is unknown to herdr-job")
+
+
+def cmd_watch(args):
+    identity = process_identity(args.pid)
+    if identity is None:
+        raise SystemExit(f"herdr-job: no process with pid {args.pid}")
+    started, command = identity
+    args.name = args.name or f"wait: {short(command, 40)}"
+    args.command = [str(SELF), "_watch-pid", str(args.pid), started]
+    args.keep, args.cwd = False, None
+    args.slot = args.exclusive = False
+    cmd_run(args)
+
+
 def cmd_wait(args):
     """Waits for a job and exits with its code. By default it prints a line
     to say what it waits for, nothing while the job runs, and the final line;
@@ -1177,6 +1250,16 @@ def main():
     run.add_argument("--exclusive", action="store_true", help="take every slot, for benchmarks")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
+    watch = sub.add_parser("watch", help="a job that waits for a process you did not start")
+    watch.add_argument("--pid", type=int, required=True)
+    watch.add_argument("--name", help="default: `wait:` and the process's command")
+    watch.add_argument("--why", help="why you wait; shown in the job tab's footer")
+    watch.add_argument("--notify", choices=["always", "failure", "never"])
+    watch.set_defaults(func=cmd_watch)
+    watch_pid = sub.add_parser("_watch-pid")
+    watch_pid.add_argument("pid", type=int)
+    watch_pid.add_argument("started")
+    watch_pid.set_defaults(func=cmd_watch_pid)
     wait = sub.add_parser("wait", help="wait for a job to end")
     wait.add_argument("id")
     wait.add_argument("--quiet", action="store_true")

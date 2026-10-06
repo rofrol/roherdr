@@ -6,6 +6,7 @@ from pathlib import Path
 import runpy
 import re
 import sys
+import threading
 import time
 import unicodedata
 import unittest
@@ -330,6 +331,33 @@ class WaitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WatchPidTests(unittest.TestCase):
+    def watch(self, pid, started):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            JOB["cmd_watch_pid"](SimpleNamespace(pid=pid, started=started))
+        return out.getvalue()
+
+    def test_it_returns_when_the_process_exits_and_does_not_claim_its_status(self):
+        child = subprocess.Popen(["sleep", "0.3"])
+        started, command = JOB["process_identity"](child.pid)
+        # Reap the child as its parent would, so its pid really goes away.
+        threading.Thread(target=child.wait, daemon=True).start()
+        out = self.watch(child.pid, started)
+        self.assertIn(f"waiting for pid {child.pid}: sleep 0.3", out)
+        self.assertIn("exit status is unknown", out)
+
+    def test_a_reused_pid_is_not_waited_for(self):
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            out = self.watch(child.pid, "Mon Jan 1 00:00:00 2001")
+        finally:
+            child.kill()
+            child.wait()
+        self.assertIn("gone already", out)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class IdleJobTests(unittest.TestCase):
     def test_cputime_formats(self):
         parse = JOB["parse_cputime"]
@@ -583,8 +611,9 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertTrue((self.home / ".local/bin/herdr-job").resolve().samefile(Path(__file__).with_name("herdr-job")))
         claude = (self.home / ".claude/CLAUDE.md").read_text()
-        self.assertTrue(claude.startswith("# Mine\n\n<!-- herdr-job agent instructions v1"))
+        self.assertTrue(claude.startswith("# Mine\n\n<!-- herdr-job agent instructions v2"))
         self.assertIn("herdr-job clean-tree", claude)
+        self.assertIn("herdr-job watch --pid", claude)
         self.assertIn("herdr-job run", (self.home / ".pi/agent/AGENTS.md").read_text())
         self.assertFalse((self.home / ".codex").exists())
         # A re-run changes nothing.
@@ -601,7 +630,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.install("--yes").returncode, 0)
         claude = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertNotIn("old text", claude)
-        self.assertTrue(claude.startswith("a\n<!-- herdr-job agent instructions v1") and claude.endswith("-->\nb\n"))
+        self.assertTrue(claude.startswith("a\n<!-- herdr-job agent instructions v2") and claude.endswith("-->\nb\n"))
         self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), "Use `herdr-job run` for builds.\n")
 
     def test_without_a_terminal_or_yes_nothing_is_written_and_foreign_files_are_kept(self):
