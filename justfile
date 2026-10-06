@@ -8,6 +8,13 @@ export HERDR_DISABLE_USAGE := "1"
 
 python := if os() == "windows" { "python" } else { "python3" }
 
+# Builds, test suites and clippy wait for a machine-wide slot, so agent sessions
+# do not run two full-machine workloads at once; benchmarks take every slot.
+# `herdr-job slots` shows the holder, HERDR_JOB_SLOTS=0 turns it off (see
+# plugins/job/README.md, "Slots"). herdr-job is Unix-only.
+slot := if os() == "windows" { "" } else { python + " plugins/job/herdr-job slot --" }
+slot_exclusive := if os() == "windows" { "" } else { python + " plugins/job/herdr-job slot --exclusive --" }
+
 # Free disk space for the shared target/: remove the debug profile (and, if still over the limit, the cross targets) once target/ is over 25 GiB.
 # Run it through just only: it waits for no build, it gives up if cargo is building. Never delete target/ by hand.
 sweep:
@@ -19,7 +26,7 @@ guard:
 
 # Run tests
 test: guard
-    cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
+    {{slot}} cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
     just maintenance-test
     just ui-hot-path-architecture-test
     just integration-assets-test
@@ -50,7 +57,7 @@ test-windows-input *args:
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
-    cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
+    {{slot}} cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
 # Enforce deterministic UI hot-path architecture boundaries
 ui-hot-path-architecture-test:
@@ -60,7 +67,7 @@ ui-hot-path-architecture-test:
 [unix]
 lint:
     cargo fmt --check
-    cargo clippy --all-targets --locked -- -D warnings
+    {{slot}} cargo clippy --all-targets --locked -- -D warnings
 
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 [windows]
@@ -73,7 +80,7 @@ ci filter='all()': guard lint
 
 # Keep the test build independently configurable from clippy in CI.
 ci-tests filter='all()':
-    cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
+    {{slot}} cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
     just maintenance-test
     just ui-hot-path-architecture-test
     just integration-assets-test
@@ -86,7 +93,7 @@ setup-windows-cross *args:
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
 [unix]
 windows-lint:
-    {{python}} scripts/windows_cross.py lint
+    {{slot}} {{python}} scripts/windows_cross.py lint
 
 # Check formatting + run unit tests + Windows target lint + documentation contract tests
 [unix]
@@ -122,33 +129,33 @@ build:
 
 # Non-gating full-render scaling profile for background workspaces and active panes
 bench-render-scale:
-    cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
 
 # Profile terminal target name resolution at increasing pane counts.
 bench-terminal-targets:
-    cargo test --release --locked --bin herdr terminal_target_lookup_profile -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr terminal_target_lookup_profile -- --ignored --nocapture --test-threads=1
 
 # Profile Windows foreground inspection of isolated idle shells, without a server.
 [windows]
 bench-process-inspection:
-    cargo test --release --locked --bin herdr windows_process_inspection_profile -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr windows_process_inspection_profile -- --ignored --nocapture --test-threads=1
 
 # Profile BSP split collection and construction with balanced and skewed trees.
 bench-bsp-layout:
-    cargo test --release --locked --bin herdr bsp_layout_profile -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr bsp_layout_profile -- --ignored --nocapture --test-threads=1
 
 # Profile full and retained text, static-image, and unchanged-image updates.
 bench-retained-graphics:
-    cargo test --release --locked --bin herdr render_scale_profile_retained_graphics -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr render_scale_profile_retained_graphics -- --ignored --nocapture --test-threads=1
 
 # Profile first-batch latency and aggregate drain cost for external API bursts.
 bench-api-fairness:
-    cargo test --release --locked --bin herdr external_api_burst_profile -- --ignored --nocapture --test-threads=1
+    {{slot_exclusive}} cargo test --release --locked --bin herdr external_api_burst_profile -- --ignored --nocapture --test-threads=1
 
 # ~3-5 minute CPU comparison; downloads stable unless HERDR_PERF_BASELINE_BIN is set
 bench-release-smoke:
-    cargo build --release --locked
-    scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/herdr"
+    {{slot}} cargo build --release --locked
+    {{slot_exclusive}} scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/herdr"
 
 # Test public documentation snapshot and release lifecycle tooling
 docs-contract-test:

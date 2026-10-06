@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """herdr-job: run long commands in their own herdr tab and wait for them.
 
-  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] -- COMMAND...
+  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] -- COMMAND...
                                  print job id, return at once
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
   herdr-job list                 show jobs and their state
   herdr-job log ID               print the log path
   herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
+  herdr-job slot [--exclusive] -- COMMAND   run COMMAND here under a machine-wide slot
+  herdr-job slots                who holds the slots
 
 The job runs in a new unfocused tab, so its output is visible live. The pane
 that started it (HERDR_PANE_ID) gets a `$jobs` sidebar token. Any agent can use
@@ -339,6 +341,158 @@ def create_job_tab(create, workspace_id, parent_tab):
     return created
 
 
+# Slots: machine-wide admission for heavy work (builds, test suites,
+# benchmarks), so several sessions do not run full-machine workloads at once.
+# cargo and nextest each use every core, so the default is one slot; cargo's own
+# lock on target/ does not cover this, because nextest runs the tests after it
+# has released that lock, and worktrees have their own target/.
+SLOTS = STATE / "slots"
+SLOT_ENV = "HERDR_JOB_SLOT"
+# flock has no wait-for-any-of-N, so a shared request with several slots polls them.
+SLOT_POLL_S = 0.5
+
+
+def slot_count():
+    """HERDR_JOB_SLOTS (default 1); 0 turns slots off, e.g. on a CI runner."""
+    try:
+        return max(0, int(os.environ.get("HERDR_JOB_SLOTS", "1")))
+    except ValueError:
+        raise SystemExit("HERDR_JOB_SLOTS must be a number") from None
+
+
+def slot_files():
+    SLOTS.mkdir(parents=True, exist_ok=True)
+    return [SLOTS / f"slot-{index}" for index in range(slot_count())]
+
+
+def slot_holder(path):
+    """Who holds a slot, from the note its holder wrote, or None when it is free.
+    The flock decides, not the note: a note outlives a holder that crashed."""
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            return json.loads(path.with_suffix(".json").read_text())
+        except (OSError, ValueError):
+            return {}
+    finally:
+        os.close(fd)
+    return None
+
+
+def describe_holder(holder):
+    if not holder:
+        return "unknown holder"
+    since = time.strftime("%H:%M", time.localtime(holder.get("since", 0)))
+    job = f"job {holder['job']} " if holder.get("job") else ""
+    return f"{job}{short(holder.get('name') or '?', 50)} (pid {holder.get('pid')}, since {since})"
+
+
+def take_slot(name, exclusive=False, job_id=None, on_wait=None):
+    """Takes one slot, or every slot with `exclusive`, and returns the open
+    files that hold them (the flocks last until they are closed or the process
+    dies). Returns [] when the caller already runs inside a slot or slots are
+    off. `on_wait(text)` hears once that the request has to wait, and who for."""
+    inside = os.environ.get(SLOT_ENV)
+    if inside:
+        if exclusive and inside != "exclusive":
+            # Waiting would deadlock on the slot our own ancestor holds.
+            raise SystemExit("herdr-job: an exclusive slot cannot be taken inside a shared one; "
+                             "run the exclusive command on its own")
+        return []
+    paths = slot_files()
+    if not paths:
+        return []
+    handles = [open(path, "a") for path in paths]
+    held = []
+
+    def holders():
+        # Not the slots this request already holds: their notes are the previous holders'.
+        mine = {handle.name for handle in held}
+        found = [slot_holder(path) for path in paths if str(path) not in mine]
+        return "; ".join(describe_holder(holder) for holder in found if holder is not None) or "nobody now"
+
+    def try_lock(handle):
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+    try:
+        if exclusive:
+            # A fixed order, so two exclusive requests cannot deadlock.
+            # Slots it already holds stay closed to newcomers while it waits for the rest.
+            told = False
+            for handle in handles:
+                if not try_lock(handle):
+                    if on_wait and not told:
+                        on_wait(f"waiting for every slot (exclusive); held by {holders()}")
+                        told = True
+                    fcntl.flock(handle, fcntl.LOCK_EX)
+                held.append(handle)
+        else:
+            told = False
+            while not held:
+                free = next((handle for handle in handles if try_lock(handle)), None)
+                if free:
+                    held.append(free)
+                    break
+                if on_wait and not told:
+                    on_wait(f"waiting for a slot held by {holders()}")
+                    told = True
+                time.sleep(SLOT_POLL_S)
+    except BaseException:
+        for handle in handles:
+            handle.close()
+        raise
+    for handle in handles:
+        if handle not in held:
+            handle.close()
+    note = {"pid": os.getpid(), "job": job_id, "name": name, "since": time.time(),
+            "exclusive": exclusive}
+    for handle in held:
+        write_atomic(Path(handle.name).with_suffix(".json"), json.dumps(note, ensure_ascii=False))
+    os.environ[SLOT_ENV] = "exclusive" if exclusive else "shared"
+    return held
+
+
+def cmd_slot(args):
+    """Runs a command in the foreground under a slot, for `just` recipes."""
+    if not args.command:
+        raise SystemExit("usage: herdr-job slot [--exclusive] [--name NAME] -- COMMAND...")
+    name = args.name or shlex.join(args.command)
+    held = take_slot(name, args.exclusive, on_wait=lambda text: print(f"herdr-job: {text}", file=sys.stderr, flush=True))
+    try:
+        proc = subprocess.Popen(args.command)
+    except OSError as err:
+        raise SystemExit(f"herdr-job slot: {err}") from err
+
+    def forward(signum, _frame):
+        if proc.returncode is None:
+            proc.send_signal(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, forward)
+    code = proc.wait()
+    for handle in held:
+        handle.close()
+    sys.exit(128 - code if code < 0 else code)
+
+
+def cmd_slots(_args):
+    paths = slot_files()
+    if not paths:
+        print("slots are off (HERDR_JOB_SLOTS=0)")
+    for index, path in enumerate(paths):
+        holder = slot_holder(path)
+        print(f"slot {index}: " + ("free" if holder is None else describe_holder(holder)))
+
+
 def cmd_run(args):
     if not args.command:
         raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
@@ -375,6 +529,7 @@ def cmd_run(args):
         "cwd": cwd,
         "why": args.why,
         "keep": args.keep,
+        "slot": "exclusive" if args.exclusive else "shared" if args.slot else None,
         # An agent reports its own jobs when `herdr-job wait` wakes it; a person
         # who started a job by hand has nobody else to tell them.
         "notify": args.notify or ("never" if owner_is_agent else "always"),
@@ -667,6 +822,22 @@ def cmd_exec(args):
         footer.start()
     print(f"$ {meta['command']}\n", flush=True)
     code = EXIT_LOST
+    command = meta["command"]
+    slot = []  # the open slot files: closing them, or dropping the last reference, frees the slot
+    if meta.get("slot"):
+        def waiting(text):
+            print(f"herdr-job: {text}", flush=True)
+            if meta.get("tab_status"):
+                herdr_ok("tab", "status", meta["tab_id"], "running", "--activity", "idle")
+
+        # Held until this process exits; taken here so the tab shows the wait.
+        try:
+            slot = take_slot(meta["name"], meta["slot"] == "exclusive", meta["id"], waiting)
+            if slot and meta.get("tab_status"):
+                herdr_ok("tab", "status", meta["tab_id"], "running")
+        except SystemExit as err:
+            # Fail like the command would, so the reason reaches the log and `wait`.
+            command = f"echo {shlex.quote(str(err))} >&2; exit 1"
     env = dict(os.environ, HERDR_JOB_ID=meta["id"])
     env.pop("HISTORY_IGNORE", None)
     try:
@@ -678,7 +849,7 @@ def cmd_exec(args):
         pass
     with open(path / "log", "ab", buffering=0) as log:
         proc = subprocess.Popen(
-            ["/bin/sh", "-c", meta["command"]],
+            ["/bin/sh", "-c", command],
             cwd=meta["cwd"],
             env=env,
             stdout=subprocess.PIPE,
@@ -714,6 +885,8 @@ def cmd_exec(args):
             code = 128 - code
     meta["ended"] = time.time()
     write_meta(path, meta)
+    for handle in slot:
+        handle.close()
     write_atomic(path / "exit", f"{code}\n")
     # The footer first: the herdr calls below take a moment, and the tab
     # label should not be ahead of the job's own status line.
@@ -888,6 +1061,8 @@ def main():
         help="desktop notification when the job ends (default: always when started by hand, never from an agent)",
     )
     run.add_argument("--cwd")
+    run.add_argument("--slot", action="store_true", help="wait for a machine-wide slot before running (builds, tests)")
+    run.add_argument("--exclusive", action="store_true", help="take every slot, for benchmarks")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
     wait = sub.add_parser("wait", help="wait for a job to end")
@@ -906,6 +1081,12 @@ def main():
     clean = sub.add_parser("clean", help="close tabs of this pane's finished jobs")
     clean.add_argument("--all", action="store_true", help="also jobs started from other panes")
     clean.set_defaults(func=cmd_clean)
+    slot = sub.add_parser("slot", help="run a command here, under a machine-wide slot")
+    slot.add_argument("--exclusive", action="store_true", help="take every slot, for benchmarks")
+    slot.add_argument("--name", help="how `slots` and waiting requests name this command")
+    slot.add_argument("command", nargs=argparse.REMAINDER)
+    slot.set_defaults(func=cmd_slot)
+    sub.add_parser("slots", help="show who holds the slots").set_defaults(func=cmd_slots)
     sub.add_parser("_tab-closed").set_defaults(func=cmd_tab_closed)
     exec_ = sub.add_parser("_exec")
     exec_.add_argument("id")
