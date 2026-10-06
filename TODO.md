@@ -1383,6 +1383,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] `herdr-job clean-tree` should refuse a path that matches nothing.
+  2026-10-07: from zsh, `clean-tree $PATHS -- just check` with `PATHS="a b"`
+  passed one path with spaces (zsh does not split words); the tree got
+  "0 changed paths" and the check ran on bare `HEAD` without a warning.
+
 - [ ] Replace job pinning and folding with an explicit pin (user,
   2026-10-06: "I don't like this pinning of herdr jobs and the whole
   folding logic. Throw it out."). Remove the automatic attachment of job
