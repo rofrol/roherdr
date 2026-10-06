@@ -176,10 +176,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   the designed fallback, not the limit: once the session's own prompts run
   out, Up goes on to other sessions' prompts with no marker between them.
   The user remembers it differently "before"; versions 2.1.289-291 have
-  the same code, and older ones are no longer on disk to compare. Ask
-  upstream for a way to stop at the session's own prompts. Options:
-  - Report upstream: apply the limit per session, not to the combined
-    scan (both models). Ask the user before filing.
+  the same code, and older ones are no longer on disk to compare.
+  Upstream already tracks it: anthropics/claude-code#15631 ("Option to
+  disable cross-session command history in up-arrow"), open since
+  2025-12-29 with many +1s (user, 2026-10-06, linked it); no new issue,
+  at most a thumbs-up there. Options:
+  - Workaround in herdr: herdr already stores each Claude pane's session
+    id (`session_ref` in `src/agent_resume.rs`), so a popup could list only
+    that pane's prompts from `history.jsonl`, newest first, and type the
+    chosen one into the pane. Prior art from that issue:
+    https://github.com/pjs7678/claude-session-history (tmux `prefix + H`,
+    a SessionStart hook records the session, fzf popup, Enter copies).
+    Read the file read-only and skip malformed lines.
   - Check that herdr never resumes one session id in two panes: both
     panes would then share "own" history and interleave transcripts (sol).
   - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
