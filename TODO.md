@@ -5094,6 +5094,62 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     Keys: mouse back/forward buttons where the terminal reports them, plus
     configurable keys, unbound by default. MiMo would ship Back alone first.
 
+- [ ] New plain tab button: the program icon instead of `+` (user,
+  2026-10-06: "instead of the + button use the same icon as tabs that are not
+  an agent session; the plus gets mixed up with the A button"). The space's
+  name line draws ` + ` (`src/client/shell/sidebar.rs`, `NameLineButton::NewTab`)
+  right next to the agent launch chip; draw `PROGRAM_ICON` (`❏`,
+  `space_tabs.rs`) there instead, so the button names what it opens: a tab
+  without an agent, the same mark its tab line will show.
+  - The tab bar's ` + ` (`src/client/shell/tabs.rs`, `NEW_TAB_WIDTH`) follows
+    for consistency; same three columns, same hover background, tooltip
+    "New shell tab".
+  - Consulted sol and MiMo (round `20261006-153926-f695`): both warn that a
+    bare `❏` reads as an existing empty tab, not an action, and would keep a
+    `+` cue (`+❏`, four columns) or label the agent chip instead. The user's
+    choice is `❏`; keep the button's colour and hover distinct from the dim
+    tab-line icon and try `+❏` if it still reads as a tab. Both also flag
+    that the chip's right-click agent picker is hard to discover.
+
+- [ ] Keep the model context small: clean up what agents load and search
+  (user, 2026-10-06: "plan for cleaning unneeded files from the repo, so the
+  model's context doesn't swell too much"). Measured: `TODO.md` 402 KB
+  (~100k tokens; 90 done items with full histories, 875 lines of Deferred),
+  `AGENTS.md` 44 KB loaded into every session (31 KB upstream, 13 KB fork
+  sections at the end), `vendor/` 1365 files, `docs/versions/` 806 files
+  (8.5 MB), `CHANGELOG.md` and `docs/next/CHANGELOG.md` identical 142 KB.
+  1. `AGENTS.md` first, a real bug: Codex reads at most 32 KiB of project
+     instructions by default (`project_doc_max_bytes`, not set in
+     `~/.codex/config.toml`), so it never sees the fork sections appended
+     past that. Options: a short root `AGENTS.override.md` for Codex (it
+     replaces `AGENTS.md` in the same directory; check what Claude Code and
+     pi load), or raise `project_doc_max_bytes`, or move the fork sections
+     to the top. Keep upstream's text untouched for rebase safety; do not
+     use `merge=ours`/`union` drivers (they drop upstream edits silently).
+     A pointer line alone ("see docs/fork/...") is not enough: rules behind
+     a link stop being followed.
+  2. `TODO.md` is fork-only (upstream has none), so splitting it causes no
+     rebase conflicts. Keep "Next, in order" with open items only; a done
+     item leaves the file, its durable decisions (why a design was chosen
+     or rejected) go to a short `docs/fork/decisions.md` first. Move
+     Deferred to `TODO-deferred.md`. Refer to work by commit subject, not
+     hash: rebasing onto upstream rewrites hashes. Consider a `just check`
+     lint that fails on `[x]` items or past N lines in `TODO.md`, or the
+     file grows back within weeks with several sessions writing to it.
+  3. A root `.ignore` (ripgrep reads it, git does not) for dead weight
+     only: `/docs/versions/`, `/docs/preview/`, `/docs/next/CHANGELOG.md`
+     (one changelog stays searchable). Keep `vendor/` searchable: terminal
+     bugs live in libghostty-vt (both models); at most exclude its test
+     data and third-party `pkg/`. Note `rg --no-ignore` in `AGENTS.md`.
+  - Not needed: `.playwright-mcp/` is already in the global gitignore and,
+    being hidden, skipped by ripgrep; `.DS_Store` is in `.gitignore`;
+    `.local/` is ignored.
+  - Consulted sol and MiMo (round `20261006-153926-f695`). Sol found the
+    Codex 32 KiB truncation and the hash-staleness point; MiMo's worry that
+    splitting `TODO.md` conflicts with upstream was wrong (fork-only file).
+  - Measure before and after: tokens of the files loaded at session start
+    and the output of a few typical searches, not repository megabytes.
+
 ## Deferred
 
 - [ ] REPL in a sibling pane as an agent tool (idea from the HN thread
