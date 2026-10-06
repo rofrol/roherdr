@@ -1362,6 +1362,29 @@ Items agents add. Not approved until the user moves them up.
   same context menu. Before starting, record in `DECISIONS.md` which
   earlier fold decisions this supersedes.
 
+- [ ] Flatten worktree spaces instead of nesting them under the creator
+  tab (user, 2026-10-06: "why is a worktree tab indented and with
+  different logic? Could it be flattened and just marked as a worktree?"
+  Example: this session created the worktree space "pi: tab create" for a
+  delegated pi agent, and that space's agent starts job tabs of its own).
+  This reverses "Worktree space nested under its creator tab" in
+  `DECISIONS.md` (user, 2026-10-03/04); the user decides. Consulted Sol
+  and MiMo: both recommend flattening. A nested space is the only row
+  type with its own header (no name bar, no git details, branch label),
+  family drag/pin, a fold toggle and job counts aggregated into the
+  parent; space -> tab -> worktree -> tab -> job is deep and narrows the
+  mouse targets. Proposal: a worktree space is an ordinary top-level row
+  (same header, git details, job counts, collapse, independent drag/pin)
+  with a worktree glyph and a secondary `from herdr/7` reference that
+  jumps to the creator tab (or reads as history when it is gone);
+  `creator_tab` stays as provenance, not hierarchy. A UI-created space
+  still lands right after the active space's family, which then is just
+  its worktrees. Rejected: nesting as a config option (two navigation
+  models, double layout and tests). Note: a nested space already shows
+  its own running/failed job counts (`workspace_rows` gets `tab_jobs`);
+  the parent's counts include a folded worktree's jobs, which flattening
+  removes.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
