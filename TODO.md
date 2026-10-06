@@ -2333,7 +2333,16 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     runs in another pane; at most once per session, then a notice instead
     (a `claude` that dies on start must not loop); never after `/exit`
     (the `SessionEnd` hook has forgotten the session by then).
-    Implemented 2026-10-06 (uncommitted while the user tries the build):
+    Done 2026-10-06 and checked live on the installed build (SIGTERM to a
+    Claude that had asked a question: the command was typed, the
+    conversation came back and so did its `?` with the question). The
+    first live run found two bugs, fixed before the commit: the resume gave
+    up at once because zsh was still drawing its prompt (running `git`), so
+    a busy shell now waits in the queue, rechecked every 200 ms for up to
+    10 s; and the notices ignored `ui.toast.delivery = "system"`, so the
+    server now forwards them like agent notifications. A session that was
+    never saved (no message yet) prints "No conversation found"; that run's
+    stop is then refused as "stopped again after a resume". Details:
     the Claude `SessionEnd` hook calls the new `pane.report_agent_stopped`
     on reason `other`; the terminal joins that report with the exit of the
     same run (report `seq` above the run's last report), the server types
@@ -2351,7 +2360,7 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     drains the queue" (only the headless server runs `App`). Gaps: Windows
     (the PowerShell hook does not report the stop), SIGKILL (no hook runs;
     a restart still resumes it), the limit and the `?` are not saved across
-    a server restart, and a live check with a real SIGTERM is still to do.
+    a server restart.
   - Not done: reproduce the kill with disposable agents (plan above), and
     explain why ~12 agents in the same coalition survived. The LaunchAgent
     fix below waits for that reproduction.
