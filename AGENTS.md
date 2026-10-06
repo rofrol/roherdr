@@ -406,6 +406,32 @@ To re-record the fork demo video and upload it for the README, follow
 `scripts/fork_demo/README.md`; uploading needs the Claude in Chrome tools
 (see "Uploading as an agent" there).
 
+### Delegating work to pi
+
+To save the coordinator's quota, a session can hand a well-specified task to
+`pi` in its own worktree and only review the result:
+
+- `herdr worktree create --cwd "$PWD" --branch pi/<slug> --base master
+  --path ../herdr-worktrees/pi-<slug> --label "pi: <what>" --no-focus`, then
+  `herdr agent start <name> --kind pi --pane <pane>`. pi's default model is
+  `openai-codex/gpt-6.1-sol` (check the footer); a new folder asks for trust
+  first (`herdr agent send-keys <pane> down down enter` picks "this session
+  only").
+- Start the prompt with a one-line task title: `pi-title` names the tab from
+  the first line. State the files it may edit, that it must not install, push,
+  rebase or touch the shared checkout, the approved commit message, and a
+  required last line `PI-DONE <sha> | ...` or `PI-BLOCKED <reason>`.
+- Wait with `herdr-job run -- herdr agent wait <pane>` without `--until`
+  (it matches idle, done and blocked). A finished pi reports `done`; waiting
+  only for `idle` hung for two hours (2026-10-06).
+- A new worktree has a cold `target/`, and `herdr-job clean-tree` run from it
+  creates another cold tree next to it. To check its change, apply the diff
+  in the shared checkout and run `just clean-check <paths>` there (warm), then
+  commit by path; remove stray `pi-*-worktrees/clean-check` trees.
+- Read the full diff, not only `--stat`: the first pilot read
+  `HERDR_WORKSPACE_ID` without the remote and empty guards that
+  `caller_pane_id()` already had.
+
 ### Client requests in the background
 
 A client shell sends endpoint methods through one command lane per
