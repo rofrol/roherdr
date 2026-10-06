@@ -501,17 +501,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-06: default to the current set over the last
   7 days; merge the unknown-version DeepSeek alias row into V4.1.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
-
-### Decide
-
 - [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
   show which models were tested together, e.g. sol ds mimo, and now a new
   stage sol mimo? ask the models"). Unique per call only compares models
@@ -539,7 +528,9 @@ user needs to decide or do. Item text is unchanged.
     each default-set change (sol). MiMo argued `--vs` already controls for
     companions and this is bookkeeping; true for a two-model verdict, but
     the user wants the history of what was tested.
-  Triage 2026-10-06 (decision): Approve `new-round --models`, `stats --lineups` with the current lineup first; are named stages (`stage start --note`) wanted?
+  Decided by the user 2026-10-06: approved: `new-round --models`, `stats
+  --lineups`, the current lineup first by default; no named stages (the
+  consult skill records set changes).
 
 - [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple
   menu: which models are used for consultation now, a checkbox to enable or
@@ -581,7 +572,9 @@ user needs to decide or do. Item text is unchanged.
     that reads "n/a"; subscription models show "included", never `$0`.
   - Later: a `doctor` mark for an enabled model without a key or CLI, so it
     does not burn calls into err%.
-  Triage 2026-10-06 (decision): You said "don't do it for now": is it unblocked, and should the server port the stats logic to Rust or call `consult.py --json`?
+  Decided by the user 2026-10-06: unblocked; the native modal gets its
+  data from `consult.py ... --json` through the server, so the statistics
+  logic stays in one place.
 
 - [ ] Consult stats per model over time, to spot a silently "nerfed" model
   (user, 2026-10-03: "what if we showed stats for a model over time? we could
@@ -618,7 +611,9 @@ user needs to decide or do. Item text is unchanged.
     would need matplotlib. HTML only for one-off exploration.
   - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
     per week; a version bump answers the question without statistics.
-  Triage 2026-10-06 (decision): Build `consult.py trend` now, or only a weekly list of `model_version` per model first? Which bucket rule and threshold?
+  Decided by the user 2026-10-06: only the smallest first step now: a
+  weekly list of `model_version`/fingerprint per model; the full
+  `consult.py trend` waits.
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
@@ -696,7 +691,22 @@ user needs to decide or do. Item text is unchanged.
     report does not count). The integration version stays 11 (not yet
     released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
     extension), V3 inference, an LLM judge for the audit.
-  Triage 2026-10-06 (decision): V2 is done for Claude Code. Should Pi get an `agent_end` nudge although it cannot block a stop, or close this with V3 and leave the LLM judge until data demands it?
+  Decided by the user 2026-10-06: investigate the pi part with a consult
+  round (should pi get an `agent_end` nudge although it cannot block a
+  stop, or does this close with V3?). If the models agree, do what they
+  agree on; if not, move the item back under Needs a decision with their
+  findings.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do. Item text is unchanged.
+
+### Decide
 
 - [ ] Update check for the fork (deferred 2026-10-02, the user: not announced yet, so
   probably not needed; DeepSeek and GPT agree: defer). Today `herdr_live.sh` (backup,
