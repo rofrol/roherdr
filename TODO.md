@@ -273,6 +273,40 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     (bytecode, re-signing, every update, terms of use); rewriting
     `project` in the shared file (one file cannot show different views to
     different panes); a FUSE view (too heavy).
+  - Better, and proven live (user, 2026-10-06: "another claude binary in
+    $PATH that intercepts the requests, so the real claude gets only its
+    session's history"): Claude's Bun binary honours the `BUN_OPTIONS` env
+    var, so a `claude` wrapper can run it with `--preload <filter.js>`,
+    without touching the signed binary. Up reads `history.jsonl` through
+    `open(path, "r")` from `fs/promises`; the preload wraps that open and
+    hands Claude a filtered copy holding only its own sessions' lines. The
+    call stack names the caller (method names survive minification):
+    `readForProject` (Up) and `countForProject` (the `History N/M`
+    counter) get the filtered view, `readTimestamped` (Ctrl+R, "Search
+    prompts · everywhere") keeps the whole file. Own sessions: the id
+    from `--resume`/`--session-id`, plus every `sessionId` this process
+    appends (a `/clear` starts a new id). Tested in a throwaway tab on
+    2.1.291: a fresh session's Up showed nothing, after one prompt
+    `History 1/1`, after `/clear` and another prompt both of this pane's
+    prompts and no others. Consulted sol and MiMo (round
+    `20261006-163930-a40c`). To do before shipping it as an opt-in fork
+    plugin that installs the wrapper:
+    - Bail out unless `process.argv[1]` is Claude's `/$bunfs/root/cli`,
+      and delete `BUN_OPTIONS` from `process.env` at once, so the Bash
+      tool's `bun` and other Bun programs never load it (both).
+    - Match the exact history path, not the basename; learn ids only
+      from appends, never from rewrites such as retention pruning (sol).
+    - Whole body in try/catch; on any error hand back the real file
+      (native behaviour), never crash Claude (MiMo; sol preferred empty
+      history, but today's behaviour is the safe fallback).
+    - The filtered copy lives in a private 0700 directory, 0600, removed
+      on exit, orphans swept at start (both); cache it by size and mtime.
+    - The id for `--continue` or a re-exec: ask herdr (`herdr pane get
+      $HERDR_PANE_ID` has `agent_session`) or learn it from the
+      transcript this process appends to (sol: SessionStart identity).
+    - Known limits: two panes resuming one id share their history (sol);
+      a Claude update that reads the file another way silently restores
+      the shared history, so log which call sites open it.
   - Check that herdr never resumes one session id in two panes: both
     panes would then share "own" history and interleave transcripts (sol).
   - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
