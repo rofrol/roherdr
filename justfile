@@ -32,19 +32,19 @@ test: guard
     just integration-assets-test
     just docs-contract-test
 
-# Run `just check` in the clean tree: this checkout's HEAD plus only the named paths (scripts/clean_tree.py).
+# Run `just check` in the clean tree: this checkout's HEAD plus only the named paths (`herdr-job clean-tree`).
 [unix]
 clean-check +paths:
-    {{python}} scripts/clean_tree.py run {{paths}} -- just check
+    {{python}} plugins/job/herdr-job clean-tree {{paths}} -- just check
 
-# Release build in the clean tree; install it with "$(scripts/clean_tree.py path)"/scripts/herdr_live.sh install.
+# Release build in the clean tree; install it with "$(plugins/job/herdr-job clean-tree --path)"/scripts/herdr_live.sh install.
 [unix]
 clean-release +paths:
-    {{python}} scripts/clean_tree.py run {{paths}} -- {{slot}} cargo build --release --locked
+    {{python}} plugins/job/herdr-job clean-tree {{paths}} -- {{slot}} cargo build --release --locked
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_target_sweep scripts.test_clean_tree scripts.test_awaiting_reply_audit scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    {{python}} -m unittest scripts.test_target_sweep scripts.test_awaiting_reply_audit scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
     bun test scripts/release-workflows.test.ts
     just fork-plugin-test
 

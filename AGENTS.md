@@ -513,14 +513,14 @@ scripts/herdr_live.sh install
 
 Check and build in the clean tree, not in the shared checkout: another
 session's half-done edits in `src/` would go into your test run and your
-install. `scripts/clean_tree.py` resets one persistent worktree
+install. `herdr-job clean-tree` (see `plugins/job/README.md`) resets one persistent worktree
 (`../herdr-worktrees/clean-check`, its `target/` stays warm) to this
 checkout's `HEAD` and applies only the paths you name:
 
 ```bash
 just clean-check <your paths>      # just check there
 just clean-release <your paths>    # cargo build --release --locked there
-"$(scripts/clean_tree.py path)"/scripts/herdr_live.sh install   # installs that build
+"$(plugins/job/herdr-job clean-tree --path)"/scripts/herdr_live.sh install   # installs that build
 ```
 
 Run them through `herdr-job run --slot --name "<what>" -- ...`; the slot keeps

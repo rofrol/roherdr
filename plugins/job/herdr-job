@@ -9,6 +9,7 @@
   herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
   herdr-job slot [--exclusive] -- COMMAND   run COMMAND here under a machine-wide slot
   herdr-job slots                who holds the slots
+  herdr-job clean-tree [PATH...] -- COMMAND   run COMMAND in a clean tree: HEAD plus only these paths
 
 The job runs in a new unfocused tab, so its output is visible live. The pane
 that started it (HERDR_PANE_ID) gets a `$jobs` sidebar token. Any agent can use
@@ -22,6 +23,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -481,6 +483,102 @@ def cmd_slot(args):
     code = proc.wait()
     for handle in held:
         handle.close()
+    sys.exit(128 - code if code < 0 else code)
+
+
+# Clean tree: builds and tests that verify one session's change, without the
+# half-done edits other sessions left in a shared checkout. One persistent
+# worktree per repository (ignored build output such as target/ stays warm) is
+# reset to the checkout's HEAD and gets only the paths the caller names: the
+# shared checkout cannot tell whose edits are whose, so `git diff` of all of it
+# would bring the others' work along.
+
+
+def git_run(cwd, *args, binary=False):
+    out = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=not binary)
+    if out.returncode != 0:
+        err = out.stderr.decode(errors="replace") if binary else out.stderr
+        raise SystemExit(f"git {' '.join(args)} failed: {err.strip()}")
+    return out.stdout
+
+
+def checkout_root():
+    return Path(git_run(Path.cwd(), "rev-parse", "--show-toplevel").strip()).resolve()
+
+
+def clean_tree_dir(root):
+    """$HERDR_CLEAN_TREE, else `<repo>-worktrees/clean-check` next to the checkout."""
+    configured = os.environ.get("HERDR_CLEAN_TREE")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (root.parent / f"{root.name}-worktrees" / "clean-check").resolve()
+
+
+def lock_clean_tree(root):
+    """One run at a time per repository; the holder note says who waits for whom."""
+    common = Path(git_run(root, "rev-parse", "--git-common-dir").strip())
+    handle = open((common if common.is_absolute() else root / common) / "clean-tree.lock", "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        print(f"herdr-job: clean tree busy ({handle.read().strip() or 'another run'}); waiting",
+              file=sys.stderr, flush=True)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid {os.getpid()}: {short(' '.join(sys.argv[2:]), 200)}\n")
+    handle.flush()
+    return handle
+
+
+def prepare_clean_tree(root, tree, paths):
+    """Resets the tree to the checkout's HEAD and copies the named paths'
+    changes into it: edits and deletions as a patch, new files as copies."""
+    base = git_run(root, "rev-parse", "HEAD").strip()
+    for path in paths:
+        resolved = (root / path).resolve()
+        if resolved != root and root not in resolved.parents:
+            raise SystemExit(f"herdr-job: {path} is outside {root}")
+    if not (tree / ".git").exists():
+        tree.parent.mkdir(parents=True, exist_ok=True)
+        git_run(root, "worktree", "add", "--detach", str(tree), base)
+    git_run(tree, "checkout", "--detach", "--force", base)
+    git_run(tree, "clean", "-fd")  # not -x: ignored build output stays warm
+    if not paths:
+        return base, 0
+    patch = git_run(root, "diff", "--binary", "HEAD", "--", *paths, binary=True)
+    if patch:
+        applied = subprocess.run(["git", "-C", str(tree), "apply", "--binary", "-"], input=patch,
+                                 capture_output=True)
+        if applied.returncode != 0:
+            raise SystemExit(f"herdr-job: the patch does not apply: {applied.stderr.decode(errors='replace').strip()}")
+    for name in filter(None, git_run(root, "ls-files", "--others", "--exclude-standard", "-z", "--", *paths).split("\0")):
+        (tree / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / name, tree / name)
+    return base, git_run(tree, "status", "--porcelain").count("\n")
+
+
+def cmd_clean_tree(args):
+    if args.print_path:
+        print(clean_tree_dir(checkout_root()))
+        return
+    argv = args.rest
+    if "--" not in argv or argv.index("--") == len(argv) - 1:
+        raise SystemExit("usage: herdr-job clean-tree [PATH...] -- COMMAND...")
+    split = argv.index("--")
+    paths, command = argv[:split], argv[split + 1:]
+    root = checkout_root()
+    tree = clean_tree_dir(root)
+    if root == tree:
+        raise SystemExit("herdr-job: run clean-tree from the shared checkout, not from the clean tree")
+    lock = lock_clean_tree(root)
+    try:
+        base, changed = prepare_clean_tree(root, tree, paths)
+        print(f"herdr-job: clean tree {tree}: {base[:12]} + {changed} changed paths", file=sys.stderr, flush=True)
+        code = subprocess.run(command, cwd=tree, env=dict(os.environ, HERDR_CLEAN_TREE_BASE=base)).returncode
+    finally:
+        lock.close()
     sys.exit(128 - code if code < 0 else code)
 
 
@@ -1101,6 +1199,10 @@ def main():
     slot.add_argument("command", nargs=argparse.REMAINDER)
     slot.set_defaults(func=cmd_slot)
     sub.add_parser("slots", help="show who holds the slots").set_defaults(func=cmd_slots)
+    tree = sub.add_parser("clean-tree", help="run a command in a clean tree: HEAD plus only the named paths")
+    tree.add_argument("--path", dest="print_path", action="store_true", help="print the clean tree's directory")
+    tree.add_argument("rest", nargs=argparse.REMAINDER, metavar="[PATH...] -- COMMAND...")
+    tree.set_defaults(func=cmd_clean_tree)
     sub.add_parser("_tab-closed").set_defaults(func=cmd_tab_closed)
     exec_ = sub.add_parser("_exec")
     exec_.add_argument("id")
