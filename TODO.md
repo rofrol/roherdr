@@ -5050,6 +5050,45 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     buckets. Later, if wanted: link `act` findings to the commits that
     landed them (MiMo).
 
+- [ ] Focus mode (user, 2026-10-06: "some focus mode, a button at the top
+  above spaces?, so that in every space all agent sessions that are not
+  doing anything or waiting are collapsed under a button"). A client-local
+  toggle in the sidebar header; each space folds its quiet agent tabs under
+  one `N idle` line, the way job child tabs fold under their parent.
+  - Quiet means `idle` only (sol, MiMo): working, blocked, awaiting-reply,
+    limited and done-unseen stay visible (done-unseen does nothing but is
+    exactly the row to see), and so does the focused tab. Plain shell tabs:
+    sol leaves them alone, MiMo folds them; undecided.
+  - No reflow while it is on (both): membership is computed when the mode
+    is switched on (or the fold line is clicked) and stays until then; an
+    agent that turns working or asks shows again at once, but an agent that
+    goes idle does not fold away under the mouse.
+  - Keep the invariants of the earlier "never hide rows by default"
+    decision: folded tabs keep their `Alt-1..9` positions, a focused folded
+    tab shows as the parent's suffix (variant d of the job folding), and the
+    space chevron stays authoritative (the mode never opens a collapsed
+    space).
+  - Consulted sol and MiMo (round `20261006-144141-fb4f`): both would start
+    with dimming quiet rows instead of folding (no reflow, nothing hidden),
+    and sol would fold only the agent detail lines, never addressable tab
+    rows. The user asked for folding; decide before building.
+
+- [ ] Back and forward over focus jumps (user, 2026-10-06: "at the very top
+  prev, next navigation, so when I jump to some card I can click prev").
+  Browser-style `‹ ›` at the top of the sidebar.
+  - Client-local history of pane ids, never in the server (each client has
+    its own focus), capped at about 50, not persisted; a new jump after
+    Back drops the forward entries; consecutive duplicates coalesce; closed
+    panes are skipped on traversal and the button greys out when nothing
+    valid remains. Back restores focus only, not layout or folds.
+  - Entries are discontinuous jumps: sidebar and dropdown clicks (`?` list,
+    inbox, toasts), cross-space moves, `pane.focus` from an agent. Not
+    incidental focus (a closed pane's fallback) or the traversal itself.
+    Open: sol records `Alt-1..9` presses, MiMo skips them as noise.
+  - Keep the server's single-step `last_pane` toggle as it is (both).
+    Keys: mouse back/forward buttons where the terminal reports them, plus
+    configurable keys, unbound by default. MiMo would ship Back alone first.
+
 ## Deferred
 
 - [ ] REPL in a sibling pane as an agent tool (idea from the HN thread
@@ -5164,6 +5203,21 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     solely from an exhausted plan limit. Keep subscription overage separate
     from Anthropic Console API billing. Display only; do not enable credits
     or change billing settings.
+  - [ ] Remind me to redeem a reset before it expires (user, 2026-10-06:
+    "clicking reset when it gets close to expired": an unused `Full reset`
+    is wasted when it expires). Herdr never redeems it and has no verified
+    source for the grant, so the first slice is a manually entered expiry
+    with an optional link to the usage page, labelled unverified ("check
+    your reset offer", it may already be used), dismissable and markable as
+    redeemed. A date without time or timezone reminds conservatively on the
+    day before, never at an invented midnight; a date without a year is
+    not guessed (the `Expires October 5` example had passed by 2026-10-06).
+    Consulted sol and MiMo (round `20261006-144141-fb4f`): one nudge when a
+    limit is actually hit while a recorded grant is unexpired (when the
+    reset pays off); a ~24 h lead-time nudge too, which MiMo would send only
+    while a limit is hit (otherwise it nags a user under quota); dedupe to
+    one nudge per grant per day. Take an API field if one appears; never
+    parse the settings page.
 - [ ] Usage modal (click the footer) / settings: checkboxes choosing which
   providers the usage footer shows. Also token-based usage?
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): the
