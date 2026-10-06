@@ -4855,8 +4855,12 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
       the `master` SHA, plus a patch of explicitly named paths of this
       session (`git diff` of the shared checkout carries other sessions'
       edits, so it cannot be the input), then the existing checks there.
-      Done 2026-10-06: `scripts/clean_tree.py`, `just clean-check <paths>`,
-      `just clean-release <paths>`, AGENTS.md install flow. Own `target/`;
+      Done 2026-10-06: `herdr-job clean-tree [PATHS] -- CMD` (any repository;
+      first as `scripts/clean_tree.py`, generalized the same day at the
+      user's request, with a rule in the global Claude and pi instructions:
+      use it when `git status` shows changes that are not yours),
+      `just clean-check <paths>`, `just clean-release <paths>`, AGENTS.md
+      install flow. Own `target/`;
       a shared one is not measured (cargo keys local and vendored path
       crates by source path, so they may rebuild on every switch): cold `just clean-check` 6.0 min and 3.6 GB, warm 1.8 min.
     - Then the task state as an attention inbox: waiting agents ranked by
