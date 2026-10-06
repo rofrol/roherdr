@@ -249,7 +249,7 @@ Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.loc
 
 Use lowercase conventional commits, no emojis, and no AI co-author lines. Commit subjects feed preview release notes, so keep them descriptive.
 
-Before committing, propose the commit message and get alignment.
+Before committing, propose the commit message and get alignment. The exception is work on an agent-queue item (`aq`, from `~/scripts/aq`; the Stop hook hands items to a worker session): the user adding the item approves its commits, so the worker commits without asking, adds the trailer `Queue-Item: <id>` to each commit, and reports the item with `aq report`, which is where the user reviews it.
 
 When a normal feature or fix commit relates to a GitHub issue, add a commit body line `refs #<issue-number>` after the subject:
 
