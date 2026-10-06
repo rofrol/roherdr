@@ -142,6 +142,31 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   fork's usage module has the numbers per agent. Risk: totals that disagree
   with the provider's bill, and resumed sessions counted twice (sol).
 
+- [ ] Up arrow in a Claude pane recalls other panes' prompts (user,
+  2026-10-06: "when I press up in some Claude instance, commands from the
+  history of other instances show up instead of this one"). Cause, read
+  from the Claude Code 2.1.291 binary (`readForProject`): every prompt goes
+  to the global `~/.claude/history.jsonl` with `project` and `sessionId`;
+  Up takes the 100 newest entries of the project (all sessions), then
+  lists the current session's first and the others after them. With ~15
+  panes in one checkout those 100 entries span 13.6 hours (measured
+  2026-10-06), so a pane quiet for half a day has none of its own left,
+  and a busy one reaches others' after its few. Not herdr's bug: herdr's
+  `claude --resume <id>` keeps the session id (60 recent transcripts, one
+  id each), and the history file has no corrupt lines. `/clear` starts a
+  new id, so prompts before it count as another session's. Upstream
+  anthropics/claude-code#24751 ("scope Up-arrow history per session") is
+  closed; the session-first order is probably its fix, the limit applied
+  before the split is what remains. Consulted sol and MiMo (round
+  `20261006-160655-e30d`). Options:
+  - Report upstream: apply the limit per session, not to the combined
+    scan (both models). Ask the user before filing.
+  - Check that herdr never resumes one session id in two panes: both
+    panes would then share "own" history and interleave transcripts (sol).
+  - Not worth it: a per-pane `CLAUDE_CONFIG_DIR` (splits settings,
+    transcripts, plugins and login), or a worktree per pane only for this
+    (and only if Claude keys `project` by the worktree root, unverified).
+
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
   but it did not close the job." Closing a parent tab's last pane (cmd+w)
   checked only the parent for running work, and the server kept its child
