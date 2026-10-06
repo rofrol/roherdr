@@ -354,6 +354,8 @@ fn run_client_with_mode(
         .await
     });
 
+    // A Quick Look panel opened from the image list must not outlive it.
+    shell_runtime::reap_image_preview(false);
     // Restore the terminal before printing any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
 
@@ -478,6 +480,9 @@ async fn run_client_loop(
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());
         shell.set_graphics_cell_size(initial_cell_width_px, initial_cell_height_px);
+        shell.set_image_previews(
+            state.kitty_graphics_enabled && image_files::terminal_reads_local_files(),
+        );
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
         shell.set_endpoint_methods_for(
             &endpoint::ClientEndpointId::Local,

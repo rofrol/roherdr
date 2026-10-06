@@ -225,6 +225,7 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - Picker first (`Attach image…`), never a blind "attach newest" (could send a private shot to a cloud model). Multi-select is core (user, 2026-10-03: "I sometimes take a few screenshots for one task").
 - Delivery reuses the clipboard-image path (works for remote servers); magic bytes checked, never truncate. The destination pane is fixed when the picker opens. No CLI in v1.
 - Rejected: clipboard route (shots go to disk, clipboard holds one image); a "skip files younger than 200 ms" wait (skip dotfiles instead; macOS renames a hidden file).
+- Preview (user, 2026-10-06): Space opens Quick Look (`qlmanage -p`) as in Finder, marking moved to `x`; the panel takes the keyboard focus, so it is one owned child killed when the list closes, not a follow-the-highlight panel. Beside the list, the highlighted PNG is a kitty image sent by path (`t=f`), so Ghostty decodes and scales it; only for a local Ghostty client (not over SSH). One preview panel, not per-row thumbnails (consult Sol + MiMo: unreadable at 1-2 cells, N transfers). Rejected: `p` for preview keeping Space for marking (the user asked for Space).
 
 ### Purple vs orange status spinner speed
 - Speed differs by design (job glyph 320 ms vs working 160 ms); consult said equalize tempo and distinguish by color/shape, since slow reads as lag.

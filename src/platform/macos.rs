@@ -686,6 +686,20 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         .map(Some)
 }
 
+/// Shows `path` in a Quick Look panel (`qlmanage -p`). The panel is its own
+/// process and takes the keyboard focus; killing the child closes it.
+pub(crate) fn quick_look(path: &std::path::Path) -> Option<std::io::Result<std::process::Child>> {
+    Some(
+        Command::new("qlmanage")
+            .arg("-p")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn(),
+    )
+}
+
 /// Where the system saves screenshots: the location set for `screencapture`,
 /// else the Desktop. The image picker opens there first.
 pub fn screenshot_dir() -> Option<PathBuf> {

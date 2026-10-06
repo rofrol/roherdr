@@ -960,6 +960,7 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.image_picker_rows = rendered.menu_rows;
+                self.hits.image_preview = rendered.image_preview;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
                 self.hits.navigator_popup = rendered.navigator_popup;
@@ -1007,7 +1008,11 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
             self.hits.popup = None;
         }
-        let graphics = self.compose_graphics(layout, &occlusion);
+        if !matches!(self.overlay, Some(ClientShellOverlay::ImagePicker(_))) {
+            self.hits.image_preview = Rect::default();
+        }
+        let mut graphics = self.compose_graphics(layout, &occlusion);
+        graphics.push_bytes(self.compose_image_preview());
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }
 }

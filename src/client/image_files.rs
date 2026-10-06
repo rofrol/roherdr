@@ -65,6 +65,19 @@ use std::ffi::OsString;
 #[cfg(unix)]
 use std::io::IsTerminal;
 
+/// The host terminal is a local Ghostty, so it can read this machine's
+/// files by path (the image list's preview sends screenshots that way).
+pub(crate) fn terminal_reads_local_files() -> bool {
+    #[cfg(unix)]
+    {
+        environment_allows()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 #[cfg(unix)]
 fn environment_allows() -> bool {
     allowed(
