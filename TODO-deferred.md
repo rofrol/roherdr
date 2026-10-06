@@ -3,6 +3,160 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Run the untrusted/cloaked OpenRouter consult (`ask-bunny`, Space Bunny /
+  MiMo) so a secret can never reach the logging provider (user, 2026-10-02).
+  - Done so far (committed `1d71dabf`): `ask-bunny` runs `ask_openrouter.py`
+    under macOS `sandbox-exec` (`bunny.sb`, `allow default` + `deny file-read*`
+    of `~/.pi`, `~/.ssh`, `~/.config`, `~/personal_projects`, `*.env`/`*.key`/
+    `credentials`/`auth.json`), token passed via `OPENROUTER_BEARER` from
+    outside the sandbox, clean cwd `/tmp/bunny`. Verified all those reads return
+    `PermissionError`. This removes the path where the model/script reads a
+    secret itself.
+  - NOT closed by the sandbox: the orchestrating agent can paste a secret into
+    the prompt (`ask-bunny "$(cat ~/.env)"` — the `cat` runs in the caller's
+    shell, before the sandbox).
+  - Decision (web research + consulted GPT Astra `117cec6b` and DeepSeek
+    `223dab7f`, 2026-10-02, agree): the only real close without a human
+    approval gate (which the user rejected) is capability split — the component
+    that talks to the model has no secrets, the component with secrets has no
+    channel to it. Egress DLP / secret-value registry / canary tokens are a
+    sensor, not a wall (base64, split, paraphrase, "key starts with sk-, 40
+    chars" bypass them); keep only as defense-in-depth.
+  - Build options (not built; both need a system change, so ask first):
+    - A separate macOS user `agentuser` (`dscl`), Bunny consults run as
+      `sudo -u agentuser` against a cleaned/secret-free workspace, so the
+      primary user's `~/.env`/Keychain/`~/.pi` are unreadable at the kernel
+      level — nothing to paste. Secret-needing work stays with the primary user
+      behind a narrow broker (unix socket, whitelisted operations) that returns
+      a result, not the value.
+    - Or run the whole agent in a Linux VM (Colima/Lima) with no home mount,
+      only a cleaned repo copy; credentials outside the VM via the broker.
+  - Irreducible (both models, explicit): while an agent can both read a secret
+    and send arbitrary text to the untrusted model, there is no 100% guarantee
+    without a human gate or removing its read access. So the chosen direction is
+    removing read access (B), not policy-only (C).
+  - Sources: specstory agent-secrets; dev.to "never see your API keys"; DZone
+    "4 ways agents exfiltrate secrets"; github.com/fabriziosalmi/aidlp.
+  Decided by the user 2026-10-06: parked: Space Bunny is dropped and MiMo
+  runs under sandbox-exec; a separate macOS user comes back with the next
+  untrusted model.
+
+- [ ] Add a model-selection review workflow for the consult/ask skills.
+  - Use official model announcements, CLI release notes and authentication /
+    subscription availability first. Terminal-Bench and SWE-bench Verified /
+    Pro are candidate sources, not automatic rankings for a read-only
+    consultation task. Record benchmark version, date, model snapshot and
+    harness/agent settings; do not compare unlike evaluation setups.
+  - Treat these user-supplied links as unverified leads, not evidence that
+    Opus is better than Sonnet:
+    https://www.reddit.com/r/Anthropic/comments/1wso4lj/silly_question_if_sonnet_opus_55_is_better_than/
+    https://x.com/BalegaNorbert/status/2102451570608853211
+  - Additional sources read in the browser on 2026-10-01, including their
+    attached images (claims not independently reproduced):
+    https://x.com/BalegaNorbert/status/2102280368909111497 compares dated
+    MiMo V2.6 Command Code/OpenCode promotions, including 72-hour / one-week
+    windows. Track plan, provider, expiry, actual quotas, overage and normal
+    non-promotional pricing; an offer multiplier is not a quality score.
+    https://x.com/BalegaNorbert/status/2102055662087786534 claims Qwen 27B
+    reproduces an earlier proprietary frontier about six months later.
+    Its chart attributes scores to Artificial Analysis Intelligence Index
+    v4.3, with current re-evaluations plotted against original release dates
+    and roughly 4-bit models in the single-24GB class. Verify the primary
+    model pages, index methodology, model/version and deployment details.
+    Neither score differences nor parameter counts establish the post's
+    "1000x" claim or parity for coding consultations.
+  - Also read on 2026-10-01:
+    https://www.reddit.com/r/singularity/comments/1wspt5z/gpt6_sol_vs_sonnet_55_at_the_same_cost_per_task/
+    The author plots claimed Artificial Analysis scores against API cost per
+    task at different effort settings: Sol is claimed more efficient at
+    overlapping budgets, Sonnet has a higher maximum-effort ceiling. The
+    post separately cites Terminal-Bench 4.0 scores; those are not the same
+    metric as the composite Intelligence Index. Verify primary data and
+    token accounting (including reasoning/cache) before adopting conclusions.
+    Equal token prices do not imply equal task costs, and effort labels are
+    not comparable across providers. API dollars/task do not establish
+    subscription quota consumption. Do not transfer GPT-6 Sol results to
+    GPT-6.1 Sol without matching the exact model snapshot. User comments
+    and unverified scores are leads, not grounds for switching defaults.
+  - Keep quality, total cost and delivery route separate. Tag CLI subscription,
+    hosted API and local weights distinctly; provider wrappers can alter
+    harnesses, privacy terms and quotas. For local candidates record hardware,
+    quantization, memory/context headroom, latency and throughput; local
+    serving is not cost-free merely because there is no API invoice.
+    Evaluate read-only consultations separately from tool-using coding
+    agents. No purchases, default switches or new provider integration based
+    solely on these posts. Verify offers again at decision time.
+  - Consulted DeepSeek and Gemini (low/medium/high), 2026-10-01: distinguish
+    temporary promotion value from quality; verify primary benchmark data
+    and local consultation usefulness, with delivery/privacy constraints.
+    Do not treat a screenshot, composite chart or marketing multiplier as
+    a reproducible result.
+  - Before switching a skill default, verify the exact model through its
+    subscribed CLI and run a small representative local evaluation. Compare
+    accepted/unique findings, incorrect advice, latency and quota consumption
+    using consult-stats. Record the decision and a rollback path; do not
+    auto-switch defaults based on leaderboard or social-media claims.
+  - Consulted DeepSeek on 2026-10-01: prioritise primary sources, exact model
+    identities and local usefulness; preserve explicit selection and report
+    unavailable models without silent fallback. No scheduled polling or
+    paid benchmark/model calls until the workflow is designed and approved.
+  - New leads (user, 2026-10-02), folded in as unverified leads, not grounds to
+    switch a default:
+    - SuperGrok's "160x more in the subscription than in tokens"
+      (https://x.com/PawelHuryn/status/2105703147184239042): a cost/access
+      ratio, not a quality signal. It compares a flat subscription's
+      theoretical token ceiling with marginal API price and ignores rate
+      limits/fair-use, that a sub may be a loss-leader, and that real
+      consumption sits far below the cap. "How many tokens do I get" in Claude
+      Max 5x vs 20x vs a GPT sub is throughput (how many consultations), not
+      competence; tokens of different models are not one unit of useful work.
+    - Artificial Analysis AA-Omniscience
+      (https://x.com/ArtificialAnlys/status/2105392625788637299): Gemini 4 Argon
+      15% hallucination (lowest among models scoring 45+ on the Intelligence
+      Index), vs GPT-6 Astra 51% and GPT-6.1 Sol 54% at max effort. A
+      general-knowledge hallucination benchmark, not reasoning over an unknown
+      codebase. Low hallucination suggests better uncertainty calibration (more
+      "I don't know / show me the file", fewer confident false positives),
+      genuinely useful for a devil's advocate, but it does not transfer the
+      percentages to code review, and a cautious model can also miss more real
+      bugs. One recent third-party score is a lead, not a default switch.
+    - Consulted GPT Astra (9cf5c878) and DeepSeek (c883180b) 2026-10-02 as
+      devil's advocates (both agree): neither argument measures quality. The
+      deciding metric stays per-consult verifiable value-add — accepted/unique
+      findings, plus false-positives-per-accepted, finding severity, cost per
+      accepted finding, and calibration (does it admit "I don't know" and ask
+      for evidence) — measured by blind A/B on the same unknown repo with the
+      same prompt, and by also scoring misses on cases with known bugs, never a
+      leaderboard or a subscription multiplier.
+  - More leads (user, 2026-10-02):
+    - TerminalBench 4.0 cost/task (https://artificialanalysis.ai/evaluations/
+      terminalbench-4-0): user cited Grok 4.7 (xhigh) $14.6, GPT-6.1 Sol (max)
+      $1.82, Claude Opus 5.5 (high, with fallback) $5.12. More relevant than
+      AA-Omniscience (agentic coding, not trivia) but still not our role:
+      TerminalBench is a tool-using agent that solves tasks, we run a read-only
+      second opinion. Cost without the paired score is half the picture — on the
+      page's score chart the top is Claude Sonnet 5.5 (max, fallback) 63.6%,
+      then Opus 5.5 59.6% (Sol's score not surfaced in the fetch), so "cheapest"
+      is not "best". Effort labels (xhigh/max/high) are not comparable across
+      providers, "with fallback" means the figure is not pure Opus, and API
+      $/task is not our subscription-quota consumption (consults bill to the CLI
+      subscription).
+    - "Space Bunny Alpha", free now on OpenRouter
+      (https://openrouter.ai/rankings#leaderboard-table), guessed to be
+      MiniMax-M3.1 (https://www.reddit.com/r/SillyTavernAI/comments/1wo8csn/
+      comment/pbmo076/): a cloaked model. "Free" is a promo / data-collection
+      phase, not a quality score; the identity is a Reddit guess, so it fails
+      this item's "exact model identity" rule and can be swapped under us
+      (consult-stats could not log the real version). Privacy red flag: consults
+      send code, and `-r` repo mode sends the whole checkout including untracked
+      files, to an unknown provider with unknown retention (MiniMax is a China
+      lab, like DeepSeek). Worth an A/B only through a route that pins the exact
+      model id, and only after deciding what code it may see; never the default,
+      never for `-r` with secrets.
+  Decided by the user 2026-10-06: parked: models are chosen through
+  consult-stats and trial rounds; this workflow comes back at the next
+  change of the default set.
+
 - [ ] Add easily accessible advisor checkboxes in Herdr so it injects
   `Consult with <selected agents>` into coding-agent requests. Let the user
   select advisors (for example DeepSeek) and disable the instruction easily.
