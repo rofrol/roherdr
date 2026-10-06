@@ -43,6 +43,11 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   runs without a controlling terminal, so `/dev/tty` fails; writing progress
   to `$HERDR_JOB_TTY` shows it in the tab but keeps it out of the log that
   `wait --stream` shows (see [Skills](#skills-a-script-in-its-own-job-tab)).
+- On macOS the job keeps the Mac from idle sleep while it waits for its slot
+  and runs (`caffeinate -i -w` on the job's executor), so an unattended build
+  goes on with the display off; the agent's own sleep inhibitor is not held
+  while it blocks on `herdr-job wait`, or has gaps. Closing the lid still
+  sleeps. `HERDR_JOB_KEEP_AWAKE=0` turns it off.
 - The starting pane gets a `$jobs` token with counts of its jobs that still
   have a tab, e.g. `⧖ 2 !1 ✓1`: running, failed (or lost) and successful,
   with the same icons as the tab bar.

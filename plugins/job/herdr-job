@@ -911,6 +911,23 @@ def watch_activity(proc, meta, last_output):
             since_report = 0
 
 
+def keep_awake():
+    """Keeps a Mac from idle sleep while this executor lives (its slot wait and
+    the command): an unattended build otherwise stops when the display is off,
+    since the agent's own inhibitor is not held while a tool call blocks, or
+    has gaps. `caffeinate -w` exits with this process, however it ends; its own
+    session keeps it out of the job's process group. HERDR_JOB_KEEP_AWAKE=0
+    turns it off. Lid-close sleep is not prevented."""
+    if sys.platform != "darwin" or os.environ.get("HERDR_JOB_KEEP_AWAKE") == "0":
+        return
+    try:
+        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 def cmd_exec(args):
     """Runs inside the job's own pane: stream output to the terminal and the log."""
     path = job_dir(args.id)
@@ -931,6 +948,7 @@ def cmd_exec(args):
     meta["pid"] = os.getpid()
     meta["started"] = time.time()
     write_meta(path, meta)
+    keep_awake()
     footer = Footer(meta)
     if not meta.get("client_footer"):
         footer.start()

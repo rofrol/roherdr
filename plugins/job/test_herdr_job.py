@@ -133,6 +133,38 @@ class ExecutorFooterTests(unittest.TestCase):
                     footer.release.assert_called_once()
 
 
+@unittest.skipUnless(sys.platform == "darwin", "caffeinate is macOS only")
+class KeepAwakeTests(unittest.TestCase):
+    def test_the_executor_holds_an_idle_sleep_assertion_until_it_exits(self):
+        script = (f"import runpy; job = runpy.run_path({str(Path(__file__).with_name('herdr-job'))!r}); "
+                  "job['keep_awake'](); import time; time.sleep(30)")
+        executor = subprocess.Popen([sys.executable, "-c", script])
+        try:
+            def caffeinate():
+                out = subprocess.run(["pgrep", "-f", f"caffeinate -i -w {executor.pid}$"],
+                                     capture_output=True, text=True)
+                return out.stdout.split()
+            deadline = time.monotonic() + 10
+            while not caffeinate() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(caffeinate())
+        finally:
+            executor.kill()
+            executor.wait()
+        # It goes with the executor, however that ends.
+        deadline = time.monotonic() + 10
+        while caffeinate() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(caffeinate(), [])
+
+    def test_it_can_be_turned_off(self):
+        popen = Mock()
+        with patch.dict(os.environ, {"HERDR_JOB_KEEP_AWAKE": "0"}), \
+                patch.object(JOB["subprocess"], "Popen", popen):
+            JOB["keep_awake"]()
+        popen.assert_not_called()
+
+
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class FooterTests(unittest.TestCase):
     def setUp(self):
