@@ -9,16 +9,6 @@ Parked ideas live in `TODO-deferred.md`.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] `herdr tab create` without `--workspace` from inside a pane should
-  create the tab in the caller's workspace (`$HERDR_WORKSPACE_ID`), not in
-  the workspace the user is looking at. On 2026-10-06 a Claude session in
-  music-mpd ran `herdr tab create --no-focus --label rormpc-test` while the
-  user had herdr in front, and the tab landed in herdr
-  (`src/app/api/tabs.rs:71` falls back to `state.active`). Default it in
-  the CLI (`src/cli/tab.rs`), so calls from outside Herdr keep today's
-  behaviour; this departs from upstream. Check the other create commands
-  that fall back to the active workspace the same way.
-
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
   guidance, as a belt-and-braces for servers without the fix above.

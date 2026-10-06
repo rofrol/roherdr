@@ -10,6 +10,9 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - No reassignment (no drag, no adopt) and no detaching when the creator tab starts a new session (user, 2026-10-03/04); `--resume` restores the old one. Rejected: re-attaching by pane cwd.
 - Nested worktree folded by default; fold via the worktree's own `▾` (user, 2026-10-04), jobs `▸` stays jobs-only; folded line keeps aggregate status/attention. Connector `└─`, not the long trunk.
 
+### Caller's workspace for tab create
+- User, 2026-10-06 (TODO): `herdr tab create` without `--workspace` from inside a pane goes to `$HERDR_WORKSPACE_ID`, defaulted in the CLI (`caller_workspace_id()`, same guards as `caller_pane_id()`: none for remote targets or empty values), so calls from outside Herdr keep the server's active-workspace fallback. Departs from upstream. Other create commands with the same fallback (workspace create, worktree create/open) left as they are.
+
 ### Reopen closed tab brings back the agent
 - Server-owned in-memory history (last 20), captured in the close handler before teardown; new method `tab.reopen_closed` rebuilds via the restart path with validated session refs; claim entry atomically.
 - Rejected: client fetching agent_session before close, keeping processes alive for undo. Method exists but fails: no silent fallback to a fresh shell (only when not advertised or entry gone, then say so).
