@@ -233,6 +233,11 @@ then wait for it in the background with `herdr-job wait <id>`. The command must
 block until the work is really done: if it only starts work elsewhere (a VM,
 a remote host, a detached process), make it wait for that work, e.g. by polling
 its status file. Do not detach it with `nohup` or `&`.
+
+When `git status` shows changes that are not yours (another session works in
+the same checkout), build and test your change in a clean tree:
+`herdr-job clean-tree <your paths> -- <build or test command>` runs it on
+`HEAD` plus only those paths.
 ```
 
 Running sessions read the file at start, so restart them or send them the
@@ -278,6 +283,35 @@ herdr-job slots                           # who holds them: job, name, pid, sinc
   until it is stopped: `herdr-job slots` names it. An exclusive request does
   not stop newcomers from taking slots it has not reached yet; with one slot
   that cannot happen.
+
+## Clean tree
+
+Several agent sessions often edit one shared checkout. A build or test run
+there compiles whatever another session left half done, so it can fail on
+their code or pass on code that will not be committed. `clean-tree` runs a
+command in a clean copy instead: the checkout's `HEAD` plus only the paths you
+name.
+
+```sh
+herdr-job clean-tree src/foo.rs tests/foo.rs -- cargo test   # HEAD + these paths' changes
+herdr-job clean-tree -- make check                           # HEAD as committed
+herdr-job run --slot --name "check foo" -- herdr-job clean-tree src/foo.rs -- just check
+herdr-job clean-tree --path                                  # where the tree is
+```
+
+- One persistent worktree per repository, `<repo>-worktrees/clean-check`
+  next to the checkout (or `$HERDR_CLEAN_TREE`). Each run resets it to
+  `HEAD` and removes untracked files, but keeps ignored build output such as
+  `target/` or `node_modules/` warm: only the first run builds from cold.
+- Name your own paths: the shared checkout cannot tell whose edits are
+  whose. Edits and deletions come as a patch against `HEAD`, new files as
+  copies. A file another session also edits brings their hunks too: check
+  `git diff -- <path>` first.
+- One run at a time per repository (an `flock` under `.git/`); another run
+  waits and says for whom. The command gets `HERDR_CLEAN_TREE_BASE`, the
+  commit it was built on.
+- Worth it where several sessions edit and build one checkout; a checkout
+  only you edit needs none.
 
 ## Idle jobs
 
