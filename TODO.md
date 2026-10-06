@@ -5553,6 +5553,10 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     `20261006-020858-b22a`): a "Keys typed as a connection drops" item in
     `connecting-machines.mdx` and a comment at the drop site in
     `finish_client_shell_input`.
-  - Upstream report: not filed yet. Upstream has the same code, but 60 of 60
-    stress runs passed there; a 120-run retry is running. The upstream
-    rules allow an issue only for a bug reproduced on the reported version.
+  - Upstream report: not filed. Upstream `3d9d2b18` has the same code. In
+    300 stress runs there, 3 failed at "remote reconnect N must restore
+    visible input", but upstream's assertion prints no screen and waits only
+    8 s, so a cut line is not shown; the 120 runs with a screen dump hit no
+    such failure (one unrelated `local-online` timeout). The upstream rules
+    allow an issue only for a bug reproduced on the reported version, so
+    file it only after capturing the `>` screen there.
