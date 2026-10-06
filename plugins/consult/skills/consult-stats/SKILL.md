@@ -14,6 +14,7 @@ stderr. Usefulness comes from ratings:
 ```bash
 O="$D/consult.py"
 $O rate <id> useful|partial|useless [--findings N] [--accepted N] [--unique N] [--note "..."]
+        [--act N --consider N --noted N --dismissed N]   # what you decided per finding; all four, adding up to --findings
 $O new-round            # round id: export CONSULT_ROUND=$($O new-round) before launching a round's models
 $O self --round <round> --model <your model id> --findings N --accepted N --refuted N --unique N --missed N [--note "..."]
 $O stats [--days 30]     # per skill/model: call dates, unique per rated call, wrong (rejected findings), rated/calls, err
@@ -41,6 +42,10 @@ Rate after triaging the answer, not on first read:
 - `--findings`: distinct claims/issues raised; `--accepted`: how many survived verification;
   `--unique`: accepted ones that neither you (the coordinator) nor another model in the same round had. `unique` is the key signal.
 - Be honest and consistent across models; don't upgrade a verdict because the model agreed with you.
+- `--act/--consider/--noted/--dismissed`: the bucket you put each finding in (see the `consult` skill); every finding
+  in exactly one, so they add up to `--findings`. A finding rejected on verification is dismissed, and so is a correct
+  nitpick; `consider` and `noted` are not "accepted". Give them for every new rating; `stats --all` shows `act/call`
+  over the calls that have them. Ratings from before 2026-10-06 have none.
 - `--note`: a few words on why (e.g. "caught race in cache invalidation", "hallucinated API").
 
 When showing stats, point out small samples (<5 rated calls per model) instead of drawing conclusions from them.
