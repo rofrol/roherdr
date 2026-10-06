@@ -4817,12 +4817,33 @@ Order consulted with DeepSeek, GPT-6 Astra and GPT-6 Luna on 2026-09-26.
     hook events (MiMo), so hybrid does not double the state machine.
   - Order: (1) a truthful task state: idle is not done; awaiting permission,
     awaiting answer, limited, failed, with question text and reset time from
-    hooks where available; (2) checkout ownership (worktrees for writing
-    children per both models, against the fork's shared-master rule: the
-    user decides); (3) a child-task primitive: parent link, brief,
+    hooks where available (user, 2026-10-06: "looks ok"); (2) clean
+    validation, not worktrees per child (see below); (3) a child-task primitive: parent link, brief,
     completion that wakes the parent at a safe input boundary (never typed
     into a permission dialog), subtree cancel, recursion bounds; (4)
     handoff; (5) MCP only as a thin facade over the API.
+  - Worktrees for children? (user, 2026-10-06: "what do we need them for;
+    if they slow things down, is manual handoff not better?"; round
+    `20261006-035159-d484`, sol and MiMo agree): no, the shared master stays.
+    Measured: one swept-hunk incident in 276 commits over 8 days, but every
+    `just check` and install builds whatever another session left half done
+    in `src/` (it was the case while asking). Worktree checks: median 3.0
+    min against 1.9 (7 runs, 7.8 cold). So:
+    - Build and test from a clean tree: a reusable detached worktree at the
+      `master` SHA plus only this session's own patch (the fix is not
+      committed before the user tries it), sharing `CARGO_TARGET_DIR` with
+      the main checkout under one lock; install from there. Measure two
+      builds sharing the target first (cargo rebuilds local crates per
+      source path).
+    - Handoff has nothing to do with worktrees (same task, one after the
+      other): automate only the pointer (session id, transcript, task,
+      SHA); ownership moves once the first agent stops writing.
+    - Children: read-only ones (review, research) in the shared checkout,
+      reviews of a committed snapshot; writing ones sequential on master
+      with path claims; a worktree only when two writers really run at
+      once or the work is long or exploratory, as AGENTS.md already says.
+    - A pre-commit hook that refuses a commit without paths (MiMo); note
+      `git commit -- <path>` also takes others' unstaged edits in that file.
   - Not to build: a chat GUI, a universal conversation schema, a scheduler
     or quotas, auto-approval, auto-merge, default auto-resume after a limit.
   - Slots: freeze them (6 min of overlap in 14 days); what contends is the
