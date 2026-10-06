@@ -1384,6 +1384,11 @@ Items agents add. Not approved until the user moves them up.
   its own running/failed job counts (`workspace_rows` gets `tab_jobs`);
   the parent's counts include a folded worktree's jobs, which flattening
   removes.
+  Screenshot (2026-10-06): tab `Koordynacja pi: tab…` with its job child
+  `wait: pi tab create` and the parent's job count, then `└ ▼ pi: tab
+  create` (worktree space, `□ A` on the right) and its pi tab `π - You are
+  working i…`: three levels of indent for one delegation, and the
+  worktree's own line shows no job count until its agent starts a job.
 
 ## Needs a decision
 
