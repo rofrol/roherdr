@@ -221,6 +221,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      variables, override precedence, NFC, a golden name taken from a real
      Keychain item (MiMo: a test of our own reimplementation proves
      nothing); never fall back to the default item when the variable is set.
+     Done 2026-10-07 (`a4c5885b`, installed): golden names captured from
+     Claude 2.1.292 through a `security` shim (no per-dir item exists on
+     this Mac yet), NFC through CoreFoundation, no fallback when set.
   2. `usage.read` gains optional facts per provider: which account it read
      (MiMo: wrong-account data must be visible), observed time, stale and
      failed-poll state (stale is unknown, never 0% or 100%). Define per
