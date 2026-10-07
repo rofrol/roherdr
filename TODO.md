@@ -373,6 +373,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      a race; report the group's exit from the exit event instead.
   2. The approval policy (realpath file tools, the strict Bash list) and
      questions to the user's `?` list, answered as `control_response`.
+     Done 2026-10-07 (`feat: approvals and questions for headless workers
+     (slice 2)`): the policy with `.herdr/worker-allow.toml`, questions in
+     `worker.status` and the `?` list, `herdr worker answer`, `worker.stop`
+     returns at once and reports the exit from the event.
   3. The sidebar: a tab-less worker row, a log view, takeover; the
      coordinator's `/todo` flow starts workers through `worker.start`.
 
