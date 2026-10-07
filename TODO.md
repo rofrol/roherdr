@@ -419,7 +419,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   sandbox covers subprocesses and reads (MiMo). File tools keep the
   realpath rule. Steps: a trial of sandbox + auto in `-p` (what it allows,
   denies, how a denial arrives), then the policy change in
-  `src/workers/policy.rs`.
+  `src/workers/policy.rs`. Gap found 2026-10-07: `herdr worker wait` ends
+  only at the turn's end or exit, so a coordinator is not woken by a
+  worker's question; add a wait that also ends on a new question (the
+  `can_use_tool` event), so whatever still needs an answer reaches the
+  coordinator first and the user only when the coordinator cannot decide.
 
 - [ ] A history of finished TODO items to look through afterwards (user,
   2026-10-07, next: "some dropdown list under the coordinator with the TODO
