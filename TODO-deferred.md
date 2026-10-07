@@ -3,6 +3,20 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Awaiting reply for agents other than Claude and pi, the same way as
+  their integrations (user, 2026-09-28): each integration that can add
+  session context (a session-start hook, an extension, a plugin) injects the
+  same instruction, and where the agent has a command allowlist the install
+  adds `herdr agent awaiting-reply` to it. Open: antigravity_cli, codex,
+  copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
+  mastracode, omp, opencode, qodercli, qwen; check per agent what it
+  offers, bump each changed integration's version once, try each live.
+  Pi's extension is not verified in a live Pi session yet (`DECISIONS.md`,
+  "Awaiting-reply for pi").
+  Triage 2026-10-06 (manual): Pi is done but not checked live; each of the 16 other integrations needs a live check in that agent with your accounts.
+  Parked by the user 2026-10-07: only the agents he uses (Claude, pi) for
+  now; pi still needs a live check.
+
 - [ ] Follow-ups of "show what an agent asks": a "needs me" filter, a
   header count for limited agents, outcomes (parked by the user 2026-10-07:
   "none for now").
