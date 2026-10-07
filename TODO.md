@@ -154,6 +154,27 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Codex app-server) would gain and lose here (the user's terminal UIs,
   `/remote-control`, hooks, resume, screen detection), a hybrid (SDK for
   workers only), and the PTY budget in numbers.
+  Measured 2026-10-07 13:23: 108 of 511 PTYs in use with 65 agents in 29
+  spaces. Round `20261007-132332-a080` (sol, MiMo), agreeing: the incident
+  was missing admission control, not a reason to leave PTYs; 511 is ample
+  with the guards (about 85-250 PTYs for this use); an SDK runaway would be
+  worse (no visible tabs). SDK workers gain structured turns, reliable
+  prompt delivery and no screen flicker, and lose the agent's own TUI,
+  slash commands and possibly `/remote-control`. Unverified and decisive:
+  whether the Claude Agent SDK runs on a subscription login or needs an API
+  key (sol: Anthropic restricts third-party use of subscription OAuth; MiMo:
+  it works); check the current docs first. Recommendation: finish the
+  guards; measure how often a worker's TUI is viewed and how often typed
+  prompts fail; only then prototype one SDK worker backend behind an
+  `AgentDriver`-like seam.
+
+- [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
+  2026-10-07: "show somewhere how many pseudo-terminals are used out of how
+  many for the current terminal, now Ghostty, e.g. 450/500; ask the models";
+  fourth in the queue). The macOS limit `kern.tty.ptmx_max` is system-wide,
+  not per terminal app; herdr can count its own panes' PTYs and the system
+  total (`/dev/ttys*`). Ask the models where (footer, header, only past a
+  threshold) and how often to sample.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
