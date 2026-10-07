@@ -1533,3 +1533,7 @@ user needs to decide or do.
   Options: yes, reliability first (Recommended) | keep the current order
   Checked: all three models: those items build on the event log and verified writes; MiMo would even drop handoff and history.
 
+- [ ] Disk: how do we free space so builds can run again (11 GiB free, `just guard` needs 15)?
+  Options: you free space yourself (e.g. ~/Downloads 14 GB, ~/Library/Caches 9.4 GB), then say "go" (Recommended) | allow the coordinator to remove the clean-check tree's target/ (7.9 GB, rebuilt cold on the next check)
+  Checked: 2026-10-07 21:13, the check of `fix: the header's back/forward arrows keep their place` (d2cee8e3, on master, not pushed or installed) stopped at `just guard` even after its sweep; the shared target/ is 31 GB; AGENTS.md says to stop and ask instead of freeing space another way.
+
