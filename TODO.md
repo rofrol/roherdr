@@ -1479,29 +1479,28 @@ Items agents add. Not approved until the user moves them up.
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
 
-- [ ] Repository rules reach headless workers mechanically (proposed by the
-  coordinator 2026-10-07 after the user asked why worker `w1` tried to
+- [ ] Workers follow the repository's commit rules mechanically (proposed by
+  the coordinator 2026-10-07 after the user asked why worker `w1` tried to
   commit with a `Co-Authored-By` line that AGENTS.md forbids: "did it not
-  know or ignore it? ask the models"). Journal: `w1` never read AGENTS.md
-  although its task said so (it read the task file, a TODO grep and the two
-  files it edited); Claude Code loads CLAUDE.md, not AGENTS.md, this repo
-  has none, and Claude Code's built-in prompt adds the co-author line. So
-  it did not know. Round `20261007-211135-e3cb` (sol, MiMo, DeepSeek), agreeing:
-  turn the attribution off in the worker's settings (verify the setting
-  works under `claude -p`); the task quotes the rules it needs instead of
-  "read AGENTS.md" (sol, MiMo); enforcement checks the resulting commits,
-  not the command: before cherry-picking, the coordinator (or herdr)
-  rejects a worker commit whose message breaks the repository's rules
-  (sol), or a `commit-msg` hook does it (MiMo, DeepSeek). Diverged: a
-  CLAUDE.md importing AGENTS.md (DeepSeek yes; sol, MiMo: 47 KB per worker
-  and still no guarantee).
-
-## Needs a decision
-
-Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do.
-
-### Decide
+  know or ignore it? ask the models", then: "Claude Code already reads
+  AGENTS.md, github.com/anthropics/claude-code/tree/main/mods/agents-md; ask
+  the models"). Corrected finding: the coordinator first said it did not
+  know (it never opened AGENTS.md); the user was right: Claude Code 2.1.293
+  loads AGENTS.md as project instructions when there is no CLAUDE.md (the
+  built-in `agents-md` plugin), and a session launched exactly like a
+  worker (`disableAllHooks` included) confirms it has AGENTS.md. So it knew
+  and did not apply "no AI co-author lines" against Claude Code's
+  attribution reminder, which sits next to the commit and names CLAUDE.md
+  and memory, not AGENTS.md, as overriding it (DeepSeek). Round
+  `20261007-211912-b075` (sol, MiMo, DeepSeek), agreeing: not a knowledge
+  problem; enforce it: (1) turn commit attribution off in the worker's
+  settings (verify the setting's name and effect under `--settings` in
+  this version); (2) the task gives the exact full commit message and says
+  "no body, no trailers"; (3) the coordinator checks the resulting
+  commit's message (`git log --format=%B`) before cherry-picking and
+  rejects a violation (a `commit-msg` hook is bypassable with
+  `--no-verify`). Keep one copy of each rule (MiMo): no CLAUDE.md
+  restating AGENTS.md.
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
