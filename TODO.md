@@ -379,6 +379,15 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      returns at once and reports the exit from the event.
   3. The sidebar: a tab-less worker row, a log view, takeover; the
      coordinator's `/todo` flow starts workers through `worker.start`.
+     Done 2026-10-07 (`feat: headless workers in the sidebar, their log and
+     takeover (slice 3)`): worker lines under their space (task name, state,
+     question), a following log popup, right-click takeover (interrupt,
+     result, stop, exit by events, then `claude --resume` in a tab; refused
+     while a question is pending), `herdr worker start --name --workspace
+     --prompt`, a paragraph in AGENTS.md. Left: the coordinator's `/todo`
+     skill and rule switch to `herdr worker start` (rule text: a worker with
+     the user's approval), and a first real coordinator run with headless
+     workers.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
