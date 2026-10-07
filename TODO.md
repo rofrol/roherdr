@@ -9,127 +9,6 @@ Parked ideas live in `TODO-deferred.md`.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
-  a name for the herdr fork, I already have roguix, maybe follow similar
-  conventions; make the Windows tests pass; do we build releases on GitHub
-  Actions like upstream herdr? Ask the models. Do it as item 4."). Consulted
-  DeepSeek, Opus and GPT. Facts: the fork `rofrol/herdr` has Actions enabled
-  and no runs yet; `ci.yml` has a `windows-latest` job (ConPTY smoke test);
-  `release.yml`, `preview.yml`, `distribution.yml`, `pr-gate.yml`,
-  `label-next-release-issues.yml` and `website-deploy.yml` are upstream's.
-  - Name: all three keep the binary, crate, `HERDR_*`, `~/.config/herdr`,
-    socket names, plugin ids and the `herdr` skill (compatibility with
-    plugins, scripts and agents, and cheap upstream rebases) and rename only
-    the repo, the display branding (README title, `--version` text, window
-    titles) and the release asset names, in one small commit on top; keep
-    attribution and the licence (`LICENSE` is Apache-2.0, verified; keep it and any
-    NOTICE), no upstream logo, domain or
-    "official" claim, disable or repoint the self-updater. Candidates after
-    "roguix" (read as ro(frol) + guix): `drovix`/`roherd`/`flockx`/`corralx`
-    (Opus, recommends `drovix`: drover, herd driver), `rogux`/`frolux`/
-    `panix`/`tabrix`/`muxix` (GPT, recommends `rogux`), `herdix`/`herdux`/
-    `herdrix` (DeepSeek; closest to the mark, most confusion). Check GitHub,
-    crates.io, npm and domain availability and trademark before choosing; the
-    choice is the user's.
-  - Windows CI: run `ci.yml` on the fork (first a baseline on the upstream tag
-    to see what fails without the fork's commits, then on `master`), read
-    `gh run view <id> --log-failed`, iterate; suspects in the fork's code:
-    `std::os::unix`, Unix sockets, `chmod`, signals, `sh -c` in plugins and
-    scripts, `$HOME`, `/` in assertions, CRLF, ConPTY timing. Gate genuinely
-    Unix-only tests with `#[cfg(unix)]` and give Windows an equivalent; use
-    `#[cfg_attr(windows, ignore = "reason")]` only with a reason; keep
-    `just windows-lint` before every push.
-  - Releases: do not reuse upstream's `release.yml` (maintainer gating,
-    Homebrew, Nix, website, secrets). Disable upstream's workflows on the fork
-    (`gh workflow disable`, no diff to rebase) and add `fork-release.yml`
-    on tags like `fork-v*`: matrix `macos` aarch64 and `ubuntu` x86_64
-    (Windows optional, its zip needs the ConPTY runtime), `cargo build
-    --release --locked`, archives with checksums, one publish job with
-    `gh release create` and `contents: write`, no custom secrets. Public repos
-    get standard runners free. Test with a prerelease tag: download on the Mac,
-    `herdr --version`, checksum, a smoke run.
-  - Order: baseline CI, disable the upstream workflows, green Windows, the
-    name commit, then the release workflow and a prerelease.
-  - Progress 2026-10-02: the fork's workflows do not run on `push` or
-    `pull_request` (0 runs after many pushes and a throwaway PR; only a
-    `workflow_dispatch` runs), so CI is run by dispatch from a branch whose
-    `ci.yml` has `workflow_dispatch:` added (`ci-dispatch*`, never merged; the
-    first run: Build artifacts (manual) for Linux green in 6 min). First CI run
-    on the fork (run 36954449725): Windows `check` failed to compile the tests
-    (`running_program` missing in two `ClientShellPane` literals in
-    `activation_tests.rs`; a `System { .. }` pattern without `target` in
-    `shell/notifications.rs`), Ubuntu failed
-    `cases::sessions::integration_commands_run_locally_when_server_is_missing`
-    (`tests/cli/sessions.rs` expected Pi `v9`, the fork's is `v10`; that test is
-    Linux-only, so `just check` on macOS never ran it). All fixed;
-    `just windows-lint` now runs `cargo clippy --all-targets`, so Windows test
-    compile errors show up locally. Still to do: rerun CI until `check` is green
-    on all three systems (nextest stops at the first failure), then the name and
-    the release workflow.
-  - Done 2026-10-02: CI is green on the fork on all three systems (run
-    36957931855: Ubuntu, macOS, Windows `check`, ConPTY package, conventional
-    commits; all 3580 Windows tests pass). More fixes after the first runs:
-    `target_sweep.py` and its tests run without `fcntl` on Windows; the fork's
-    Unix-only plugin tests (`fork-plugin-test`) run on Unix only; the macOS
-    symlink test is skipped on Windows. To run CI by hand (push and PR events do
-    not start it on this fork): a throwaway branch `ci-dispatch-N` whose `ci.yml`
-    has `workflow_dispatch:`, then `gh workflow run ci.yml --ref ci-dispatch-N`.
-    Upstream's workflows (preview, release, pr-gate, label-next-release-issues,
-    distribution, website-deploy, nix, windows-arm64) are disabled on the fork
-    (`gh workflow disable`, reversible); `ci.yml` and `build-artifacts-manual.yml`
-    stay. New `.github/workflows/fork-release.yml`: a `fork-v*` tag or a manual
-    dispatch with a tag builds Linux x86_64/aarch64 (static musl), macOS
-    arm64/x86_64 and the Windows zip with its ConPTY runtime, and publishes a
-    prerelease with `SHA256SUMS`; the asset names use `FORK_NAME` (now
-    `herdr-fork`). First dispatch built macOS and Windows; Linux aarch64 failed on
-    an `ldd` check (replaced by `file`), rerun in progress.
-  - Name consultation 2026-10-02 (DeepSeek, Opus, GPT, Gemini; availability
-    checked the same day on crates.io, npm and GitHub, `.dev` by DNS; trademark
-    NOT checked). All four: keep `herdr` out of the repo name, say "unofficial
-    fork of herdr" in the description, README line one and the topics, keep
-    attribution and Apache-2.0, `--version` like `herdr 0.9.3 (<name> fork)`.
-    Candidates by support: `drovix` (drover + ix; Opus's pick; crates and npm
-    free, a GitHub user `drovix` and 8 repos exist, `drovix.dev` has no DNS
-    record); `roherdix` (ro + herd + ix; Gemini's pick, DeepSeek's 4th; free
-    everywhere I looked, but contains "herd", which Opus and DeepSeek avoid for
-    confusion); `rofherdix` (DeepSeek's pick, same objection, clumsy);
-    `ropanix` (ro + pane + ix; GPT's pick, free, a pun on panes, reads like
-    "panics"); `corralix` and `flockix` (herding puns; users `Corralix` and
-    `Flockix` exist); `rogux` (closest to roguix, too close). Rejected by all:
-    `herdix`, `herdrix`, `herdux`. My order: `drovix`, `ropanix`, `roherdix`.
-  - Name chosen 2026-10-02 by the user: first **roherd**, an hour later
-    **roherdr** (it keeps the `-r` of herdr, so it is closer to upstream's name
-    than the models advised; the README disclaimer carries the weight). Everything
-    below was done for `roherd` and renamed to `roherdr`. Original note: **roherd** (his own pick, not one of the
-    models' lists; contains "herd", which Opus and DeepSeek advised against, so
-    the README says first thing that it is unofficial and not affiliated).
-    Checked free the same day: crates.io, npm, Homebrew, GitHub user and repo
-    names; trademark not checked. Done: `--version` prints `herdr 0.9.3 (roherd,
-    an unofficial fork)` for fork builds; README title and first paragraph;
-    release assets `roherd-<os>-<arch>`; the GitHub repo is renamed to
-    `rofrol/roherd` with a description and topics after the first release run.
-  - Versioning policy decided 2026-10-02 (DeepSeek and GPT agree; the try-roguix
-    session explained its own, which differs): tags `roherdr-v<upstream version>.<fork
-    revision>`, e.g. `roherdr-v0.9.3.1` (changed from `fork-v0.9.3-1` the same day: the user
-    asked for the name in the tag, DeepSeek and GPT agreed: no collision with upstream's
-    `v*`/`preview-*`, matches the asset names; four numbers because `0.9.3-1` is a
-    semver prerelease below `0.9.3`); the revision counts published fork releases (not
-    commits or rebases), restarts at 1 when upstream's version changes, tags are
-    annotated and never reused; `Cargo.toml` stays at upstream's version (fewer rebase
-    conflicts). try-roguix uses independent semver `vX.Y.Z` (it has no upstream release
-    to track; `bNN` there are image build counters, not releases) and records upstream
-    in the release title, with upstream tags fetched into a namespace; roherdr's
-    upstream tags are already namespaced `upstream/*`. First release: `roherdr-v0.9.3.1`. `--version` now shows the revision
-    (`herdr 0.9.3 (roherdr 0.9.3.1, an unofficial fork)`; CI sets `ROHERDR_VERSION` from the tag,
-    local builds show the commit hash, `+` when dirty; the `herdr <semver>` prefix is unchanged;
-    DeepSeek and GPT agree). The first release `roherdr-v0.9.3.1` was built before this, so
-    it prints no revision; the next release carries it. Not done: a self-update
-    check against the fork's releases (the updater is off for fork builds).
-  - Still open: the name itself (the user's choice; then `FORK_NAME`, the README
-    title, `--version` text), the self-updater pointing at upstream, trying a
-    prerelease download on the Mac.
-  - Done: nothing yet.
-
 - [ ] Keep the model context small, second pass (user, 2026-10-06: "plan
   for cleaning unneeded files from the repo, so the model's context doesn't
   swell too much"). Done on 2026-10-06: finished items left `TODO.md`
@@ -1887,3 +1766,10 @@ user needs to decide or do. Item text is unchanged.
   Original item: tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or
   `--parent "$HERDR_TAB_ID"`) when they create tabs, as a belt-and-braces for
   servers without the fix.
+
+- [ ] Should fork builds check the fork's GitHub releases for updates, or keep
+  the self-updater off?
+  Checked 2026-10-07: fork builds have the updater off; releases are
+  prereleases tagged `roherdr-v*` on `rofrol/roherdr` with `SHA256SUMS`, and
+  the macOS arm64 asset downloads, verifies and runs. Upstream's updater reads
+  `distribution/latest.json`, which the fork does not publish.
