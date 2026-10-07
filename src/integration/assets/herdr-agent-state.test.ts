@@ -397,6 +397,43 @@ test("Pi reports idle only after the agent settles", async () => {
   expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
 });
 
+test("Pi reports its turns with the prompt that started them", async () => {
+  const requests = await startRecordingServer("pi-turns");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    ...piContext(() => idle),
+    sessionManager: { getSessionFile: () => undefined, getSessionId: () => "pi-session" },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  idle = false;
+  handlers.get("before_agent_start")?.(
+    { prompt: "review the diff", systemPromptOptions: { sections: {} } },
+    context,
+  );
+  handlers.get("agent_start")?.({}, context);
+  idle = true;
+  handlers.get("agent_settled")?.({}, context);
+
+  const turns = () =>
+    requests.filter((request) => isRecord(request) && request.method === "pane.report_turn");
+  await waitFor(() => turns().length === 2);
+  const params = turns().map((request) => (isRecord(request) ? request.params : undefined));
+  expect(params).toEqual([
+    { pane_id: "test:p1", source: "herdr:pi", agent: "pi", phase: "started", prompt: "review the diff" },
+    { pane_id: "test:p1", source: "herdr:pi", agent: "pi", phase: "finished" },
+  ]);
+  const session = requests.find(
+    (request) => isRecord(request) && request.method === "pane.report_agent_session",
+  );
+  expect(isRecord(session) && isRecord(session.params) ? session.params.turn_reports : null).toBe(
+    true,
+  );
+});
+
 test("Pi ignores RPC sessions even when UI APIs are available", async () => {
   const requests = await startRecordingServer("pi-rpc");
   const { handlers, pi } = createExtensionHarness();

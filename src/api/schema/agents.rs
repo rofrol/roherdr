@@ -219,6 +219,53 @@ pub struct AgentPromptParams {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,
+    /// Set by `agent.prompt_turn`: refuse before typing when the agent does not report turns.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) follow_turn: bool,
+}
+
+/// Sends a prompt like `agent.prompt` and waits until the turn that prompt started ends, as the
+/// agent's integration reports it. Refused with `turn_tracking_unsupported`, before anything is
+/// typed, when the agent does not report its turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPromptTurnParams {
+    pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPromptStatusParams {
+    pub request_id: String,
+}
+
+/// A prompt herdr typed into an agent and how far the turn it started got.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPromptRequest {
+    pub request_id: String,
+    pub state: AgentPromptRequestState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPromptRequestState {
+    /// Typed into the agent; the turn it starts has not been reported yet.
+    Accepted,
+    /// The agent reported that a turn started with this prompt.
+    Working,
+    /// That turn ended.
+    Finished,
+    /// The agent does not report its turns, so herdr cannot follow this prompt.
+    Unsupported,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

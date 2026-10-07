@@ -230,6 +230,8 @@ pub struct TerminalState {
     /// tab's name ahead of its terminal title, which agents set once per
     /// session. Dropped when the agent exits or changes session.
     reported_task: Option<String>,
+    /// Prompts herdr typed, followed through the agent's turn reports.
+    pub prompt_turns: super::prompt_turns::PromptTurns,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     pub respawn_shell_on_exit: bool,
@@ -284,6 +286,7 @@ impl TerminalState {
             blocked_since_ms: None,
             limit_report: None,
             reported_task: None,
+            prompt_turns: Default::default(),
             revision: 0,
             launch_argv: None,
             respawn_shell_on_exit: false,

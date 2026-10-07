@@ -14,7 +14,9 @@ use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
 };
 use crate::api::subscriptions::ActiveSubscription;
-use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
+use crate::api::wait::{
+    prompt_agent, prompt_agent_turn, wait_for_agent, wait_for_event, wait_for_output,
+};
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
     bind_local_listener, is_connection_closed_error, local_stream_peer_closed,
@@ -469,6 +471,17 @@ fn handle_connection_with_stop(
             )?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
+        Method::AgentPromptTurn(params) => {
+            let response = prompt_agent_turn(
+                request_id.clone(),
+                params,
+                &mut stream,
+                api_tx,
+                event_hub,
+                running,
+            )?;
+            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+        }
         Method::AgentWait(params) => {
             let response = wait_for_agent(
                 request_id.clone(),
@@ -665,6 +678,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentHandoff(_) => "agent.handoff",
         Method::AgentKindList(_) => "agent.kind_list",
         Method::AgentPrompt(_) => "agent.prompt",
+        Method::AgentPromptTurn(_) => "agent.prompt_turn",
+        Method::AgentPromptStatus(_) => "agent.prompt_status",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",
         Method::PaneSwap(_) => "pane.swap",
@@ -699,6 +714,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneRead(_) => "pane.read",
         Method::PaneReportAgent(_) => "pane.report_agent",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
+        Method::PaneReportTurn(_) => "pane.report_turn",
         Method::PaneReportAwaitingReply(_) => "pane.report_awaiting_reply",
         Method::PaneClearAwaitingReply(_) => "pane.clear_awaiting_reply",
         Method::PaneReportTask(_) => "pane.report_task",
@@ -1149,6 +1165,7 @@ fn caller_timeout_dispatch_uses_timeout_error() {
         Request {
             id: "prompt-timeout".into(),
             method: Method::AgentPrompt(crate::api::schema::AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "review this".into(),

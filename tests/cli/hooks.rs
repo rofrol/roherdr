@@ -161,6 +161,76 @@ fn claude_hook_reports_session_id_from_stdin() {
 }
 
 #[test]
+fn claude_hook_declares_turn_reports_with_the_session() {
+    let request = run_claude_hook(
+        "session",
+        r#"{"hook_event_name":"SessionStart","session_id":"claude-session"}"#,
+    )
+    .expect("session start should report session identity");
+
+    assert_eq!(request["params"]["turn_reports"], true);
+}
+
+#[test]
+fn claude_hook_reports_a_turn_started_with_its_prompt() {
+    let request = run_claude_hook(
+        "reminder",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"review the diff"}"#,
+    )
+    .expect("a submitted prompt should report the turn start");
+
+    assert_eq!(request["method"], "pane.report_turn");
+    assert_eq!(request["params"]["phase"], "started");
+    assert_eq!(request["params"]["agent"], "claude");
+    assert_eq!(request["params"]["prompt"], "review the diff");
+}
+
+fn run_claude_stop_check(hook_input: &str, envs: &[(&str, &str)]) -> Option<serde_json::Value> {
+    let state_home = unique_test_dir();
+    let state_home_str = state_home.to_string_lossy().into_owned();
+    let mut all_envs = vec![("XDG_STATE_HOME", state_home_str.as_str())];
+    all_envs.extend_from_slice(envs);
+    let request = run_shell_hook_with_env(
+        "src/integration/assets/claude/herdr-agent-state.sh",
+        &["stop-check"],
+        hook_input,
+        &all_envs,
+    );
+    cleanup_test_base(&state_home);
+    request
+}
+
+#[test]
+fn claude_hook_reports_a_turn_finished_when_the_stop_goes_through() {
+    let input = r#"{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"Done, the tests pass."}"#;
+    for envs in [
+        &[][..],
+        &[("HERDR_AWAITING_REPLY_INSTRUCTIONS", "0")][..],
+        &[("HERDR_AWAITING_REPLY_STOP", "0")][..],
+    ] {
+        let request = run_claude_stop_check(input, envs)
+            .expect("a stop that ends the turn should report it finished");
+        assert_eq!(request["method"], "pane.report_turn");
+        assert_eq!(request["params"]["phase"], "finished");
+    }
+}
+
+#[test]
+fn claude_hook_does_not_finish_a_turn_whose_stop_it_blocks() {
+    let input = r#"{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"Which variant do you want?"}"#;
+
+    assert!(run_claude_stop_check(input, &[]).is_none());
+}
+
+#[test]
+fn claude_hook_ignores_a_subagent_stop_for_turns() {
+    let input =
+        r#"{"hook_event_name":"Stop","agent_id":"agent-1","last_assistant_message":"Done."}"#;
+
+    assert!(run_claude_stop_check(input, &[]).is_none());
+}
+
+#[test]
 fn claude_hook_forgets_a_session_the_user_ended() {
     for reason in ["prompt_input_exit", "logout"] {
         let request = run_claude_hook(

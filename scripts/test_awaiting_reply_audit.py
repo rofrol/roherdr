@@ -149,7 +149,7 @@ HOOK = os.path.join(
 def hook_source():
     with open(HOOK, encoding="utf-8") as handle:
         text = handle.read()
-    start = text.index('if [ "$action" = "stop-check" ]')
+    start = text.index("stop_check() {")
     start = text.index("<<'PY'\n", start) + len("<<'PY'\n")
     return text[start : text.index("\nPY\n", start)]
 
@@ -250,7 +250,10 @@ class StopHook(unittest.TestCase):
                     except BlockingIOError:
                         break
                     connection.settimeout(1)
-                    reports.append(json.loads(connection.recv(65536).decode()))
+                    report = json.loads(connection.recv(65536).decode())
+                    # Turn reports have their own tests (tests/cli/hooks.rs).
+                    if report.get("method") != "pane.report_turn":
+                        reports.append(report)
                     connection.close()
             finally:
                 server and server.close()
