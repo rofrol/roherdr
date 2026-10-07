@@ -221,10 +221,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      frees up (sol).
   3. The coordinator picks Claude or pi/sol for a new worker from
      `usage.read` (both models: a coordinator rule or script first, not a
-     server capability that freezes an unstable policy in the API). Spell
-     out: "used" percentages, threshold and hysteresis, stale or missing
-     data, both providers tight, an explicit kind always wins, and the
-     reason with the data age in the worker task. pi and Codex keep separate
+     server capability that freezes an unstable policy in the API).
+     Decided (rounds above; the coordinator decided the values, the user
+     can change them): percentages are "used"; a new worker goes to pi/sol
+     when any Claude window is at 90% or more, and back to Claude only when
+     every Claude window is below 80% or has reset (MiMo proposed 90/50;
+     80 because weekly windows fall only at their reset); the hysteresis
+     state lives in the coordinator's session and starts from Claude after
+     a restart; stale or failed usage data counts as unknown and keeps the
+     current choice, with the data age in the worker task; when both are at
+     90% or more, the item waits for the earlier reset (the user's rule:
+     "When no worker can run (limits), the item waits"); an explicit kind
+     from the user always wins. pi and Codex keep separate
      logins (`~/.pi/agent/auth.json`, `~/.codex/auth.json`); both are the
      same account today, so Codex's limits stand for pi's.
   4. Named accounts (`--account <id>` as an execution profile: config dir,
