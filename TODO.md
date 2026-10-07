@@ -568,6 +568,21 @@ Items agents add. Not approved until the user moves them up.
   dotfiles worktree had to be made by hand (`herdr worktree create` does not
   see the home repository, whose git dir lives elsewhere), and Claude
   stopped in it on the folder-trust prompt.
+  Build cost of a worktree per worker (user: "won't the worktree slow down
+  building the Rust code? ask the models"; round `20261007-030604-5a6b`,
+  sol and MiMo). Measured 2026-10-07: one worker's cold `target/` reached
+  5.2 GB, clean-check's is 10 GB, 25 GiB were free (95% used) against the
+  15 GiB guard, so disk binds first (MiMo). Both: one shared worker
+  `CARGO_TARGET_DIR` (workers run one at a time), clean-check kept separate
+  as the correctness gate, shared-checkout work rejected for code. MiMo:
+  Cargo fingerprints path dependencies by absolute path, so a new worktree
+  path rebuilds `crates/ghostty-vt` (Zig) and `vendor/portable-pty`
+  (verified: both are path deps; Zig's own `~/.cache/zig` may soften it).
+  My addition: one persistent worker worktree at a fixed path, reset to
+  `master` per item like clean-check, keeps paths stable. Fallback (MiMo):
+  APFS clones (`cp -Rc`) of a warm target. Measure first: `cargo build
+  --timings` cold, `du` of `target/{debug,incremental,nextest}`, `cargo
+  check -v` after switching worktrees (dirty units, did build.rs rerun).
 
 - [ ] `workspace list` shows a space's repository only when the space is in a
   worktree family (its `worktree` object), so tools read `.worktree` as "the
