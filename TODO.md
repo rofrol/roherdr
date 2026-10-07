@@ -397,6 +397,48 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
 
+- [ ] Make coordinating headless workers reliable, not another patch (user,
+  2026-10-07, after worker `w1`'s permission questions sat 1.5-15 minutes
+  each because nothing woke the coordinator: "another bug; what crap; how
+  do we make this work reliably? work out a plan to TODO with the models").
+  Stopgap in use since 21:08: a level-triggered wait script in the
+  coordinator's scratchpad (follows the worker's journal, reads `herdr
+  worker status` after arming, ends on a question, turn end or exit), run
+  under herdr-job and re-armed after every answer; drop it once step 2
+  lands. Round `20261007-210846-3775` (sol, MiMo, DeepSeek), agreeing: herdr
+  enforces the invariants, the coordinator supplies decisions; one event
+  log, no second delivery mechanism. Plan, in order, one worker each:
+  1. Fewer questions first (MiMo: nothing else matters while trivia
+     arrives): the item "Headless workers ask the user almost never"
+     (sandbox + auto mode).
+  2. One durable event log per worker in the server: monotonic sequence,
+     question / turn end / exit events, level-triggered `worker.wait
+     --attention --after <seq>`; the per-coordinator inbox is a filter on
+     this log, not a second queue (MiMo, sol). Merges the items "A
+     coordinator is woken by its worker's question" and "One wait over all
+     of a coordinator's workers".
+  3. Durable, idempotent answers keyed by question id; "delivered",
+     "acknowledged" and "answered" are distinct states, and acknowledging
+     never clears an unanswered question (sol); an answer survives the
+     coordinator dying mid-answer (MiMo).
+  4. The coordinator's turn cannot end while one of its workers has an
+     event it has not handled: the existing coordinator Stop hook asks
+     herdr and blocks the stop (MiMo, DeepSeek: enforce it mechanically,
+     never as diligence).
+  5. A question with no live owner reaches the user: on the events herdr
+     has (the coordinator's pane closed, its agent exited). A live but
+     silent coordinator emits nothing; all three say only a lease (a
+     timer) detects that: asked in "Needs a decision".
+  6. Verified TODO.md/DECISIONS.md writes (read back, refuse on a missing
+     anchor) and an acknowledged prompt at worker start.
+  7. Fault-injection tests: the coordinator killed mid-answer and between
+     answer and re-arm; two questions at once; a worker exiting during a
+     wait; a server restart and live handoff mid-wait; a duplicate or lost
+     acknowledgement; a TODO write conflict. Pass: no event lost, every
+     question resolved or explicitly escalated.
+  All three: do this before the fresh-coordinator-per-item, item-history
+  and handoff items (asked in "Needs a decision").
+
 - [ ] Review the coordinator's code with the models so its operations are
   atomic and transactional (user, 2026-10-07, next: "it must be like a
   database transaction, not hop siup; maybe review this coordinator's code
@@ -1466,3 +1508,11 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
+
+- [ ] Reliability: may a lease (a timer) hand a question to the user when its coordinator is alive but silent (stuck, rate-limited)?
+  Options: yes, a lease the coordinator renews by its own activity, expiry hands its questions to the user, the value stated as a designed bound (Recommended) | no, only events (pane closed, agent exited); a silent coordinator's questions wait, quietly visible to the user
+  Checked: round on 2026-10-07; sol, MiMo and DeepSeek all say silence cannot be detected without a timer; the user's rule allows time only for a real external deadline or designed backoff.
+- [ ] Reliability: do the reliability steps go before the fresh-coordinator-per-item, item-history and handoff items?
+  Options: yes, reliability first (Recommended) | keep the current order
+  Checked: all three models: those items build on the event log and verified writes; MiMo would even drop handoff and history.
+
