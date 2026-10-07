@@ -97,6 +97,25 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   3.5 hours lost. A worker's end must come from something no UI state can
   hide: the worker's commit on its branch, its transcript's last message,
   or a report the worker sends (`herdr agent ...`), not the screen.
+  The user (2026-10-07): "that tab just had the blue dot, so the work was
+  done and I simply had not read the agent's output; should that block the
+  work?" No: the screen read of a pane nobody looks at was stale until the
+  tab was shown, so "seen" leaked into a machine signal.
+  Rounds `20261007-175122-5333` and `20261007-175429-5e27` (sol, MiMo):
+  - Start the worker with `agent.prompt_turn`; its end is the wakeup, not
+    the verdict. The verdict: the worker's final assistant message in its
+    transcript JSONL for that turn (`WORKER-DONE <sha>` / `WORKER-BLOCKED`),
+    or a result file the worker writes atomically outside its worktree;
+    then verify the sha is on its branch. A turn that ends without a marker
+    is "needs attention" (a question, a limit, a crash), never done.
+  - A deadline (about 30 minutes) and stall detection (no transcript growth,
+    no commits) report "overdue" to the coordinator; no automatic retry.
+  - herdr: `agent read --source detection` is a presentation cache that may
+    be stale for hidden panes; machine readers need a live source or a
+    staleness flag; nothing a user does (viewing, scrolling) may change what
+    automation observes.
+  - Test: stub workers (done, blocked, question without marker, kill -9),
+    with the pane scrolled away throughout.
 
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
@@ -836,6 +855,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   4. A space without `TODO.md` (`~`, scratch dirs): its title opens an
      overview offering "Set up coordinator" (create a TODO.md, then start
      one), not a coordinator.
+
+- [ ] DeepSeek back in the default consult set (user, 2026-10-07: "add
+  DeepSeek to the consultations; it is fast, and since I have Claude Max 20
+  the tokens Claude spends reading its answer do not hurt as much"). The
+  `consult` skill (`plugins/consult/skills/consult/SKILL.md`) names sol +
+  MiMo as the default set and says DeepSeek left it on 2026-10-03; make it
+  sol + MiMo + DeepSeek. The coordinator asks DeepSeek in its rounds from
+  now on.
 
 ## Proposed
 
