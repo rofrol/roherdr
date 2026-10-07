@@ -397,6 +397,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
 
+- [ ] Review the coordinator's code with the models so its operations are
+  atomic and transactional (user, 2026-10-07, next: "it must be like a
+  database transaction, not hop siup; maybe review this coordinator's code
+  with the models so these operations are atomic, transactional"). Scope:
+  `src/workers/` (start, answer, stop, kill, take-over, journal, registry,
+  `lost` after restart, live handoff), `herdr worker`/`herdr-job` waits,
+  the `/todo` skill's steps (claim, delegate, cherry-pick, check, TODO and
+  DECISIONS edits, install, push) and the coordinator's scratch scripts.
+  For each operation: what is the commit point, what happens on a crash or
+  a concurrent call halfway, what is idempotent, what can be lost. Output:
+  findings verified against the code, fixes as follow-up items in order.
+
 - [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
   next: "the wait that wakes the coordinator on a worker's question is
   missing: a fix plan to TODO as next; ask the models"). Today
@@ -1188,9 +1200,26 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      a reconnecting or new coordinator gets a snapshot of its workers'
      states and pending questions first, even when their events are older
      than its cursor.
-  4. Re-owning (a fresh coordinator per item takes over the previous one's
-     workers): an ownership epoch per worker, raised atomically with a
-     `re-owned` event; answers and actions from an older epoch are refused.
+  4. Handing over, as a transaction, not "hop siup" (user, 2026-10-07: "the
+     old coordinator's answers are rejected: what? why is there no handoff?
+     It must be like a database transaction"). Round `20261007-210018-c710`
+     (sol, MiMo, DeepSeek): workers belong to the item: a coordinator
+     finishes and reviews its item's workers before it ends, so normally
+     only the item is handed over, not live workers (sol, MiMo). When a
+     worker must go on (a crash, a long task), `coordinator.handoff {note}`
+     is one server transaction, serialized with answers: it stores the note
+     (what was being done, decisions said only in chat, each worker's
+     purpose and what to check in review, answers given and why), moves
+     ownership and the epoch, and captures worker states, pending questions
+     and the cursor; an answer lands either before it (and is in the
+     record) or after it (and goes to the new owner). herdr's TODO runner,
+     not the old coordinator, picks and starts the successor, which reads
+     and acknowledges the package before acting; the old one exits after
+     the commit. Workers keep running meanwhile; their questions stay
+     queued. Fencing only for a crashed, hung or stale old coordinator: its
+     late actions are refused with `ownership_transferred` naming the
+     successor, and its late answers are kept and passed to the successor
+     as information, never applied and never dropped.
   5. One background job per coordinator (`herdr-job run -- herdr worker
      events --owner ... --wait`), not one per worker; events arriving while
      the coordinator's turn is busy wait in the inbox; after a wake the
