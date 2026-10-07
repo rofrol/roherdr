@@ -63,6 +63,7 @@ mod thread_spawn;
 mod ui;
 mod update;
 mod usage;
+mod workers;
 mod workspace;
 mod worktree;
 

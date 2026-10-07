@@ -5,6 +5,7 @@ mod server;
 mod status;
 mod subscriptions;
 mod wait;
+mod workers;
 
 pub use event_hub::EventHub;
 pub use server::ServerHandle;

@@ -2552,6 +2552,17 @@ fn session_processes_from_snapshot(child_pid: u32, snapshot: &ProcessSnapshot) -
     pids
 }
 
+/// Windows has no POSIX sessions; a worker's tools are its descendants and
+/// end with its process tree.
+pub fn descendant_sessions(_root_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Windows has no POSIX sessions.
+pub fn session_members(_session_id: u32) -> Vec<u32> {
+    Vec::new()
+}
+
 pub fn signal_processes(pids: &[u32], signal: Signal) {
     if signal == Signal::Hangup {
         return;

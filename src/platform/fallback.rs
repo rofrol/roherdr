@@ -228,6 +228,16 @@ pub fn session_processes(_child_pid: u32) -> Vec<u32> {
 }
 
 /// Unsupported platform stub.
+pub fn descendant_sessions(_root_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Unsupported platform stub.
+pub fn session_members(_session_id: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Unsupported platform stub.
 pub fn signal_processes(_pids: &[u32], _signal: Signal) {}
 
 /// Unsupported platform stub.

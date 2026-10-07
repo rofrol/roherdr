@@ -12,6 +12,7 @@ pub mod server;
 pub mod session;
 pub mod tabs;
 pub mod usage;
+pub mod workers;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -27,6 +28,7 @@ pub use server::*;
 pub use session::*;
 pub use tabs::*;
 pub use usage::*;
+pub use workers::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -63,6 +65,22 @@ pub enum Method {
     ServerReloadAgentManifests(EmptyParams),
     #[serde(rename = "server.pty_usage")]
     ServerPtyUsage(EmptyParams),
+    #[serde(rename = "worker.start")]
+    WorkerStart(WorkerStartParams),
+    #[serde(rename = "worker.status")]
+    WorkerStatus(WorkerTarget),
+    #[serde(rename = "worker.list")]
+    WorkerList(EmptyParams),
+    #[serde(rename = "worker.wait")]
+    WorkerWait(WorkerWaitParams),
+    #[serde(rename = "worker.prompt")]
+    WorkerPrompt(WorkerPromptParams),
+    #[serde(rename = "worker.interrupt")]
+    WorkerInterrupt(WorkerTarget),
+    #[serde(rename = "worker.stop")]
+    WorkerStop(WorkerTarget),
+    #[serde(rename = "worker.kill")]
+    WorkerKill(WorkerTarget),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

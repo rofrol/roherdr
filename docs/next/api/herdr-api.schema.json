@@ -5272,6 +5272,94 @@
           ],
           "type": "object"
         },
+        "WorkerPromptParams": {
+          "properties": {
+            "text": {
+              "description": "The next user message; accepted only between turns.",
+              "type": "string"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        "WorkerStartParams": {
+          "description": "Starts a headless Claude worker: `claude -p` over stream-json pipes, no\nterminal. The server owns the process; clients only ask about it.",
+          "properties": {
+            "cwd": {
+              "description": "Working directory; file tools are allowed only inside its real path.",
+              "type": "string"
+            },
+            "model": {
+              "description": "Passed to `claude --model`; the CLI's default when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "description": "The first user message.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "WorkerTarget": {
+          "properties": {
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
+        "WorkerWaitParams": {
+          "properties": {
+            "until": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerWaitUntil"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What to wait for; `turn_end` when absent."
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
+        "WorkerWaitUntil": {
+          "oneOf": [
+            {
+              "const": "turn_end",
+              "description": "A finished, failed or interrupted turn, or the process's end.",
+              "type": "string"
+            },
+            {
+              "const": "exit",
+              "description": "The process's end (`exited` or `lost`).",
+              "type": "string"
+            }
+          ]
+        },
         "WorkspaceBookmarkParams": {
           "properties": {
             "bookmarked": {
@@ -5826,6 +5914,134 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.prompt",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerPromptParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.interrupt",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.kill",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
             }
           },
           "required": [
@@ -11240,6 +11456,63 @@
             {
               "properties": {
                 "type": {
+                  "const": "worker_info",
+                  "type": "string"
+                },
+                "worker": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                }
+              },
+              "required": [
+                "type",
+                "worker"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "worker_list",
+                  "type": "string"
+                },
+                "workers": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "workers"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`worker.stop` sent SIGTERM to the worker's process group.",
+              "properties": {
+                "still_alive": {
+                  "description": "Whether a process of the group was still alive right after the\nsignal. Herdr does not escalate; `worker.kill` does.",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "worker_stopped",
+                  "type": "string"
+                },
+                "worker": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                }
+              },
+              "required": [
+                "type",
+                "worker",
+                "still_alive"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
                   "const": "workspace_info",
                   "type": "string"
                 },
@@ -13151,6 +13424,180 @@
             "id",
             "label",
             "used_percent"
+          ],
+          "type": "object"
+        },
+        "WorkerInfo": {
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "exit_code": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "exit_signal": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "journal_path": {
+              "description": "The JSONL journal of every event in and out.",
+              "type": "string"
+            },
+            "last_result": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerTurnResult"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pid": {
+              "description": "The CLI's process id, which also leads the worker's process group.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rate_limit": {
+              "description": "`rate_limit_info` of the last `rate_limit_event`, as the CLI sent it."
+            },
+            "session_id": {
+              "description": "Claude Code's session id from `system/init`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/WorkerState"
+            },
+            "tool_sessions": {
+              "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends them.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "turns": {
+              "description": "Turns that ended with a `result`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "state",
+            "cwd",
+            "turns",
+            "journal_path"
+          ],
+          "type": "object"
+        },
+        "WorkerState": {
+          "oneOf": [
+            {
+              "const": "starting",
+              "description": "Spawned; no `system/init` yet.",
+              "type": "string"
+            },
+            {
+              "const": "working",
+              "description": "A turn is running.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_approval",
+              "description": "The CLI asked for a tool permission that is not answered yet.",
+              "type": "string"
+            },
+            {
+              "const": "finished",
+              "description": "The last turn ended with `result/success`.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The last turn ended with an error `result` other than an interrupt.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "The last turn was interrupted (`terminal_reason` `aborted_*`).",
+              "type": "string"
+            },
+            {
+              "const": "exited",
+              "description": "The process ended; `exit_code` or `exit_signal` says how.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "The server that ran it ended before it did; its process is not ours\nany more.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerTurnResult": {
+          "description": "The `result` message that ended the last turn.",
+          "properties": {
+            "api_error_status": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "subtype": {
+              "type": "string"
+            },
+            "terminal_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "The reply text, when the CLI sent one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "subtype",
+            "is_error"
           ],
           "type": "object"
         },

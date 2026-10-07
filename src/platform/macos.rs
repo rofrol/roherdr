@@ -1250,6 +1250,35 @@ pub fn session_processes(child_pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Session ids of `root_pid`'s descendants that differ from `root_pid`'s own
+/// session. Claude Code starts each Bash tool with `setsid`, so a crashed
+/// worker's tools survive in these sessions.
+pub fn descendant_sessions(root_pid: u32) -> Vec<u32> {
+    let own_session = unsafe { libc::getsid(root_pid as libc::pid_t) };
+    if root_pid == 0 || own_session <= 0 {
+        return Vec::new();
+    }
+    let parents: Vec<(u32, u32)> = all_pids()
+        .into_iter()
+        .filter_map(|pid| process_bsdinfo(pid).map(|info| (pid, info.pbi_ppid)))
+        .collect();
+    super::sessions_of_descendants(root_pid, &parents, own_session as u32, |pid| {
+        let session = unsafe { libc::getsid(pid as libc::pid_t) };
+        (session > 0).then_some(session as u32)
+    })
+}
+
+/// Every live process whose session id is `session_id`.
+pub fn session_members(session_id: u32) -> Vec<u32> {
+    if session_id <= 1 {
+        return Vec::new();
+    }
+    all_pids()
+        .into_iter()
+        .filter(|pid| unsafe { libc::getsid(*pid as libc::pid_t) } == session_id as libc::pid_t)
+        .collect()
+}
+
 fn all_pids() -> Vec<u32> {
     let initial_count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     let mut capacity = if initial_count > 0 {

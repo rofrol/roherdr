@@ -1238,6 +1238,20 @@ impl App {
                     "agent.wait is handled by the api server",
                 );
             }
+            Method::WorkerStart(_)
+            | Method::WorkerStatus(_)
+            | Method::WorkerList(_)
+            | Method::WorkerWait(_)
+            | Method::WorkerPrompt(_)
+            | Method::WorkerInterrupt(_)
+            | Method::WorkerStop(_)
+            | Method::WorkerKill(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "connection_local_only",
+                    "worker methods are handled by the local JSON API server",
+                );
+            }
             Method::AgentRead(params) => return self.handle_agent_read(request.id, params),
             Method::AgentExplain(target) => return self.handle_agent_explain(request.id, target),
             Method::AgentSendKeys(params) => {
