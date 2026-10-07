@@ -78,7 +78,12 @@ impl App {
     ) {
         let exited = crate::workers::supervisor()
             .status(&takeover.worker_id)
-            .is_ok_and(|worker| matches!(worker.state, crate::api::schema::WorkerState::Exited));
+            .is_ok_and(|worker| {
+                // `failed` with an exit code: the exit failed the last turn.
+                matches!(worker.state, crate::api::schema::WorkerState::Exited)
+                    || worker.exit_code.is_some()
+                    || worker.exit_signal.is_some()
+            });
         if !exited {
             tracing::warn!(
                 worker = takeover.worker_id,
