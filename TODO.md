@@ -78,6 +78,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   asking what it tests: whether a coordinator asked "what is happening?"
   mid-work answers and goes on, or still ends its turn waiting for a
   go-ahead, with the new rule line and the Stop hook in place).
+  Step 4 done 2026-10-07 (`scripts/coordinator_trial.sh`, report
+  `docs/coordinator-trial-2026-10-07.md`): 5/5 runs finished all three
+  items, 21 turn ends, 0 abandoned; the question always landed mid-turn and
+  the coordinator answered and went on; the Stop hook never had to block.
+  Not shown: a question while the coordinator idles on a background wait,
+  and the Stop hook's nudge itself. Left: step 5 (the audit over real
+  coordinator transcripts after a few days, compare with 5.6 per 100); a
+  variant of the trial that asks while the coordinator idles.
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
