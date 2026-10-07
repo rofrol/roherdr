@@ -388,6 +388,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      skill and rule switch to `herdr worker start` (rule text: a worker with
      the user's approval), and a first real coordinator run with headless
      workers.
+     Decided by the user 2026-10-07: switch after one trial run: the
+     coordinator hands one real item to `herdr worker start`; if it goes
+     through, a worker changes the rule and skill (approved in its pane).
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
