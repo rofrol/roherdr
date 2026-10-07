@@ -1263,7 +1263,7 @@
           "key": "ui.sidebar.spaces.todo_command",
           "type": "string",
           "default": "unset",
-          "description": "With ui.sidebar.spaces.tabs, a command a T button left of each local Space's A chip runs in the background, e.g. a launcher that starts an agent working through that Space's TODO. {space} is replaced with the Space's label, quoted for the shell. The first line it prints shows as a toast; a failure keeps its message until clicked. Unset means no button."
+          "description": "With ui.sidebar.spaces.tabs, a command a T button left of each local Space's A chip runs in the background, e.g. a launcher that starts an agent working through that Space's TODO. {space} is replaced with the Space's label, quoted for the shell. The first line it prints shows as a toast; a failure also stays as an unread entry in the notification history. Unset means no button."
         },
         {
           "key": "ui.sidebar.spaces.rows",

@@ -67,6 +67,8 @@ pub(super) fn render_notice(
         &notice.body,
         crate::config::ToastHerdrPosition::TopRight,
         top_offset,
+        // A notice is not in the history, so it keeps its whole text.
+        u16::MAX,
         notice_color(notice.key.kind, palette),
         palette,
     )

@@ -1526,7 +1526,7 @@ impl ClientShellState {
         }
         if self.visible_endpoint_notice.is_some()
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && super::contains(self.hits.notification_toast, point)
+            && super::contains(self.hits.endpoint_notice_toast, point)
         {
             self.visible_endpoint_notice = None;
             outcome.repaint = true;
@@ -1534,15 +1534,23 @@ impl ClientShellState {
         }
         if self.overlay.is_none()
             && self.mode == ClientShellMode::Terminal
-            && self
-                .visible_notification
-                .as_ref()
-                .is_some_and(|notification| notification.event.pane_id.is_some())
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && super::contains(self.hits.notification_toast, point)
         {
-            self.focus_visible_notification(outcome);
-            return;
+            if super::contains(self.hits.notification_toast_more, point) {
+                self.toggle_notification_log(outcome);
+                outcome.repaint = true;
+                return;
+            }
+            let card = self
+                .hits
+                .notification_toast_cards
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, index)| *index);
+            if let Some(index) = card {
+                self.click_toast_card(index, outcome);
+                return;
+            }
         }
         if self.handle_mobile_mouse(mouse, outcome) {
             return;

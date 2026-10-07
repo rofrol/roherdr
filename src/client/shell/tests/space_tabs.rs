@@ -4499,7 +4499,7 @@ fn the_todo_button_shows_only_with_a_todo_command_and_runs_it_for_the_space() {
 }
 
 #[test]
-fn a_finished_space_command_shows_its_first_line_and_a_failure_stays() {
+fn a_finished_space_command_shows_its_first_line_and_a_failure_goes_to_the_log() {
     let mut state = state_with_tabs(true);
     assert!(state.space_command_finished(
         "repo",
@@ -4525,7 +4525,23 @@ fn a_finished_space_command_shows_its_first_line_and_a_failure_stays() {
     let notice = state.visible_endpoint_notice.as_ref().expect("notice");
     assert_eq!(notice.body, "todo-worker: no space named repo");
     assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Rejected);
-    assert!(notice.deadline > short + std::time::Duration::from_secs(60 * 60));
+    // A failure leaves the screen like any notice and waits, unread, in the
+    // notification history instead.
+    assert!(notice.deadline < short + std::time::Duration::from_secs(60));
+    assert_eq!(state.notification_log_button(), Some(1));
+    state.tick_notifications(notice.deadline);
+    assert!(state.visible_endpoint_notice.is_none());
+    let mut outcome = ClientShellInput::default();
+    state.toggle_notification_log(&mut outcome);
+    let rows = state.notification_log_rows();
+    assert_eq!(rows[0].title, "TODO repo");
+    assert_eq!(
+        rows[0].body.as_deref(),
+        Some("todo-worker: no space named repo")
+    );
+    assert_eq!(state.notification_unread_rows(&rows), vec![true]);
+    state.activate_notification_log_row(0, &mut outcome);
+    assert_eq!(state.notification_log_button(), Some(0));
 
     state.space_command_finished("repo", Err("No such file or directory".into()));
     let notice = state.visible_endpoint_notice.as_ref().expect("notice");

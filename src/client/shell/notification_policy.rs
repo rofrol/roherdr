@@ -62,6 +62,50 @@ impl ClientShellState {
         true
     }
 
+    /// A click on the toast card at `index` among the shown ones (0 is the
+    /// visible notification, then the queued ones): it opens the card's
+    /// pane, or dismisses a card that has none.
+    pub(super) fn click_toast_card(&mut self, index: usize, outcome: &mut ClientShellInput) {
+        if index > 0 {
+            // Bring the clicked card to the front; the one it replaces goes
+            // back to the head of the queue.
+            let Some(clicked) = self.queued_notifications.remove(index - 1) else {
+                return;
+            };
+            if let Some(previous) = self.visible_notification.replace(clicked) {
+                self.queued_notifications.push_front(previous);
+            }
+        }
+        if self
+            .visible_notification
+            .as_ref()
+            .is_some_and(|notification| notification.event.pane_id.is_some())
+        {
+            self.focus_visible_notification(outcome);
+        } else {
+            self.dismiss_visible_notification(std::time::Instant::now());
+            outcome.repaint = true;
+        }
+    }
+
+    /// Takes the visible toast off the screen; the next queued one shows.
+    pub(super) fn dismiss_visible_notification(&mut self, now: std::time::Instant) {
+        self.visible_notification = None;
+        self.promote_queued_notification(now);
+    }
+
+    /// Takes every toast and the endpoint notice off the screen; what they
+    /// said stays in the notification history.
+    pub(super) fn dismiss_all_toasts(&mut self) -> bool {
+        let shown = self.visible_notification.is_some()
+            || !self.queued_notifications.is_empty()
+            || self.visible_endpoint_notice.is_some();
+        self.visible_notification = None;
+        self.queued_notifications.clear();
+        self.visible_endpoint_notice = None;
+        shown
+    }
+
     pub(super) fn focus_visible_notification(&mut self, outcome: &mut ClientShellInput) {
         let Some(notification) = self.visible_notification.as_ref() else {
             return;

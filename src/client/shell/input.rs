@@ -718,6 +718,9 @@ impl ClientShellState {
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
+                    // A bare Esc belongs to the pane (it interrupts agents),
+                    // so prefix, Esc is what dismisses the toasts.
+                    self.dismiss_all_toasts();
                     self.mode = return_mode;
                     outcome.repaint = true;
                     return None;

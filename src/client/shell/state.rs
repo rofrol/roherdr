@@ -164,7 +164,14 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
     pub(super) usage_footer: Rect,
+    /// Everything the corner's notices and toasts cover together.
     pub(super) notification_toast: Rect,
+    /// The endpoint notice's card.
+    pub(super) endpoint_notice_toast: Rect,
+    /// The toast cards: 0 is the visible notification, 1 the first queued.
+    pub(super) notification_toast_cards: Vec<(Rect, usize)>,
+    /// The `+N more` line under the cards; it opens the history.
+    pub(super) notification_toast_more: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     /// The notification history button at the right of the spaces header.
     pub(super) notification_log_button: Rect,

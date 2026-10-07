@@ -255,7 +255,7 @@ impl ClientShellState {
     }
 
     /// The command started by `click_todo_button` ended: its output as a
-    /// toast, which stays until clicked when the command failed.
+    /// toast; a failure also stays unread in the notification history.
     pub(crate) fn space_command_finished(
         &mut self,
         space: &str,
@@ -275,12 +275,13 @@ impl ClientShellState {
         kind: ClientEndpointNoticeKind,
         body: String,
     ) {
-        // A failure waits for the user; a day stands in for "until clicked".
-        let duration = if kind == ClientEndpointNoticeKind::Info {
-            std::time::Duration::from_secs(8)
-        } else {
-            std::time::Duration::from_secs(24 * 60 * 60)
-        };
+        // A failure shows for the same time as any notice, then waits for
+        // the user as an unread entry in the notification history instead of
+        // covering the panes until clicked.
+        if kind != ClientEndpointNoticeKind::Info {
+            self.record_local_notification(format!("TODO {space}"), Some(body.clone()));
+        }
+        let duration = std::time::Duration::from_secs(8);
         self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
             key: ClientEndpointNoticeKey {
                 boot_id: "local".into(),

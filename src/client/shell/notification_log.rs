@@ -28,7 +28,20 @@ pub(super) struct NotificationLog {
     /// The machine and server run the counts belong to.
     source: Option<(ClientEndpointId, String)>,
     unsupported_boot: Option<String>,
+    /// Notices this client raised itself (a launcher's failure), oldest
+    /// first: the server never sees them, so they are kept here, apart from
+    /// the fetched entries and across machines.
+    local_entries: Vec<NotificationRecord>,
+    /// The local entries not opened yet.
+    unread_local: std::collections::HashSet<u64>,
 }
+
+/// Local entries count down from the top of the id range, so they never
+/// meet the server's ids, which count up from zero.
+const FIRST_LOCAL_ID: u64 = u64::MAX;
+
+/// Local entries kept at most; the oldest go first.
+const MAX_LOCAL_ENTRIES: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ClientNotificationLogOverlay {
@@ -115,6 +128,40 @@ impl ClientShellState {
         }
     }
 
+    /// Keeps a notice this client raised as an unread history entry, so it
+    /// can leave the screen without being lost.
+    pub(super) fn record_local_notification(&mut self, title: String, body: Option<String>) {
+        let log = &mut self.notification_log;
+        let id = log
+            .local_entries
+            .last()
+            .map_or(FIRST_LOCAL_ID, |last| last.id.saturating_sub(1));
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            });
+        log.local_entries.push(NotificationRecord {
+            id,
+            unix_ms,
+            kind: "custom".into(),
+            title,
+            body,
+            agent: None,
+            workspace_id: None,
+            tab_id: None,
+            pane_id: None,
+            task: None,
+            request: None,
+            repeats: None,
+        });
+        log.unread_local.insert(id);
+        if log.local_entries.len() > MAX_LOCAL_ENTRIES {
+            let dropped = log.local_entries.remove(0);
+            log.unread_local.remove(&dropped.id);
+        }
+    }
+
     /// Counts a notification for its tab unless that tab is shown.
     pub(super) fn notification_log_received(&mut self, tab_id: Option<&str>) {
         self.sync_notification_log_source();
@@ -188,7 +235,8 @@ impl ClientShellState {
         });
         // Unread tabs, not arrivals: the list marks one row per unread tab and
         // collapses repeats, so the count matches the marks it shows.
-        Some(if current { log.unread_tabs.len() } else { 0 })
+        let unread_tabs = if current { log.unread_tabs.len() } else { 0 };
+        Some(unread_tabs + log.unread_local.len())
     }
 
     /// The view of the open dropdown, or none when no list is open.
@@ -212,14 +260,20 @@ impl ClientShellState {
     /// and jump apply.
     pub(super) fn notification_log_rows(&self) -> Vec<NotificationRecord> {
         match self.notification_log_view() {
-            NotificationLogView::History => self
-                .notification_log
-                .entries
-                .iter()
-                .rev()
-                .take(MAX_ROWS)
-                .cloned()
-                .collect(),
+            NotificationLogView::History => {
+                let log = &self.notification_log;
+                let mut rows = log
+                    .entries
+                    .iter()
+                    .rev()
+                    .chain(log.local_entries.iter().rev())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                // Stable, so entries of the same millisecond stay newest first.
+                rows.sort_by_key(|row| std::cmp::Reverse(row.unix_ms));
+                rows.truncate(MAX_ROWS);
+                rows
+            }
             NotificationLogView::Bookmarks => self.bookmark_rows(),
             view => self.agent_rows(view),
         }
@@ -734,9 +788,11 @@ impl ClientShellState {
         let mut marked = std::collections::HashSet::new();
         rows.iter()
             .map(|entry| {
-                entry.tab_id.as_deref().is_some_and(|tab_id| {
-                    self.notification_log.unread_tabs.contains_key(tab_id) && marked.insert(tab_id)
-                })
+                self.notification_log.unread_local.contains(&entry.id)
+                    || entry.tab_id.as_deref().is_some_and(|tab_id| {
+                        self.notification_log.unread_tabs.contains_key(tab_id)
+                            && marked.insert(tab_id)
+                    })
             })
             .collect()
     }
@@ -856,6 +912,7 @@ impl ClientShellState {
         if let Some(tab_id) = entry.tab_id.as_deref() {
             self.notification_log.unread_tabs.remove(tab_id);
         }
+        self.notification_log.unread_local.remove(&entry.id);
         self.expand_for_jump(entry.workspace_id.as_deref(), outcome);
         let method = self.snapshot.as_deref().and_then(|snapshot| {
             use crate::api::schema::{Method, PaneTarget, TabTarget, WorkspaceTarget};
