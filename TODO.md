@@ -454,8 +454,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   takeovers (needs a compare-and-set on ownership with an epoch, all
   three). Ours that T3 lacks: live worker continuity, the lease, commit
   checks, fault injection. sol: a Stop hook is not a durable obligation
-  queue: obligations live in the server. Storage asked in "Needs a
-  decision".
+  queue: obligations live in the server. Decided by the user 2026-10-07:
+  step 2 moves worker state to SQLite (WAL): command receipts, events,
+  projections and an outbox in one transaction per command, as T3 Code;
+  the JSONL journals stay only as a debug export (adds the `rusqlite`
+  dependency, the reason recorded here).
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
@@ -1593,9 +1596,5 @@ user needs to decide or do.
   Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
   Decided by the user 2026-10-07: after the colours and symbols audit,
   generated from its style map; waits for that audit.
-
-- [ ] Worker state: move it to SQLite event sourcing (command receipts, events, projections and an outbox in one transaction, as T3 Code does) at the event-log step, or keep JSONL journals with fixed writes?
-  Options: SQLite at the event-log step (plan step 2), JSONL kept only as a debug export (Recommended) | fix the bugs on JSONL first, SQLite only when shared state needs exactly-once delivery | stay on JSONL
-  Checked: round on 2026-10-07; sol and MiMo: SQLite now, receipts make double starts and silent loss structurally impossible, building `wait --after` on JSONL means building it twice; DeepSeek: the review's findings are correctness bugs, fix them and fencing first. herdr has no SQLite dependency today (AGENTS.md: no dependency without a reason).
 
 ### Needs you to act or watch
