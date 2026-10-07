@@ -562,6 +562,12 @@ Items agents add. Not approved until the user moves them up.
   lists what the coordinator does itself and sends everything else to a
   worker, also after a "do it" answer (gaps 1 and 2 above). Left: gap 3 and
   the two herdr observations.
+  Also (user, 2026-10-07): a worker needs its own worktree for code
+  changes; for documentation and rule text in files nobody else is editing,
+  the shared checkout with a commit by path is enough. Seen the same day: a
+  dotfiles worktree had to be made by hand (`herdr worktree create` does not
+  see the home repository, whose git dir lives elsewhere), and Claude
+  stopped in it on the folder-trust prompt.
 
 - [ ] `workspace list` shows a space's repository only when the space is in a
   worktree family (its `worktree` object), so tools read `.worktree` as "the
