@@ -95,6 +95,7 @@ impl UsageCache {
         }
     }
 
+    #[cfg(unix)]
     fn invalidate(&mut self) {
         self.sampled = None;
     }

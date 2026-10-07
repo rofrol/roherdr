@@ -1340,9 +1340,30 @@ pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok());
     Some(super::SystemPtyUsage {
-        in_use: super::count_macos_pty_slave_names(names),
+        in_use: count_macos_pty_slave_names(names),
         max,
     })
+}
+
+/// Counts the names of allocated macOS pty slave nodes in a `/dev` listing.
+/// devfs creates `/dev/ttysNNN` (three or more digits) when a pty is
+/// allocated through `/dev/ptmx` and removes it when the pty is freed. The
+/// single-character `/dev/ttys0`..`/dev/ttysf` are static legacy BSD pty
+/// nodes, present whether used or not: counting them overstated the total
+/// by 16 (527 against the 511 limit).
+fn count_macos_pty_slave_names<I, S>(names: I) -> u32
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    names
+        .into_iter()
+        .filter(|name| {
+            name.as_ref().strip_prefix("ttys").is_some_and(|digits| {
+                digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+        .count() as u32
 }
 
 fn sysctl_u32_by_name(name: &std::ffi::CStr) -> Option<u32> {
@@ -1368,6 +1389,15 @@ fn sysctl_u32_by_name(name: &std::ffi::CStr) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_pty_count_skips_legacy_bsd_nodes() {
+        let names = [
+            "ttys000", "ttys001", "ttys165", "ttys1000", "ttys0", "ttysf", "ttyp0", "ptmx",
+            "ttys00a", "tty",
+        ];
+        assert_eq!(count_macos_pty_slave_names(names), 4);
+    }
 
     #[test]
     fn nofile_target_raises_low_soft_limit_to_cap_when_hard_is_unlimited() {
