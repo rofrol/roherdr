@@ -397,6 +397,30 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
 
+- [ ] Headless workers ask the user almost never (user, 2026-10-07, after
+  two approval questions from worker `w1` for a heredoc draft in `/tmp`:
+  "why do you ask me about such trivia? allow. It was supposed to be
+  without me, or as little as possible. Ask the models"). Until this lands
+  the coordinator answers such harmless requests itself (user: "allow").
+  Round `20261007-204900-9b47` (sol, MiMo, DeepSeek), all three: drop the shell
+  syntax list (risk lies in effects, not in `&&` or heredocs; a parsed
+  deny list is spoofable) for a boundary: Claude Code's Bash sandbox
+  (seatbelt: writes only to the worktree and a per-worker temp dir, reads
+  of credential paths such as `~/.ssh`, `~/.aws`, `.env` blocked, network
+  denied or limited to an allow list) plus `--permission-mode auto` (the
+  CLI lists it; verify it works together with `--permission-prompt-tool
+  stdio` in `-p`); herdr logs every decision. Reaching the user: only what
+  crosses the boundary: network or package installs, writes outside the
+  worktree and temp dir, credential reads, `git push`/remote/config/hooks,
+  `sudo`, ssh. A classifier denial is not forwarded at once: the worker
+  tries another way or reports blocked (sol). Questions batched, the worker
+  not blocked where it can go on (DeepSeek). Also: worktrees share the
+  repository's `.git`, so the boundary must protect it (sol); verify the
+  sandbox covers subprocesses and reads (MiMo). File tools keep the
+  realpath rule. Steps: a trial of sandbox + auto in `-p` (what it allows,
+  denies, how a denial arrives), then the policy change in
+  `src/workers/policy.rs`.
+
 - [ ] A history of finished TODO items to look through afterwards (user,
   2026-10-07, next: "some dropdown list under the coordinator with the TODO
   text, what was done and what conclusions, whether new TODO entries were
