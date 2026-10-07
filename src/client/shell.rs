@@ -49,6 +49,7 @@ mod text_editor;
 mod tooltip;
 mod usage;
 mod word_selection;
+mod workers;
 mod worktrees;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;

@@ -4,8 +4,10 @@ use crate::api::schema::{
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|wait|prompt|interrupt|stop|kill|answer> ...
-  herdr worker start [--cwd DIR] [--model MODEL] <prompt>
+    "usage: herdr worker <start|status|list|wait|prompt|interrupt|stop|kill|answer|log|take-over> ...
+  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] (--prompt TEXT | <prompt>)
+    --name names the worker's line in the sidebar (default: the prompt's first line);
+    --workspace is the space it is listed under (default: the caller's space).
   herdr worker status <worker_id>
   herdr worker list
   herdr worker wait <worker_id> [--exit]
@@ -15,9 +17,16 @@ const USAGE: &str =
   herdr worker kill <worker_id>
   herdr worker answer <worker_id> [--request REQUEST_ID] [--message TEXT] allow|deny|<choice>...
     A choice is an option's label or 1-based number, or free text; give one per
-    question, and several options of a multi-select question separated by commas.";
+    question, and several options of a multi-select question separated by commas.
+  herdr worker log [--follow] <worker_id>
+    The worker's journal as text; --follow keeps printing new events until q.
+  herdr worker take-over <worker_id>
+    Interrupts and stops the worker, then resumes its session in a new tab.";
 
 pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
+    if args.first().map(String::as_str) == Some("log") {
+        return run_log(&args[1..]);
+    }
     let method = match parse_worker_args(args) {
         Ok(Some(method)) => method,
         Ok(None) => {
@@ -80,6 +89,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "stop" => Method::WorkerStop(target(rest)?),
         "kill" => Method::WorkerKill(target(rest)?),
         "answer" => Method::WorkerAnswer(parse_answer(rest)?),
+        "take-over" => Method::WorkerTakeOver(target(rest)?),
         "help" | "--help" | "-h" => return Ok(None),
         _ => return Err(format!("unknown worker command: {subcommand}")),
     }))
@@ -134,6 +144,8 @@ fn parse_answer(args: &[String]) -> Result<WorkerAnswerParams, String> {
 fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
     let mut cwd = None;
     let mut model = None;
+    let mut name = None;
+    let mut workspace_id = None;
     let mut prompt = None;
     let mut index = 0;
     while index < args.len() {
@@ -151,7 +163,19 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
                 model = Some(value()?);
                 index += 2;
             }
-            other if prompt.is_none() => {
+            "--name" => {
+                name = Some(value()?);
+                index += 2;
+            }
+            "--workspace" => {
+                workspace_id = Some(value()?);
+                index += 2;
+            }
+            "--prompt" if prompt.is_none() => {
+                prompt = Some(value()?);
+                index += 2;
+            }
+            other if prompt.is_none() && !other.starts_with("--") => {
                 prompt = Some(other.to_owned());
                 index += 1;
             }
@@ -168,7 +192,112 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         cwd: cwd.display().to_string(),
         prompt,
         model,
+        name,
+        workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
     })
+}
+
+/// `herdr worker log [--follow] <worker_id>`: the worker's journal as text
+/// (`crate::workers::log_lines`). With `--follow`, as in the sidebar's log
+/// popup, it keeps printing new events until `q`, Esc or Ctrl-C.
+fn run_log(args: &[String]) -> std::io::Result<i32> {
+    let follow = args.iter().any(|arg| arg == "--follow");
+    let ids: Vec<&String> = args.iter().filter(|arg| *arg != "--follow").collect();
+    let [worker_id] = ids.as_slice() else {
+        eprintln!("log takes one worker id");
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let response = super::send_request(&Request {
+        id: "cli:worker:log".into(),
+        method: Method::WorkerStatus(WorkerTarget {
+            worker_id: (*worker_id).clone(),
+        }),
+    })?;
+    let worker = &response["result"]["worker"];
+    let Some(path) = worker["journal_path"].as_str() else {
+        return super::print_response(&response);
+    };
+    let title = format!(
+        "worker {worker_id} · {}",
+        worker["name"].as_str().unwrap_or("")
+    );
+    let file = std::fs::File::open(path)?;
+    if !follow {
+        println!("{title}");
+        for line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+            for shown in crate::workers::log_lines(&line?) {
+                println!("{shown}");
+            }
+        }
+        return Ok(0);
+    }
+    follow_log(&title, file)
+}
+
+/// Prints the journal and then what is appended to it, until a key closes
+/// the view. Without a terminal on stdin it follows until killed.
+fn follow_log(title: &str, file: std::fs::File) -> std::io::Result<i32> {
+    use std::io::{BufRead, IsTerminal, Write};
+    use std::sync::mpsc::RecvTimeoutError;
+
+    // The journal is a file the server appends to, which gives no change
+    // event without a file-watching dependency: like `tail -f`, look again
+    // at this interval (external polling).
+    const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+    struct RawMode;
+    impl Drop for RawMode {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+
+    let (quit_tx, quit_rx) = std::sync::mpsc::channel::<()>();
+    let _raw = if std::io::stdin().is_terminal() {
+        crossterm::terminal::enable_raw_mode()?;
+        std::thread::spawn(move || {
+            use crossterm::event::{Event, KeyCode, KeyModifiers};
+            while let Ok(event) = crossterm::event::read() {
+                let Event::Key(key) = event else { continue };
+                let quit = matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL));
+                if quit {
+                    let _ = quit_tx.send(());
+                    return;
+                }
+            }
+        });
+        Some(RawMode)
+    } else {
+        // Nothing ever closes it but a signal.
+        std::mem::forget(quit_tx);
+        None
+    };
+    let mut out = std::io::stdout().lock();
+    // Raw mode does not turn `\n` into a new line at the left edge.
+    write!(out, "{title} — q closes\r\n\r\n")?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut pending = String::new();
+    loop {
+        // The server writes a record and its newline in one write; a read
+        // can still see half of it, which waits for the rest.
+        while reader.read_line(&mut pending)? > 0 {
+            if !pending.ends_with('\n') {
+                break;
+            }
+            for shown in crate::workers::log_lines(pending.trim_end()) {
+                write!(out, "{shown}\r\n")?;
+            }
+            pending.clear();
+        }
+        out.flush()?;
+        match quit_rx.recv_timeout(POLL) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return Ok(0),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +322,23 @@ mod tests {
         };
         assert_eq!(params.cwd, "/tmp/repo");
         assert_eq!(params.model.as_deref(), Some("sonnet"));
+        assert_eq!(params.prompt, "do it");
+
+        let Ok(Some(Method::WorkerStart(params))) = parse_worker_args(&args(&[
+            "start",
+            "--name",
+            "fix login",
+            "--cwd",
+            "/tmp/repo",
+            "--workspace",
+            "ws-1",
+            "--prompt",
+            "do it",
+        ])) else {
+            panic!("start with --prompt must parse");
+        };
+        assert_eq!(params.name.as_deref(), Some("fix login"));
+        assert_eq!(params.workspace_id.as_deref(), Some("ws-1"));
         assert_eq!(params.prompt, "do it");
     }
 

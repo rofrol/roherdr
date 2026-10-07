@@ -143,7 +143,7 @@ impl Fixture {
 
     fn start(&self, prompt: &str) -> String {
         self.supervisor
-            .start(&self.repo.display().to_string(), prompt, Some("stub-model"))
+            .start(&start_params(&self.repo, prompt, Some("stub-model")))
             .unwrap()
             .worker_id
     }
@@ -212,6 +212,16 @@ impl Fixture {
             .filter(|record| record["dir"] == "herdr" && record["event"]["type"] == kind)
             .map(|record| record["event"].clone())
             .collect()
+    }
+}
+
+fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartParams {
+    WorkerStartParams {
+        cwd: repo.display().to_string(),
+        prompt: prompt.to_owned(),
+        model: model.map(str::to_owned),
+        name: None,
+        workspace_id: None,
     }
 }
 
@@ -591,8 +601,85 @@ fn a_restart_marks_unfinished_workers_lost_and_keeps_exited_ones() {
     );
 
     let next = supervisor
-        .start(&fixture.repo.display().to_string(), "finish", None)
+        .start(&start_params(&fixture.repo, "finish", None))
         .unwrap();
     assert_eq!(next.worker_id, "w8");
     supervisor.kill("w8").unwrap();
+}
+
+#[test]
+fn a_worker_is_named_by_its_task_and_keeps_its_space() {
+    let fixture = Fixture::new("name");
+    let named = fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            name: Some("fix login".into()),
+            workspace_id: Some("ws_1".into()),
+            ..start_params(&fixture.repo, "finish", None)
+        })
+        .unwrap();
+    assert_eq!(named.name, "fix login");
+    assert_eq!(named.workspace_id.as_deref(), Some("ws_1"));
+    let unnamed = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "\n  finish  \nmore", None))
+        .unwrap();
+    assert_eq!(unnamed.name, "finish");
+    let summaries = fixture.supervisor.summaries();
+    assert_eq!(summaries[0].name, "fix login");
+    assert_eq!(summaries[0].workspace_id.as_deref(), Some("ws_1"));
+
+    // The journal keeps them across a restart.
+    fixture.wait(&named.worker_id, WorkerWaitUntil::TurnEnd);
+    let reopened = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let replayed = reopened.status(&named.worker_id).unwrap();
+    assert_eq!(replayed.name, "fix login");
+    assert_eq!(replayed.workspace_id.as_deref(), Some("ws_1"));
+}
+
+#[test]
+fn a_takeover_interrupts_stops_and_waits_for_the_exit() {
+    let fixture = Fixture::new("takeover");
+    let id = fixture.start("block");
+    fixture.wait_for(&id, |worker| worker.session_id.is_some());
+    let takeover = fixture.supervisor.begin_takeover(&id).unwrap();
+    assert_eq!(takeover.session_id, "stub-session");
+    assert!(matches!(
+        fixture.supervisor.begin_takeover(&id),
+        Err(WorkerError::Busy(_))
+    ));
+    let worker = fixture.supervisor.end_for_takeover(&id).unwrap();
+    assert_eq!(worker.state, WorkerState::Exited);
+    assert!(worker.takeover_ms.is_some());
+    assert_eq!(
+        worker.last_result.and_then(|result| result.terminal_reason),
+        Some("aborted_tools".into())
+    );
+    // In this order: claimed, interrupted, its turn's result, then stopped.
+    let journal = fixture.journal(&id);
+    let position = |found: &dyn Fn(&Value) -> bool| {
+        journal
+            .iter()
+            .position(found)
+            .unwrap_or_else(|| panic!("missing in {journal:?}"))
+    };
+    let claimed = position(&|record| record["event"]["type"] == "takeover");
+    let interrupted = position(&|record| {
+        record["dir"] == "in" && record["event"]["request"]["subtype"] == "interrupt"
+    });
+    let result = position(&|record| record["event"]["type"] == "result");
+    let stopped = position(&|record| record["event"]["signal"] == "SIGTERM");
+    assert!(claimed < interrupted && interrupted < result && result < stopped);
+}
+
+#[test]
+fn a_worker_that_asks_is_not_taken_over() {
+    let fixture = Fixture::new("takeover-asks");
+    let id = fixture.start("perm Bash git push origin master");
+    fixture.wait_for_question(&id);
+    assert!(matches!(
+        fixture.supervisor.begin_takeover(&id),
+        Err(WorkerError::Busy(_))
+    ));
+    assert_eq!(fixture.supervisor.status(&id).unwrap().takeover_ms, None);
 }

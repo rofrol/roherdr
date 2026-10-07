@@ -59,6 +59,8 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "usage.set_enabled",
     "usage.set_provider",
     "usage.settings",
+    "worker.open_log",
+    "worker.take_over",
     "workspace.bookmark",
     "workspace.close",
     "workspace.create",
@@ -386,6 +388,14 @@ mod tests {
         assert_eq!(
             actual.remove("usage.settings").as_deref(),
             Some("c058886d69de2979c8d0f422e5a6934db8f59574bace3811d02aa7e5cb5257c2")
+        );
+        assert_eq!(
+            actual.remove("worker.open_log").as_deref(),
+            Some("a64a1ecca397684a1b989cce31f485f30eece10d4608105079a4ed7e7ba71198")
+        );
+        assert_eq!(
+            actual.remove("worker.take_over").as_deref(),
+            Some("7488429403c59189afdbde40dc0794ed30264d89745772190209f6b07acb579a")
         );
 
         assert_eq!(

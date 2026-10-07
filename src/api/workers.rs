@@ -64,9 +64,7 @@ fn handle_immediate(
     method: Method,
 ) -> Result<ResponseResult, WorkerError> {
     let worker = match method {
-        Method::WorkerStart(params) => {
-            supervisor.start(&params.cwd, &params.prompt, params.model.as_deref())?
-        }
+        Method::WorkerStart(params) => supervisor.start(&params)?,
         Method::WorkerStatus(target) => supervisor.status(&target.worker_id)?,
         Method::WorkerList(_) => {
             return Ok(ResponseResult::WorkerList {

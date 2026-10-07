@@ -250,4 +250,7 @@ pub enum AppEvent {
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
     /// Background worktree discovery completed for an API list/open request.
     WorktreeReadFinished(Box<WorktreeReadResult>),
+    /// A worker being taken over has ended (or the takeover stopped with
+    /// this error): its session can resume in a tab.
+    WorkerTakenOver(Box<(crate::workers::Takeover, Option<String>)>),
 }

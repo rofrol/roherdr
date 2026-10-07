@@ -11,6 +11,13 @@ pub struct WorkerStartParams {
     /// Passed to `claude --model`; the CLI's default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The worker's task, as the sidebar names it; the prompt's first line
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The space the worker belongs to, which the sidebar lists it under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -87,6 +94,13 @@ pub struct WorkerInfo {
     pub worker_id: String,
     pub state: WorkerState,
     pub cwd: String,
+    /// The worker's task: the `name` given at start, else the prompt's
+    /// first line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The space given at start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// The CLI's process id, which also leads the worker's process group.
@@ -118,6 +132,10 @@ pub struct WorkerInfo {
     /// has not exited yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_requested_ms: Option<u64>,
+    /// Unix milliseconds when a takeover began (`worker.take_over`): the
+    /// worker is being ended so its session can resume in a tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_ms: Option<u64>,
     /// The JSONL journal of every event in and out.
     pub journal_path: String,
 }

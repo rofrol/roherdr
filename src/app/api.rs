@@ -11,6 +11,7 @@ pub(super) mod responses;
 mod session;
 mod tabs;
 mod usage;
+mod workers;
 mod workspaces;
 mod worktrees;
 
@@ -205,6 +206,12 @@ impl App {
 
         if let AppEvent::WorktreeRemoveFinished(result) = ev {
             return self.handle_api_worktree_remove_finished(*result);
+        }
+
+        if let AppEvent::WorkerTakenOver(taken) = ev {
+            let (takeover, error) = *taken;
+            self.open_taken_over_worker(takeover, error);
+            return Vec::new();
         }
 
         let mut worktree_restore_updates = Vec::new();
@@ -1252,6 +1259,12 @@ impl App {
                     "connection_local_only",
                     "worker methods are handled by the local JSON API server",
                 );
+            }
+            Method::WorkerOpenLog(target) => {
+                return self.handle_worker_open_log(request.id, target)
+            }
+            Method::WorkerTakeOver(target) => {
+                return self.handle_worker_take_over(request.id, target);
             }
             Method::AgentRead(params) => return self.handle_agent_read(request.id, params),
             Method::AgentExplain(target) => return self.handle_agent_explain(request.id, target),

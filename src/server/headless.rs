@@ -415,11 +415,11 @@ impl HeadlessServer {
             },
         );
 
-        // A worker's question changes no app state; this makes the next
-        // render rebuild the clients' snapshots, which carry it.
+        // A worker's state or question changes no app state; this makes the
+        // next render rebuild the clients' snapshots, which carry them.
         let render_dirty = self.app.render_dirty.clone();
         let render_notify = self.app.render_notify.clone();
-        crate::workers::set_question_notifier(Arc::new(move || {
+        crate::workers::set_change_notifier(Arc::new(move || {
             render_dirty.request_generic();
             render_notify.notify_one();
         }));

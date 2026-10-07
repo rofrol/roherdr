@@ -956,6 +956,28 @@ pub struct ClientShellSnapshot {
     /// answers them.
     #[serde(default)]
     pub worker_questions: Vec<ClientShellWorkerQuestion>,
+    /// Headless workers, oldest first, for their lines under their space.
+    #[serde(default)]
+    pub workers: Vec<ClientShellWorker>,
+}
+
+/// A headless worker as the sidebar shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellWorker {
+    pub worker_id: String,
+    /// The space it was started from; none for one started outside a space.
+    pub workspace_id: Option<String>,
+    /// Its task: the `name` given at start, else its prompt's first line.
+    pub name: String,
+    pub cwd: String,
+    /// `worker.status`'s state name (`working`, `waiting_approval`, ...), a
+    /// string so a state this client does not know cannot break the
+    /// snapshot.
+    pub state: String,
+    /// Claude Code's session id, once the worker has one.
+    pub session_id: Option<String>,
+    /// A takeover is ending it to resume its session in a tab.
+    pub takeover: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2944,6 +2966,15 @@ mod tests {
             }],
             build_commit: None,
             worker_questions: Vec::new(),
+            workers: vec![ClientShellWorker {
+                worker_id: "w1".into(),
+                workspace_id: Some("w1".into()),
+                name: "fix login".into(),
+                cwd: "/repo".into(),
+                state: "working".into(),
+                session_id: None,
+                takeover: false,
+            }],
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
