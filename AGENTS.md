@@ -451,7 +451,8 @@ space; `--workspace <id>` names another). The sidebar shows it as one line
 named `<task>` with its state; a click opens its log, and its right-click
 menu takes it over (ends it, then resumes its session in a tab; not while
 it asks). Wait for its turn with `herdr-job run -- herdr worker wait <id>`,
-answer its questions with `herdr worker answer <id> ...` (they also show in
+answer its questions with
+`herdr worker answer <id> --request <request_id> ...` (they also show in
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
 `last_result.text`.

@@ -5301,7 +5301,7 @@
               ]
             },
             "request_id": {
-              "description": "The question to answer. When absent, the only pending question; an answer without it is refused while several are pending. A question that is no longer pending is refused with `worker_question_gone`.",
+              "description": "The question to answer. When absent, the only pending question; an\nanswer without it is refused while several are pending. A question\nthat is no longer pending is refused with `worker_question_gone`.",
               "type": [
                 "string",
                 "null"
