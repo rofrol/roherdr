@@ -11,27 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
-  where I see what the agent asks? now I only have a question mark"; queued
-  next). Inspired by posts praising the T3 Code and Devin sidebars
-  (https://x.com/kr0der/status/2107037327575208337). The header's `?` list
-  already shows the ask and the `Limited` state (`DECISIONS.md`, "Agent's
-  question in the `?` list").
-  Decided by the user 2026-10-06: next comes the second line under asking
-  tab lines in the sidebar (the ask, as in the `?` list; working rows stay
-  one line); the other follow-ups wait:
-  - a "needs me" filter in the planned sidebar filter bar, never hiding rows
-    by default (hiding breaks positional `Alt-1…9`, focus, and job child
-    tabs);
-  - a separate header count for limited agents; limits for Codex and pi;
-  - outcomes ("ready for review"): sol shows them apart from actions, MiMo
-    would not (stale within a day); if they come, only until the tab is
-    viewed (round `20261006-021127-0eb7`). A done row could carry facts
-    herdr reads itself (branch, `+N -M`), not agent prose. T3 Code takes a
-    per-turn diff stat by snapshotting the tree into hidden refs through a
-    temporary `GIT_INDEX_FILE`; in the shared checkout it would still count
-    concurrent sessions' edits.
-
 - [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
   would help, now I have to paste a link to the pi or claude session by
   hand"; queued after the `?` list above). Inspired by
@@ -790,3 +769,15 @@ user needs to decide or do.
   prereleases tagged `roherdr-v*` on `rofrol/roherdr` with `SHA256SUMS`, and
   the macOS arm64 asset downloads, verifies and runs. Upstream's updater reads
   `distribution/latest.json`, which the fork does not publish.
+
+- [ ] Which follow-up of "show what an agent asks" comes next, if any: a
+  "needs me" filter, a header count for limited agents, or outcomes?
+  Checked 2026-10-07: the `?` list and (since `e0bfbce8`) a `↳` line under
+  asking tab lines show the ask. Waiting since the user's 2026-10-06
+  decision: a "needs me" filter in the planned sidebar filter bar, never
+  hiding rows by default (hiding breaks positional `Alt-1…9`, focus and job
+  child tabs); a separate header count for limited agents, and limits for
+  Codex and pi; outcomes ("ready for review"), which sol shows apart from
+  actions and MiMo would not (stale within a day; round
+  `20261006-021127-0eb7`), and if they come only until the tab is viewed,
+  as facts herdr reads itself (branch, `+N -M`), not agent prose.
