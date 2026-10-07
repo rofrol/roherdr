@@ -2,25 +2,14 @@
 
 Open work only. A finished item leaves this file: its durable
 decisions go to `DECISIONS.md`, the rest stays in the commit messages.
-Parked ideas live in `TODO-deferred.md`.
+Parked ideas live in `TODO-deferred.md`. An open item keeps only its
+title with the user's words, what is still open, and the decisions that
+constrain it.
 
 ## Next, in order
 
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
-
-- [ ] Keep the model context small, second pass (user, 2026-10-06: "plan
-  for cleaning unneeded files from the repo, so the model's context doesn't
-  swell too much"). Done on 2026-10-06: finished items left `TODO.md`
-  (402 KB to about 170 KB), their decisions went to `DECISIONS.md`, Deferred
-  to `TODO-deferred.md`; a root `.ignore` hides published doc snapshots and
-  the duplicate changelog from ripgrep; Codex's `project_doc_max_bytes` was
-  raised so it reads the fork sections of `AGENTS.md`, which stays as
-  upstream writes it (user).
-  - Left: open items still carry long histories of their finished slices;
-    condense each to its open part plus decisions. A lint against `[x]` in
-    `TODO.md` was skipped: the maintenance test list is upstream's justfile
-    line, a rebase conflict magnet.
 
 - [ ] Mark a pane whose agent ended its turn waiting for the user even when
   it could not run `herdr agent awaiting-reply` (user, 2026-10-06: why was
@@ -30,11 +19,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   write "dalej" (continue); Claude Code's auto-mode classifier gave no verdict
   for every Bash/Edit call, so the agent could not run the awaiting-reply
   command and the pane looked finished. The marker today depends on a tool
-  call the agent makes; it needs a path that does not: e.g. the Stop hook
-  (already installed by `herdr integration install claude`) marking the pane
-  when the turn ended right after failed or blocked tool calls, or showing
-  such a pane as "stopped with an error" instead of idle. Check what the hook
-  input carries about the last tool results before choosing.
+  call the agent makes; it needs a path that does not. Check what the Stop
+  hook input (already installed by `herdr integration install claude`)
+  carries about the last tool results first.
   Decided by the user 2026-10-06: a turn that ends right after failed or
   blocked tool calls marks the pane as awaiting a reply (the `?` list),
   through the Stop hook; no separate error state.
@@ -42,112 +29,46 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
 - [ ] Show what an agent asks, not only `?` (user, 2026-10-06: "some list
   where I see what the agent asks? now I only have a question mark"; queued
   next). Inspired by posts praising the T3 Code and Devin sidebars
-  (https://x.com/kr0der/status/2107037327575208337: rows like "Approve
-  phase 1" or "PR is ready" instead of a title and a coloured dot). Today the
-  header's `?N` list names the tabs that wait for a reply, not the question.
-  ```
-   ⇅ manual        ◐3 [?2] ✉1
-   ┌───────────────────────────┐
-   │ ? Read the X post         │
-   │   ↳ add it to TODO?       │
-   │ ? Fix OAuth callback      │
-   │   ↳ Install now?          │
-   └───────────────────────────┘
-  ```
-  - First slice: `herdr agent awaiting-reply` takes an optional short text
-    (the question in a few words); the integration hook asks for it. The
-    text lives and is cleared with the `awaiting_reply` flag (the next user
-    prompt), so no stale questions. The server caps it at ingest (about 40
-    characters on a grapheme boundary, control and ANSI sequences stripped),
-    never per frame. The `?` list draws it as a dim second row. Bump the
-    Claude integration version once from the latest release.
-    Done 2026-10-06 together with the inbox and Limited from "Orchestration
-    direction": `pane.report_awaiting_reply` takes `question`; agents
-    report `waiting_since_ms` (blocked, asked, limited) and the `?` list
-    ranks by it, longest first, the wait (`3h`, `2m`) in the time column,
-    the ask as a dim `↳` line (blocked: the hook message or `approval`).
-    `pane.report_limit {kind: usage|credits, message}` (CLI `herdr agent
-    limited`) from Claude's `StopFailure` hook (`rate_limit`,
-    `billing_error`); shown like an awaiting-reply report and counted in
-    `?N`; `resets_at` is the latest reset of the provider's full windows
-    in the usage report (a limit report refreshes it). Integration stays v12
-    (unreleased since v11). Open: a separate header count for limited
-    agents, the second line under sidebar tab lines, limits for Codex/pi.
-  - Later: the same second line under `?` tab lines in the sidebar (only
-    for asking rows; working rows stay one line), and a "needs me" filter
-    in the planned sidebar filter bar, never hiding rows by default
-    (hiding breaks positional `Alt-1…9`, focus, and job child tabs).
-  - Consulted sol and MiMo (round `20261006-021127-0eb7`). Agreed: keep the
-    task title as the row's identity and put the ask in a second line (sol;
-    rejected MiMo's ask replacing the title: three OAuth tabs become
-    indistinguishable); explicit reporting, not a heuristic over
-    `last_assistant_message` (preambles, the question in paragraph four,
-    raw text landing in server metadata); server-side expiry. Open: sol
-    shows outcomes ("ready for review") apart from actions, MiMo would not
-    show outcomes at all (stale within a day); if outcomes come, show them
-    only until the tab is viewed.
-  - More users asking for it (2026-10-06, replies to the post above): "a
-    colored dot tells me something's running, not that it's waiting on me
-    ... most of my lost time with agents is hunting for the chat that's
-    stuck on a yes" (@haonv2); Shika gives every card a second line in
-    words: the CLI, the status, the branch, and the diff stat once it is
-    ready to check (@hieuspringle). Candidate for a done row later: branch
-    and `+N -M`, facts herdr can read itself instead of agent prose.
-  - How T3 Code does it (read 2026-10-06, pingdotgg/t3code `4df84a7d`): a
-    three-line card (project and status word, title, branch/PR/providers);
-    status words Working, Waiting, Approval, Input, Limited (a usage limit,
-    apart from Failed), Failed, Done (`resolveSidebarThreadStatus`,
-    `apps/web/src/components/Sidebar.logic.ts:977`). The question text is
-    not in the sidebar, only the label; it shows in a panel above the
-    composer. Working rows are dimmed, an optional "working shelf" folds
-    them away, and the inbox sorts by when a thread last came back to the
-    user. Its diff stat is a stub (`latestRunDiff()` returns null,
-    `Sidebar.tsx:2161`). Worth taking: a `Limited` state, which also tells
-    when to hand a session over (see below).
-  - Diff stat source, if it comes: T3 snapshots the tree at each turn end
-    into hidden refs (`refs/t3/checkpoints`, through a temporary
-    `GIT_INDEX_FILE`) and takes `git diff --numstat` between consecutive
-    snapshots, so the stat is per turn, not the whole tree. In the shared
-    checkout it would still count concurrent sessions' edits.
+  (https://x.com/kr0der/status/2107037327575208337). The header's `?` list
+  already shows the ask and the `Limited` state (`DECISIONS.md`, "Agent's
+  question in the `?` list").
   Decided by the user 2026-10-06: next comes the second line under asking
-  tab lines in the sidebar (the ask, as in the `?` list); the other
-  follow-ups wait.
+  tab lines in the sidebar (the ask, as in the `?` list; working rows stay
+  one line); the other follow-ups wait:
+  - a "needs me" filter in the planned sidebar filter bar, never hiding rows
+    by default (hiding breaks positional `Alt-1…9`, focus, and job child
+    tabs);
+  - a separate header count for limited agents; limits for Codex and pi;
+  - outcomes ("ready for review"): sol shows them apart from actions, MiMo
+    would not (stale within a day); if they come, only until the tab is
+    viewed (round `20261006-021127-0eb7`). A done row could carry facts
+    herdr reads itself (branch, `+N -M`), not agent prose. T3 Code takes a
+    per-turn diff stat by snapshotting the tree into hidden refs through a
+    temporary `GIT_INDEX_FILE`; in the shared checkout it would still count
+    concurrent sessions' edits.
 
 - [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
   would help, now I have to paste a link to the pi or claude session by
   hand"; queued after the `?` list above). Inspired by
   https://x.com/MahyadGhassemi/status/2107190376692056222 (T3 Code switches
   models mid-chat, useful when a usage limit runs out).
-  - Idea: a tab menu item "Hand over to… Claude / Pi / Codex" opens a new
-    tab in the same cwd with the chosen agent and a first prompt naming the
-    source agent, its session id, its transcript path and the task title:
+  - A tab menu item "Hand over to… Claude / Pi / Codex" opens a new tab in
+    the same cwd with the chosen agent and a first prompt naming the source
+    agent, its session id, its transcript path and the task title:
     "Continue the work from <agent> session <id>, transcript <path>, task
-    <title>; read it first". Herdr already keeps agent session ids for
-    resume (`src/agent_resume.rs`); the transcript path is derived per agent
-    (Claude `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file;
-    verify both). The new agent reads the transcript itself, so herdr never
-    parses private transcript formats, and it works after the source agent
-    hit its limit.
-  - Open: whether the source tab stays (likely yes, idle), a CLI/API form
-    (`herdr agent handoff <pane> --to pi`) as a neutral server method, and
-    what to do when the session id is unknown (say so, do not guess).
-  - How T3 Code does it (2026-10-06): it drives agents through their
-    protocols (Claude Agent SDK, `codex app-server`, `pi --mode rpc`, ACP),
-    so it owns the event stream. On a provider switch it replays selected
-    items, not a model-written summary: user and assistant text, commands
-    with output, errors, changed file names, plans, within a 16k-token
-    budget (`T3CODE_CONTEXT_HANDOFF_TOKEN_CAP`), only the delta since the
-    target last saw the thread; natively for Codex (`thread/inject_items`),
-    else as text before the user's message. Herdr has no event stream, so
-    the new agent reading the transcript stays cheaper; reuse T3's list of
-    what to carry over as the instruction in the first prompt. Subagents:
-    T3 hides them from the sidebar too (shown in the parent's lineage
-    panel; a terminal child wakes the parent with a synthetic message), so
-    showing them in herdr is not urgent.
-  - From the Fellowship post (below): keep it a provenance pointer (source
-    agent, session id, transcript, repository, revision, time), not a
-    shared context; the post moves context between sessions only "when it
-    is useful".
+    <title>; read it first". Session ids come from `src/agent_resume.rs`;
+    the transcript path is derived per agent (Claude
+    `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file; verify
+    both). The new agent reads the transcript itself, so herdr never parses
+    private transcript formats, and it works after the source hit its limit.
+  - The first prompt lists what to carry over, as T3 Code replays it: user
+    and assistant text, commands with output, errors, changed file names,
+    plans. Keep it a provenance pointer (source agent, session id,
+    transcript, repository, revision, time), not a shared context (the
+    Fellowship post below).
+  Decided by the user 2026-10-06: a tab menu item plus a CLI/API form
+  (`herdr agent handoff <pane> --to <agent>`, a neutral server method); the
+  source tab stays, idle; an unknown session id is reported, never guessed.
 
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
@@ -155,18 +76,14 @@ session that writes all code and delegates to documenter, reviewer, qa and
 ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
-  Decided by the user 2026-10-06: a tab menu item plus a CLI/API form
-  (`herdr agent handoff <pane> --to <agent>`); the source tab stays, idle;
-  an unknown session id is reported, never guessed.
 
 - [ ] Resolve agent names within the caller's workspace first. Today
   `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
   `agent_name` in every workspace, so the post names agents
   `<workspace-id>-<role>` and its main profile has to say "verify that each
   target belongs to the intended workspace and project. Never substitute an
-  unnamed, focused, or unrelated agent." Keep an explicit way to address a
-  name globally; an ambiguous name stays an error. Risk: callers that rely
-  on global names from another workspace (sol).
+  unnamed, focused, or unrelated agent." Risk: callers that rely on global
+  names from another workspace (sol).
   Decided by the user 2026-10-06: names resolve in the caller's workspace
   first; a `--global` flag addresses a name in every workspace; an
   ambiguous name stays an error.
@@ -174,10 +91,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 - [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
   help says "It does not track turns: if the agent is already working, that
   active turn's completion may match", and the post's whole delegation runs
-  on it. Return a request id and report accepted, working and finished for
-  that request. Screen detection cannot prove a turn ended, so this needs a
-  signal from the integration; say so where an agent has none instead of
-  guessing (sol, MiMo).
+  on it. Screen detection cannot prove a turn ended, so this needs a signal
+  from the integration (sol, MiMo).
   Decided by the user 2026-10-06: return a request id and report accepted,
   working and finished for that request, from the Claude and pi
   integration hooks; other agents answer `unsupported`, never a guess.
@@ -191,121 +106,53 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   estimate, not the bill; no sidebar total yet.
 
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
-  but it did not close the job." Closing a parent tab's last pane (cmd+w)
-  checked only the parent for running work, and the server kept its child
-  job tabs running as top-level tabs. Consulted sol, DeepSeek and MiMo
-  (unanimous): an explicit close of the last pane is a close of the tab;
-  a parent whose shell exits or crashes keeps its jobs (an agent may exit
-  after starting a long build on purpose). Done: close-pane on a parent's
-  last pane asks and closes like closing the tab (test
-  `closing_a_parents_last_pane_closes_the_tab_with_its_children`). Not done:
-  make the kept jobs visible when the parent exits by itself: a notice
-  "Parent <name> exited; N jobs kept running" and a `was <name>` mark on
-  the orphaned rows (sol, DeepSeek, MiMo); MiMo's "Close tab, keep jobs"
-  button in the parent's close dialog.
+  but it did not close the job." The explicit close is fixed (`DECISIONS.md`,
+  "Closing a parent's last pane"); a parent whose shell exits by itself
+  keeps its jobs on purpose, but nothing shows it.
   Decided by the user 2026-10-06: when a parent exits on its own, show the
-  "N jobs kept running" notice and a `was <name>` mark; no new "Close tab,
-  keep jobs" button.
+  "Parent <name> exited; N jobs kept running" notice and a `was <name>`
+  mark on the orphaned rows (sol, DeepSeek, MiMo); no new "Close tab, keep
+  jobs" button.
 
 - [ ] The tab state does not show that something runs in the background
   (user, 2026-10-06, screenshot: "the tab state doesn't show that something
-  is running in the background"). Space `music-mpd`, tab "Testy,
-  ReplayGain, plan j…" shows idle `o` while Claude waits for a finite
-  `musicdb update` (about 2 minutes) and said it would continue when it
-  ends:
-  ```
-  * Worked for 1m 2s · done 12:21 PM · 1 shell still running
-  ❯ ok, czekam
-    ⏵⏵ auto mode on · 1 shell · ← for agents
-  ```
-  This is the case the 2026-10-03 decision above left idle on purpose
-  (a shell alone is not working, no badge: an endless `npm run dev` would
-  pin the pane). The user still wants to see it, so revisit the rejected
-  option: an orthogonal background badge next to the idle state (e.g. a
-  dim `1 shell` or a glyph with the count), not a new `AgentStatus`
-  variant (append-closed in frozen codecs). It needs an optional runtime
-  field (pane background task counts, parsed from the footer below the
-  prompt box) in the JSON API, then the TUI draws it in the tab line and
-  maybe the space header counts. Open: whether a long-lived dev server
-  should show the same badge (probably yes: it is true, just not urgent).
-  Consulted sol and MiMo (2026-10-06, calls `557d6c84`, `56fe2bac`):
-  - Both: a footer count shows that something runs, not that the agent
-    waits for it. Split the two: `background_tasks` (observed counts) and
-    an optional "awaiting background" flag only an explicit signal sets.
-    Like `awaiting-reply`, the integration could tell the agent to run
-    `herdr agent awaiting-background "<what>"` when it ends a turn waiting
-    for a task, cleared on the next prompt or working. Only that flag
-    may count as busy (bubble, header); a bare count never does.
-  - MiMo: a badge on every dev-server pane gets tuned out; draw it only
-    for awaited tasks, or dim the detached ones.
-  - sol: report unknown (no footer seen, other agents such as Codex) apart
-    from an observed zero, with source and freshness; show the count next
-    to every state, blocked included; notify only the final done
-    (idle+bg -> working -> done), never on shell exit.
-  - Glyph: not `⧗`/`⧖`, which already marks herdr-job jobs in space
-    squares (`space_tabs.rs`); sol prefers a plain `bg:1`.
-  - Noted: had the agent run `musicdb update` through `herdr-job`, the
-    space would already show `⧖ 1`; this case is a plain
-    `run_in_background` shell.
-  - Dismissed: MiMo's 5 s debounce of working (a delay hides the cause,
-    Rule 10) and its claim that bubble's "running job" covers background
-    shells (it means herdr-job jobs).
-  Why no herdr-job here (user, 2026-10-06: "why didn't the agent open this
-  background task as a herdr job? I want visibility"): `musicdb update` was
-  started by the hourly launchd job, not by the agent. The agent (which
-  used `herdr-job` for its own long commands in the same session) only
-  waited for that pid with a native background shell
-  (`until ! ps -p 95192 …`), reading the rule "run work that takes more
-  than a minute with herdr-job" as covering its own work, not waits.
-  Herdr jobs are drawn as a counter-rotating circle (`◑ 1`,
-  `src/ui/motion.rs` `JOB_FRAMES`), not `⧖`; the `⧖` in the doc comments
-  of `src/client/shell/space_tabs.rs` is stale.
-  Second round, sol and MiMo (calls `f2132f2c`, `9c834783`):
-  - Both rank: instruction change plus footer badge (A+D) first; a
-    PostToolUse registry of native shells without an exit hook leaves
-    ghost jobs; a PreToolUse deny of `run_in_background` trains
-    workarounds (worst, MiMo).
-  - Instruction by intent, not minutes (sol): "use herdr-job for
-    background work or waits whose end gates your next step, including
-    processes you did not start". MiMo: make that path cheaper than a
-    native shell, e.g. `herdr-job watch --pid N --name …`. Both: its
-    success means "the process disappeared", not "it succeeded" (no exit
-    status of a foreign process; pid reuse), so show it as such.
-  - Do not reuse `◑` for native shells (both): it promises a tab, a log
-    and an exit code. "Dimmed" must be carried by text, not colour
-    (16-colour themes, `NO_COLOR`): sol `bg1` (observed) vs `wait1`
-    (declared awaited), secondary foreground on top. Dismissed MiMo's
-    `○N`: `○` is the idle glyph in every state-icon theme.
-  - Agent waiting on a herdr job with its turn ended: sol keeps idle plus
-    the job circle (today's behaviour), MiMo wants working with a frozen
-    spinner. Undecided.
+  is running in the background"). Space `music-mpd`: the tab showed idle
+  while Claude waited for a finite `musicdb update` (about 2 minutes), its
+  footer saying `1 shell still running`. The 2026-10-03 decision left a
+  shell alone idle on purpose (`DECISIONS.md`, "Claude background tasks and
+  working state"); this revisits it.
   Decided by the user 2026-10-06: a `bg:N` observed-count badge on the
   tab, dev servers included; a `herdr-job wait` counts as work; no
   separate awaiting-background flag.
+  - Shape: an optional runtime field (pane background task counts, parsed
+    from the footer below the prompt box) in the JSON API, drawn by the TUI
+    on the tab line; never a new `AgentStatus` variant (append-closed in
+    frozen codecs). Report unknown (no footer seen, agents such as Codex)
+    apart from an observed zero; show the count next to every state; notify
+    only the final done, never on shell exit (sol). A bare count never makes
+    a space busy (bubble, header).
+  - Glyph: not `◑` (herdr-job jobs; it promises a tab, a log and an exit
+    code), not `⧖`, not `○` (the idle glyph). Dimming must be carried by
+    text, not colour (16-colour themes, `NO_COLOR`). Consult calls
+    `557d6c84`, `56fe2bac`, `f2132f2c`, `9c834783`.
 
 - [ ] Consult cost per model and the coordinator's extra spend (user,
   2026-10-03: "how much money/tokens a model used on a consult, and how much
   more the coordinator burned by asking it"). Today every call logs normalized
   usage, but no money, and the coordinator's own tokens are not logged at all.
-  Consulted Sol, DeepSeek, MiMo and Space Bunny (round `20261003-013157-b88d`,
-  agree on the shape):
+  Round `20261003-013157-b88d` (Sol, DeepSeek, MiMo, Space Bunny agree):
   - Money only where money exists: a versioned, dated price table (input,
-    cached input, output; reasoning billed as output, never twice since output
-    already includes it), `$` per call for DeepSeek and OpenRouter. Subscription
-    models (GPT, Claude, Gemini) show tokens and "included in subscription", not
-    a made-up per-token price; an API-list-price equivalent only as a separately
+    cached input, output; reasoning billed as output, never twice). Subscription
+    models (GPT, Claude, Gemini) show tokens and "included in subscription",
+    never a made-up price; an API-list-price equivalent only as a separately
     labelled column. A free preview model is `$0` for now, not for good.
   - Coordinator: log the Claude Code session id and the round's start and end
     (`new-round` to the last `rate`/`self`), then sum that window's per-message
-    usage from the session transcript, keeping cache reads apart. Label it
-    "consult-associated usage", not "extra": those turns also carry the existing
-    context (Sol, Space Bunny). Keep it per round, not split per model. Do not
-    add the answers again: they are already in the tool-result input (Space
-    Bunny). `answer_chars` is only a fallback proxy: it misses reasoning tokens.
+    usage from the session transcript, cache reads apart, per round, not split
+    per model. Do not add the answers again (already in the tool-result
+    input). `answer_chars` is only a fallback proxy: it misses reasoning.
   - The true "how much more" needs a few matched tasks with and without a
     consult; a one-off audit, not a stats column.
-  - DeepSeek: a later trial could score coordinator tokens per accepted unique
-    finding, which is what a shorter answer saves.
   Decided by the user 2026-10-06: approved as proposed: a dated price
   table with `$` only for DeepSeek and OpenRouter, and the coordinator's
   usage summed per round from the transcript, labelled "consult-
@@ -313,10 +160,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 - [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
   (user, 2026-10-03: "do we need to unify ask in one place and consult in
-  another?"). All four consulted models (same round): leave it. `consult` names
-  the bundle and the stats, `ask_*` are the per-vendor adapters, and renaming
-  skills would split the log keys (`skill` field) and break muscle memory. At
-  most one README line stating the convention. Awaiting the user's decision.
+  another?"). `consult` names the bundle and the stats, `ask_*` are the
+  per-vendor adapters; renaming would split the log keys (`skill` field).
   Decided by the user 2026-10-06: keep the names; add one README line
   explaining them.
 
@@ -324,75 +169,39 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
   how do you rate these models now? The table is mixed up, deepseek is third;
   maybe show last week as the first table. Very much data; is it needed? ask
-  the models"). Consulted sol, DeepSeek and MiMo (round
-  `20261003-124630-aaf5`).
-  - `astra -r` is not better (all three agree, verified in the log): 11 rated
-    calls, mostly code reviews, three of them beside only `luna -r`. In the
-    same window plain astra had 115 rated calls with uniq 1.57 versus 1.82,
-    the same 6.7 findings per call, but more accepted (5.1 versus 4.1) and
-    fewer rejected (24% versus 39%). Only paired rounds (same prompt, astra
-    and astra -r, same companions) could show a repo-mode gain.
+  the models"). Round `20261003-124630-aaf5`; findings in `DECISIONS.md`
+  ("Consult roster").
   - The mix-up: the default table pools all time and sorts by uniq/call, but
-    unique depends on who else was asked. The `deepseek-flash` alias row
-    (pre-2026-09-28, beside gpt-6-sol, terra, gemini) sits third; the current
-    DeepSeek-V4.1 row (0.86) is depressed by stronger companions (sol, MiMo).
-    `--days 7` alone does not fix it: it still shows the 09-26..09-28 rows.
-  - Proposed default (sol's framing; DeepSeek and MiMo close): current
-    configurations first (the default set and running trials, in configured
-    order), last 7 days with the dates printed; retired models, alias rows of
-    unknown version and rows under 5 rated calls collapse into one footer
-    line. Do not merge the unknown-version alias into V4.1 (sol; DeepSeek and
-    MiMo would merge with a footnote). MiMo: put the head-to-head of the
-    current set first, since only shared rounds control for companions.
-    Rows from another coordinator (Sonnet, asked by a DeepSeek-run agent)
-    are marked or split. Keep: rated/calls, uniq/call, rejected share, err,
-    p50. Cut from the default: call dates, the 8-line legend (two lines plus
-    `--legend`), anecdotal rows. All of it stays behind `--all`.
-  - Model ranking from shared rounds: sol 6.1 and MiMo tie on unique (60
-    rounds, -0.07, CI -0.28..+0.13, W/T/L 15/29/16), sol rejects 7 points
-    less, is faster (p50 38 s versus 47 s) and uses a quarter of the output
-    tokens. Both beat DeepSeek-V4.1 (sol +0.67 over 161 rounds, MiMo +0.48
-    over 58), DeepSeek is fastest (p50 16 s). Sonnet, Opus, Gemini, astra
-    `-r`: not comparable or too few. Keep sol + DeepSeek and finish the MiMo
-    trial; whether MiMo replaces DeepSeek is the trial's question.
-  - Cost (user, 2026-10-03: "and DeepSeek cost-wise? I think it has to be
-    turned off"): negligible. DeepSeek-V4.1 used 0.51M input and 2.52M
-    output tokens over 334 calls, $1.6 to $3.2 at the current off-peak and
-    peak prices (about a cent a call; $7.56 left on the account); MiMo cost
-    $0.22 over 71 calls (OpenRouter's own cost field). MiMo's second trial
-    passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). Done 2026-10-03:
-    the user replaced DeepSeek with MiMo, default set sol + MiMo, for
-    quality, not cost; DeepSeek on request.
+    unique depends on who else was asked; `--days 7` alone still shows the
+    09-26..09-28 rows.
+  - Plan: current configurations first (the default set and running trials,
+    in configured order), last 7 days with the dates printed; retired models
+    and rows under 5 rated calls collapse into one footer line; rows from
+    another coordinator marked or split. Keep: rated/calls, uniq/call,
+    rejected share, err, p50. Cut from the default: call dates, the 8-line
+    legend (two lines plus `--legend`), anecdotal rows. All of it stays
+    behind `--all`.
   Decided by the user 2026-10-06: default to the current set over the last
   7 days; merge the unknown-version DeepSeek alias row into V4.1.
 
 - [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
   show which models were tested together, e.g. sol ds mimo, and now a new
   stage sol mimo? ask the models"). Unique per call only compares models
-  asked beside the same companions. Lineups derived from the log's rounds
-  (all calls, failed ones included): 32 distinct, led by astra+ds 116 rounds
-  (09-26..09-28), ds+sol 90 (09-30..10-03), ds alone 63, ds+mimo+sol 42,
-  ds+luna 31, astra+ds+luna 29, sonnet alone 27, bunny+ds+mimo+sol 22.
-  Consulted sol and MiMo (round `20261003-130240-6583`). Plan:
+  asked beside the same companions; the log has 32 distinct lineups. Round
+  `20261003-130240-6583`. Plan:
   - `new-round` records the requested lineup (`--models sol,mimo`, the
     consult skill passes the default set), because dates cannot assign
-    stages: the MiMo and Space Bunny trials ran inside the sol+ds period
-    (MiMo). Older rounds get a lineup derived from their calls, marked
-    derived.
+    stages (the MiMo and Space Bunny trials ran inside the sol+ds period).
+    Older rounds get a lineup derived from their calls, marked derived.
   - `stats --lineups`: one block per lineup with dates, coordinator, rounds,
     full rounds; per model calls ok/failed, findings, accepted, rejected,
     unique per answered call, p50. Lineups under 5 rounds fold into one line.
   - Default `stats`: the current lineup's block first; no ranking across
     lineups.
   - Kept apart, each with a count so nothing is silently dropped: one-model
-    asks (unique is near tautological there), rounds where a companion
-    failed (its outage inflates the other's unique, sol), rounds run by
-    another coordinator, and rounds with an extra model asked on request.
-  - Named stages with a reason (`stage start sol+mimo --note ...`): only if
-    the why is worth keeping in the tool; the consult skill already records
-    each default-set change (sol). MiMo argued `--vs` already controls for
-    companions and this is bookkeeping; true for a two-model verdict, but
-    the user wants the history of what was tested.
+    asks, rounds where a companion failed (its outage inflates the other's
+    unique), rounds run by another coordinator, rounds with an extra model
+    asked on request.
   Decided by the user 2026-10-06: approved: `new-round --models`, `stats
   --lineups`, the current lineup first by default; no named stages (the
   consult skill records set changes).
@@ -401,161 +210,60 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   menu: which models are used for consultation now, a checkbox to enable or
   disable, its rank, uniqueness, error rate, and maybe how much the
   coordinator's token cost increases"). Narrows the deferred settings >
-  consults page and the auto-consult toggle (both below, under herdr > menu >
-  settings). Consulted sol and MiMo (round `20261003-145404-dae6`). Not
-  started: another session is working nearby (user, 2026-10-03: "don't do it
-  for now, another session is on it; only the TODO"). Plan:
-  - A native herdr modal in Rust (user, 2026-10-03: "a script? I want it in
-    Rust"; chose the native modal over a ratatui binary in the plugin), in
-    the existing dialog style, mouse-first: clickable checkboxes. It replaces
-    the menu's **consult stats** item. The server reads the log and the state
-    file and exposes them through new advertised API methods (neutral names,
-    e.g. `consult.models.list`, `consult.models.set`), so the modal also
-    works against a remote server; an older server without them disables
-    only this item. Rows `[x] model | uniq/call (n) | wrong% | err% |
-    rated/calls | last used`; a toggle shows only after the server confirms
-    it is persisted. The statistics logic lives in `consult.py` today: decide
-    whether the server ports it or calls `consult.py ... --json`.
-  - State: one global file `~/.local/state/consult/models.json`, written
-    atomically. `consult.py models` prints the enabled set and is the single
-    source: it prints the skill's default when the file is missing (MiMo),
-    an empty list means consulting is off, a malformed file is an error, not
-    a silent default (sol). The consult skill runs it at each round instead
-    of the prose default set. An explicit request ("ask DeepSeek") bypasses
-    the checkbox but never the self-consultation rule or a missing key.
-  - `new-round` records the enabled set and whether the round was automatic
-    or explicitly requested, which also feeds "Consult stats by lineup".
-  - No rank column (both models): one number per model moves when another
-    row is toggled (companion effect). Numbers come from rounds of the actual
-    lineup, with n shown and metrics hidden under 5 rated calls; the paired
-    `stats --vs` stays the comparison.
-  - Coordinator cost, stage 1: the answer tokens each round injects into the
-    coordinator's context (already logged as `answer_chars`), labelled a lower
-    bound: they are re-read as cached input on every later turn, and the
-    coordinator's own reasoning is not counted. The full number waits for
-    "Consult cost per model and the coordinator's extra spend". No column
-    that reads "n/a"; subscription models show "included", never `$0`.
-  - Later: a `doctor` mark for an enabled model without a key or CLI, so it
-    does not burn calls into err%.
+  consults page and the auto-consult toggle. Round `20261003-145404-dae6`.
   Decided by the user 2026-10-06: unblocked; the native modal gets its
   data from `consult.py ... --json` through the server, so the statistics
   logic stays in one place.
+  - A native herdr modal in Rust (user, 2026-10-03: "a script? I want it in
+    Rust"), in the existing dialog style, mouse-first, replacing the menu's
+    **consult stats** item. New advertised API methods with neutral names
+    (e.g. `consult.models.list`, `consult.models.set`), so it works against a
+    remote server; an older server disables only this item. Rows `[x] model
+    | uniq/call (n) | wrong% | err% | rated/calls | last used`; a toggle
+    shows only after the server confirms it is persisted.
+  - State: one global file `~/.local/state/consult/models.json`, written
+    atomically. `consult.py models` prints the enabled set and is the single
+    source: the skill's default when the file is missing, an empty list means
+    consulting is off, a malformed file is an error, not a silent default.
+    The consult skill runs it at each round. An explicit request ("ask
+    DeepSeek") bypasses the checkbox but never the self-consultation rule or
+    a missing key.
+  - `new-round` records the enabled set and whether the round was automatic
+    or explicitly requested (feeds the lineup item above).
+  - No rank column: one number moves when another row is toggled. Metrics
+    from rounds of the actual lineup, with n shown, hidden under 5 rated
+    calls; `stats --vs` stays the comparison.
+  - Coordinator cost, stage 1: the answer tokens each round injects
+    (`answer_chars`), labelled a lower bound; the full number waits for the
+    cost item above. Subscription models show "included", never `$0`.
+  - Later: a `doctor` mark for an enabled model without a key or CLI.
 
 - [ ] Consult stats per model over time, to spot a silently "nerfed" model
   (user, 2026-10-03: "what if we showed stats for a model over time? we could
   detect a nerfed model. How to display those graphs then? ask the models").
-  Log on 2026-10-03: about 7.5 days, DeepSeek ~460 calls, Sol ~175, MiMo 39.
-  `model_version` exists for DeepSeek (`DeepSeek-V4.1-Flash`, one fingerprint),
-  MiMo and Claude, never for the GPT models (Codex does not report it); `usage`
-  has `reasoning` tokens for every vendor. Consulted Sol, DeepSeek and MiMo
-  (round `20261003-023646-4385`), agreeing on:
-  - A drift report, not a "nerf detector": the data can show a change, not
-    its cause. No composite score, no alerts, no all-pairs dashboard.
-  - Primary series: the paired difference against a reference model over
-    shared rounds (reuses `--vs` and its round bootstrap), since pooled rates
-    move with the question mix. My addition: a pair alone cannot say which side
-    moved; rounds with three models (Sol, DeepSeek, MiMo) can, because the side
-    shared by both shifted differences is the one that changed.
-  - Objective companions: output and reasoning tokens per 1k prompt chars
-    (missing is not zero), error rate, latency only as a hint. Version and
-    fingerprint changes are markers on the time axis, not a series.
-  - Demote `unique` per call (depends on who else answered) and pooled useful
-    share (the rater is an LLM and drifts too; MiMo: check whether verdicts
-    correlate with answer length).
-  - Buckets: equal-n blocks (Sol: 50 rated calls; MiMo: rolling 50 shared
-    rounds, at least 30), labelled with their date span, with `n`, rating
-    coverage and a CI (Wilson for rates, round bootstrap for paired
-    differences). Below the minimum print "insufficient n", do not draw.
-    Fix the rule in advance (MiMo: |Δ| >= 15 points with the CI excluding 0 in
-    two consecutive blocks); no change-point detection yet.
-  - Display: text first, as `consult.py trend [--vs A B]` in the existing
-    `page-consult` popup, width-aware like `stats`: one row per block
-    (`span | n | Δ useful [CI] | coverage | errors | tokens | latency`), with
-    version changes marked. Sparklines at most as an extra column (they hide
-    the CI). No kitty-graphics PNG: `less -R` strips graphics escapes, and it
-    would need matplotlib. HTML only for one-off exploration.
-  - Smallest first step (DeepSeek): list `model_version`/fingerprint per model
-    per week; a version bump answers the question without statistics.
+  `model_version` exists for DeepSeek, MiMo and Claude, never for the GPT
+  models (Codex does not report it). Round `20261003-023646-4385`.
   Decided by the user 2026-10-06: only the smallest first step now: a
   weekly list of `model_version`/fingerprint per model; the full
-  `consult.py trend` waits.
+  `consult.py trend` waits. When it comes: a drift report, not a "nerf
+  detector" (no composite score, no alerts); the paired difference against
+  a reference model over shared rounds (three-model rounds tell which side
+  moved); equal-n blocks with CIs and "insufficient n" below the minimum, a
+  rule fixed in advance; text in the `page-consult` popup, no kitty-graphics
+  PNG (`less -R` strips it).
 
 - [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").
-  Cause, verified: the `?` mark comes only from the agent running `herdr agent
-  awaiting-reply` as the last command of its turn (the hook reminder asks for
-  it); the agent in that turn did not run it. Nothing in herdr infers a
-  question. Consulted DeepSeek, Opus and GPT; they agree the explicit command
-  stays authoritative and that screen scraping is out; they differ on the
-  fallback:
-  - DeepSeek: a Claude Code `Stop` hook reads `last_assistant_message`
-    (or `transcript_path`), strips code, quotes and URLs, and when the final
-    paragraph is a direct question and nothing was reported it either marks
-    the pane itself with a high-confidence rule or, if ambiguous, blocks the
-    stop once (`stop_hook_active` false) with "if you are waiting for the user,
-    run `herdr agent awaiting-reply`".
-  - Opus: only the blocking reminder (the agent decides; no inference, no
-    model calls); a false alarm costs one short extra turn and sets no mark.
-  - GPT: the hook marks the pane itself as an inferred state (`source =
-    stop-heuristic`, with the matched evidence), conservative bilingual rules
-    (a direct request for a choice, confirmation or information, not just a
-    `?`), ambiguous means idle; no blocking, because it restarts the agent for
-    bookkeeping.
-  - Common: per-turn generation so a stale report cannot stick; clear on
-    `UserPromptSubmit`, typing, the next tool use or turn; run in shadow mode
-    first (log the would-be marks next to the real reports), then enable per
-    integration behind a flag; fixtures in English and Polish with code,
-    quotes, rhetorical questions, "let me know if", lists of options, and the
-    reported sentence as a positive case.
-  - Decision (the user said "choose yourself", 2026-10-01): order V1 shadow
-    logging, then V5 a stronger instruction, then V2 the blocking Stop-hook
-    reminder as a canary, V3 inference only if V2 is not enough (all three
-    models, second round). The offline audit made V1 unnecessary: it measures
-    the misses from existing transcripts.
-  - Audit (`scripts/awaiting_reply_audit.py`, tests in
-    `scripts/test_awaiting_reply_audit.py`; read only; Claude Code and Pi
-    transcripts; a bilingual question heuristic; per model: question-like
-    turns, reported, missed, false reports, order violations, Wilson interval).
-    First numbers, turns since 2026-10-01 12:40 (when every integration sent
-    the instruction): Claude Sonnet 5.5 (this session): 15 question-like turns,
-    11 missed (73%, CI 48-89%); Claude Opus 5.5: 8 question-like, 1 missed
-    (12%, CI 2-47%); Claude Haiku 4.5: 8 question-like, 7 missed (88%). Older
-    turns, before the instruction, are 90-100% misses for every model, so they
-    prove nothing about compliance. No Pi turn since the extension was
-    installed was in the transcripts yet (rerun after some Pi use). Caveats: the
-    heuristic gives false reports too (reported but the last paragraph is not a
-    question: 12-28 per model), it is a screen to review, not ground truth.
-  - Models' thresholds for moving on: V2 when the lower bound of the miss rate
-    is above 2-5% and the heuristic's false positive rate is at most 2%; V3 only
-    when the inferred precision's lower bound is above 98-99% and V2 is not
-    enough; rubric for an LLM judge: "does the final message ask the user for
-    a decision or an answer before work can continue" (not courtesy offers,
-    rhetorical or quoted questions), two judges, blind to the report status.
-  - Other variants kept here for when it happens again: V1 shadow log from a
-    Stop hook (`last_assistant_message`, else `transcript_path`); V2 block once
-    (`stop_hook_active`, "if you wait for the user run `herdr agent
-    awaiting-reply`, otherwise just stop"); V3 the hook marks the pane itself
-    (`source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
-    typing and the next tool use); Pi has no `Stop` hook found yet, so it needs
-    an `agent_end` extension that does the same.
-  - Done 2026-10-01 (V2 for Claude Code; installed into `~/.claude` the same day with
-    `herdr integration install claude`, committed in the dotfiles repo; sessions
-    started before that keep their old hooks until restarted): a `Stop` hook
-    (`herdr-agent-state.sh stop-check`, added and removed with the reminder in
-    `claude_settings.rs`): when the final message's last paragraph looks like a
-    question for the user (the audit's bilingual heuristic, a parity test keeps
-    them equal) and the turn ran no `herdr agent awaiting-reply`, it blocks the
-    stop once (`stop_hook_active` guards the loop) with "run `herdr agent
-    awaiting-reply` now as the only command, then stop without repeating your
-    message; if you are not waiting for the user just stop"; every decision is
-    logged to `~/.local/state/herdr/awaiting-reply-stop.jsonl`;
-    `HERDR_AWAITING_REPLY_STOP=0` turns it off, `=shadow` only logs. Tests: the
-    install/uninstall tests, and `StopHook` in `scripts/test_awaiting_reply_
-    audit.py` (block once, reported and statement pass, an earlier turn's
-    report does not count). The integration version stays 11 (not yet
-    released). Not done: Pi (no `Stop` equivalent found; needs an `agent_end`
-    extension), V3 inference, an LLM judge for the audit.
+  The Claude Code Stop-hook check is done (`DECISIONS.md`, "Stop-hook check
+  for unreported questions"). Open: Pi (no `Stop` equivalent found; it needs
+  an `agent_end` extension), V3 inference (the hook marks the pane itself,
+  `source = inferred`, per-turn generation, cleared on `UserPromptSubmit`,
+  typing and the next tool use), an LLM judge for the audit (rubric: "does
+  the final message ask the user for a decision or an answer before work can
+  continue", two judges, blind to the report status). Thresholds: V3 only
+  when the inferred precision's lower bound is above 98-99% and V2 is not
+  enough.
   Decided by the user 2026-10-06: investigate the pi part with a consult
   round (should pi get an `agent_end` nudge although it cannot block a
   stop, or does this close with V3?). If the models agree, do what they
@@ -570,458 +278,38 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   for the user to view in a tab, then moves the item back under Needs a
   decision with the variants named, so the user picks one with a click.
 
-- [ ] Remove the agents panel; fold agents into spaces. The sort toggle moves
-  to the right of the "spaces" header (like the agents panel's
-  grouped/priority). Grouped: `<space> <git branch> <git status>`, then per
-  agent a line with its state dot and what it works on, then a line with its
-  herdr-job statuses.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): yes, but
-    it loses an attention queue visible while browsing spaces, so show the
-    agents waiting for me in the header, with the agent state circles
-    (`◉1 ●1`: one blocked, one done and unseen; `!` stays reserved for
-    failed herdr jobs); clicking it switches to priority.
-  - Agent states are circles that differ by shape, not only colour (now
-    working, blocked and done are all `●`): `◐` working, `◉` blocked (as on
-    mobile already), `●` done and unseen, `○` idle; colours stay.
-    Done 2026-09-29: a `shapes` indicator style, the fork's default
-    (settings > indicators offers dots, symbols, shapes); a waiting-on-job
-    mark is `⧖` there, as in symbols (was `◷` until 2026-09-29: at a small
-    font it read as a moon, close to `◐` working; GPT-6 Astra and DeepSeek
-    both picked `⧖`, the job line's running mark). Consulted (GPT-6 Astra, DeepSeek):
-    both chose a new style over changing `dots`; both warned `◉` and `●`
-    blur at small font sizes (DeepSeek: use the symbols' `×` for blocked);
-    kept `◉` as decided, the colour differs too.
-    Priority lists agents, not spaces (a space-sorted list buries several
-    urgent agents), with the space on the second line; spaces without
-    agents collapse into "other spaces" at the bottom. Freeze the order
-    while the pointer is over the list and re-sort only on real state
-    transitions (blocked > done-unseen > working > idle, stable ties).
-  - The jobs line only when the agent has jobs; jobs without an owner get
-    their own row in the space, never an arbitrary agent. Ownership comes
-    from the server (`owner_pane` is already in herdr-job metadata); never
-    count a job twice. An agent without
-    a task title shows `claude · no task`. Every agent is listed, no
-    `+N agents` cap: the spaces list scrolls; a chevron collapses a space.
-    When tight, one line per agent with counts appended. Truncate the branch first; keep state and counts.
-  - Clicks: header toggle switches the view; space row opens its last
-    focused pane; chevron collapses; agent row focuses its pane; job counts
-    open that agent's jobs. Remember scroll per view.
-  - The "menu" and "new" buttons move above "spaces", in swapped order:
-    "menu" at the left edge, "new" at the right edge (now "new" is left and
-    "menu" right, below the spaces list).
-  - Mockups (28 columns):
-
-    ```text
-    menu                   new
-    spaces     ◉1 ●1  grouped
-    ▾ herdr  master ↑4 ±7
-      ◐ Name unnamed tabs aft…
-        ⧖ 1  ✓ 2
-      ● TODO consults
-      ○ claude · no task
-    ▾ try-roguix  main ±4
-      ◉ Build Hyprland portal…
-        ! 1  ✓ 3
-      ◐ Publish Roguix packag…
-        ⧖ 2
-      ⚙ jobs  ⧖ 1
-    ▸ job-seeker  main
-    ▸ music-mpd  main
-    ```
-
-    ```text
-    menu                   new
-    spaces    ◉1 ●1  priority
-    ◉ Build Hyprland portal…
-      try-roguix · ! 1  ✓ 3
-    ● TODO consults
-      herdr
-    ◐ Name unnamed tabs aft…
-      herdr · ⧖ 1  ✓ 2
-    ◐ Publish Roguix packag…
-      try-roguix · ⧖ 2
-    ○ claude · no task
-      herdr
-    ▸ other spaces (2)
-    ```
-
-    `◐` working, `◉` blocked, `●` done and unseen, `○` idle; `!` failed
-    job, `⧖` running, `✓` succeeded, `±7` uncommitted changes, `↑4` ahead
-    of upstream.
-  - Ship in stages (consulted 2026-09-26): grouped view with the state
-    circles and job lines; then the attention header and the priority view;
-    then clicks and scroll memory. Remove the old panel only after the new
-    view works in daily use.
-  - Stage 1 in progress (2026-09-26): `ui.sidebar.spaces.agents = true`
-    (off by default) lists each space's agents under it, with the state
-    icon and task (`claude · no task` without one) and a line with the
-    herdr-job counts from the `$jobs` token; clicking an agent or job line
-    focuses that agent (local endpoint only). Still to do in stage 1: the
-    new state circle shapes, unowned jobs, the chevron.
-  - 2026-09-28: with `spaces.agents` the space row drops its own aggregate
-    state icon (redundant next to the agents' icons), for every space, also
-    those without agents, so the name does not shift as agents come and go;
-    the name starts where the icon was. Consulted (GPT-6 Astra, DeepSeek):
-    Astra proposed this; DeepSeek proposed keeping the icon on spaces without
-    visible agents and reserving the column for the chevron. When the
-    chevron lands it takes the name's place in front of it.
-  - 2026-09-28: the job line under an agent counts the tabs nested under its
-    tab by their status (`⧖ 1 !1 ✓2`), not herdr-job's `$jobs` pane token,
-    which expires and goes with its pane; a tab with several agents shows
-    them under the first. The space's `tab_jobs` leaves those tabs out, so
-    each job shows in one place and the space row keeps only jobs without a
-    listed agent (its pane closed, filtered out, a status set by hand).
-    Consulted (GPT-6 Astra, DeepSeek) on dropping `tab_jobs` with agents
-    listed: both said no while the two counts come from different sources
-    (a failed job showed only as the space's `!1`); hide it only for jobs
-    shown under an agent, matched by tab id, never by subtracting counts.
-  - 2026-09-28: the remaining jobs (no listed agent) moved from the space row
-    to an `other jobs ⧖ 1 !1` line below the agents: they matter less than
-    the agents' own. Consulted (GPT-6 Astra, DeepSeek), both agreed on:
-    `other jobs`, not `unowned` (the owner may just not be listed); label at
-    the agents' icon column, dimmed, counts coloured; running and failed
-    only; a click focuses the first failed tab, else the first running; a
-    space without listed agents keeps the counts on its row. When the
-    chevron collapses a space's agents, its counts go back to the space row.
-  - 2026-09-28: tasks fall back to the agent's terminal title (was always
-    `claude · no task`). Decided by me instead of the header toggle above:
-    the "spaces" title is now `cust  name ↑  prio ↓`, sorting the spaces
-    themselves (cust = manual order, the only mode that drags; prio = most
-    urgent agent in the space); clicking the active button flips its
-    direction; a client preference, keyboard navigation follows it; the
-    multi-machine sidebar keeps the manual order. Consulted (GPT-6 Astra,
-    DeepSeek): both preferred keeping "spaces" with a dropdown and an agent
-    list for priority; overruled. `ui.sidebar.show_agents_panel = false`
-    hides the old panel (kept in code for cheap rebases). Still open: the
-    attention counts (`◉1 ●1`) have no place in the header now; the
-    multi-machine sidebar.
-  - Done 2026-09-28: a sorted list (name or prio) holds its order while the
-    pointer is over it: the order drawn last stays, new spaces come last,
-    closed ones drop out, and leaving the list (or the window losing
-    focus) applies the live order; keyboard navigation follows the held
-    order. The sort header is outside the list, so clicking it re-sorts at
-    once. Consulted (GPT-6 Astra, DeepSeek): both wanted a true freeze
-    (no re-sort on real state changes either) and keyboard order to match;
-    Astra wanted name frozen too (chosen), DeepSeek prio only.
-  - Missing (screenshot 2026-09-28): a sort button for the agents listed
-    under each space, like the one for spaces. Their order still comes from
-    the hidden agents panel's `agent_panel_sort` (config only, no UI).
-    Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): Astra proposed one global
-    second row under the spaces header, `agents  tab  prio`, shown only with
-    `spaces.agents`; DeepSeek proposed no new control, with agents following
-    the space sort key. Decided: the second row (it is what I asked for, and
-    urgent spaces first with agents in tab order is a valid combination).
-    Two modes, no direction toggle: `tab` (tab bar order; never reorders the
-    tabs) and `prio` (blocked > done-unseen > working > idle, ties by tab
-    order, not by the latest state change, which reshuffles on every
-    change). Freeze the order while the pointer is over the list and apply
-    it on leave; take the clicked agent from mouse-down, so a re-sort cannot
-    make the release hit another row; keep the selection by pane id. A
-    client preference like the spaces sort; `agent_panel_sort` only seeds it
-    when no preference is saved.
-  - Colour the agent rows under a space like the tabs: blue for the agent
-    selected in its space, grey for the others. Today only the globally
-    focused agent's task is `text`, the rest `subtext0`, barely different.
-    Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): both: selected means the
-    focused pane of the space's active tab (other agents split into that tab
-    stay grey; none is blue when that pane runs no agent); blue is accent
-    foreground, bold, on the task text only, grey is `overlay1`; no accent
-    background (it fights the grey selected-space row and hides the state
-    colours in ~28 columns); the state icon keeps its colour and the jobs
-    line stays secondary. They differ on background spaces: Astra shows
-    their selected agent blue too, which matches the request ("selected in
-    its space") but needs a new optional per-agent flag from the server
-    (`focused` is global; generation-1 codecs are frozen, so a compatible
-    extension, falling back to `focused` on older servers); DeepSeek shows
-    blue only in the current space, derivable from `focused` with no
-    protocol change. Decided: every space shows its selected agent blue
-    (Astra's), not only the current one.
-  - 2026-09-28: decided to replace the agents under each space with plain
-    vertical tabs, which supersedes the agents sort row, the per-agent
-    selected flag, the `other jobs` line and the agent colouring above.
-    `ui.sidebar.spaces.tabs = true` replaces `spaces.agents`: one line per
-    top-level tab in tab order (plain shells too; a tab with several agents
-    is one line), with the tab's state icon and the tab bar's label. Job
-    tabs nested under a tab are not listed; clicking the tab enters its
-    group's last focused tab and the child row at the top shows them. The
-    line ends with the running and failed counts of its nested jobs
-    (`⧖1 !1`), so a failed job in a background space stays visible;
-    truncate the label first. The active tab of every space is accent
-    foreground, bold (its group: an active child marks its parent's line);
-    `active_tab_id` gives this with no protocol change. With vertical tabs
-    on, the main tab row is hidden and the child row takes the top. A
-    collapsed worktree group shows no tabs. Consulted (GPT-6 Astra,
-    DeepSeek): both wanted some job signal (Astra counts, DeepSeek a
-    single `!` on failure only; counts chosen), agreed on hiding the main
-    row, listing shells, and the new option name. DeepSeek: if middle-click
-    close comes, refuse it when the tab has running jobs.
-  - Done 2026-09-28: the vertical tabs, and a disclosure triangle in front
-    of the space's name (`▼`/`►`, grey, two-column hit) that hides its tab
-    lines, as in tree-style tab lists; a worktree parent's triangle
-    collapses its child spaces and tabs together, replacing its right-edge
-    chevron. Consulted (GPT-6 Astra, DeepSeek): both chose `▼`/`►` (not
-    `▶`, which has an emoji form) and a dim colour; Astra merged the
-    parent's two collapses, DeepSeek wanted them separate. Hiding the tab
-    rows is done (job squares, below).
-  - Done 2026-09-29: a dim `+` at the right end of every space's name line
-    (2-column hit) opens and focuses a new tab in that space, whichever
-    space is focused, and expands a collapsed space; the drag grip moved a
-    column left, with a blank column between them, so the name line keeps
-    four columns free. Consulted (GPT-6 Astra, DeepSeek): Astra wanted it
-    always visible (chosen: a space that is not focused needs it most),
-    DeepSeek on hover only and apart from the grip (the gap column).
-  - Done 2026-09-28: only the tab lines have a background, in the tab
-    bar's colours, from the tab indent to one column before the right
-    edge: inactive `surface0`, the focused space's active tab accent-filled
-    (icon and counts in its text colour), other spaces' active tab the
-    accent tint; the focused space lost its grey block. Tabs without an
-    agent show `❏` (U+274F), job counts are right-aligned. Chosen from
-    mockups and real-terminal demos; tried and rejected gaps between tabs
-    (terminal cells fill the whole row; an underline in the background
-    colour or an empty row were the options). Consulted (GPT-6 Astra,
-    DeepSeek): both chose `surface0` (text contrast 4.66:1), preferred no
-    icon for agentless tabs, then `▣` (Astra) or `❏` (DeepSeek). Open
-    from the consults: white on accent `#4078F2` is 3.9:1; on the accent
-    fill working, done and waiting all show a white `●`.
-  - Decided 2026-09-28 (mockup
-    https://claude.ai/artifact/8Bu831GPSzW7F5kfoQ1U3W): job squares replace
-    the horizontal tab rows. Both rows go (main and child); a tab's job tabs
-    (its child tabs) show as squares on the lines under its vertical tab,
-    in start order, wrapping, 3 columns each (` ⧖ `, glyph in the state
-    colour on `surface0`, bold `!` and `✓`) with a 1-column gap. The open
-    job's square gets the accent tint (the parent tab's tint), glyph keeps
-    its state colour; its parent tab line is tinted too. Click a square to
-    open its job, click the open square again to go back to the parent tab.
-    Middle-click closes; a running job asks first (`Stop and close` /
-    Cancel). The `⧖1 !1` counts stay at the end of the tab line, and on
-    the space row when the space is collapsed. The squares are folded by default: clicking
-    an inactive tab only opens it; clicking the tab you are on unfolds its
-    squares, clicking it again folds them (the counts stay); with a job
-    open, clicking the parent tab goes back to the agent. Hovering a
-    square names it (and a failed job's exit code) on the sidebar's bottom
-    line. A succeeded square closes after 10 s, never while it is open or
-    while the pointer is over the sidebar, so squares never shift under the
-    mouse. No drag and drop. With the sidebar hidden there is no job
-    navigation for now: show the sidebar to switch.
-  - Over the open job one top line: ` ← `, the state glyph, the job name,
-    `--why`, the agent and space that started it and the job id (cut from
-    the right when narrow), and ` × ` at the right end. herdr-job's pinned
-    footer goes (the top line holds all of it).
-  - Done 2026-09-28: the squares (folded by default, client-local, not
-    saved), both tab rows hidden with `spaces.tabs`, square clicks and
-    middle-click close, and the top line. herdr-job draws the top line
-    itself as a pinned first row (a scroll region, as the footer was), and
-    herdr only turns clicks on its first and last three columns into back
-    and close, for a focused tab with a parent and a status. Consulted
-    (GPT-6 Astra, DeepSeek) on where the line lives: Astra wanted a
-    herdr-drawn row reserved while the workspace has nested tabs, with
-    `--why` and the job id sent to clients (a new codec: generation-1
-    codecs are frozen); DeepSeek wanted herdr-job's own row (no resize, no
-    protocol change). Chose DeepSeek's: a pane-owned row can be wiped by a
-    program that clears the screen, as the footer could. Both: unfolded
-    state client-local, not in the saved collapsed set; measure the square
-    rows once for layout and drawing, and again with the scrollbar column
-    when the list overflows. The follow-ups (hover name, held slots,
-    multi-machine squares) are done below.
-  - Changed 2026-09-28 (mockup updated, same link): a disclosure triangle
-    right before the counts, `► ⧖ 1 !1` (`▼` unfolded, dim grey, inside
-    the fill), folds and unfolds the squares; its hit runs from the
-    triangle to the fill's end. The rest of the line always opens the tab
-    itself, also from one of its jobs, never the job its group had open
-    last. A tab with only succeeded jobs shows the triangle alone; the
-    label is cut first, then the counts, the triangle last. Squares start
-    where the fill starts (column 5), not under the state icon. Consulted
-    (GPT-6 Astra, DeepSeek): both preferred this to clicking the active tab
-    (one meaning per target), the triangle on the right inside the fill
-    (the icon column stays the agent's state, and it cannot pass for the
-    space's triangle), no auto-unfold of failed jobs (it moves rows under
-    the pointer). Succeeded-only: Astra the triangle alone (chosen),
-    DeepSeek nothing.
-  - Changed 2026-09-29 at my request: the tab lines' fill (and the square
-    rows) reach the right edge, level with the space name line's `+`,
-    instead of stopping a column short.
-  - 2026-09-29: the square glyphs keep the theme's own status colours.
-    Compared in a terminal demo against darkening them to 3:1, 3.5:1 and
-    4.5:1, mixing toward the text colour, more saturation, a darker tint
-    and an accent frame (consulted GPT-6 Astra and DeepSeek: both chose
-    darkening to 3:1); I chose the original colours.
-  - Bug (2026-09-29, screenshot): a tab whose only job succeeded (kept
-    open with `--keep`) shows the `▼` triangle but no count, since the
-    summary counts only running and failed jobs; it should count succeeded
-    ones too (`✓1`). Fixed the same day: the line counts `⧖ !` and `✓`.
-  - Changed 2026-09-29 at my request, after a terminal demo of five
-    placements: a hovered square's job is named at once in a tooltip on
-    the square's row, right of the square, instead of in place of the tab
-    line's label (cut at ~12 columns). It takes no hover, so moving onto a
-    square it covers names that job; leaving the squares hides it.
-    Consulted (GPT-6 Astra, DeepSeek): both wanted it past the sidebar's
-    edge so it covers no square, and no label swap; Astra with the 450 ms
-    dwell, DeepSeek at once (chosen). The tooltip then lost the glyph (the
-    square shows the state) and took the square's fill, so the two read as
-    one.
-  - Changed 2026-09-29 at my request: a tooltip's text starts where its
-    target's text does (its padding column sits left of the target), a
-    cut tab label's tooltip keeps the line's own fill (tint, grey), and a
-    tab line's fill runs under the scrollbar, whose thin `▕` otherwise left
-    a white gap after it.
-  - Changed 2026-09-29 at my request, after a terminal demo of seven ways:
-    unfolded squares are followed by an empty row, so they do not run into
-    the next tab line. Consulted (GPT-6 Astra, DeepSeek): Astra wanted the
-    squares indented under the label, DeepSeek the parent's fill behind
-    them (both to spend no row); I chose the empty row.
-  - Bug (2026-09-29): the `new` button at the bottom creates a space and
-    scrolls the list to it, but a new tab (`+` or the new-tab key) in a
-    space low in the list does not scroll to the new tab line. Fixed the
-    same day: a change of the focused tab, not only of the focused space,
-    reveals it in the list.
-  - Done 2026-09-28: a succeeded job's tab does not close while it is the
-    focused tab (herdr's `focused`, the tab shown); herdr-job checks every
-    2 s and closes it once you leave it.
-  - Done 2026-09-28: hovering a square names its job (glyph and label) in
-    place of its tab line's label, the nearest stable row. A cap of three
-    square rows with a `+N` slot was tried and removed the same night at
-    my request: every square shows, and the list scrolls to them.
-  - Done 2026-09-28: the local spaces list scrolls by rows, not whole
-    spaces, so a space taller than the list scrolls through to its last
-    square; the wheel moves three rows. A space cut at the list's top or
-    bottom is drawn off screen and its visible rows copied (only those
-    one or two spaces per frame); its hits are moved and clipped. Every
-    space's row span, drawn or not, goes into the hit map, so space drag
-    and drop and revealing a space work with a space scrolled half out.
-    Revealing the focused space shows its name row and its active tab line
-    (or the open job's square), and only the deeper one when both do not
-    fit. Consulted (GPT-6 Astra, DeepSeek): both wanted row scrolling and
-    a renderer that takes a row offset instead of an off-screen copy;
-    chose the copy for the one or two cut spaces, as the renderers draw
-    into a rect. The multi-machine sidebar scrolls by rows too (done the
-    same night), so both use one unit. The local list also keeps its top
-    row on the same space and row when rows above come or go (squares
-    folding or closing), unless it was scrolled since (DeepSeek's anchor).
-    Still open: space drag and drop in the multi-machine sidebar still
-    works from the drawn spaces. Consulted
-    (GPT-6 Astra, DeepSeek): Astra chose the sidebar's footer for the name,
-    DeepSeek the tab line (chosen: next to the pointer, no chrome hidden).
-    For a space taller than the list, Astra wanted the list to scroll by
-    rows instead of whole spaces, DeepSeek the cap now and row scrolling
-    later (chosen: row scrolling touches drag and drop, reveal and the
-    scrollbar); the cap was then dropped for row scrolling (below).
-  - Done 2026-09-28: while the pointer is over the spaces list, a job tab
-    that closes (a success after 10 s, a close elsewhere) leaves a blank,
-    inert slot, so the other squares do not move under the pointer; new
-    jobs come last; leaving the list (or the window losing focus) closes
-    the gaps. The order is the one drawn last frame, not a snapshot taken
-    when the pointer enters (DeepSeek: no enter edge to miss). A blank slot
-    takes no click, so a middle-click there cannot fall through to closing
-    the space (Astra). A tab line that closes still moves the rest.
-  - Done 2026-09-28: the multi-machine sidebar shows squares for the
-    active machine's tab lines, which now take clicks like the local
-    sidebar's (focus, fold, squares); another machine's lines stay
-    folded and select its space. The unfolded tabs are kept per machine.
-    Both consults: active machine only, keyed by machine.
-  - Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): both called the squares
-    fine but removing the rows risky (no navigation with the sidebar
-    hidden, keyboard). Both wanted a per-tab number in the square (`1⧖`,
-    for `Alt-1…9`); I chose the glyph only. Both found "click the open
-    square again goes back" surprising; kept because I asked for it, with
-    `←` in the top line as a visible way back. Both: no drag and drop,
-    keep counts on a collapsed space, never reflow squares under the
-    pointer (a middle-click could stop the wrong job). DeepSeek wanted the
-    footer dropped (chosen); Astra wanted the top line and footer to split
-    the fields.
+- [ ] Remove the agents panel; fold agents into spaces. The spaces list
+  already shows vertical tabs with job squares (`DECISIONS.md`, "Vertical
+  tabs and job squares"); the old panel is only hidden by
+  `ui.sidebar.show_agents_panel = false`.
   Decided by the user 2026-10-06: remove the panel and
-  `show_agents_panel`; the attention counts move to the sidebar header;
-  raise the white-on-accent contrast from 3.9:1 to at least 4.5:1.
+  `show_agents_panel`; the attention counts (`◉1 ●1`: blocked, done and
+  unseen; clicking switches to prio) move to the sidebar header; raise the
+  white-on-accent contrast (`#4078F2`, 3.9:1) to at least 4.5:1.
+  - Also open: space drag and drop in the multi-machine sidebar still works
+    from the drawn spaces only.
 
 - [ ] Dragging a space does not show where it will land (screenshot
-  2026-09-26, dragging `herdr`). The dragged space keeps a grey background
-  much like the selected row, so two grey blocks are on screen; the drop
-  marker is a thin accent line in the gap row, which could belong to either
-  neighbour; and no-op slots (right above or below the dragged space) show a
-  marker like real targets. Here it sat under `herdr`, a drop that changes
-  nothing. Do it together with, or right after, the spaces redesign above,
-  whose blocks are taller.
-  - Decided 2026-09-26 after trying a prototype
-    (https://claude.ai/artifact/MNP3sXkyHSZSwCNnUDCiTX): variant C, live
-    swap, without collapsing. Past the drag threshold the block lifts
-    (accent bar in its first column, raised background, not the selection
-    grey) and follows the pointer row by row. When its middle passes a
-    neighbour's middle, the neighbour slides past it one row per frame
-    (~40 ms/row); swapping back needs the middle to pass the neighbour's new
-    middle, which gives hysteresis, so it does not flicker. On release the
-    block settles into its slot; on Esc or release outside the sidebar it
-    slides back. A fixed hint line says `move herdr before try-roguix · Esc`
-    or `no change`.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26) preferred
-    a still list with a labelled marker (Astra, DeepSeek) or a guarded live
-    preview (Luna); their constraints still apply to C: swaps happen only
-    between whole blocks (never inside a worktree family), and redraw only
-    when the order or the block's row changes.
-  - Do not collapse spaces while dragging (it moves the target as the user
-    aims). Worktree children move with the parent, labelled `herdr (+2)`.
-  - Done in part 2026-09-26: the list shows the drop live (the dragged
-    space and its worktrees move to where they would land), the dragged
-    block gets an accent bar instead of the grey, the thin line is gone,
-    the header says `herdr → before try-roguix`, `herdr → end` or
-    `no change · Esc`, and Esc cancels. The target is the landing slot
-    nearest the block's top (grabbed row kept) in the list without the
-    dragged block, so it does not flicker. Still open: the row-by-row
-    slide animation, the priority-view rule, and the local sidebar only
-    (with remote endpoints the aggregate sidebar keeps the old look).
-  - Done 2026-09-28: auto-scroll. A space dragged onto the list's top or
-    bottom row (or past it) scrolls the list a row every 60 ms, retargeting
-    the drop with the pointer where it is, and stops back inside the list;
-    local sidebar only (it scrolls by rows).
-  - Changed 2026-09-29 at my request: while a space is dragged the header
-    keeps its sort buttons; the `→ before …`, `→ end` and `no change`
-    hints went (the live reorder shows where it lands). Left:
-    `release cancels · Esc` outside the list and a refusal's reason. The
-    own order's button is `manual`, not `cust`, and the header's buttons
-    are one column apart, so `manual name ↑ prio ↓` leaves room for `✉N`.
-    Consulted (GPT-6 Astra, DeepSeek): both said to keep only those
-    exceptional hints; Astra chose `manual` (chosen), DeepSeek `custom`.
-  - Done 2026-09-29: right-click anywhere on a tab line (its summary
-    too) opens the tab menu with a `Close jobs:` row of chips, as the line
-    counts them, `⧖ 2  !1  ✓3`: a chip closes that state's job tabs (the
-    statuses when clicked, not when the menu opened); `⧖` asks first
-    ("Stop 2 running jobs?", naming them) and keeps the tab; chips appear
-    only for states with jobs. Keyboard moves through the chips as items.
-    Consulted (GPT-6 Astra, DeepSeek): both wanted one tab menu, no menu of
-    its own on the summary, and "close finished jobs"; Astra also a
-    confirmed "stop all", DeepSeek no stopping at all. I asked for
-    succeeded, failed and running separately, as chips on one row. Still
-    open: a per-job menu on a square (open, close).
-  - Next (screenshot 2026-09-29): a collapsed space does not show that it
-    is the focused one (the only focus mark is its active tab's fill, and
-    the tabs are hidden). A collapsed space is one line: no branch line,
-    its git status moves onto the name line without the branch name
-    (`► herdr ↑2 ⧖ 1 !3`), and the focused collapsed space's name line
-    gets the focused active tab's solid accent fill (same span as a tab
-    line). Consulted (GPT-6 Astra, DeepSeek): both: fill only the focused
-    collapsed space, no tint or grey on the others (nearly every space has
-    an active tab, so a tint says nothing, and grey reads as a tab); give
-    the collapsed line its own configurable token list (default
-    `workspace, git_status, tab_jobs`) instead of merging arbitrary row-2
-    tokens; the triangle, `+`, grip and job counts need readable colours on
-    the accent (as the tab line's `on_accent`); hover must differ from the
-    focus fill; a collapsed worktree parent whose child space is focused
-    gets the fill but needs a "focus inside" cue, and its git status must
-    not pass off one child's as the group's. They differ on order: Astra
-    git status before the job counts (as asked, chosen), DeepSeek jobs
-    first; both truncate the name first, then drop the git status, never
-    the job counts. DeepSeek also wanted the branch kept for worktree
-    children (rejected: their names already tell them apart).
-  - Done 2026-09-28: keyboard reorder. `keys.move_space_previous` and
-    `keys.move_space_next` (unset by default, e.g. `alt+shift+up/down`)
-    move the focused space one place in the sidebar's own order, with its
-    worktrees (a focused worktree moves its parent's family); only in cust
-    sort, like dragging; no wrap at either end; the list then reveals it.
-  - Drag starts only from the space's name line after a small threshold, so
-    clicks, chevrons and agent/job rows keep working; a click is suppressed
-    after a drag. Esc cancels. Time-based auto-scroll near the list edges.
-  - Priority view: no reordering, with a hint to switch to grouped.
-  - Keyboard reorder (move space up/down, whole family); none exists now.
-  - The move is sent by ids (`move X before Y`); if another client changed
-    the order or the anchor vanished, cancel with a notice.
+  2026-09-26, dragging `herdr`). The live reorder is done (`DECISIONS.md`,
+  "Dragging spaces"). Open:
+  - A collapsed space does not show that it is the focused one (screenshot
+    2026-09-29). A collapsed space is one line: no branch line, its git
+    status on the name line without the branch (`► herdr ↑2 ⧖ 1 !3`), and
+    the focused collapsed space's name line gets the focused active tab's
+    solid accent fill. Consulted (GPT-6 Astra, DeepSeek): fill only the
+    focused collapsed space; the collapsed line gets its own configurable
+    token list (default `workspace, git_status, tab_jobs`); the triangle,
+    `+`, grip and counts need readable colours on the accent; hover must
+    differ from the focus fill; a collapsed worktree parent whose child is
+    focused gets the fill plus a "focus inside" cue, and its git status must
+    not pass off one child's as the group's. Git status before the job
+    counts; truncate the name first, then drop the git status, never the
+    counts. Worktree children keep no branch.
+  - Not done: the row-by-row slide animation, a per-job menu on a square
+    (open, close), the drag in the multi-machine sidebar (keeps the old
+    look), the priority view (no reordering, a hint to switch). A move is
+    sent by ids (`move X before Y`); if another client changed the order or
+    the anchor vanished, cancel with a notice.
   Decided by the user 2026-10-06: the agent makes demos of the collapsed
   one-line space and the "focus inside" cue for worktree parents, then
   moves the item back under Needs a decision with the variants named, so
@@ -1030,62 +318,29 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
-  their work?
-  - Consulted models: do not ask the agent (it costs context and cannot replace its
-    own process); herdr restarts it. Version: record `claude --version` when
-    the pane starts, compare with the binary on disk (mtime only as a hint).
-  - Restart only when the pane is idle, not blocked, with no draft in the
-    input box, no subagents (`SubagentStop` hook) and no jobs; otherwise mark
-    it "restart pending". Then `/exit` and resume with the plan from
-    `src/agent_resume.rs` (`claude --resume <id>`, `pi --session <path>`),
-    one at a time.
-  - Menu with a preview: how many idle / working / blocked, pick which.
-    Launch flags (permission mode, model, env) must be recorded; resume does
-    not restore them. For pi, check that `--session` restores everything.
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Luna, 2026-09-26): call it
-    "Restart agents…", not "reload" (that reads as a config reload). A scoped
-    picker: current agent, selected agents, or the workspace, showing which
-    support resume; from the agent's menu and the global menu. Restart
-    idle agents, queue busy ones until idle; interrupting work needs an
-    explicit choice. The server orchestrates, agent adapters know resume.
-  - Stages (consulted 2026-09-26): first a manual restart of a selected idle
-    agent, after checking that launch flags are recorded and resume works;
-    then version detection, the "restart pending" queue and bulk restart.
-  - Stage 1 done 2026-09-26 as the `plugins/restart` plugin (not core):
-    menu actions for the focused pane and for the workspace's idle agents.
-    Launch flags come from the agent process's own argv (old resume
-    arguments and prompts dropped), so nothing has to be recorded; Claude
-    with a draft (non-dim text after `❯`) is skipped; SIGTERM, wait for the
-    shell, then `claude --resume <id>` / `pi --session <path>`. Tested live
-    on a throwaway Claude session. Still to do: version detection, the
-    restart-pending queue, a preview/picker, pi's draft check.
+  their work? The manual restart exists (`DECISIONS.md`, "Restart agents").
   Decided by the user 2026-10-06: when an update is detected, only mark
   the agents "restart pending"; the user restarts them from the menu; no
   automatic restart.
+  - Version: record `claude --version` when the pane starts, compare with
+    the binary on disk (mtime only as a hint).
+  - Still to do: version detection and the restart-pending mark, a
+    preview/picker (how many idle / working / blocked; current agent,
+    selected agents or the workspace, showing which support resume), pi's
+    draft check. Restart only an idle pane: not blocked, no draft, no
+    subagents (`SubagentStop` hook), no jobs; one at a time.
 
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
   ends with new commits, list them as "to review" until I acknowledge them.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-27): a plugin with a
-    popup, no new core state. Uncommitted changes in the shared checkout
-    cannot be attributed to one agent (neither HEAD nor file mtimes tell who
-    changed what), so the unit is the commit.
-  - At turn start record the session id and HEAD; at turn end find new
-    commits carrying `Claude-Session: <id>`. Enqueue only when there are
-    commits, not on every finished turn. Viewing the pane clears "done" as
-    today; only an explicit acknowledgement clears "to review".
-  - Show each commit's own patch (delta or lazygit), never
-    `git diff first^..last`: with other agents committing to master the range
-    includes their commits. Leftover uncommitted files get one line:
-    "N uncommitted (unattributed)".
-  - Sidebar token like `review 3c / 5f`; on the phone one item at a time
-    with next/previous, no side-by-side diffs.
-  - Open questions: the trailer is per session, not per turn, and only
-    Claude adds it; Codex and pi need an equivalent (or hook-reported
-    commits). Prototype a plain commit list first: maybe lazygit in a popup
-    is already enough.
   Decided by the user 2026-10-06: start with lazygit in a popup on the
   tab's repository, no new code beyond that; a herdr-native list only if
-  that falls short.
+  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
+  unit is the commit (uncommitted changes in the shared checkout cannot be
+  attributed); at turn start record the session id and HEAD, at turn end
+  find new commits carrying `Claude-Session: <id>`; show each commit's own
+  patch, never `git diff first^..last` (other agents' commits fall in the
+  range); only an explicit acknowledgement clears "to review". Codex and pi
+  need an equivalent of the trailer.
 
 - [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06,
   after a consult round on GLM and Kimi, `20261006-221442-cf9e`, where both
@@ -1105,25 +360,20 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 - [ ] Pin a space, like a pinned tab: a pin icon on the space row, and
   pinned spaces stay at the top of the spaces list. Consulted (GPT-6 Astra,
   DeepSeek, 2026-09-28), both agreed on:
-  - Pinned first in every sort mode (cust, name, prio); the sort and its
-    direction apply inside each tier. If it only worked in cust it would
-    duplicate the manual order. Maybe a separator line between the tiers,
-    so `name ↑` honestly sorts only the unpinned ones (DeepSeek).
+  - Pinned first in every sort mode (manual, name, prio); the sort and its
+    direction apply inside each tier.
   - A 1-cell narrow glyph (ASCII `*` or `▪`), not 📌 (double width, emoji)
     and no nerd-font requirement; in a fixed leading column, so names do
-    not shift when a space gets pinned.
+    not shift when a space gets pinned. The icon is only an indicator.
   - Server-owned session state (like the manual order), in the JSON API;
-    the sort mode stays client-only. Pins affect every client. In the
-    multi-machine sidebar pins apply per server.
+    the sort mode stays client-only. In the multi-machine sidebar pins apply
+    per server.
   - Pin/Unpin in the space's context menu, plus a keybinding; no drag to
-    pin. The icon is only an indicator (1 cell is a poor click target).
-  - Worktree families are pinned whole; a child's menu says "Pin family".
-    Drag in cust moves within a tier (Astra: refuse crossing the boundary;
-    DeepSeek: dragging out unpins); unpinning keeps the underlying manual
-    order. Pinned spaces never go into `other spaces (N)`.
+    pin. Worktree families are pinned whole; a child's menu says "Pin
+    family". Unpinning keeps the underlying manual order.
   - Cost to weigh: in prio an idle pinned space sits above an unpinned
     blocked one; urgent unpinned agents need another cue (the header
-    attention counts, still without a place).
+    attention counts).
   Decided by the user 2026-10-06: dragging a pinned space out of the
   pinned group is refused, and a separator line divides pinned from
   unpinned spaces; unpin from the menu. Pinned spaces come first in every
@@ -1131,21 +381,15 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 - [ ] Audit whether colours and symbols are consistent across the UI
   (sidebar, mobile layout, tabs, toasts, job statuses `⧖ ✓ !`, state dots).
-  - Plan: an inventory (glyph or colour, meaning, where used), then
-    conflicts (one colour with two meanings, one meaning with two glyphs),
-    then a single mapping in code.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): fold it into the
-    planned state-shape redesign above; one colour meaning different things
-    in different contexts is not automatically a conflict. Check it without
-    colour (colour-blind users, monochrome), in light and dark themes and
-    narrow layouts. Generate the legend from the code, not by hand, or it
-    drifts.
+  Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): one colour meaning
+  different things in different contexts is not automatically a conflict;
+  check it without colour, in light and dark themes and narrow layouts.
   - Audit (2026-09-28), conflicts by severity:
     1. `Done` is teal in `status_color` (`src/client/shell.rs`) but blue in
        the mobile summary (`mobile.rs`) and finished toasts
        (`notifications.rs`); in most themes blue equals `accent`.
-    2. The default Dots style draws working, blocked, done and
-       waiting-on-job all as `●`: colour alone tells them apart.
+    2. The Dots style draws working, blocked, done and waiting-on-job all
+       as `●`: colour alone tells them apart.
     3. Blocked has three glyphs: `●` (Dots), `×` (Symbols), `◉` (mobile);
        other red problems use `!`.
     4. `◐` is both agent working and endpoint connecting, both yellow.
@@ -1163,53 +407,35 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     twice in `notifications.rs`. Model to follow:
     `endpoint_status_presentation` (`endpoints.rs`) returns glyph, label
     and colour together. Next: one `status_style` module per domain (agent,
-    job, endpoint, notification) and semantic palette roles, decided
-    together with the state-shape redesign.
+    job, endpoint, notification) and semantic palette roles.
   Decided by the user 2026-10-06: the agent makes demos of a few palette-
   role variants (e.g. Done teal vs blue) for the user to view in a tab,
   then moves the item back under Needs a decision with the variants named,
   so the user picks with a click; the legend item waits for that choice.
 
 - [ ] No view of how much memory and CPU spaces, tabs and jobs use (user,
-  2026-10-03). Consulted sol and MiMo (round `20261003-163010-4ae0`); both
-  keep a server-owned sampler and "CLI first, modal later". Plan:
-  - Sampler in the server, running only while someone subscribed (a CLI
-    `--watch` or an open view), pushing `resources.sampled` events; no
-    always-on cost, no client timer requests on the command lane. One worker,
-    no overlapping scans, cached snapshots with timestamp, interval, metric
-    kind and partial/error status; measure its own cost.
-  - One process enumeration per tick for the whole machine (macOS
-    `proc_listallpids` + `proc_pidinfo`, Linux `/proc`), one parent graph,
-    each `(pid, start time)` assigned once; never one walk per pane (sol).
-  - Attribution: the pane's PTY child tree, plus processes still holding the
-    pane's controlling tty (MiMo); process groups and sessions are no use
-    (`setsid` resets both). Daemons that escaped (cargo build server,
-    rust-analyzer, docker, a detached qemu) go into a `shared / unattributed`
-    row, not onto a pane, or the totals lie. The `HERDR_PANE_ID` env marker
-    (already set in `src/pane.rs`) needs `KERN_PROCARGS2` per pid on macOS:
-    later, benchmark first, never show env contents. Linux cgroups per pane:
-    later. herdr's own server and clients get their own row.
-  - CPU: per-process deltas of native counters (macOS task info ns, Linux
-    utime+stime) before summing, never a difference of changing tree totals;
-    label "% of one core" (sums above 100% are normal). Not `ps cputime` on
-    Linux (whole seconds; macOS `ps` has centiseconds).
-  - Memory: macOS `phys_footprint` labelled "footprint"; Linux RSS labelled
-    "RSS" by default (MiMo: `smaps_rollup` is costly on large processes),
-    PSS only on an explicit refresh; never mix metrics in one total, and
-    never call a sum "memory freed by closing this space".
-  - Jobs are tabs flagged as jobs, not a separate bucket.
-  - First slice: API method `resources.snapshot` + subscription, and
-    `herdr top` (space > tab > pane totals, process count, CPU, memory, sample
-    age; `--sort cpu|mem`, `--json`, `--watch`). A cheaper prototype (sol):
-    one `ps` per tick in the server plus the same graph aggregation, RSS
-    labelled as an estimate. Later: a Resources modal (sortable tree), top
-    processes per pane, tab tooltips (they force sampling on hover).
-  - Tests: aggregation over a synthetic process graph (reparenting, pid
-    reuse, a shared daemon, tty holders), no sampling without a subscriber,
-    the sampler stops after the last subscriber disconnects.
+  2026-10-03). Round `20261003-163010-4ae0` (sol, MiMo).
   Decided by the user 2026-10-06: start with a `herdr top` prototype
   computed from `ps` and each pane's process tree, with no new API
-  contract; the native sampler and `resources.snapshot` wait.
+  contract (space > tab > pane totals, process count, CPU, memory, sample
+  age; `--sort cpu|mem`, `--json`, `--watch`); the native sampler and
+  `resources.snapshot` wait. Constraints for both:
+  - One process enumeration per tick for the whole machine, one parent
+    graph, each `(pid, start time)` assigned once; never one walk per pane.
+  - Attribution: the pane's PTY child tree plus processes still holding its
+    controlling tty; daemons that escaped (cargo build server,
+    rust-analyzer, docker) go into a `shared / unattributed` row, never onto
+    a pane. herdr's own server and clients get their own row. Jobs are tabs,
+    not a separate bucket.
+  - CPU: per-process deltas before summing, labelled "% of one core". Not
+    `ps cputime` on Linux (whole seconds).
+  - Memory: macOS `phys_footprint` labelled "footprint", Linux RSS labelled
+    "RSS" (the `ps` prototype: an estimate); never mix metrics in one total,
+    never call a sum "memory freed by closing this space".
+  - The native sampler later: server-owned, runs only while subscribed,
+    pushes `resources.sampled`, measures its own cost.
+  - Tests: aggregation over a synthetic process graph (reparenting, pid
+    reuse, a shared daemon, tty holders).
 
 - [ ] Track which buttons the user never clicks, to drop them from roherdr
   (user, 2026-10-07: "it would be useful to somehow track which buttons I
@@ -1346,40 +572,30 @@ Items agents add. Not approved until the user moves them up.
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
-user needs to decide or do. Item text is unchanged.
+user needs to decide or do.
 
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
-  states, sort buttons, the grip, footer provider codes). Nothing in the UI
-  explains them today. Ties in with the colour and symbol audit above: the
-  legend should come from the same glyph/label/colour mapping.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28), both: a full
-    modal (the sidebar's 28 columns cannot hold explanations), opened by a
-    `?` button in the sidebar header, plus a menu entry and a prefix
-    keybinding; never a bare `?`, which belongs to the agent's terminal.
-    Hover tooltips come later as a supplement, never the only way (tmux
-    drops motion, no keyboard access, and five glyphs cannot be compared
-    at once). No first-run hint (gone before it is needed).
+  states, sort buttons, the grip, footer provider codes). A status legend
+  for agent and job states exists (`DECISIONS.md`, "Status legend",
+  `src/client/shell/status_legend.rs`); the other domains are open.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): a full modal,
+    never a bare `?` (it belongs to the agent's terminal); hover tooltips
+    only as a supplement; no first-run hint.
   - Content per domain (agent, job, git, endpoint, controls, usage):
     glyph, label, one-line meaning and a swatch in the theme's actually
-    rendered colour, never a colour name ("yellow" lies when a theme
-    collapses peach into yellow). Explain the counts by example (`!2` two
-    failed jobs, `↑4` four commits ahead); Astra: define what `±7` counts
-    (files or lines) and never describe planned glyphs as current.
-  - Generated from the per-domain `status_style` mapping of the audit above
-    (glyph, label, colour, explanation), with a test that every state
-    variant has an entry, so a new state cannot ship unexplained. Unknown
-    states from older remote servers show as "unknown status".
-  - DeepSeek: an "on screen now" filter at the top of the modal; a warning
-    when the theme gives two states the same colour. Both: a legend exposes
-    colour-only meaning (Dots draws four states as `●`) but does not fix
-    it; the shape redesign must.
-  - Order: they differ. DeepSeek: after the consolidation and the shape
-    redesign. Astra: together with the consolidation, not waiting for the
-    redesign. Astra's, I think: a generated legend follows the redesign
-    for free, and it helps now, while the glyphs are most confusing.
+    rendered colour, never a colour name. Explain the counts by example
+    (`!2` two failed jobs, `↑4` four commits ahead); define what `±7`
+    counts (files or lines); never describe planned glyphs as current.
+  - Generated from the per-domain `status_style` mapping of the audit item,
+    with a test that every state variant has an entry. Unknown states from
+    older remote servers show as "unknown status". DeepSeek: an "on screen
+    now" filter; a warning when the theme gives two states the same colour.
+  - Order: DeepSeek after the consolidation and the shape redesign; Astra
+    together with the consolidation (my preference: a generated legend
+    follows the redesign for free).
   Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
 
 ### Needs you to act or watch
@@ -1392,28 +608,18 @@ user needs to decide or do. Item text is unchanged.
 - [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
   consult stats? we have Rust. ask the models"). `page-consult` pages
   `consult.py` output with `less -R`; a popup is a real PTY pane
-  (`spawn_popup_command`, `src/app/popup.rs`). Consulted Sol, DeepSeek and MiMo
-  (round `20261003-022724-693a`), unanimous: keep `less` for now; "we have Rust"
-  is not a reason by itself, since the problem is viewing text, not the language.
-  - Reject a herdr pager subcommand (`herdr pager FILE`): it rebuilds `less`
-    (search, keys, ANSI, resize, mouse) and still runs inside a PTY, so it
-    gains nothing at the runtime/client boundary.
-  - Reject rewriting `consult.py stats` in Rust inside herdr: orthogonal, and it
-    couples personal analytics to the multiplexer.
-  - First step, a spike: a temporary popup with `command = ["seq", "1", "300"]`.
-    Does the popup keep scrollback, scroll with the mouse wheel and start at the
-    top? Does it get SIGWINCH on resize? If yes, drop `less` from
-    `page-consult` (print, then wait for Enter): mouse-first, no external pager,
-    but no `/` search. `less` runs on the alternate screen, so herdr's
-    scrollback sees nothing while it runs. If popups do not scroll, that is a
-    herdr defect worth fixing on its own.
-  - Later, only if several plugins want it (DeepSeek, MiMo): a manifest text
-    popup whose command's stdout herdr renders itself (no PTY, works on Windows
-    and remote clients). It is a new pane type: server-owned content,
-    client-owned viewport, reflow on resize, output limits, stderr and exit
-    status.
-  - Known limit either way: the tables are fitted to the width at launch; a
-    resized popup does not regenerate them.
+  (`spawn_popup_command`, `src/app/popup.rs`). Round `20261003-022724-693a`
+  (Sol, DeepSeek, MiMo), unanimous: keep `less` for now. Rejected: a herdr
+  pager subcommand (rebuilds `less` inside a PTY), rewriting `consult.py
+  stats` in Rust inside herdr.
+  - First step, a spike: a temporary popup with `command = ["seq", "1",
+    "300"]`. Does it keep scrollback, scroll with the wheel, start at the
+    top, get SIGWINCH on resize? If yes, drop `less` from `page-consult`
+    (print, then wait for Enter; no `/` search). If popups do not scroll,
+    that is a herdr defect worth fixing on its own.
+  - Later, only if several plugins want it: a manifest text popup whose
+    command's stdout herdr renders itself (a new pane type).
+  - Known limit either way: tables are fitted to the width at launch.
   Triage 2026-10-06 (manual): The first step is a live popup spike (scrollback, wheel scroll, start at the top, SIGWINCH) that needs you watching the real UI; a popup steals focus.
 
 - [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
@@ -1421,340 +627,149 @@ user needs to decide or do. Item text is unchanged.
     newline characters into copied multiline text. Determine whether these
     are extra breaks at visual wraps rather than intentional paragraph/code
     breaks. No exact reproduction or clipboard-byte comparison yet.
-  - Installed Pi 0.99.1 fullscreen `getActiveSelectionText()` reads rendered
-    rows and joins them with `\n` in `pi-tui/dist/tui-alt-screen.js`.
-    This is a plausible mechanism in fullscreen, not proof for regular mode.
-    Global settings currently omit `tuiMode` (default regular); CLI/project
-    overrides and the user's actual gesture remain unknown. Do not assume
-    Claude's selection implementation without inspecting/reproducing it.
-  - Consulted DeepSeek and Gemini (low/medium/high): compare the same
-    synthetic paragraph, real-newline code block, unwrapped control and
-    Unicode text at 80/120 columns, in Pi regular/fullscreen and Claude CLI.
-    Record terminal/version, resize geometry, mouse modifiers and whether
-    copying uses terminal selection, Pi copy-on-select or OSC 52/native
-    clipboard. Compare exact LF/CRLF bytes, not just pasted appearance.
-    Preserve real newlines, indentation, graphemes and trailing spaces;
-    never fix this by blindly joining every selected row. Do not inspect or
-    overwrite the user's existing clipboard without permission; use a
-    disposable synthetic reproduction. No upstream issue without reproduction.
+  - Pi 0.99.1 fullscreen `getActiveSelectionText()` joins rendered rows with
+    `\n` (`pi-tui/dist/tui-alt-screen.js`): plausible in fullscreen, not
+    proof for regular mode (the default; global settings omit `tuiMode`).
+  - Consulted DeepSeek and Gemini: compare the same synthetic paragraph,
+    real-newline code block, unwrapped control and Unicode text at 80/120
+    columns, in Pi regular/fullscreen and Claude CLI; record terminal,
+    version, geometry, modifiers and the copy path (terminal selection, Pi
+    copy-on-select, OSC 52); compare exact LF/CRLF bytes. Never fix this by
+    blindly joining every selected row. Do not inspect or overwrite the
+    user's clipboard without permission. No upstream issue without
+    reproduction.
   Triage 2026-10-06 (manual): Needs your real gesture, terminal, Pi mode and copy path for a live reproduction; the item forbids touching your clipboard without permission.
 
 - [ ] Update automatic terminal/tab titles to reflect current activity, as
   in other terminals (screenshot, 2026-09-30 02:14). The selected sidebar
   tab says `env` while its pane runs `brew update` / `brew upgrade --formula`.
-  Investigate the source of `env` and title precedence before assigning a
-  cause: launch label, shell-emitted OSC 0/2, explicit name, or stale state.
-  Consulted DeepSeek 2026-09-30: honor shell-provided titles first; do not
-  assume every terminal infers foreground commands. Preserve explicit user
-  names. Consider a foreground-command fallback only when reliable and no
-  meaningful emitted title is available; launch wrappers must not remain
-  the automatic label when a better source exists. Verify command-to-prompt
-  restoration, consecutive commands, empty OSC titles, explicit names and
-  shells with/without title emission. Sanitize and bound title text; avoid
-  flicker, output-driven churn and per-render process-tree polling. Check
-  many-pane idle overhead if fallback detection is added. No root cause
-  verified and no implementation approved yet.
-  - Probable cause found 2026-10-01 (not reproduced live): the tab label comes
-    from the program leading the pane's foreground group (`TerminalState::
-    running_label`), and `ForegroundProgramTracker` looks that name up once
-    per new group. A command like `env VAR=1 brew upgrade` starts as `env`,
-    which then execs the real program inside the same group, so the group
-    kept the name `env`. Mitigation committed (not installed): wrappers
+  - Probable cause (not reproduced live): the label comes from the program
+    leading the pane's foreground group, looked up once per group, and
+    `env VAR=1 brew upgrade` starts as `env`. Mitigation committed: wrappers
     (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `timeout`, `sudo`,
-    `doas`) are looked up again for up to six ticks per group, then believed.
-    Bounded extra work, only for panes running a wrapper. Not done: the rest
-    of this item (a title or foreground-command fallback beyond the program
-    name, OSC title precedence), and the user should say whether `env` still
-    appears after the next install.
+    `doas`) are looked up again for up to six ticks per group.
+  - Open: a title or foreground-command fallback beyond the program name,
+    and OSC title precedence. Consulted DeepSeek 2026-09-30: honor
+    shell-provided titles first; preserve explicit user names; a
+    foreground-command fallback only when reliable and no meaningful emitted
+    title exists; sanitize and bound titles; no flicker, output-driven churn
+    or per-render process-tree polling.
   Triage 2026-10-06 (manual): Tell whether `env` still shows in the title after the next install.
 
 - [ ] Telegram notifications when I am away from the Mac (agent blocked,
   agent done, herdr-job finished).
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): Telegram
-    is a good fit: a bot sends to my private chat (`chat_id`), free, reliable
-    Android push, no Meta-style restrictions (Instagram was rejected: no API
-    for broadcast channels, DMs need app review and a 24h reply window).
-    Bot chats are not end-to-end encrypted. ntfy or Pushover as alternatives.
-  - A plugin subscribing to the socket API events, not core; bot token and
-    `chat_id` in the plugin config, never in payloads. Check whether
-    herdr-job completion reaches that event stream. Transitions only: to
-    blocked, to done, job finished/failed; dedup per pane and approval
-    request, coalesce bursts, drop an alert that is stale (agent resumed).
-  - Send only when away: no attached client or all clients idle for N
-    minutes, plus an explicit away/mute toggle.
-  - Content: the same text as the toast (`claude finished` plus
-    `workspace · 1 · tab`, see `notification_context`); it has no paths,
-    prompts or agent output, which is fine for a private bot chat.
-  - Later: inline keyboard buttons (approve / deny) answered through the
-    herdr socket, accepting callbacks only from my own user id.
-  - Start with a spike (consulted 2026-09-26): does herdr-job completion
-    reach the event stream, and can "away" be detected without core
-    changes? Then the plugin.
-  - Spike done 2026-09-26, no core change needed: agent blocked/done comes
-    as `pane.agent_status_changed`, which runs plugin `[[events]]` hooks (no
-    daemon). herdr-job completion has no event (tab status changes emit
-    none), but herdr-job already runs `notify()` at the end, so it can call
-    the plugin's sender itself. The API knows nothing about attached
-    clients or their idleness; "away from the Mac" is better read from the
-    OS: macOS `ioreg -c IOHIDSystem` `HIDIdleTime` (keyboard/mouse idle),
-    on Linux logind's `IdleHint` or `xprintidle`, plus a manual away/mute
-    action writing a state file. Blocked on: a bot token and `chat_id` from
-    me, to test sending.
+  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): a
+    Telegram bot sending to my private chat (`chat_id`); Instagram rejected
+    (no API for it). Bot chats are not end-to-end encrypted. ntfy or
+    Pushover as alternatives.
+  - A plugin, not core: agent blocked/done comes as
+    `pane.agent_status_changed` through plugin `[[events]]` hooks; herdr-job
+    completion has no event, so herdr-job's `notify()` calls the plugin's
+    sender. Bot token and `chat_id` in the plugin config, never in payloads.
+    Transitions only; dedup per pane and approval request, coalesce bursts,
+    drop a stale alert.
+  - Away: read it from the OS (macOS `ioreg -c IOHIDSystem` `HIDIdleTime`,
+    Linux logind's `IdleHint` or `xprintidle`) plus a manual away/mute
+    action writing a state file; the API knows nothing about idle clients.
+  - Content: the toast text (`claude finished` plus `workspace · 1 · tab`):
+    no paths, prompts or agent output. Later: approve/deny buttons answered
+    through the herdr socket, accepting callbacks only from my own user id.
   Triage 2026-10-06 (manual): The spike is done; give a bot token and `chat_id` so sending can be tested.
 
-- [ ] Run the Windows checks for fork commits. Nobody does today: the
-  Windows SDK for `just windows-lint` is not set up on the Mac (no `xwin`),
-  so `just check` fails there and agents run narrower checks, and the fork
-  has never had a GitHub Actions run although `ci.yml` has a
-  `windows-latest` job (`just check` in pwsh plus the ConPTY smoke test).
-  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`,
-    integration v11): the awaiting-reply instruction it prints from
-    `SessionStart` and the `Bash(herdr agent awaiting-reply)` rule are
-    untested there (Claude may run commands through PowerShell).
+- [ ] Run the Windows checks for fork commits locally. Fork CI runs by
+  dispatch and is green on Windows (`DECISIONS.md`, "Fork name, CI and
+  releases"), but the Windows SDK for `just windows-lint` is not set up on
+  the Mac (no `xwin`), so `just check` fails there and agents run narrower
+  checks.
   - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
     (the user accepts Microsoft's SDK license), and prove a full
     `just check` passes before the fork section of AGENTS.md requires it.
     Cross-clippy only catches compile and lint errors in `cfg(windows)`
     code; it runs no Windows tests.
-  - CI: activate Actions in the fork's Actions tab and verify that a push
-    to `master` really starts a CI run. Native Windows CI is the only
-    runtime check (tests, ConPTY, paths), and shared TUI code can break
-    there without touching `cfg` code.
-  - Before activating, disable the workflows that would fail or misfire on
-    the fork with `gh workflow disable` (UI state, so no rebase conflicts
-    with upstream): `label-next-release-issues.yml` and
-    `website-deploy.yml` have no `github.repository == 'herdrdev/herdr'`
-    gate and need upstream secrets. `preview`, `release` and `pr-gate` are
-    gated; the rest are PR- or path-triggered. After each upstream rebase,
-    check for new workflows.
-  - Ownership: the agent that pushes a commit watches that SHA's run
-    (`herdr-job run -- gh run watch <id> --exit-status`) and fixes a red
-    run before pushing more.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): both say local
-    cross-lint is necessary but not sufficient; Astra added verifying the
-    activation and the per-SHA ownership, DeepSeek the post-rebase workflow
-    check and that a fresh machine without the SDK fails `just check`.
-  Triage 2026-10-06 (manual): Accept Microsoft's SDK license for xwin and turn on Actions in the fork; the Windows hook needs a live test on Windows.
+  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`): the
+    awaiting-reply instruction it prints from `SessionStart` and the
+    `Bash(herdr agent awaiting-reply)` rule are untested there (Claude may
+    run commands through PowerShell).
+  Triage 2026-10-06 (manual): Accept Microsoft's SDK license for xwin; the Windows hook needs a live test on Windows. (Turning on Actions is done: CI runs by dispatch.)
 
-- [ ] Awaiting reply for agents other than Claude (pi done 2026-10-01; the rest open), the same way as their
-  integrations (user, 2026-09-28): each integration that can add session
-  context (a session-start hook, an extension, a plugin) injects the same
-  instruction, and where the agent has a command allowlist the install
-  adds `herdr agent awaiting-reply` to it, so reporting never stops at a
-  permission prompt. Integrations today: antigravity_cli, codex, copilot,
-  cursor, devin, droid, grok, hermes, kilo, kimi, letta, mastracode, omp,
-  opencode, pi, qodercli, qwen. Check per agent what it offers; bump each
-  changed integration's version once; try each live.
-  - Pi done 2026-10-01 (committed; linked into `~/.pi/agent/extensions/` by
-    `plugins/pi-title/install`, active after `/reload` or a new session):
-    `pi-awaiting-reply.ts` adds the instruction as a named system-prompt
-    section in Herdr's TUI mode, since Pi has no command allowlist to edit and
-    the managed `herdr-agent-state.ts` is overwritten on reinstall (an
-    integration-version bump would also drift from upstream's numbering).
-    Not verified in a live Pi session. The other integrations (antigravity,
-    codex, copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
-    mastracode, omp, opencode, qodercli, qwen) are untouched: each needs its
-    own live check, which I cannot do here.
+- [ ] Awaiting reply for agents other than Claude and pi, the same way as
+  their integrations (user, 2026-09-28): each integration that can add
+  session context (a session-start hook, an extension, a plugin) injects the
+  same instruction, and where the agent has a command allowlist the install
+  adds `herdr agent awaiting-reply` to it. Open: antigravity_cli, codex,
+  copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
+  mastracode, omp, opencode, qodercli, qwen; check per agent what it
+  offers, bump each changed integration's version once, try each live.
+  Pi's extension is not verified in a live Pi session yet (`DECISIONS.md`,
+  "Awaiting-reply for pi").
   Triage 2026-10-06 (manual): Pi is done but not checked live; each of the 16 other integrations needs a live check in that agent with your accounts.
 
-- [ ] Refresh the README's "Fork changes" so it says how the fork differs
-  now, with a small looping animation under each change.
-  - Text part done 2026-10-01 (committed): the README now lists tab-line
-    drag, the spaces filter, the animated glyphs (the hourglass is gone), the
-    fork build's refusal of upstream updates and the `pi-title` plugin; the
-    demo scripts say `consult` instead of `oracle` (the plugin was renamed;
-    `record.sh` linked a `plugins/oracle` that no longer exists). Still
-    open: the looping clips (animated WebP pilot), which need a recording
-    session in a real terminal and browser.
-  - Audit first (vertical tabs, the disclosure triangle and
-    `show_agents_panel` are in the README since 2026-09-28);
-    `scripts/fork_demo/README.md` still
-    says "oracle stats" where the menu item is "consult stats".
-  - Format (consulted GPT-6 Astra and DeepSeek, 2026-09-28): a video can't
-    autoplay or loop on github.com (the sanitizer drops `autoplay`/`loop`,
-    user-attachments videos are click-to-play), so use animated WebP as an
-    `<img>`: far smaller than GIF, loops, Safari 14+. Avoid animated AVIF
-    (patchy support). Pilot one clip in the real rendered README (Chrome,
-    Safari, GitHub mobile app) and compare it with a GIF before making the
-    rest. Keep the long MP4 as the full walkthrough.
+- [ ] Refresh the README's "Fork changes" with a small looping animation
+  under each change (the text part is done). `scripts/fork_demo/README.md`
+  still says "oracle stats" where the menu item is "consult stats".
+  - Format (consulted GPT-6 Astra and DeepSeek, 2026-09-28): video cannot
+    autoplay or loop on github.com, so animated WebP as an `<img>`; not
+    animated AVIF. Pilot one clip in the rendered README (Chrome, Safari,
+    GitHub mobile app) against a GIF before making the rest. Keep the long
+    MP4 as the full walkthrough.
   - Clips: each scene of `record.py` runnable on its own from a fresh
-    state, so one changed feature re-records one clip; crop to the feature
-    with enough context; 3-6 s, 8-12 fps, a hold before and after the
-    action so the loop seam is calm; about 500 KB each, under 4 MB total.
-    No caption bar (the bullet is the caption); alt text on every image.
-    Keep scene, crop and encoder settings in the script, not done by hand.
-  - Text must stay readable at README width, desktop and mobile: don't
-    downscale the 104-column window below 1:1, or record fewer columns or
-    a bigger font instead.
-  - Storage: files under `assets/fork/` with relative links, new file names
-    on re-record (camo caches). Each re-record adds its size to git
-    history; if that grows, move them to an orphan `assets` branch.
+    state; crop to the feature; 3-6 s, 8-12 fps, a hold before and after;
+    about 500 KB each, under 4 MB total; no caption bar; alt text on every
+    image; scene, crop and encoder settings in the script. Never downscale
+    the 104-column window below 1:1.
+  - Storage: `assets/fork/` with relative links, new file names on
+    re-record (camo caches); an orphan `assets` branch if history grows.
   - Risk: seven loops at once are distracting and ignore reduced-motion;
-    if it looks busy, use a static frame per bullet linking to its clip.
+    if it looks busy, a static frame per bullet linking to its clip.
   Triage 2026-10-06 (manual): The text is done; the clips need a recording session in a real terminal and a pilot in Chrome, Safari and the GitHub mobile app.
 
 - [ ] Open a herdr tab with Cmd+T (macOS), as Cmd+W closes panes.
-  - Set up 2026-09-28: dotfiles Ghostty config has `cmd+t=unbind`, with no
-    replacement key (the user's choice); herdr config has
-    `[keys] new_tab = ["prefix+c", "cmd+t"]` (prefix+c kept for SSH and
-    terminals without super key reporting). Consulted GPT-6 Astra and
-    DeepSeek: no objections.
-  - Verify after reloading Ghostty: Cmd+T opens a herdr tab in the current
-    space; File > New Tab still opens a Ghostty tab;
-    Cmd+Shift+T is still Ghostty's undo, not a herdr tab.
-  - Linux: Ctrl+Shift+T opens a tab and Ctrl+Shift+W closes a pane, the
-    keys Ghostty uses there; plain Ctrl+T/W stay shell keys (fzf file
-    picker, transpose-chars, backward-kill-word). herdr's kitty keyboard
-    flags keep Ctrl+Shift+T apart from Ctrl+T. The dotfiles config is
-    shared and herdr has no per-OS keys, so herdr takes Ctrl+Shift+T/W on
-    macOS too, and Cmd+T/W on Linux. Ghostty: `ctrl+shift+t/w=unbind`,
-    with no replacement keys (the user's choice). Consulted GPT-6
-    Astra and DeepSeek, 2026-09-28: no blockers. Costs: Ghostty loses
-    Ctrl+Shift+T/W outside herdr (a plain shell may get them as ^T/^W),
-    and programs inside herdr never see them.
-  - Checked in Ghostty v1.3.1 `src/config/Config.zig` (non-Darwin
-    defaults): `ctrl+shift+t=new_tab`; `ctrl+shift+w` is put twice,
-    `close_surface` then `close_tab:this`, and the later put wins, so it
-    closes the tab.
-  - Verify on Linux: plain Ctrl+T/W still reach the shell inside herdr.
+  - Set up 2026-09-28: Ghostty `cmd+t=unbind` and `ctrl+shift+t/w=unbind`,
+    no replacement keys (the user's choice); herdr `[keys] new_tab =
+    ["prefix+c", "cmd+t"]`, and Ctrl+Shift+T/W for Linux (the dotfiles
+    config is shared and herdr has no per-OS keys). Costs: Ghostty loses
+    Ctrl+Shift+T/W outside herdr, and programs inside herdr never see them.
+  - Verify on macOS after reloading Ghostty: Cmd+T opens a herdr tab in the
+    current space; File > New Tab still opens a Ghostty tab; Cmd+Shift+T is
+    still Ghostty's undo.
+  - Verify on Linux: Ctrl+Shift+T/W work, and plain Ctrl+T/W still reach
+    the shell inside herdr.
   Triage 2026-10-06 (manual): Config is set; live checks after reloading Ghostty on macOS and on Linux remain.
 
 - [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
   and their `?` marks did not come back after `claude --resume` (user,
   2026-10-03, screenshots of job-seeker and email-assistant showing "Resume
-  this session with:"). Timeline from the logs (local time):
-  - 15:16:27 the user quit Ghostty (the Esc-debugging session told him the
-    herdr panes would survive); the herdr client logged its exit, the server
-    kept running.
-  - 15:17:35 loginwindow opened the Force Quit panel (Cmd+Opt+Esc) and logged
-    "Adding Ghostty to apps because it still has background processes".
-  - 15:17:39-40 every one of ~19 `claude` processes exited at once, with the
-    graceful resume hint (not SIGKILL). Their interactive zsh shells survived
-    (zsh ignores SIGTERM), so did the herdr server and ~12 other claude
-    processes. 15:18:20 the user wrote "zabiłem ghostty" ("I killed
-    Ghostty"). The log does not record the kill itself, so the click on
-    Force Quit is inferred.
-  - Start times do not split dead from alive: dead agents started from
-    2026-09-24 to 2026-10-03 11:47, survivors 2026-10-02 23:50 and
-    2026-10-03 12:16-15:03; live handoffs were at 14:07, 14:19 and 14:45.
-    Which processes macOS counts as Ghostty's "background processes"
-    (responsible pid, coalition, process group) is still unknown.
-  - Plan: reproduce with disposable agents (quit Ghostty, force-quit its
-    entry, record the signal in a wrapper, `sudo launchctl procinfo` on the
-    server, shells and agents before and after). Only then choose a fix:
-    disclaim responsibility when spawning the server and each handoff server
-    (`responsibility_spawnattrs_setdisclaim`, private API, works only at
-    spawn), or run the server as a launchd job. Both can move TCC prompts
-    from the terminal to herdr; test with the signed release binary and test
-    logout separately.
-  - Measured afterwards with `proc_pidinfo(PROC_PIDCOALITIONINFO)` (no root
-    needed): the herdr server, all 69 pane shells and every live claude,
-    survivors and resumed ones alike, are in resource coalition 2647; the
-    new Ghostty and the new herdr client are in 14055. So the whole server
-    tree still belongs to the dead Ghostty, and a Force Quit of its entry can
-    hit it again. Live handoff does not help: the successor is spawned by
-    the old server and inherits its coalition, and so does every pane it
-    creates later. Survivors in the same coalition mean the kill set was not
-    simply the coalition; still unexplained.
-  - Fix, after the second round (sol, MiMo, `20261003-153704-1042`, both
-    agree): start the macOS server as a per-user LaunchAgent, which gets its
-    own coalition without entitlements. Write the plist on first use,
-    `launchctl bootstrap gui/$UID <plist>` when it is not loaded, then
-    `launchctl kickstart gui/$UID/<label>` (never `-k`), and wait for the
-    socket. `RunAtLoad=false`, `ProcessType=Interactive`, no plain
-    `KeepAlive=true` (a broken build would respawn in a loop). Costs:
-    - The environment of launchd jobs is minimal: send the client's
-      `PATH`, `SSH_AUTH_SOCK` and the like over the socket for each new
-      pane instead of freezing them in the plist.
-    - TCC: permissions then belong to herdr, not Ghostty, and an ad hoc
-      signature changes its cdhash on every build, so grants may prompt
-      again after every `herdr_live.sh install`; sign with a stable
-      self-signed identity (MiMo).
-    - `bootstrap gui/$UID` fails over SSH; keep today's direct spawn as the
-      fallback (MiMo).
-    - Handoff: a successor spawned by the job's process leaves launchd
-      tracking a PID that exits; start the successor through launchd too,
-      or exec in place (sol).
-    - Panes that exist before the switch stay in the old coalition; they
-      move only by resuming the agent in a new pane.
-    Rejected: `responsibility_spawnattrs_setdisclaim` and
-    `posix_spawnattr_setcoalition_np` as the fix (they change attribution,
-    not coalition, or need private entitlements); `launchctl submit`
-    (legacy); MiMo's `waitid` on the agent to log its signal (the agent is
-    the shell's child, not herdr's); auto-resume without the user's click.
-  - Recovery, decided by the user on 2026-10-06 (overrides the earlier
-    "ask first" plan): resume a Claude agent killed by a signal
-    automatically, in the same pane, without asking, and show a short
-    notice "resumed N agents" with the `?` restored. `claude --resume` only
-    loads the conversation and runs nothing, and herdr already resumes
-    agents on its own after a restart and a logout, so asking only here
-    would be inconsistent. Guards: never when the same session already
-    runs in another pane; at most once per session, then a notice instead
-    (a `claude` that dies on start must not loop); never after `/exit`
-    (the `SessionEnd` hook has forgotten the session by then).
-    Done 2026-10-06 and checked live on the installed build (SIGTERM to a
-    Claude that had asked a question: the command was typed, the
-    conversation came back and so did its `?` with the question). The
-    first live run found two bugs, fixed before the commit: the resume gave
-    up at once because zsh was still drawing its prompt (running `git`), so
-    a busy shell now waits in the queue, rechecked every 200 ms for up to
-    10 s; and the notices ignored `ui.toast.delivery = "system"`, so the
-    server now forwards them like agent notifications. A session that was
-    never saved (no message yet) prints "No conversation found"; that run's
-    stop is then refused as "stopped again after a resume". Details:
-    the Claude `SessionEnd` hook calls the new `pane.report_agent_stopped`
-    on reason `other`; the terminal joins that report with the exit of the
-    same run (report `seq` above the run's last report), the server types
-    Ctrl-U plus `claude --resume <id>` into the idle shell, spaced by
-    `startup_per_agent_delay_ms`, and toasts "Resumed N agents stopped by
-    the system". Refused with a toast: the session runs in another pane, it
-    already auto-resumed in this server run (an accepted forget lifts
-    that), the shell is busy. Off with `resume_agents_on_restore = false`.
-    The `?` is stashed at the exit and put back when the same session runs
-    in the pane again, also after a manual `claude --resume`. Rounds:
-    design `20261006-185542-a111`, implementation review
-    `20261006-191356-247c` (sol, MiMo). Rejected there: skipping the hook
-    and resuming every exited session (races `/exit`), resuming only on a
-    mass stop (against the user's decision), MiMo's "the TUI loop never
-    drains the queue" (only the headless server runs `App`). Gaps: Windows
-    (the PowerShell hook does not report the stop), SIGKILL (no hook runs;
-    a restart still resumes it), the limit and the `?` are not saved across
-    a server restart.
-  - Not done: reproduce the kill with disposable agents (plan above), and
-    explain why ~12 agents in the same coalition survived. The LaunchAgent
-    fix below waits for that reproduction.
+  this session with:"). At 15:17:35 loginwindow opened the Force Quit panel
+  for Ghostty "because it still has background processes"; at 15:17:39-40
+  ~19 `claude` processes exited gracefully at once, while their zsh shells,
+  the herdr server and ~12 other claude survived. Auto-resume of such agents
+  is done (`DECISIONS.md`, "Auto-resume of agents stopped by a signal").
+  - Cause: the herdr server, every pane shell and agent sit in the resource
+    coalition of the Ghostty that started the server
+    (`proc_pidinfo(PROC_PIDCOALITIONINFO)`); live handoff inherits it. Why
+    ~12 agents in the same coalition survived is unexplained.
+  - Not done: reproduce with disposable agents (quit Ghostty, force-quit
+    its entry, record the signal in a wrapper, `sudo launchctl procinfo` on
+    the server, shells and agents before and after); the fix waits for it.
+  - Fix, if the reproduction confirms it (sol, MiMo, `20261003-153704-1042`):
+    start the macOS server as a per-user LaunchAgent (own coalition):
+    `launchctl bootstrap gui/$UID <plist>`, then `kickstart` (never `-k`),
+    wait for the socket; `RunAtLoad=false`, `ProcessType=Interactive`, no
+    plain `KeepAlive=true`. Costs: send the client's `PATH`,
+    `SSH_AUTH_SOCK` and the like per new pane; TCC grants move to herdr
+    (sign with a stable self-signed identity); `bootstrap` fails over SSH,
+    keep direct spawn as fallback; start the handoff successor through
+    launchd too, or exec in place; existing panes stay in the old
+    coalition. Rejected: `responsibility_spawnattrs_setdisclaim`,
+    `posix_spawnattr_setcoalition_np`, `launchctl submit`.
+  - Gaps of the auto-resume: Windows (the PowerShell hook does not report
+    the stop), SIGKILL (no hook runs), and the limit and the `?` are not
+    saved across a server restart (persist the report keyed by session id,
+    restore only when that session resumes with no user prompt after the
+    question). Consider a "the agent exited, resume?" hint on panes whose
+    agent died.
   - Until then, the user's side: do not Force Quit a "Ghostty" entry that
     shows up after Ghostty has quit; Cmd+Q is enough.
-  - Status 2026-10-06 (after the reboot of 10-05): the server, all 74 zsh
-    and all 48 claude are now in coalition 1206, the coalition of the live
-    Ghostty, so the coupling is unchanged; it will become a "dead Ghostty"
-    group again the next time Ghostty quits. The "mass exit a minute after a
-    client detach, cause unknown" noted by the signal-exit work (`0ddaa676`)
-    is this same 10-03 incident, not a second trigger. Third round (sol,
-    MiMo, `20261006-182514-d451`): do the auto-resume first and keep the
-    LaunchAgent deferred until the reproduction (sol); MiMo's "the live
-    coalition contradicts the premise" and "resume runs on by itself" are
-    wrong. Risks for the auto-resume, accepted from both: SessionEnd
-    `reason: "other"` also covers a deliberate external `kill`, which
-    auto-resume would undo; `claude --resume` runs SessionStart hooks; cap
-    how many agents resume at once.
-  - The `?` mark: today it survives a live handoff but not the agent's exit
-    and resume. Restore the normal `?` on resume: the question is still the
-    last message of the resumed conversation and still unanswered, which is
-    exactly what `?` means (revised after the user asked "why not?"; the
-    first plan, a distinct stale mark, distinguished nothing the user
-    needs). Persist the report keyed by the agent session id, put it back
-    only when that same session id resumes with no user prompt after the
-    question (check the transcript, so an answer sent from another resume
-    or from the phone clears it), and clear it as today on the next prompt.
-    Separately, consider a "the agent exited, resume?" hint on panes whose
-    agent died.
-  Consulted sol and MiMo (round `20261003-153021-f65d`). Both: the mechanism
-  is plausible but unproven, disclaiming fixes nothing if macOS selects by
-  coalition or process group. Rejected: both models' "a restored `?` must be
-  a distinct mark" (see above); MiMo's "survivors are those spawned after the handoffs"
-  (it mixed UTC and local time; the start times contradict it) and its
-  reading of `?` as "agent mid-turn".
   Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
 
 - [ ] Is the `--workspace` hint for agents still worth adding, now that
