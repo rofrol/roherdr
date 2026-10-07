@@ -74,17 +74,6 @@ ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
 
-- [ ] Finish the idle-job mark: a still mauve `z` instead of the dotted ring
-  (user chose a worker for it, 2026-10-07). Left uncommitted in the shared
-  checkout by the session "Widoczność kółka z przerywaną linią" (tab in the
-  herdr space, waiting for the user to try a build that later installs
-  replaced): `src/client/shell.rs`, `src/client/shell/job_footer.rs`,
-  `src/client/shell/tests/space_tabs.rs`, `plugins/job/README.md` and its
-  `DECISIONS.md` line ("Silent job vs stuck job"). A worker applies that
-  diff in its worktree, runs the tests, commits; the coordinator brings it
-  in, installs, the user checks the `z`, then the old session's tab and the
-  dirty files go. It blocks the rebase below.
-
 - [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
   2026-10-07: 21 upstream commits behind, 372 fork commits on top
   (upstream `a124eed7`, "route all pane key encoding through libghostty").
@@ -92,6 +81,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   leased force-push of `master`. Do it at a boundary: no worker based on the
   old `master`, the shared checkout clean (another session's idle-mark edits
   are uncommitted there), then `just check`, build, install.
+  In progress 2026-10-07 with worker `w-rebase` (branch
+  `todo/rebase-upstream`, `git rerere` on); the shared checkout is clean.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
