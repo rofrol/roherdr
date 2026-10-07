@@ -579,7 +579,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   upstream; a turn's outcome is judged by `result.subtype`, the exit code,
   `permission_denials` and refusal events, not `result/success` alone.
   Next: apply this in `src/workers/` (args, per-worker settings with
-  `attribution` off, the temp dir, the policy, the outcome check), then
+  `attribution` off, the temp dir, the policy, the outcome check), in
+  progress 2026-10-07 (worker `w-wsandbox`); the user asked: "let the
+  models review the implementation this worker made afterwards": a consult
+  round on its diff before it is brought in; then
   the policy change in
   `src/workers/policy.rs`. Gap found 2026-10-07: `herdr worker wait` ends
   only at the turn's end or exit, so a coordinator is not woken by a
