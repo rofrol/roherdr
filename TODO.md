@@ -428,7 +428,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   5. A question with no live owner reaches the user: on the events herdr
      has (the coordinator's pane closed, its agent exited). A live but
      silent coordinator emits nothing; all three say only a lease (a
-     timer) detects that: asked in "Needs a decision".
+     timer) detects that. Decided by the user 2026-10-07: yes, a lease the
+     coordinator renews by its own activity, its expiry hands its questions
+     to the user, the value stated next to it as a designed bound.
   6. Verified TODO.md/DECISIONS.md writes (read back, refuse on a missing
      anchor) and an acknowledged prompt at worker start.
   7. Fault-injection tests: the coordinator killed mid-answer and between
@@ -436,8 +438,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      wait; a server restart and live handoff mid-wait; a duplicate or lost
      acknowledgement; a TODO write conflict. Pass: no event lost, every
      question resolved or explicitly escalated.
-  All three: do this before the fresh-coordinator-per-item, item-history
-  and handoff items (asked in "Needs a decision").
+  Decided by the user 2026-10-07: these steps go before the
+  fresh-coordinator-per-item, item-history and handoff items (all three
+  models: those build on the event log and verified writes).
 
 - [ ] Review the coordinator's code with the models so its operations are
   atomic and transactional (user, 2026-10-07, next: "it must be like a
@@ -1525,15 +1528,3 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
-
-- [ ] Reliability: may a lease (a timer) hand a question to the user when its coordinator is alive but silent (stuck, rate-limited)?
-  Options: yes, a lease the coordinator renews by its own activity, expiry hands its questions to the user, the value stated as a designed bound (Recommended) | no, only events (pane closed, agent exited); a silent coordinator's questions wait, quietly visible to the user
-  Checked: round on 2026-10-07; sol, MiMo and DeepSeek all say silence cannot be detected without a timer; the user's rule allows time only for a real external deadline or designed backoff.
-- [ ] Reliability: do the reliability steps go before the fresh-coordinator-per-item, item-history and handoff items?
-  Options: yes, reliability first (Recommended) | keep the current order
-  Checked: all three models: those items build on the event log and verified writes; MiMo would even drop handoff and history.
-
-- [ ] Disk: how do we free space so builds can run again (11 GiB free, `just guard` needs 15)?
-  Options: you free space yourself (e.g. ~/Downloads 14 GB, ~/Library/Caches 9.4 GB), then say "go" (Recommended) | allow the coordinator to remove the clean-check tree's target/ (7.9 GB, rebuilt cold on the next check)
-  Checked: 2026-10-07 21:13, the check of `fix: the header's back/forward arrows keep their place` (d2cee8e3, on master, not pushed or installed) stopped at `just guard` even after its sweep; the shared target/ is 31 GB; AGENTS.md says to stop and ask instead of freeing space another way.
-
