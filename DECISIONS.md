@@ -386,3 +386,13 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - Open points a worker or agent reports are decided after a consult and written into the TODO item, or moved to "Needs a decision" with `Options:`; never left only in an agent's output (user; global rule and `/todo` skill, dotfiles `c348422`).
 - A worker's end is an event: `agent.wait_turn` on the prompt's request (finished, failed, interrupted, exited, unknown_request), then one transcript read for the verdict; no screen polling, deadlines or idle debounces (user: "why any asynchronous workaround?"; `7a82f292`). A first screen-based `wait-agent --worker-line` missed a finished worker for 3.5 h because an unwatched pane's screen was stale.
 - Toasts top right again (user; dotfiles `ae7cea1`), stacked under the endpoint notice and banners, at most two cards plus "+N more", 48 columns at most, a sticky error moves to the notification log (`76aa9c54`).
+
+## The header keeps its back/forward arrows (2026-10-07)
+
+The user saw the `‹ ›` arrows disappear on a narrow sidebar. The header now
+reserves the sort, filter, back/forward and fold buttons first; counters use
+what is left and drop whole buttons in a fixed order (★ bookmarks, ◐
+working, ✉ history), never `?`. An arrow with no history is drawn dim, not
+hidden (rule from sol, with MiMo's "? never drops"). Done by the first
+headless worker run.
+

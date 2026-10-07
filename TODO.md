@@ -251,23 +251,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      second account per provider, together with the subscription terms on
      several accounts (both models: all of them can be suspended at once).
 
-- [ ] The header's back/forward arrows `‹ ›` disappear now and then (user,
-  2026-10-07: "why do the navigation arrows disappear from time to time?
-  different builds without them? ask the models"; second in the queue).
-  Not builds: `src/client/shell/sidebar.rs` draws them only when they fit
-  after the header's counters ("they give way to the indicators on a narrow
-  sidebar"); with `★8 ◐13 ?1 ✉8` there is no room. The sidebar direction
-  (slice 3: the header keeps only `?` and `!`) frees the room; until then
-  the arrows could take priority over the counters, or the counters could
-  shorten. Ask the models which.
-  Round `20261007-132233-dc23`: sol: reserve space for sort, search,
-  arrows and fold; counters use the rest and drop whole buttons in a fixed
-  order (★, ◐, ✉, then ?); an empty history disables an arrow, never hides
-  it. MiMo: show the arrows only when the history is non-empty, cap counts
-  at 9+, never drop ? or !, collapse search last. Both: never let width
-  decide arrows. Mine: sol's rule (stable place, disabled when empty), with
-  MiMo's "? and ! never drop".
-
 - [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY
   per agent (user, 2026-10-07: "we ran out of pseudo-terminals today;
   analyse whether T3 Code's approach with an SDK is better here; ask the
@@ -396,6 +379,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      (asked because of `&&`); the user allowed it. For the rule switch: the
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
+     Result: `w1` finished the item (`fix: the header's back/forward
+     arrows keep their place`, checked and installed); it asked 9
+     questions, all harmless, each waiting until something woke the
+     coordinator, and tried a `Co-Authored-By` trailer once. Verdict: the
+     transport works; switching the rule waits for the reliability plan's
+     steps 1-2 (fewer questions, the wake on questions) and the commit
+     rule item.
 
 - [ ] Make coordinating headless workers reliable, not another patch (user,
   2026-10-07, after worker `w1`'s permission questions sat 1.5-15 minutes
