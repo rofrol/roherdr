@@ -548,6 +548,16 @@ Items agents add. Not approved until the user moves them up.
   returned, the prompt never arrived) until `herdr worktree create` got
   `--trust-repository`; `herdr pane wait-output` has a short default timeout,
   so a herdr-job waiting for a worker's last line failed early.
+  The herdr coordinator showed gap (2) too (user, 2026-10-07: "why do you
+  make changes yourself when you are the coordinator?"): after the rule
+  change it still edited itself the global rule and `/todo` skill (about 15
+  lines), a code fix (the role mark's gap, with tests, build and install), a
+  flaky test, AGENTS.md notes and the launcher, reading "few-line fixes" as
+  covering them. The rule needs a line saying what the coordinator does
+  itself (TODO.md and DECISIONS.md edits, triage, answering, integrating
+  workers' commits, installs and pushes it is approved for) and that
+  everything else, code, tests and rule text included, goes to a worker,
+  however small.
 
 - [ ] `workspace list` shows a space's repository only when the space is in a
   worktree family (its `worktree` object), so tools read `.worktree` as "the
