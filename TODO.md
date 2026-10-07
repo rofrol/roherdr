@@ -632,6 +632,23 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   or never hidden (sol, Astra); spaces without a TODO get no coordinator
   (MiMo) or an overview with "set up coordinator" (sol, Astra). Mockups E
   and F added to the artifact.
+  Decided by the user 2026-10-07 (menu, mockup E): a space's title is its
+  coordinator; workers are lines under their space, not nested spaces.
+  Slices, one worker each:
+  1. Clicking a space title focuses its coordinator tab (role
+     `coordinator` in that space); with none, it starts one at once (the
+     user chose that over a tab that waits for Start TODO), through the
+     same launcher as the T button.
+  2. Worker worktrees are no longer drawn as nested spaces: each shows as a
+     line under the space it came from, named by its task (the worker
+     agent's task title, else the tab label), with branch and worktree path
+     only in its own view (tooltip).
+  3. Clean the rows: no `❏ T A` buttons (new tab and agent launch move to the
+     space's right-click menu), no role marks (`♛ ⚒`), no idle `○`, no row
+     backgrounds except the selection; the header keeps only `?` and `!`.
+  4. A space without `TODO.md` (`~`, scratch dirs): its title opens an
+     overview offering "Set up coordinator" (create a TODO.md, then start
+     one), not a coordinator.
 
 ## Proposed
 
