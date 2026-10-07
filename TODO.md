@@ -473,6 +473,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `decision_reason_type` is `classifier` or that names a path outside the
   roots goes to the questions. Fix the reason text. Test with a stub
   request of this shape.
+  Also seen on `w2`: tests that need a temp dir fail in the sandbox (the
+  sandbox `$TMPDIR` is the shared `/tmp/claude-<uid>`), and the worker
+  started building a `mktemp` shim to get around it; the contract should
+  say: run only the tests that work in the sandbox, list the others, the
+  coordinator runs `just check` outside it. Consider `TMPDIR` pointing at
+  the worker's temp dir if the sandbox allows it (trial 3 says the CLI
+  overrides it).
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
