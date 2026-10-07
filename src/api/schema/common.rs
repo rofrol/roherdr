@@ -94,6 +94,11 @@ pub struct TabTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentTarget {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

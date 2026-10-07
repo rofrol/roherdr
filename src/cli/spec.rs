@@ -346,7 +346,7 @@ fn agent_command() -> Command {
     Command::new("agent")
         .about("Control and inspect agent panes")
         .subcommand(Command::new("list").about("List agents"))
-        .subcommand(id_command("get", "target", "Show an agent"))
+        .subcommand(id_command("get", "target", "Show an agent").arg(global_name_flag()))
         .subcommand(
             Command::new("read")
                 .about("Read agent terminal output")
@@ -355,13 +355,15 @@ fn agent_command() -> Command {
                 .arg(read_source_option(true))
                 .arg(option("lines", "N"))
                 .arg(text_ansi_format_option())
-                .arg(flag("ansi")),
+                .arg(flag("ansi"))
+                .arg(global_name_flag()),
         )
         .subcommand(
             Command::new("send-keys")
                 .about("Send key presses to an agent")
                 .arg(required("target", "TARGET"))
                 .arg(required("key", "KEY").num_args(1..))
+                .arg(global_name_flag())
                 .after_help("Use esc as the canonical Escape key name; escape is also accepted."),
         )
         .subcommand(
@@ -370,6 +372,7 @@ fn agent_command() -> Command {
                 .override_usage("herdr agent prompt <TARGET> <TEXT> [OPTIONS]")
                 .arg(required("target", "TARGET"))
                 .arg(required("text", "TEXT"))
+                .arg(global_name_flag())
                 .arg(
                     flag("wait")
                         .help("Wait for the first matching state observed after submission"),
@@ -397,13 +400,14 @@ fn agent_command() -> Command {
                 .arg(required("target", "TARGET"))
                 .arg(Arg::new("name").value_name("NAME"))
                 .arg(flag("clear"))
+                .arg(global_name_flag())
                 .group(
                     ArgGroup::new("rename")
                         .args(["name", "clear"])
                         .required(true),
                 ),
         )
-        .subcommand(id_command("focus", "target", "Focus an agent"))
+        .subcommand(id_command("focus", "target", "Focus an agent").arg(global_name_flag()))
         .subcommand(
             Command::new("awaiting-reply")
                 .about("Report that this agent ends its turn by asking the user something")
@@ -457,6 +461,7 @@ fn agent_command() -> Command {
                         .help("State to match; repeat for more than one state"),
                 )
                 .arg(option("timeout", "MS").help("Fail after this many milliseconds"))
+                .arg(global_name_flag())
                 .after_help(
                     "Without --until, matches idle, done, or blocked. Use --until unknown explicitly when needed. Without --timeout, waits indefinitely.",
                 ),
@@ -466,7 +471,8 @@ fn agent_command() -> Command {
                 .about("Attach directly to an agent terminal")
                 .override_usage("herdr agent attach <TARGET> [OPTIONS]")
                 .arg(required("target", "TARGET"))
-                .arg(flag("takeover")),
+                .arg(flag("takeover"))
+                .arg(global_name_flag()),
         )
         .subcommand(
             Command::new("start")
@@ -520,6 +526,7 @@ fn agent_command() -> Command {
             Command::new("explain")
                 .about("Explain agent detection state")
                 .arg(Arg::new("target").value_name("TARGET"))
+                .arg(global_name_flag())
                 .arg(path_option("file", "PATH"))
                 .arg(option("agent", "LABEL"))
                 .arg(json_flag())
@@ -1031,6 +1038,11 @@ fn integration_target_values() -> Vec<&'static str> {
     values
 }
 
+/// An agent name given as a target resolves in the caller's workspace first.
+fn global_name_flag() -> Arg {
+    flag("global").help("Look an agent name up in every workspace instead of the caller's first")
+}
+
 fn id_command(name: &'static str, id: &'static str, about: &'static str) -> Command {
     Command::new(name).about(about).arg(required(id, id))
 }
@@ -1312,6 +1324,33 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn agent_name_targets_accept_global() {
+        for valid in [
+            &["herdr", "agent", "get", "reviewer", "--global"][..],
+            &["herdr", "agent", "read", "reviewer", "--global"][..],
+            &[
+                "herdr",
+                "agent",
+                "send-keys",
+                "reviewer",
+                "enter",
+                "--global",
+            ][..],
+            &["herdr", "agent", "prompt", "reviewer", "hello", "--global"][..],
+            &["herdr", "agent", "rename", "reviewer", "worker", "--global"][..],
+            &["herdr", "agent", "focus", "reviewer", "--global"][..],
+            &["herdr", "agent", "wait", "reviewer", "--global"][..],
+            &["herdr", "agent", "attach", "reviewer", "--global"][..],
+            &["herdr", "agent", "explain", "reviewer", "--global"][..],
+        ] {
+            assert!(
+                super::command().try_get_matches_from(valid).is_ok(),
+                "{valid:?}"
+            );
+        }
     }
 
     #[test]

@@ -1795,6 +1795,7 @@ mod tests {
                 id: "agent_explain".into(),
                 method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
                     target,
+                    prefer_workspace_id: None,
                 }),
             })
         });
@@ -1840,6 +1841,7 @@ mod tests {
             id: "agent_explain_omp".into(),
             method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
                 target,
+                prefer_workspace_id: None,
             }),
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
