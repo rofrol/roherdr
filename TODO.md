@@ -558,6 +558,10 @@ Items agents add. Not approved until the user moves them up.
   workers' commits, installs and pushes it is approved for) and that
   everything else, code, tests and rule text included, goes to a worker,
   however small.
+  Done 2026-10-07 (user: "plug this gap"), by a worker: dotfiles `a24546d`
+  lists what the coordinator does itself and sends everything else to a
+  worker, also after a "do it" answer (gaps 1 and 2 above). Left: gap 3 and
+  the two herdr observations.
 
 - [ ] `workspace list` shows a space's repository only when the space is in a
   worktree family (its `worktree` object), so tools read `.worktree` as "the
