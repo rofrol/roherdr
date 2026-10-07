@@ -5353,9 +5353,23 @@
                 "null"
               ]
             },
+            "name": {
+              "description": "The worker's task, as the sidebar names it; the prompt's first line\nwhen absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prompt": {
               "description": "The first user message.",
               "type": "string"
+            },
+            "workspace_id": {
+              "description": "The space the worker belongs to, which the sidebar lists it under.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -6109,6 +6123,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerAnswerParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Opens the worker's journal, read-only, in a popup that follows it.",
+          "properties": {
+            "method": {
+              "const": "worker.open_log",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ends the worker (interrupt, its `result`, stop, its exit), then opens\na tab running `claude --resume <session>` in its directory.",
+          "properties": {
+            "method": {
+              "const": "worker.take_over",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
             }
           },
           "required": [
@@ -13539,6 +13587,10 @@
                 "null"
               ]
             },
+            "name": {
+              "description": "The worker's task: the `name` given at start, else the prompt's\nfirst line.",
+              "type": "string"
+            },
             "pid": {
               "description": "The CLI's process id, which also leads the worker's process group.",
               "format": "uint32",
@@ -13577,6 +13629,15 @@
                 "null"
               ]
             },
+            "takeover_ms": {
+              "description": "Unix milliseconds when a takeover began (`worker.take_over`): the\nworker is being ended so its session can resume in a tab.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "tool_sessions": {
               "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends them.",
               "items": {
@@ -13594,6 +13655,13 @@
             },
             "worker_id": {
               "type": "string"
+            },
+            "workspace_id": {
+              "description": "The space given at start.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

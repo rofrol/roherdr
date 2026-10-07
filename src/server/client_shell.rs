@@ -318,6 +318,7 @@ pub(super) fn snapshot_with_completions(
                 since_ms: pending.question.since_ms,
             })
             .collect(),
+        workers: client_shell_workers(crate::workers::summaries()),
     };
     (shell, completions)
 }
@@ -680,9 +681,56 @@ fn split_hit_rect(
     Some(hit)
 }
 
+/// The workers as the snapshot carries them to the sidebar, their state as
+/// `worker.status` names it.
+fn client_shell_workers(
+    workers: Vec<crate::workers::WorkerSummary>,
+) -> Vec<protocol::ClientShellWorker> {
+    workers
+        .into_iter()
+        .map(|worker| protocol::ClientShellWorker {
+            worker_id: worker.worker_id,
+            workspace_id: worker.workspace_id,
+            name: worker.name,
+            cwd: worker.cwd,
+            state: serde_json::to_value(worker.state)
+                .ok()
+                .and_then(|state| state.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            session_id: worker.session_id,
+            takeover: worker.takeover,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_snapshot_carries_workers_with_their_space_task_and_state() {
+        let workers = client_shell_workers(vec![crate::workers::WorkerSummary {
+            worker_id: "w3".into(),
+            workspace_id: Some("ws_1".into()),
+            name: "fix login".into(),
+            cwd: "/repo".into(),
+            state: crate::api::schema::WorkerState::WaitingApproval,
+            session_id: Some("session-1".into()),
+            takeover: false,
+        }]);
+        assert_eq!(
+            workers,
+            vec![protocol::ClientShellWorker {
+                worker_id: "w3".into(),
+                workspace_id: Some("ws_1".into()),
+                name: "fix login".into(),
+                cwd: "/repo".into(),
+                state: "waiting_approval".into(),
+                session_id: Some("session-1".into()),
+                takeover: false,
+            }]
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn snapshot_metadata_skips_scroll_reads_and_preserves_public_session_data() {

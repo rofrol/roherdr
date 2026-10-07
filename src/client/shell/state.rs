@@ -840,6 +840,10 @@ pub(super) enum ClientContextMenuAction {
     HandOver,
     /// Hands the session over to the handoff menu's agent at this index.
     HandOverTo(usize),
+    /// Opens a headless worker's log.
+    OpenWorkerLog,
+    /// Ends a headless worker and resumes its session in a tab.
+    TakeOverWorker,
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
@@ -912,6 +916,13 @@ pub(super) enum ClientContextMenuTarget {
         ahead_behind: Option<(usize, usize)>,
         /// `None` while the server lists them.
         branches: Option<BranchListing>,
+    },
+    /// A headless worker's line.
+    Worker {
+        worker_id: String,
+        /// The server can take it over now: it has a session, no question
+        /// waits on the user, and it was not lost or taken over already.
+        can_take_over: bool,
     },
     Pane {
         pane_id: String,

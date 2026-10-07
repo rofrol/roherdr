@@ -4689,3 +4689,149 @@ fn a_cut_question_ends_in_an_ellipsis_with_the_whole_text_on_hover() {
     assert_eq!(tooltip.text, "↳ Run the migration on production now?");
     assert_eq!(tooltip.rect.y, row);
 }
+
+fn with_worker(state: &mut ClientShellState, worker_id: &str, name: &str, worker_state: &str) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workers.push(crate::protocol::ClientShellWorker {
+        worker_id: worker_id.into(),
+        workspace_id: Some("ws_1".into()),
+        name: name.into(),
+        cwd: "/tmp/repo".into(),
+        state: worker_state.into(),
+        session_id: Some("session-1".into()),
+        takeover: false,
+    });
+    state.set_snapshot(Box::new(projected));
+}
+
+fn worker_line(state: &ClientShellState, worker_id: &str) -> Rect {
+    state
+        .hits
+        .space_tabs
+        .iter()
+        .find(|(_, id)| super::super::space_tabs::worker_line_worker(id) == Some(worker_id))
+        .map(|(rect, _)| *rect)
+        .unwrap_or_else(|| panic!("no line for {worker_id}: {:?}", state.hits.space_tabs))
+}
+
+fn worker_menu_labels(state: &ClientShellState) -> Vec<String> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            menu.items().into_iter().map(|item| item.label).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn a_worker_shows_as_a_line_under_its_space_with_its_task_and_state() {
+    let mut state = state_with_tabs_and_width(true, 34);
+    with_worker(&mut state, "w1", "fix login", "working");
+    with_worker(&mut state, "w2", "add tests", "failed");
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let sidebar = |row: &String| row.chars().take(36).collect::<String>();
+    let tab = state.hits.space_tabs[0].0;
+    let first = worker_line(&state, "w1");
+    let second = worker_line(&state, "w2");
+    assert!(
+        tab.y < first.y && first.y < second.y,
+        "after the tabs, in order"
+    );
+    let working = super::super::agent_icon(
+        AgentStatus::Working,
+        AgentMark::None,
+        state.config.status_indicators,
+    );
+    let line = sidebar(&rows[first.y as usize]);
+    assert!(line.contains("fix login"), "{line}");
+    assert!(line.contains(working), "the working glyph: {line}");
+    let line = sidebar(&rows[second.y as usize]);
+    assert!(
+        line.contains("add tests") && line.contains("failed"),
+        "{line}"
+    );
+    let space = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("space hit");
+    assert!(
+        (space.rect.y..space.rect.bottom()).contains(&first.y),
+        "the space's block covers its worker lines"
+    );
+    let tooltip = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id == "tab:worker:w1")
+        .expect("the worker line's tooltip");
+    assert!(
+        tooltip
+            .text
+            .contains("running: resuming it forks the transcript"),
+        "{}",
+        tooltip.text
+    );
+}
+
+#[test]
+fn clicking_a_worker_line_opens_its_log() {
+    let mut state = state_with_tabs(true);
+    with_worker(&mut state, "w1", "fix login", "working");
+    state.compose(106, 30).unwrap();
+    let line = worker_line(&state, "w1");
+    let outcome = left_click(&mut state, (line.x + 6, line.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
+                if target.worker_id == "w1"))));
+    assert!(!outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::TabFocus(_)))));
+}
+
+#[test]
+fn a_worker_is_not_offered_for_takeover_while_it_asks() {
+    let right_click = |state: &mut ClientShellState| {
+        state.compose(106, 30).unwrap();
+        let line = worker_line(state, "w1");
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: line.x + 6,
+            row: line.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    };
+
+    let mut state = state_with_tabs(true);
+    with_worker(&mut state, "w1", "fix login", "working");
+    right_click(&mut state);
+    assert_eq!(worker_menu_labels(&state), vec!["Open log", "Take over"]);
+    if let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_mut() {
+        menu.highlighted = 1;
+    }
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkerTakeOver(target)
+                if target.worker_id == "w1"))));
+
+    let mut state = state_with_tabs(true);
+    with_worker(&mut state, "w1", "fix login", "waiting_approval");
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected
+        .worker_questions
+        .push(crate::protocol::ClientShellWorkerQuestion {
+            worker_id: "w1".into(),
+            cwd: "/tmp/repo".into(),
+            tool_name: "Bash".into(),
+            text: "git push".into(),
+            choice: false,
+            since_ms: 1,
+        });
+    state.set_snapshot(Box::new(projected));
+    right_click(&mut state);
+    assert_eq!(worker_menu_labels(&state), vec!["Open log"]);
+}

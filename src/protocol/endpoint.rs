@@ -267,6 +267,7 @@ mod tests {
             commands: Vec::new(),
             build_commit: None,
             worker_questions: Vec::new(),
+            workers: Vec::new(),
         }
     }
 

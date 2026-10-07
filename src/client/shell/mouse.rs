@@ -2604,6 +2604,11 @@ impl ClientShellState {
                     self.open_agent_picker(workspace_id, button, outcome);
                     return;
                 }
+                if let Some(worker_id) = self.worker_line_at(point) {
+                    self.open_worker_context_menu(worker_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 if let Some(tab_id) = self.space_tab_at(point) {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -2994,6 +2999,11 @@ impl ClientShellState {
                     }
                     let method = self.new_tab_method(workspace_id, None);
                     self.push_endpoint_method(method, outcome);
+                    return;
+                }
+                // A worker's line opens its log.
+                if let Some(worker_id) = self.worker_line_at(point) {
+                    self.open_worker_log(worker_id, outcome);
                     return;
                 }
                 // A tab line waits for the release: a drag reorders it, a

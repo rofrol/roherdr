@@ -83,6 +83,13 @@ pub enum Method {
     WorkerKill(WorkerTarget),
     #[serde(rename = "worker.answer")]
     WorkerAnswer(WorkerAnswerParams),
+    /// Opens the worker's journal, read-only, in a popup that follows it.
+    #[serde(rename = "worker.open_log")]
+    WorkerOpenLog(WorkerTarget),
+    /// Ends the worker (interrupt, its `result`, stop, its exit), then opens
+    /// a tab running `claude --resume <session>` in its directory.
+    #[serde(rename = "worker.take_over")]
+    WorkerTakeOver(WorkerTarget),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

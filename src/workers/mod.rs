@@ -11,9 +11,12 @@
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
+mod log;
 mod policy;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use log::log_lines;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -28,7 +31,7 @@ use tracing::warn;
 
 use crate::api::schema::{
     WorkerAnswerParams, WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion,
-    WorkerQuestionKind, WorkerState, WorkerTurnResult, WorkerWaitUntil,
+    WorkerQuestionKind, WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -125,6 +128,8 @@ struct Status {
     worker_id: String,
     state: WorkerState,
     cwd: String,
+    name: String,
+    workspace_id: Option<String>,
     model: Option<String>,
     pid: Option<u32>,
     session_id: Option<String>,
@@ -137,6 +142,7 @@ struct Status {
     /// Requests left to the user, oldest first.
     questions: Vec<Pending>,
     stop_requested_ms: Option<u64>,
+    takeover_ms: Option<u64>,
 }
 
 /// A question with the tool input its answer is built from.
@@ -152,6 +158,8 @@ impl Status {
             worker_id,
             state: WorkerState::Starting,
             cwd: String::new(),
+            name: String::new(),
+            workspace_id: None,
             model: None,
             pid: None,
             session_id: None,
@@ -163,6 +171,7 @@ impl Status {
             exit_signal: None,
             questions: Vec::new(),
             stop_requested_ms: None,
+            takeover_ms: None,
         }
     }
 
@@ -198,6 +207,8 @@ impl Status {
         match (direction, kind) {
             (Direction::Herdr, "started") => {
                 self.cwd = string_field(event, "cwd").unwrap_or_default();
+                self.name = string_field(event, "name").unwrap_or_default();
+                self.workspace_id = string_field(event, "workspace_id");
                 self.model = string_field(event, "model");
                 self.pid = event
                     .get("pid")
@@ -225,6 +236,9 @@ impl Status {
                         input: event.get("input").cloned().unwrap_or_else(|| json!({})),
                     });
                 }
+            }
+            (Direction::Herdr, "takeover") => {
+                self.takeover_ms = event["at_ms"].as_u64();
             }
             (Direction::Herdr, "answer") => {
                 self.settle_question(event["request_id"].as_str());
@@ -303,6 +317,8 @@ impl Status {
             worker_id: self.worker_id.clone(),
             state: self.state,
             cwd: self.cwd.clone(),
+            name: self.name.clone(),
+            workspace_id: self.workspace_id.clone(),
             model: self.model.clone(),
             pid: self.pid,
             session_id: self.session_id.clone(),
@@ -318,6 +334,7 @@ impl Status {
                 .map(|pending| pending.question.clone())
                 .collect(),
             stop_requested_ms: self.stop_requested_ms,
+            takeover_ms: self.takeover_ms,
             journal_path: journal_path.display().to_string(),
         }
     }
@@ -465,18 +482,19 @@ fn worker_number(worker_id: &str) -> Option<u64> {
 
 static SUPERVISOR: OnceLock<WorkerSupervisor> = OnceLock::new();
 
-type QuestionNotifier = Arc<dyn Fn() + Send + Sync>;
+type ChangeNotifier = Arc<dyn Fn() + Send + Sync>;
 
-/// Called whenever a worker's pending questions change, so the server
-/// rebuilds the clients' snapshots, which carry them to the `?` list.
-static QUESTION_NOTIFIER: Mutex<Option<QuestionNotifier>> = Mutex::new(None);
+/// Called whenever what the clients show of a worker changes (its state,
+/// its pending questions, a takeover), so the server rebuilds the clients'
+/// snapshots, which carry them to the sidebar and the `?` list.
+static CHANGE_NOTIFIER: Mutex<Option<ChangeNotifier>> = Mutex::new(None);
 
-pub(crate) fn set_question_notifier(notifier: QuestionNotifier) {
-    *lock(&QUESTION_NOTIFIER) = Some(notifier);
+pub(crate) fn set_change_notifier(notifier: ChangeNotifier) {
+    *lock(&CHANGE_NOTIFIER) = Some(notifier);
 }
 
-fn notify_questions_changed() {
-    let notifier = lock(&QUESTION_NOTIFIER).clone();
+fn notify_clients() {
+    let notifier = lock(&CHANGE_NOTIFIER).clone();
     if let Some(notifier) = notifier {
         notifier();
     }
@@ -497,6 +515,50 @@ pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
         .get()
         .map(WorkerSupervisor::pending_questions)
         .unwrap_or_default()
+}
+
+/// What the sidebar shows of a worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkerSummary {
+    pub(crate) worker_id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) cwd: String,
+    pub(crate) state: WorkerState,
+    pub(crate) session_id: Option<String>,
+    pub(crate) takeover: bool,
+}
+
+/// Every worker of the server's supervisor, oldest first; empty when no
+/// supervisor was opened.
+pub(crate) fn summaries() -> Vec<WorkerSummary> {
+    SUPERVISOR
+        .get()
+        .map(WorkerSupervisor::summaries)
+        .unwrap_or_default()
+}
+
+/// The task a worker is named by: the first non-empty line of its prompt,
+/// cut to a sidebar line.
+fn task_name(prompt: &str) -> String {
+    one_line(
+        prompt
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or(""),
+        80,
+    )
+}
+
+/// What a takeover hands to the tab that resumes the worker's session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Takeover {
+    pub(crate) worker_id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) cwd: String,
+    pub(crate) session_id: String,
 }
 
 /// The server's supervisor, opened on first use. Its journals live in
@@ -570,12 +632,10 @@ impl WorkerSupervisor {
         }
     }
 
-    pub(crate) fn start(
-        &self,
-        cwd: &str,
-        prompt: &str,
-        model: Option<&str>,
-    ) -> Result<WorkerInfo, WorkerError> {
+    pub(crate) fn start(&self, params: &WorkerStartParams) -> Result<WorkerInfo, WorkerError> {
+        let cwd = params.cwd.as_str();
+        let prompt = params.prompt.as_str();
+        let model = params.model.as_deref();
         let cwd_path = PathBuf::from(cwd);
         if !cwd_path.is_absolute() {
             return Err(WorkerError::Invalid(format!("cwd must be absolute: {cwd}")));
@@ -661,9 +721,17 @@ impl WorkerSupervisor {
         };
 
         let (policy, policy_warnings) = policy::Policy::load(&cwd_path, &cwd_real);
+        let name = params
+            .name
+            .as_deref()
+            .map(|name| one_line(name, 80))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| task_name(prompt));
         let started = json!({
             "type": "started",
             "worker_id": worker_id,
+            "name": name,
+            "workspace_id": params.workspace_id,
             "cwd": cwd_real.display().to_string(),
             "model": model,
             "pid": pid,
@@ -734,18 +802,45 @@ impl WorkerSupervisor {
 
     fn update(&self, number: u64, direction: Direction, event: &Value) {
         let mut registry = lock(&self.shared.registry);
-        let mut questions_changed = false;
+        let mut shown_changed = false;
         if let Some(entry) = registry.workers.get_mut(&number) {
-            let before = entry.status.questions.len();
+            let before = Self::shown(&entry.status);
             entry.status.apply(direction, event);
-            // Questions are only added or removed, never replaced in place.
-            questions_changed = entry.status.questions.len() != before;
+            shown_changed = Self::shown(&entry.status) != before;
         }
         drop(registry);
         self.shared.changed.notify_all();
-        if questions_changed {
-            notify_questions_changed();
+        if shown_changed {
+            notify_clients();
         }
+    }
+
+    /// The parts of a status the clients show. Questions are only added or
+    /// removed, never replaced in place, so their count tells a change.
+    fn shown(status: &Status) -> (WorkerState, usize, bool, bool) {
+        (
+            status.state,
+            status.questions.len(),
+            status.session_id.is_some(),
+            status.takeover_ms.is_some(),
+        )
+    }
+
+    fn summaries(&self) -> Vec<WorkerSummary> {
+        let registry = lock(&self.shared.registry);
+        registry
+            .workers
+            .values()
+            .map(|entry| WorkerSummary {
+                worker_id: entry.status.worker_id.clone(),
+                workspace_id: entry.status.workspace_id.clone(),
+                name: entry.status.name.clone(),
+                cwd: entry.status.cwd.clone(),
+                state: entry.status.state,
+                session_id: entry.status.session_id.clone(),
+                takeover: entry.status.takeover_ms.is_some(),
+            })
+            .collect()
     }
 
     fn pending_questions(&self) -> Vec<PendingWorkerQuestion> {
@@ -940,7 +1035,7 @@ impl WorkerSupervisor {
             (number, live, request_id, response, answer)
         };
         self.shared.changed.notify_all();
-        notify_questions_changed();
+        notify_clients();
         live.journal.record(Direction::Herdr, &answer);
         let message = control_response(&request_id, response);
         live.send(&message)?;
@@ -984,6 +1079,89 @@ impl WorkerSupervisor {
             &json!({"type": "killed_tool_processes", "pids": killed}),
         );
         self.status(worker_id)
+    }
+
+    /// Claims a worker for a takeover and journals it. Refused while a
+    /// question waits on the user (answer it first, or the interrupt would
+    /// throw the answer away), for a worker without a session yet, for one
+    /// that was lost (its process is not ours to end) and a second time.
+    pub(crate) fn begin_takeover(&self, worker_id: &str) -> Result<Takeover, WorkerError> {
+        let (takeover, journal, event) = {
+            let mut registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, worker_id)?;
+            let entry = registry
+                .workers
+                .get_mut(&number)
+                .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
+            let status = &entry.status;
+            if status.state == WorkerState::Lost {
+                return Err(WorkerError::NotRunning(format!(
+                    "worker {worker_id} was lost: its process is not this server's to end"
+                )));
+            }
+            if !status.questions.is_empty() {
+                return Err(WorkerError::Busy(format!(
+                    "worker {worker_id} waits on your answer; answer it before taking over"
+                )));
+            }
+            if status.takeover_ms.is_some() {
+                return Err(WorkerError::Busy(format!(
+                    "worker {worker_id} is already being taken over"
+                )));
+            }
+            let session_id = status.session_id.clone().ok_or_else(|| {
+                WorkerError::NotRunning(format!("worker {worker_id} has no session yet"))
+            })?;
+            let takeover = Takeover {
+                worker_id: worker_id.to_owned(),
+                workspace_id: status.workspace_id.clone(),
+                name: status.name.clone(),
+                cwd: status.cwd.clone(),
+                session_id,
+            };
+            let journal = match &entry.live {
+                Some(live) => Arc::clone(&live.journal),
+                None => Arc::new(Journal::open(&entry.journal_path)?),
+            };
+            let event = json!({"type": "takeover", "at_ms": now_ms()});
+            // Claimed under the lock, so a second takeover is refused.
+            entry.status.apply(Direction::Herdr, &event);
+            (takeover, journal, event)
+        };
+        journal.record(Direction::Herdr, &event);
+        self.shared.changed.notify_all();
+        notify_clients();
+        Ok(takeover)
+    }
+
+    /// Ends a worker being taken over, so its session has one writer: the
+    /// running turn is interrupted and its `result` (`aborted_*`) awaited,
+    /// then the worker is stopped and its exit awaited. Blocks on those
+    /// events; no timer decides anything, so a worker that ignores SIGTERM
+    /// keeps this waiting until the user force-stops it (`worker.kill`).
+    pub(crate) fn end_for_takeover(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
+        // Only to look at nothing: the waits below end on the worker's
+        // events, never on this interval.
+        const RECHECK: Duration = Duration::from_secs(60);
+        let status = self.status(worker_id)?;
+        if matches!(status.state, WorkerState::Exited | WorkerState::Lost) {
+            return Ok(status);
+        }
+        let in_turn = !matches!(
+            status.state,
+            WorkerState::Finished | WorkerState::Failed | WorkerState::Interrupted
+        );
+        if in_turn {
+            self.interrupt(worker_id)?;
+            self.wait(worker_id, WorkerWaitUntil::TurnEnd, RECHECK, || true)?;
+        }
+        match self.stop(worker_id) {
+            // It exited between the wait and the stop.
+            Ok(_) | Err(WorkerError::NotRunning(_)) => {}
+            Err(error) => return Err(error),
+        }
+        self.wait(worker_id, WorkerWaitUntil::Exit, RECHECK, || true)?
+            .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} wait ended")))
     }
 
     fn journal_path(&self, worker_id: &str) -> PathBuf {

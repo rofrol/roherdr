@@ -60,6 +60,17 @@ pub(super) struct SpaceTabLine {
     /// What the tab's agent waits on the user for, as the `?` list's `↳`
     /// line says it: drawn on a row of its own under the line.
     pub(super) ask: Option<String>,
+    /// Set on a headless worker's line (see [`worker_lines`]); its `tab_id`
+    /// is [`worker_line_id`], never a real tab's.
+    pub(super) worker: Option<WorkerLine>,
+}
+
+/// What a worker's line knows beyond a tab line's parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkerLine {
+    pub(super) worker_id: String,
+    /// What its glyph and label say on hover.
+    pub(super) tooltip: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +169,124 @@ pub(super) fn quiet_fold_workspace(id: &str) -> Option<&str> {
 }
 
 const QUIET_FOLD_PREFIX: &str = "quiet:";
+
+/// The `tab_id` of a headless worker's line, which its line hit carries.
+pub(super) fn worker_line_id(worker_id: &str) -> String {
+    format!("{WORKER_LINE_PREFIX}{worker_id}")
+}
+
+/// The worker whose line a hit's id names.
+pub(super) fn worker_line_worker(id: &str) -> Option<&str> {
+    id.strip_prefix(WORKER_LINE_PREFIX)
+}
+
+const WORKER_LINE_PREFIX: &str = "worker:";
+
+/// A worker state as its line shows it: the agent state whose glyph it
+/// takes, what it is called, and the word after the label for a worker
+/// that no longer works.
+pub(super) fn worker_state(
+    state: &str,
+) -> (
+    crate::api::schema::AgentStatus,
+    &'static str,
+    Option<&'static str>,
+) {
+    use crate::api::schema::AgentStatus;
+    match state {
+        "starting" => (AgentStatus::Working, "starting", None),
+        "working" => (AgentStatus::Working, "working", None),
+        "waiting_approval" => (AgentStatus::Blocked, "waiting for you", None),
+        "finished" => (AgentStatus::Done, "finished", None),
+        "interrupted" => (AgentStatus::Done, "interrupted", Some("interrupted")),
+        "failed" => (AgentStatus::Blocked, "failed", Some("failed")),
+        "exited" => (AgentStatus::Idle, "exited", Some("exited")),
+        "lost" => (
+            AgentStatus::Idle,
+            "lost: the server restarted",
+            Some("lost"),
+        ),
+        _ => (AgentStatus::Idle, "unknown state", None),
+    }
+}
+
+/// The space a worker's line goes under: the one it was started from, else
+/// (none given, or that space is gone) the space whose directory holds the
+/// worker's, the deepest one.
+fn worker_space<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    worker: &crate::protocol::ClientShellWorker,
+) -> Option<&'a str> {
+    if let Some(workspace) = worker.workspace_id.as_deref().and_then(|id| {
+        snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == id)
+    }) {
+        return Some(&workspace.workspace_id);
+    }
+    let cwd = std::path::Path::new(&worker.cwd);
+    snapshot
+        .workspaces
+        .iter()
+        .filter(|workspace| {
+            !workspace.new_workspace_cwd.is_empty() && cwd.starts_with(&workspace.new_workspace_cwd)
+        })
+        .max_by_key(|workspace| workspace.new_workspace_cwd.len())
+        .map(|workspace| workspace.workspace_id.as_str())
+}
+
+/// One line per headless worker of `workspace`, oldest first, named by its
+/// task; its pending question, as in the `?` list, on the row under it.
+pub(super) fn worker_lines(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+) -> Vec<SpaceTabLine> {
+    snapshot
+        .workers
+        .iter()
+        .filter(|worker| worker_space(snapshot, worker) == Some(workspace.workspace_id.as_str()))
+        .map(|worker| {
+            let (status, said, word) = worker_state(&worker.state);
+            let running = !matches!(worker.state.as_str(), "exited" | "lost");
+            let mut tooltip = format!("{} · worker {}, {said}", worker.name, worker.worker_id);
+            if worker.takeover && running {
+                tooltip.push_str(" · being taken over");
+            } else if worker.takeover {
+                tooltip.push_str(" · taken over: its session goes on in a tab");
+            } else if running && worker.session_id.is_some() {
+                tooltip.push_str(" · running: resuming it forks the transcript");
+            }
+            SpaceTabLine {
+                tab_id: worker_line_id(&worker.worker_id),
+                state: Some((status, AgentMark::None)),
+                label: if worker.name.is_empty() {
+                    format!("worker {}", worker.worker_id)
+                } else {
+                    worker.name.clone()
+                },
+                agent: None,
+                active: false,
+                jobs: Vec::new(),
+                plan: word.map(str::to_owned),
+                squares: Vec::new(),
+                unfolded: false,
+                hidden_focus: None,
+                quiet: Vec::new(),
+                role: None,
+                ask: snapshot
+                    .worker_questions
+                    .iter()
+                    .find(|question| question.worker_id == worker.worker_id)
+                    .map(|question| format!("{}: {}", question.tool_name, question.text)),
+                worker: Some(WorkerLine {
+                    worker_id: worker.worker_id.clone(),
+                    tooltip,
+                }),
+            }
+        })
+        .collect()
+}
 
 /// A top-level tab the fold button may put away: its agents sit idle with
 /// nothing to say (no question, no limit, no unseen result), none of its jobs
@@ -338,6 +467,7 @@ pub(super) fn space_tab_lines_filtered(
                 quiet: Vec::new(),
                 role: tab.role,
                 ask: tab_ask(snapshot, tab),
+                worker: None,
             }
         })
         .collect::<Vec<_>>();
@@ -376,9 +506,15 @@ pub(super) fn space_tab_lines_filtered(
                 quiet: folded.into_iter().map(|line| line.tab_id).collect(),
                 role: None,
                 ask: None,
+                worker: None,
             });
         }
     }
+    lines.extend(
+        worker_lines(snapshot, workspace)
+            .into_iter()
+            .filter(|line| filter.is_none_or(|view| view.shows_tab(workspace, &line.tab_id))),
+    );
     lines
 }
 
@@ -976,13 +1112,18 @@ pub(super) fn render_space_tab_lines(
         hits.tooltips.push(super::tooltip::TooltipTarget {
             rect: Rect::new(x, y, 2, 1),
             id: format!("tab-state:{}", line.tab_id),
-            text: format!(
-                "{} · menu › status legend",
-                match line.state {
-                    Some((status, mark)) => super::status_legend::agent_state_label(status, mark),
-                    None => super::status_legend::PROGRAM_LABEL,
-                }
-            ),
+            text: match &line.worker {
+                Some(worker) => worker.tooltip.clone(),
+                None => format!(
+                    "{} · menu › status legend",
+                    match line.state {
+                        Some((status, mark)) => {
+                            super::status_legend::agent_state_label(status, mark)
+                        }
+                        None => super::status_legend::PROGRAM_LABEL,
+                    }
+                ),
+            },
             bg: None,
             starts_at_target: false,
         });
@@ -1056,7 +1197,16 @@ pub(super) fn render_space_tab_lines(
             );
         }
         let label = truncate(&line.label, label_width as usize);
-        if label != line.label {
+        if let Some(worker) = &line.worker {
+            // A worker has no tab to show what it is: the label says it.
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(label_x, y, label_width, 1),
+                id: format!("tab:{}", line.tab_id),
+                text: worker.tooltip.clone(),
+                bg: Some(bg),
+                starts_at_target: true,
+            });
+        } else if label != line.label {
             hits.tooltips.push(super::tooltip::TooltipTarget {
                 rect: Rect::new(label_x, y, label_width, 1),
                 id: format!("tab:{}", line.tab_id),

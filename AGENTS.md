@@ -444,6 +444,18 @@ To save the coordinator's quota, a session can hand a well-specified task to
   `HERDR_WORKSPACE_ID` without the remote and empty guards that
   `caller_pane_id()` already had.
 
+A coordinator can also start a headless Claude worker, which needs no tab
+or PTY: `herdr worker start --name <task> --cwd <worktree> --prompt <text>`
+(run it from the coordinator's pane, so the worker is listed under its
+space; `--workspace <id>` names another). The sidebar shows it as one line
+named `<task>` with its state; a click opens its log, and its right-click
+menu takes it over (ends it, then resumes its session in a tab; not while
+it asks). Wait for its turn with `herdr-job run -- herdr worker wait <id>`,
+answer its questions with `herdr worker answer <id> ...` (they also show in
+the `?` list), and read what it did with `herdr worker log <id>`; the
+worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
+`last_result.text`.
+
 ### Client requests in the background
 
 A client shell sends endpoint methods through one command lane per

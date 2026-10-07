@@ -284,7 +284,7 @@ impl App {
         Ok((response, prompt))
     }
 
-    fn type_agent_launch(
+    pub(super) fn type_agent_launch(
         &mut self,
         pane_id: &str,
         kind: crate::detect::Agent,

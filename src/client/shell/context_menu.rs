@@ -240,6 +240,13 @@ impl ClientContextMenuOverlay {
                 .into_iter()
                 .map(|(key, label)| item(&label, Action::SortSpaces(key)))
                 .collect(),
+            ClientContextMenuTarget::Worker { can_take_over, .. } => {
+                let mut items = vec![item("Open log", Action::OpenWorkerLog)];
+                if *can_take_over {
+                    items.push(item("Take over", Action::TakeOverWorker));
+                }
+                items
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -637,6 +644,13 @@ impl ClientShellState {
                 ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Branches { .. } => {}
+            ClientContextMenuTarget::Worker { worker_id, .. } => match action {
+                ClientContextMenuAction::OpenWorkerLog => self.open_worker_log(worker_id, outcome),
+                ClientContextMenuAction::TakeOverWorker => {
+                    self.take_over_worker(worker_id, outcome);
+                }
+                _ => {}
+            },
             ClientContextMenuTarget::Handoff { pane_id } => {
                 if let ClientContextMenuAction::HandOverTo(index) = action {
                     if let Some((to, _)) = HANDOFF_AGENTS.get(index) {
