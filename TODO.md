@@ -617,6 +617,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   the bottom (sol), D two-line space headings. Both: counts once, on the
   line that owns them; worker lines show the role mark and branch, never a
   cut name.
+  The user rejected all four (2026-10-07): "none. Make it so a space always
+  has a coordinator, and clicking the space title opens its tab. Do not nest
+  worktrees. Clean the UI of unneeded things. Consult the models, maybe even
+  Astra."
 
 ## Proposed
 
