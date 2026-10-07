@@ -1073,6 +1073,34 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
   header-arrows` and its Bash question: "a headless worker's entry cannot
   be clicked; ask the models").
+  Checked: the `?` row of a worker question has no pane, tab or space
+  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
+  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
+  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
+  style bound to the request id (not the worker): worker name and task, the
+  full command (monospace, newlines kept, scrollable, never truncated: an
+  approval must not rest on a preview) or the question with its options as
+  buttons; Allow once / Deny (optional deny message) / View log; no default
+  action on Enter. If the request is answered elsewhere or the worker exits
+  while it is open, the dialog shows that and disables its buttons; the
+  server rejects stale request ids. Several pending requests: "1 of 3", the
+  next opens after the answer. No "allow this pattern" for now (both: a
+  single command does not show a safe pattern). Keyboard works too.
+
+- [ ] Clicking outside the popup does not close it, only Escape does (user,
+  2026-10-07, with a screenshot of a headless worker's log popup titled
+  "popup": "clicking outside the modal does not close it, only escape
+  works; ask the models").
+  Round `20261007-204532-f8ba` (sol, MiMo, DeepSeek): sol and DeepSeek: popups
+  herdr opens itself (the worker log) close on an outside click; popups of
+  custom commands (an editor may hold unsaved work) do not, and get an `[x]`
+  in the border (DeepSeek: decide by who opened it, not by guessing the
+  content; MiMo: ask first when the process still runs). All three: find
+  out who owns Escape first (if herdr takes it, vim in a popup cannot leave
+  insert mode; likely the log viewer exits on Escape itself), and title the
+  popup by its content, e.g. `worker w1 · header arrows · log`, not
+  "popup". Chosen by the coordinator from the agreement: sol's and
+  DeepSeek's rule.
 
 ## Proposed
 
