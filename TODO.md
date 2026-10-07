@@ -94,6 +94,24 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   working and finished for that request, from the Claude and pi
   integration hooks; other agents answer `unsupported`, never a guess.
 
+- [ ] The T button fails in a repository Claude has never opened (user,
+  2026-10-07, screenshot of kisswiki: toast `agent_not_ready ... blocked
+  during startup`; "ask the models"). Claude's folder-trust dialog blocks
+  `herdr agent start`, the launcher exits and leaves a half-started tab.
+  Consult round `20261007-040046-b1c7` (sol, MiMo), agreeing: clicking T
+  is not consent to the repository's pre-approved permissions; never write
+  `hasTrustDialogAccepted` into `~/.claude.json` (Claude rewrites the file,
+  undocumented) and never answer the dialog with keystrokes. Plan for
+  `~/scripts/todo-worker` (a dotfiles worker): check trust read-only in
+  `~/.claude.json`; when untrusted, open the tab, focus it, print "answer
+  Claude's folder-trust prompt in the new TODO tab; the TODO starts after
+  it", wait for the agent to become ready (bounded: 10 minutes for the
+  user to answer), then send the prompt exactly once; on timeout or
+  refusal leave the tab and say the TODO was not sent. Later in herdr: a
+  structured `awaiting_user_action` state from `agent start` instead of
+  `agent_not_ready` (sol); `--trust-repository` on `worktree create` is
+  git's `safe.directory`, not Claude's trust (checked).
+
 - [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
   2026-10-07: 21 upstream commits behind, 372 fork commits on top
   (upstream `a124eed7`, "route all pane key encoding through libghostty").
