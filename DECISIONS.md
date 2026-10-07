@@ -306,3 +306,53 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - Releases: `.github/workflows/fork-release.yml`, never upstream's `release.yml` (maintainer gating, Homebrew, Nix, website, secrets); upstream's workflows are disabled on the fork with `gh workflow disable`. Tags `roherdr-v<upstream version>.<fork revision>` (`roherdr-v0.9.3.1`; four numbers because `0.9.3-1` is a semver prerelease below `0.9.3`), annotated, never reused; the revision counts published fork releases and restarts at 1 on a new upstream version; `Cargo.toml` keeps upstream's version. `--version` reads `herdr 0.9.3 (roherdr 0.9.3.1, an unofficial fork)`.
 - CI on the fork runs only by dispatch (push and PR events do not start it): a throwaway `ci-dispatch-N` branch whose `ci.yml` adds `workflow_dispatch:`, then `gh workflow run ci.yml --ref ci-dispatch-N`. Green on Ubuntu, macOS and Windows since run 36957931855.
 - Verified 2026-10-07: the `roherdr-v0.9.3.1` macOS arm64 asset downloads with `gh`, matches `SHA256SUMS` and runs (`--version`).
+
+### Model context size
+- User, 2026-10-06: keep the model context small. Finished items leave `TODO.md` (decisions to `DECISIONS.md`, parked ideas to `TODO-deferred.md`); open items keep only their open part and the decisions that constrain it.
+- A root `.ignore` hides the published doc snapshots and the duplicate changelog from ripgrep. Codex's `project_doc_max_bytes` is raised so it reads the fork sections of `AGENTS.md`, which stays as upstream writes it (user).
+- No lint against `[x]` in `TODO.md`: the maintenance test list is upstream's justfile line, a rebase conflict magnet.
+
+### Agent's question in the `?` list
+- `herdr agent awaiting-reply` takes an optional short question (`pane.report_awaiting_reply` `question`); the server caps it at ingest (about 40 characters on a grapheme boundary, control and ANSI sequences stripped), never per frame; it lives and clears with the `awaiting_reply` flag, so no stale questions. The `?` list draws it as a dim `↳` line (blocked: the hook message or `approval`).
+- The task title stays the row's identity, the ask goes in a second line (sol; rejected MiMo's ask replacing the title: three OAuth tabs become indistinguishable). Explicit reporting, never a heuristic over `last_assistant_message` (round `20261006-021127-0eb7`).
+- Agents report `waiting_since_ms` (blocked, asked, limited); the list ranks longest wait first with the wait in the time column.
+- `Limited` (taken from T3 Code): `pane.report_limit {kind: usage|credits, message}` (`herdr agent limited`) from Claude's `StopFailure` hook (`rate_limit`, `billing_error`), shown like an awaiting-reply report and counted in `?N`; `resets_at` is the latest reset of the provider's full windows in the usage report.
+
+### Closing a parent's last pane
+- An explicit close of a parent tab's last pane (cmd+w) is a close of the tab: it asks and closes its job tabs too. A parent whose shell exits or crashes keeps its jobs (an agent may exit after starting a long build on purpose). Consult sol, DeepSeek, MiMo, unanimous (2026-10-03).
+
+### Waits go through herdr-job
+- User, 2026-10-06 ("I want visibility"): an agent waited for a process it did not start with a native background shell, read as outside "work over a minute". The rule is by intent: use herdr-job for background work or waits whose end gates the next step, including processes you did not start (`herdr-job watch --pid`). Its success means "the process disappeared", not "it succeeded" (no exit status of a foreign process). Rejected: a PreToolUse deny of `run_in_background` (trains workarounds), a PostToolUse registry of native shells (ghost jobs without an exit hook).
+
+### Consult roster outcome
+- `astra -r` is not better than plain astra (2026-10-03, verified in the log): 11 rated calls, mostly code reviews beside weaker companions; only paired rounds can show a repo-mode gain.
+- MiMo's second trial passed (+0.45, CI +0.00..+0.85; rejected +3.1 points). The user replaced DeepSeek with MiMo (2026-10-03): default set sol + MiMo, for quality, not cost (DeepSeek cost about a cent a call); DeepSeek on request.
+
+### Stop-hook check for unreported questions
+- Order chosen 2026-10-01 (user: "choose yourself"): V1 shadow log, V5 a stronger instruction, V2 a blocking Stop-hook reminder, V3 inference only if V2 is not enough. The offline audit (`scripts/awaiting_reply_audit.py`) replaced V1: it measures misses from existing transcripts (a screen to review, not ground truth).
+- V2 for Claude Code: `herdr-agent-state.sh stop-check` blocks the stop once (`stop_hook_active`) when the final paragraph looks like a question (the audit's bilingual heuristic, kept equal by a parity test) and the turn ran no `herdr agent awaiting-reply`. Decisions log to `~/.local/state/herdr/awaiting-reply-stop.jsonl`; `HERDR_AWAITING_REPLY_STOP=0` turns it off, `=shadow` only logs.
+
+### Vertical tabs and job squares
+- 2026-09-28: `ui.sidebar.spaces.tabs` replaced agents under each space: one line per top-level tab (plain shells too), the tab's state icon and label; both horizontal tab rows are hidden. Agentless tabs show `❏`. Disclosure triangles `▼`/`►` (not `▶`, which has an emoji form); a worktree parent's triangle collapses its children too.
+- A tab's job tabs are 3-column squares under its line, glyph only (no `Alt` number, the user's choice over both models), in the theme's own status colours (the user rejected darkening them to 3:1), followed by an empty row. Click opens the job, the open square again goes back; middle-click closes, a running job asks first. The line counts `⧖ ! ✓`. A succeeded square closes after 10 s, never while focused or while the pointer is over the sidebar; while it is, closed squares leave blank inert slots so nothing moves under the mouse.
+- The job's top line (`←`, name, `--why`, starter, id, `×`) is drawn by herdr-job as a pinned row, so no protocol change (DeepSeek's; Astra wanted a herdr-drawn row and a new codec).
+- The spaces list scrolls by rows, not whole spaces, and keeps its top row anchored when rows above change. Space sort buttons `manual name ↑ prio ↓`; only `manual` drags; a sorted list holds its drawn order while the pointer is over it.
+- Agent state shapes (style `shapes`, the fork's default): `◐` working, `◉` blocked, `●` done and unseen, `○` idle; colours stay. Rejected `◷` for waiting on a job (reads as a moon next to `◐`).
+
+### Dragging spaces
+- Live reorder while dragging (prototype variant C, decided 2026-09-26): the dragged block gets an accent bar instead of grey, the list shows where it lands; target is the slot nearest the block's top in the list without it, so it does not flicker. Never collapse spaces while dragging; worktree families move whole.
+- The header keeps its sort buttons while dragging; only `release cancels · Esc` and a refusal's reason are shown (user, 2026-09-29). Dragging onto the list's edge auto-scrolls a row every 60 ms.
+- Keyboard reorder: `keys.move_space_previous` / `move_space_next`, unset by default, manual sort only, whole family, no wrap.
+
+### Restart agents
+- Called "Restart agents…", not "reload" (reads as a config reload). Herdr restarts the agent; never ask the agent (it costs context and cannot replace its own process).
+- Stage 1 is the `plugins/restart` plugin, not core: focused pane or the workspace's idle agents; launch flags come from the agent process's own argv (old resume arguments and prompts dropped), so nothing is recorded; Claude with a draft is skipped; SIGTERM, wait for the shell, then `claude --resume <id>` / `pi --session <path>`.
+
+### Awaiting-reply for pi
+- `pi-awaiting-reply.ts` (linked by `plugins/pi-title/install`) adds the instruction as a named system-prompt section in Herdr's TUI mode: pi has no command allowlist, and the managed `herdr-agent-state.ts` is overwritten on reinstall (a version bump would drift from upstream's numbering).
+
+### Auto-resume of agents stopped by a signal
+- User, 2026-10-06 (overrides "ask first"): a Claude agent killed by a signal resumes automatically in the same pane with a notice "Resumed N agents stopped by the system" and its `?` restored; `claude --resume` only loads the conversation, and herdr already resumes after a restart.
+- The `SessionEnd` hook reports `pane.report_agent_stopped` on reason `other`, joined with the exit of the same run by report `seq`; the server types Ctrl-U plus `claude --resume <id>` into the idle shell (a busy shell waits in the queue, up to 10 s). Refused with a toast: the session runs in another pane, it already auto-resumed in this server run, the shell stays busy. Never after `/exit`. Notices follow `ui.toast.delivery`. Off with `resume_agents_on_restore = false`.
+- Rounds `20261006-185542-a111`, `20261006-191356-247c`. Rejected: resuming every exited session without the hook (races `/exit`), resuming only on a mass stop. Accepted risk: `reason: "other"` also covers a deliberate external `kill`.
+- A restored `?` is the normal mark, not a distinct one: the question is still the last unanswered message (user asked "why not?").
