@@ -621,6 +621,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   has a coordinator, and clicking the space title opens its tab. Do not nest
   worktrees. Clean the UI of unneeded things. Consult the models, maybe even
   Astra."
+  Round `20261007-044327-2f1f` (sol, Astra, MiMo), agreeing: "always a
+  coordinator" means a permanent destination, not a running process: the
+  title click opens the coordinator's tab without starting Claude (no
+  quota, no trust prompt); the agent starts on an explicit Start TODO;
+  `❏ T A` leave the rows (menus, coordinator); branch and worktree path go
+  to the worker's own view. Split: workers as rows under the space named by
+  their task (Astra, MiMo) or only "↳ N worker" (sol); role marks and
+  header totals removed (sol, Astra) or kept (MiMo); idle tabs folded (MiMo)
+  or never hidden (sol, Astra); spaces without a TODO get no coordinator
+  (MiMo) or an overview with "set up coordinator" (sol, Astra). Mockups E
+  and F added to the artifact.
 
 ## Proposed
 
