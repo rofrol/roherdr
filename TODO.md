@@ -485,6 +485,36 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
   state instead of its own CPU and output.
 
+- [ ] Coordinators present "Needs a decision" questions as clickable
+  options (user via the try-roguix coordinator, 2026-10-07: it moved four
+  items there and only mentioned them; "fix the process so a coordinator
+  that records questions also presents them as clickable options at once or
+  at a defined point; ask the models"; the user: "does the collector have to
+  be in herdr? earlier you also said something had to be in herdr and the
+  /todo skill was enough"). The herdr coordinator did the same with three
+  questions on 2026-10-07. Consult rounds `20261007-025516-0631` and
+  `20261007-025602-9f40` (sol, MiMo). Both: no herdr collector needed now;
+  TODO.md is already the durable state; a script plus a `/decisions` skill
+  first, herdr only after lost updates or unseen questions are observed.
+  - Each question carries its options in the TODO line (`Options: a | b |
+    c`); a skill never invents choices (MiMo); a short id or hash lets the
+    asker re-read and skip a question changed meanwhile (both).
+  - Timing in the `/todo` skill: right after delegating an item (the worker
+    runs meanwhile), ask the new questions with the multiple-choice tool, 4
+    per call; if unanswered or on the phone, plain text plus `herdr agent
+    awaiting-reply "N decisions"`, which already shows in the `?` list, so no
+    herdr badge is needed (MiMo wanted a badge for visibility).
+  - Answers are written back as "Decided by the user <date>: ..." and the
+    item moves to "Next, in order" only on an explicit approval; writers
+    re-read before writing and commit `TODO.md` by path (both). Coordinators
+    re-read `TODO.md` before each item, never from memory (MiMo).
+  - The global rule's "herdr collects them from there" is not true yet and
+    should go (sol). Fix the coordinator stopping between items first, or
+    stalls get blamed on the wrong change (both, round 1).
+  - Test: a fixture repo with one trivial item and two questions, no user
+    present: the item still lands and both questions are asked once; an
+    answer written back is not asked again after a restart.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
