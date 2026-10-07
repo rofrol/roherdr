@@ -1168,6 +1168,38 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   "popup". Chosen by the coordinator from the agreement: sol's and
   DeepSeek's rule.
 
+- [ ] One wait over all of a coordinator's workers (user, 2026-10-07:
+  "waiting for several workers at once was deferred: so work out a new TODO
+  entry with the models"). Builds on "A coordinator is woken by its
+  worker's question". Round `20261007-205522-d711` (sol, MiMo, DeepSeek), all
+  three: not `worker.wait --any` or an id list (membership races: workers
+  started, exiting or re-owned during a wait) but a per-coordinator inbox:
+  1. `worker.events --owner <coordinator> --after <cursor> --wait`: blocks
+     while empty, returns every pending event in order as a bounded batch
+     with `next_cursor` (two questions at once arrive together; returning
+     only the first lets one unanswered question starve the rest). Events:
+     question, turn end, exit, joined, left, re-owned. `worker.wait` stays
+     as a shorthand over it.
+  2. One server-wide monotonic sequence filtered by owner, with the
+     server's incarnation (`epoch, seq`); kept across live handoff; a
+     cursor the server can no longer serve gets `resync_required` and a
+     snapshot, never a silent skip.
+  3. Reading is not resolving (sol): pending questions are durable state;
+     a reconnecting or new coordinator gets a snapshot of its workers'
+     states and pending questions first, even when their events are older
+     than its cursor.
+  4. Re-owning (a fresh coordinator per item takes over the previous one's
+     workers): an ownership epoch per worker, raised atomically with a
+     `re-owned` event; answers and actions from an older epoch are refused.
+  5. One background job per coordinator (`herdr-job run -- herdr worker
+     events --owner ... --wait`), not one per worker; events arriving while
+     the coordinator's turn is busy wait in the inbox; after a wake the
+     coordinator drains the batch and re-arms from its last cursor.
+  Tests: two simultaneous questions in one batch; an event between drain
+  and re-arm; a worker started and one exiting during a wait; live handoff
+  and restart keep the sequence; re-owning during a wait and a stale answer
+  from the old owner; a wake while the coordinator's turn is busy.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
