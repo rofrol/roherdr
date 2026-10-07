@@ -428,9 +428,21 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   collapse is chosen for API-created worktree spaces and what a collapsed
   space should show when it holds the focused tab; consult the default set.
 
+- [ ] Navigation history survives a client restart (user, 2026-10-07: "the
+  navigation history is cleared after a client restart, I can't go back").
+  The header's back/forward (`focus_history.rs`) lives in client memory, so
+  every reattach, and every install's live handoff, empties it.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
+
+- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each
+  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
+  coordinator's `herdr pane wait-output` on its worker failed with
+  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
+  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
+  reconnect across a handoff instead of failing.
 
 - [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc,
   2026-10-07, forwarded by the user). After the user answered two "Needs a
