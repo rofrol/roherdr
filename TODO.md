@@ -1179,3 +1179,20 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
+
+- [ ] Headless workers: who answers their approval requests (`can_use_tool`)?
+  Options: herdr allows worktree edits and listed commands, the rest to you (Recommended) | allow by default inside the worktree, log everything | every request to you
+  Checked: sol and DeepSeek want default-deny with realpath checks and
+  escalation to the user; MiMo warns that default-deny breeds denial
+  storms. AskUserQuestion from a worker goes to the user (all three).
+- [ ] Headless workers: where does the supervisor live?
+  Options: herdr's server, Rust (Recommended) | a separate process first (Python, like herdr-job)
+  Checked: sol and DeepSeek: the server already owns process lifecycles,
+  restarts and the journal; MiMo: iterate outside the release cycle while
+  the CLI protocol moves.
+- [ ] Headless workers: which of your instructions do they load?
+  Options: your global CLAUDE.md plus a worker contract, global hooks off (Recommended) | only a worker contract (isolated config dir) | everything as today
+  Checked: the trial worker loaded the global CLAUDE.md and hooks (Polish
+  replies, Stop-hook injections). MiMo: flags cannot remove CLAUDE.md, and
+  an isolated `CLAUDE_CONFIG_DIR` loses the login (the Keychain item name
+  depends on the dir). Verify which flags disable hooks before relying on it.
