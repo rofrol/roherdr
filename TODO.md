@@ -424,6 +424,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   writes, reconcilable records): build them together.
   Diverged: who writes it (sol, MiMo: herdr's server, the coordinator only
   proposes; DeepSeek: the coordinator, every TODO edit its own commit).
+  Decided by the user 2026-10-07 (menu): herdr's server writes the records
+  through a `herdr history` call that checks the commits and the TODO
+  change first; each item gets a short id at the end of its first line
+  (`[t-...]`, minted when claimed, also a `Todo-Item:` commit trailer); the
+  history is kept outside the repository, under herdr's state dir per
+  repository, not committed (so it is private and local to this machine).
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
@@ -1339,14 +1345,3 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
-
-- [ ] Item history: who writes the finished-item records?
-  Options: herdr's server through a `herdr history` call that checks the commits and TODO change before appending (Recommended) | the coordinator appends them itself, each TODO edit its own commit
-  Checked: round on 2026-10-07; sol and MiMo for the server (one writer that validates, survives fresh coordinators), DeepSeek for the coordinator (simpler).
-- [ ] Item history: where does the stable item id live in TODO.md?
-  Options: a short id at the end of the item's first line, e.g. `[t-01J9...]`, minted when the item is claimed (Recommended) | a hidden HTML comment after the line | no id in TODO.md, matched by text
-  Checked: all three models: mutable item text cannot be the key; the id also goes into a `Todo-Item:` commit trailer.
-- [ ] Item history: committed in the repository (public on the fork's GitHub) or kept outside it?
-  Options: `.herdr/history.jsonl` committed in the repository (Recommended) | under herdr's state dir per repository, not committed
-  Checked: the models chose the repository (survives clones and fresh processes); the fork's master is public, so item texts and conclusions become public too.
-
