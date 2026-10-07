@@ -61,7 +61,8 @@ pub enum WorkerState {
     WaitingApproval,
     /// The last turn ended with `result/success`.
     Finished,
-    /// The last turn ended with an error `result` other than an interrupt.
+    /// The last turn ended with an error `result` other than an interrupt,
+    /// or with a model refusal (`last_result.failure` says which).
     Failed,
     /// The last turn was interrupted (`terminal_reason` `aborted_*`).
     Interrupted,
@@ -87,6 +88,15 @@ pub struct WorkerTurnResult {
     /// The reply text, when the CLI sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Why herdr counts the turn as failed even when its `result` reads as
+    /// success: a model refusal in the turn, or a non-zero exit code right
+    /// after a finished turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// The `result`'s `permission_denials`: the tool uses denied in the
+    /// turn, as the CLI sent them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_denials: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

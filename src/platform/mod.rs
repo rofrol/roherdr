@@ -236,6 +236,12 @@ fn configure_worker_process_platform(command: &mut std::process::Command) {
 #[cfg(not(unix))]
 fn configure_worker_process_platform(_command: &mut std::process::Command) {}
 
+/// Whether Claude Code's Bash sandbox exists here (seatbelt on macOS,
+/// bubblewrap on Linux). Headless workers are refused without it; on Linux
+/// the worker's `failIfUnavailable` ends a CLI that cannot start it.
+pub(crate) const WORKER_SANDBOX_SUPPORTED: bool =
+    cfg!(any(target_os = "linux", target_os = "macos"));
+
 /// Signals the process group led by `leader_pid` (started through
 /// [`configure_worker_process`]). Returns `Ok(false)` when the group is gone.
 pub(crate) fn signal_process_group(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {

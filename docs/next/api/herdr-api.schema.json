@@ -13763,7 +13763,7 @@
             },
             {
               "const": "failed",
-              "description": "The last turn ended with an error `result` other than an interrupt.",
+              "description": "The last turn ended with an error `result` other than an interrupt,\nor with a model refusal (`last_result.failure` says which).",
               "type": "string"
             },
             {
@@ -13798,8 +13798,20 @@
                 "null"
               ]
             },
+            "failure": {
+              "description": "Why herdr counts the turn as failed even when its `result` reads as\nsuccess: a model refusal in the turn, or a non-zero exit code right\nafter a finished turn.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "is_error": {
               "type": "boolean"
+            },
+            "permission_denials": {
+              "description": "The `result`'s `permission_denials`: the tool uses denied in the\nturn, as the CLI sent them.",
+              "items": true,
+              "type": "array"
             },
             "subtype": {
               "type": "string"
