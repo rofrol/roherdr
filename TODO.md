@@ -9,39 +9,6 @@ Parked ideas live in `TODO-deferred.md`.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A `T` button next to `A` on a space's name line starts a TODO worker
-  for that space (user, 2026-10-07: "add a button next to A on the space
-  title line, T as todo-worker, that runs this skill for that space").
-  - The button runs a command from config, e.g. `[ui.sidebar.spaces]
-    todo_command = "~/scripts/todo-worker {space}"`, with the space's
-    label; unset means no button, so roherdr users without the user's TODO
-    convention never get an agent that commits through an unknown TODO
-    (consult round `20261007-010106-c5ac`, MiMo; Sol hit its limit).
-  - herdr does not start the agent itself and does not go through an
-    agent or a skill: the command (the user's dotfiles launcher, also
-    behind the `todo-worker` skill) opens the tab, reuses an existing
-    `todo-<space>` worker, and starts Claude with Remote Control or pi.
-  - Run it in the background; show its one-line output as a toast; a
-    failure keeps the message.
-  - Set it in the user's own config; nothing ships a default.
-  - Mark the worker's tab (user, 2026-10-07, chose `⚒` from mockups; consult
-    rounds `20261007-010734-4c57` and `20261007-011027-5c82`, MiMo): a
-    server-owned `worker` flag on the tab, set by the launcher when it
-    creates the tab (e.g. a `herdr tab create` option), never derived from
-    the agent's name or the title the agent sets. Draw `⚒` in a marker
-    column before the state glyph; no reordering and no pin (pinning is the
-    user's choice; a pinned worker tab stays possible, so pin needs its own
-    place or is ordering only). The flag ends with the tab. No progress line
-    (`?` and `↳` already mean other things; TODO.md counts are unreliable).
-    Then `~/scripts/todo-worker` passes the flag.
-  - A role, not a yes/no flag (user, 2026-10-07, next): instead of
-    `tab.set_worker`, `tab.set_role` with `coordinator` or `worker`
-    (server-side state, set by whoever opens the tab, never derived from the
-    agent's name or title). Two marks in the marker column: `⚒` for a worker
-    (does one item in a worktree), another glyph for a coordinator, chosen
-    by the user from mockups (to "Needs a decision" if he does not answer).
-    A coordinator sets role `worker` on the worker tabs it opens.
-
 - [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
   "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
   guidance, as a belt-and-braces for servers without the fix above.
