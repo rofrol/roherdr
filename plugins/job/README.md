@@ -83,6 +83,51 @@ macOS and Linux only. The state directory must be on a local filesystem:
 a job's liveness is an `flock` held by its executor, which network
 filesystems may not honour.
 
+## One wait, one job
+
+Wait for something with one wait command, never with a retry loop around
+`herdr-job run`: each `run` opens a tab (a PTY) and a failed job's tab stays
+open. A coordinator that retried its wait for a worker this way after a herdr
+server restart opened about 400 tabs, until macOS ran out of PTYs and herdr
+could open no tab anywhere. When a wait fails because herdr did not answer,
+check the state once and report it.
+
+To wait for an agent (a worker in another pane), run one job that waits and
+reconnects inside:
+
+```sh
+id=$(herdr-job run --name "wait w-docs" --why "review its commit" -- \
+  herdr-job wait-agent "$pane" --worker-line)
+herdr-job wait "$id"
+```
+
+- `wait-agent <pane> [--until STATE]...` ends when the agent reaches one of
+  the states (default: idle, done or blocked), as `herdr agent wait` does.
+- `--worker-line` ends instead on a `WORKER-DONE <sha> ...` or
+  `WORKER-BLOCKED <reason>` line on the agent's screen: a worker's state
+  flickers to done or idle while it works, so the state alone ends too early.
+- When herdr does not answer (a server restart, `EmptyResponse`, no socket)
+  it retries with backoff from 1 s to 30 s and gives up after 15 minutes of
+  continuous failures (exit 5). An agent that is gone ends the wait (exit 3),
+  not a retry. `WORKER-BLOCKED` exits 4, another error 2.
+
+`run` also refuses, before it opens the job's tab:
+
+- more than 16 job tabs of one owner pane (running jobs and kept failed
+  tabs) or 64 in all; a job started from inside a job, or from a job tab,
+  counts against the pane that started the first one. At most 8 failed job
+  tabs per owner stay open: older ones are closed (never the focused tab);
+  their logs stay in the state directory. `herdr-job clean` closes finished
+  ones. `HERDR_JOB_MAX_PER_OWNER`, `HERDR_JOB_MAX_GLOBAL` and
+  `HERDR_JOB_MAX_FAILED_KEPT` change the limits.
+- a `--name` that failed 3 times in the last 10 minutes for the same owner,
+  unless `--force`. The counters are on disk
+  (`~/.local/state/herdr-job/failures.json`), so a server restart does not
+  reset them.
+
+The checks run under a lock file held until the new job is recorded, so
+concurrent launches cannot pass a limit together.
+
 ## Design and limits
 
 - State lives in files, not in the agent, so Claude, pi and a person share it,

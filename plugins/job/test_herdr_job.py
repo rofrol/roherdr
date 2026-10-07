@@ -566,6 +566,259 @@ class SlotTests(unittest.TestCase):
         self.assertIsNone(job_slot(args(exclusive=True)))
 
 
+# A stand-in for the herdr CLI: it records every call and keeps the tabs it
+# created in a file, so separate herdr-job processes see the same tabs.
+HERDR_STUB = r"""#!/usr/bin/env python3
+import fcntl, json, os, sys
+d = os.environ["STUB_DIR"]
+args = sys.argv[1:]
+with open(os.path.join(d, "lock"), "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(os.path.join(d, "calls"), "a") as calls:
+        calls.write(json.dumps(args) + "\n")
+    tabs_path = os.path.join(d, "tabs.json")
+    tabs = json.load(open(tabs_path)) if os.path.exists(tabs_path) else []
+    def out(result):
+        print(json.dumps({"result": result}))
+    if args[:2] == ["pane", "get"]:
+        out({"pane": {"pane_id": args[2], "workspace_id": "w", "tab_id": "w:t0", "agent": "claude"}})
+    elif args[:2] == ["workspace", "get"]:
+        out({"workspace": {"label": "ws"}})
+    elif args[:2] == ["tab", "get"]:
+        out({"tab": {"tab_id": args[2]}})
+    elif args[:2] == ["tab", "list"]:
+        out({"tabs": tabs})
+    elif args[:2] == ["tab", "create"]:
+        n = len(tabs) + 1
+        tabs.append({"tab_id": f"w:t{n}", "label": args[args.index("--label") + 1]})
+        json.dump(tabs, open(tabs_path, "w"))
+        out({"tab": {"tab_id": f"w:t{n}"}, "root_pane": {"pane_id": f"w:p{n}"}})
+    elif args[:2] == ["tab", "close"]:
+        json.dump([t for t in tabs if t["tab_id"] != args[2]], open(tabs_path, "w"))
+    elif args[:1] == ["agent"]:
+        # Answers queued by the test, one per call: [exit code, stdout, stderr].
+        queue_path = os.path.join(d, "agent.json")
+        queue = json.load(open(queue_path))
+        code, stdout, stderr = queue.pop(0) if len(queue) > 1 else queue[0]
+        json.dump(queue, open(queue_path, "w"))
+        sys.stdout.write(stdout)
+        sys.stderr.write(stderr)
+        sys.exit(code)
+"""
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class GuardTests(unittest.TestCase):
+    """Caps and failure backoff, checked before the job's tab is created."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.stub_dir = root / "stub"
+        self.stub_dir.mkdir()
+        stub = root / "herdr"
+        stub.write_text(HERDR_STUB)
+        stub.chmod(0o755)
+        self.state = root / "state" / "herdr-job"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "STUB_"))}
+        self.env.update(XDG_STATE_HOME=str(root / "state"), HERDR_BIN_PATH=str(stub), STUB_DIR=str(self.stub_dir),
+                        HERDR_SOCKET_PATH="/nonexistent", HERDR_PANE_ID="w:p0", HERDR_JOB_MAX_PER_OWNER="3")
+
+    def run_job(self, name, *flags, env=None):
+        return subprocess.run([str(Path(__file__).with_name("herdr-job")), "run", "--name", name, *flags,
+                               "--", "false"], env={**self.env, **(env or {})},
+                              capture_output=True, text=True, timeout=30)
+
+    def tab_creates(self):
+        calls = [json.loads(line) for line in (self.stub_dir / "calls").read_text().splitlines()]
+        return sum(1 for call in calls if call[:2] == ["tab", "create"])
+
+    def fail_all_jobs(self):
+        """The stub never runs the executor: end every job as `_exec` would after a failure."""
+        for path in self.state.iterdir():
+            if (path / "meta.json").exists() and not (path / "exit").exists():
+                meta = json.loads((path / "meta.json").read_text())
+                meta["started"] = meta["ended"] = time.time()
+                (path / "meta.json").write_text(json.dumps(meta))
+                (path / "exit").write_text("1\n")
+
+    def test_three_failed_jobs_fill_the_owner_cap_and_the_fourth_opens_no_tab(self):
+        for n in range(3):
+            out = self.run_job(f"build {n}")
+            self.assertEqual(out.returncode, 0, out.stderr)
+        self.fail_all_jobs()
+        out = self.run_job("build 3")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("0 running and 3 failed job tabs (limit 3)", out.stderr)
+        self.assertIn("herdr-job clean", out.stderr)
+        self.assertEqual(self.tab_creates(), 3)
+
+    def test_a_nested_job_counts_against_the_pane_that_started_the_first_one(self):
+        self.assertEqual(self.run_job("outer").returncode, 0)
+        outer = next(self.state.glob("2*"))
+        # From the outer job's tab: its pane is not an owner of its own.
+        for n in range(2):
+            self.assertEqual(self.run_job(f"inner {n}", env={"HERDR_PANE_ID": "w:p1"}).returncode, 0)
+        out = self.run_job("inner 2", env={"HERDR_PANE_ID": "w:p1", "HERDR_JOB_ID": outer.name})
+        self.assertIn("pane w:p0 has 3 running", out.stderr)
+        self.assertEqual(self.tab_creates(), 3)
+
+    def test_the_oldest_failed_tabs_beyond_the_kept_number_close_and_keep_their_logs(self):
+        env = {"HERDR_JOB_MAX_PER_OWNER": "10", "HERDR_JOB_MAX_FAILED_KEPT": "2"}
+        for n in range(4):
+            self.assertEqual(self.run_job(f"job {n}", env=env).returncode, 0)
+        self.fail_all_jobs()
+        self.assertEqual(self.run_job("job 4", env=env).returncode, 0)
+        tabs = [tab["label"] for tab in json.loads((self.stub_dir / "tabs.json").read_text())]
+        self.assertEqual(tabs, ["job 2", "job 3", "job 4"])
+        self.assertEqual(len(list(self.state.glob("2*"))), 5)
+
+    def test_the_global_cap_counts_every_owner(self):
+        env = {"HERDR_JOB_MAX_GLOBAL": "2"}
+        self.assertEqual(self.run_job("a", env=env).returncode, 0)
+        self.assertEqual(self.run_job("b", env={**env, "HERDR_PANE_ID": "w:p9"}).returncode, 0)
+        out = self.run_job("c", env={**env, "HERDR_PANE_ID": "w:p8"})
+        self.assertIn("2 running and 0 failed job tabs in all panes (limit 2)", out.stderr)
+
+    def test_concurrent_launches_cannot_exceed_the_cap(self):
+        job = str(Path(__file__).with_name("herdr-job"))
+        procs = [subprocess.Popen([job, "run", "--name", f"race {n}", "--", "false"], env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for n in range(8)]
+        codes = [proc.wait(timeout=60) for proc in procs]
+        for proc in procs:
+            proc.stdout.close()
+            proc.stderr.close()
+        self.assertEqual(codes.count(0), 3, codes)
+        self.assertEqual(self.tab_creates(), 3)
+
+    def test_a_name_that_failed_three_times_is_refused_even_after_a_restart(self):
+        job = Path(__file__).with_name("herdr-job")
+        with patch.dict(os.environ, {"XDG_STATE_HOME": self.env["XDG_STATE_HOME"]}):
+            first = runpy.run_path(str(job))
+            for _ in range(3):
+                first["record_failure"]("w:p0", "wait w-docs")
+            # A new process, as after a herdr server restart: the counters come from disk.
+            second = runpy.run_path(str(job))
+            self.assertEqual(second["recent_failures"]("w:p0", "wait w-docs"), 3)
+            self.assertEqual(second["recent_failures"]("w:p1", "wait w-docs"), 0)
+            self.assertEqual(second["recent_failures"]("w:p0", "wait w-docs", now=time.time() + 601), 0)
+        out = self.run_job("wait w-docs", env={"HERDR_JOB_MAX_PER_OWNER": "16"})
+        self.assertIn("failed 3 times in the last 10 minutes", out.stderr)
+        self.assertFalse((self.stub_dir / "calls").exists() and self.tab_creates())
+        self.assertEqual(self.run_job("wait w-docs", "--force").returncode, 0)
+
+    def test_a_failed_job_is_counted_by_its_executor(self):
+        self.assertEqual(self.run_job("probe").returncode, 0)
+        path = next(self.state.glob("2*"))
+        env = {**self.env, "HERDR_JOB_KEEP_AWAKE": "0"}
+        out = subprocess.run([str(Path(__file__).with_name("herdr-job")), "_exec", path.name], env=env,
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 1, out.stderr)
+        failures = json.loads((self.state / "failures.json").read_text())
+        self.assertEqual(len(failures["w:p0\tprobe"]), 1)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitAgentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        stub = root / "herdr"
+        stub.write_text(HERDR_STUB)
+        stub.chmod(0o755)
+        self.stub_dir = root
+        self.wait_agent = JOB["cmd_wait_agent"]
+        self.sleeps = []
+        patcher = patch.dict(self.wait_agent.__globals__, {"HERDR": str(stub)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = patch.dict(os.environ, {"STUB_DIR": str(root)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_wait(self, answers, **flags):
+        (self.stub_dir / "agent.json").write_text(json.dumps(answers))
+        args = SimpleNamespace(pane="w:p5", until=flags.get("until", []), worker_line=flags.get("worker_line", False))
+        out = io.StringIO()
+        with patch.object(time, "sleep", self.sleeps.append), contextlib.redirect_stdout(out):
+            try:
+                self.wait_agent(args)
+                code = 0
+            except SystemExit as error:
+                code = error.code
+        calls = [json.loads(line) for line in (self.stub_dir / "calls").read_text().splitlines()]
+        return code, out.getvalue(), calls
+
+    def test_transport_errors_are_retried_with_backoff_until_the_state(self):
+        empty = [1, "", "Error: empty api response\n"]
+        down = [1, "", json.dumps({"error": {"code": "server_not_running", "message": "x"}}) + "\n"]
+        done = [0, json.dumps({"result": {"agent": {"status": "done"}}}) + "\n", ""]
+        code, text, calls = self.run_wait([empty, down, empty, done], until=["done"])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.sleeps, [1, 2, 4])
+        self.assertEqual(calls[0], ["agent", "wait", "w:p5", "--until", "done"])
+        self.assertEqual(len(calls), 4)
+        self.assertIn("reached", text)
+
+    def test_a_live_handoff_is_retried_not_an_error(self):
+        shutting = [1, "", json.dumps({"id": "", "error": {"code": "server_unavailable",
+                                                           "message": "server is shutting down"}}) + "\n"]
+        done = [0, json.dumps({"result": {"agent": {"status": "idle"}}}) + "\n", ""]
+        code, text, calls = self.run_wait([shutting, shutting, done])
+        self.assertEqual(code, 0, text)
+        self.assertEqual((len(calls), self.sleeps), (3, [1, 2]))
+        self.assertIn("server is shutting down", text)
+
+    def test_a_gone_agent_ends_the_wait_without_a_retry(self):
+        for error in ("agent_not_found", "agent_not_running"):
+            with self.subTest(error=error):
+                self.sleeps.clear()
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                gone = [1, "", json.dumps({"error": {"code": error, "message": "no agent"}}) + "\n"]
+                code, text, calls = self.run_wait([gone])
+                self.assertEqual((code, len(calls), self.sleeps), (3, 1, []))
+                self.assertIn("gone", text)
+
+    def test_an_error_that_waiting_cannot_fix_ends_the_wait(self):
+        mismatch = [1, "", json.dumps({"error": {"code": "protocol_mismatch", "message": "x"}}) + "\n"]
+        code, _, calls = self.run_wait([mismatch])
+        self.assertEqual((code, len(calls), self.sleeps), (2, 1, []))
+
+    def test_it_gives_up_after_fifteen_minutes_of_transport_failures(self):
+        clock = [0.0]
+        empty = [1, "", "Error: empty api response\n"]
+
+        def sleep(seconds):
+            self.sleeps.append(seconds)
+            clock[0] += seconds
+
+        (self.stub_dir / "agent.json").write_text(json.dumps([empty]))
+        args = SimpleNamespace(pane="w:p5", until=[], worker_line=False)
+        with patch.object(time, "sleep", sleep), patch.object(time, "monotonic", lambda: clock[0]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as result:
+                self.wait_agent(args)
+        self.assertEqual(result.exception.code, 5)
+        self.assertEqual(max(self.sleeps), 30)
+        self.assertGreaterEqual(clock[0], 15 * 60)
+
+    def test_worker_line_ignores_the_task_text_and_ends_on_the_workers_last_line(self):
+        task = "a last line `WORKER-DONE <sha> | <summary>` or\nWORKER-BLOCKED <reason>\n"
+        working = [0, task + "⏺ Running the tests\n", ""]
+        finished = [0, task + "⏺ Done.\n  WORKER-DONE 1a2b3c4 | caps and backoff\n", ""]
+        code, text, calls = self.run_wait([working, working, finished], worker_line=True)
+        self.assertEqual(code, 0)
+        self.assertIn("WORKER-DONE 1a2b3c4 | caps and backoff", text)
+        self.assertEqual(calls[0][:3], ["agent", "read", "w:p5"])
+        blocked = [0, task + "WORKER-BLOCKED needs a login\n", ""]
+        self.sleeps.clear()
+        (self.stub_dir / "calls").unlink()
+        code, text, _ = self.run_wait([blocked], worker_line=True)
+        self.assertEqual(code, 4)
+
+
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class CleanTreeTests(unittest.TestCase):
     def setUp(self):

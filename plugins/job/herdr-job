@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """herdr-job: run long commands in their own herdr tab and wait for them.
 
-  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] -- COMMAND...
+  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] [--force] -- COMMAND...
                                  print job id, return at once
   herdr-job watch --pid PID [--name NAME] [--why TEXT]
                                  a job that waits for a process you did not start; print job id
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
+  herdr-job wait-agent PANE [--until STATE] [--worker-line]
+                                 wait for an agent, reconnecting inside one job
   herdr-job list                 show jobs and their state
   herdr-job log ID               print the log path
   herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
@@ -19,6 +21,7 @@ it: the state lives in files under ~/.local/state/herdr-job/, not in the agent.
 """
 import argparse
 import collections
+import contextlib
 import fcntl
 import json
 import os
@@ -607,12 +610,171 @@ def job_slot(args):
     return wanted
 
 
+# Guards against runaway launches. A coordinator once retried its wait for a
+# worker in a loop, each attempt through `herdr-job run`: every attempt opened
+# a tab (a PTY) and failed ones stayed open, ~400 tabs until macOS ran out of
+# PTYs and herdr could not open a tab anywhere. The caps are checked before the
+# job's tab exists, under one lock, so concurrent launches cannot pass them
+# together; the failure counters live on disk, because the retries began when
+# a herdr server restart broke the waits.
+LAUNCH_LOCK = STATE / "launch.lock"
+FAILURES = STATE / "failures.json"
+FAILURES_LOCK = STATE / "failures.lock"
+NAME_FAILURES_MAX = 3
+NAME_FAILURES_WINDOW_S = 600
+
+
+def env_limit(name, default):
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        raise SystemExit(f"{name} must be a number") from None
+
+
+def max_per_owner():
+    """Running jobs plus kept failed job tabs per owner pane."""
+    return env_limit("HERDR_JOB_MAX_PER_OWNER", 16)
+
+
+def max_global():
+    return env_limit("HERDR_JOB_MAX_GLOBAL", 64)
+
+
+def max_failed_kept():
+    return env_limit("HERDR_JOB_MAX_FAILED_KEPT", 8)
+
+
+def job_owner(meta):
+    """The pane a job counts against: the original owner of nested jobs."""
+    return meta.get("root_owner", meta.get("owner_pane"))
+
+
+def root_owner(pane):
+    """The pane a new job counts against. A job started from inside a job (its
+    command has HERDR_JOB_ID) or from a job tab's shell belongs to whoever
+    started that job, so a nested launch cannot escape the owner's cap."""
+    parent = os.environ.get("HERDR_JOB_ID")
+    if parent and re.fullmatch(r"[0-9a-f-]+", parent) and (STATE / parent / "meta.json").exists():
+        try:
+            return job_owner(read_meta(STATE / parent))
+        except (OSError, ValueError):
+            pass
+    if pane:
+        for _, meta in all_jobs():
+            if meta.get("pane_id") == pane:
+                return job_owner(meta)
+    return pane
+
+
+@contextlib.contextmanager
+def flocked(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def failure_key(owner, name):
+    return f"{owner or ''}\t{name}"
+
+
+def recent_failures(owner, name, now=None):
+    now = now or time.time()
+    try:
+        times = json.loads(FAILURES.read_text()).get(failure_key(owner, name), [])
+    except (OSError, ValueError, AttributeError):
+        return 0
+    return sum(1 for t in times if now - t < NAME_FAILURES_WINDOW_S)
+
+
+def record_failure(owner, name, now=None):
+    """Counts a failed job by owner and name, on disk: a counter in memory
+    would not survive the server restart that starts a retry loop."""
+    now = now or time.time()
+    with flocked(FAILURES_LOCK):
+        try:
+            data = json.loads(FAILURES.read_text())
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data = {key: kept for key, times in data.items()
+                if (kept := [t for t in times if now - t < NAME_FAILURES_WINDOW_S])}
+        data.setdefault(failure_key(owner, name), []).append(now)
+        write_atomic(FAILURES, json.dumps(data))
+
+
+def job_tab_counts(tabs):
+    """Running jobs and failed (or lost) jobs whose tab is still open, per
+    owner, and the failed ones oldest first. A job that has not started yet
+    counts as running, so a launch in progress holds its place."""
+    owned = job_tabs(tabs)
+    running, failed = collections.Counter(), collections.defaultdict(list)
+    for path, meta in all_jobs():
+        st, _ = status(path, meta)
+        if st == "running":
+            running[job_owner(meta)] += 1
+        elif st in ("failed", "lost") and owned.get(meta.get("tab_id"), (None,))[0] == path:
+            failed[job_owner(meta)].append(meta)
+    for metas in failed.values():
+        metas.sort(key=lambda meta: meta["created"])
+    return running, failed
+
+
+def prune_failed_tabs(owner, tabs, failed):
+    """Closes the owner's oldest failed job tabs beyond the kept number; the
+    logs stay in the state directory. The focused tab is never closed."""
+    metas = failed.get(owner, [])
+    excess = len(metas) - max_failed_kept()
+    for meta in list(metas):
+        if excess <= 0:
+            break
+        if tabs.get(meta["tab_id"], {}).get("focused"):
+            continue
+        if herdr_ok("tab", "close", meta["tab_id"]):
+            metas.remove(meta)
+            excess -= 1
+
+
+def check_launch(owner, name, force):
+    """Refuses a launch over the caps, before its tab exists. Runs under
+    LAUNCH_LOCK, held until the new job's meta.json is written."""
+    if not force and (failures := recent_failures(owner, name)) >= NAME_FAILURES_MAX:
+        raise SystemExit(
+            f"herdr-job: not starting {name!r}: it failed {failures} times in the last "
+            f"{NAME_FAILURES_WINDOW_S // 60} minutes for pane {owner or '(none)'}; fix the cause or pass --force "
+            "(never retry `herdr-job run` in a loop)")
+    tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    running, failed = job_tab_counts(tabs)
+    prune_failed_tabs(owner, tabs, failed)
+    mine_running, mine_failed = running[owner], len(failed.get(owner, []))
+    if mine_running + mine_failed >= max_per_owner():
+        raise SystemExit(
+            f"herdr-job: not starting {name!r}: pane {owner or '(none)'} has {mine_running} running and "
+            f"{mine_failed} failed job tabs (limit {max_per_owner()}); close finished ones with `herdr-job clean`")
+    all_running = sum(running.values())
+    all_failed = sum(len(metas) for metas in failed.values())
+    if all_running + all_failed >= max_global():
+        raise SystemExit(
+            f"herdr-job: not starting {name!r}: {all_running} running and {all_failed} failed job tabs "
+            f"in all panes (limit {max_global()}); close finished ones with `herdr-job clean --all`")
+
+
 def cmd_run(args):
     if not args.command:
         raise SystemExit("usage: herdr-job run --name NAME -- COMMAND...")
     owner = os.environ.get("HERDR_PANE_ID")
     if not os.environ.get("HERDR_SOCKET_PATH"):
         raise SystemExit("herdr-job needs to run inside a herdr pane")
+    with flocked(LAUNCH_LOCK):
+        root = root_owner(owner)
+        check_launch(root, args.name, getattr(args, "force", False))
+        # The lock is held until meta.json exists: from then on the job counts.
+        meta = start_job(args, owner, root)
+    launch_started_job(meta)
+
+
+def start_job(args, owner, root):
     cwd = str(Path(args.cwd or os.getcwd()).resolve())
     command = args.command[0] if len(args.command) == 1 else shlex.join(args.command)
     job_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
@@ -649,6 +811,7 @@ def cmd_run(args):
         "notify": args.notify or ("never" if owner_is_agent else "always"),
         "origin": origin,
         "owner_pane": owner,
+        "root_owner": root,
         "tab_id": tab_id,
         "tab_status": tab_status,
         "pane_id": created["root_pane"]["pane_id"],
@@ -656,11 +819,15 @@ def cmd_run(args):
     }
     meta["client_footer"] = register_job_metadata(meta)
     write_meta(path, meta)
+    return meta
+
+
+def launch_started_job(meta):
     # `pane run` types into the tab's interactive shell; see HISTORY_IGNORE.
-    launch_job_executor(meta, job_id)
-    update_owner_token(owner)
+    launch_job_executor(meta, meta["id"])
+    update_owner_token(meta["owner_pane"])
     reconcile_tabs()
-    print(job_id)
+    print(meta["id"])
 
 
 def notify(meta, code):
@@ -1022,6 +1189,8 @@ def cmd_exec(args):
     for handle in slot:
         handle.close()
     write_atomic(path / "exit", f"{code}\n")
+    if code != 0:
+        record_failure(job_owner(meta), meta["name"])
     # The footer first: the herdr calls below take a moment, and the tab
     # label should not be ahead of the job's own status line.
     if not meta.get("client_footer"):
@@ -1031,6 +1200,14 @@ def cmd_exec(args):
     else:
         mark = "✓" if code == 0 else "✗"
         herdr("tab", "rename", meta["tab_id"], f"{mark} {short(meta['name'], 30)}", check=False)
+    if code != 0:
+        # Keep at most the allowed number of this owner's failed tabs open now,
+        # not only at the next launch.
+        try:
+            tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+            prune_failed_tabs(job_owner(meta), tabs, job_tab_counts(tabs)[1])
+        except (SystemExit, ValueError, KeyError):
+            pass
     update_owner_token(meta.get("owner_pane"))
     notify(meta, code)
     print(f"\nherdr-job {meta['id']}: exit {code}", flush=True)
@@ -1181,6 +1358,100 @@ def cmd_wait(args):
         time.sleep(2)
 
 
+# `wait-agent`: one job that waits for an agent and reconnects inside, so a
+# server restart or a dropped answer (`EmptyResponse`) never makes the caller
+# start a new job (a new tab) per attempt. Designed backoff, 1 s to 30 s.
+AGENT_RETRY_FIRST_S = 1
+AGENT_RETRY_MAX_S = 30
+AGENT_GIVE_UP_S = 15 * 60
+# How often `--worker-line` reads the agent's screen (external polling: a
+# worker's last line comes after minutes of work).
+WORKER_LINE_POLL_S = 3
+# `agent wait` reports an agent that disappeared while it waited as `agent_not_running`.
+AGENT_GONE_CODES = {"agent_not_found", "agent_not_running", "pane_not_found", "terminal_not_found"}
+# The server is restarting or not reachable yet: `server_unavailable` is a
+# live handoff ("server is shutting down") or a request the app could not take.
+# Not `protocol_mismatch`: that one does not pass by waiting.
+TRANSPORT_CODES = {"server_not_running", "server_unavailable"}
+# The line a worker ends with, alone on its line (after an agent's bullet).
+# `<sha>`/`<reason>` placeholders, as in a task text echoed on the screen, do not count.
+WORKER_LINE = re.compile(r"^[\s⏺●•]*(WORKER-DONE [0-9a-f]{7,40}\b.*|WORKER-BLOCKED [^<\s].*)$")
+EXIT_AGENT_GONE = 3
+EXIT_WORKER_BLOCKED = 4
+EXIT_TRANSPORT_GAVE_UP = 5
+
+
+def agent_call(*args):
+    """Runs a herdr agent command: ("ok", stdout), ("gone", message),
+    ("transport", message) for a lost connection, or ("error", message)."""
+    try:
+        out = subprocess.run([HERDR, *args], capture_output=True, text=True)
+    except OSError as err:
+        return "transport", str(err)
+    if out.returncode == 0:
+        return "ok", out.stdout
+    text = (out.stderr.strip() or out.stdout.strip())
+    for line in reversed(text.splitlines()):
+        try:
+            code = json.loads(line)["error"]["code"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if code in AGENT_GONE_CODES:
+            return "gone", line
+        return ("transport" if code in TRANSPORT_CODES else "error"), line
+    # Not a server answer: the socket, an empty answer, a handoff in progress.
+    return "transport", text or f"exit {out.returncode}"
+
+
+def worker_line(screen):
+    found = None
+    for line in screen.splitlines():
+        if match := WORKER_LINE.match(line.rstrip()):
+            found = match.group(1).strip()
+    return found
+
+
+def cmd_wait_agent(args):
+    """Waits for one agent: until it reaches a state (`herdr agent wait`), or
+    with `--worker-line` until its screen shows a WORKER-DONE/WORKER-BLOCKED
+    line. Transport errors are retried here with backoff; an agent that is
+    gone ends the wait."""
+    say = lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True)
+    delay, failing_since = AGENT_RETRY_FIRST_S, None
+    if args.worker_line:
+        request = ["agent", "read", args.pane, "--source", "recent", "--format", "text", "--lines", "200"]
+    else:
+        request = ["agent", "wait", args.pane] + [flag for state in args.until for flag in ("--until", state)]
+    say("waiting for a worker line" if args.worker_line else
+        f"waiting for {', '.join(args.until) or 'idle, done or blocked'}")
+    while True:
+        kind, text = agent_call(*request)
+        if kind == "transport":
+            now = time.monotonic()
+            failing_since = failing_since or now
+            if now - failing_since >= AGENT_GIVE_UP_S:
+                say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}")
+                sys.exit(EXIT_TRANSPORT_GAVE_UP)
+            say(f"herdr did not answer ({short(text, 120)}); retrying in {delay} s")
+            time.sleep(delay)
+            delay = min(delay * 2, AGENT_RETRY_MAX_S)
+            continue
+        failing_since, delay = None, AGENT_RETRY_FIRST_S
+        if kind == "gone":
+            say(f"the agent is gone: {short(text, 200)}")
+            sys.exit(EXIT_AGENT_GONE)
+        if kind == "error":
+            say(f"failed: {short(text, 200)}")
+            sys.exit(2)
+        if not args.worker_line:
+            say(f"reached: {short(text.strip(), 300)}")
+            return
+        if line := worker_line(text):
+            say(line)
+            sys.exit(EXIT_WORKER_BLOCKED if line.startswith("WORKER-BLOCKED") else 0)
+        time.sleep(WORKER_LINE_POLL_S)
+
+
 def cmd_list(_args):
     reconcile_tabs()
     jobs = all_jobs()
@@ -1268,6 +1539,9 @@ def main():
     run.add_argument("--cwd")
     run.add_argument("--slot", action="store_true", help="wait for a machine-wide slot before running (builds, tests)")
     run.add_argument("--exclusive", action="store_true", help="take every slot, for benchmarks")
+    run.add_argument("--force", action="store_true",
+                     help=f"start even though this name failed {NAME_FAILURES_MAX} times in the last "
+                          f"{NAME_FAILURES_WINDOW_S // 60} minutes")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
     watch = sub.add_parser("watch", help="a job that waits for a process you did not start")
@@ -1285,6 +1559,18 @@ def main():
     wait.add_argument("--quiet", action="store_true")
     wait.add_argument("--stream", action="store_true", help="follow the whole log as it grows")
     wait.set_defaults(func=cmd_wait)
+    wait_agent = sub.add_parser(
+        "wait-agent", help="wait for an agent in one job, reconnecting when herdr does not answer",
+        description="Exit 0: the state was reached or WORKER-DONE; 3: the agent is gone; "
+                    "4: WORKER-BLOCKED; 5: gave up after 15 minutes without herdr; 2: another error.")
+    wait_agent.add_argument("pane")
+    wait_agent.add_argument("--until", action="append", default=[],
+                            choices=["idle", "working", "blocked", "done", "unknown"],
+                            help="state to wait for; repeat for more (default: idle, done or blocked)")
+    wait_agent.add_argument("--worker-line", action="store_true",
+                            help="end on a WORKER-DONE <sha> or WORKER-BLOCKED <reason> line on the agent's "
+                                 "screen instead of on its state, which flickers while a worker works")
+    wait_agent.set_defaults(func=cmd_wait_agent)
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
     open_ = sub.add_parser("open", help="focus a job's tab")
     open_.add_argument("id", nargs="?")
