@@ -375,7 +375,7 @@ fn agent_command() -> Command {
                 .arg(global_name_flag())
                 .arg(
                     flag("wait")
-                        .help("Wait for the first matching state observed after submission"),
+                        .help("Wait until the turn this prompt started ends"),
                 )
                 .arg(
                     option("until", "STATUS")
@@ -390,7 +390,7 @@ fn agent_command() -> Command {
                         .help("Fail after this many milliseconds"),
                 )
                 .after_help(
-                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. When an accepted submission starts from another non-working state, --wait requires an observed working or blocked state within 5000ms; otherwise it returns agent_prompt_stalled. A caller timeout that expires first returns timeout. It then matches idle, done, or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match.",
+                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. The result carries prompt_request: its request_id and state (accepted, working, finished, or unsupported for an agent whose integration does not report turns).\n\n--wait without --until follows the prompt's own turn: it returns when the agent's integration (Claude, pi) reports that the turn started by this prompt ended, so a turn already running when the prompt is sent does not end the wait. A caller timeout returns timeout with the request's state.\n\nFor an agent that does not report turns, or with --until, --wait matches screen states instead: when an accepted submission starts from a non-working state, it requires an observed working or blocked state within 5000ms, otherwise it returns agent_prompt_stalled; it then matches idle, done, or blocked by default, or any exact --until state. That wait does not track turns: if the agent is already working, that active turn's completion may match.",
                 ),
         )
         .subcommand(

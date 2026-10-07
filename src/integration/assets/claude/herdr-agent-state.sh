@@ -9,10 +9,64 @@ set -eu
 
 action="${1:-}"
 
+hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
+trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
+cat >"$hook_input_file" 2>/dev/null || true
+
+# Reports that the main agent's turn started (`UserPromptSubmit`, with the submitted prompt) or
+# ended (`Stop` that the stop check let through, `StopFailure`), so herdr can tell a caller of
+# `herdr agent prompt --wait` when the turn its prompt started ends. Not instructions: it runs
+# whatever HERDR_AWAITING_REPLY_* say.
+report_turn() {
+  [ "${HERDR_ENV:-}" = "1" ] || return 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || return 0
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  [ -z "${CURSOR_VERSION:-}" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  HERDR_TURN_PHASE="$1" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY' || true
+import json
+import os
+import socket
+import time
+
+try:
+    with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
+        hook_input = json.loads(handle.read() or "{}")
+except Exception:
+    raise SystemExit(0)
+if not isinstance(hook_input, dict) or hook_input.get("agent_id"):
+    raise SystemExit(0)
+phase = os.environ.get("HERDR_TURN_PHASE")
+params = {"pane_id": os.environ["HERDR_PANE_ID"], "source": "herdr:claude", "agent": "claude", "phase": phase}
+if phase == "started":
+    prompt = hook_input.get("prompt")
+    if not isinstance(prompt, str):
+        raise SystemExit(0)
+    params["prompt"] = prompt
+request = {
+    "id": f"herdr:claude:turn:{int(time.time() * 1000)}",
+    "method": "pane.report_turn",
+    "params": params,
+}
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    client.connect(os.environ["HERDR_SOCKET_PATH"])
+    client.sendall((json.dumps(request) + "\n").encode())
+    try:
+        client.recv(4096)
+    except Exception:
+        pass
+    client.close()
+except Exception:
+    pass
+PY
+}
+
 # Repeats the awaiting-reply and task instructions on every prompt, since the SessionStart
 # context is far back in a long session. Printed as is: it needs no hook input and no socket.
 if [ "$action" = "reminder" ]; then
-  cat >/dev/null 2>&1 || true
+  report_turn started
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
   [ -z "${CURSOR_VERSION:-}" ] || exit 0
@@ -28,10 +82,6 @@ if [ "$action" = "reminder" ]; then
   exit 0
 fi
 
-hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
-trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
-cat >"$hook_input_file" 2>/dev/null || true
-
 # Stop hook: when the turn ends with a question for the user and the agent did not report it with
 # `herdr agent awaiting-reply`, ask it once to do so. The agent decides (a rhetorical question is
 # not reported). A turn whose last tool calls all failed or were denied (a permission prompt, the
@@ -41,13 +91,14 @@ cat >"$hook_input_file" 2>/dev/null || true
 # In a tab with the role `coordinator`, a turn that ends by waiting for the user's go-ahead ("when
 # you say continue", "should I continue?") while no background task of the session runs is blocked
 # once too, so the coordinator goes on with the next approved item or asks its open questions.
-if [ "$action" = "stop-check" ]; then
-  [ "${HERDR_ENV:-}" = "1" ] || exit 0
-  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
-  [ -z "${CURSOR_VERSION:-}" ] || exit 0
-  [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || exit 0
-  [ "${HERDR_AWAITING_REPLY_STOP:-block}" != "0" ] || exit 0
-  command -v python3 >/dev/null 2>&1 || exit 0
+# A stop the check blocks does not end the turn; any other stop reports the turn finished.
+stop_check() {
+  [ "${HERDR_ENV:-}" = "1" ] || return 0
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  [ -z "${CURSOR_VERSION:-}" ] || return 0
+  [ "${HERDR_AWAITING_REPLY_INSTRUCTIONS:-1}" != "0" ] || return 0
+  [ "${HERDR_AWAITING_REPLY_STOP:-block}" != "0" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
   HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
 import json
 import os
@@ -430,6 +481,15 @@ elif block and mode != "shadow":
         )
     )
 PY
+}
+
+if [ "$action" = "stop-check" ]; then
+  stop_decision="$(stop_check)" || true
+  if [ -n "$stop_decision" ]; then
+    printf '%s\n' "$stop_decision"
+  else
+    report_turn finished
+  fi
   exit 0
 fi
 
@@ -495,6 +555,7 @@ fi
 # StopFailure hook (matched to rate_limit and billing_error): a usage limit or missing credits
 # ended the turn, so herdr lists the agent as waiting on the user, with the reset time it knows.
 if [ "$action" = "stop-failure" ]; then
+  report_turn finished
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
@@ -707,6 +768,8 @@ if agent_session_id:
         "agent": "claude",
         "seq": report_seq,
         "agent_session_id": agent_session_id,
+        # The reminder and stop-check hooks report this session's turns (`pane.report_turn`).
+        "turn_reports": True,
     }
     if agent_session_path:
         params["agent_session_path"] = agent_session_path

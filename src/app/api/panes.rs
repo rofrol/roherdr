@@ -1610,6 +1610,11 @@ impl App {
         if let Err(message) = validate_optional_resume_argv(params.resume_argv.as_deref()) {
             return encode_error(id, "invalid_resume_argv", message);
         }
+        if params.turn_reports {
+            if let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) {
+                terminal.prompt_turns.mark_reporting(&agent_label);
+            }
+        }
         let report_is_newer = self
             .pane_terminal(ws_idx, pane_id)
             .is_some_and(|terminal| terminal.hook_report_is_newer(&params.source, params.seq));
@@ -1654,6 +1659,51 @@ impl App {
             self.pane_terminal(ws_idx, pane_id)
                 .is_some_and(|terminal| terminal.session_ref_is_current(session_ref))
         })
+    }
+
+    fn pane_terminal_mut(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<&mut crate::terminal::TerminalState> {
+        let terminal_id = self
+            .state
+            .workspaces
+            .get(ws_idx)?
+            .pane_state(pane_id)?
+            .attached_terminal_id
+            .clone();
+        self.state.terminals.get_mut(&terminal_id)
+    }
+
+    /// A turn of the pane's agent started or ended; prompts herdr typed follow it. A change
+    /// emits `pane.updated`, which wakes `agent.prompt_turn` waiters.
+    pub(super) fn handle_pane_report_turn(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneReportTurnParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
+            return invalid_agent(id);
+        };
+        let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        terminal.prompt_turns.mark_reporting(&agent_label);
+        let changed = match params.phase {
+            crate::api::schema::AgentTurnPhase::Started => {
+                terminal.prompt_turns.turn_started(params.prompt.as_deref())
+            }
+            crate::api::schema::AgentTurnPhase::Finished => terminal.prompt_turns.turn_finished(),
+        };
+        if changed {
+            terminal.revision = terminal.revision.saturating_add(1);
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
     }
 
     fn pane_terminal(

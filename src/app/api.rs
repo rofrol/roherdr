@@ -1195,6 +1195,16 @@ impl App {
                     "agent.prompt is handled asynchronously by the app runtime",
                 );
             }
+            Method::AgentPromptTurn(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.prompt_turn is handled by the api server",
+                );
+            }
+            Method::AgentPromptStatus(params) => {
+                return self.handle_agent_prompt_status(request.id, params);
+            }
             Method::AgentWait(_) => {
                 return responses::encode_error(
                     request.id,
@@ -1255,6 +1265,9 @@ impl App {
             Method::PaneRead(params) => return self.handle_pane_read(request.id, params),
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
+            }
+            Method::PaneReportTurn(params) => {
+                return self.handle_pane_report_turn(request.id, params);
             }
             Method::PaneReportAgentSession(params) => {
                 return self.handle_pane_report_agent_session(request.id, params);

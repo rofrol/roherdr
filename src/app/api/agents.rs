@@ -10,6 +10,17 @@ use crate::app::App;
 
 use super::responses::{encode_error, encode_error_body, encode_success};
 
+use crate::api::schema::AgentPromptRequestState;
+use crate::terminal::prompt_turns::PromptTurnState;
+
+/// The request id, the agent, the followed prompt and the submission's completion.
+type QueuedAgentPrompt = (
+    String,
+    crate::api::schema::AgentInfo,
+    crate::api::schema::AgentPromptRequest,
+    std::sync::mpsc::Receiver<std::io::Result<()>>,
+);
+
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 // Codex's Windows input reader does not surface bracketed paste. It detects the prompt as a
@@ -327,18 +338,20 @@ impl App {
         };
         // Start the completion waiter before submitting, so a refused thread
         // fails the request while nothing has been sent yet.
-        let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<(
-            String,
-            crate::api::schema::AgentInfo,
-            std::sync::mpsc::Receiver<std::io::Result<()>>,
-        )>();
+        let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<QueuedAgentPrompt>();
         let waiter_respond_to = respond_to.clone();
         let spawned = crate::thread_spawn::spawn_named("herdr-agent-prompt", move || {
-            let Ok((id, agent, completion)) = handoff_rx.recv() else {
+            let Ok((id, agent, prompt_request, completion)) = handoff_rx.recv() else {
                 return;
             };
             let response = match completion.recv() {
-                Ok(Ok(())) => encode_success(id, ResponseResult::AgentPrompted { agent }),
+                Ok(Ok(())) => encode_success(
+                    id,
+                    ResponseResult::AgentPrompted {
+                        agent,
+                        prompt_request: Some(prompt_request),
+                    },
+                ),
                 Ok(Err(err)) if err.kind() == std::io::ErrorKind::TimedOut => {
                     encode_error(id, "timeout", err.to_string())
                 }
@@ -411,6 +424,20 @@ impl App {
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(agent_not_ready(id, &params.target));
         };
+        if params.follow_turn
+            && !terminal
+                .prompt_turns
+                .supported_for(terminal.effective_agent_label())
+        {
+            return Err(encode_error(
+                id,
+                "turn_tracking_unsupported",
+                format!(
+                    "agent {} does not report its turns; its integration may be missing or older",
+                    params.target
+                ),
+            ));
+        }
         if terminal.managed_agent_launch_pending() {
             return Err(agent_not_ready(id, &params.target));
         }
@@ -443,14 +470,7 @@ impl App {
         &mut self,
         validated: ValidatedAgentPrompt,
         params: &AgentPromptParams,
-    ) -> Result<
-        (
-            String,
-            crate::api::schema::AgentInfo,
-            std::sync::mpsc::Receiver<std::io::Result<()>>,
-        ),
-        String,
-    > {
+    ) -> Result<QueuedAgentPrompt, String> {
         let ValidatedAgentPrompt {
             id,
             ws_idx,
@@ -498,8 +518,87 @@ impl App {
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
-        self.clear_awaiting_reply_on_pane_input(resolved.ws_idx, resolved.pane_id);
-        Ok((id, agent, completion))
+        // Registered before the app handles anything else, so the agent's turn report for
+        // this prompt always finds it.
+        let terminal_id = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .cloned()
+            .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
+        let prompt_request = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .map(|terminal| {
+                let request_id = next_prompt_request_id();
+                let label = terminal.effective_agent_label().map(str::to_string);
+                if terminal.prompt_turns.supported_for(label.as_deref()) {
+                    terminal
+                        .prompt_turns
+                        .accept(request_id.clone(), &params.text);
+                    crate::api::schema::AgentPromptRequest {
+                        request_id,
+                        state: crate::api::schema::AgentPromptRequestState::Accepted,
+                    }
+                } else {
+                    crate::api::schema::AgentPromptRequest {
+                        request_id,
+                        state: crate::api::schema::AgentPromptRequestState::Unsupported,
+                    }
+                }
+            })
+            .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
+        self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
+        Ok((id, agent, prompt_request, completion))
+    }
+
+    pub(super) fn handle_agent_prompt_status(
+        &mut self,
+        id: String,
+        params: crate::api::schema::AgentPromptStatusParams,
+    ) -> String {
+        for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
+            let panes = workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.panes.iter())
+                .map(|(pane_id, pane)| (*pane_id, &pane.attached_terminal_id));
+            for (pane_id, terminal_id) in panes {
+                let Some(state) = self
+                    .state
+                    .terminals
+                    .get(terminal_id)
+                    .and_then(|terminal| terminal.prompt_turns.state_of(&params.request_id))
+                else {
+                    continue;
+                };
+                let state = match state {
+                    PromptTurnState::Accepted => AgentPromptRequestState::Accepted,
+                    PromptTurnState::Working => AgentPromptRequestState::Working,
+                    PromptTurnState::Finished => AgentPromptRequestState::Finished,
+                };
+                return encode_success(
+                    id,
+                    ResponseResult::AgentPromptStatus {
+                        pane_id: self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
+                        prompt_request: crate::api::schema::AgentPromptRequest {
+                            request_id: params.request_id,
+                            state,
+                        },
+                    },
+                );
+            }
+        }
+        encode_error(
+            id,
+            "prompt_request_not_found",
+            format!(
+                "no followed prompt {}; its pane closed, or the agent does not report turns",
+                params.request_id
+            ),
+        )
     }
 
     pub(super) fn handle_agent_read(
@@ -673,6 +772,15 @@ struct ValidatedAgentPrompt {
     pane_id: crate::layout::PaneId,
     expected_agent: crate::detect::Agent,
     agent: crate::api::schema::AgentInfo,
+}
+
+/// Unique within a server run, and across runs by the start time.
+fn next_prompt_request_id() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    static RUN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let run = RUN.get_or_init(crate::app::api_helpers::unix_ms_now);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("prompt_{run:x}_{seq}")
 }
 
 fn agent_not_ready(id: String, target: &str) -> String {
@@ -889,6 +997,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "A != B".into(),
@@ -992,6 +1101,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                follow_turn: false,
                 target: public_pane_id,
                 prefer_workspace_id: None,
                 text: "A != B".into(),
@@ -1022,6 +1132,7 @@ mod tests {
             &mut app,
             "req-raw",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "A != B".into(),
@@ -1038,6 +1149,7 @@ mod tests {
             &mut app,
             "req-label",
             AgentPromptParams {
+                follow_turn: false,
                 target: "opencode".into(),
                 prefer_workspace_id: None,
                 text: "wrong target".into(),
@@ -1047,6 +1159,185 @@ mod tests {
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    fn claude_with_runtime(app: &mut App) -> (String, tokio::sync::mpsc::Receiver<Bytes>) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        (app.public_pane_id(0, pane_id).unwrap(), rx)
+    }
+
+    fn prompt_params(text: &str, follow_turn: bool) -> AgentPromptParams {
+        AgentPromptParams {
+            follow_turn,
+            target: "reviewer".into(),
+            prefer_workspace_id: None,
+            text: text.into(),
+            wait: None,
+        }
+    }
+
+    fn prompt_request_of(response: &str) -> crate::api::schema::AgentPromptRequest {
+        let success: SuccessResponse = serde_json::from_str(response).unwrap();
+        let ResponseResult::AgentPrompted {
+            prompt_request: Some(request),
+            ..
+        } = success.result
+        else {
+            panic!("expected a prompt request: {response}");
+        };
+        request
+    }
+
+    fn report_turn(app: &mut App, pane_id: &str, phase: &str, prompt: Option<&str>) {
+        let mut params = serde_json::json!({
+            "pane_id": pane_id, "source": "herdr:claude", "agent": "claude", "phase": phase,
+        });
+        if let Some(prompt) = prompt {
+            params["prompt"] = prompt.into();
+        }
+        let response =
+            app.handle_pane_report_turn("turn".into(), serde_json::from_value(params).unwrap());
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&response).is_ok(),
+            "{response}"
+        );
+    }
+
+    fn prompt_state(app: &mut App, request_id: &str) -> AgentPromptRequestState {
+        let response = app.handle_agent_prompt_status(
+            "status".into(),
+            crate::api::schema::AgentPromptStatusParams {
+                request_id: request_id.into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentPromptStatus { prompt_request, .. } = success.result else {
+            panic!("expected a prompt status: {response}");
+        };
+        prompt_request.state
+    }
+
+    #[tokio::test]
+    async fn a_prompt_to_an_agent_without_turn_reports_is_unsupported() {
+        let mut app = app_with_agent();
+        let (_pane, mut rx) = claude_with_runtime(&mut app);
+
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("review the diff", false),
+        ));
+        assert_eq!(request.state, AgentPromptRequestState::Unsupported);
+        assert!(!request.request_id.is_empty());
+        while rx.try_recv().is_ok() {}
+
+        // Waiting for the turn is refused before anything is typed.
+        let refused = run_deferred_agent_prompt(&mut app, "req2", prompt_params("again", true));
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&refused).unwrap();
+        assert_eq!(error.error.code, "turn_tracking_unsupported");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_follows_its_turn_through_the_hook_reports() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        report_turn(&mut app, &pane, "finished", None);
+
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("review the diff", true),
+        ));
+        assert_eq!(request.state, AgentPromptRequestState::Accepted);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Accepted
+        );
+
+        report_turn(&mut app, &pane, "started", Some("review the diff\n"));
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Working
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Finished
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_running_before_the_prompt_does_not_finish_it() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        report_turn(&mut app, &pane, "started", Some("the user's own prompt"));
+
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("review the diff", true),
+        ));
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Accepted
+        );
+
+        report_turn(&mut app, &pane, "started", Some("review the diff"));
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Finished
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_report_with_turn_reports_makes_prompts_followed() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        app.handle_pane_report_agent_session(
+            "session".into(),
+            crate::api::schema::PaneReportAgentSessionParams {
+                pane_id: pane,
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                seq: Some(1),
+                agent_session_id: Some("s1".into()),
+                agent_session_path: None,
+                session_start_source: None,
+                resume_argv: None,
+                turn_reports: true,
+            },
+        );
+
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            prompt_params("hello", false),
+        ));
+        assert_eq!(request.state, AgentPromptRequestState::Accepted);
+    }
+
+    #[test]
+    fn an_unknown_prompt_request_is_not_found() {
+        let mut app = app_with_agent();
+        let response = app.handle_agent_prompt_status(
+            "status".into(),
+            crate::api::schema::AgentPromptStatusParams {
+                request_id: "prompt_nope".into(),
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "prompt_request_not_found");
     }
 
     #[tokio::test]
@@ -1067,7 +1358,9 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "hello".into(),
                 wait: None,
             },
@@ -1101,7 +1394,9 @@ mod tests {
                 &mut app,
                 "req",
                 AgentPromptParams {
+                    follow_turn: false,
                     target: target.into(),
+                    prefer_workspace_id: None,
                     text: text.into(),
                     wait: None,
                 },
@@ -1134,6 +1429,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "unrelated prompt".into(),
@@ -1175,6 +1471,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "A != B".into(),
@@ -1257,6 +1554,7 @@ mod tests {
             &mut app,
             "req-pending",
             AgentPromptParams {
+                follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
                 text: "A != B".into(),

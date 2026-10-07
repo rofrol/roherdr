@@ -395,6 +395,29 @@ pub struct PaneReportAgentSessionParams {
     /// first element must be a plain command name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_argv: Option<Vec<String>>,
+    /// The integration reports this agent's turns with `pane.report_turn`.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub turn_reports: bool,
+}
+
+/// The agent's integration reports that a turn started (with the prompt that started it) or
+/// ended. Herdr follows the prompts it typed (`agent.prompt`) through these reports only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportTurnParams {
+    pub pane_id: String,
+    pub source: String,
+    pub agent: String,
+    pub phase: AgentTurnPhase,
+    /// The submitted prompt, with `started`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTurnPhase {
+    Started,
+    Finished,
 }
 
 /// The agent in the pane ends its current turn by asking the user something: a question or a

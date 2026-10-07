@@ -234,6 +234,7 @@ pub(super) fn prompt_agent(
     let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
         return Ok(Some(prompt_response));
     };
+    let prompt_request = prompt_request_from_response(&prompt_response);
     if !agent_wait_identity_matches(
         &prompted,
         &before_prompt.terminal_id,
@@ -294,7 +295,7 @@ pub(super) fn prompt_agent(
         };
     }
     if agent_wait_matches(&initial, &until, None) {
-        return agent_prompt_success(request_id, initial).map(Some);
+        return agent_prompt_success(request_id, initial, prompt_request).map(Some);
     }
 
     let Some(outcome) = wait_for_resolved_agent(
@@ -323,7 +324,7 @@ pub(super) fn prompt_agent(
         AgentWaitOutcome::Matched(agent) => *agent,
         AgentWaitOutcome::Response(response) => return Ok(Some(response)),
     };
-    agent_prompt_success(request_id, agent).map(Some)
+    agent_prompt_success(request_id, agent, prompt_request).map(Some)
 }
 
 fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> Option<u64> {
@@ -336,10 +337,141 @@ fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> O
 fn agent_prompt_success(
     request_id: String,
     agent: crate::api::schema::AgentInfo,
+    prompt_request: Option<crate::api::schema::AgentPromptRequest>,
 ) -> std::io::Result<String> {
     serde_json::to_string(&SuccessResponse {
         id: request_id,
-        result: ResponseResult::AgentPrompted { agent },
+        result: ResponseResult::AgentPrompted {
+            agent,
+            prompt_request,
+        },
+    })
+    .map_err(std::io::Error::other)
+}
+
+fn prompt_request_from_response(response: &str) -> Option<crate::api::schema::AgentPromptRequest> {
+    let value: serde_json::Value = serde_json::from_str(response).ok()?;
+    serde_json::from_value(value["result"]["prompt_request"].clone()).ok()
+}
+
+/// `agent.prompt_turn`: types the prompt (refused first when the agent does not report turns),
+/// then waits until the agent reports that the turn this prompt started ended. A turn already
+/// running when the prompt is typed does not end the wait: only a turn reported as started with
+/// this prompt does.
+pub(super) fn prompt_agent_turn(
+    request_id: String,
+    params: crate::api::schema::AgentPromptTurnParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let started = std::time::Instant::now();
+    let deadline = params
+        .timeout_ms
+        .map(|ms| started + std::time::Duration::from_millis(ms));
+    let mut last_event_sequence = event_hub.current_sequence();
+    let prompt_response = dispatch_to_app_with_timeout(
+        Request {
+            id: request_id.clone(),
+            method: Method::AgentPrompt(crate::api::schema::AgentPromptParams {
+                target: params.target,
+                prefer_workspace_id: params.prefer_workspace_id,
+                text: params.text,
+                wait: None,
+                follow_turn: true,
+            }),
+        },
+        api_tx,
+        None,
+    );
+    let Ok(agent) = agent_from_response(&request_id, &prompt_response) else {
+        return Ok(Some(prompt_response));
+    };
+    let Some(mut prompt_request) = prompt_request_from_response(&prompt_response) else {
+        return internal_error(request_id, "agent prompt returned no request").map(Some);
+    };
+    let pane_id = agent.pane_id.clone();
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let mut should_probe = false;
+        for (sequence, event) in event_hub.events_after(last_event_sequence) {
+            last_event_sequence = sequence;
+            match event.data {
+                EventData::PaneUpdated { pane } if pane.pane_id == pane_id => should_probe = true,
+                EventData::PaneMoved {
+                    previous_pane_id, ..
+                } if previous_pane_id == pane_id => should_probe = true,
+                EventData::PaneClosed {
+                    pane_id: event_pane,
+                    ..
+                }
+                | EventData::PaneExited {
+                    pane_id: event_pane,
+                    ..
+                } if event_pane == pane_id => should_probe = true,
+                _ => {}
+            }
+        }
+        let timed_out = deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline);
+        if should_probe || timed_out {
+            let status = dispatch_to_app_with_timeout(
+                Request {
+                    id: format!("{request_id}:prompt_status"),
+                    method: Method::AgentPromptStatus(
+                        crate::api::schema::AgentPromptStatusParams {
+                            request_id: prompt_request.request_id.clone(),
+                        },
+                    ),
+                },
+                api_tx,
+                Some(APP_RESPONSE_TIMEOUT),
+            );
+            let value: serde_json::Value =
+                serde_json::from_str(&status).unwrap_or(serde_json::Value::Null);
+            if value.get("error").is_some() {
+                // The request went with its pane or its agent.
+                return agent_wait_not_running(request_id).map(Some);
+            }
+            if let Ok(current) = serde_json::from_value(value["result"]["prompt_request"].clone()) {
+                prompt_request = current;
+            }
+            if prompt_request.state == crate::api::schema::AgentPromptRequestState::Finished {
+                return agent_prompt_success(request_id, agent, Some(prompt_request)).map(Some);
+            }
+            if timed_out {
+                let state = serde_json::to_value(prompt_request.state)
+                    .ok()
+                    .and_then(|state| state.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                return serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: format!(
+                            "timed out waiting for the prompt's turn to finish; request {} is {state}",
+                            prompt_request.request_id
+                        ),
+                    },
+                })
+                .map(Some)
+                .map_err(std::io::Error::other);
+            }
+        }
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+fn internal_error(request_id: String, message: &str) -> std::io::Result<String> {
+    serde_json::to_string(&ErrorResponse {
+        id: request_id,
+        error: ErrorBody {
+            code: "internal_error".into(),
+            message: message.into(),
+        },
     })
     .map_err(std::io::Error::other)
 }

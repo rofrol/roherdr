@@ -171,6 +171,10 @@ pub enum Method {
     AgentHandoff(AgentHandoffParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
+    #[serde(rename = "agent.prompt_turn")]
+    AgentPromptTurn(AgentPromptTurnParams),
+    #[serde(rename = "agent.prompt_status")]
+    AgentPromptStatus(AgentPromptStatusParams),
     #[serde(rename = "agent.wait")]
     AgentWait(AgentWaitParams),
     #[serde(rename = "pane.split")]
@@ -239,6 +243,8 @@ pub enum Method {
     PaneReportAgent(PaneReportAgentParams),
     #[serde(rename = "pane.report_agent_session")]
     PaneReportAgentSession(PaneReportAgentSessionParams),
+    #[serde(rename = "pane.report_turn")]
+    PaneReportTurn(PaneReportTurnParams),
     #[serde(rename = "pane.report_awaiting_reply")]
     PaneReportAwaitingReply(PaneReportAwaitingReplyParams),
     #[serde(rename = "pane.clear_awaiting_reply")]

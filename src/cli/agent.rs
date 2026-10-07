@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentPromptParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
+    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams,
+    EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
+    ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -1043,9 +1044,29 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         eprintln!("--timeout requires --wait");
         return Ok(2);
     }
+    if wait && until.is_empty() {
+        let response = super::send_request(&Request {
+            id: "cli:agent:prompt_turn".into(),
+            method: Method::AgentPromptTurn(AgentPromptTurnParams {
+                target: target.clone(),
+                prefer_workspace_id: scope.prefer_workspace_id.clone(),
+                text: text.clone(),
+                timeout_ms,
+            }),
+        })?;
+        if !prompt_turn_unavailable(&response) {
+            return super::print_response(&response);
+        }
+        // Nothing was typed: the agent reports no turns, or the server predates
+        // `agent.prompt_turn`. Fall back to waiting on the agent's screen state.
+        eprintln!(
+            "herdr: agent {target} does not report its turns; waiting for its state instead, which may match a turn that was already running"
+        );
+    }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
+            follow_turn: false,
             target: target.clone(),
             prefer_workspace_id: scope.prefer_workspace_id,
             text: text.clone(),
@@ -1057,6 +1078,19 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         }),
     })?;
     super::print_response(&response)
+}
+
+/// Whether `agent.prompt_turn` refused before typing anything: the agent does not report
+/// turns, or an older server does not know the method.
+fn prompt_turn_unavailable(response: &serde_json::Value) -> bool {
+    let error = &response["error"];
+    match error["code"].as_str() {
+        Some("turn_tracking_unsupported") => true,
+        Some("invalid_request") => error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("agent.prompt_turn")),
+        _ => false,
+    }
 }
 
 fn agent_send_keys(args: &[String], scope: NameScope) -> std::io::Result<i32> {
@@ -1178,7 +1212,35 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{split_global_flag, NameScope};
+    use super::{prompt_turn_unavailable, split_global_flag, NameScope};
+
+    #[test]
+    fn prompt_turn_falls_back_only_when_nothing_was_typed() {
+        let unsupported =
+            serde_json::json!({"error": {"code": "turn_tracking_unsupported", "message": ""}});
+        assert!(prompt_turn_unavailable(&unsupported));
+        // What an older server answers for a method it does not know.
+        let request = serde_json::json!({
+            "id": "x", "method": "agent.prompt_turn", "params": {"target": "a", "text": "b"},
+        });
+        let older = serde_json::from_value::<crate::api::schema::Request>(request.clone());
+        assert!(older.is_ok(), "this server knows the method");
+        let mut unknown = request;
+        unknown["method"] = "agent.prompt_turn_from_the_future".into();
+        let message = format!(
+            "invalid request: {}",
+            serde_json::from_value::<crate::api::schema::Request>(unknown).unwrap_err()
+        );
+        assert!(prompt_turn_unavailable(
+            &serde_json::json!({"error": {"code": "invalid_request", "message": message}})
+        ));
+        for code in ["timeout", "agent_not_running", "agent_blocked"] {
+            let error =
+                serde_json::json!({"error": {"code": code, "message": "agent.prompt_turn"}});
+            assert!(!prompt_turn_unavailable(&error), "{code}");
+        }
+        assert!(!prompt_turn_unavailable(&serde_json::json!({"result": {}})));
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()

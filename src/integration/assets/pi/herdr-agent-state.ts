@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=10
+// HERDR_INTEGRATION_VERSION=11
 // @ts-nocheck
 
 import net from "node:net";
@@ -137,6 +137,8 @@ function reportSession(sessionStartSource?: string): Promise<void> {
       agent: "pi",
       seq: nextReportSeq(),
       session_start_source: sessionStartSource,
+      // This extension reports the session's turns (`pane.report_turn`).
+      turn_reports: true,
       ...sessionRef,
     },
   });
@@ -155,6 +157,25 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
       seq,
     }),
   });
+}
+
+// Turn reports go one after another, so a turn's end never overtakes its start.
+let turnReports: Promise<void> = Promise.resolve();
+
+// Lets herdr follow a prompt it typed (`herdr agent prompt --wait`) to the end of its turn.
+function reportTurn(phase: "started" | "finished", prompt?: string): void {
+  const params: Record<string, unknown> = { pane_id: paneId, source, agent: "pi", phase };
+  if (phase === "started") {
+    if (typeof prompt !== "string") return;
+    params.prompt = prompt;
+  }
+  turnReports = turnReports.then(() =>
+    sendRequest({
+      id: `${source}:turn:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      method: "pane.report_turn",
+      params,
+    }),
+  );
 }
 
 let sendInFlight = false;
@@ -200,6 +221,9 @@ export default function (pi) {
   let rootSession = false;
 
   pi.on("before_agent_start", (event, ctx) => {
+    if (rootSession) {
+      reportTurn("started", event?.prompt);
+    }
     // Use a named prompt section when supported: Pi retains it across compaction
     // and updates it by key, without appending a message or triggering a run.
     if (ctx?.mode !== "tui" || process.env.HERDR_AGENT_CONTEXT === "0") {
@@ -284,5 +308,6 @@ export default function (pi) {
 
     agentActive = false;
     publishState();
+    reportTurn("finished");
   });
 }

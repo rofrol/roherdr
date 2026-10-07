@@ -1452,6 +1452,48 @@
           ],
           "type": "object"
         },
+        "AgentPromptStatusParams": {
+          "properties": {
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "AgentPromptTurnParams": {
+          "description": "Sends a prompt like `agent.prompt` and waits until the turn that prompt started ends, as the\nagent's integration reports it. Refused with `turn_tracking_unsupported`, before anything is\ntyped, when the agent does not report its turns.",
+          "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
         "AgentPromptWaitOptions": {
           "properties": {
             "timeout_ms": {
@@ -1619,6 +1661,13 @@
             "target"
           ],
           "type": "object"
+        },
+        "AgentTurnPhase": {
+          "enum": [
+            "started",
+            "finished"
+          ],
+          "type": "string"
         },
         "AgentViewBuiltinField": {
           "enum": [
@@ -3322,6 +3371,10 @@
             },
             "source": {
               "type": "string"
+            },
+            "turn_reports": {
+              "description": "The integration reports this agent's turns with `pane.report_turn`.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -3513,6 +3566,37 @@
           },
           "required": [
             "pane_id"
+          ],
+          "type": "object"
+        },
+        "PaneReportTurnParams": {
+          "description": "The agent's integration reports that a turn started (with the prompt that started it) or\nended. Herdr follows the prompts it typed (`agent.prompt`) through these reports only.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "phase": {
+              "$ref": "#/schemas/request/$defs/AgentTurnPhase"
+            },
+            "prompt": {
+              "description": "The submitted prompt, with `started`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "agent",
+            "phase"
           ],
           "type": "object"
         },
@@ -6575,6 +6659,38 @@
         {
           "properties": {
             "method": {
+              "const": "agent.prompt_turn",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentPromptTurnParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.prompt_status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentPromptStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.wait",
               "type": "string"
             },
@@ -7108,6 +7224,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReportAgentSessionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.report_turn",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportTurnParams"
             }
           },
           "required": [
@@ -8152,6 +8284,52 @@
             "local_override_shadowing_remote"
           ],
           "type": "object"
+        },
+        "AgentPromptRequest": {
+          "description": "A prompt herdr typed into an agent and how far the turn it started got.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/AgentPromptRequestState"
+            }
+          },
+          "required": [
+            "request_id",
+            "state"
+          ],
+          "type": "object"
+        },
+        "AgentPromptRequestState": {
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "accepted",
+              "description": "Typed into the agent; the turn it starts has not been reported yet.",
+              "type": "string"
+            },
+            {
+              "const": "working",
+              "description": "The agent reported that a turn started with this prompt.",
+              "type": "string"
+            },
+            {
+              "const": "finished",
+              "description": "That turn ended.",
+              "type": "string"
+            },
+            {
+              "const": "unsupported",
+              "description": "The agent does not report its turns, so herdr cannot follow this prompt.",
+              "type": "string"
+            }
+          ]
         },
         "AgentSessionInfo": {
           "properties": {
@@ -11192,6 +11370,16 @@
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
                 },
+                "prompt_request": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/AgentPromptRequest"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "type": {
                   "const": "agent_prompted",
                   "type": "string"
@@ -11200,6 +11388,26 @@
               "required": [
                 "type",
                 "agent"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "prompt_request": {
+                  "$ref": "#/schemas/success_response/$defs/AgentPromptRequest"
+                },
+                "type": {
+                  "const": "agent_prompt_status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "prompt_request"
               ],
               "type": "object"
             },
