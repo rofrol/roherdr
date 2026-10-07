@@ -474,6 +474,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   The header's back/forward (`focus_history.rs`) lives in client memory, so
   every reattach, and every install's live handoff, empties it.
 
+- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07,
+  screenshot: "this circle is grey, it looks as if the coordinator is not
+  working"). Its only running job is `herdr agent wait <worker pane>`: no
+  output and no CPU, so after 5 minutes herdr-job reports it `--activity
+  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
+  the uncommitted idle-mark change lands), while the worker it waits on
+  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
+  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
+  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
+  state instead of its own CPU and output.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
