@@ -231,6 +231,7 @@ impl App {
             status: tab.status,
             bookmarked: tab.bookmarked,
             activity: tab.activity,
+            role: tab.role,
             job: tab.job.clone(),
         })
     }

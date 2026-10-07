@@ -1102,6 +1102,17 @@
                 "null"
               ]
             },
+            "role": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the tab's agent does for the user (see `tab.set_role`); absent\nwhen none was set."
+            },
             "status": {
               "anyOf": [
                 {
@@ -1163,6 +1174,26 @@
             "origin"
           ],
           "type": "object"
+        },
+        "TabRole": {
+          "description": "What the agent in a tab does for the user, as whoever opened the tab says\n(never derived from the agent's name or title).",
+          "oneOf": [
+            {
+              "const": "coordinator",
+              "description": "Works through a list (a repository's TODO) by handing each item to a\nworker.",
+              "type": "string"
+            },
+            {
+              "const": "worker",
+              "description": "Does one item, usually in a worktree of its own.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
         },
         "TabStatus": {
           "description": "Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).\nClients choose how to show it and summarise a parent's children with it.",
@@ -4860,6 +4891,26 @@
           ],
           "type": "object"
         },
+        "TabRole": {
+          "description": "What the agent in a tab does for the user, as whoever opened the tab says\n(never derived from the agent's name or title).",
+          "oneOf": [
+            {
+              "const": "coordinator",
+              "description": "Works through a list (a repository's TODO) by handing each item to a\nworker.",
+              "type": "string"
+            },
+            {
+              "const": "worker",
+              "description": "Does one item, usually in a worktree of its own.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "TabSetJobMetadataParams": {
           "properties": {
             "job": {
@@ -4890,6 +4941,29 @@
                 "string",
                 "null"
               ]
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
+        "TabSetRoleParams": {
+          "description": "Sets or clears a tab's role. The role ends with the tab.",
+          "properties": {
+            "role": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omit or null to clear the role; repeating it is harmless."
             },
             "tab_id": {
               "type": "string"
@@ -6187,6 +6261,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabBookmarkParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_role",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetRoleParams"
             }
           },
           "required": [
@@ -12194,6 +12284,17 @@
                 "null"
               ]
             },
+            "role": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the tab's agent does for the user (see `tab.set_role`); absent\nwhen none was set."
+            },
             "status": {
               "anyOf": [
                 {
@@ -12255,6 +12356,26 @@
             "origin"
           ],
           "type": "object"
+        },
+        "TabRole": {
+          "description": "What the agent in a tab does for the user, as whoever opened the tab says\n(never derived from the agent's name or title).",
+          "oneOf": [
+            {
+              "const": "coordinator",
+              "description": "Works through a list (a repository's TODO) by handing each item to a\nworker.",
+              "type": "string"
+            },
+            {
+              "const": "worker",
+              "description": "Does one item, usually in a worktree of its own.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
         },
         "TabStatus": {
           "description": "Outcome of the work a tab runs, set by whoever runs it (e.g. a job runner).\nClients choose how to show it and summarise a parent's children with it.",

@@ -368,6 +368,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         parent_tab_id: None,
         status: None,
         program: None,
+        role: None,
     });
     projected.workspaces.push(ClientShellWorkspace {
         bookmarked: false,
@@ -400,6 +401,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
             parent_tab_id: None,
             status: None,
             program: None,
+            role: None,
         });
     }
     state.set_snapshot(Box::new(projected));

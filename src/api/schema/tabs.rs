@@ -147,6 +147,30 @@ pub struct TabBookmarkParams {
     pub bookmarked: bool,
 }
 
+/// What the agent in a tab does for the user, as whoever opened the tab says
+/// (never derived from the agent's name or title).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TabRole {
+    /// Works through a list (a repository's TODO) by handing each item to a
+    /// worker.
+    Coordinator,
+    /// Does one item, usually in a worktree of its own.
+    Worker,
+    /// A value from a newer server that this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Sets or clears a tab's role. The role ends with the tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetRoleParams {
+    pub tab_id: String,
+    /// Omit or null to clear the role; repeating it is harmless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TabRole>,
+}
+
 /// Runtime facts supplied by a job runner; presentation belongs to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabJobMetadata {
@@ -188,4 +212,8 @@ pub struct TabInfo {
     /// What the running job does (see `tab.set_status`); absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<TabActivity>,
+    /// What the tab's agent does for the user (see `tab.set_role`); absent
+    /// when none was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TabRole>,
 }

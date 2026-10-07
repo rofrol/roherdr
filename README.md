@@ -92,6 +92,9 @@ PRs.
   of its `A`: a click runs that command in the background with the space's
   label (quoted for the shell) and shows its first output line as a toast;
   a failure stays until clicked. Unset, there is no button.
+  A tab line starts with `♛` when its agent coordinates a TODO and `⚒` when
+  it is a worker doing one item: whoever opens the tab sets the role with
+  `herdr tab role <tab_id> coordinator|worker` (`tab.set_role`).
 - **Spaces filter.** The `/ filter` button between `new` and `menu` opens a
   bar under the spaces header, like fzf: type to narrow the list to the
   spaces and tabs that match (a smart-case subsequence of a space's name,

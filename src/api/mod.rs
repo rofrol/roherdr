@@ -56,6 +56,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabSetParent(_)
             | Method::TabSetStatus(_)
             | Method::TabBookmark(_)
+            | Method::TabSetRole(_)
             | Method::TabSetJobMetadata(_)
             | Method::LayoutApply(_)
             | Method::LayoutSetSplitRatio(_)

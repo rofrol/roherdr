@@ -267,6 +267,7 @@ mod tests {
             parent_tab_id: parent.map(str::to_string),
             status,
             program: None,
+            role: None,
         }
     }
 

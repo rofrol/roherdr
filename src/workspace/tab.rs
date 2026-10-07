@@ -45,6 +45,9 @@ pub struct Tab {
     pub status: Option<crate::api::schema::TabStatus>,
     /// Pinned by the user to the bookmarks list; shared by every client.
     pub bookmarked: bool,
+    /// What the tab's agent does for the user, set by whoever opened the tab
+    /// (`tab.set_role`); clients mark it.
+    pub role: Option<crate::api::schema::TabRole>,
     /// What the tab's running job does, as its runner reports it; runtime
     /// only, so a restart clears it until the runner reports again.
     pub activity: Option<crate::api::schema::TabActivity>,
@@ -196,6 +199,7 @@ impl Tab {
                 parent: None,
                 status: None,
                 bookmarked: false,
+                role: None,
                 activity: None,
                 job: None,
                 root_pane: root_id,
@@ -464,6 +468,7 @@ impl Tab {
             parent: None,
             status: None,
             bookmarked: false,
+            role: None,
             activity: None,
             job: None,
             root_pane: pane_id,

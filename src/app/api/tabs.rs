@@ -708,6 +708,32 @@ impl App {
         }
     }
 
+    pub(super) fn handle_tab_set_role(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TabSetRoleParams,
+    ) -> String {
+        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        if tab.role != params.role {
+            tab.role = params.role;
+            self.schedule_session_save();
+        }
+        match self.tab_info(ws_idx, tab_idx) {
+            Some(tab) => encode_success(id, ResponseResult::TabInfo { tab }),
+            None => tab_not_found(id, &params.tab_id),
+        }
+    }
+
     pub(super) fn handle_tab_set_job_metadata(
         &mut self,
         id: String,
@@ -1106,6 +1132,72 @@ mod tests {
             crate::api::schema::TabBookmarkParams {
                 tab_id: "no_such_tab".into(),
                 bookmarked: true,
+            },
+        );
+        assert!(response.contains("tab_not_found"), "{response}");
+    }
+
+    #[test]
+    fn api_tab_set_role_marks_the_tab_and_survives_a_snapshot() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("todo"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        let tab_id = app.public_tab_id(0, 1).unwrap();
+
+        let set = |app: &mut App, role| {
+            let response = app.handle_tab_set_role(
+                "req".into(),
+                crate::api::schema::TabSetRoleParams {
+                    tab_id: tab_id.clone(),
+                    role,
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabInfo { tab } = success.result else {
+                panic!("unexpected response: {response}");
+            };
+            tab.role
+        };
+        use crate::api::schema::TabRole;
+        assert_eq!(set(&mut app, Some(TabRole::Worker)), Some(TabRole::Worker));
+        assert_eq!(
+            set(&mut app, Some(TabRole::Coordinator)),
+            Some(TabRole::Coordinator)
+        );
+        assert_eq!(
+            app.tab_list_info(0)
+                .into_iter()
+                .map(|tab| tab.role)
+                .collect::<Vec<_>>(),
+            [None, Some(TabRole::Coordinator)]
+        );
+        let captured = crate::persist::capture(
+            &app.state.workspaces,
+            &app.state.terminals,
+            &app.terminal_runtimes,
+            app.state.active,
+            app.state.selected,
+        );
+        assert_eq!(
+            captured.workspaces[0].tabs[1].role,
+            Some(TabRole::Coordinator)
+        );
+        assert_eq!(captured.workspaces[0].tabs[0].role, None);
+        assert_eq!(set(&mut app, None), None);
+        let response = app.handle_tab_set_role(
+            "req".into(),
+            crate::api::schema::TabSetRoleParams {
+                tab_id: "no_such_tab".into(),
+                role: Some(TabRole::Worker),
             },
         );
         assert!(response.contains("tab_not_found"), "{response}");

@@ -207,6 +207,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
             parent_tab_id: None,
             status: None,
             program: None,
+            role: None,
         });
     }
     let mut config = ClientShellConfig::from_config(&Config::default());
@@ -264,6 +265,7 @@ fn inactive_auto_named_tab_label_does_not_stack_terminal_faint() {
         parent_tab_id: None,
         status: None,
         program: None,
+        role: None,
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
