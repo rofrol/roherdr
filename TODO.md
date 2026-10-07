@@ -74,6 +74,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repo with three trivial items and a stub worker, with "what is happening?"
   injected mid-turn, many runs (costs Claude usage; ask first); (5) a field
   metric: abandoned turn ends per 100 coordinator turn ends, before and after.
+  Step 1 done 2026-10-07 (`78167f03`, `scripts/coordinator_turn_audit.py`):
+  baseline over this machine's transcripts, 3 coordinator sessions, 36 turn
+  ends: asked 1, waiting 32, abandoned 2 (both in the herdr coordinator,
+  the known case), other 1, so 5.6 abandoned per 100. Small sample; rerun
+  after the rule change.
 
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
