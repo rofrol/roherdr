@@ -568,6 +568,30 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-07 ("I don't know. A popup spike?"): do the
   spike; a worker prepares the test popup, the user watches it scroll.
 
+- [ ] Phone notifications when I am away from the Mac (agent blocked,
+  agent done, herdr-job finished).
+  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): a
+    Telegram bot sending to my private chat (`chat_id`); Instagram rejected
+    (no API for it). Bot chats are not end-to-end encrypted. ntfy or
+    Pushover as alternatives.
+  - A plugin, not core: agent blocked/done comes as
+    `pane.agent_status_changed` through plugin `[[events]]` hooks; herdr-job
+    completion has no event, so herdr-job's `notify()` calls the plugin's
+    sender. Bot token and `chat_id` in the plugin config, never in payloads.
+    Transitions only; dedup per pane and approval request, coalesce bursts,
+    drop a stale alert.
+  - Away: read it from the OS (macOS `ioreg -c IOHIDSystem` `HIDIdleTime`,
+    Linux logind's `IdleHint` or `xprintidle`) plus a manual away/mute
+    action writing a state file; the API knows nothing about idle clients.
+  - Content: the toast text (`claude finished` plus `workspace · 1 · tab`):
+    no paths, prompts or agent output. Later: approve/deny buttons answered
+    through the herdr socket, accepting callbacks only from my own user id.
+  Triage 2026-10-06 (manual): The spike is done; give a bot token and `chat_id` so sending can be tested.
+  Decided by the user 2026-10-07: an Android app, ntfy (no account or
+  token: a topic the user subscribes to in the ntfy app). The plugin design
+  above stands, with ntfy instead of the Telegram bot; Telegram rejected for
+  now.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -804,29 +828,6 @@ user needs to decide or do.
     or per-render process-tree polling.
   Triage 2026-10-06 (manual): Tell whether `env` still shows in the title after the next install.
 
-- [ ] Telegram notifications when I am away from the Mac (agent blocked,
-  agent done, herdr-job finished).
-  - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): a
-    Telegram bot sending to my private chat (`chat_id`); Instagram rejected
-    (no API for it). Bot chats are not end-to-end encrypted. ntfy or
-    Pushover as alternatives.
-  - A plugin, not core: agent blocked/done comes as
-    `pane.agent_status_changed` through plugin `[[events]]` hooks; herdr-job
-    completion has no event, so herdr-job's `notify()` calls the plugin's
-    sender. Bot token and `chat_id` in the plugin config, never in payloads.
-    Transitions only; dedup per pane and approval request, coalesce bursts,
-    drop a stale alert.
-  - Away: read it from the OS (macOS `ioreg -c IOHIDSystem` `HIDIdleTime`,
-    Linux logind's `IdleHint` or `xprintidle`) plus a manual away/mute
-    action writing a state file; the API knows nothing about idle clients.
-  - Content: the toast text (`claude finished` plus `workspace · 1 · tab`):
-    no paths, prompts or agent output. Later: approve/deny buttons answered
-    through the herdr socket, accepting callbacks only from my own user id.
-  Triage 2026-10-06 (manual): The spike is done; give a bot token and `chat_id` so sending can be tested.
-  Answered by the user 2026-10-07: "an Android app". Next question: ntfy
-  or Telegram on Android?
-  Options: ntfy (no account or token) | Telegram (bot token and chat_id)
-
 - [ ] Awaiting reply for agents other than Claude and pi, the same way as
   their integrations (user, 2026-09-28): each integration that can add
   session context (a session-start hook, an extension, a plugin) injects the
@@ -906,3 +907,17 @@ user needs to decide or do.
   - Until then, the user's side: do not Force Quit a "Ghostty" entry that
     shows up after Ghostty has quit; Cmd+Q is enough.
   Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
+
+- [ ] How should the rule line "a coordinator's turn goes on after the
+  user's questions" get into `~/.claude/CLAUDE.md`, now that the auto-mode
+  classifier blocked the worker?
+  Options: you add it yourself | approve the edit in the worker's pane with auto mode off | leave the rule as it is
+  Checked 2026-10-07: worker `w-turn-rule` (task in the coordinator's
+  scratchpad, `task-rule3.md`) was blocked twice ("instruction poisoning",
+  then "self-modification") editing `.claude/CLAUDE.md` and the `todo` skill;
+  nothing changed. An earlier worker with a similar task was not blocked.
+  The wanted text: a mid-work question or request does not withdraw the
+  approval, answer or queue it and go on in the same turn; end a turn only
+  when every remaining item waits on the user, Next is empty, the user says
+  stop, or a worker runs under a background wait that will wake the
+  session; never end with a promise to continue when told.
