@@ -25,6 +25,14 @@ def text(value):
     return {"type": "text", "text": value}
 
 
+def tool_use(tool_id, command="ls"):
+    return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
+
+
+def tool_result(tool_id, is_error):
+    return {"type": "tool_result", "tool_use_id": tool_id, "content": "x", "is_error": is_error}
+
+
 class QuestionHeuristic(unittest.TestCase):
     def test_questions_in_both_languages(self):
         for message in [
@@ -191,7 +199,10 @@ class StopHook(unittest.TestCase):
             bash("herdr agent awaiting-reply"), text("Masz email?\n\nherdr agent awaiting-reply")]}}]
         self.assertEqual(self.run_hook(ran), "")
 
-    def run_hook(self, entries, **fields):
+    def run_hook(self, entries, reports=None, stop_mode=None, **fields):
+        """Runs the hook on a transcript; with a `reports` list, also gives it a herdr socket
+        and appends the requests it sent there."""
+        import socket
         import subprocess
 
         with tempfile.TemporaryDirectory() as directory:
@@ -207,15 +218,113 @@ class StopHook(unittest.TestCase):
                 XDG_STATE_HOME=os.path.join(directory, "state"),
             )
             env.pop("CURSOR_VERSION", None)
-            result = subprocess.run(
-                ["sh", HOOK, "stop-check"],
-                input=json.dumps(payload),
-                text=True,
-                capture_output=True,
-                env=env,
-                check=True,
-            )
+            env.pop("HERDR_SOCKET_PATH", None)
+            env.pop("HERDR_AWAITING_REPLY_STOP", None)
+            if stop_mode:
+                env["HERDR_AWAITING_REPLY_STOP"] = stop_mode
+            server = None
+            if reports is not None:
+                path = os.path.join(directory, "s.sock")
+                server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                server.bind(path)
+                server.listen(4)
+                env["HERDR_SOCKET_PATH"] = path
+            try:
+                result = subprocess.run(
+                    ["sh", HOOK, "stop-check"],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    check=True,
+                )
+                # The hook has exited, so whatever it sent waits in the backlog.
+                server and server.setblocking(False)
+                while server:
+                    try:
+                        connection, _ = server.accept()
+                    except BlockingIOError:
+                        break
+                    connection.settimeout(1)
+                    reports.append(json.loads(connection.recv(65536).decode()))
+                    connection.close()
+            finally:
+                server and server.close()
             return result.stdout.strip()
+
+    def blocked_turn(self, final, *results):
+        """A turn whose last batch of tool calls ended with these `is_error` results."""
+        entries = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [tool_use("a0")]}},
+            {"type": "user", "message": {"role": "user", "content": [tool_result("a0", False)]}},
+        ]
+        for index, _ in enumerate(results):
+            entries.append({"type": "assistant", "message": {
+                "role": "assistant", "content": [tool_use(f"b{index}")]}})
+        for index, is_error in enumerate(results):
+            entries.append({"type": "user", "message": {
+                "role": "user", "content": [tool_result(f"b{index}", is_error)]}})
+        entries.append({"type": "assistant", "message": {"role": "assistant",
+                                                         "content": [text(final)]}})
+        return entries
+
+    def test_a_turn_ending_in_denied_calls_marks_the_pane_without_blocking(self):
+        reports = []
+        entries = self.blocked_turn("Write 'dalej' to continue?", True, True)
+        self.assertEqual(self.run_hook(entries, reports), "")
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["method"], "pane.report_awaiting_reply")
+        self.assertEqual(reports[0]["params"], {"pane_id": "p1", "question": "blocked tool calls"})
+        # A statement after denied calls is marked too: the agent may not have been able to ask.
+        reports = []
+        self.assertEqual(self.run_hook(self.blocked_turn("I stop here.", True), reports), "")
+        self.assertEqual(len(reports), 1)
+
+    def test_a_successful_last_call_changes_nothing(self):
+        reports = []
+        entries = self.blocked_turn("All done.", True, False)
+        self.assertEqual(self.run_hook(entries, reports), "")
+        self.assertEqual(reports, [])
+        # An earlier failure followed by a successful call is not a blocked ending either.
+        entries = self.blocked_turn("All done.", True)
+        entries[-1:-1] = [
+            {"type": "assistant", "message": {"role": "assistant", "content": [tool_use("c")]}},
+            {"type": "user", "message": {"role": "user", "content": [tool_result("c", False)]}},
+        ]
+        self.assertEqual(self.run_hook(entries, reports), "")
+        self.assertEqual(reports, [])
+        # A question after a successful call is still blocked once, as before.
+        output = self.run_hook(self.blocked_turn("Push the commits?", False), reports)
+        self.assertEqual(json.loads(output)["decision"], "block")
+        self.assertEqual(reports, [])
+
+    def test_failed_calls_in_an_earlier_turn_do_not_count(self):
+        reports = []
+        entries = self.blocked_turn("Stuck.", True) + [
+            {"type": "user", "message": {"role": "user", "content": "next"}},
+            {"type": "assistant", "message": {"role": "assistant",
+                                              "content": [text("All done.")]}},
+        ]
+        self.assertEqual(self.run_hook(entries, reports), "")
+        self.assertEqual(reports, [])
+
+    def test_the_second_stop_is_never_blocked_but_still_marked(self):
+        reports = []
+        question = self.blocked_turn("Push the commits?", False)
+        self.assertEqual(self.run_hook(question, reports, stop_hook_active=True), "")
+        self.assertEqual(reports, [])
+        # Asked to run the command, the agent was denied again: the pane is marked.
+        denied = self.blocked_turn("Push the commits?", True)
+        self.assertEqual(self.run_hook(denied, reports, stop_hook_active=True), "")
+        self.assertEqual(len(reports), 1)
+
+    def test_shadow_mode_and_a_subagent_do_not_mark(self):
+        entries = self.blocked_turn("Stuck.", True)
+        reports = []
+        self.assertEqual(self.run_hook(entries, reports, agent_id="sub"), "")
+        self.assertEqual(self.run_hook(entries, reports, stop_mode="shadow"), "")
+        self.assertEqual(reports, [])
 
     def test_blocks_once_for_an_unreported_question(self):
         entries = [

@@ -34,8 +34,10 @@ cat >"$hook_input_file" 2>/dev/null || true
 
 # Stop hook: when the turn ends with a question for the user and the agent did not report it with
 # `herdr agent awaiting-reply`, ask it once to do so. The agent decides (a rhetorical question is
-# not reported); herdr never marks the pane itself. HERDR_AWAITING_REPLY_STOP=0 turns it off,
-# =shadow only logs what it would have done to ~/.local/state/herdr/awaiting-reply-stop.jsonl.
+# not reported). A turn whose last tool calls all failed or were denied (a permission prompt, the
+# auto-mode classifier) may have left the agent unable to run that command, so the hook marks the
+# pane as awaiting a reply itself, without blocking the stop. HERDR_AWAITING_REPLY_STOP=0 turns it
+# off, =shadow only logs what it would have done to ~/.local/state/herdr/awaiting-reply-stop.jsonl.
 if [ "$action" = "stop-check" ]; then
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
@@ -47,10 +49,12 @@ if [ "$action" = "stop-check" ]; then
 import json
 import os
 import re
+import socket
 import time
 
 mode = os.environ.get("HERDR_AWAITING_REPLY_STOP", "block")
 COMMAND = "herdr agent awaiting-reply"
+BLOCKED_QUESTION = "blocked tool calls"
 # The same question heuristic as scripts/awaiting_reply_audit.py (a test keeps them equal).
 ASK_PHRASES = re.compile(
     r"\b("
@@ -122,15 +126,20 @@ try:
         hook_input = json.loads(handle.read() or "{}")
 except Exception:
     raise SystemExit(0)
-if hook_input.get("hook_event_name") != "Stop" or hook_input.get("stop_hook_active"):
+if hook_input.get("hook_event_name") != "Stop" or hook_input.get("agent_id"):
     raise SystemExit(0)
-if hook_input.get("agent_id"):
-    raise SystemExit(0)
+# The second stop of a turn the hook already blocked is never blocked again, but it may still
+# be marked: the command the agent was asked to run may have been denied too.
+stop_hook_active = bool(hook_input.get("stop_hook_active"))
 
 final_text = hook_input.get("last_assistant_message")
 final_text = final_text if isinstance(final_text, str) else ""
 reported = False
 last_text = ""
+# Outcomes (True: failed or denied) of the turn's last batch of tool calls: the calls the agent
+# made together before their results came back. A call after a result starts a new batch.
+last_batch = []
+batch_has_results = False
 transcript = hook_input.get("transcript_path")
 if isinstance(transcript, str) and transcript:
     try:
@@ -158,8 +167,18 @@ if isinstance(transcript, str) and transcript:
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
+                last_batch = []
+                batch_has_results = False
+            elif tool_result:
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        last_batch.append(bool(block.get("is_error")))
+                        batch_has_results = True
         elif entry.get("type") == "assistant":
             for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and batch_has_results:
+                    last_batch = []
+                    batch_has_results = False
                 if (
                     isinstance(block, dict)
                     and block.get("type") == "tool_use"
@@ -175,7 +194,31 @@ if not final_text.strip():
 
 printed = printed_command(final_text)
 question = looks_like_question(final_text) or printed
-block = question and not reported
+blocked_calls = bool(last_batch) and all(last_batch)
+if stop_hook_active and not blocked_calls:
+    raise SystemExit(0)
+marked = False
+if blocked_calls and mode != "shadow" and os.environ.get("HERDR_SOCKET_PATH"):
+    request = {
+        "id": f"herdr:claude:blocked:{int(time.time() * 1000)}",
+        "method": "pane.report_awaiting_reply",
+        "params": {"pane_id": os.environ["HERDR_PANE_ID"], "question": BLOCKED_QUESTION},
+    }
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(os.environ["HERDR_SOCKET_PATH"])
+        client.sendall((json.dumps(request) + "\n").encode())
+        try:
+            client.recv(4096)
+        except Exception:
+            pass
+        client.close()
+        marked = True
+    except Exception:
+        pass
+# Asking the agent to run a command its tools may deny again only repeats the denial.
+block = question and not reported and not blocked_calls and not stop_hook_active
 try:
     state_dir = os.path.join(
         os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
@@ -190,6 +233,8 @@ try:
                     "session": hook_input.get("session_id"),
                     "question": question,
                     "reported": reported,
+                    "blocked_calls": blocked_calls,
+                    "marked": marked,
                     "blocked": block and mode != "shadow",
                     "printed": printed,
                     "tail": last_paragraph(final_text)[-200:],
