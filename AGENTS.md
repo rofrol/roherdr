@@ -430,6 +430,15 @@ To save the coordinator's quota, a session can hand a well-specified task to
   creates another cold tree next to it. To check its change, apply the diff
   in the shared checkout and run `just clean-check <paths>` there (warm), then
   commit by path; remove stray `pi-*-worktrees/clean-check` trees.
+- Name workers by their task (`w-<slug>`), not `todo-*`: the `/todo`
+  coordinator finds another coordinator by that prefix.
+- When the worker is done, close its workspace (`herdr workspace close
+  <workspace_id>`), not its tab: a job tab the worker started nests under
+  its tab and makes `tab close` fail (`tab_has_children`); then remove the
+  worktree and branch.
+- A cold worktree build needs Zig 0.16 (`vendor/libghostty-vt`); Homebrew
+  ships 0.17 since 2026-10, so check and build warm in the shared
+  checkout's clean tree instead.
 - Read the full diff, not only `--stat`: the first pilot read
   `HERDR_WORKSPACE_ID` without the remote and empty guards that
   `caller_pane_id()` already had.
