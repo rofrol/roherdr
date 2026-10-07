@@ -141,52 +141,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   negative conditions; retries need an acknowledgement and an idempotent
   action. Left: the hook that flags time constants.
 
-- [ ] Open points an agent reports must not wait in its output (user via the
-  omarchy-panel session, 2026-10-07: "who is supposed to settle these? did
-  you add it to the TODO or are you only telling me here? fix the process
-  so such things do not wait for me in a worker's output but get added to
-  the TODO after analysis with the models"). Rule: open points an agent or
-  worker reports are, after a consult round, either decided by the agent
-  and written into the TODO item (values and who decided) or moved to
-  "Needs a decision" with `Options:`; never left only in a final message.
-  The coordinator checks each worker's final message for such points when
-  it reviews. Rule text: a worker, with the user's approval.
-  Done 2026-10-07 (dotfiles `c348422`, in the global rule and the `/todo`
-  skill).
-
-- [ ] The coordinator noticed a finished worker only when the user scrolled its
-  tab to the end (user, 2026-10-07: "you started doing something only when
-  I scrolled the worker tab's conversation to the end; that's a bug; fix
-  the process; ask the models"). The toast worker committed at 14:14;
-  `herdr-job wait-agent <pane> --worker-line`, which reads the pane's
-  screen (`agent read --source detection`) for the `WORKER-DONE` line, saw
-  it only at 17:50, after the user scrolled the worker's pane: the screen
-  read followed the scrolled view, or the line was not on the read part.
-  3.5 hours lost. A worker's end must come from something no UI state can
-  hide: the worker's commit on its branch, its transcript's last message,
-  or a report the worker sends (`herdr agent ...`), not the screen.
-  The user (2026-10-07): "that tab just had the blue dot, so the work was
-  done and I simply had not read the agent's output; should that block the
-  work?" No: the screen read of a pane nobody looks at was stale until the
-  tab was shown, so "seen" leaked into a machine signal.
-  Rounds `20261007-175122-5333` and `20261007-175429-5e27` (sol, MiMo):
-  - Start the worker with `agent.prompt_turn`; its end is the wakeup, not
-    the verdict. The verdict: the worker's final assistant message in its
-    transcript JSONL for that turn (`WORKER-DONE <sha>` / `WORKER-BLOCKED`),
-    or a result file the worker writes atomically outside its worktree;
-    then verify the sha is on its branch. A turn that ends without a marker
-    is "needs attention" (a question, a limit, a crash), never done.
-  - A deadline (about 30 minutes) and stall detection (no transcript growth,
-    no commits) report "overdue" to the coordinator; no automatic retry.
-  - herdr: `agent read --source detection` is a presentation cache that may
-    be stale for hidden panes; machine readers need a live source or a
-    staleness flag; nothing a user does (viewing, scrolling) may change what
-    automation observes.
-  - Test: stub workers (done, blocked, question without marker, kill -9),
-    with the pane scrolled away throughout.
-  Superseded by "Event-driven worker waits, no timers" above; the
-  polling/deadline commit of worker `w-worker-end` was not taken.
-
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
@@ -241,28 +195,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   fails on `windows-lint`: `count_macos_pty_slave_names` and a method
   `invalidate` are dead code on Windows; a worker gates them with cfg
   (AGENTS.md: platform code compile-gated) before push and install.
-
-- [ ] Toasts in the top right corner again, not the bottom right (user,
-  2026-10-07: "notifications should appear in the top right corner after
-  all, not the bottom; ask the models"). Today the user's config has
-  `[ui.toast.herdr] position = "bottom-right"`, `bottom_margin = 6`
-  (dotfiles `e85197d`); endpoint notices and lifecycle banners already sit
-  top right.
-  History: top-right on 2026-10-01, bottom-right above the input box on
-  2026-10-03 (`DECISIONS.md`, "Toast position"), top-right again now.
-  Round `20261007-132059-d893` (sol, MiMo), agreeing: top-right needs one
-  layout for the corner: endpoint notices and banners first, toasts below
-  them (an offset from their real height), at most 2-3 cards with "+N
-  more", width capped near 48 columns; a sticky error (the launcher's
-  failure) should not cover content: brief toast, then an unread mark and
-  the details in the notification log, dismissable by key. MiMo: the
-  flip-flop says the real need is the notification list, with toasts only
-  for short-lived events. First step: switch the config (a dotfiles
-  worker); then the stacking fixes as a herdr worker.
-  First step done 2026-10-07 (dotfiles `ae7cea1`: `position = "top-right"`,
-  `bottom_margin` removed). Left: toasts below the endpoint notices and
-  banners, at most 2-3 cards with "+N more", width cap, a sticky error into
-  the notification log instead of covering content.
 
 - [ ] Ideas from Omarchy's "agent account" (user, 2026-10-07: "add all of
   it to the TODO as 4, ask the models"; omacom/omarchy PRs 13770 and 13992:

@@ -381,3 +381,8 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 
 ### Upstream rebase, 2026-10-07
 - Rebased 384 fork commits on upstream `a124eed7` (21 upstream commits) by a worker in its own worktree with `git rerere` on; 9 commits conflicted, 16 changed in `git range-diff` (382 identical); upstream's version won three contradictions and the fork's intent was re-applied on top (pane probe shell guard, Windows clippy `--all-targets`, the agent prompt validate/submit split with `prompt_request`). `just check` green (4193 tests); master moved with `--force-with-lease`; the old master is `backup/pre-rebase-20261007`.
+
+### Coordinator process, 2026-10-07
+- Open points a worker or agent reports are decided after a consult and written into the TODO item, or moved to "Needs a decision" with `Options:`; never left only in an agent's output (user; global rule and `/todo` skill, dotfiles `c348422`).
+- A worker's end is an event: `agent.wait_turn` on the prompt's request (finished, failed, interrupted, exited, unknown_request), then one transcript read for the verdict; no screen polling, deadlines or idle debounces (user: "why any asynchronous workaround?"; `7a82f292`). A first screen-based `wait-agent --worker-line` missed a finished worker for 3.5 h because an unwatched pane's screen was stale.
+- Toasts top right again (user; dotfiles `ae7cea1`), stacked under the endpoint notice and banners, at most two cards plus "+N more", 48 columns at most, a sticky error moves to the notification log (`76aa9c54`).
