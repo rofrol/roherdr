@@ -646,6 +646,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-07: reproduce first; a worker prepares the
   script with disposable agents, the user quits and force-quits Ghostty once.
 
+- [ ] An `×` that clears the spaces filter field (user, 2026-10-07: "in the
+  filter for searching tabs and spaces, add some x to clear the field").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
