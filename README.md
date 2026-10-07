@@ -63,7 +63,9 @@ PRs.
 - **Vertical tabs in the sidebar** (experimental). With
   `spaces.tabs = true`, each space lists its tabs under it, one line per
   top-level tab with its agent state, label and the running and failed
-  counts of its nested job tabs; click a line to open that tab. Both tab
+  counts of its nested job tabs; click a line to open that tab. A tab whose
+  agent waits on you shows what it asks on a dim `↳` line under it (its
+  question, the approval or the limit, as in the header's `?` list). Both tab
   rows above the panes go. Click `►` before a tab's job counts to unfold
   its job tabs as small squares under it (`◐` running, `!` failed, `✓`
   done), and `▼` to fold them; click a square to open that job, click it

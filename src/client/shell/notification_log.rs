@@ -524,7 +524,7 @@ impl ClientShellState {
     /// reply, or stopped by a limit) and agents working, one pane in at most
     /// one of them: attention wins. Counted from the snapshot the client
     /// already has.
-    fn agent_is_asking(agent: &crate::protocol::ClientShellAgent) -> bool {
+    pub(super) fn agent_is_asking(agent: &crate::protocol::ClientShellAgent) -> bool {
         agent.agent_status == crate::api::schema::AgentStatus::Blocked
             || agent.awaiting_reply
             || agent.limited.is_some()
@@ -623,7 +623,7 @@ impl ClientShellState {
     /// What an agent waiting on the user asks, for the second line of its
     /// row: its question, the approval it waits for, or the limit that
     /// stopped it and when that resets (`limited · resets 14:32`).
-    fn asking_detail(agent: &crate::protocol::ClientShellAgent) -> String {
+    pub(super) fn asking_detail(agent: &crate::protocol::ClientShellAgent) -> String {
         use crate::api::schema::AgentStatus;
         if agent.agent_status == AgentStatus::Blocked {
             return agent
