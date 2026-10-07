@@ -115,8 +115,7 @@ fn run_space_command(
     let spawned = std::thread::Builder::new()
         .name("herdr-space-command".into())
         .spawn(move || {
-            let result = crate::platform::detached_custom_command_process(&command)
-                .stdin(std::process::Stdio::null())
+            let result = space_command_process(&command)
                 .output()
                 .map_err(|err| err.to_string())
                 .map(|output| shell::SpaceCommandOutput {
@@ -130,6 +129,17 @@ fn run_space_command(
     if let Err(err) = spawned {
         warn!(err = %err, "failed to start the space command thread");
     }
+}
+
+/// The client runs in the user's own terminal, not in a pane, so the command
+/// gets the environment a pane has; without `HERDR_ENV` a launcher that calls
+/// the herdr CLI refuses to run.
+fn space_command_process(command: &str) -> std::process::Command {
+    let mut process = crate::platform::detached_custom_command_process(command);
+    process
+        .stdin(std::process::Stdio::null())
+        .envs(crate::integration::local_pane_like_env());
+    process
 }
 
 pub(super) fn dispatch_client_shell_actions(
@@ -973,6 +983,22 @@ pub(super) fn finish_client_shell_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_command_gets_herdr_pane_env() {
+        let process = space_command_process("true");
+        let env: Vec<_> = process.get_envs().collect();
+        let value = |key: &str| {
+            env.iter()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .and_then(|(_, value)| *value)
+        };
+        assert_eq!(value(crate::HERDR_ENV_VAR), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(
+            value(crate::api::SOCKET_PATH_ENV_VAR),
+            Some(crate::api::socket_path().as_os_str())
+        );
+    }
 
     #[test]
     fn host_color_reaches_server_before_first_snapshot() {
