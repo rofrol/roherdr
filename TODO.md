@@ -505,6 +505,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      several are pending), the `?` list shows it; a gone id is refused
      with what happened to it (finding 2: the oldest question was
      answered, possibly one the user never saw).
+     Done 2026-10-07 (`fix: answers to a worker's question must name the
+     question`, `fix: regenerate the api schema for worker answers`,
+     checked and installed; by headless worker `w2`, whose hand-edited
+     schema the check caught).
   2. Takeover claims recorded in every state and released on failure; no
      prompt or answer during a takeover (findings 3, 8: two clicks on an
      exited worker open two tabs on one session).
