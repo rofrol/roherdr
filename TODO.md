@@ -119,6 +119,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   from 1 s to 30 s for up to 15 minutes. Left: herdr core's PTY headroom
   check and clear error; the agent rule in the global instructions (the
   rule text is the user's file: a worker, with his approval).
+  Bug found at first use: `wait-agent --worker-line` reads `agent read
+  --source recent --lines 200`, which herdr refuses while the agent works
+  (`agent_not_idle`: alternate-screen history needs scrolling while idle),
+  so the wait exits 2 at once; read `--source detection` (the visible
+  screen) instead, and treat `agent_not_idle` as retry, with a test.
 
 - [ ] Toasts in the top right corner again, not the bottom right (user,
   2026-10-07: "notifications should appear in the top right corner after
