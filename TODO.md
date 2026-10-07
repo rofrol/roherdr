@@ -397,6 +397,38 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
 
+- [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
+  next: "the wait that wakes the coordinator on a worker's question is
+  missing: a fix plan to TODO as next; ask the models"). Today
+  `worker.wait` ends only at the turn's end or exit, so the coordinator
+  sleeps while its worker blocks on a question and the user gets asked.
+  Round `20261007-205219-4d6b` (sol, MiMo, DeepSeek); plan chosen by the
+  coordinator from the agreement:
+  1. `worker.wait --until attention` (CLI `herdr worker wait <id>
+     --attention`): returns at the first of a pending question, the turn's
+     end, exit, level-triggered (state already there returns at once), with
+     a typed reason, the question and its request id, and the worker's
+     event sequence number; `--after <seq>` skips what the caller already
+     saw (DeepSeek, MiMo: a sequence covers turn ends and new questions; a
+     seen request id alone can hide a later completion, sol). Answers stay
+     atomic: the first valid answer wins, a stale request id is refused.
+  2. The question stays visible to the user at once but quiet: listed as
+     "the coordinator is on it", not counted in the `?` badge and not
+     flagged, so the user is not asked; it becomes a normal `?` question
+     when the coordinator escalates it (`worker.escalate`) or when the
+     worker's coordinator is gone (its pane closed or its agent exited:
+     events herdr has). sol, DeepSeek: hiding it entirely makes a crashed
+     coordinator a lost question; MiMo: showing it loudly breaks "asked
+     almost never". A live but stuck or rate-limited coordinator emits no
+     event: the quiet entry lets the user act; no timer.
+  3. Ownership: `worker.start` records the starting pane and agent session
+     as the worker's coordinator (sol: bind to the session, not only the
+     pane id).
+  4. The coordinator's loop and the `/todo` skill: wait with `--attention
+     --after <seq>`; answer per the policy or escalate; wait again.
+  Later, when a coordinator runs several workers at once: one wait over all
+  of them (`--any`), deferred by all three.
+
 - [ ] Headless workers ask the user almost never (user, 2026-10-07, after
   two approval questions from worker `w1` for a heredoc draft in `/tmp`:
   "why do you ask me about such trivia? allow. It was supposed to be
