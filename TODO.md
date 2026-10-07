@@ -1179,11 +1179,3 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
-
-- [ ] Headless workers: which Bash commands run without asking you?
-  Options: a strict list per repository (single command, no chaining or redirection; git without push/config, just check, cargo test), the rest to you (Recommended) | the repository's own Claude permissions.allow rules | every Bash command to you
-  Checked: Bash requests carry only the command text, so the worktree
-  realpath rule cannot cover them (trial 2). sol: all to the user (a
-  worktree is not a sandbox; git, cargo and just run repository code);
-  MiMo: a strict list (repository-supplied rules are attacker-controlled);
-  DeepSeek: the repository's `permissions.allow` with a seeded default.
