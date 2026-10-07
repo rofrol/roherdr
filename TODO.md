@@ -492,7 +492,21 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   or point `ZIG_GLOBAL_CACHE_DIR`/`ZIG_LOCAL_CACHE_DIR`/`CARGO_TARGET_DIR`
   into the worktree or the worker's temp dir, or keep compiling for the
   coordinator only. Also: AGENTS.md still shows `herdr worker answer <id>
-  ...` without `--request` (line ~454).
+  ...` without `--request` (line ~454; fixed by `fix: regenerate the api schema for worker
+  answers`).
+  Rounds `20261008-015225-c5bd` and `20261008-015557-f6e2` (sol, MiMo,
+  DeepSeek): copying a warm `target/` or Zig cache into a new worktree
+  does not help (both record absolute paths, so the copy is "cold in
+  disguise", and may even mark units fresh against another tree's files);
+  sharing the user's caches widens the sandbox. Decided by the user
+  2026-10-08: one persistent worker worktree (`../herdr-worktrees/worker`,
+  like `clean-check`), headless workers one at a time: at each item herdr
+  stops anything left from the previous worker, asserts a clean status,
+  checks out a new branch from current master there (unique branch name),
+  removes untracked files except `target/` and the Zig cache, and lets the
+  sandbox write to that folder and its caches only; a "build from
+  scratch" switch for a suspicious build; ~8 GB disk. A cold build once,
+  then only the changes compile.
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
