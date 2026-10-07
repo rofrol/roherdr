@@ -431,6 +431,31 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-07: these steps go before the
   fresh-coordinator-per-item, item-history and handoff items (all three
   models: those build on the event log and verified writes).
+  Compared with T3 Code (user 2026-10-07: "what safeguards does t3code have
+  for all this? ask the models"; read at `vendor/t3code` 0678e4e23d, the
+  key parts checked by the coordinator): SQLite event sourcing (WAL,
+  AUTOINCREMENT sequence, one transaction per command: a command receipt
+  `insertIfAbsent` on `commandId`, events, projections, an outbox; a
+  repeated command id returns the stored result); clients subscribe, then
+  replay after their sequence and dedupe, or get a snapshot; approvals
+  keyed by request id, answered only while pending, re-checked against the
+  same session, with a guard against cleanup erasing a racing answer; at
+  restart pending requests expire and runs are cancelled (no continuity of
+  running agents; resume is opt-in); interrupt + close, 10 s, then
+  finalized as interrupted. It has no stuck-agent watchdog, no commit
+  checks, and passes no Claude sandbox. Round `20261007-215243-99f4` (sol,
+  MiMo, DeepSeek), adopt: request-id approvals with the pending-only rule,
+  session fencing and the cleanup guard (fix 1 of the atomicity item, then
+  step 3); command ids with receipts for every state-changing call (step
+  3); subscribe-before-replay with sequence dedupe (step 2); restart
+  reconcile that requeues only replay-safe effects (with fix 3). Do not
+  adopt: questions without expiry (we decided a lease), cancelling running
+  workers at restart (our live handoff keeps them, MiMo), a plain lock for
+  takeovers (needs a compare-and-set on ownership with an epoch, all
+  three). Ours that T3 lacks: live worker continuity, the lease, commit
+  checks, fault injection. sol: a Stop hook is not a durable obligation
+  queue: obligations live in the server. Storage asked in "Needs a
+  decision".
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
@@ -1568,5 +1593,9 @@ user needs to decide or do.
   Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
   Decided by the user 2026-10-07: after the colours and symbols audit,
   generated from its style map; waits for that audit.
+
+- [ ] Worker state: move it to SQLite event sourcing (command receipts, events, projections and an outbox in one transaction, as T3 Code does) at the event-log step, or keep JSONL journals with fixed writes?
+  Options: SQLite at the event-log step (plan step 2), JSONL kept only as a debug export (Recommended) | fix the bugs on JSONL first, SQLite only when shared state needs exactly-once delivery | stay on JSONL
+  Checked: round on 2026-10-07; sol and MiMo: SQLite now, receipts make double starts and silent loss structurally impossible, building `wait --after` on JSONL means building it twice; DeepSeek: the review's findings are correctness bugs, fix them and fencing first. herdr has no SQLite dependency today (AGENTS.md: no dependency without a reason).
 
 ### Needs you to act or watch
