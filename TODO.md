@@ -281,6 +281,44 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   guards; measure how often a worker's TUI is viewed and how often typed
   prompts fail; only then prototype one SDK worker backend behind an
   `AgentDriver`-like seam.
+  Again 2026-10-07 (user: "something always needs fixing with the
+  coordinator and the workers; I think that is why T3 Code uses the agents'
+  SDKs; analyse with the models, read the source"). Facts: the Agent SDK
+  runs the Claude Code binary; its docs say "Unless previously approved,
+  Anthropic does not allow third party developers to offer claude.ai login
+  or rate limits for their products, including agents built on the Claude
+  Agent SDK" (code.claude.com/docs/en/agent-sdk/overview), and point other
+  languages to `claude -p --output-format json`. T3 Code (MIT, commit
+  611132c1) drives Claude through the SDK with `pathToClaudeCodeExecutable`
+  on the user's local login (it labels `claudemax20xsubscription`): turn end
+  = the `result` message, interrupted from `terminal_reason`
+  (`aborted_tools`/`aborted_streaming`), limits from `api_error_status`
+  429/529, questions and approvals through `canUseTool`, `query.interrupt()`,
+  readiness from `system/init`; its Claude adapter is 8016 lines (held
+  frames until the prompt echo, a deadlock when interrupting the raw
+  generator), Pi and Cursor 3000+ each.
+  Rounds `20261007-183147-d819` and `20261007-183420-2140` (sol, MiMo, DeepSeek):
+  an event stream instead of a TUI removes today's failures 3 (state
+  flicker), 4 (stale screen), 5 (Esc without Stop: interrupt is a control
+  request with a reason) and the PTY per worker (6), and makes 1 (lost first
+  prompt: gate on `system/init`) and 2 (trust dialog) startup errors rather
+  than silent hangs; 7 (permission classifier) and 8 (tab ids) stay ours.
+  New costs: no native TUI for a worker (watch through a log view, take over
+  with `claude --resume <session>` in a tab, never two writers), questions
+  and approvals need our own answering path, pipe backpressure and a
+  journal of events, the user's CLI version churn. All three: hybrid,
+  headless workers, TUI coordinators and agents the user talks to. Split on
+  the transport: SDK sidecar (sol, DeepSeek: it absorbs the undocumented
+  `control_request` protocol for `can_use_tool`/`interrupt`) vs plain
+  `claude -p --input-format stream-json --output-format stream-json` now
+  (MiMo: the only SDK-specific win is `canUseTool`). Policy risk either way:
+  the auth note targets SDK products; the user's own CLI in print mode is
+  the stronger case; verify before building.
+  Next: one experiment (approved by the user's "analyse, add to TODO"? no:
+  ask first): a single headless worker in a fresh worktree through normal
+  completion, a tool denial, a question, an interrupt, a crash, a limit and
+  a `--resume` takeover; check whether plain stream-json exposes
+  `can_use_tool` control requests and what `AskUserQuestion` does in `-p`.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
