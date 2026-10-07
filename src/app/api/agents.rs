@@ -133,16 +133,145 @@ impl App {
         else {
             return response;
         };
-        if let Err(err) = self.type_agent_launch(&root_pane.pane_id, kind) {
+        if let Err(err) = self.type_agent_launch(&root_pane.pane_id, kind, &[]) {
             tracing::warn!(err, pane = root_pane.pane_id, "could not launch the agent");
         }
         response
+    }
+
+    pub(super) fn handle_agent_handoff(
+        &mut self,
+        id: String,
+        params: crate::api::schema::AgentHandoffParams,
+    ) -> String {
+        let dirs = crate::agent_handoff::TranscriptDirs::from_env();
+        match self.hand_off_agent(id, params, &dirs) {
+            Ok((response, _prompt)) => response,
+            Err(response) => response,
+        }
+    }
+
+    /// Opens the new agent's tab and returns the response with the first
+    /// prompt typed into it; an error response when the source session or its
+    /// transcript is unknown, before any tab exists.
+    pub(super) fn hand_off_agent(
+        &mut self,
+        id: String,
+        params: crate::api::schema::AgentHandoffParams,
+        dirs: &crate::agent_handoff::TranscriptDirs,
+    ) -> Result<(String, String), String> {
+        let Some(to) = crate::detect::parse_canonical_agent_label(&params.to)
+            .filter(|agent| crate::agent_handoff::HANDOFF_TARGETS.contains(agent))
+        else {
+            return Err(encode_error(
+                id,
+                "unsupported_agent_kind",
+                format!(
+                    "cannot hand a session over to {}: use claude, pi or codex",
+                    params.to
+                ),
+            ));
+        };
+        let pane_not_found = |id: String| {
+            encode_error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane_id),
+            )
+        };
+        let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
+            return Err(pane_not_found(id));
+        };
+        let Some(terminal) = self.state.workspaces[ws_idx]
+            .terminal_id(pane_id)
+            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+        else {
+            return Err(pane_not_found(id));
+        };
+        // The running session, else the one that just exited (for example
+        // at its usage limit).
+        let session = terminal
+            .hook_authority
+            .as_ref()
+            .and_then(|authority| {
+                Some((
+                    authority.agent_label.clone(),
+                    authority.session_ref.clone()?,
+                ))
+            })
+            .or_else(|| {
+                terminal
+                    .persisted_agent_session
+                    .as_ref()
+                    .or(terminal.exited_agent_session())
+                    .map(|session| (session.agent.clone(), session.session_ref.clone()))
+            });
+        let Some((agent, session_ref)) = session else {
+            return Err(encode_error(
+                id,
+                "agent_session_unknown",
+                format!(
+                    "pane {} has no agent session herdr knows of",
+                    params.pane_id
+                ),
+            ));
+        };
+        let task = terminal.reported_task().map(str::to_owned);
+        let cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id);
+        let transcript =
+            match crate::agent_handoff::transcript_path(dirs, &agent, &session_ref, cwd.as_deref())
+            {
+                Ok(path) => path,
+                Err(message) => {
+                    return Err(encode_error(id, "agent_transcript_not_found", message))
+                }
+            };
+        let (repository, revision) = cwd
+            .as_deref()
+            .and_then(crate::workspace::git_repo_and_head)
+            .map_or((None, None), |(root, head)| (Some(root), head));
+        let session_id = crate::agent_handoff::session_display_id(&session_ref);
+        let prompt = crate::agent_handoff::handoff_prompt(&crate::agent_handoff::HandoffSource {
+            agent: &agent,
+            session_id: &session_id,
+            transcript: &transcript,
+            task: task.as_deref(),
+            repository: repository.as_deref(),
+            revision: revision.as_deref(),
+            time: time::OffsetDateTime::now_utc(),
+        });
+        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+            return Err(pane_not_found(id));
+        };
+        let response = self.create_tab_in_workspace(
+            id,
+            ws_idx,
+            super::tabs::NewTabPlace::After(tab_idx),
+            cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
+            params.focus,
+            None,
+            Default::default(),
+        );
+        let Ok(crate::api::schema::SuccessResponse {
+            result: ResponseResult::TabCreated { root_pane, .. },
+            ..
+        }) = serde_json::from_str(&response)
+        else {
+            return Err(response);
+        };
+        if let Err(err) =
+            self.type_agent_launch(&root_pane.pane_id, to, std::slice::from_ref(&prompt))
+        {
+            tracing::warn!(err, pane = root_pane.pane_id, "could not launch the agent");
+        }
+        Ok((response, prompt))
     }
 
     fn type_agent_launch(
         &mut self,
         pane_id: &str,
         kind: crate::detect::Agent,
+        args: &[String],
     ) -> Result<(), String> {
         let (ws_idx, pane) = self
             .parse_current_public_pane_id(pane_id)
@@ -165,7 +294,8 @@ impl App {
                 .map(|name| name.to_string_lossy().into_owned())
         });
         let shell = shell.ok_or("no shell to type the launch into")?;
-        let argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+        argv.extend_from_slice(args);
         let command = crate::platform::interactive_shell_command(&argv, &shell)
             .ok_or("the launch cannot be encoded for this shell")?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);

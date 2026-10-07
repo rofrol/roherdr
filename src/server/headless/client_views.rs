@@ -238,6 +238,7 @@ impl HeadlessServer {
                 | Method::TabReopenClosed(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
+                | Method::AgentHandoff(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceCreateAfter(_)
@@ -277,6 +278,7 @@ impl HeadlessServer {
                 | Method::TabCreateAfter(_)
                 | Method::TabReopenClosed(_)
                 | Method::TabCreateAgent(_)
+                | Method::AgentHandoff(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
                 | Method::TabRename(_)
@@ -315,6 +317,7 @@ impl HeadlessServer {
                 | Method::TabReopenClosed(_)
                 | Method::TabCreateChild(_)
                 | Method::TabCreateAgent(_)
+                | Method::AgentHandoff(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
@@ -873,6 +876,7 @@ impl HeadlessServer {
             api::schema::Method::TabCreateAfter(params) => params.focus,
             api::schema::Method::TabReopenClosed(params) => params.focus,
             api::schema::Method::TabCreateAgent(params) => params.focus,
+            api::schema::Method::AgentHandoff(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(

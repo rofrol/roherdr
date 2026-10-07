@@ -1667,4 +1667,139 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn agent_handoff_opens_a_tab_after_the_source_with_a_pointer_prompt() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        let mut workspace = Workspace::test_new("handoff");
+        workspace.test_add_tab(Some("other"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let root = crate::agent_handoff::tests::temp_dir("app");
+        let claude_transcript = root.join("claude/projects/-elsewhere/abc-123.jsonl");
+        let pi_transcript = root.join("pi/sessions/--w--/2026-10-06T00-00-00-000Z_01pi.jsonl");
+        for path in [&claude_transcript, &pi_transcript] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}\n").unwrap();
+        }
+        let dirs = crate::agent_handoff::TranscriptDirs {
+            claude: Some(root.join("claude")),
+            pi: Some(root.join("pi")),
+            ..Default::default()
+        };
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let source_terminal = app.state.terminal_id_for_pane(0, source_pane).unwrap();
+        let pane_id = app.public_pane_id(0, source_pane).unwrap();
+        let set_session = |app: &mut App, session| {
+            app.state
+                .terminals
+                .get_mut(&source_terminal)
+                .unwrap()
+                .persisted_agent_session = session;
+        };
+        let params = |to: &str| crate::api::schema::AgentHandoffParams {
+            pane_id: pane_id.clone(),
+            to: to.into(),
+            focus: false,
+        };
+
+        // No session known: an error, and no tab.
+        let err = app
+            .hand_off_agent("req".into(), params("pi"), &dirs)
+            .unwrap_err();
+        assert!(err.contains("agent_session_unknown"), "{err}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+
+        // A session whose transcript is not on this machine is not guessed.
+        set_session(
+            &mut app,
+            Some(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("gone-1").unwrap(),
+            }),
+        );
+        let err = app
+            .hand_off_agent("req".into(), params("pi"), &dirs)
+            .unwrap_err();
+        assert!(err.contains("agent_transcript_not_found"), "{err}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+
+        // Only the agents that take a first prompt.
+        let err = app
+            .hand_off_agent("req".into(), params("vim"), &dirs)
+            .unwrap_err();
+        assert!(err.contains("unsupported_agent_kind"), "{err}");
+
+        // A Claude session goes to Pi in a new tab right after the source.
+        set_session(
+            &mut app,
+            Some(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("abc-123").unwrap(),
+            }),
+        );
+        let (response, prompt) = app
+            .hand_off_agent("req".into(), params("pi"), &dirs)
+            .unwrap();
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(
+            matches!(success.result, ResponseResult::TabCreated { .. }),
+            "{response}"
+        );
+        assert!(
+            prompt.starts_with(&format!(
+                "Continue the work from claude session abc-123, transcript {}",
+                claude_transcript.display()
+            )),
+            "{prompt}"
+        );
+        let tabs = &app.state.workspaces[0].tabs;
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs[0].root_pane, source_pane);
+        assert_eq!(tabs[2].custom_name.as_deref(), Some("other"));
+
+        // The source tab is untouched: same pane, same session.
+        assert!(app.state.terminals[&source_terminal]
+            .persisted_agent_session
+            .is_some());
+
+        // A Pi session, known by its session file, goes to Claude.
+        set_session(
+            &mut app,
+            Some(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:pi".into(),
+                agent: "pi".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::path(
+                    pi_transcript.to_string_lossy(),
+                )
+                .unwrap(),
+            }),
+        );
+        let (_, prompt) = app
+            .hand_off_agent("req".into(), params("claude"), &dirs)
+            .unwrap();
+        assert!(
+            prompt.starts_with(&format!(
+                "Continue the work from pi session 01pi, transcript {}",
+                pi_transcript.display()
+            )),
+            "{prompt}"
+        );
+        assert_eq!(app.state.workspaces[0].tabs.len(), 4);
+        shutdown_test_runtimes(&mut app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -97,6 +97,9 @@ PRs.
   A tab line starts with `♛` when its agent coordinates a TODO and `⚒` when
   it is a worker doing one item: whoever opens the tab sets the role with
   `herdr tab role <tab_id> coordinator|worker` (`tab.set_role`).
+  "Hand over to…" in a tab's menu (or `herdr agent handoff <pane> --to
+  claude|pi|codex`, `agent.handoff`) opens a tab where another agent
+  continues the session from its transcript, e.g. after a usage limit.
 - **Spaces filter.** The `/ filter` button between `new` and `menu` opens a
   bar under the spaces header, like fzf: type to narrow the list to the
   spaces and tabs that match (a smart-case subsequence of a space's name,

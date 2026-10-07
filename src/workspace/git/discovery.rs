@@ -231,6 +231,13 @@ fn git_symbolic_head_short(repo_root: &Path) -> Option<String> {
     git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
 }
 
+/// The repository `cwd` is in and the commit checked out there.
+pub(crate) fn git_repo_and_head(cwd: &Path) -> Option<(PathBuf, Option<String>)> {
+    let repo_root = git_repo_root(cwd)?;
+    let head = git_rev_parse_verify(&repo_root, "HEAD");
+    Some((repo_root, head))
+}
+
 pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
     git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision])
 }

@@ -470,6 +470,7 @@ impl ClientShellState {
             crate::api::schema::Method::TabCreateAfter(params) => params.focus,
             crate::api::schema::Method::TabReopenClosed(params) => params.focus,
             crate::api::schema::Method::TabCreateAgent(params) => params.focus,
+            crate::api::schema::Method::AgentHandoff(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
         };

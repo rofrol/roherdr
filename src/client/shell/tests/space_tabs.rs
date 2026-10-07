@@ -2953,6 +2953,63 @@ fn the_tab_context_menu_adds_and_removes_a_bookmark() {
 }
 
 #[test]
+fn the_tab_context_menu_hands_the_session_over_to_another_agent() {
+    let menu_labels = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    let right_click_tab = |state: &mut ClientShellState| {
+        state.compose(106, 30).unwrap();
+        let line = state.hits.space_tabs[0].0;
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: line.x + 6,
+            row: line.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    };
+    let choose = |state: &mut ClientShellState, label: &str| {
+        let index = menu_labels(state)
+            .iter()
+            .position(|candidate| candidate == label)
+            .unwrap_or_else(|| panic!("no {label} in {:?}", menu_labels(state)));
+        if let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_mut() {
+            menu.highlighted = index;
+        }
+        state.handle_input_bytes(b"\r")
+    };
+
+    // A server without the method shows no item.
+    let mut state = state_with_tabs(true);
+    state.set_endpoint_methods(Some(vec!["tab.close".into()]));
+    right_click_tab(&mut state);
+    assert!(!menu_labels(&state)
+        .iter()
+        .any(|label| label == "Hand over to…"));
+
+    let mut state = state_with_tabs(true);
+    right_click_tab(&mut state);
+    let outcome = choose(&mut state, "Hand over to…");
+    assert!(!outcome
+        .actions
+        .iter()
+        .any(|action| matches!(action, ClientShellAction::Endpoint { .. })));
+    assert_eq!(menu_labels(&state), ["Claude", "Pi", "Codex"]);
+
+    // The agent's pane goes to the server, which opens the new tab.
+    let outcome = choose(&mut state, "Pi");
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::AgentHandoff(params)
+                if params.pane_id == "pane_1" && params.to == "pi" && params.focus))));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
     use crate::api::schema::AgentStatus::{Blocked, Working};
     let mut state = state_with_tabs(true);
