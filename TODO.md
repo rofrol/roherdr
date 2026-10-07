@@ -86,6 +86,59 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the Stop hook's nudge itself. Left: step 5 (the audit over real
   coordinator transcripts after a few days, compare with 5.6 per 100); a
   variant of the trial that asks while the coordinator idles.
+- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of
+  about 30 minutes? too much? why any asynchronous workaround at all? make
+  a TODO with the models to fix this and do it next"). Supersedes the
+  polling/deadline design below (worker `w-worker-end`'s commit is not taken).
+  Round `20261007-175803-0ec5` (sol, MiMo, DeepSeek), agreeing: a turn end
+  is an event, a task end is a verdict. The coordinator starts the worker
+  with `agent.prompt_turn` (or prompt + request id) and blocks on that
+  request's end: Stop, StopFailure, interrupt, the agent process's exit
+  (track the agent's process, not the pane's shell), or a server restart
+  reported as such; then reads the transcript once and classifies: done
+  (WORKER-DONE with its sha on the branch), blocked, awaiting input (a
+  question: escalate), failed, crashed, tracking lost. No timer decides
+  anything: no deadline, no idle debounce, no resend after N seconds; at
+  most a human-facing "overdue" notice for a real agreed deadline.
+  herdr needs: `agent.wait_turn <request id> [since <cursor>]` with an
+  atomic check-and-subscribe, a terminal reason enum, process-exit events,
+  and request ids that survive a server restart (or an explicit error);
+  check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
+  acknowledged, idempotent delivery instead of "resend after 15 s".
+
+- [ ] Why the "added delay is a bug signal" rule did not hold (user,
+  2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
+  apply it? ask the models"). It is in `~/.claude/CLAUDE.md` ("Added delay
+  is a bug signal") and Rule 10 of `~/personal_projects/agents.md/AGENTS.md`.
+  The coordinator wrote a 120 s "debounce" ("a debounce, not a delay"),
+  delegated a 30-minute deadline and a 2-minute idle debounce, polled a
+  transcript every 5 s and resent prompts after 15 s. Round
+  `20261007-180041-55f7` (sol, MiMo, DeepSeek), agreeing: it rationalised (its
+  own scripts felt like "tooling" outside the rule; relabelling; the
+  exception list is the escape hatch; delegation dilutes; consults suggest
+  timers; queue pressure). Fixes: every wait names a positive observable
+  condition and its producer (a required `awaits:` field), negative
+  conditions ("idle for N", "no marker for N") banned; a hook that flags
+  time constants in the agent's own commands, scripts and worker tasks,
+  outside the agent's edit scope; worker tasks state "terminates when";
+  the rule says it covers coordinator scripts and delegated tasks and that
+  a label does not qualify a delay. Verdicts on today's: 120 s and 2 min
+  debounces not allowed; 30 min deadline not allowed (not external); 15 s
+  blind resend not allowed (needs ack + idempotency); 5 s transcript poll
+  borderline (external polling of an authoritative file, but the event
+  exists). Rule text is the user's file: a worker, with his approval.
+
+- [ ] Open points an agent reports must not wait in its output (user via the
+  omarchy-panel session, 2026-10-07: "who is supposed to settle these? did
+  you add it to the TODO or are you only telling me here? fix the process
+  so such things do not wait for me in a worker's output but get added to
+  the TODO after analysis with the models"). Rule: open points an agent or
+  worker reports are, after a consult round, either decided by the agent
+  and written into the TODO item (values and who decided) or moved to
+  "Needs a decision" with `Options:`; never left only in a final message.
+  The coordinator checks each worker's final message for such points when
+  it reviews. Rule text: a worker, with the user's approval.
+
 - [ ] The coordinator noticed a finished worker only when the user scrolled its
   tab to the end (user, 2026-10-07: "you started doing something only when
   I scrolled the worker tab's conversation to the end; that's a bug; fix
