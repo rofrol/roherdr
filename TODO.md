@@ -35,6 +35,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   source tab stays, idle; an unknown session id is reported, never guessed.
 
 
+- [ ] Bug: the space `T` button cannot start a coordinator (user,
+  2026-10-07, screenshot: toast "TODO chat-hosted / todo-worker: not inside
+  herdr"). The client runs `todo_command` from its own process, which lives
+  in the user's terminal, not a herdr pane, so `HERDR_ENV` is unset and the
+  launcher refuses. Fix: herdr runs the command with the environment a
+  pane gets (`HERDR_ENV=1` and the local server's socket path), in
+  `run_space_command` (`src/client/shell_runtime.rs`), with a test.
+  Workaround meanwhile: `/todo <space>` from any Claude session in herdr.
+
 - [ ] A coordinator stops between items without being asked (user,
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
