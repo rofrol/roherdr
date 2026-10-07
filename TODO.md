@@ -135,6 +135,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Fixed 2026-10-07 by a worker (`fix(job): wait-agent reads the visible
   screen`); the coordinator waits with `herdr-job wait-agent <pane>
   --worker-line` from now on.
+  Part 2 brought in 2026-10-07 (`5de0c204`, not pushed or installed yet):
+  `pty_exhausted` below 64 free PTYs and `server.pty_usage`. `just check`
+  fails on `windows-lint`: `count_macos_pty_slave_names` and a method
+  `invalidate` are dead code on Windows; a worker gates them with cfg
+  (AGENTS.md: platform code compile-gated) before push and install.
 
 - [ ] Toasts in the top right corner again, not the bottom right (user,
   2026-10-07: "notifications should appear in the top right corner after
