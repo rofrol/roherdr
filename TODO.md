@@ -520,6 +520,20 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Test: a fixture repo with one trivial item and two questions, no user
     present: the item still lands and both questions are asked once; an
     answer written back is not asked again after a restart.
+  - Second rormpc report (2026-10-07, forwarded by the user; "fix the
+    process, consult the models"): its coordinator piled up 13 questions in
+    "Needs a decision" and never asked them; with "Next, in order" down to
+    one item it waited on a worker and reported, so work would have
+    stopped; only after the user asked "is nothing left? why don't you hand
+    it to workers?" did it ask 4 in a menu, which unblocked 3 items at once.
+    Expected: ask as soon as they are added, at the latest while a worker
+    runs, so "Next" never runs dry while answerable questions wait; record
+    answers and queue the work. The rule of `9b851dd` covers only new
+    questions, not a backlog of old ones without `Options:`.
+  - Other languages (user, 2026-10-07: "what if I also start in Odin? other
+    rules than for Rust"): how workers build (worktree or not, a shared
+    cache) depends on the repository; it belongs in each repository's
+    AGENTS.md, the global rule stays language-neutral.
 
 ## Proposed
 
