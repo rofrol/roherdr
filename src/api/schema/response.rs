@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::agents::{AgentInfo, AgentPromptRequest};
+use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
 use super::integrations::{
@@ -123,6 +123,17 @@ pub enum ResponseResult {
     AgentPromptStatus {
         pane_id: String,
         prompt_request: AgentPromptRequest,
+    },
+    /// `agent.wait_turn`: how the followed prompt's turn ended.
+    AgentTurnEnded {
+        request_id: String,
+        reason: AgentTurnEndReason,
+        /// The pane the request was typed into, when herdr still knew the request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
+        /// The error a `failed` turn ended on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     AgentList {
         agents: Vec<AgentInfo>,

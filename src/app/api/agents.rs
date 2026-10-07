@@ -541,11 +541,13 @@ impl App {
                     crate::api::schema::AgentPromptRequest {
                         request_id,
                         state: crate::api::schema::AgentPromptRequestState::Accepted,
+                        error: None,
                     }
                 } else {
                     crate::api::schema::AgentPromptRequest {
                         request_id,
                         state: crate::api::schema::AgentPromptRequestState::Unsupported,
+                        error: None,
                     }
                 }
             })
@@ -566,18 +568,23 @@ impl App {
                 .flat_map(|tab| tab.panes.iter())
                 .map(|(pane_id, pane)| (*pane_id, &pane.attached_terminal_id));
             for (pane_id, terminal_id) in panes {
-                let Some(state) = self
-                    .state
-                    .terminals
-                    .get(terminal_id)
-                    .and_then(|terminal| terminal.prompt_turns.state_of(&params.request_id))
-                else {
+                let Some(terminal) = self.state.terminals.get(terminal_id) else {
                     continue;
                 };
+                let Some(state) = terminal.prompt_turns.state_of(&params.request_id) else {
+                    continue;
+                };
+                let error = terminal
+                    .prompt_turns
+                    .error_of(&params.request_id)
+                    .map(str::to_string);
                 let state = match state {
                     PromptTurnState::Accepted => AgentPromptRequestState::Accepted,
                     PromptTurnState::Working => AgentPromptRequestState::Working,
                     PromptTurnState::Finished => AgentPromptRequestState::Finished,
+                    PromptTurnState::Failed => AgentPromptRequestState::Failed,
+                    PromptTurnState::Interrupted => AgentPromptRequestState::Interrupted,
+                    PromptTurnState::Exited => AgentPromptRequestState::Exited,
                 };
                 return encode_success(
                     id,
@@ -586,6 +593,7 @@ impl App {
                         prompt_request: crate::api::schema::AgentPromptRequest {
                             request_id: params.request_id,
                             state,
+                            error,
                         },
                     },
                 );
@@ -1298,6 +1306,100 @@ mod tests {
             prompt_state(&mut app, &request.request_id),
             AgentPromptRequestState::Finished
         );
+    }
+
+    /// A prompt herdr typed and whose turn the agent reported as started.
+    fn working_prompt(app: &mut App, pane: &str) -> String {
+        report_turn(app, pane, "finished", None);
+        let request = prompt_request_of(&run_deferred_agent_prompt(
+            app,
+            "req",
+            prompt_params("review the diff", true),
+        ));
+        report_turn(app, pane, "started", Some("review the diff"));
+        request.request_id
+    }
+
+    fn prompt_request(app: &mut App, request_id: &str) -> crate::api::schema::AgentPromptRequest {
+        let response = app.handle_agent_prompt_status(
+            "status".into(),
+            crate::api::schema::AgentPromptStatusParams {
+                request_id: request_id.into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentPromptStatus { prompt_request, .. } = success.result else {
+            panic!("expected a prompt status: {response}");
+        };
+        prompt_request
+    }
+
+    #[tokio::test]
+    async fn a_turn_reported_with_an_error_fails_the_prompt() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        let response = app.handle_pane_report_turn(
+            "turn".into(),
+            serde_json::from_value(serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished", "error": "server_error: overloaded",
+            }))
+            .unwrap(),
+        );
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        let request = prompt_request(&mut app, &request_id);
+        assert_eq!(request.state, AgentPromptRequestState::Failed);
+        assert_eq!(request.error.as_deref(), Some("server_error: overloaded"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_user_interrupts_ends_when_the_next_one_starts() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        // Esc ends Claude's turn without a `Stop`; the next prompt starts a turn.
+        report_turn(&mut app, &pane, "started", Some("do something else"));
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn the_agent_process_exiting_ends_its_prompt_as_exited() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: true,
+            observed_at: std::time::Instant::now(),
+        });
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Exited
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restarted_server_does_not_know_the_old_prompt() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        // Followed prompts live in memory only: a new server starts without them.
+        let mut restarted = app_with_agent();
+        let response = restarted.handle_agent_prompt_status(
+            "status".into(),
+            crate::api::schema::AgentPromptStatusParams { request_id },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "prompt_request_not_found");
     }
 
     #[tokio::test]

@@ -740,7 +740,7 @@ class WaitAgentTests(unittest.TestCase):
 
     def run_wait(self, answers, **flags):
         (self.stub_dir / "agent.json").write_text(json.dumps(answers))
-        args = SimpleNamespace(pane="w:p5", until=flags.get("until", []), worker_line=flags.get("worker_line", False))
+        args = SimpleNamespace(pane="w:p5", until=flags.get("until", []), request=flags.get("request"))
         out = io.StringIO()
         with patch.object(time, "sleep", self.sleeps.append), contextlib.redirect_stdout(out):
             try:
@@ -795,7 +795,7 @@ class WaitAgentTests(unittest.TestCase):
             clock[0] += seconds
 
         (self.stub_dir / "agent.json").write_text(json.dumps([empty]))
-        args = SimpleNamespace(pane="w:p5", until=[], worker_line=False)
+        args = SimpleNamespace(pane="w:p5", until=[], request=None)
         with patch.object(time, "sleep", sleep), patch.object(time, "monotonic", lambda: clock[0]), \
                 contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as result:
@@ -804,29 +804,93 @@ class WaitAgentTests(unittest.TestCase):
         self.assertEqual(max(self.sleeps), 30)
         self.assertGreaterEqual(clock[0], 15 * 60)
 
-    def test_worker_line_ignores_the_task_text_and_ends_on_the_workers_last_line(self):
-        task = "a last line `WORKER-DONE <sha> | <summary>` or\nWORKER-BLOCKED <reason>\n"
-        working = [0, task + "⏺ Running the tests\n", ""]
-        finished = [0, task + "⏺ Done.\n  WORKER-DONE 1a2b3c4 | caps and backoff\n", ""]
-        code, text, calls = self.run_wait([working, working, finished], worker_line=True)
-        self.assertEqual(code, 0)
-        self.assertIn("WORKER-DONE 1a2b3c4 | caps and backoff", text)
-        self.assertEqual(calls[0][:3], ["agent", "read", "w:p5"])
-        blocked = [0, task + "WORKER-BLOCKED needs a login\n", ""]
-        self.sleeps.clear()
-        (self.stub_dir / "calls").unlink()
-        code, text, _ = self.run_wait([blocked], worker_line=True)
-        self.assertEqual(code, 4)
+    # `--request`: one `agent wait-turn`, then one `agent get` and one read of the transcript.
 
-    def test_worker_line_reads_the_visible_screen_of_a_working_agent(self):
-        busy = [1, "", json.dumps({"error": {"code": "agent_not_idle", "message": "cannot read 200 lines"}}) + "\n"]
-        working = [0, "⏺ Editing herdr-job\n\n esc to interrupt\n", ""]
-        finished = [0, "⏺ Committed.\n  WORKER-DONE 1a2b3c4 | visible screen\n\n> \n", ""]
-        code, text, calls = self.run_wait([working, busy, working, finished], worker_line=True)
+    def turn(self, reason, error=None, code=None):
+        result = {"type": "agent_turn_ended", "request_id": "prompt_1", "reason": reason}
+        if error:
+            result["error"] = error
+        exit_code = code if code is not None else (0 if reason == "finished" else 1)
+        return [exit_code, json.dumps({"result": result}) + "\n", ""]
+
+    def worker(self, *messages, awaiting_reply=False):
+        """`agent get` of a worker whose transcript holds these assistant messages,
+        in a repository with one commit; returns (answer, that commit's sha)."""
+        root = Path(self.tmp.name)
+        repo = root / "repo"
+        if not repo.exists():
+            repo.mkdir()
+            for args in (["init", "-q"], ["config", "user.email", "t@example.com"],
+                         ["config", "user.name", "t"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+                subprocess.run(["git", "-C", str(repo), *args], check=True)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                             capture_output=True, text=True).stdout.strip()
+        transcript = root / "session.jsonl"
+        with transcript.open("w") as handle:
+            handle.write(json.dumps({"type": "user", "message": {"role": "user", "content": "the task"}}) + "\n")
+            for message in messages:
+                handle.write(json.dumps({"type": "assistant", "message": {
+                    "role": "assistant", "content": [{"type": "text", "text": message.format(sha=sha)}]}}) + "\n")
+            handle.write(json.dumps({"type": "assistant", "isSidechain": True, "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "WORKER-DONE 0000000"}]}}) + "\n")
+        agent = {"agent": "pi", "pane_id": "w:p5", "cwd": str(repo), "awaiting_reply": awaiting_reply,
+                 "agent_session": {"kind": "path", "value": str(transcript)}}
+        return [0, json.dumps({"result": {"type": "agent_info", "agent": agent}}) + "\n", ""], sha
+
+    def test_a_finished_turn_with_worker_done_and_its_commit_is_done(self):
+        get, sha = self.worker("Working on it.", "Committed.\n\nWORKER-DONE {sha} | caps")
+        code, text, calls = self.run_wait([self.turn("finished"), get], request="prompt_1")
         self.assertEqual(code, 0, text)
-        self.assertIn("WORKER-DONE 1a2b3c4 | visible screen", text)
-        self.assertEqual(calls[0], ["agent", "read", "w:p5", "--source", "detection", "--format", "text"])
-        self.assertEqual((len(calls), self.sleeps), (4, [3, 3, 3]))
+        self.assertIn(f"WORKER-DONE {sha} | caps", text)
+        self.assertEqual(calls, [["agent", "wait-turn", "prompt_1"], ["agent", "get", "w:p5"]])
+        self.assertEqual(self.sleeps, [])
+
+    def test_worker_done_naming_a_missing_commit_needs_attention(self):
+        get, _ = self.worker("WORKER-DONE 1a2b3c4 | invented")
+        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        self.assertEqual(code, 7, text)
+        self.assertIn("not a commit", text)
+
+    def test_worker_blocked_is_reported(self):
+        get, _ = self.worker("I cannot log in.\nWORKER-BLOCKED needs a login")
+        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        self.assertEqual(code, 4, text)
+        self.assertIn("WORKER-BLOCKED needs a login", text)
+
+    def test_a_question_without_a_marker_is_awaiting_input(self):
+        for messages, awaiting in ((("Which variant do you want?",), False),
+                                   (("Pick one of the two.",), True)):
+            with self.subTest(messages=messages):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                get, _ = self.worker(*messages, awaiting_reply=awaiting)
+                code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+                self.assertEqual(code, 6, text)
+                self.assertIn("awaiting input", text)
+
+    def test_a_task_text_placeholder_is_not_a_verdict(self):
+        get, _ = self.worker("End with `WORKER-DONE <sha> | <summary>`.\nWORKER-BLOCKED <reason>\nDone, I think.")
+        code, text, _ = self.run_wait([self.turn("finished"), get], request="prompt_1")
+        self.assertEqual(code, 7, text)
+        self.assertIn("without a WORKER line", text)
+
+    def test_turn_ends_other_than_finished_are_reported_without_reading_the_transcript(self):
+        for reason, error, exit_code, words in (("failed", "rate_limit: 5-hour limit", 7, "rate_limit"),
+                                                ("interrupted", None, 7, "interrupted"),
+                                                ("exited", None, 3, "exited"),
+                                                ("unknown_request", None, 8, "tracking lost")):
+            with self.subTest(reason=reason):
+                (self.stub_dir / "calls").unlink(missing_ok=True)
+                code, text, calls = self.run_wait([self.turn(reason, error)], request="prompt_1")
+                self.assertEqual(code, exit_code, text)
+                self.assertIn(words, text)
+                self.assertEqual(calls, [["agent", "wait-turn", "prompt_1"]])
+
+    def test_a_restart_during_the_wait_is_retried_then_reported_as_tracking_lost(self):
+        empty = [1, "", "Error: empty api response\n"]
+        code, text, calls = self.run_wait([empty, empty, self.turn("unknown_request")], request="prompt_1")
+        self.assertEqual(code, 8, text)
+        self.assertEqual(self.sleeps, [1, 2])
+        self.assertEqual(len(calls), 3)
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

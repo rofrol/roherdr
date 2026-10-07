@@ -177,6 +177,10 @@ pub enum Method {
     AgentPromptTurn(AgentPromptTurnParams),
     #[serde(rename = "agent.prompt_status")]
     AgentPromptStatus(AgentPromptStatusParams),
+    #[serde(rename = "agent.prompt_tracked")]
+    AgentPromptTracked(AgentPromptTrackedParams),
+    #[serde(rename = "agent.wait_turn")]
+    AgentWaitTurn(AgentWaitTurnParams),
     #[serde(rename = "agent.wait")]
     AgentWait(AgentWaitParams),
     #[serde(rename = "pane.split")]

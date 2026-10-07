@@ -1677,7 +1677,7 @@ impl App {
     }
 
     /// A turn of the pane's agent started or ended; prompts herdr typed follow it. A change
-    /// emits `pane.updated`, which wakes `agent.prompt_turn` waiters.
+    /// emits `pane.updated`, which wakes `agent.prompt_turn` and `agent.wait_turn` waiters.
     pub(super) fn handle_pane_report_turn(
         &mut self,
         id: String,
@@ -1697,7 +1697,9 @@ impl App {
             crate::api::schema::AgentTurnPhase::Started => {
                 terminal.prompt_turns.turn_started(params.prompt.as_deref())
             }
-            crate::api::schema::AgentTurnPhase::Finished => terminal.prompt_turns.turn_finished(),
+            crate::api::schema::AgentTurnPhase::Finished => {
+                terminal.prompt_turns.turn_finished(params.error.as_deref())
+            }
         };
         if changed {
             terminal.revision = terminal.revision.saturating_add(1);
