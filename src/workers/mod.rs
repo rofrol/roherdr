@@ -35,16 +35,63 @@ use crate::api::schema::{
 };
 use crate::platform::Signal;
 
-/// Appended to the worker's system prompt.
-const WORKER_CONTRACT: &str = "You are a headless worker started by herdr. Nobody watches \
-your output live. Work only inside your working directory. Commands and tools outside \
-herdr's short allow list, and your questions, wait until the user answers, which can take \
-long: ask only when you cannot go on without it, otherwise finish the task or stop and say \
-what blocks you.";
+/// Appended to the worker's system prompt; names the worker's temp dir.
+fn worker_contract(temp_dir: &Path) -> String {
+    let temp = temp_dir.display();
+    format!(
+        "You are a headless worker started by herdr. Nobody watches your output live. Work \
+only inside your working directory. Bash runs in a sandbox without asking: it can write only \
+to your working directory and your temp dir {temp}, has no network and cannot read \
+credentials. A command the sandbox refuses fails; do not try to get around it, report it as \
+blocked. Put drafts and scratch files under {temp} by that absolute path; never use $TMPDIR, \
+it is shared with other sessions. File tools work only inside your working directory and \
+{temp}. Your questions wait until the user answers, which can take long: ask only when you \
+cannot go on without it, otherwise finish the task or stop and say what blocks you."
+    )
+}
 
-/// The settings that keep the user's CLAUDE.md and login but turn the
-/// global hooks off (trial 2, T2-1).
-const WORKER_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+/// The worker's `--settings`: the user's CLAUDE.md, settings and login stay,
+/// the global hooks are off (trial 2, T2-1), the co-author trailer is off
+/// (T3-5), and Bash runs in Claude Code's sandbox: writes only to the
+/// worktree (the CLI's default) and `temp_dir`, credential paths unreadable,
+/// no network, no unsandboxed escape, and no start at all without the
+/// sandbox (T3-2, T3-3). The deny rules cover the file tools and the
+/// in-process web tools, which the sandbox does not.
+fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
+    json!({
+        "disableAllHooks": true,
+        "attribution": {"commit": "", "pr": "", "sessionUrl": false},
+        "sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            "autoAllowBashIfSandboxed": true,
+            "allowUnsandboxedCommands": false,
+            "filesystem": {
+                "allowWrite": [temp_dir.display().to_string()],
+                "denyRead": [
+                    "~/.ssh",
+                    "~/.aws",
+                    "~/.gnupg",
+                    "~/.config/gh",
+                    cwd_real.join(".env").display().to_string(),
+                ],
+            },
+            "network": {"allowedDomains": [], "strictAllowlist": true},
+        },
+        "permissions": {
+            "deny": [
+                "Read(~/.ssh/**)",
+                "Read(~/.aws/**)",
+                "Read(~/.gnupg/**)",
+                "Read(~/.config/gh/**)",
+                "Read(**/.env)",
+                "Edit(**/.env)",
+                "WebFetch",
+                "WebSearch",
+            ],
+        },
+    })
+}
 
 #[derive(Debug)]
 pub(crate) enum WorkerError {
@@ -53,6 +100,7 @@ pub(crate) enum WorkerError {
     NotRunning(String),
     Busy(String),
     NoQuestion(String),
+    Unsupported(String),
     Io(std::io::Error),
 }
 
@@ -64,6 +112,7 @@ impl WorkerError {
             Self::NotRunning(_) => "worker_not_running",
             Self::Busy(_) => "worker_busy",
             Self::NoQuestion(_) => "worker_no_question",
+            Self::Unsupported(_) => "worker_unsupported",
             Self::Io(_) => "worker_io_error",
         }
     }
@@ -76,7 +125,8 @@ impl std::fmt::Display for WorkerError {
             Self::Invalid(message)
             | Self::NotRunning(message)
             | Self::Busy(message)
-            | Self::NoQuestion(message) => f.write_str(message),
+            | Self::NoQuestion(message)
+            | Self::Unsupported(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -143,6 +193,9 @@ struct Status {
     questions: Vec<Pending>,
     stop_requested_ms: Option<u64>,
     takeover_ms: Option<u64>,
+    /// The category of a model refusal in the running turn
+    /// (`system/model_refusal_no_fallback`); it fails the turn.
+    refusal: Option<String>,
 }
 
 /// A question with the tool input its answer is built from.
@@ -172,6 +225,7 @@ impl Status {
             questions: Vec::new(),
             stop_requested_ms: None,
             takeover_ms: None,
+            refusal: None,
         }
     }
 
@@ -249,10 +303,25 @@ impl Status {
                 }
             }
             (Direction::Herdr, "exited") => {
+                let code = event.get("code").and_then(Value::as_i64);
+                // A refused turn can end with `result/success` and then
+                // exit code 1 (T3-1). Herdr's own stop and an interrupted
+                // last turn also exit non-zero, but neither is `finished`.
+                if let (Some(code), true, None) = (
+                    code.filter(|code| *code != 0),
+                    self.state == WorkerState::Finished,
+                    self.stop_requested_ms,
+                ) {
+                    if let Some(result) = self.last_result.as_mut() {
+                        result.failure.get_or_insert_with(|| {
+                            format!("the CLI exited with code {code} after the turn")
+                        });
+                    }
+                }
                 self.questions.clear();
                 self.stop_requested_ms = None;
                 self.state = WorkerState::Exited;
-                self.exit_code = event.get("code").and_then(Value::as_i64).map(|v| v as i32);
+                self.exit_code = code.map(|v| v as i32);
                 self.exit_signal = event
                     .get("signal")
                     .and_then(Value::as_i64)
@@ -264,6 +333,13 @@ impl Status {
                 self.state = WorkerState::Lost;
             }
             (Direction::Out, "system") => {
+                if event.get("subtype").and_then(Value::as_str) == Some("model_refusal_no_fallback")
+                {
+                    self.refusal = Some(
+                        string_field(event, "api_refusal_category")
+                            .unwrap_or_else(|| "unknown".into()),
+                    );
+                }
                 if event.get("subtype").and_then(Value::as_str) == Some("init") {
                     if let Some(session_id) = string_field(event, "session_id") {
                         self.session_id = Some(session_id);
@@ -285,6 +361,7 @@ impl Status {
                 self.settle_question(event["request_id"].as_str());
             }
             (Direction::In, "user") => {
+                self.refusal = None;
                 if self.state != WorkerState::Starting {
                     self.state = WorkerState::Working;
                 }
@@ -302,6 +379,14 @@ impl Status {
                     terminal_reason: string_field(event, "terminal_reason"),
                     api_error_status: event.get("api_error_status").and_then(Value::as_i64),
                     text: string_field(event, "result"),
+                    failure: self
+                        .refusal
+                        .take()
+                        .map(|category| format!("the model refused the turn ({category})")),
+                    permission_denials: event["permission_denials"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
                 };
                 self.state = turn_end_state(&result);
                 self.questions.clear();
@@ -340,10 +425,14 @@ impl Status {
     }
 }
 
-/// Judges a turn by its `result`, never by the exit code (1 after an
-/// interrupted last turn, 143 after SIGTERM).
+/// Judges a turn by its `result` and a model refusal in it (which can end
+/// with `result/success`, T3-1); a non-zero exit code after a `finished`
+/// turn is recorded in its `failure` when the process exits (it is also 1
+/// after an interrupted last turn and 143 after SIGTERM).
 fn turn_end_state(result: &WorkerTurnResult) -> WorkerState {
-    if result
+    if result.failure.is_some() {
+        WorkerState::Failed
+    } else if result
         .terminal_reason
         .as_deref()
         .is_some_and(|reason| reason.starts_with("aborted"))
@@ -612,6 +701,8 @@ impl WorkerSupervisor {
                 }
                 status.apply(Direction::Herdr, &lost);
             }
+            // Every replayed worker is gone; so is its temp dir.
+            remove_temp_dir(&temp_dir_path(&dir, worker_id));
             registry.next_number = registry.next_number.max(number + 1);
             registry.workers.insert(
                 number,
@@ -651,6 +742,13 @@ impl WorkerSupervisor {
         if prompt.trim().is_empty() {
             return Err(WorkerError::Invalid("prompt must not be empty".into()));
         }
+        if !crate::platform::WORKER_SANDBOX_SUPPORTED {
+            return Err(WorkerError::Unsupported(
+                "headless workers run Bash in Claude Code's sandbox, which this platform does not \
+                 have; refusing to start a worker without it"
+                    .into(),
+            ));
+        }
 
         let number = {
             let mut registry = lock(&self.shared.registry);
@@ -662,6 +760,9 @@ impl WorkerSupervisor {
         std::fs::create_dir_all(&self.shared.dir)?;
         let journal_path = self.shared.dir.join(format!("{worker_id}.jsonl"));
         let journal = Arc::new(Journal::open(&journal_path)?);
+        let temp_dir = self.create_temp_dir(&worker_id)?;
+        let settings = worker_settings(&cwd_real, &temp_dir).to_string();
+        let contract = worker_contract(&temp_dir);
 
         let mut args: Vec<String> = [
             "-p",
@@ -676,9 +777,9 @@ impl WorkerSupervisor {
             "--permission-prompt-tool",
             "stdio",
             "--settings",
-            WORKER_SETTINGS,
+            &settings,
             "--append-system-prompt",
-            WORKER_CONTRACT,
+            &contract,
         ]
         .iter()
         .map(|arg| (*arg).to_owned())
@@ -704,6 +805,7 @@ impl WorkerSupervisor {
         }
         crate::platform::configure_worker_process(&mut command);
         let mut child = command.spawn().map_err(|error| {
+            remove_temp_dir(&temp_dir);
             WorkerError::Io(std::io::Error::new(
                 error.kind(),
                 format!("cannot start {}: {error}", self.shared.program.display()),
@@ -715,12 +817,13 @@ impl WorkerSupervisor {
         else {
             let _ = child.kill();
             let _ = child.wait();
+            remove_temp_dir(&temp_dir);
             return Err(WorkerError::Io(std::io::Error::other(
                 "worker pipes missing",
             )));
         };
 
-        let (policy, policy_warnings) = policy::Policy::load(&cwd_path, &cwd_real);
+        let policy = policy::Policy::new(&cwd_path, &cwd_real, &temp_dir);
         let name = params
             .name
             .as_deref()
@@ -734,6 +837,7 @@ impl WorkerSupervisor {
             "workspace_id": params.workspace_id,
             "cwd": cwd_real.display().to_string(),
             "model": model,
+            "temp_dir": temp_dir.display().to_string(),
             "pid": pid,
             "program": self.shared.program.display().to_string(),
             "args": args,
@@ -741,11 +845,7 @@ impl WorkerSupervisor {
         journal.record(Direction::Herdr, &started);
         journal.record(
             Direction::Herdr,
-            &json!({
-                "type": "policy",
-                "bash_rules": policy.rules(),
-                "warnings": policy_warnings,
-            }),
+            &json!({"type": "policy", "file_tool_roots": policy.roots()}),
         );
         let mut status = Status::new(worker_id.clone());
         status.apply(Direction::Herdr, &started);
@@ -780,6 +880,7 @@ impl WorkerSupervisor {
             number,
             pid,
             policy,
+            temp_dir: temp_dir.clone(),
             live: Arc::clone(&live),
         };
         if let Err(error) =
@@ -787,6 +888,7 @@ impl WorkerSupervisor {
         {
             // Without a reader nobody would reap or journal the process.
             let _ = crate::platform::signal_process_group(pid, Signal::Kill);
+            remove_temp_dir(&temp_dir);
             self.update(
                 number,
                 Direction::Herdr,
@@ -1168,6 +1270,17 @@ impl WorkerSupervisor {
         self.shared.dir.join(format!("{worker_id}.jsonl"))
     }
 
+    /// Creates the worker's own temp dir, empty, and returns its real path:
+    /// the sandbox and the policy compare real paths. The sandbox's
+    /// `$TMPDIR` is `/tmp/claude-<uid>`, shared by every sandboxed session
+    /// of the user, so workers get this one by its absolute path (T3-2).
+    fn create_temp_dir(&self, worker_id: &str) -> std::io::Result<PathBuf> {
+        let path = temp_dir_path(&self.shared.dir, worker_id);
+        remove_temp_dir(&path);
+        std::fs::create_dir_all(&path)?;
+        path.canonicalize()
+    }
+
     /// Records the sessions of the CLI's descendants that are new. Claude
     /// Code runs each Bash tool with `setsid`, so after a crash only these
     /// recorded sessions find its tools (trial 2, T2-3).
@@ -1191,6 +1304,19 @@ impl WorkerSupervisor {
         let event = json!({"type": "tool_sessions", "sessions": new});
         journal.record(Direction::Herdr, &event);
         self.update(number, Direction::Herdr, &event);
+    }
+}
+
+/// Where a worker's temp dir lives, beside the journals.
+fn temp_dir_path(dir: &Path, worker_id: &str) -> PathBuf {
+    dir.join("tmp").join(worker_id)
+}
+
+fn remove_temp_dir(path: &Path) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(%error, path = %path.display(), "worker temp dir not removed"),
     }
 }
 
@@ -1376,6 +1502,7 @@ struct Reader {
     number: u64,
     pid: u32,
     policy: policy::Policy,
+    temp_dir: PathBuf,
     live: Arc<Live>,
 }
 
@@ -1411,6 +1538,7 @@ impl Reader {
             Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
         };
         self.live.journal.record(Direction::Herdr, &exited);
+        remove_temp_dir(&self.temp_dir);
         self.supervisor
             .update(self.number, Direction::Herdr, &exited);
     }
@@ -1420,7 +1548,9 @@ impl Reader {
         let request_id = event["request_id"].as_str().unwrap_or("");
         let tool_name = request["tool_name"].as_str().unwrap_or("");
         let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
-        let decision = self.policy.decide(tool_name, &input);
+        let decision =
+            self.policy
+                .decide(tool_name, &input, request["decision_reason_type"].as_str());
         let (behavior, message) = match &decision {
             policy::Decision::Allow => ("allow", Value::Null),
             policy::Decision::Deny(message) => ("deny", Value::String(message.clone())),
@@ -1434,6 +1564,7 @@ impl Reader {
                 "tool_use_id": request.get("tool_use_id"),
                 "decision": behavior,
                 "message": message,
+                "decision_reason_type": request.get("decision_reason_type"),
             }),
         );
         let response = match decision {

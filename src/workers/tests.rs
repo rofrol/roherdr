@@ -2,7 +2,10 @@
 //! Claude runs here. The stub's behavior is chosen by each user message:
 //! `finish`, `fail`, `crash`, `block` (until an interrupt), `perm <tool>
 //! <words...>` (one `can_use_tool` request whose path or command is the
-//! words), `ask` (an `AskUserQuestion` request), `ignore-term` (SIGTERM is
+//! words), `classifier <tool> <words...>` (the same, escalated by the auto
+//! mode classifier), `refuse` (a model refusal, then `result/success`),
+//! `exit1` (`result/success`, then exit code 1), `denials` (a result with
+//! `permission_denials`), `ask` (an `AskUserQuestion` request), `ignore-term` (SIGTERM is
 //! ignored from then on) and `orphan <fifo>` (a tool process in its own
 //! session that holds `<fifo>` open until it dies).
 #![cfg(unix)]
@@ -45,9 +48,11 @@ def read():
         sys.exit(0)
     return json.loads(line)
 
-def ask_host(tool, tool_input):
-    emit({"type": "control_request", "request_id": "perm-1", "request": {
-        "subtype": "can_use_tool", "tool_name": tool, "input": tool_input}})
+def ask_host(tool, tool_input, reason_type=None):
+    request = {"subtype": "can_use_tool", "tool_name": tool, "input": tool_input}
+    if reason_type:
+        request["decision_reason_type"] = reason_type
+    emit({"type": "control_request", "request_id": "perm-1", "request": request})
     answer = read()
     response = answer["response"]
     assert response["request_id"] == "perm-1", answer
@@ -76,9 +81,22 @@ while True:
                     "response": {"still_queued": []}}})
                 result("error_during_execution", True, "aborted_tools", None)
                 break
-    elif command == "perm":
+    elif command == "refuse":
+        emit({"type": "system", "subtype": "model_refusal_no_fallback",
+              "api_refusal_category": "cyber"})
+        result()
+    elif command == "exit1":
+        result()
+        sys.exit(1)
+    elif command == "denials":
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "terminal_reason": "completed", "result": "ok",
+              "permission_denials": [{"tool_name": "Write", "tool_use_id": "t1",
+                                      "tool_input": {"file_path": "/outside"}}]})
+    elif command in ("perm", "classifier"):
         rest = " ".join(words[2:])
-        response = ask_host(words[1], {"file_path": rest, "command": rest})
+        response = ask_host(words[1], {"file_path": rest, "command": rest},
+                            "classifier" if command == "classifier" else None)
         text = response["behavior"]
         if text == "deny":
             text += ": " + response["message"]
@@ -270,13 +288,195 @@ fn a_turn_finishes_and_the_next_prompt_runs_another() {
     ] {
         assert!(args.contains(&flag), "{flag} missing from {args:?}");
     }
-    assert!(args.contains(&r#"{"disableAllHooks":true}"#));
     let init = journal
         .iter()
         .find(|record| record["event"]["subtype"] == "init")
         .unwrap();
     assert_eq!(init["event"]["herdr_env"], serde_json::json!([]));
     assert!(journal.iter().any(|record| record["dir"] == "in"));
+}
+
+/// The value after `flag` in the worker's launch arguments.
+fn launch_arg(journal: &[Value], flag: &str) -> String {
+    let args = journal[0]["event"]["args"].as_array().unwrap();
+    let index = args.iter().position(|arg| arg == flag).unwrap();
+    args[index + 1].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
+    let fixture = Fixture::new("sandbox");
+    let id = fixture.start("finish");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+
+    let journal = fixture.journal(&id);
+    let temp = fixture
+        .root
+        .join("workers/tmp")
+        .join(&id)
+        .canonicalize()
+        .unwrap();
+    let cwd = fixture.repo.canonicalize().unwrap();
+    assert_eq!(journal[0]["event"]["temp_dir"], temp.display().to_string());
+    assert_eq!(launch_arg(&journal, "--permission-mode"), "manual");
+
+    let settings: Value = serde_json::from_str(&launch_arg(&journal, "--settings")).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({
+            "disableAllHooks": true,
+            "attribution": {"commit": "", "pr": "", "sessionUrl": false},
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "autoAllowBashIfSandboxed": true,
+                "allowUnsandboxedCommands": false,
+                "filesystem": {
+                    "allowWrite": [temp.display().to_string()],
+                    "denyRead": [
+                        "~/.ssh",
+                        "~/.aws",
+                        "~/.gnupg",
+                        "~/.config/gh",
+                        cwd.join(".env").display().to_string(),
+                    ],
+                },
+                "network": {"allowedDomains": [], "strictAllowlist": true},
+            },
+            "permissions": {
+                "deny": [
+                    "Read(~/.ssh/**)",
+                    "Read(~/.aws/**)",
+                    "Read(~/.gnupg/**)",
+                    "Read(~/.config/gh/**)",
+                    "Read(**/.env)",
+                    "Edit(**/.env)",
+                    "WebFetch",
+                    "WebSearch",
+                ],
+            },
+        })
+    );
+    let contract = launch_arg(&journal, "--append-system-prompt");
+    assert!(
+        contract.contains(&format!("under {} by that absolute path", temp.display())),
+        "{contract}"
+    );
+    assert!(contract.contains("never use $TMPDIR"), "{contract}");
+    let policy = &fixture.herdr_events(&id, "policy")[0];
+    assert_eq!(
+        policy["file_tool_roots"],
+        serde_json::json!([cwd.display().to_string(), temp.display().to_string()])
+    );
+
+    // The temp dir lives as long as the worker and goes with it.
+    assert!(temp.is_dir());
+    std::fs::write(temp.join("draft.txt"), "x").unwrap();
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert!(!temp.exists());
+
+    let crashed = fixture.start("crash");
+    let crashed_temp = fixture.root.join("workers/tmp").join(&crashed);
+    fixture.wait(&crashed, WorkerWaitUntil::Exit);
+    assert!(!crashed_temp.exists());
+}
+
+#[test]
+fn a_restart_removes_the_temp_dirs_of_gone_workers() {
+    let root = std::env::temp_dir().join(format!(
+        "herdr-workers-temp-restart-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let dir = root.join("workers");
+    write_journal(
+        &dir,
+        "w1",
+        &[
+            serde_json::json!({"ts_ms": 1, "dir": "herdr", "event": {"type": "started", "cwd": "/x"}}),
+        ],
+    );
+    let leftover = dir.join("tmp/w1");
+    std::fs::create_dir_all(&leftover).unwrap();
+    std::fs::write(leftover.join("draft.txt"), "x").unwrap();
+
+    let supervisor = WorkerSupervisor::open(dir.clone(), PathBuf::from("claude"));
+    assert_eq!(supervisor.status("w1").unwrap().state, WorkerState::Lost);
+    assert!(!leftover.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_refused_turn_fails_even_with_result_success() {
+    let fixture = Fixture::new("refusal");
+    let id = fixture.start("refuse");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Failed);
+    let result = worker.last_result.unwrap();
+    assert_eq!(result.subtype, "success");
+    assert_eq!(
+        result.failure.as_deref(),
+        Some("the model refused the turn (cyber)")
+    );
+
+    // The refusal belongs to that turn only.
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert!(worker.last_result.unwrap().failure.is_none());
+
+    // Replayed from the journal, the same turns fold the same way.
+    let replayed = replay_journal(
+        &id,
+        &fixture.root.join("workers").join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    assert_eq!(replayed.turns, 2);
+}
+
+#[test]
+fn an_exit_code_after_a_finished_turn_records_a_failure() {
+    let fixture = Fixture::new("exit1");
+    let id = fixture.start("exit1");
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.exit_code, Some(1));
+    let result = worker.last_result.unwrap();
+    assert_eq!(result.subtype, "success");
+    assert_eq!(
+        result.failure.as_deref(),
+        Some("the CLI exited with code 1 after the turn")
+    );
+
+    // Herdr's own stop is no failure of the turn.
+    let stopped = fixture.start("finish");
+    fixture.wait(&stopped, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.stop(&stopped).unwrap();
+    let worker = fixture.wait(&stopped, WorkerWaitUntil::Exit);
+    assert!(worker.last_result.unwrap().failure.is_none());
+}
+
+#[test]
+fn permission_denials_are_kept_in_the_status() {
+    let fixture = Fixture::new("denials");
+    let id = fixture.start("denials");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    let denials = worker.last_result.unwrap().permission_denials;
+    assert_eq!(denials.len(), 1);
+    assert_eq!(denials[0]["tool_name"], "Write");
+}
+
+#[test]
+fn a_classifier_escalation_goes_to_the_user() {
+    let fixture = Fixture::new("classifier");
+    let id = fixture.start("classifier Write inside.txt");
+    let worker = fixture.wait_for_question(&id);
+    assert_eq!(worker.questions[0].tool_name, "Write");
+    let decision = &fixture.herdr_events(&id, "permission")[0];
+    assert_eq!(decision["decision"], "ask");
+    assert_eq!(decision["decision_reason_type"], "classifier");
 }
 
 #[test]
@@ -308,11 +508,14 @@ fn an_interrupt_ends_the_turn_as_interrupted() {
 fn the_policy_answers_the_requests_it_decides() {
     let fixture = Fixture::new("permissions");
     let outside = fixture.root.join("outside.txt").display().to_string();
+    let temp = fixture.root.join("workers/tmp");
     for (prompt, expected) in [
         ("perm Write inside.txt".to_owned(), "allow"),
         (format!("perm Write {outside}"), "deny"),
-        ("perm Bash git status".to_owned(), "allow"),
-        ("perm Bash cargo test -p herdr".to_owned(), "allow"),
+        // The next worker's temp dir: w3.
+        (format!("perm Write {}/w3/msg.txt", temp.display()), "allow"),
+        // Another worker's temp dir is outside this one's roots.
+        (format!("perm Write {}/w1/msg.txt", temp.display()), "deny"),
     ] {
         let id = fixture.start(&prompt);
         let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
