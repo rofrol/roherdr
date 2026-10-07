@@ -86,6 +86,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the Stop hook's nudge itself. Left: step 5 (the audit over real
   coordinator transcripts after a few days, compare with 5.6 per 100); a
   variant of the trial that asks while the coordinator idles.
+- [ ] The coordinator noticed a finished worker only when the user scrolled its
+  tab to the end (user, 2026-10-07: "you started doing something only when
+  I scrolled the worker tab's conversation to the end; that's a bug; fix
+  the process; ask the models"). The toast worker committed at 14:14;
+  `herdr-job wait-agent <pane> --worker-line`, which reads the pane's
+  screen (`agent read --source detection`) for the `WORKER-DONE` line, saw
+  it only at 17:50, after the user scrolled the worker's pane: the screen
+  read followed the scrolled view, or the line was not on the read part.
+  3.5 hours lost. A worker's end must come from something no UI state can
+  hide: the worker's commit on its branch, its transcript's last message,
+  or a report the worker sends (`herdr agent ...`), not the screen.
+
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
