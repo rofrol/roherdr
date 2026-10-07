@@ -1333,6 +1333,38 @@ pub(crate) fn read_keychain_generic_password(service: &str) -> Option<String> {
     (!secret.is_empty()).then(|| secret.to_owned())
 }
 
+pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
+    let max = sysctl_u32_by_name(c"kern.tty.ptmx_max")?;
+    let names = std::fs::read_dir("/dev")
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok());
+    Some(super::SystemPtyUsage {
+        in_use: super::count_macos_pty_slave_names(names),
+        max,
+    })
+}
+
+fn sysctl_u32_by_name(name: &std::ffi::CStr) -> Option<u32> {
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: `name` is NUL-terminated, and `value`/`size` describe a valid
+    // c_int buffer that outlives the call.
+    let ret = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 || size != std::mem::size_of::<libc::c_int>() {
+        return None;
+    }
+    u32::try_from(value).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

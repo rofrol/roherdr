@@ -14,6 +14,7 @@ pub(crate) fn spawn_with_portable_pty(
     cols: u16,
     cmd: CommandBuilder,
 ) -> std::io::Result<SpawnedPty> {
+    crate::pty::headroom::ensure_spawn_headroom()?;
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -22,7 +23,7 @@ pub(crate) fn spawn_with_portable_pty(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+        .map_err(crate::pty::headroom::openpty_error)?;
     let master_fd = pair
         .master
         .as_raw_fd()

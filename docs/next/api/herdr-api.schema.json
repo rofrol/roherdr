@@ -5779,6 +5779,22 @@
         {
           "properties": {
             "method": {
+              "const": "server.pty_usage",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "notification.show",
               "type": "string"
             },
@@ -11052,6 +11068,29 @@
             },
             {
               "properties": {
+                "system": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/SystemPtyUsageInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Absent where the platform has no fixed pool (Windows) or the\ncount cannot be read."
+                },
+                "type": {
+                  "const": "pty_usage",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "snapshot": {
                   "$ref": "#/schemas/success_response/$defs/SessionSnapshot"
                 },
@@ -12503,6 +12542,35 @@
             "down"
           ],
           "type": "string"
+        },
+        "SystemPtyUsageInfo": {
+          "description": "System-wide pseudo-terminal usage, sampled at most once a second.",
+          "properties": {
+            "in_use": {
+              "description": "Pseudo-terminals open on the whole system, not only Herdr's panes.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max": {
+              "description": "The kernel limit (`kern.tty.ptmx_max` on macOS, `kernel.pty.max` on Linux).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "required_free": {
+              "description": "Free pseudo-terminals a new pane must leave; below this Herdr refuses\nthe spawn with `pty_exhausted`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "in_use",
+            "max",
+            "required_free"
+          ],
+          "type": "object"
         },
         "TabActivity": {
           "description": "What a running tab's job is doing, as far as its runner can tell.",

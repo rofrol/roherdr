@@ -8,7 +8,7 @@ use crate::api::schema::{
 use crate::app::App;
 
 use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_spawn_error, encode_success};
 
 impl App {
     pub(super) fn handle_workspace_list(&mut self, id: String) -> String {
@@ -111,7 +111,7 @@ impl App {
                         .expect("new workspace should produce a complete create response"),
                 )
             }
-            Err(err) => encode_error(id, "workspace_create_failed", err.to_string()),
+            Err(err) => encode_spawn_error(id, "workspace_create_failed", &err),
         }
     }
 

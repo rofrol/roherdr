@@ -28,7 +28,7 @@ use super::super::api_helpers::{
 };
 #[cfg(test)]
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_spawn_error, encode_success};
 
 impl App {
     pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
@@ -108,7 +108,7 @@ impl App {
         };
         let (target_tab_idx, new_pane) = match split_result {
             Some(Ok(result)) => result,
-            Some(Err(err)) => return encode_error(id, "pane_split_failed", err.to_string()),
+            Some(Err(err)) => return encode_spawn_error(id, "pane_split_failed", &err),
             None => return encode_error(id, "pane_not_found", "pane not found"),
         };
         if let Some(pane) = self.state.workspaces[ws_idx].pane_state_mut(new_pane.pane_id) {

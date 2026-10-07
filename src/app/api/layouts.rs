@@ -10,7 +10,7 @@ use crate::app::{App, Mode};
 use crate::layout::{Node, PaneId};
 use crate::workspace::NewPane;
 
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_spawn_error, encode_success};
 
 const MAX_LAYOUT_PANES: usize = 24;
 const MAX_LAYOUT_DEPTH: usize = 16;
@@ -140,7 +140,7 @@ impl App {
 
         let (new_tab_idx, terminal, runtime) = match created {
             Ok(result) => result,
-            Err(err) => return encode_error(id, "layout_apply_failed", err.to_string()),
+            Err(err) => return encode_spawn_error(id, "layout_apply_failed", &err),
         };
         let new_root_pane = self.state.workspaces[ws_idx].tabs[new_tab_idx].root_pane;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);

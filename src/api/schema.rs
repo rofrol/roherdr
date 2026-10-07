@@ -61,6 +61,8 @@ pub enum Method {
     ServerAgentManifests(EmptyParams),
     #[serde(rename = "server.reload_agent_manifests")]
     ServerReloadAgentManifests(EmptyParams),
+    #[serde(rename = "server.pty_usage")]
+    ServerPtyUsage(EmptyParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

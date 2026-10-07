@@ -36,6 +36,42 @@ fn monitor_host_shutdown(
     None
 }
 
+/// System-wide pseudo-terminal allocation: how many are open and the kernel limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SystemPtyUsage {
+    pub in_use: u32,
+    pub max: u32,
+}
+
+/// Counts the system's live pseudo-terminals, or `None` where the platform
+/// has no fixed PTY pool or the count cannot be read. Reads the filesystem:
+/// call it per spawn or on a slow timer, never per frame.
+pub(crate) fn system_pty_usage() -> Option<SystemPtyUsage> {
+    system_pty_usage_platform()
+}
+
+/// Counts the names of allocated macOS pty slave nodes in a `/dev` listing.
+/// devfs creates `/dev/ttysNNN` (three or more digits) when a pty is
+/// allocated through `/dev/ptmx` and removes it when the pty is freed. The
+/// single-character `/dev/ttys0`..`/dev/ttysf` are static legacy BSD pty
+/// nodes, present whether used or not: counting them overstated the total
+/// by 16 (527 against the 511 limit).
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn count_macos_pty_slave_names<I, S>(names: I) -> u32
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    names
+        .into_iter()
+        .filter(|name| {
+            name.as_ref().strip_prefix("ttys").is_some_and(|digits| {
+                digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+        .count() as u32
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProcess {
     pub pid: u32,
@@ -678,6 +714,23 @@ fn child_exit_classification_only_checkpoints_interruptions() {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_pty_count_skips_legacy_bsd_nodes() {
+        let names = [
+            "ttys000", "ttys001", "ttys165", "ttys1000", "ttys0", "ttysf", "ttyp0", "ptmx",
+            "ttys00a", "tty",
+        ];
+        assert_eq!(count_macos_pty_slave_names(names), 4);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn system_pty_usage_reads_the_live_pool() {
+        let usage = system_pty_usage().expect("PTY usage is readable");
+        assert!(usage.max > 0, "{usage:?}");
+        assert!(usage.in_use <= usage.max, "{usage:?}");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

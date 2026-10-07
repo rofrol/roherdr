@@ -1,6 +1,6 @@
 use ratatui::layout::Direction;
 
-use super::super::responses::{encode_error, encode_success};
+use super::super::responses::{encode_error, encode_spawn_error, encode_success};
 use crate::api::schema::{
     InstalledPluginInfo, PluginInvocationContext, PluginManifestPane, PluginPaneInfo,
     PluginPaneOpenParams, PluginPanePlacement, ResponseResult,
@@ -30,7 +30,7 @@ impl App {
             extra_env,
             crate::app::popup::PopupGeometry { width, height },
         ) {
-            return encode_error(id, "plugin_pane_open_failed", err.to_string());
+            return encode_spawn_error(id, "plugin_pane_open_failed", &err);
         }
         let Some(popup) = self.state.popup_pane.as_ref() else {
             return encode_error(id, "plugin_pane_open_failed", "plugin popup disappeared");
@@ -62,7 +62,7 @@ impl App {
             Vec::new(),
         ) {
             Ok(result) => result,
-            Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
+            Err(err) => return encode_spawn_error(id, "plugin_pane_open_failed", &err),
         };
         let layout_tab_idx = self
             .overlay_panes
@@ -145,7 +145,7 @@ impl App {
         );
         let (tab_idx, new_pane) = match result {
             Some(Ok(result)) => result,
-            Some(Err(err)) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
+            Some(Err(err)) => return encode_spawn_error(id, "plugin_pane_open_failed", &err),
             None => {
                 return encode_error(
                     id,
@@ -220,7 +220,7 @@ impl App {
             self.state.host_terminal_appearance,
         ) {
             Ok(result) => result,
-            Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
+            Err(err) => return encode_spawn_error(id, "plugin_pane_open_failed", &err),
         };
         let pane_id = ws.tabs[tab_idx].root_pane;
         if params.focus {

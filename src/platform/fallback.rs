@@ -291,3 +291,7 @@ pub fn show_desktop_notification_with_details(
 ) -> std::io::Result<bool> {
     Ok(false)
 }
+
+pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
+    None
+}

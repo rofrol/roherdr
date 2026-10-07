@@ -977,6 +977,18 @@ impl App {
                     },
                 }
             }
+            Method::ServerPtyUsage(_) => SuccessResponse {
+                id: request.id,
+                result: ResponseResult::PtyUsage {
+                    system: crate::pty::headroom::system_usage().map(|usage| {
+                        crate::api::schema::SystemPtyUsageInfo {
+                            in_use: usage.in_use,
+                            max: usage.max,
+                            required_free: crate::pty::headroom::required_free(usage.max),
+                        }
+                    }),
+                },
+            },
             Method::ServerAgentManifests(_) => {
                 self.state.refresh_agent_manifest_summaries();
                 let update_status = crate::detect::manifest_update::load_status();

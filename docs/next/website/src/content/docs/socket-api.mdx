@@ -96,7 +96,7 @@ Raw socket method names use dot notation:
 
 | Area | Methods |
 | --- | --- |
-| Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
+| Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests`, `server.pty_usage` |
 | Notification | `notification.show`, `notification.show_for_pane`, `notification.list` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
@@ -1015,6 +1015,20 @@ Successful responses look like this:
 ```
 
 Fields such as `last_check_unix`, `last_result`, `active_version`, `cached_remote_version`, `remote_update_result`, `remote_update_error`, `remote_last_checked_unix`, and `warning` are omitted when not available. `server.reload_agent_manifests` returns `agent_manifest_reload` with the same `manifests` item shape after reloading the in-memory rule cache.
+
+`server.pty_usage` reports the system's pseudo-terminal usage, sampled at most once a second. `in_use` counts every pseudo-terminal on the machine, not only Herdr's panes; `max` is the kernel limit (`kern.tty.ptmx_max` on macOS, `kernel.pty.max` on Linux). `system` is omitted where the platform has no fixed pool (Windows) or the count cannot be read:
+
+```json
+{
+  "id": "req_1",
+  "result": {
+    "type": "pty_usage",
+    "system": { "in_use": 108, "max": 511, "required_free": 64 }
+  }
+}
+```
+
+A new pane must leave `required_free` pseudo-terminals free (64, or a quarter of a smaller pool). Below that, and when the system pool is already full, `workspace.create`, `tab.create`, `pane.split` and the other methods that open a pane fail with the error code `pty_exhausted` and a message such as ``448 of 511 pseudo-terminals in use; close tabs or run `herdr-job clean` ``.
 
 `agent.explain` evaluates the target pane's detection snapshot in the running server using the server's active manifest cache:
 

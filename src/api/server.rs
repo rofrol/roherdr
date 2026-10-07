@@ -623,6 +623,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ServerSshAgentRegister(_) => "server.ssh_agent.register",
         Method::ServerAgentManifests(_) => "server.agent_manifests",
         Method::ServerReloadAgentManifests(_) => "server.reload_agent_manifests",
+        Method::ServerPtyUsage(_) => "server.pty_usage",
         Method::NotificationShow(_) => "notification.show",
         Method::NotificationShowForPane(_) => "notification.show_for_pane",
         Method::ProductAnnouncementDismiss(_) => "product_announcement.dismiss",

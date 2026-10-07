@@ -37,3 +37,15 @@ pub struct ServerCapabilities {
     #[serde(default)]
     pub ssh_agent_registration: bool,
 }
+
+/// System-wide pseudo-terminal usage, sampled at most once a second.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SystemPtyUsageInfo {
+    /// Pseudo-terminals open on the whole system, not only Herdr's panes.
+    pub in_use: u32,
+    /// The kernel limit (`kern.tty.ptmx_max` on macOS, `kernel.pty.max` on Linux).
+    pub max: u32,
+    /// Free pseudo-terminals a new pane must leave; below this Herdr refuses
+    /// the spawn with `pty_exhausted`.
+    pub required_free: u32,
+}

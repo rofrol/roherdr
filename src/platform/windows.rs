@@ -945,6 +945,11 @@ pub(crate) fn should_query_host_terminal_palette() -> bool {
 }
 
 /// The machine's node name, as shown by tmux's `#h`.
+/// ConPTY has no fixed system-wide pool to run out of.
+pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
+    None
+}
+
 pub(crate) fn hostname() -> Option<String> {
     std::env::var("COMPUTERNAME")
         .ok()
