@@ -110,6 +110,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Test: set the owner cap to 3, launch three failing jobs, the fourth is
     refused before a PTY is opened, also under concurrent launches.
 
+- [ ] Toasts in the top right corner again, not the bottom right (user,
+  2026-10-07: "notifications should appear in the top right corner after
+  all, not the bottom; ask the models"). Today the user's config has
+  `[ui.toast.herdr] position = "bottom-right"`, `bottom_margin = 6`
+  (dotfiles `e85197d`); endpoint notices and lifecycle banners already sit
+  top right.
+
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
