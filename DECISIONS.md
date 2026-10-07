@@ -295,3 +295,8 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 ### New tab button
 - Draws `❏`, the mark of a tab without an agent, not `+`, which the user mixed up with the agent launch chip (user, 2026-10-06).
 - Colour, not shape, tells it from a tab line: the accent, never the tab lines' dim grey nor an agent's badge colour (user, 2026-10-06: "maybe just a colour other than grey"). Fallback if that is not enough: `+❏`.
+
+### Space `T` button and tab roles
+- User, 2026-10-07: a `T` left of a space's `A` runs `ui.sidebar.spaces.todo_command` (the user's `~/scripts/todo-worker {space}`) on this machine, in the background, with a toast of its first output line; a failure stays until clicked. Unset means no button: nothing ships a default, so users without the user's TODO convention never get an agent committing through an unknown TODO (consult `20261007-010106-c5ac`). herdr starts no agent itself; the launcher does.
+- Tabs carry a server-owned role, `coordinator` or `worker` (`tab.set_role`, `herdr tab role`), set by whoever opens the tab and never derived from the agent's name or title; it survives restarts and ends with the tab. A yes/no worker flag was replaced by the role before it shipped (user). Marks before the state glyph: `♛` coordinator and `⚒` worker, both chosen by the user from mockups (consults `20261007-010734-4c57`, `20261007-011027-5c82`). No reordering, no pin, no progress line (`?` and `↳` already mean other things; TODO counts are unreliable).
+- `tab.create`'s shape is frozen, so the role is a separate method rather than a create option.
