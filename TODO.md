@@ -364,7 +364,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   1. herdr's server starts, journals and ends headless Claude workers
      (`worker.start`, state from events, `worker.wait/interrupt/stop/kill`,
      a CLI), approvals limited to file tools inside the worktree for now.
-     In progress 2026-10-07 (worker `w-supervisor1`).
+     Done 2026-10-07 (`feat: a server-side supervisor for headless Claude
+     workers (slice 1)`): `worker.*` API and `herdr worker` CLI, a journal
+     per worker, state from events, `worker.wait` woken by state changes,
+     realpath file-tool policy, stop/kill with recorded tool sessions,
+     `lost` after a server restart. Review finding for slice 2:
+     `worker.stop` reports "still alive" from a check right after SIGTERM,
+     a race; report the group's exit from the exit event instead.
   2. The approval policy (realpath file tools, the strict Bash list) and
      questions to the user's `?` list, answered as `control_response`.
   3. The sidebar: a tab-less worker row, a log view, takeover; the
