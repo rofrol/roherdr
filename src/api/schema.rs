@@ -81,6 +81,8 @@ pub enum Method {
     WorkerStop(WorkerTarget),
     #[serde(rename = "worker.kill")]
     WorkerKill(WorkerTarget),
+    #[serde(rename = "worker.answer")]
+    WorkerAnswer(WorkerAnswerParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

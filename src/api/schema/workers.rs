@@ -49,7 +49,8 @@ pub enum WorkerState {
     Starting,
     /// A turn is running.
     Working,
-    /// The CLI asked for a tool permission that is not answered yet.
+    /// The CLI asked for a tool permission or a question that is not
+    /// answered yet; `questions` lists those left to the user.
     WaitingApproval,
     /// The last turn ended with `result/success`.
     Finished,
@@ -109,6 +110,87 @@ pub struct WorkerInfo {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_signal: Option<i32>,
+    /// Questions the worker waits on, oldest first; its state is
+    /// `waiting_approval` while there are any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<WorkerQuestion>,
+    /// Unix milliseconds when `worker.stop` sent SIGTERM, while the process
+    /// has not exited yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_requested_ms: Option<u64>,
     /// The JSONL journal of every event in and out.
     pub journal_path: String,
+}
+
+/// Answers a worker's pending question: a tool approval or an
+/// `AskUserQuestion`. The worker waits for it without a time limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAnswerParams {
+    pub worker_id: String,
+    /// The question to answer; the oldest pending one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// `allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`
+    /// declines to answer and `allow` (or absent) sends `answers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<WorkerDecision>,
+    /// `AskUserQuestion` only: one answer per question, in order. Each is an
+    /// option's label, its 1-based number, or free text; a multi-select
+    /// question takes several labels or numbers separated by commas.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<String>,
+    /// The message the model gets with a denial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerQuestionKind {
+    /// A tool the policy does not decide; answered with allow or deny.
+    Approval,
+    /// An `AskUserQuestion`; answered with the chosen options.
+    Choice,
+    /// A kind this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A question a worker waits on: a `can_use_tool` request the policy left to
+/// the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerQuestion {
+    /// The CLI's control request id; `worker.answer` may name it.
+    pub request_id: String,
+    pub kind: WorkerQuestionKind,
+    pub tool_name: String,
+    /// One line for the user: the Bash command, the question, or the tool's
+    /// input.
+    pub text: String,
+    /// Why the policy did not decide it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `AskUserQuestion`'s questions, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<WorkerChoiceQuestion>,
+    /// Unix milliseconds since when the worker waits.
+    pub since_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerChoiceQuestion {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The options' labels.
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
 }

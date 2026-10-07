@@ -415,6 +415,15 @@ impl HeadlessServer {
             },
         );
 
+        // A worker's question changes no app state; this makes the next
+        // render rebuild the clients' snapshots, which carry it.
+        let render_dirty = self.app.render_dirty.clone();
+        let render_notify = self.app.render_notify.clone();
+        crate::workers::set_question_notifier(Arc::new(move || {
+            render_dirty.request_generic();
+            render_notify.notify_one();
+        }));
+
         let mut needs_render = true;
         let mut needs_full_render = true;
         let mut needs_graphics_render = false;

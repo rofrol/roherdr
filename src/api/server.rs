@@ -660,6 +660,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerInterrupt(_) => "worker.interrupt",
         Method::WorkerStop(_) => "worker.stop",
         Method::WorkerKill(_) => "worker.kill",
+        Method::WorkerAnswer(_) => "worker.answer",
         Method::NotificationShow(_) => "notification.show",
         Method::NotificationShowForPane(_) => "notification.show_for_pane",
         Method::ProductAnnouncementDismiss(_) => "product_announcement.dismiss",

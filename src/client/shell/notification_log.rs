@@ -603,7 +603,8 @@ impl ClientShellState {
             .agents
             .iter()
             .filter(|agent| Self::agent_is_asking(agent))
-            .count();
+            .count()
+            + snapshot.worker_questions.len();
         let working = snapshot
             .agents
             .iter()
@@ -629,9 +630,8 @@ impl ClientShellState {
         if view == NotificationLogView::Asking {
             agents.sort_by_key(|agent| agent.waiting_since_ms.unwrap_or(u64::MAX));
         }
-        agents
+        let mut rows: Vec<NotificationRecord> = agents
             .into_iter()
-            .take(MAX_ROWS)
             .map(|agent| NotificationRecord {
                 id: 0,
                 // An asking row's time is when the agent started waiting.
@@ -671,7 +671,58 @@ impl ClientShellState {
                 request: None,
                 repeats: None,
             })
-            .collect()
+            .collect();
+        if view == NotificationLogView::Asking {
+            rows.extend(
+                snapshot
+                    .worker_questions
+                    .iter()
+                    .map(Self::worker_question_row),
+            );
+            // Stable, so agents without a known start keep their order.
+            rows.sort_by_key(|row| {
+                if row.unix_ms == 0 {
+                    u64::MAX
+                } else {
+                    row.unix_ms
+                }
+            });
+        }
+        rows.truncate(MAX_ROWS);
+        rows
+    }
+
+    /// A headless worker's question: it has no pane to open, so its second
+    /// line says how to answer it.
+    fn worker_question_row(
+        question: &crate::protocol::ClientShellWorkerQuestion,
+    ) -> NotificationRecord {
+        let repo = std::path::Path::new(&question.cwd)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| question.cwd.clone());
+        let how = if question.choice {
+            "<choice>"
+        } else {
+            "allow|deny"
+        };
+        NotificationRecord {
+            id: 0,
+            unix_ms: question.since_ms,
+            kind: "asking".into(),
+            title: format!("worker {} · {repo}", question.worker_id),
+            body: Some(format!(
+                "{}: {} — herdr worker answer {} {how}",
+                question.tool_name, question.text, question.worker_id
+            )),
+            agent: None,
+            workspace_id: None,
+            tab_id: None,
+            pane_id: None,
+            task: None,
+            request: None,
+            repeats: None,
+        }
     }
 
     /// What an agent waiting on the user asks, for the second line of its

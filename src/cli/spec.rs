@@ -378,6 +378,21 @@ fn worker_command() -> Command {
             "worker_id",
             "SIGKILL the worker's group and its recorded tool sessions",
         ))
+        .subcommand(
+            id_command(
+                "answer",
+                "worker_id",
+                "Answer the worker's pending question: allow, deny, or the chosen options",
+            )
+            .arg(
+                Arg::new("answer")
+                    .value_name("ANSWER")
+                    .num_args(1..)
+                    .required(true),
+            )
+            .arg(option("request", "REQUEST_ID"))
+            .arg(option("message", "TEXT")),
+        )
 }
 
 fn agent_command() -> Command {

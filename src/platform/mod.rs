@@ -272,21 +272,6 @@ fn exit_status_signal_platform(_status: &std::process::ExitStatus) -> Option<i32
     None
 }
 
-/// Whether any process of the group led by `leader_pid` is still alive.
-pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
-    process_group_alive_platform(leader_pid)
-}
-
-#[cfg(unix)]
-fn process_group_alive_platform(leader_pid: u32) -> bool {
-    unix_common::process_group_alive(leader_pid)
-}
-
-#[cfg(not(unix))]
-fn process_group_alive_platform(leader_pid: u32) -> bool {
-    !session_processes(leader_pid).is_empty()
-}
-
 /// Sessions of `root_pid`'s descendants other than `own_session`, from a
 /// `(pid, parent)` table. Shared by the platforms that have POSIX sessions.
 // Only the Linux and macOS process tables call it; Windows has no sessions.

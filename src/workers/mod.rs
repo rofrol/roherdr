@@ -1,11 +1,13 @@
-//! Headless Claude workers owned by the server (slice 1).
+//! Headless Claude workers owned by the server.
 //!
 //! A worker is `claude -p` over stream-json pipes, without a terminal, in its
 //! own process group. One reader thread per worker journals every line in and
 //! out (`<state dir>/workers/<id>.jsonl`), answers `can_use_tool` requests
-//! through [`policy`], and folds the events into the worker's state. The same
-//! fold replays a journal after a server restart, where a worker that had not
-//! exited is recorded as `lost`.
+//! through [`policy`], and folds the events into the worker's state. A request
+//! the policy leaves to the user becomes a pending question, shown in the
+//! client's `?` list and answered with `worker.answer`; the worker waits for
+//! it without a time limit. The same fold replays a journal after a server
+//! restart, where a worker that had not exited is recorded as `lost`.
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
@@ -24,14 +26,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tracing::warn;
 
-use crate::api::schema::{WorkerInfo, WorkerState, WorkerTurnResult, WorkerWaitUntil};
+use crate::api::schema::{
+    WorkerAnswerParams, WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion,
+    WorkerQuestionKind, WorkerState, WorkerTurnResult, WorkerWaitUntil,
+};
 use crate::platform::Signal;
 
 /// Appended to the worker's system prompt.
 const WORKER_CONTRACT: &str = "You are a headless worker started by herdr. Nobody watches \
-your output live and nobody can answer questions: do not ask any; finish the task, or stop \
-and say what blocks you. Work only inside your working directory. Tools that need an \
-approval are denied for now; continue without them or stop and explain.";
+your output live. Work only inside your working directory. Commands and tools outside \
+herdr's short allow list, and your questions, wait until the user answers, which can take \
+long: ask only when you cannot go on without it, otherwise finish the task or stop and say \
+what blocks you.";
 
 /// The settings that keep the user's CLAUDE.md and login but turn the
 /// global hooks off (trial 2, T2-1).
@@ -43,6 +49,7 @@ pub(crate) enum WorkerError {
     Invalid(String),
     NotRunning(String),
     Busy(String),
+    NoQuestion(String),
     Io(std::io::Error),
 }
 
@@ -53,6 +60,7 @@ impl WorkerError {
             Self::Invalid(_) => "invalid_request",
             Self::NotRunning(_) => "worker_not_running",
             Self::Busy(_) => "worker_busy",
+            Self::NoQuestion(_) => "worker_no_question",
             Self::Io(_) => "worker_io_error",
         }
     }
@@ -62,9 +70,10 @@ impl std::fmt::Display for WorkerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(id) => write!(f, "worker {id} not found"),
-            Self::Invalid(message) | Self::NotRunning(message) | Self::Busy(message) => {
-                f.write_str(message)
-            }
+            Self::Invalid(message)
+            | Self::NotRunning(message)
+            | Self::Busy(message)
+            | Self::NoQuestion(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -125,6 +134,16 @@ struct Status {
     tool_sessions: BTreeSet<u32>,
     exit_code: Option<i32>,
     exit_signal: Option<i32>,
+    /// Requests left to the user, oldest first.
+    questions: Vec<Pending>,
+    stop_requested_ms: Option<u64>,
+}
+
+/// A question with the tool input its answer is built from.
+#[derive(Debug, Clone)]
+struct Pending {
+    question: WorkerQuestion,
+    input: Value,
 }
 
 impl Status {
@@ -142,6 +161,20 @@ impl Status {
             tool_sessions: BTreeSet::new(),
             exit_code: None,
             exit_signal: None,
+            questions: Vec::new(),
+            stop_requested_ms: None,
+        }
+    }
+
+    /// Drops an answered or cancelled question; the turn goes on once none
+    /// is left.
+    fn settle_question(&mut self, request_id: Option<&str>) {
+        if let Some(request_id) = request_id {
+            self.questions
+                .retain(|pending| pending.question.request_id != request_id);
+        }
+        if self.questions.is_empty() && self.state == WorkerState::WaitingApproval {
+            self.state = WorkerState::Working;
         }
     }
 
@@ -181,7 +214,29 @@ impl Status {
                         .map(|session| session as u32),
                 );
             }
+            (Direction::Herdr, "question") => {
+                let question = event
+                    .get("question")
+                    .cloned()
+                    .and_then(|question| serde_json::from_value(question).ok());
+                if let Some(question) = question {
+                    self.questions.push(Pending {
+                        question,
+                        input: event.get("input").cloned().unwrap_or_else(|| json!({})),
+                    });
+                }
+            }
+            (Direction::Herdr, "answer") => {
+                self.settle_question(event["request_id"].as_str());
+            }
+            (Direction::Herdr, "signal") => {
+                if event["signal"].as_str() == Some("SIGTERM") {
+                    self.stop_requested_ms = event["at_ms"].as_u64();
+                }
+            }
             (Direction::Herdr, "exited") => {
+                self.questions.clear();
+                self.stop_requested_ms = None;
                 self.state = WorkerState::Exited;
                 self.exit_code = event.get("code").and_then(Value::as_i64).map(|v| v as i32);
                 self.exit_signal = event
@@ -189,7 +244,11 @@ impl Status {
                     .and_then(Value::as_i64)
                     .map(|v| v as i32);
             }
-            (Direction::Herdr, "lost") => self.state = WorkerState::Lost,
+            (Direction::Herdr, "lost") => {
+                self.questions.clear();
+                self.stop_requested_ms = None;
+                self.state = WorkerState::Lost;
+            }
             (Direction::Out, "system") => {
                 if event.get("subtype").and_then(Value::as_str) == Some("init") {
                     if let Some(session_id) = string_field(event, "session_id") {
@@ -206,9 +265,10 @@ impl Status {
                 }
             }
             (Direction::In, "control_response") => {
-                if self.state == WorkerState::WaitingApproval {
-                    self.state = WorkerState::Working;
-                }
+                self.settle_question(event["response"]["request_id"].as_str());
+            }
+            (Direction::Out, "control_cancel_request") => {
+                self.settle_question(event["request_id"].as_str());
             }
             (Direction::In, "user") => {
                 if self.state != WorkerState::Starting {
@@ -230,6 +290,7 @@ impl Status {
                     text: string_field(event, "result"),
                 };
                 self.state = turn_end_state(&result);
+                self.questions.clear();
                 self.turns += 1;
                 self.last_result = Some(result);
             }
@@ -251,6 +312,12 @@ impl Status {
             tool_sessions: self.tool_sessions.iter().copied().collect(),
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
+            questions: self
+                .questions
+                .iter()
+                .map(|pending| pending.question.clone())
+                .collect(),
+            stop_requested_ms: self.stop_requested_ms,
             journal_path: journal_path.display().to_string(),
         }
     }
@@ -396,10 +463,45 @@ fn worker_number(worker_id: &str) -> Option<u64> {
     worker_id.strip_prefix('w')?.parse().ok()
 }
 
+static SUPERVISOR: OnceLock<WorkerSupervisor> = OnceLock::new();
+
+type QuestionNotifier = Arc<dyn Fn() + Send + Sync>;
+
+/// Called whenever a worker's pending questions change, so the server
+/// rebuilds the clients' snapshots, which carry them to the `?` list.
+static QUESTION_NOTIFIER: Mutex<Option<QuestionNotifier>> = Mutex::new(None);
+
+pub(crate) fn set_question_notifier(notifier: QuestionNotifier) {
+    *lock(&QUESTION_NOTIFIER) = Some(notifier);
+}
+
+fn notify_questions_changed() {
+    let notifier = lock(&QUESTION_NOTIFIER).clone();
+    if let Some(notifier) = notifier {
+        notifier();
+    }
+}
+
+/// A question some worker waits on, with the worker it belongs to.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingWorkerQuestion {
+    pub(crate) worker_id: String,
+    pub(crate) cwd: String,
+    pub(crate) question: WorkerQuestion,
+}
+
+/// Every pending question of the server's supervisor; empty when no
+/// supervisor was opened (it is never opened just to answer this).
+pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
+    SUPERVISOR
+        .get()
+        .map(WorkerSupervisor::pending_questions)
+        .unwrap_or_default()
+}
+
 /// The server's supervisor, opened on first use. Its journals live in
 /// herdr's state directory, apart per named session.
 pub(crate) fn supervisor() -> &'static WorkerSupervisor {
-    static SUPERVISOR: OnceLock<WorkerSupervisor> = OnceLock::new();
     SUPERVISOR.get_or_init(|| {
         let state_dir = crate::config::state_dir();
         let dir = match crate::session::active_name() {
@@ -558,6 +660,7 @@ impl WorkerSupervisor {
             )));
         };
 
+        let (policy, policy_warnings) = policy::Policy::load(&cwd_path, &cwd_real);
         let started = json!({
             "type": "started",
             "worker_id": worker_id,
@@ -568,6 +671,14 @@ impl WorkerSupervisor {
             "args": args,
         });
         journal.record(Direction::Herdr, &started);
+        journal.record(
+            Direction::Herdr,
+            &json!({
+                "type": "policy",
+                "bash_rules": policy.rules(),
+                "warnings": policy_warnings,
+            }),
+        );
         let mut status = Status::new(worker_id.clone());
         status.apply(Direction::Herdr, &started);
 
@@ -600,8 +711,7 @@ impl WorkerSupervisor {
             supervisor: self.clone(),
             number,
             pid,
-            cwd: cwd_real.clone(),
-            cwd_real,
+            policy,
             live: Arc::clone(&live),
         };
         if let Err(error) =
@@ -624,11 +734,37 @@ impl WorkerSupervisor {
 
     fn update(&self, number: u64, direction: Direction, event: &Value) {
         let mut registry = lock(&self.shared.registry);
+        let mut questions_changed = false;
         if let Some(entry) = registry.workers.get_mut(&number) {
+            let before = entry.status.questions.len();
             entry.status.apply(direction, event);
+            // Questions are only added or removed, never replaced in place.
+            questions_changed = entry.status.questions.len() != before;
         }
         drop(registry);
         self.shared.changed.notify_all();
+        if questions_changed {
+            notify_questions_changed();
+        }
+    }
+
+    fn pending_questions(&self) -> Vec<PendingWorkerQuestion> {
+        let registry = lock(&self.shared.registry);
+        registry
+            .workers
+            .values()
+            .flat_map(|entry| {
+                entry
+                    .status
+                    .questions
+                    .iter()
+                    .map(|pending| PendingWorkerQuestion {
+                        worker_id: entry.status.worker_id.clone(),
+                        cwd: entry.status.cwd.clone(),
+                        question: pending.question.clone(),
+                    })
+            })
+            .collect()
     }
 
     fn entry_number(registry: &Registry, worker_id: &str) -> Result<u64, WorkerError> {
@@ -736,23 +872,80 @@ impl WorkerSupervisor {
         self.status(worker_id)
     }
 
-    /// Closes the worker's input and sends SIGTERM to its process group.
-    /// It never escalates: it reports whether the group is still alive and
-    /// leaves `worker.kill` to the caller.
-    pub(crate) fn stop(&self, worker_id: &str) -> Result<(WorkerInfo, bool), WorkerError> {
+    /// Closes the worker's input, sends SIGTERM to its process group and
+    /// returns. The outcome comes from the process's exit event, which turns
+    /// the state to `exited`; until then the status carries
+    /// `stop_requested_ms`, so asking again shows a worker that is still
+    /// alive. A repeated stop sends nothing. It never escalates; `worker.kill`
+    /// does.
+    pub(crate) fn stop(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
         let (number, live, status) = self.live(worker_id)?;
+        if status.stop_requested_ms.is_some() {
+            return self.status(worker_id);
+        }
         let pid = status
             .pid
             .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} has no process")))?;
         self.record_tool_sessions(number, pid, &live.journal);
-        live.journal.record(
-            Direction::Herdr,
-            &json!({"type": "signal", "signal": "SIGTERM"}),
-        );
+        let signal = json!({"type": "signal", "signal": "SIGTERM", "at_ms": now_ms()});
+        live.journal.record(Direction::Herdr, &signal);
+        self.update(number, Direction::Herdr, &signal);
         live.close_input();
         crate::platform::signal_process_group(pid, Signal::Terminate)?;
-        let still_alive = crate::platform::process_group_alive(pid);
-        Ok((self.status(worker_id)?, still_alive))
+        self.status(worker_id)
+    }
+
+    /// Answers the worker's oldest pending question, or the one
+    /// `request_id` names, with the user's decision.
+    pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
+        let worker_id = params.worker_id.as_str();
+        let (number, live, request_id, response, answer) = {
+            let mut registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, worker_id)?;
+            let entry = registry
+                .workers
+                .get_mut(&number)
+                .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
+            let live = match (&entry.live, entry.status.is_gone()) {
+                (Some(live), false) => Arc::clone(live),
+                _ => {
+                    return Err(WorkerError::NotRunning(format!(
+                        "worker {worker_id} is not running"
+                    )))
+                }
+            };
+            let pending = match params.request_id.as_deref() {
+                Some(request_id) => entry
+                    .status
+                    .questions
+                    .iter()
+                    .find(|pending| pending.question.request_id == request_id),
+                None => entry.status.questions.first(),
+            }
+            .ok_or_else(|| {
+                WorkerError::NoQuestion(format!("worker {worker_id} has no such pending question"))
+            })?;
+            let (response, answers) = answer_response(pending, params)?;
+            let request_id = pending.question.request_id.clone();
+            let answer = json!({
+                "type": "answer",
+                "request_id": request_id,
+                "tool_name": pending.question.tool_name,
+                "decision": response["behavior"],
+                "answers": answers,
+                "by": "user",
+            });
+            // Settled under the lock, so a second answer finds no question.
+            entry.status.apply(Direction::Herdr, &answer);
+            (number, live, request_id, response, answer)
+        };
+        self.shared.changed.notify_all();
+        notify_questions_changed();
+        live.journal.record(Direction::Herdr, &answer);
+        let message = control_response(&request_id, response);
+        live.send(&message)?;
+        self.update(number, Direction::In, &message);
+        self.status(worker_id)
     }
 
     /// Force-stops a worker: SIGKILL to its process group, then to every
@@ -827,13 +1020,184 @@ fn user_message(text: &str) -> Value {
     json!({"type": "user", "message": {"role": "user", "content": text}})
 }
 
+fn control_response(request_id: &str, response: Value) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        },
+    })
+}
+
+/// The `can_use_tool` answer for the user's decision, and the answers it
+/// carries (for the journal). An `AskUserQuestion` is allowed with
+/// `updatedInput.answers`, a map from each question to its answer (trial 1,
+/// case 3).
+fn answer_response(
+    pending: &Pending,
+    params: &WorkerAnswerParams,
+) -> Result<(Value, Value), WorkerError> {
+    let question = &pending.question;
+    let deny = |default: &str| {
+        let message = params.message.as_deref().unwrap_or(default);
+        Ok((json!({"behavior": "deny", "message": message}), Value::Null))
+    };
+    match question.kind {
+        WorkerQuestionKind::Choice => {
+            if params.decision == Some(WorkerDecision::Deny) {
+                return deny("The user declined to answer.");
+            }
+            if params.answers.len() != question.questions.len() {
+                return Err(WorkerError::Invalid(format!(
+                    "this question needs {} answer(s), got {}",
+                    question.questions.len(),
+                    params.answers.len()
+                )));
+            }
+            let mut answers = serde_json::Map::new();
+            for (choice, raw) in question.questions.iter().zip(&params.answers) {
+                let answer = resolve_choice(choice, raw).ok_or_else(|| {
+                    WorkerError::Invalid(format!("an empty answer to: {}", choice.question))
+                })?;
+                answers.insert(choice.question.clone(), Value::String(answer));
+            }
+            let mut input = pending.input.clone();
+            if let Some(object) = input.as_object_mut() {
+                object.insert("answers".into(), Value::Object(answers.clone()));
+            }
+            Ok((
+                json!({"behavior": "allow", "updatedInput": input}),
+                Value::Object(answers),
+            ))
+        }
+        WorkerQuestionKind::Approval | WorkerQuestionKind::Unknown => {
+            if !params.answers.is_empty() {
+                return Err(WorkerError::Invalid(
+                    "an approval takes allow or deny, not answers".into(),
+                ));
+            }
+            match params.decision {
+                Some(WorkerDecision::Allow) => Ok((
+                    json!({"behavior": "allow", "updatedInput": pending.input}),
+                    Value::Null,
+                )),
+                Some(WorkerDecision::Deny) => deny("The user denied this tool use."),
+                None => Err(WorkerError::Invalid(
+                    "an approval needs the decision allow or deny".into(),
+                )),
+            }
+        }
+    }
+}
+
+/// One answer: an option's 1-based number or label (any case) becomes the
+/// label, anything else is the user's own text. A multi-select answer is a
+/// comma-separated list of those, joined with `, `.
+fn resolve_choice(choice: &WorkerChoiceQuestion, raw: &str) -> Option<String> {
+    let resolve = |part: &str| {
+        let part = part.trim();
+        part.parse::<usize>()
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| choice.options.get(index))
+            .or_else(|| {
+                choice
+                    .options
+                    .iter()
+                    .find(|label| label.eq_ignore_ascii_case(part))
+            })
+            .cloned()
+            .unwrap_or_else(|| part.to_owned())
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if !choice.multi_select || choice.options.iter().any(|label| label == raw) {
+        return Some(resolve(raw));
+    }
+    let parts: Vec<String> = raw
+        .split(',')
+        .map(resolve)
+        .filter(|part| !part.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// The question a `can_use_tool` request the policy left to the user asks.
+fn question_from_request(request_id: &str, request: &Value, reason: &str) -> WorkerQuestion {
+    let tool_name = request["tool_name"].as_str().unwrap_or("").to_owned();
+    let input = &request["input"];
+    let questions: Vec<WorkerChoiceQuestion> = if tool_name == "AskUserQuestion" {
+        input["questions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|question| WorkerChoiceQuestion {
+                question: question["question"].as_str().unwrap_or("").to_owned(),
+                header: string_field(question, "header"),
+                options: question["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|option| option["label"].as_str().map(str::to_owned))
+                    .collect(),
+                multi_select: question["multiSelect"].as_bool().unwrap_or(false),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let text = if tool_name == "AskUserQuestion" {
+        questions
+            .iter()
+            .map(|question| format!("{} [{}]", question.question, question.options.join(" | ")))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    } else if let Some(command) = input["command"].as_str() {
+        command.to_owned()
+    } else if let Some(path) = ["file_path", "notebook_path", "path", "url"]
+        .iter()
+        .find_map(|key| input[*key].as_str())
+    {
+        path.to_owned()
+    } else {
+        input.to_string()
+    };
+    WorkerQuestion {
+        request_id: request_id.to_owned(),
+        kind: if tool_name == "AskUserQuestion" {
+            WorkerQuestionKind::Choice
+        } else {
+            WorkerQuestionKind::Approval
+        },
+        tool_name,
+        text: one_line(&text, 300),
+        reason: Some(reason.to_owned()),
+        questions,
+        since_ms: now_ms(),
+    }
+}
+
+/// `text` on one line, cut to `max` characters with an ellipsis.
+fn one_line(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
 /// The thread that owns one worker's stdout and process.
 struct Reader {
     supervisor: WorkerSupervisor,
     number: u64,
     pid: u32,
-    cwd: PathBuf,
-    cwd_real: PathBuf,
+    policy: policy::Policy,
     live: Arc<Live>,
 }
 
@@ -875,16 +1239,14 @@ impl Reader {
 
     fn answer_permission(&self, event: &Value) {
         let request = &event["request"];
+        let request_id = event["request_id"].as_str().unwrap_or("");
         let tool_name = request["tool_name"].as_str().unwrap_or("");
         let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
-        let decision = policy::decide(&self.cwd, &self.cwd_real, tool_name, &input);
-        let (behavior, response) = match &decision {
-            policy::Decision::Allow => {
-                ("allow", json!({"behavior": "allow", "updatedInput": input}))
-            }
-            policy::Decision::Deny(message) => {
-                ("deny", json!({"behavior": "deny", "message": message}))
-            }
+        let decision = self.policy.decide(tool_name, &input);
+        let (behavior, message) = match &decision {
+            policy::Decision::Allow => ("allow", Value::Null),
+            policy::Decision::Deny(message) => ("deny", Value::String(message.clone())),
+            policy::Decision::Ask(reason) => ("ask", Value::String(reason.clone())),
         };
         self.live.journal.record(
             Direction::Herdr,
@@ -893,20 +1255,23 @@ impl Reader {
                 "tool_name": tool_name,
                 "tool_use_id": request.get("tool_use_id"),
                 "decision": behavior,
-                "message": match &decision {
-                    policy::Decision::Allow => Value::Null,
-                    policy::Decision::Deny(message) => Value::String(message.clone()),
-                },
+                "message": message,
             }),
         );
-        let answer = json!({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": event.get("request_id"),
-                "response": response,
-            },
-        });
+        let response = match decision {
+            policy::Decision::Allow => json!({"behavior": "allow", "updatedInput": input}),
+            policy::Decision::Deny(message) => json!({"behavior": "deny", "message": message}),
+            policy::Decision::Ask(reason) => {
+                // No timer: the worker waits until the user answers.
+                let question = question_from_request(request_id, request, &reason);
+                let event = json!({"type": "question", "question": question, "input": input});
+                self.live.journal.record(Direction::Herdr, &event);
+                self.supervisor
+                    .update(self.number, Direction::Herdr, &event);
+                return;
+            }
+        };
+        let answer = control_response(request_id, response);
         match self.live.send(&answer) {
             Ok(()) => self.supervisor.update(self.number, Direction::In, &answer),
             Err(error) => warn!(%error, "worker permission answer not delivered"),
