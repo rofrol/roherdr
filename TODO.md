@@ -553,8 +553,34 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   not blocked where it can go on (DeepSeek). Also: worktrees share the
   repository's `.git`, so the boundary must protect it (sol); verify the
   sandbox covers subprocesses and reads (MiMo). File tools keep the
-  realpath rule. Steps: a trial of sandbox + auto in `-p` (what it allows,
-  denies, how a denial arrives), then the policy change in
+  realpath rule. Trial 3 done 2026-10-07 (`test: headless workers in the
+  sandbox and auto mode`, report sections T3-1..T3-6): Claude Code's Bash
+  sandbox stopped every boundary-crossing Bash probe (writes outside,
+  `~/.ssh`, `.env`, network, subprocesses, a push to a remote outside);
+  auto mode alone is no boundary (it allowed all of them when the prompt
+  asked, and lets the Write tool write outside the worktree with no
+  request); a realistic task under sandbox + auto asked 0 questions; the
+  `attribution` setting removes the co-author trailer; a model refusal can
+  end with `result/success` and exit code 1. Decided by the coordinator
+  from round `20261007-215458-0718` (sol, MiMo, DeepSeek agreeing, against
+  the worker's second and fourth recommendations): manual mode + the
+  sandbox (`failIfUnavailable`, `allowUnsandboxedCommands: false`, no
+  network, credential reads denied), file tools by herdr's realpath rule
+  with the worker's temp dir as a second root, herdr answering in-root
+  requests itself; keep `disableAllHooks` and the user's settings until a
+  hook is really needed; no network (sol preferred a tested allow list:
+  try an online `cargo build` first and revisit); no extra write paths or
+  the herdr socket for workers: the coordinator runs `just check` after
+  bringing a commit in (a socket to herdr's control plane would undo the
+  sandbox, sol); a post-turn check that only the worker's branch moved,
+  after testing whether `git branch -f` from a worktree works at all;
+  workers use their absolute per-worker temp dir, never `$TMPDIR` (shared
+  `/tmp/claude-<uid>`, observed clobbering), and the issue is reported
+  upstream; a turn's outcome is judged by `result.subtype`, the exit code,
+  `permission_denials` and refusal events, not `result/success` alone.
+  Next: apply this in `src/workers/` (args, per-worker settings with
+  `attribution` off, the temp dir, the policy, the outcome check), then
+  the policy change in
   `src/workers/policy.rs`. Gap found 2026-10-07: `herdr worker wait` ends
   only at the turn's end or exit, so a coordinator is not woken by a
   worker's question; add a wait that also ends on a new question (the
