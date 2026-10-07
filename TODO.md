@@ -1501,6 +1501,23 @@ Items agents add. Not approved until the user moves them up.
   rejects a violation (a `commit-msg` hook is bypassable with
   `--no-verify`). Keep one copy of each rule (MiMo): no CLAUDE.md
   restating AGENTS.md.
+  Hooks (user, 2026-10-07: "so maybe the worker should have hooks enabled?
+  ask the models"). Round `20261007-212023-f5fe` (sol, MiMo, DeepSeek), all
+  three: not the user's global hooks (they target interactive panes: the
+  awaiting-reply reminder would land in worker prompts, the coordinator
+  stop-check and `uncommitted-notes.sh` would block workers' stops in a
+  shared checkout; making each hook worker-aware rots as hooks change), but
+  herdr's own worker hook set: the user's settings left out with
+  `--setting-sources project,local` (Claude Code 2.1.293 has it; verify the
+  user's CLAUDE.md and login stay) instead of `disableAllHooks` (which would
+  also turn off herdr's hooks), and herdr's hooks given with `--settings`.
+  Candidates: a Stop hook that checks the worker's own new commits
+  (message rules, no trailers, the task's subject) and its worktree, and
+  refuses to stop with the reason, with a way out after a refusal so it
+  cannot loop (sol, MiMo); a PreToolUse Bash check on `git commit` only as
+  a hint (bypassable by `git -C`, `-F`, scripts). Needed because
+  auto-mode calls never reach `can_use_tool`. The coordinator's check of
+  the commits before cherry-picking stays the gate.
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
