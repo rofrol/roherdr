@@ -109,6 +109,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     report; every loop bounded in iterations and time.
   - Test: set the owner cap to 3, launch three failing jobs, the fourth is
     refused before a PTY is opened, also under concurrent launches.
+  Part 1 done 2026-10-07 (`02796a77`, live at once: herdr-job runs from
+  this checkout): caps before the job's tab exists under one lock (16
+  running+failed per owner pane, 64 globally, 8 failed tabs kept per owner,
+  nested jobs count for the original owner), a job name that failed 3 times
+  in 10 minutes is refused unless `--force` (counters on disk), and
+  `herdr-job wait-agent <pane> [--until …] [--worker-line]` waits in one job,
+  retrying transport errors (`server_not_running`, `server_unavailable`)
+  from 1 s to 30 s for up to 15 minutes. Left: herdr core's PTY headroom
+  check and clear error; the agent rule in the global instructions (the
+  rule text is the user's file: a worker, with his approval).
 
 - [ ] Toasts in the top right corner again, not the bottom right (user,
   2026-10-07: "notifications should appear in the top right corner after
