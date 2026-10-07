@@ -897,3 +897,5 @@ user needs to decide or do.
   when every remaining item waits on the user, Next is empty, the user says
   stop, or a worker runs under a background wait that will wake the
   session; never end with a promise to continue when told.
+  Decided by the user 2026-10-07: he approves the edit in the worker's
+  pane with auto mode off (worker `w-turn-rule2`, tab `w4:t6Z`).
