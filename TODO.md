@@ -175,6 +175,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   not per terminal app; herdr can count its own panes' PTYs and the system
   total (`/dev/ttys*`). Ask the models where (footer, header, only past a
   threshold) and how often to sample.
+  Round `20261007-132613-27ed` (sol, MiMo), agreeing: always on in the
+  footer, dim, e.g. `PTY 65 · sys ~108/511` (herdr's exact count first, it is
+  the actionable one; the system figure marked approximate), amber at 70%,
+  red at 90%, one toast at 80% and 90% with hysteresis, an `openpty` failure
+  always warns; herdr's count updates on pane create/close, the system
+  estimate every 10-15 s (slower when low), never per frame. Clicking opens
+  herdr's PTY users (job tabs, idle shells) sorted, with close actions that
+  confirm before killing a running job. Caveat (MiMo, matches the 527 > 511
+  seen in the incident): counting `/dev/ttys*` may not track live
+  allocations; find an accurate source (`lsof /dev/ptmx`, sysctl) first.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
