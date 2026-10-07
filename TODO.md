@@ -1006,6 +1006,36 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   transcripts, Claude and Codex first (DeepSeek), which could feed the
   forecast's pace (MiMo).
 
+- [ ] A fresh coordinator per item instead of one long-lived session (user,
+  2026-10-07: "can't it be compacted or cleared now and then? ask the
+  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
+  per item, state only in files, herdr owns the waits, a thin chat session
+  stays for talking with the user). Slices, one worker each:
+  1. Verified writes: a small tool the coordinator uses for TODO.md and
+     DECISIONS.md edits that fails loudly when the anchor is missing or the
+     text did not land (the 2026-10-07 lost edits), and the rule that a
+     preference said only in chat goes to DECISIONS.md before the turn ends.
+  2. Records a new coordinator can reconcile: each delegated item in
+     TODO.md carries its worker id, worktree, branch, base SHA and the event
+     waited for; open menus listed in TODO.md.
+  3. The per-item coordinator: herdr starts a headless coordinator for the
+     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
+     `herdr worker list`, `herdr-job list`), which ends after committing the
+     item; the next starts on that event. The chat session only answers and
+     queues. The `/todo` skill and the rule change accordingly.
+  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
+  and then? ask the models"). Measured on 2026-10-07: the coordinator made
+  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
+  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
+  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
+  sol `/clear` now and a fresh process later; all three reject `/compact`
+  (a lossy summary, the session already lost track of failed TODO edits
+  after one). Needed first under any choice: TODO/DECISIONS writes read
+  back and verified (that bug), chat-only preferences written to
+  DECISIONS.md before the turn ends, worker/job records a new coordinator
+  can reconcile (worker id, worktree, branch, base SHA, the event waited
+  for), pending menus in TODO.md.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1243,19 +1273,4 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
-
-- [ ] The coordinator's context: how should a long-lived coordinator stop paying for its whole history on every call?
-  Options: a fresh coordinator per item (state only in files, herdr owns the waits, a thin chat session stays for talking with you) (Recommended) | /clear at item boundaries plus a startup prompt that rereads TODO.md, DECISIONS.md, git and herdr | herdr sends /compact at item boundaries | leave as is
-  Checked: the user asked 2026-10-07 ("can't it be compacted or cleared now
-  and then? ask the models"). Measured on 2026-10-07: the coordinator made
-  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
-  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
-  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
-  sol `/clear` now and a fresh process later; all three reject `/compact`
-  (a lossy summary, the session already lost track of failed TODO edits
-  after one). Needed first under any choice: TODO/DECISIONS writes read
-  back and verified (that bug), chat-only preferences written to
-  DECISIONS.md before the turn ends, worker/job records a new coordinator
-  can reconcile (worker id, worktree, branch, base SHA, the event waited
-  for), pending menus in TODO.md.
 
