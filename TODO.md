@@ -105,6 +105,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and request ids that survive a server restart (or an explicit error);
   check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
   acknowledged, idempotent delivery instead of "resend after 15 s".
+  Done 2026-10-07 by a worker (`feat: wait for a prompt's turn by event`):
+  `agent.wait_turn` (finished, failed with StopFailure's error, interrupted,
+  exited, unknown_request), `agent.prompt_tracked`, `herdr agent
+  wait-turn`, `herdr-job wait-agent <pane> --request <id>` reading the
+  transcript once; screen polling and the deadline are gone. Gap: Claude
+  sends no Stop on Esc, so an interrupted turn shows only when the next
+  turn starts; a coordinator waiting on a worker the user interrupted waits
+  until then. Left: acknowledged startup prompt delivery.
 
 - [ ] Why the "added delay is a bug signal" rule did not hold (user,
   2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
