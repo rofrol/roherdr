@@ -397,6 +397,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      worker contract should tell workers to edit with Edit/Write inside the
      worktree and read with Read/Grep, so such drafts do not need the user.
 
+- [ ] A history of finished TODO items to look through afterwards (user,
+  2026-10-07, next: "some dropdown list under the coordinator with the TODO
+  text, what was done and what conclusions, whether new TODO entries were
+  made after it finished. Store it somewhere in SQL? Ask the models. I want
+  to look through it after the fact. So it would be like a ticket system
+  that could even get a web interface later? Ask the models.").
+
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
   many for the current terminal, now Ghostty, e.g. 450/500; ask the models";
