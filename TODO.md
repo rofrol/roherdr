@@ -391,6 +391,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      Decided by the user 2026-10-07: switch after one trial run: the
      coordinator hands one real item to `herdr worker start`; if it goes
      through, a worker changes the rule and skill (approved in its pane).
+     Trial run 2026-10-07: worker `w1` ("header arrows", the `‹ ›` item).
+     Its first question was a Bash heredoc writing a code draft to `/tmp`
+     (asked because of `&&`); the user allowed it. For the rule switch: the
+     worker contract should tell workers to edit with Edit/Write inside the
+     worktree and read with Read/Grep, so such drafts do not need the user.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
