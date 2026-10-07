@@ -132,6 +132,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   (`agent_not_idle`: alternate-screen history needs scrolling while idle),
   so the wait exits 2 at once; read `--source detection` (the visible
   screen) instead, and treat `agent_not_idle` as retry, with a test.
+  Fixed 2026-10-07 by a worker (`fix(job): wait-agent reads the visible
+  screen`); the coordinator waits with `herdr-job wait-agent <pane>
+  --worker-line` from now on.
 
 - [ ] Toasts in the top right corner again, not the bottom right (user,
   2026-10-07: "notifications should appear in the top right corner after
