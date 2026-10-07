@@ -922,9 +922,10 @@ pub(super) fn render_space_tab_lines(
         };
         super::render::put_text(buffer, x, y, 1, icon, icon_style);
         if let Some((glyph, meaning)) = line.role.and_then(role_marker) {
-            // In the free column before the state glyph, so the state, the
-            // order and the label stay as they are.
-            let marker = Rect::new(x.saturating_sub(1), y, 1, 1);
+            // Two columns before the state glyph, with a gap so the two
+            // glyphs do not touch (user); the state, the order and the label
+            // stay as they are.
+            let marker = Rect::new(x.saturating_sub(2), y, 1, 1);
             super::render::put_text(
                 buffer,
                 marker.x,

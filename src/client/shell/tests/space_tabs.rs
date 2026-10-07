@@ -4499,9 +4499,13 @@ fn a_tab_line_shows_its_role_mark_before_its_state() {
             .find(|row| row.contains("agent tab"))
             .expect("tab line");
         // The mark, then the state glyph, then the label: nothing else moves.
-        let mark = row.find(glyph).expect("role mark");
+        // The mark, a gap, the state glyph, then the label.
+        let chars = row.chars().collect::<Vec<_>>();
+        let mark = chars.iter().position(|c| *c == glyph).expect("role mark");
+        assert_eq!(chars[mark + 1], ' ', "{row:?}");
+        assert_ne!(chars[mark + 2], ' ', "{row:?}");
         let label = row.find("agent tab").expect("label");
-        assert!(mark < label, "{row:?}");
+        assert!(row.find(glyph).expect("role mark") < label, "{row:?}");
         assert!(state
             .hits
             .tooltips
