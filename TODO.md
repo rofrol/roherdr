@@ -9,10 +9,6 @@ Parked ideas live in `TODO-deferred.md`.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or `--parent
-  "$HERDR_TAB_ID"`) when they create tabs, in the herdr skill/integration
-  guidance, as a belt-and-braces for servers without the fix above.
-
 - [ ] The fork's name, green Windows CI and releases (user, 2026-10-01: "pick
   a name for the herdr fork, I already have roguix, maybe follow similar
   conventions; make the Windows tests pass; do we build releases on GitHub
@@ -1881,3 +1877,13 @@ user needs to decide or do. Item text is unchanged.
   (it mixed UTC and local time; the start times contradict it) and its
   reading of `?` as "agent mid-turn".
   Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
+
+- [ ] Is the `--workspace` hint for agents still worth adding, now that
+  `herdr tab create` defaults to the caller's workspace?
+  Checked 2026-10-07: the fix (`39be3b9b`) is in the fork and installed; the
+  only servers without it are upstream's. The hint's homes are
+  `skills/herdr/SKILL.md` (edited only at stable release prep, AGENTS.md) or
+  the integration context added to every prompt (a token cost on every turn).
+  Original item: tell agents to pass `--workspace "$HERDR_WORKSPACE_ID"` (or
+  `--parent "$HERDR_TAB_ID"`) when they create tabs, as a belt-and-braces for
+  servers without the fix.
