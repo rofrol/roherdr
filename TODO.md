@@ -153,6 +153,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   flip-flop says the real need is the notification list, with toasts only
   for short-lived events. First step: switch the config (a dotfiles
   worker); then the stacking fixes as a herdr worker.
+  First step done 2026-10-07 (dotfiles `ae7cea1`: `position = "top-right"`,
+  `bottom_margin` removed). Left: toasts below the endpoint notices and
+  banners, at most 2-3 cards with "+N more", width cap, a sticky error into
+  the notification log instead of covering content.
 
 - [ ] Ideas from Omarchy's "agent account" (user, 2026-10-07: "add all of
   it to the TODO as 4, ask the models"; omacom/omarchy PRs 13770 and 13992:
