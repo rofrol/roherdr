@@ -51,6 +51,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   it ends (done since 2026-10-07 in this session); a Stop hook that blocks a
   coordinator-role tab's stop once while "Next, in order" has items and no
   worker runs; herdr flagging an idle `♛` tab with open items.
+  Consult round `20261007-024331-bde5` (sol, MiMo; the user: "how would I
+  know what works? ask the models, do tests"). Both: the rule line is the
+  direct fix but only probabilistic, and must say what legitimately ends a
+  turn (cancellation, a decision whose answer changes the diff, failed
+  checks, missing credentials), with the blocking question written into
+  "Needs a decision" so a silent stop is checkable; "a mid-turn question
+  does not revoke approval" (sol). The background wait fixes a different
+  failure (nothing reviews a finished worker), not this one: here no worker
+  ran (both). The Stop hook is the only deterministic backstop, but one nudge
+  only (`stop_hook_active`) and it costs a turn per false positive: ship it
+  only with its predicate unit-tested on synthetic hook input to zero false
+  positives (both). An idle-`♛` flag is observability, not prevention.
+  Bigger alternatives: a durable item state machine outside the model (sol)
+  or a shell driver that runs the queue and calls Claude per item to review
+  (MiMo).
+  Test plan, cheapest first: (1) an offline audit of coordinator
+  transcripts that labels each turn end (finished, blocked on the user,
+  abandoned with items left and no worker), the baseline; (2) the rule
+  wording, then the audit on later transcripts; (3) the Stop hook with its
+  predicate tested on the audit's cases; (4) headless runs on a throwaway
+  repo with three trivial items and a stub worker, with "what is happening?"
+  injected mid-turn, many runs (costs Claude usage; ask first); (5) a field
+  metric: abandoned turn ends per 100 coordinator turn ends, before and after.
 
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
