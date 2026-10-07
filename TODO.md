@@ -137,6 +137,23 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   (slice 3: the header keeps only `?` and `!`) frees the room; until then
   the arrows could take priority over the counters, or the counters could
   shorten. Ask the models which.
+  Round `20261007-132233-dc23`: sol: reserve space for sort, search,
+  arrows and fold; counters use the rest and drop whole buttons in a fixed
+  order (★, ◐, ✉, then ?); an empty history disables an arrow, never hides
+  it. MiMo: show the arrows only when the history is non-empty, cap counts
+  at 9+, never drop ? or !, collapse search last. Both: never let width
+  decide arrows. Mine: sol's rule (stable place, disabled when empty), with
+  MiMo's "? and ! never drop".
+
+- [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY
+  per agent (user, 2026-10-07: "we ran out of pseudo-terminals today;
+  analyse whether T3 Code's approach with an SDK is better here; ask the
+  models"; third in the queue). Today each agent, shell and herdr-job runs
+  in its own PTY; ~400 runaway job tabs plus normal use exhausted macOS's
+  511. Consult the default set: what an SDK-driven agent (Claude Agent SDK,
+  Codex app-server) would gain and lose here (the user's terminal UIs,
+  `/remote-control`, hooks, resume, screen detection), a hybrid (SDK for
+  workers only), and the PTY budget in numbers.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
