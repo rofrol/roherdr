@@ -94,33 +94,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   working and finished for that request, from the Claude and pi
   integration hooks; other agents answer `unsupported`, never a guess.
 
-- [ ] The T button fails in a repository Claude has never opened (user,
-  2026-10-07, screenshot of kisswiki: toast `agent_not_ready ... blocked
-  during startup`; "ask the models"). Claude's folder-trust dialog blocks
-  `herdr agent start`, the launcher exits and leaves a half-started tab.
-  Consult round `20261007-040046-b1c7` (sol, MiMo), agreeing: clicking T
-  is not consent to the repository's pre-approved permissions; never write
-  `hasTrustDialogAccepted` into `~/.claude.json` (Claude rewrites the file,
-  undocumented) and never answer the dialog with keystrokes. Plan for
-  `~/scripts/todo-worker` (a dotfiles worker): check trust read-only in
-  `~/.claude.json`; when untrusted, open the tab, focus it, print "answer
-  Claude's folder-trust prompt in the new TODO tab; the TODO starts after
-  it", wait for the agent to become ready (bounded: 10 minutes for the
-  user to answer), then send the prompt exactly once; on timeout or
-  refusal leave the tab and say the TODO was not sent. Later in herdr: a
-  structured `awaiting_user_action` state from `agent start` instead of
-  `agent_not_ready` (sol); `--trust-repository` on `worktree create` is
-  git's `safe.directory`, not Claude's trust (checked).
-  Also (report from the bussiness-ideas coordinator, 2026-10-07): there
-  the trust was already given, `agent start` succeeded, yet the prompt
-  "Rób TODO po kolei." never arrived (the transcript's first user message
-  is the user's "no i?"), and the tab looked like a working coordinator.
-  The launcher must confirm the prompt landed (the agent turns working
-  within seconds; send again once, then report failure). In herdr:
-  `agent start` reports ready before Claude accepts typed input, and
-  `agent prompt` returns `agent_prompted` without knowing it arrived; the
-  coordinator works around both with "send, wait for working, resend".
-
 - [ ] Finish the idle-job mark: a still mauve `z` instead of the dotted ring
   (user chose a worker for it, 2026-10-07). Left uncommitted in the shared
   checkout by the session "Widoczność kółka z przerywaną linią" (tab in the
@@ -663,6 +636,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
+
+- [ ] herdr: `agent start` reports ready before Claude accepts typed input,
+  and `agent prompt` returns `agent_prompted` without knowing the prompt
+  arrived (2026-10-07: the bussiness-ideas coordinator's first prompt was
+  lost; workers' prompts too until the coordinator resent them). A
+  structured `awaiting_user_action` state from `agent start` instead of
+  `agent_not_ready` for a startup prompt (sol, round
+  `20261007-040046-b1c7`). The launcher (dotfiles `140fc7f`) works around
+  both: it waits up to 10 minutes for the user to answer Claude's trust
+  prompt and resends the first prompt once unless the agent turns working.
 
 - [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07,
   screenshot of the `?` list: "how do I know which tab that is?" for
