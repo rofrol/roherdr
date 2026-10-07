@@ -549,6 +549,25 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     cache) depends on the repository; it belongs in each repository's
     AGENTS.md, the global rule stays language-neutral.
 
+- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
+  consult stats? we have Rust. ask the models"). `page-consult` pages
+  `consult.py` output with `less -R`; a popup is a real PTY pane
+  (`spawn_popup_command`, `src/app/popup.rs`). Round `20261003-022724-693a`
+  (Sol, DeepSeek, MiMo), unanimous: keep `less` for now. Rejected: a herdr
+  pager subcommand (rebuilds `less` inside a PTY), rewriting `consult.py
+  stats` in Rust inside herdr.
+  - First step, a spike: a temporary popup with `command = ["seq", "1",
+    "300"]`. Does it keep scrollback, scroll with the wheel, start at the
+    top, get SIGWINCH on resize? If yes, drop `less` from `page-consult`
+    (print, then wait for Enter; no `/` search). If popups do not scroll,
+    that is a herdr defect worth fixing on its own.
+  - Later, only if several plugins want it: a manifest text popup whose
+    command's stdout herdr renders itself (a new pane type).
+  - Known limit either way: tables are fitted to the width at launch.
+  Triage 2026-10-06 (manual): The first step is a live popup spike (scrollback, wheel scroll, start at the top, SIGWINCH) that needs you watching the real UI; a popup steals focus.
+  Decided by the user 2026-10-07 ("I don't know. A popup spike?"): do the
+  spike; a worker prepares the test popup, the user watches it scroll.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -741,6 +760,8 @@ user needs to decide or do.
     together with the consolidation (my preference: a generated legend
     follows the redesign for free).
   Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
+  Decided by the user 2026-10-07: after the colours and symbols audit,
+  generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
 
@@ -748,23 +769,6 @@ user needs to decide or do.
   close the space, and cancelling leaves an odd highlight. The screenshots
   from that session were the wrong ones; the user reproduces it on request.
   Triage 2026-10-06 (manual): reproduce it once so an agent can fix it.
-
-- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
-  consult stats? we have Rust. ask the models"). `page-consult` pages
-  `consult.py` output with `less -R`; a popup is a real PTY pane
-  (`spawn_popup_command`, `src/app/popup.rs`). Round `20261003-022724-693a`
-  (Sol, DeepSeek, MiMo), unanimous: keep `less` for now. Rejected: a herdr
-  pager subcommand (rebuilds `less` inside a PTY), rewriting `consult.py
-  stats` in Rust inside herdr.
-  - First step, a spike: a temporary popup with `command = ["seq", "1",
-    "300"]`. Does it keep scrollback, scroll with the wheel, start at the
-    top, get SIGWINCH on resize? If yes, drop `less` from `page-consult`
-    (print, then wait for Enter; no `/` search). If popups do not scroll,
-    that is a herdr defect worth fixing on its own.
-  - Later, only if several plugins want it: a manifest text popup whose
-    command's stdout herdr renders itself (a new pane type).
-  - Known limit either way: tables are fitted to the width at launch.
-  Triage 2026-10-06 (manual): The first step is a live popup spike (scrollback, wheel scroll, start at the top, SIGWINCH) that needs you watching the real UI; a popup steals focus.
 
 - [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
   - User reports Claude CLI selection copies as expected, whereas Pi inserts
@@ -819,22 +823,9 @@ user needs to decide or do.
     no paths, prompts or agent output. Later: approve/deny buttons answered
     through the herdr socket, accepting callbacks only from my own user id.
   Triage 2026-10-06 (manual): The spike is done; give a bot token and `chat_id` so sending can be tested.
-
-- [ ] Run the Windows checks for fork commits locally. Fork CI runs by
-  dispatch and is green on Windows (`DECISIONS.md`, "Fork name, CI and
-  releases"), but the Windows SDK for `just windows-lint` is not set up on
-  the Mac (no `xwin`), so `just check` fails there and agents run narrower
-  checks.
-  - Local: `cargo install xwin --locked`, then `just setup-windows-cross`
-    (the user accepts Microsoft's SDK license), and prove a full
-    `just check` passes before the fork section of AGENTS.md requires it.
-    Cross-clippy only catches compile and lint errors in `cfg(windows)`
-    code; it runs no Windows tests.
-  - Also try the Windows Claude hook live (`herdr-agent-state.ps1`): the
-    awaiting-reply instruction it prints from `SessionStart` and the
-    `Bash(herdr agent awaiting-reply)` rule are untested there (Claude may
-    run commands through PowerShell).
-  Triage 2026-10-06 (manual): Accept Microsoft's SDK license for xwin; the Windows hook needs a live test on Windows. (Turning on Actions is done: CI runs by dispatch.)
+  Answered by the user 2026-10-07: "an Android app". Next question: ntfy
+  or Telegram on Android?
+  Options: ntfy (no account or token) | Telegram (bot token and chat_id)
 
 - [ ] Awaiting reply for agents other than Claude and pi, the same way as
   their integrations (user, 2026-09-28): each integration that can add

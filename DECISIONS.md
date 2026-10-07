@@ -365,3 +365,4 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - No `--workspace` hint for agents: `herdr tab create` defaults to the caller's workspace in the fork (`39be3b9b`), and the hint would cost tokens on every turn or wait for a stable release of the herdr skill (user).
 - Fork builds keep the self-updater off; the user installs from `master` with `scripts/herdr_live.sh` (user).
 - Follow-ups of the ask line (a "needs me" filter, a limited-agents count, outcomes) are parked in `TODO-deferred.md` (user: "none for now").
+- Windows checks stay in the fork's CI, run by dispatch on demand; no local Windows SDK (xwin) on the Mac (user, 2026-10-07).
