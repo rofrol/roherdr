@@ -480,6 +480,19 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   coordinator runs `just check` outside it. Consider `TMPDIR` pointing at
   the worker's temp dir if the sandbox allows it (trial 3 says the CLI
   overrides it).
+  Second finding on `w2` (2026-10-07): a headless worker cannot build
+  herdr in the sandbox (vendored `libghostty-vt` builds with Zig, which
+  writes outside the worktree), so it committed `fix: answers to a
+  worker's question must name the question` uncompiled and untested; the
+  coordinator's `just check` caught nothing only because the diff was
+  right. 7 questions in one item, all from the compound-command check.
+  Options to weigh in this item: allow the Zig and cargo caches as worker
+  write paths (trial 3's fourth question, which the models answered "not
+  yet, only after a failure proves it is needed": this is that failure),
+  or point `ZIG_GLOBAL_CACHE_DIR`/`ZIG_LOCAL_CACHE_DIR`/`CARGO_TARGET_DIR`
+  into the worktree or the worker's temp dir, or keep compiling for the
+  coordinator only. Also: AGENTS.md still shows `herdr worker answer <id>
+  ...` without `--request` (line ~454).
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
