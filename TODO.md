@@ -55,6 +55,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ends: asked 1, waiting 32, abandoned 2 (both in the herdr coordinator,
   the known case), other 1, so 5.6 abandoned per 100. Small sample; rerun
   after the rule change.
+  Step 2 done 2026-10-07 (dotfiles `45c6466`, approved by the user in the
+  worker's pane after the auto-mode classifier blocked a worker): a
+  mid-work question does not withdraw the approval; a turn ends only when
+  every item waits on the user, Next is empty, the user says stop, or a
+  background wait on a running worker will wake the session. Step 3, the
+  Stop hook, is with a worker.
 
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
@@ -883,19 +889,3 @@ user needs to decide or do.
   - Until then, the user's side: do not Force Quit a "Ghostty" entry that
     shows up after Ghostty has quit; Cmd+Q is enough.
   Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
-
-- [ ] How should the rule line "a coordinator's turn goes on after the
-  user's questions" get into `~/.claude/CLAUDE.md`, now that the auto-mode
-  classifier blocked the worker?
-  Options: you add it yourself | approve the edit in the worker's pane with auto mode off | leave the rule as it is
-  Checked 2026-10-07: worker `w-turn-rule` (task in the coordinator's
-  scratchpad, `task-rule3.md`) was blocked twice ("instruction poisoning",
-  then "self-modification") editing `.claude/CLAUDE.md` and the `todo` skill;
-  nothing changed. An earlier worker with a similar task was not blocked.
-  The wanted text: a mid-work question or request does not withdraw the
-  approval, answer or queue it and go on in the same turn; end a turn only
-  when every remaining item waits on the user, Next is empty, the user says
-  stop, or a worker runs under a background wait that will wake the
-  session; never end with a promise to continue when told.
-  Decided by the user 2026-10-07: he approves the edit in the worker's
-  pane with auto mode off (worker `w-turn-rule2`, tab `w4:t6Z`).
