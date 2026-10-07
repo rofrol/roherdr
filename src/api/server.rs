@@ -67,6 +67,9 @@ pub(crate) fn start_server_with_stop_control(
     event_hub: EventHub,
     server_stop: ServerStop,
 ) -> std::io::Result<ServerHandle> {
+    // Replays the worker journals now, so workers a previous server left
+    // behind show as `lost` before anyone asks.
+    let _ = crate::workers::supervisor();
     start_server_inner(api_tx, event_hub, default_capabilities(), Some(server_stop))
 }
 
@@ -514,6 +517,15 @@ fn handle_connection_with_stop(
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
+        method_body if crate::api::workers::is_worker_method(&method_body) => {
+            let response = crate::api::workers::handle_worker_request(
+                request_id.clone(),
+                method_body,
+                &mut stream,
+                running,
+            );
+            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+        }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let stop_caller = matches!(method_body, Method::ServerStop(_))
@@ -640,6 +652,14 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ServerAgentManifests(_) => "server.agent_manifests",
         Method::ServerReloadAgentManifests(_) => "server.reload_agent_manifests",
         Method::ServerPtyUsage(_) => "server.pty_usage",
+        Method::WorkerStart(_) => "worker.start",
+        Method::WorkerStatus(_) => "worker.status",
+        Method::WorkerList(_) => "worker.list",
+        Method::WorkerWait(_) => "worker.wait",
+        Method::WorkerPrompt(_) => "worker.prompt",
+        Method::WorkerInterrupt(_) => "worker.interrupt",
+        Method::WorkerStop(_) => "worker.stop",
+        Method::WorkerKill(_) => "worker.kill",
         Method::NotificationShow(_) => "notification.show",
         Method::NotificationShowForPane(_) => "notification.show_for_pane",
         Method::ProductAnnouncementDismiss(_) => "product_announcement.dismiss",

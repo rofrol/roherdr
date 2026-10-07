@@ -390,6 +390,21 @@ A successful start returns only after the expected agent owns the same terminal 
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
+Headless Claude workers run without a pane; the server owns them (see `worker.*` in the socket API):
+
+```bash
+herdr worker start [--cwd DIR] [--model MODEL] <prompt>
+herdr worker status <worker_id>
+herdr worker list
+herdr worker wait <worker_id> [--exit]
+herdr worker prompt <worker_id> <text>
+herdr worker interrupt <worker_id>
+herdr worker stop <worker_id>
+herdr worker kill <worker_id>
+```
+
+`worker start` defaults `--cwd` to the current directory. `worker wait` returns at the end of the current turn, or with `--exit` when the process ended. `worker stop` sends SIGTERM and reports `still_alive` instead of escalating; `worker kill` also ends the tool processes the worker left behind.
+
 ## Direct terminal attach
 
 ```bash

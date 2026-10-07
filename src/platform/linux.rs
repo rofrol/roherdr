@@ -820,6 +820,41 @@ pub fn session_processes(child_pid: u32) -> Vec<u32> {
     pids
 }
 
+fn proc_pids() -> impl Iterator<Item = u32> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+}
+
+/// Session ids of `root_pid`'s descendants that differ from `root_pid`'s own
+/// session. Claude Code starts each Bash tool with `setsid`, so a crashed
+/// worker's tools survive in these sessions.
+pub fn descendant_sessions(root_pid: u32) -> Vec<u32> {
+    let Some(own_session) = process_session_id(root_pid).filter(|session| *session > 0) else {
+        return Vec::new();
+    };
+    let parents: Vec<(u32, u32)> = proc_pids()
+        .filter_map(|pid| process_name_and_parent(pid).map(|(_, parent)| (pid, parent)))
+        .collect();
+    super::sessions_of_descendants(root_pid, &parents, own_session as u32, |pid| {
+        process_session_id(pid)
+            .filter(|session| *session > 0)
+            .map(|session| session as u32)
+    })
+}
+
+/// Every live process whose session id is `session_id`.
+pub fn session_members(session_id: u32) -> Vec<u32> {
+    if session_id <= 1 {
+        return Vec::new();
+    }
+    proc_pids()
+        .filter(|pid| process_session_id(*pid) == Some(session_id as i32))
+        .collect()
+}
+
 pub fn signal_processes(pids: &[u32], signal: Signal) {
     let sig = match signal {
         Signal::Hangup => libc::SIGHUP,

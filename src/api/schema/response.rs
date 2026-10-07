@@ -18,6 +18,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
+use super::workers::WorkerInfo;
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
 
@@ -56,6 +57,19 @@ pub enum ResponseResult {
     },
     SessionSnapshot {
         snapshot: Box<SessionSnapshot>,
+    },
+    WorkerInfo {
+        worker: WorkerInfo,
+    },
+    WorkerList {
+        workers: Vec<WorkerInfo>,
+    },
+    /// `worker.stop` sent SIGTERM to the worker's process group.
+    WorkerStopped {
+        worker: WorkerInfo,
+        /// Whether a process of the group was still alive right after the
+        /// signal. Herdr does not escalate; `worker.kill` does.
+        still_alive: bool,
     },
     WorkspaceInfo {
         workspace: WorkspaceInfo,

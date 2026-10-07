@@ -42,6 +42,7 @@ pub(super) fn command() -> Command {
         .subcommand(tab_command())
         .subcommand(notification_command())
         .subcommand(agent_command())
+        .subcommand(worker_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -340,6 +341,43 @@ fn notification_command() -> Command {
                         .help("Pane the notification is about; clicking it focuses the pane's tab"),
                 ),
         )
+}
+
+fn worker_command() -> Command {
+    Command::new("worker")
+        .about("Run headless Claude workers owned by the server")
+        .subcommand(
+            Command::new("start")
+                .about("Start a worker: claude -p over stream-json, no terminal")
+                .arg(required("prompt", "PROMPT"))
+                .arg(option("cwd", "DIR").value_hint(ValueHint::DirPath))
+                .arg(option("model", "MODEL")),
+        )
+        .subcommand(id_command("status", "worker_id", "Show a worker"))
+        .subcommand(Command::new("list").about("List workers"))
+        .subcommand(
+            id_command("wait", "worker_id", "Wait for the turn's end")
+                .arg(flag("exit").help("Wait for the process's end instead")),
+        )
+        .subcommand(
+            id_command("prompt", "worker_id", "Send the next turn's message")
+                .arg(required("text", "TEXT")),
+        )
+        .subcommand(id_command(
+            "interrupt",
+            "worker_id",
+            "Interrupt the current turn",
+        ))
+        .subcommand(id_command(
+            "stop",
+            "worker_id",
+            "Send SIGTERM to the worker's process group; never escalates",
+        ))
+        .subcommand(id_command(
+            "kill",
+            "worker_id",
+            "SIGKILL the worker's group and its recorded tool sessions",
+        ))
 }
 
 fn agent_command() -> Command {

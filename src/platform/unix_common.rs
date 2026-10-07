@@ -463,6 +463,43 @@ fn fits_unix_socket_path(path: &Path) -> bool {
 }
 
 /// The machine's node name, as shown by tmux's `#h`.
+fn signal_number(signal: super::Signal) -> libc::c_int {
+    match signal {
+        super::Signal::Hangup => libc::SIGHUP,
+        super::Signal::Terminate => libc::SIGTERM,
+        super::Signal::Kill => libc::SIGKILL,
+    }
+}
+
+pub(crate) fn signal_process_group(
+    leader_pid: u32,
+    signal: super::Signal,
+) -> std::io::Result<bool> {
+    if leader_pid <= 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to signal process group 0 or 1",
+        ));
+    }
+    if unsafe { libc::killpg(leader_pid as libc::pid_t, signal_number(signal)) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
+    if leader_pid <= 1 {
+        return false;
+    }
+    let alive = unsafe { libc::killpg(leader_pid as libc::pid_t, 0) } == 0;
+    alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 pub(crate) fn hostname() -> Option<String> {
     let mut buffer = [0_u8; 256];
     let result =

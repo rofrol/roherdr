@@ -221,6 +221,102 @@ pub(crate) fn configure_background_command(command: &mut std::process::Command) 
 #[cfg(not(windows))]
 fn configure_background_command_platform(_command: &mut std::process::Command) {}
 
+/// Prepares a headless worker's command: its own process group, so the whole
+/// group can be signalled without touching the server.
+pub(crate) fn configure_worker_process(command: &mut std::process::Command) {
+    configure_background_command(command);
+    configure_worker_process_platform(command);
+}
+
+#[cfg(unix)]
+fn configure_worker_process_platform(command: &mut std::process::Command) {
+    std::os::unix::process::CommandExt::process_group(command, 0);
+}
+
+#[cfg(not(unix))]
+fn configure_worker_process_platform(_command: &mut std::process::Command) {}
+
+/// Signals the process group led by `leader_pid` (started through
+/// [`configure_worker_process`]). Returns `Ok(false)` when the group is gone.
+pub(crate) fn signal_process_group(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {
+    signal_process_group_platform(leader_pid, signal)
+}
+
+#[cfg(unix)]
+fn signal_process_group_platform(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {
+    unix_common::signal_process_group(leader_pid, signal)
+}
+
+#[cfg(not(unix))]
+fn signal_process_group_platform(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {
+    let pids = session_processes(leader_pid);
+    if pids.is_empty() {
+        return Ok(false);
+    }
+    signal_processes(&pids, signal);
+    Ok(true)
+}
+
+/// The signal that ended a process, where the platform has signals.
+pub(crate) fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    exit_status_signal_platform(status)
+}
+
+#[cfg(unix)]
+fn exit_status_signal_platform(status: &std::process::ExitStatus) -> Option<i32> {
+    std::os::unix::process::ExitStatusExt::signal(status)
+}
+
+#[cfg(not(unix))]
+fn exit_status_signal_platform(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// Whether any process of the group led by `leader_pid` is still alive.
+pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
+    process_group_alive_platform(leader_pid)
+}
+
+#[cfg(unix)]
+fn process_group_alive_platform(leader_pid: u32) -> bool {
+    unix_common::process_group_alive(leader_pid)
+}
+
+#[cfg(not(unix))]
+fn process_group_alive_platform(leader_pid: u32) -> bool {
+    !session_processes(leader_pid).is_empty()
+}
+
+/// Sessions of `root_pid`'s descendants other than `own_session`, from a
+/// `(pid, parent)` table. Shared by the platforms that have POSIX sessions.
+// Only the Linux and macOS process tables call it; Windows has no sessions.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+pub(crate) fn sessions_of_descendants(
+    root_pid: u32,
+    parents: &[(u32, u32)],
+    own_session: u32,
+    session_of: impl Fn(u32) -> Option<u32>,
+) -> Vec<u32> {
+    let mut frontier = vec![root_pid];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut sessions = std::collections::BTreeSet::new();
+    while let Some(parent) = frontier.pop() {
+        for &(pid, _) in parents
+            .iter()
+            .filter(|(pid, ppid)| *ppid == parent && *pid != parent)
+        {
+            if !seen.insert(pid) {
+                continue;
+            }
+            if let Some(session) = session_of(pid).filter(|session| *session != own_session) {
+                sessions.insert(session);
+            }
+            frontier.push(pid);
+        }
+    }
+    sessions.into_iter().collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlatformCapabilities {
     pub(crate) live_handoff: bool,
@@ -700,6 +796,24 @@ mod tests {
     use super::*;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn sessions_of_descendants_skips_the_roots_session_and_unrelated_trees() {
+        // 10 -> 11 (own session) -> 12 (session 12) -> 13 (session 12);
+        // 10 -> 14 (session 14); 20 (session 20) is not a descendant.
+        let parents = [(11, 10), (12, 11), (13, 12), (14, 10), (20, 1)];
+        let session_of = |pid: u32| {
+            Some(match pid {
+                11 => 5,
+                13 => 12,
+                other => other,
+            })
+        };
+        assert_eq!(
+            sessions_of_descendants(10, &parents, 5, session_of),
+            vec![12, 14]
+        );
+    }
+
     #[test]
     fn system_pty_usage_reads_the_live_pool() {
         let usage = system_pty_usage().expect("PTY usage is readable");
