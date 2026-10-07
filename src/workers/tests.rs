@@ -1,8 +1,10 @@
 //! Supervisor tests against a stub `claude` that speaks stream-json. No real
 //! Claude runs here. The stub's behavior is chosen by each user message:
 //! `finish`, `fail`, `crash`, `block` (until an interrupt), `perm <tool>
-//! <path>` (one `can_use_tool` request) and `orphan <fifo>` (a tool process
-//! in its own session that holds `<fifo>` open until it dies).
+//! <words...>` (one `can_use_tool` request whose path or command is the
+//! words), `ask` (an `AskUserQuestion` request), `ignore-term` (SIGTERM is
+//! ignored from then on) and `orphan <fifo>` (a tool process in its own
+//! session that holds `<fifo>` open until it dies).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -13,9 +15,10 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::*;
+use crate::api::schema::{WorkerAnswerParams, WorkerDecision, WorkerQuestionKind};
 
 const STUB: &str = r#"#!/usr/bin/env python3
-import json, os, subprocess, sys
+import json, os, signal, subprocess, sys, time
 
 def emit(event):
     sys.stdout.write(json.dumps(event) + "\n")
@@ -29,11 +32,26 @@ def result(subtype="success", is_error=False, reason="completed", text="ok"):
 emit({"type": "system", "subtype": "init", "session_id": "stub-session",
       "herdr_env": sorted(k for k in os.environ if k.startswith("HERDR_"))})
 
+ignore_term = False
+
 def read():
     line = sys.stdin.readline()
     if not line:
+        if ignore_term:
+            # Still alive after SIGTERM and the closed input: only
+            # SIGKILL ends it.
+            while True:
+                time.sleep(1000)
         sys.exit(0)
     return json.loads(line)
+
+def ask_host(tool, tool_input):
+    emit({"type": "control_request", "request_id": "perm-1", "request": {
+        "subtype": "can_use_tool", "tool_name": tool, "input": tool_input}})
+    answer = read()
+    response = answer["response"]
+    assert response["request_id"] == "perm-1", answer
+    return response["response"]
 
 while True:
     message = read()
@@ -59,13 +77,28 @@ while True:
                 result("error_during_execution", True, "aborted_tools", None)
                 break
     elif command == "perm":
-        emit({"type": "control_request", "request_id": "perm-1", "request": {
-            "subtype": "can_use_tool", "tool_name": words[1],
-            "input": {"file_path": words[2], "command": words[2]}}})
-        answer = read()
-        response = answer["response"]
-        assert response["request_id"] == "perm-1", answer
-        result(text=response["response"]["behavior"])
+        rest = " ".join(words[2:])
+        response = ask_host(words[1], {"file_path": rest, "command": rest})
+        text = response["behavior"]
+        if text == "deny":
+            text += ": " + response["message"]
+        result(text=text)
+    elif command == "ask":
+        response = ask_host("AskUserQuestion", {"questions": [
+            {"question": "Which file?", "header": "File", "multiSelect": False,
+             "options": [{"label": "alpha.txt", "description": "a"},
+                         {"label": "blue.txt", "description": "b"}]},
+            {"question": "Which colors?", "header": "Colors", "multiSelect": True,
+             "options": [{"label": "green", "description": "g"},
+                         {"label": "red", "description": "r"}]}]})
+        if response["behavior"] == "allow":
+            result(text=json.dumps(response["updatedInput"]["answers"], sort_keys=True))
+        else:
+            result(text="deny: " + response["message"])
+    elif command == "ignore-term":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        ignore_term = True
+        result()
     elif command == "orphan":
         subprocess.Popen([sys.executable, "-c",
             "import sys, time; f = open(sys.argv[1], 'w'); time.sleep(1000)", words[1]],
@@ -124,6 +157,45 @@ impl Fixture {
             })
             .unwrap()
             .unwrap()
+    }
+
+    /// Waits, woken by state changes, until the worker's status satisfies
+    /// `done`.
+    fn wait_for(&self, worker_id: &str, done: impl Fn(&WorkerInfo) -> bool) -> WorkerInfo {
+        let started = Instant::now();
+        loop {
+            let worker = self.supervisor.status(worker_id).unwrap();
+            if done(&worker) {
+                return worker;
+            }
+            assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+            let registry = lock(&self.supervisor.shared.registry);
+            drop(
+                self.supervisor
+                    .shared
+                    .changed
+                    .wait_timeout(registry, Duration::from_millis(100)),
+            );
+        }
+    }
+
+    fn wait_for_question(&self, worker_id: &str) -> WorkerInfo {
+        self.wait_for(worker_id, |worker| !worker.questions.is_empty())
+    }
+
+    fn answer(
+        &self,
+        worker_id: &str,
+        decision: Option<WorkerDecision>,
+        answers: &[&str],
+    ) -> Result<WorkerInfo, WorkerError> {
+        self.supervisor.answer(&WorkerAnswerParams {
+            worker_id: worker_id.to_owned(),
+            request_id: None,
+            decision,
+            answers: answers.iter().map(|answer| (*answer).to_owned()).collect(),
+            message: None,
+        })
     }
 
     fn journal(&self, worker_id: &str) -> Vec<Value> {
@@ -223,31 +295,158 @@ fn an_interrupt_ends_the_turn_as_interrupted() {
 }
 
 #[test]
-fn file_tools_inside_are_allowed_and_everything_else_denied() {
+fn the_policy_answers_the_requests_it_decides() {
     let fixture = Fixture::new("permissions");
     let outside = fixture.root.join("outside.txt").display().to_string();
     for (prompt, expected) in [
         ("perm Write inside.txt".to_owned(), "allow"),
         (format!("perm Write {outside}"), "deny"),
-        ("perm Bash touch".to_owned(), "deny"),
+        ("perm Bash git status".to_owned(), "allow"),
+        ("perm Bash cargo test -p herdr".to_owned(), "allow"),
     ] {
         let id = fixture.start(&prompt);
         let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
-        assert_eq!(
-            worker.last_result.unwrap().text.as_deref(),
-            Some(expected),
-            "{prompt}"
-        );
+        let text = worker.last_result.unwrap().text.unwrap();
+        assert!(text.starts_with(expected), "{prompt}: {text}");
         let decisions = fixture.herdr_events(&id, "permission");
         assert_eq!(decisions.len(), 1, "{prompt}");
         assert_eq!(decisions[0]["decision"], expected, "{prompt}");
         if expected == "deny" {
-            assert!(decisions[0]["message"]
-                .as_str()
-                .unwrap()
-                .contains("herdr worker policy"));
+            assert!(text.contains("herdr worker policy"), "{text}");
         }
+        assert!(fixture.herdr_events(&id, "question").is_empty());
     }
+}
+
+#[test]
+fn a_request_left_to_the_user_waits_for_the_answer() {
+    let fixture = Fixture::new("approval");
+    let id = fixture.start("perm Bash git push origin master");
+
+    let worker = fixture.wait_for_question(&id);
+    assert_eq!(worker.state, WorkerState::WaitingApproval);
+    let question = &worker.questions[0];
+    assert_eq!(question.kind, WorkerQuestionKind::Approval);
+    assert_eq!(question.tool_name, "Bash");
+    assert_eq!(question.text, "git push origin master");
+    assert_eq!(question.request_id, "perm-1");
+    let pending = fixture.supervisor.pending_questions();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].worker_id, id);
+    assert_eq!(
+        fixture.herdr_events(&id, "permission")[0]["decision"],
+        "ask"
+    );
+    assert!(fixture
+        .journal(&id)
+        .iter()
+        .all(|record| record["dir"] != "in" || record["event"]["type"] != "control_response"));
+
+    let wrong = fixture.answer(&id, None, &["blue.txt"]).unwrap_err();
+    assert_eq!(wrong.code(), "invalid_request");
+    let undecided = fixture.answer(&id, None, &[]).unwrap_err();
+    assert_eq!(undecided.code(), "invalid_request");
+    assert_eq!(fixture.supervisor.status(&id).unwrap().questions.len(), 1);
+
+    let answered = fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap();
+    assert!(answered.questions.is_empty());
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert!(fixture.supervisor.pending_questions().is_empty());
+    let answers = fixture.herdr_events(&id, "answer");
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["decision"], "allow");
+    assert_eq!(answers[0]["by"], "user");
+
+    let none = fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap_err();
+    assert_eq!(none.code(), "worker_no_question");
+}
+
+#[test]
+fn a_denial_carries_the_users_message() {
+    let fixture = Fixture::new("deny");
+    let id = fixture.start("perm WebFetch https://example.com");
+    let worker = fixture.wait_for_question(&id);
+    assert_eq!(worker.questions[0].text, "https://example.com");
+    fixture
+        .supervisor
+        .answer(&WorkerAnswerParams {
+            worker_id: id.clone(),
+            request_id: Some("perm-1".into()),
+            decision: Some(WorkerDecision::Deny),
+            answers: Vec::new(),
+            message: Some("not today".into()),
+        })
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("deny: not today")
+    );
+}
+
+#[test]
+fn ask_user_question_answers_flow_back_as_updated_input() {
+    let fixture = Fixture::new("ask");
+    let id = fixture.start("ask");
+    let worker = fixture.wait_for_question(&id);
+    let question = &worker.questions[0];
+    assert_eq!(question.kind, WorkerQuestionKind::Choice);
+    assert_eq!(question.questions.len(), 2);
+    assert_eq!(question.questions[0].options, vec!["alpha.txt", "blue.txt"]);
+    assert!(question.questions[1].multi_select);
+    assert!(question.text.contains("Which file?"), "{}", question.text);
+
+    let short = fixture.answer(&id, None, &["2"]).unwrap_err();
+    assert_eq!(short.code(), "invalid_request");
+    let approval = fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap_err();
+    assert_eq!(approval.code(), "invalid_request");
+
+    fixture.answer(&id, None, &["2", "RED, 1"]).unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let answers: Value =
+        serde_json::from_str(worker.last_result.unwrap().text.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        answers,
+        serde_json::json!({"Which colors?": "red, green", "Which file?": "blue.txt"})
+    );
+    assert_eq!(
+        fixture.herdr_events(&id, "answer")[0]["answers"]["Which file?"],
+        "blue.txt"
+    );
+
+    let second = fixture.start("ask");
+    fixture.wait_for_question(&second);
+    fixture
+        .answer(&second, Some(WorkerDecision::Deny), &[])
+        .unwrap();
+    let worker = fixture.wait(&second, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("deny: The user declined to answer.")
+    );
+}
+
+#[test]
+fn questions_end_with_the_worker() {
+    let fixture = Fixture::new("question-exit");
+    let id = fixture.start("perm Bash rm -rf target");
+    fixture.wait_for_question(&id);
+    fixture.supervisor.stop(&id).unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert!(worker.questions.is_empty());
+    assert!(fixture.supervisor.pending_questions().is_empty());
+    let gone = fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap_err();
+    assert_eq!(gone.code(), "worker_not_running");
 }
 
 #[test]
@@ -264,14 +463,41 @@ fn a_crash_ends_as_exited_without_a_result() {
 }
 
 #[test]
-fn stop_terminates_an_idle_worker() {
+fn stop_reports_the_exit_from_the_exit_event() {
     let fixture = Fixture::new("stop");
     let id = fixture.start("finish");
     fixture.wait(&id, WorkerWaitUntil::TurnEnd);
-    fixture.supervisor.stop(&id).unwrap();
+    let stopped = fixture.supervisor.stop(&id).unwrap();
+    // The stop returns at once; the exit may or may not have been seen yet.
+    assert!(stopped.stop_requested_ms.is_some() || stopped.state == WorkerState::Exited);
     let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
     assert_eq!(worker.state, WorkerState::Exited);
+    assert_eq!(worker.stop_requested_ms, None);
     assert_eq!(fixture.herdr_events(&id, "signal")[0]["signal"], "SIGTERM");
+    assert_eq!(fixture.herdr_events(&id, "exited").len(), 1);
+    let again = fixture.supervisor.stop(&id).unwrap_err();
+    assert_eq!(again.code(), "worker_not_running");
+}
+
+#[test]
+fn a_worker_alive_after_stop_shows_it_until_it_exits() {
+    let fixture = Fixture::new("stop-ignored");
+    let id = fixture.start("ignore-term");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let first = fixture.supervisor.stop(&id).unwrap();
+    let requested = first.stop_requested_ms.unwrap();
+
+    // It ignores SIGTERM, so asking again finds it alive, and the second
+    // stop sends nothing.
+    let again = fixture.supervisor.stop(&id).unwrap();
+    assert_eq!(again.state, WorkerState::Finished);
+    assert_eq!(again.stop_requested_ms, Some(requested));
+    assert_eq!(fixture.herdr_events(&id, "signal").len(), 1);
+
+    fixture.supervisor.kill(&id).unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.exit_signal, Some(libc::SIGKILL));
+    assert_eq!(worker.stop_requested_ms, None);
 }
 
 #[test]

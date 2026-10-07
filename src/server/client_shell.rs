@@ -307,6 +307,17 @@ pub(super) fn snapshot_with_completions(
         agents,
         commands: app.client_shell_command_manifest(),
         build_commit: crate::build_info::commit_line().map(str::to_owned),
+        worker_questions: crate::workers::pending_questions()
+            .into_iter()
+            .map(|pending| protocol::ClientShellWorkerQuestion {
+                worker_id: pending.worker_id,
+                cwd: pending.cwd,
+                tool_name: pending.question.tool_name,
+                text: pending.question.text,
+                choice: pending.question.kind == crate::api::schema::WorkerQuestionKind::Choice,
+                since_ms: pending.question.since_ms,
+            })
+            .collect(),
     };
     (shell, completions)
 }

@@ -1245,7 +1245,8 @@ impl App {
             | Method::WorkerPrompt(_)
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)
-            | Method::WorkerKill(_) => {
+            | Method::WorkerKill(_)
+            | Method::WorkerAnswer(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

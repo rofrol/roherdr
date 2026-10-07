@@ -952,6 +952,22 @@ pub struct ClientShellSnapshot {
     /// `+` after the hash for uncommitted changes.
     #[serde(default)]
     pub build_commit: Option<String>,
+    /// Questions headless workers wait on, for the `?` list; `worker.answer`
+    /// answers them.
+    #[serde(default)]
+    pub worker_questions: Vec<ClientShellWorkerQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellWorkerQuestion {
+    pub worker_id: String,
+    pub cwd: String,
+    pub tool_name: String,
+    /// The Bash command, the question, or the tool's input, on one line.
+    pub text: String,
+    /// An `AskUserQuestion` (answered with options), else an approval.
+    pub choice: bool,
+    pub since_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2927,6 +2943,7 @@ mod tests {
                 description: Some("deploy".into()),
             }],
             build_commit: None,
+            worker_questions: Vec::new(),
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

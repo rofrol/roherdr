@@ -64,13 +64,6 @@ pub enum ResponseResult {
     WorkerList {
         workers: Vec<WorkerInfo>,
     },
-    /// `worker.stop` sent SIGTERM to the worker's process group.
-    WorkerStopped {
-        worker: WorkerInfo,
-        /// Whether a process of the group was still alive right after the
-        /// signal. Herdr does not escalate; `worker.kill` does.
-        still_alive: bool,
-    },
     WorkspaceInfo {
         workspace: WorkspaceInfo,
     },

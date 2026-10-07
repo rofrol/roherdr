@@ -401,9 +401,10 @@ herdr worker prompt <worker_id> <text>
 herdr worker interrupt <worker_id>
 herdr worker stop <worker_id>
 herdr worker kill <worker_id>
+herdr worker answer <worker_id> [--request REQUEST_ID] [--message TEXT] allow|deny|<choice>...
 ```
 
-`worker start` defaults `--cwd` to the current directory. `worker wait` returns at the end of the current turn, or with `--exit` when the process ended. `worker stop` sends SIGTERM and reports `still_alive` instead of escalating; `worker kill` also ends the tool processes the worker left behind.
+`worker start` defaults `--cwd` to the current directory. `worker wait` returns at the end of the current turn, or with `--exit` when the process ended. `worker stop` sends SIGTERM and returns; the worker turns `exited` when its process ends, and until then its status carries `stop_requested_ms`. It never escalates; `worker kill` does, and also ends the tool processes the worker left behind. `worker answer` answers the worker's oldest pending question (or `--request`'s): `allow` or `deny` for a tool approval (`--message` goes to the model with a denial), or one choice per `AskUserQuestion` question, each an option's label, its 1-based number or free text, with several options of a multi-select question separated by commas.
 
 ## Direct terminal attach
 

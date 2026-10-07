@@ -23,6 +23,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
+            | Method::WorkerAnswer(_)
     )
 }
 
@@ -74,14 +75,9 @@ fn handle_immediate(
         }
         Method::WorkerPrompt(params) => supervisor.prompt(&params.worker_id, &params.text)?,
         Method::WorkerInterrupt(target) => supervisor.interrupt(&target.worker_id)?,
-        Method::WorkerStop(target) => {
-            let (worker, still_alive) = supervisor.stop(&target.worker_id)?;
-            return Ok(ResponseResult::WorkerStopped {
-                worker,
-                still_alive,
-            });
-        }
+        Method::WorkerStop(target) => supervisor.stop(&target.worker_id)?,
         Method::WorkerKill(target) => supervisor.kill(&target.worker_id)?,
+        Method::WorkerAnswer(params) => supervisor.answer(&params)?,
         _ => return Err(WorkerError::Invalid("not a worker method".into())),
     };
     Ok(ResponseResult::WorkerInfo { worker })

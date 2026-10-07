@@ -5272,6 +5272,57 @@
           ],
           "type": "object"
         },
+        "WorkerAnswerParams": {
+          "description": "Answers a worker's pending question: a tool approval or an\n`AskUserQuestion`. The worker waits for it without a time limit.",
+          "properties": {
+            "answers": {
+              "description": "`AskUserQuestion` only: one answer per question, in order. Each is an\noption's label, its 1-based number, or free text; a multi-select\nquestion takes several labels or numbers separated by commas.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerDecision"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`\ndeclines to answer and `allow` (or absent) sends `answers`."
+            },
+            "message": {
+              "description": "The message the model gets with a denial.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "The question to answer; the oldest pending one when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
+        "WorkerDecision": {
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "type": "string"
+        },
         "WorkerPromptParams": {
           "properties": {
             "text": {
@@ -6042,6 +6093,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "worker.answer",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerAnswerParams"
             }
           },
           "required": [
@@ -11489,28 +11556,6 @@
               "type": "object"
             },
             {
-              "description": "`worker.stop` sent SIGTERM to the worker's process group.",
-              "properties": {
-                "still_alive": {
-                  "description": "Whether a process of the group was still alive right after the\nsignal. Herdr does not escalate; `worker.kill` does.",
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "worker_stopped",
-                  "type": "string"
-                },
-                "worker": {
-                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
-                }
-              },
-              "required": [
-                "type",
-                "worker",
-                "still_alive"
-              ],
-              "type": "object"
-            },
-            {
               "properties": {
                 "type": {
                   "const": "workspace_info",
@@ -13427,6 +13472,34 @@
           ],
           "type": "object"
         },
+        "WorkerChoiceQuestion": {
+          "properties": {
+            "header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "multi_select": {
+              "type": "boolean"
+            },
+            "options": {
+              "description": "The options' labels.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "options"
+          ],
+          "type": "object"
+        },
         "WorkerInfo": {
           "properties": {
             "cwd": {
@@ -13475,6 +13548,13 @@
                 "null"
               ]
             },
+            "questions": {
+              "description": "Questions the worker waits on, oldest first; its state is\n`waiting_approval` while there are any.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+              },
+              "type": "array"
+            },
             "rate_limit": {
               "description": "`rate_limit_info` of the last `rate_limit_event`, as the CLI sent it."
             },
@@ -13487,6 +13567,15 @@
             },
             "state": {
               "$ref": "#/schemas/success_response/$defs/WorkerState"
+            },
+            "stop_requested_ms": {
+              "description": "Unix milliseconds when `worker.stop` sent SIGTERM, while the process\nhas not exited yet.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "tool_sessions": {
               "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends them.",
@@ -13516,6 +13605,72 @@
           ],
           "type": "object"
         },
+        "WorkerQuestion": {
+          "description": "A question a worker waits on: a `can_use_tool` request the policy left to\nthe user.",
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/WorkerQuestionKind"
+            },
+            "questions": {
+              "description": "`AskUserQuestion`'s questions, in order.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerChoiceQuestion"
+              },
+              "type": "array"
+            },
+            "reason": {
+              "description": "Why the policy did not decide it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "The CLI's control request id; `worker.answer` may name it.",
+              "type": "string"
+            },
+            "since_ms": {
+              "description": "Unix milliseconds since when the worker waits.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "One line for the user: the Bash command, the question, or the tool's\ninput.",
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id",
+            "kind",
+            "tool_name",
+            "text",
+            "since_ms"
+          ],
+          "type": "object"
+        },
+        "WorkerQuestionKind": {
+          "oneOf": [
+            {
+              "const": "approval",
+              "description": "A tool the policy does not decide; answered with allow or deny.",
+              "type": "string"
+            },
+            {
+              "const": "choice",
+              "description": "An `AskUserQuestion`; answered with the chosen options.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerState": {
           "oneOf": [
             {
@@ -13530,7 +13685,7 @@
             },
             {
               "const": "waiting_approval",
-              "description": "The CLI asked for a tool permission that is not answered yet.",
+              "description": "The CLI asked for a tool permission or a question that is not\nanswered yet; `questions` lists those left to the user.",
               "type": "string"
             },
             {

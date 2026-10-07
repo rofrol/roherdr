@@ -492,14 +492,6 @@ pub(crate) fn signal_process_group(
     }
 }
 
-pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
-    if leader_pid <= 1 {
-        return false;
-    }
-    let alive = unsafe { libc::killpg(leader_pid as libc::pid_t, 0) } == 0;
-    alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
 pub(crate) fn hostname() -> Option<String> {
     let mut buffer = [0_u8; 256];
     let result =
