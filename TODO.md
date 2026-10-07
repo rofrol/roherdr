@@ -121,6 +121,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `agent prompt` returns `agent_prompted` without knowing it arrived; the
   coordinator works around both with "send, wait for working, resend".
 
+- [ ] Finish the idle-job mark: a still mauve `z` instead of the dotted ring
+  (user chose a worker for it, 2026-10-07). Left uncommitted in the shared
+  checkout by the session "Widoczność kółka z przerywaną linią" (tab in the
+  herdr space, waiting for the user to try a build that later installs
+  replaced): `src/client/shell.rs`, `src/client/shell/job_footer.rs`,
+  `src/client/shell/tests/space_tabs.rs`, `plugins/job/README.md` and its
+  `DECISIONS.md` line ("Silent job vs stuck job"). A worker applies that
+  diff in its worktree, runs the tests, commits; the coordinator brings it
+  in, installs, the user checks the `z`, then the old session's tab and the
+  dirty files go. It blocks the rebase below.
+
 - [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
   2026-10-07: 21 upstream commits behind, 372 fork commits on top
   (upstream `a124eed7`, "route all pane key encoding through libghostty").
