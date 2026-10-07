@@ -3,6 +3,36 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Which roherdr parts could be plugins, which need core, and which are
+  worth a PR upstream (user, 2026-10-07: "think it over with the agents:
+  what can be split out of roherdr as a plugin and what not, where a PR
+  upstream would be needed; or maybe it no longer makes sense, because the
+  plugin is too limiting and we are racing ahead like mad?").
+  Consult round `20261007-035612-31de` (sol, MiMo), agreeing:
+  - Core for good: the sidebar and TUI work (vertical tabs, squares, role
+    marks, T/A buttons, ask line, footers, legend, filter/sort/drag) and
+    new API verbs and server semantics (handoff, reply and limit reports,
+    tab.create_* variants, reopen, name resolution). Plugins today can only
+    orchestrate existing verbs; already plugins: job, consult, restart,
+    relaunch, pi-title.
+  - The plugin-API extensions that would unlock most: declarative UI slots
+    (tab badges, sidebar rows/buttons, a footer strip with bound actions)
+    and namespaced, server-persisted entity metadata with lifecycle events;
+    API method registration is core work in a plugin costume (MiMo).
+  - Upstream: plan for permanent divergence; file verified reproducible bugs
+    in upstream-owned code (each fix upstream deletes rebase work); no
+    feature PRs or approval chase (their rules wall them out).
+  - Rebase cost grows with overlap in upstream-owned files, not commit
+    count: rebase often, keep fork code behind narrow seams, enable `git
+    rerere`, count conflicts per rebase; a rebase over a day is the signal to
+    redesign seams (MiMo).
+  - Policy: extract later and only when the API preserves the behaviour; a
+    feature graduates to a plugin after ~4 weeks stable with no new UI slot
+    or verb (MiMo). The user decides whether to adopt it.
+  Parked by the user 2026-10-07 ("I only wanted to think it over, not do
+  it"): nothing adopted; the outcome above is for when rebases start to
+  hurt.
+
 - [ ] Awaiting reply for agents other than Claude and pi, the same way as
   their integrations (user, 2026-09-28): each integration that can add
   session context (a session-start hook, an extension, a plugin) injects the
