@@ -565,6 +565,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   above stands, with ntfy instead of the Telegram bot; Telegram rejected for
   now.
 
+- [ ] `scripts/fork_demo/README.md` still says "oracle stats" where the menu
+  item is "consult stats" (left over from the dropped README animations).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -803,66 +806,6 @@ user needs to decide or do.
     user's clipboard without permission. No upstream issue without
     reproduction.
   Triage 2026-10-06 (manual): Needs your real gesture, terminal, Pi mode and copy path for a live reproduction; the item forbids touching your clipboard without permission.
-
-- [ ] Update automatic terminal/tab titles to reflect current activity, as
-  in other terminals (screenshot, 2026-09-30 02:14). The selected sidebar
-  tab says `env` while its pane runs `brew update` / `brew upgrade --formula`.
-  - Probable cause (not reproduced live): the label comes from the program
-    leading the pane's foreground group, looked up once per group, and
-    `env VAR=1 brew upgrade` starts as `env`. Mitigation committed: wrappers
-    (`env`, `command`, `exec`, `nice`, `nohup`, `time`, `timeout`, `sudo`,
-    `doas`) are looked up again for up to six ticks per group.
-  - Open: a title or foreground-command fallback beyond the program name,
-    and OSC title precedence. Consulted DeepSeek 2026-09-30: honor
-    shell-provided titles first; preserve explicit user names; a
-    foreground-command fallback only when reliable and no meaningful emitted
-    title exists; sanitize and bound titles; no flicker, output-driven churn
-    or per-render process-tree polling.
-  Triage 2026-10-06 (manual): Tell whether `env` still shows in the title after the next install.
-
-- [ ] Awaiting reply for agents other than Claude and pi, the same way as
-  their integrations (user, 2026-09-28): each integration that can add
-  session context (a session-start hook, an extension, a plugin) injects the
-  same instruction, and where the agent has a command allowlist the install
-  adds `herdr agent awaiting-reply` to it. Open: antigravity_cli, codex,
-  copilot, cursor, devin, droid, grok, hermes, kilo, kimi, letta,
-  mastracode, omp, opencode, qodercli, qwen; check per agent what it
-  offers, bump each changed integration's version once, try each live.
-  Pi's extension is not verified in a live Pi session yet (`DECISIONS.md`,
-  "Awaiting-reply for pi").
-  Triage 2026-10-06 (manual): Pi is done but not checked live; each of the 16 other integrations needs a live check in that agent with your accounts.
-
-- [ ] Refresh the README's "Fork changes" with a small looping animation
-  under each change (the text part is done). `scripts/fork_demo/README.md`
-  still says "oracle stats" where the menu item is "consult stats".
-  - Format (consulted GPT-6 Astra and DeepSeek, 2026-09-28): video cannot
-    autoplay or loop on github.com, so animated WebP as an `<img>`; not
-    animated AVIF. Pilot one clip in the rendered README (Chrome, Safari,
-    GitHub mobile app) against a GIF before making the rest. Keep the long
-    MP4 as the full walkthrough.
-  - Clips: each scene of `record.py` runnable on its own from a fresh
-    state; crop to the feature; 3-6 s, 8-12 fps, a hold before and after;
-    about 500 KB each, under 4 MB total; no caption bar; alt text on every
-    image; scene, crop and encoder settings in the script. Never downscale
-    the 104-column window below 1:1.
-  - Storage: `assets/fork/` with relative links, new file names on
-    re-record (camo caches); an orphan `assets` branch if history grows.
-  - Risk: seven loops at once are distracting and ignore reduced-motion;
-    if it looks busy, a static frame per bullet linking to its clip.
-  Triage 2026-10-06 (manual): The text is done; the clips need a recording session in a real terminal and a pilot in Chrome, Safari and the GitHub mobile app.
-
-- [ ] Open a herdr tab with Cmd+T (macOS), as Cmd+W closes panes.
-  - Set up 2026-09-28: Ghostty `cmd+t=unbind` and `ctrl+shift+t/w=unbind`,
-    no replacement keys (the user's choice); herdr `[keys] new_tab =
-    ["prefix+c", "cmd+t"]`, and Ctrl+Shift+T/W for Linux (the dotfiles
-    config is shared and herdr has no per-OS keys). Costs: Ghostty loses
-    Ctrl+Shift+T/W outside herdr, and programs inside herdr never see them.
-  - Verify on macOS after reloading Ghostty: Cmd+T opens a herdr tab in the
-    current space; File > New Tab still opens a Ghostty tab; Cmd+Shift+T is
-    still Ghostty's undo.
-  - Verify on Linux: Ctrl+Shift+T/W work, and plain Ctrl+T/W still reach
-    the shell inside herdr.
-  Triage 2026-10-06 (manual): Config is set; live checks after reloading Ghostty on macOS and on Linux remain.
 
 - [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
   and their `?` marks did not come back after `claude --resume` (user,

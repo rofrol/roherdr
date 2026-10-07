@@ -366,6 +366,9 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - Fork builds keep the self-updater off; the user installs from `master` with `scripts/herdr_live.sh` (user).
 - Follow-ups of the ask line (a "needs me" filter, a limited-agents count, outcomes) are parked in `TODO-deferred.md` (user: "none for now").
 - Windows checks stay in the fork's CI, run by dispatch on demand; no local Windows SDK (xwin) on the Mac (user, 2026-10-07).
+- Cmd+T opens a herdr tab on macOS and File > New Tab still opens a Ghostty tab (checked by the user); the `env` tab title no longer shows (user).
+- No looping animations in the README's "Fork changes": the text and the long MP4 walkthrough stay (user).
+- Awaiting-reply instructions only for the agents the user runs (Claude, pi); the other 16 integrations are parked (user).
 
 ### Handing a session over
 - 2026-10-07 (`07b6b605`): `agent.handoff` (`herdr agent handoff <pane> --to claude|pi|codex`, and "Hand over to…" in a tab's menu) opens a tab after the source tab, in its cwd, and starts the agent with a first prompt that points at the source transcript, lists what to carry over and records provenance. herdr never parses the transcript, so it works after the source hit its limit; an unknown session or a missing transcript is an error and no tab opens; the source tab stays. A new method, not a `tab.create` change (frozen shape).
