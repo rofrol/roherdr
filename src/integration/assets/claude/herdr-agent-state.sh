@@ -38,6 +38,9 @@ cat >"$hook_input_file" 2>/dev/null || true
 # auto-mode classifier) may have left the agent unable to run that command, so the hook marks the
 # pane as awaiting a reply itself, without blocking the stop. HERDR_AWAITING_REPLY_STOP=0 turns it
 # off, =shadow only logs what it would have done to ~/.local/state/herdr/awaiting-reply-stop.jsonl.
+# In a tab with the role `coordinator`, a turn that ends by waiting for the user's go-ahead ("when
+# you say continue", "should I continue?") while no background task of the session runs is blocked
+# once too, so the coordinator goes on with the next approved item or asks its open questions.
 if [ "$action" = "stop-check" ]; then
   [ "${HERDR_ENV:-}" = "1" ] || exit 0
   [ -n "${HERDR_PANE_ID:-}" ] || exit 0
@@ -70,6 +73,29 @@ COURTESY = re.compile(
     r"|let me know if you (need|have) anything)",
     re.IGNORECASE,
 )
+# The same expression as ABANDON in scripts/coordinator_turn_audit.py (a test keeps them equal):
+# final text that defers the next step to the user's go-ahead.
+ABANDON = re.compile(
+    r"("
+    # English
+    r"when you say|once you say|say (?:\"|“)?(?:continue|go|next)\b|"
+    r"(?:should|shall) i (?:continue|proceed|go on|start|delegate|carry on)|"
+    r"do you want me to (?:continue|proceed|go on|start the next)|"
+    r"let me know when|on your (?:go|signal|word)|"
+    r"(?:i will|i'll) (?:continue|delegate|start|proceed|resume|go on)[^.\n]{0,60}"
+    r"\b(?:when|once|after) you|"
+    # Polish
+    r"gdy powiesz|jak powiesz|kiedy powiesz|gdy napiszesz|jak napiszesz|"
+    r"zlec[ęe] (?:j[aą]|je|go)?[^.\n]{0,60}\b(?:gdy|jak|kiedy)\b|"
+    r"daj zna[ćc],? (?:gdy|kiedy|jak|czy)|"
+    r"czy (?:mam )?(?:kontynuowa[ćc]|i[śs][ćc] dalej|zleca[ćc])|"
+    r"kontynuowa[ćc]\s*\?|mam (?:kontynuowa[ćc]|zleci[ćc])"
+    r")",
+    re.IGNORECASE,
+)
+ASK_TOOL = "AskUserQuestion"
+NOTIFICATION_ID = re.compile(r"<tool-use-id>([^<\s]+)</tool-use-id>")
+COORDINATOR_ROLE = "coordinator"
 
 
 def strip_code(text):
@@ -121,6 +147,80 @@ def text_of(content):
     )
 
 
+def is_abandon_text(text):
+    """True when the end of the final text waits for the user's go-ahead."""
+    tail = strip_code(text).strip()[-600:]
+    return bool(ABANDON.search(tail))
+
+
+def pending_background(lines):
+    """Background tool calls of the session that no task notification has reported yet."""
+    background = set()
+    finished = set()
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("isSidechain"):
+            continue
+        kind = entry.get("type")
+        if kind == "attachment":
+            attachment = entry.get("attachment") or {}
+            if attachment.get("type") == "queued_command":
+                finished.update(NOTIFICATION_ID.findall(str(attachment.get("prompt", ""))))
+            continue
+        message = entry.get("message") or {}
+        if kind == "user" and not entry.get("isMeta"):
+            content = message.get("content")
+            if isinstance(content, str) or not any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content or []
+            ):
+                finished.update(NOTIFICATION_ID.findall(text_of(content)))
+        elif kind == "assistant":
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    args = block.get("input") or {}
+                    if isinstance(args, dict) and args.get("run_in_background"):
+                        background.add(block.get("id"))
+    return len(background - finished)
+
+
+def ask_server(method, params):
+    """The result of one request to the herdr server, or None on any failure."""
+    request = {"id": f"herdr:claude:{method}:{int(time.time() * 1000)}", "method": method,
+               "params": params}
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(os.environ["HERDR_SOCKET_PATH"])
+        client.sendall((json.dumps(request) + "\n").encode())
+        reply = b""
+        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+        client.close()
+        result = json.loads(reply.decode("utf-8", "replace")).get("result")
+        return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+
+
+def tab_role():
+    """The role of the pane's tab (`tab.set_role`), or None when it is unknown."""
+    if not os.environ.get("HERDR_SOCKET_PATH"):
+        return None
+    pane = (ask_server("pane.get", {"pane_id": os.environ["HERDR_PANE_ID"]}) or {}).get("pane")
+    tab_id = pane.get("tab_id") if isinstance(pane, dict) else None
+    if not isinstance(tab_id, str) or not tab_id:
+        return None
+    tab = (ask_server("tab.get", {"tab_id": tab_id}) or {}).get("tab")
+    role = tab.get("role") if isinstance(tab, dict) else None
+    return role if isinstance(role, str) else None
+
+
 try:
     with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
         hook_input = json.loads(handle.read() or "{}")
@@ -136,6 +236,7 @@ final_text = hook_input.get("last_assistant_message")
 final_text = final_text if isinstance(final_text, str) else ""
 reported = False
 last_text = ""
+last_tool = ""
 # Outcomes (True: failed or denied) of the turn's last batch of tool calls: the calls the agent
 # made together before their results came back. A call after a result starts a new batch.
 last_batch = []
@@ -150,6 +251,8 @@ if isinstance(transcript, str) and transcript:
             lines = handle.read().decode("utf-8", "replace").splitlines()[1:]
     except OSError:
         lines = []
+        size = 0
+    truncated = size > 400_000
     for line in lines:
         try:
             entry = json.loads(line)
@@ -167,6 +270,7 @@ if isinstance(transcript, str) and transcript:
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
+                last_tool = ""
                 last_batch = []
                 batch_has_results = False
             elif tool_result:
@@ -176,6 +280,8 @@ if isinstance(transcript, str) and transcript:
                         batch_has_results = True
         elif entry.get("type") == "assistant":
             for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    last_tool = block.get("name", "")
                 if isinstance(block, dict) and block.get("type") == "tool_use" and batch_has_results:
                     last_batch = []
                     batch_has_results = False
@@ -219,6 +325,34 @@ if blocked_calls and mode != "shadow" and os.environ.get("HERDR_SOCKET_PATH"):
         pass
 # Asking the agent to run a command its tools may deny again only repeats the denial.
 block = question and not reported and not blocked_calls and not stop_hook_active
+# A coordinator that waits for the user's go-ahead while nothing it started runs: the precedence
+# of scripts/coordinator_turn_audit.py (a tool-based ask, then a running background task, then
+# the go-ahead text). Any missing input or failed request leaves the stop alone.
+abandon = is_abandon_text(final_text)
+pending = None
+role = None
+coordinator_block = False
+if (
+    abandon
+    and not reported
+    and last_tool != ASK_TOOL
+    and not blocked_calls
+    and not stop_hook_active
+    and isinstance(transcript, str)
+    and transcript
+):
+    if truncated:
+        # A background task started before the tail that was read may still run.
+        try:
+            with open(transcript, "rb") as handle:
+                lines = handle.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            lines = None
+    if lines:
+        pending = pending_background(lines)
+    if pending == 0:
+        role = tab_role()
+        coordinator_block = role == COORDINATOR_ROLE
 try:
     state_dir = os.path.join(
         os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
@@ -235,8 +369,12 @@ try:
                     "reported": reported,
                     "blocked_calls": blocked_calls,
                     "marked": marked,
-                    "blocked": block and mode != "shadow",
+                    "blocked": (block or coordinator_block) and mode != "shadow",
                     "printed": printed,
+                    "abandon": abandon,
+                    "pending": pending,
+                    "role": role,
+                    "coordinator_blocked": coordinator_block and mode != "shadow",
                     "tail": last_paragraph(final_text)[-200:],
                 },
                 ensure_ascii=False,
@@ -245,7 +383,23 @@ try:
         )
 except OSError:
     pass
-if block and mode != "shadow" and printed:
+if coordinator_block and mode != "shadow":
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": (
+                    "Herdr: this tab is a TODO coordinator, and your message ends by waiting for "
+                    "the user's go-ahead, but approved items need none and nothing you started "
+                    "is still running. If \"Next, in order\" in TODO.md still has items, hand "
+                    "the next one to a worker now. If every remaining item waits on the user, "
+                    "ask the open questions (AskUserQuestion, or `herdr agent awaiting-reply`). "
+                    "If the user told you to stop, or the queue is empty, just stop."
+                ),
+            }
+        )
+    )
+elif block and mode != "shadow" and printed:
     print(
         json.dumps(
             {
