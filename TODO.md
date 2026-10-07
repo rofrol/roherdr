@@ -604,6 +604,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 - [ ] An `×` that clears the spaces filter field (user, 2026-10-07: "in the
   filter for searching tabs and spaces, add some x to clear the field").
 
+- [ ] The space lines are hard to read (user, 2026-10-07, screenshot of the
+  sidebar: "this can hardly be read; propose something, ask the models, show
+  nice visualisations, in the browser?"). Every space name line carries the
+  branch, `↑N`, job counts and three buttons (`❏ T A`); nested worktree
+  spaces cut their names to a few letters ("worker: re…", "try-roguix AX…").
+  Consult the default set, then show variants as browser mockups and let
+  the user choose.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
