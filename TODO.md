@@ -323,10 +323,52 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   (MiMo: the only SDK-specific win is `canUseTool`). Policy risk either way:
   the auth note targets SDK products; the user's own CLI in print mode is
   the stronger case; verify before building.
-  Next, waiting on the user's choice below: one experiment, a single headless worker in a fresh worktree through normal
-  completion, a tool denial, a question, an interrupt, a crash, a limit and
-  a `--resume` takeover; check whether plain stream-json exposes
-  `can_use_tool` control requests and what `AskUserQuestion` does in `-p`.
+  The user chose plain `claude -p` stream-json for an experiment (not the
+  SDK, not staying with TUI workers).
+  Experiment done 2026-10-07 (`scripts/headless_worker_trial.py`, report
+  `docs/headless-worker-trial-2026-10-07.md`, observed on Claude Code
+  2.1.292 with the user's login): failures 1-5 gone (a prompt sent before
+  `system/init` is buffered and echoed with `--replay-user-messages`; no
+  trust dialog in `-p`; the turn ends at `result`; interrupt is a
+  `control_request` acknowledged at once, ending in `aborted_tools`);
+  `--permission-prompt-tool stdio` turns approvals and `AskUserQuestion`
+  into `can_use_tool` control requests the host answers; the CLI needs no
+  PTY; a `rate_limit_event` with 5-hour and 7-day use comes every turn;
+  workers inherit the user's global hooks and CLAUDE.md; a SIGKILLed
+  worker leaves tool processes; `--resume` in a tab asks for trust once.
+  Adoption, round `20261007-185247-aeba` (sol, MiMo, DeepSeek), decided from
+  the agreement: a failure-focused trial first; tab-less worker rows with
+  state from the event journal and a log view; takeover = interrupt, wait
+  for `aborted_tools`, end the process group, confirm exit, then `claude
+  --resume` in a tab; no Stop-hook injection for workers; `rate_limit_event`
+  pauses delegation at high use.
+  Decided by the user 2026-10-07 (menu): approvals allowed by default inside
+  the worker's worktree, every decision logged (realpath checks for file
+  tools); AskUserQuestion to the user's `?` list; the supervisor in herdr's
+  server (Rust); workers load the global CLAUDE.md plus a worker contract,
+  global hooks off; Bash: a strict list per repository (one command, no
+  chaining, pipes or redirection; git without push/config/-c, just check,
+  cargo test) runs without asking, every other command goes to the user.
+  Trial 2 done 2026-10-07 (report section "Trial 2"): `disableAllHooks`
+  keeps CLAUDE.md and the login; interrupt and SIGTERM leave no orphans,
+  SIGKILL does (tools start their own sessions: record and end them); a
+  20-request approval storm stays in order; a second `--resume` of a
+  running session is not refused and forks the transcript; three workers at
+  once stay apart. Decided after round `20261007-191044-2920` (all three
+  agreeing): never SIGKILL on a timer (report "still alive" after SIGTERM,
+  the user force-stops); the user accepts the trust dialog on takeover
+  (herdr neither writes `~/.claude.json` nor answers the dialog); a running
+  worker's session shows "running: resuming it forks the transcript", and
+  herdr's own takeover ends the worker first.
+  Next: the server-side supervisor in slices, one worker each:
+  1. herdr's server starts, journals and ends headless Claude workers
+     (`worker.start`, state from events, `worker.wait/interrupt/stop/kill`,
+     a CLI), approvals limited to file tools inside the worktree for now.
+     In progress 2026-10-07 (worker `w-supervisor1`).
+  2. The approval policy (realpath file tools, the strict Bash list) and
+     questions to the user's `?` list, answered as `control_response`.
+  3. The sidebar: a tab-less worker row, a log view, takeover; the
+     coordinator's `/todo` flow starts workers through `worker.start`.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
