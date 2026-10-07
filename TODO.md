@@ -34,6 +34,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (`herdr agent handoff <pane> --to <agent>`, a neutral server method); the
   source tab stays, idle; an unknown session id is reported, never guessed.
 
+
+- [ ] A coordinator stops between items without being asked (user,
+  2026-10-07: "why aren't you delegating anything? ... explain why; we want
+  to improve the process, not have you start working now and forget"). Twice
+  the herdr coordinator answered the user's mid-turn questions, wrote a
+  status report and ended its turn with "I will delegate the next item when
+  you say continue", although the items were approved. Causes: (1) the rule
+  says questions are answered, not queued, but not that the coordinator
+  goes on afterwards, and a report reads as a natural end of turn; (2) a
+  Claude coordinator only acts inside a turn: once the turn ends, nothing
+  starts the next item or reviews a finished worker until the user writes.
+  Candidates: a rule line ("answering or queuing never ends the turn; end
+  it only when 'Next, in order' is empty or every item waits on the user");
+  waiting for a worker with a background wait that wakes the session when
+  it ends (done since 2026-10-07 in this session); a Stop hook that blocks a
+  coordinator-role tab's stop once while "Next, in order" has items and no
+  worker runs; herdr flagging an idle `♛` tab with open items.
+
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
 session that writes all code and delegates to documenter, reviewer, qa and
