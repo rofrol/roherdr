@@ -1217,6 +1217,20 @@ impl App {
             Method::AgentPromptStatus(params) => {
                 return self.handle_agent_prompt_status(request.id, params);
             }
+            Method::AgentPromptTracked(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.prompt_tracked is handled by the api server",
+                );
+            }
+            Method::AgentWaitTurn(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.wait_turn is handled by the api server",
+                );
+            }
             Method::AgentWait(_) => {
                 return responses::encode_error(
                     request.id,

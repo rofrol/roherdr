@@ -1792,6 +1792,11 @@ impl AppState {
             // change must still drop the old session's report.
             if mutation.agent_released {
                 terminal.stash_awaiting_reply_for_exited_session();
+                // Its followed prompts end as exited; the release's `pane.agent_detected`
+                // wakes `agent.wait_turn`.
+                if terminal.prompt_turns.agent_exited() {
+                    terminal.revision = terminal.revision.saturating_add(1);
+                }
             }
             if (mutation.agent_released || completion_reset) && terminal.clear_awaiting_reply() {
                 terminal.revision = terminal.revision.saturating_add(1);

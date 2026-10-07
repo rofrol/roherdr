@@ -92,24 +92,35 @@ server restart opened about 400 tabs, until macOS ran out of PTYs and herdr
 could open no tab anywhere. When a wait fails because herdr did not answer,
 check the state once and report it.
 
-To wait for an agent (a worker in another pane), run one job that waits and
-reconnects inside:
+To wait for a worker (an agent in another pane), start its prompt with
+`herdr agent prompt`, whose result carries `prompt_request.request_id`, and
+run one job that waits for that prompt's turn and reconnects inside:
 
 ```sh
+request=$(herdr agent prompt "$pane" "$task" | jq -r '.result.prompt_request.request_id')
 id=$(herdr-job run --name "wait w-docs" --why "review its commit" -- \
-  herdr-job wait-agent "$pane" --worker-line)
+  herdr-job wait-agent "$pane" --request "$request")
 herdr-job wait "$id"
 ```
 
+- `wait-agent <pane> --request <id>` blocks on `herdr agent wait-turn`: the
+  turn's end is an event (the agent's turn report, its process exiting, the
+  pane closing), never a timer, a screen read or a debounce. Then it reads
+  the worker's transcript once and prints its verdict from the final
+  message: `WORKER-DONE <sha>` when that commit exists in the worker's
+  checkout (exit 0), `WORKER-BLOCKED <reason>` (exit 4), `awaiting input`
+  when the message asks something (exit 6), or what needs attention: a turn
+  that failed, was interrupted or finished without a WORKER line, or a sha
+  that is not a commit (exit 7). An agent that exited ends it with exit 3,
+  and a request herdr no longer knows (its server restarted) with exit 8.
 - `wait-agent <pane> [--until STATE]...` ends when the agent reaches one of
   the states (default: idle, done or blocked), as `herdr agent wait` does.
-- `--worker-line` ends instead on a `WORKER-DONE <sha> ...` or
-  `WORKER-BLOCKED <reason>` line on the agent's screen: a worker's state
-  flickers to done or idle while it works, so the state alone ends too early.
+  A worker's state flickers to done or idle while it works, so use
+  `--request` for workers.
 - When herdr does not answer (a server restart, `EmptyResponse`, no socket)
   it retries with backoff from 1 s to 30 s and gives up after 15 minutes of
   continuous failures (exit 5). An agent that is gone ends the wait (exit 3),
-  not a retry. `WORKER-BLOCKED` exits 4, another error 2.
+  not a retry. Another error exits 2.
 
 `run` also refuses, before it opens the job's tab:
 

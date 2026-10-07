@@ -411,6 +411,10 @@ pub struct PaneReportTurnParams {
     /// The submitted prompt, with `started`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// With `finished`: the turn ended on this error (Claude's `StopFailure`), so the prompts
+    /// it ran end as failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -246,11 +246,58 @@ pub struct AgentPromptStatusParams {
     pub request_id: String,
 }
 
+/// Types a prompt like `agent.prompt` and returns at once with the request herdr follows
+/// (`prompt_request`), for `agent.wait_turn`. Refused with `turn_tracking_unsupported`, before
+/// anything is typed, when the agent does not report its turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPromptTrackedParams {
+    pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
+    pub text: String,
+}
+
+/// Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started
+/// ends, and says how it ended. It checks the request and subscribes to its changes in one
+/// step, so a turn that ended before the wait began still answers `finished`. It has no
+/// timeout: every outcome is an event, and a request herdr no longer knows (its server
+/// restarted) answers `unknown_request` at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentWaitTurnParams {
+    pub request_id: String,
+}
+
+/// How the turn of a followed prompt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTurnEndReason {
+    /// The agent reported the turn's end (Claude's `Stop`).
+    Finished,
+    /// The agent reported the turn ended on an error (Claude's `StopFailure`); see `error`.
+    Failed,
+    /// Another turn started before this one reported its end: the user interrupted it
+    /// (Claude reports no `Stop` for a turn ended with Esc).
+    Interrupted,
+    /// The agent's own process ended, or its pane closed, before the turn ended.
+    Exited,
+    /// Herdr does not follow this request: it never did, it was dropped as the oldest, or the
+    /// server restarted and lost it. Its turn's outcome is not known.
+    UnknownRequest,
+    #[serde(other)]
+    Unknown,
+}
+
 /// A prompt herdr typed into an agent and how far the turn it started got.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptRequest {
     pub request_id: String,
     pub state: AgentPromptRequestState,
+    /// The error a `failed` turn ended on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -264,8 +311,24 @@ pub enum AgentPromptRequestState {
     Finished,
     /// The agent does not report its turns, so herdr cannot follow this prompt.
     Unsupported,
+    /// That turn ended on an error the agent reported; see `error`.
+    Failed,
+    /// Another turn started before this one reported its end.
+    Interrupted,
+    /// The agent's process ended before the turn did.
+    Exited,
     #[serde(other)]
     Unknown,
+}
+
+impl AgentPromptRequestState {
+    /// The prompt's turn is over, however it ended.
+    pub fn is_turn_end(self) -> bool {
+        matches!(
+            self,
+            Self::Finished | Self::Failed | Self::Interrupted | Self::Exited
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

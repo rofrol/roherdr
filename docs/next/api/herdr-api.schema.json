@@ -1463,6 +1463,29 @@
           ],
           "type": "object"
         },
+        "AgentPromptTrackedParams": {
+          "description": "Types a prompt like `agent.prompt` and returns at once with the request herdr follows\n(`prompt_request`), for `agent.wait_turn`. Refused with `turn_tracking_unsupported`, before\nanything is typed, when the agent does not report its turns.",
+          "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
         "AgentPromptTurnParams": {
           "description": "Sends a prompt like `agent.prompt` and waits until the turn that prompt started ends, as the\nagent's integration reports it. Refused with `turn_tracking_unsupported`, before anything is\ntyped, when the agent does not report its turns.",
           "properties": {
@@ -1975,6 +1998,18 @@
           },
           "required": [
             "target"
+          ],
+          "type": "object"
+        },
+        "AgentWaitTurnParams": {
+          "description": "Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started\nends, and says how it ended. It checks the request and subscribes to its changes in one\nstep, so a turn that ended before the wait began still answers `finished`. It has no\ntimeout: every outcome is an event, and a request herdr no longer knows (its server\nrestarted) answers `unknown_request` at once.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
           ],
           "type": "object"
         },
@@ -3574,6 +3609,13 @@
           "properties": {
             "agent": {
               "type": "string"
+            },
+            "error": {
+              "description": "With `finished`: the turn ended on this error (Claude's `StopFailure`), so the prompts\nit ran end as failed.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "pane_id": {
               "type": "string"
@@ -6707,6 +6749,38 @@
         {
           "properties": {
             "method": {
+              "const": "agent.prompt_tracked",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentPromptTrackedParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.wait_turn",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentWaitTurnParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.wait",
               "type": "string"
             },
@@ -8304,6 +8378,13 @@
         "AgentPromptRequest": {
           "description": "A prompt herdr typed into an agent and how far the turn it started got.",
           "properties": {
+            "error": {
+              "description": "The error a `failed` turn ended on.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "request_id": {
               "type": "string"
             },
@@ -8343,6 +8424,21 @@
             {
               "const": "unsupported",
               "description": "The agent does not report its turns, so herdr cannot follow this prompt.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "That turn ended on an error the agent reported; see `error`.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "Another turn started before this one reported its end.",
+              "type": "string"
+            },
+            {
+              "const": "exited",
+              "description": "The agent's process ended before the turn did.",
               "type": "string"
             }
           ]
@@ -8386,6 +8482,42 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "AgentTurnEndReason": {
+          "description": "How the turn of a followed prompt ended.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "finished",
+              "description": "The agent reported the turn's end (Claude's `Stop`).",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The agent reported the turn ended on an error (Claude's `StopFailure`); see `error`.",
+              "type": "string"
+            },
+            {
+              "const": "interrupted",
+              "description": "Another turn started before this one reported its end: the user interrupted it\n(Claude reports no `Stop` for a turn ended with Esc).",
+              "type": "string"
+            },
+            {
+              "const": "exited",
+              "description": "The agent's own process ended, or its pane closed, before the turn ended.",
+              "type": "string"
+            },
+            {
+              "const": "unknown_request",
+              "description": "Herdr does not follow this request: it never did, it was dropped as the oldest, or the\nserver restarted and lost it. Its turn's outcome is not known.",
+              "type": "string"
+            }
+          ]
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -11447,6 +11579,41 @@
                 "type",
                 "pane_id",
                 "prompt_request"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.wait_turn`: how the followed prompt's turn ended.",
+              "properties": {
+                "error": {
+                  "description": "The error a `failed` turn ended on.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pane_id": {
+                  "description": "The pane the request was typed into, when herdr still knew the request.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "$ref": "#/schemas/success_response/$defs/AgentTurnEndReason"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_turn_ended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "request_id",
+                "reason"
               ],
               "type": "object"
             },

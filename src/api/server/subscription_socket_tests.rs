@@ -213,31 +213,35 @@ fn reply(request: ApiRequestMessage, result: ResponseResult) {
         .unwrap();
 }
 
+fn test_pane_info() -> PaneInfo {
+    PaneInfo {
+        pane_id: "pane_1".into(),
+        terminal_id: "term_1".into(),
+        workspace_id: "workspace_1".into(),
+        tab_id: "tab_1".into(),
+        focused: true,
+        cwd: None,
+        foreground_cwd: None,
+        restore_error: None,
+        label: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        display_agent: None,
+        agent_status: AgentStatus::Working,
+        state_labels: Default::default(),
+        tokens: Default::default(),
+        agent_session: None,
+        scroll: None,
+        revision: 0,
+    }
+}
+
 fn reply_to_probe(request: ApiRequestMessage) {
     let result = match request.request.method {
         Method::PaneGet(_) => ResponseResult::PaneInfo {
-            pane: PaneInfo {
-                pane_id: "pane_1".into(),
-                terminal_id: "term_1".into(),
-                workspace_id: "workspace_1".into(),
-                tab_id: "tab_1".into(),
-                focused: true,
-                cwd: None,
-                foreground_cwd: None,
-                restore_error: None,
-                label: None,
-                agent: Some("pi".into()),
-                title: None,
-                terminal_title: None,
-                terminal_title_stripped: None,
-                display_agent: None,
-                agent_status: AgentStatus::Working,
-                state_labels: Default::default(),
-                tokens: Default::default(),
-                agent_session: None,
-                scroll: None,
-                revision: 0,
-            },
+            pane: test_pane_info(),
         },
         Method::PaneRead(_) => ResponseResult::PaneRead {
             read: PaneReadResult {
@@ -353,4 +357,147 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     let response = ordinary.response();
     assert_eq!(response["id"], "ordinary");
     assert_eq!(response["result"]["type"], "workspace_list");
+}
+
+// `agent.wait_turn`: the app answers each `agent.prompt_status` read; events about the pane
+// make the wait read again.
+
+fn wait_turn(client: &mut Client, request_id: &str) {
+    client.send(json!({
+        "id": "wait",
+        "method": "agent.wait_turn",
+        "params": {"request_id": request_id}
+    }));
+}
+
+fn reply_prompt_state(test: &mut SocketTest, state: &str, error: Option<&str>) {
+    let request = test.app_request();
+    let Method::AgentPromptStatus(params) = &request.request.method else {
+        panic!(
+            "expected a prompt status read: {:?}",
+            request.request.method
+        );
+    };
+    assert_eq!(params.request_id, "prompt_1");
+    let mut prompt_request = json!({"request_id": "prompt_1", "state": state});
+    if let Some(error) = error {
+        prompt_request["error"] = error.into();
+    }
+    reply(
+        request,
+        ResponseResult::AgentPromptStatus {
+            pane_id: "pane_1".into(),
+            prompt_request: serde_json::from_value(prompt_request).unwrap(),
+        },
+    );
+}
+
+fn assert_turn_ended(client: &mut Client, reason: &str) -> Value {
+    let response = client.response();
+    assert_eq!(response["id"], "wait");
+    assert_eq!(response["result"]["type"], "agent_turn_ended", "{response}");
+    assert_eq!(response["result"]["reason"], reason, "{response}");
+    assert_eq!(response["result"]["request_id"], "prompt_1");
+    response
+}
+
+fn pane_updated() -> EventEnvelope {
+    EventEnvelope {
+        event: EventKind::PaneUpdated,
+        data: EventData::PaneUpdated {
+            pane: test_pane_info(),
+        },
+    }
+}
+
+#[test]
+fn wait_turn_answers_at_once_for_a_turn_that_ended_before_it() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_turn(&mut client, "prompt_1");
+    reply_prompt_state(&mut test, "finished", None);
+    let response = assert_turn_ended(&mut client, "finished");
+    assert_eq!(response["result"]["pane_id"], "pane_1");
+}
+
+#[test]
+fn wait_turn_reads_again_on_a_pane_event_and_reports_each_end() {
+    for (state, error, reason) in [
+        ("finished", None, "finished"),
+        ("failed", Some("server_error: overloaded"), "failed"),
+        ("interrupted", None, "interrupted"),
+        ("exited", None, "exited"),
+    ] {
+        let mut test = SocketTest::new();
+        let mut client = test.connect();
+        wait_turn(&mut client, "prompt_1");
+        reply_prompt_state(&mut test, "working", None);
+        test.hub.push(pane_updated());
+        reply_prompt_state(&mut test, state, error);
+        let response = assert_turn_ended(&mut client, reason);
+        match error {
+            Some(error) => assert_eq!(response["result"]["error"], error),
+            None => assert!(response["result"].get("error").is_none()),
+        }
+    }
+}
+
+#[test]
+fn wait_turn_sees_a_change_made_while_its_first_read_was_answered() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_turn(&mut client, "prompt_1");
+    let first = test.app_request();
+    // The turn ends after the app read the request but before the wait got the answer.
+    test.hub.push(pane_updated());
+    reply(
+        first,
+        ResponseResult::AgentPromptStatus {
+            pane_id: "pane_1".into(),
+            prompt_request: serde_json::from_value(
+                json!({"request_id": "prompt_1", "state": "working"}),
+            )
+            .unwrap(),
+        },
+    );
+    reply_prompt_state(&mut test, "finished", None);
+    assert_turn_ended(&mut client, "finished");
+}
+
+#[test]
+fn wait_turn_reports_exited_when_the_pane_exits_during_the_turn() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_turn(&mut client, "prompt_1");
+    reply_prompt_state(&mut test, "working", None);
+    test.hub.push(EventEnvelope {
+        event: EventKind::PaneExited,
+        data: EventData::PaneExited {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    reply_prompt_state(&mut test, "working", None);
+    assert_turn_ended(&mut client, "exited");
+}
+
+#[test]
+fn wait_turn_reports_a_request_the_server_does_not_know() {
+    // A request id from before a server restart: the new server never saw it.
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_turn(&mut client, "prompt_1");
+    let request = test.app_request();
+    request
+        .respond_to
+        .send(
+            json!({
+                "id": request.request.id,
+                "error": {"code": "prompt_request_not_found", "message": "no followed prompt"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    let response = assert_turn_ended(&mut client, "unknown_request");
+    assert!(response["result"].get("pane_id").is_none());
 }

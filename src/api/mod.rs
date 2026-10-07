@@ -68,6 +68,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::AgentHandoff(_)
             | Method::AgentPrompt(_)
             | Method::AgentPromptTurn(_)
+            | Method::AgentPromptTracked(_)
             | Method::AgentSendKeys(_)
             | Method::PaneSplit(_)
             | Method::PaneSwap(_)

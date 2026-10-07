@@ -6,8 +6,8 @@
   herdr-job watch --pid PID [--name NAME] [--why TEXT]
                                  a job that waits for a process you did not start; print job id
   herdr-job wait ID [--quiet]    follow the log until the job ends; exit with its code
-  herdr-job wait-agent PANE [--until STATE] [--worker-line]
-                                 wait for an agent, reconnecting inside one job
+  herdr-job wait-agent PANE [--until STATE | --request ID]
+                                 wait for an agent or its prompt's turn, reconnecting inside one job
   herdr-job list                 show jobs and their state
   herdr-job log ID               print the log path
   herdr-job clean [--all]        close tabs of this pane's finished jobs (--all: everyone's)
@@ -1364,36 +1364,43 @@ def cmd_wait(args):
 AGENT_RETRY_FIRST_S = 1
 AGENT_RETRY_MAX_S = 30
 AGENT_GIVE_UP_S = 15 * 60
-# How often `--worker-line` reads the agent's screen (external polling: a
-# worker's last line comes after minutes of work).
-WORKER_LINE_POLL_S = 3
 # `agent wait` reports an agent that disappeared while it waited as `agent_not_running`.
 AGENT_GONE_CODES = {"agent_not_found", "agent_not_running", "pane_not_found", "terminal_not_found"}
 # The server is restarting or not reachable yet: `server_unavailable` is a
 # live handoff ("server is shutting down") or a request the app could not take.
 # Not `protocol_mismatch`: that one does not pass by waiting.
 TRANSPORT_CODES = {"server_not_running", "server_unavailable"}
-# A read the server refuses while the agent works (`agent_not_idle`, a long
-# read of an alternate screen): poll again, the agent is still there.
+# A read the server refuses while the agent works (`agent_not_idle`).
 AGENT_BUSY_CODES = {"agent_not_idle"}
-# The line a worker ends with, alone on its line (after an agent's bullet).
-# `<sha>`/`<reason>` placeholders, as in a task text echoed on the screen, do not count.
-WORKER_LINE = re.compile(r"^[\s⏺●•]*(WORKER-DONE [0-9a-f]{7,40}\b.*|WORKER-BLOCKED [^<\s].*)$")
+# The line a worker ends its final message with. `<sha>`/`<reason>`
+# placeholders, as in a quoted task text, do not count.
+WORKER_LINE = re.compile(r"^[\s⏺●•]*(WORKER-DONE ([0-9a-f]{7,40})\b.*|WORKER-BLOCKED [^<\s].*)$")
 EXIT_AGENT_GONE = 3
 EXIT_WORKER_BLOCKED = 4
 EXIT_TRANSPORT_GAVE_UP = 5
+EXIT_AWAITING_INPUT = 6
+EXIT_NEEDS_ATTENTION = 7
+EXIT_TRACKING_LOST = 8
 
 
 def agent_call(*args):
     """Runs a herdr agent command: ("ok", stdout), ("gone", message),
     ("transport", message) for a lost connection, ("busy", message) for a
-    read refused while the agent works, or ("error", message)."""
+    read refused while the agent works, or ("error", message). A command that
+    prints a result and still exits non-zero (`agent wait-turn` for a turn
+    that did not finish) is ("ok", stdout)."""
     try:
         out = subprocess.run([HERDR, *args], capture_output=True, text=True)
     except OSError as err:
         return "transport", str(err)
     if out.returncode == 0:
         return "ok", out.stdout
+    for line in reversed(out.stdout.splitlines()):
+        try:
+            if "result" in json.loads(line):
+                return "ok", out.stdout
+        except (ValueError, TypeError):
+            continue
     text = (out.stderr.strip() or out.stdout.strip())
     for line in reversed(text.splitlines()):
         try:
@@ -1409,58 +1416,154 @@ def agent_call(*args):
     return "transport", text or f"exit {out.returncode}"
 
 
-def worker_line(screen):
-    found = None
-    for line in screen.splitlines():
-        if match := WORKER_LINE.match(line.rstrip()):
-            found = match.group(1).strip()
-    return found
+def last_result(stdout):
+    for line in reversed(stdout.splitlines()):
+        try:
+            return json.loads(line)["result"]
+        except (ValueError, KeyError, TypeError):
+            continue
+    return {}
+
+
+def transcript_path(session, agent):
+    """The transcript file of an agent session herdr reports (`agent_session`):
+    a path, or for Claude a session id under its projects directory."""
+    if not session:
+        return None
+    if session.get("kind") == "path":
+        return Path(session["value"])
+    if agent == "claude" and session.get("kind") == "id":
+        root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+        found = sorted(root.glob(f"*/{session['value']}.jsonl"))
+        return found[0] if found else None
+    return None
+
+
+def last_assistant_text(path):
+    """The text of the last assistant message in a JSONL transcript (Claude's
+    `{"type": "assistant", "message": {...}}`, pi's `{"message": {"role":
+    "assistant", ...}}`), skipping subagents' messages."""
+    last = None
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict) or record.get("isSidechain"):
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            if (message.get("role") or record.get("type")) != "assistant":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "\n".join(part.get("text", "") for part in content
+                                 if isinstance(part, dict) and part.get("type") == "text")
+            else:
+                continue
+            if text.strip():
+                last = text
+    return last
+
+
+def commit_exists(cwd, sha):
+    if not cwd:
+        return False
+    out = subprocess.run(["git", "-C", cwd, "cat-file", "-e", f"{sha}^{{commit}}"],
+                         capture_output=True, text=True)
+    return out.returncode == 0
+
+
+def worker_verdict(agent):
+    """Reads the worker's transcript once, after its turn finished, and
+    classifies its final message: (exit code, verdict)."""
+    path = transcript_path(agent.get("agent_session"), agent.get("agent"))
+    if path is None or not path.is_file():
+        return EXIT_NEEDS_ATTENTION, f"turn finished; no transcript found for {agent.get('agent_session')}"
+    text = last_assistant_text(path)
+    if not text:
+        return EXIT_NEEDS_ATTENTION, f"turn finished; no assistant message in {path}"
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if match := WORKER_LINE.match(line):
+            verdict = match.group(1).strip()
+            if verdict.startswith("WORKER-BLOCKED"):
+                return EXIT_WORKER_BLOCKED, verdict
+            cwd = agent.get("foreground_cwd") or agent.get("cwd")
+            if not commit_exists(cwd, match.group(2)):
+                return EXIT_NEEDS_ATTENTION, f"{verdict} (but {match.group(2)} is not a commit in {cwd})"
+            return 0, verdict
+    if lines[-1].endswith("?") or agent.get("awaiting_reply"):
+        return EXIT_AWAITING_INPUT, f"awaiting input: {short(agent.get('question') or lines[-1], 300)}"
+    return EXIT_NEEDS_ATTENTION, f"turn finished without a WORKER line: {short(lines[-1], 300)}"
+
+
+def call_until_answered(say, *request):
+    """One herdr call, repeated only while herdr does not answer (designed
+    backoff); returns (kind, text) of the first answer."""
+    delay, failing_since = AGENT_RETRY_FIRST_S, None
+    while True:
+        kind, text = agent_call(*request)
+        if kind != "transport":
+            return kind, text
+        now = time.monotonic()
+        failing_since = failing_since or now
+        if now - failing_since >= AGENT_GIVE_UP_S:
+            say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}")
+            sys.exit(EXIT_TRANSPORT_GAVE_UP)
+        say(f"herdr did not answer ({short(text, 120)}); retrying in {delay} s")
+        time.sleep(delay)
+        delay = min(delay * 2, AGENT_RETRY_MAX_S)
 
 
 def cmd_wait_agent(args):
-    """Waits for one agent: until it reaches a state (`herdr agent wait`), or
-    with `--worker-line` until its screen shows a WORKER-DONE/WORKER-BLOCKED
-    line. Transport errors are retried here with backoff; an agent that is
-    gone ends the wait."""
+    """Waits for one agent: with `--request` until the turn of that prompt
+    request ends (`herdr agent wait-turn`, an event, no timer), then reads the
+    worker's transcript once for its verdict; otherwise until it reaches a
+    state (`herdr agent wait`). Transport errors are retried here with
+    backoff; an agent that is gone ends the wait."""
     say = lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True)
-    delay, failing_since = AGENT_RETRY_FIRST_S, None
-    if args.worker_line:
-        # The visible screen: herdr refuses a `recent` read of an alternate
-        # screen while the agent works, and a worker's last line is visible.
-        request = ["agent", "read", args.pane, "--source", "detection", "--format", "text"]
+    if args.request:
+        say(f"waiting for the turn of prompt request {args.request}")
+        kind, text = call_until_answered(say, "agent", "wait-turn", args.request)
     else:
-        request = ["agent", "wait", args.pane] + [flag for state in args.until for flag in ("--until", state)]
-    say("waiting for a worker line" if args.worker_line else
-        f"waiting for {', '.join(args.until) or 'idle, done or blocked'}")
-    while True:
-        kind, text = agent_call(*request)
-        if kind == "transport":
-            now = time.monotonic()
-            failing_since = failing_since or now
-            if now - failing_since >= AGENT_GIVE_UP_S:
-                say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}")
-                sys.exit(EXIT_TRANSPORT_GAVE_UP)
-            say(f"herdr did not answer ({short(text, 120)}); retrying in {delay} s")
-            time.sleep(delay)
-            delay = min(delay * 2, AGENT_RETRY_MAX_S)
-            continue
-        failing_since, delay = None, AGENT_RETRY_FIRST_S
-        if kind == "gone":
-            say(f"the agent is gone: {short(text, 200)}")
-            sys.exit(EXIT_AGENT_GONE)
-        if kind == "busy" and args.worker_line:
-            time.sleep(WORKER_LINE_POLL_S)
-            continue
-        if kind in ("error", "busy"):
-            say(f"failed: {short(text, 200)}")
-            sys.exit(2)
-        if not args.worker_line:
-            say(f"reached: {short(text.strip(), 300)}")
-            return
-        if line := worker_line(text):
-            say(line)
-            sys.exit(EXIT_WORKER_BLOCKED if line.startswith("WORKER-BLOCKED") else 0)
-        time.sleep(WORKER_LINE_POLL_S)
+        say(f"waiting for {', '.join(args.until) or 'idle, done or blocked'}")
+        kind, text = call_until_answered(
+            say, "agent", "wait", args.pane, *[flag for state in args.until for flag in ("--until", state)])
+    if kind == "gone":
+        say(f"the agent is gone: {short(text, 200)}")
+        sys.exit(EXIT_AGENT_GONE)
+    if kind != "ok":
+        say(f"failed: {short(text, 200)}")
+        sys.exit(2)
+    if not args.request:
+        say(f"reached: {short(text.strip(), 300)}")
+        return
+    result = last_result(text)
+    reason = result.get("reason")
+    if reason == "unknown_request":
+        say(f"tracking lost: herdr does not know request {args.request} (did its server restart?)")
+        sys.exit(EXIT_TRACKING_LOST)
+    if reason == "exited":
+        say("the agent exited before its turn ended")
+        sys.exit(EXIT_AGENT_GONE)
+    if reason == "failed":
+        say(f"the turn failed: {short(result.get('error') or 'no error given', 300)}")
+        sys.exit(EXIT_NEEDS_ATTENTION)
+    if reason != "finished":
+        say(f"the turn ended: {reason or short(text.strip(), 200)}")
+        sys.exit(EXIT_NEEDS_ATTENTION)
+    kind, text = call_until_answered(say, "agent", "get", args.pane)
+    if kind != "ok":
+        say(f"turn finished; reading the agent failed: {short(text, 200)}")
+        sys.exit(EXIT_AGENT_GONE if kind == "gone" else 2)
+    code, verdict = worker_verdict(last_result(text).get("agent") or {})
+    say(verdict)
+    sys.exit(code)
 
 
 def cmd_list(_args):
@@ -1572,15 +1675,19 @@ def main():
     wait.set_defaults(func=cmd_wait)
     wait_agent = sub.add_parser(
         "wait-agent", help="wait for an agent in one job, reconnecting when herdr does not answer",
-        description="Exit 0: the state was reached or WORKER-DONE; 3: the agent is gone; "
-                    "4: WORKER-BLOCKED; 5: gave up after 15 minutes without herdr; 2: another error.")
+        description="Exit 0: the state was reached, or WORKER-DONE with a commit that exists; "
+                    "3: the agent is gone or exited; 4: WORKER-BLOCKED; 5: gave up after 15 minutes "
+                    "without herdr; 6: the worker asks something; 7: needs attention (the turn failed, "
+                    "was interrupted, or finished without a WORKER line); 8: herdr lost track of the "
+                    "request; 2: another error.")
     wait_agent.add_argument("pane")
     wait_agent.add_argument("--until", action="append", default=[],
                             choices=["idle", "working", "blocked", "done", "unknown"],
                             help="state to wait for; repeat for more (default: idle, done or blocked)")
-    wait_agent.add_argument("--worker-line", action="store_true",
-                            help="end on a WORKER-DONE <sha> or WORKER-BLOCKED <reason> line on the agent's "
-                                 "screen instead of on its state, which flickers while a worker works")
+    wait_agent.add_argument("--request", metavar="ID",
+                            help="end when the turn of this prompt request ends (the request_id that "
+                                 "`herdr agent prompt` prints), then report the worker's verdict "
+                                 "from its transcript")
     wait_agent.set_defaults(func=cmd_wait_agent)
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
     open_ = sub.add_parser("open", help="focus a job's tab")

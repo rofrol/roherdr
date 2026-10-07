@@ -14,7 +14,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 # Reports that the main agent's turn started (`UserPromptSubmit`, with the submitted prompt) or
-# ended (`Stop` that the stop check let through, `StopFailure`), so herdr can tell a caller of
+# ended (`Stop` that the stop check let through, `StopFailure` with its error), so herdr can tell a caller of
 # `herdr agent prompt --wait` when the turn its prompt started ends. Not instructions: it runs
 # whatever HERDR_AWAITING_REPLY_* say.
 report_turn() {
@@ -43,6 +43,12 @@ if phase == "started":
     if not isinstance(prompt, str):
         raise SystemExit(0)
     params["prompt"] = prompt
+elif hook_input.get("hook_event_name") == "StopFailure":
+    # The turn ended on an error: its prompts end as failed, with the error.
+    error = hook_input.get("error")
+    details = hook_input.get("error_details")
+    parts = [part for part in (error, details) if isinstance(part, str) and part.strip()]
+    params["error"] = (": ".join(parts) or "unknown error")[:1000]
 request = {
     "id": f"herdr:claude:turn:{int(time.time() * 1000)}",
     "method": "pane.report_turn",

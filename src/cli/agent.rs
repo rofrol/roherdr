@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
-    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams,
-    EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
-    ReadSource, Request,
+    AgentPromptParams, AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions,
+    AgentReadParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
+    AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody, ErrorResponse, Method,
+    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -28,6 +28,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => agent_rename(&scoped_args, scope()),
         "focus" => agent_focus(&scoped_args, scope()),
         "wait" => agent_wait(&scoped_args, scope()),
+        "wait-turn" => agent_wait_turn(&args[1..]),
         "attach" => agent_attach(&scoped_args, scope()),
         "explain" => agent_explain(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
@@ -1045,23 +1046,12 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         return Ok(2);
     }
     if wait && until.is_empty() {
-        let response = super::send_request(&Request {
-            id: "cli:agent:prompt_turn".into(),
-            method: Method::AgentPromptTurn(AgentPromptTurnParams {
-                target: target.clone(),
-                prefer_workspace_id: scope.prefer_workspace_id.clone(),
-                text: text.clone(),
-                timeout_ms,
-            }),
-        })?;
-        if !prompt_turn_unavailable(&response) {
-            return super::print_response(&response);
+        match prompt_and_wait_for_turn(target, text, &scope, timeout_ms)? {
+            TurnWait::Done(exit_code) => return Ok(exit_code),
+            TurnWait::Untracked => eprintln!(
+                "herdr: agent {target} does not report its turns; waiting for its state instead, which may match a turn that was already running"
+            ),
         }
-        // Nothing was typed: the agent reports no turns, or the server predates
-        // `agent.prompt_turn`. Fall back to waiting on the agent's screen state.
-        eprintln!(
-            "herdr: agent {target} does not report its turns; waiting for its state instead, which may match a turn that was already running"
-        );
     }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
@@ -1078,6 +1068,90 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         }),
     })?;
     super::print_response(&response)
+}
+
+enum TurnWait {
+    /// The prompt went out and the command is done, with this exit code.
+    Done(i32),
+    /// Nothing was typed: the agent reports no turns, or the server follows none.
+    Untracked,
+}
+
+/// Types the prompt and waits for the turn it starts. Without a timeout it uses
+/// `agent.prompt_tracked`, prints the followed request's id, then waits with `agent.wait_turn`;
+/// with a timeout, or against a server without those methods, `agent.prompt_turn`.
+fn prompt_and_wait_for_turn(
+    target: &str,
+    text: &str,
+    scope: &NameScope,
+    timeout_ms: Option<u64>,
+) -> std::io::Result<TurnWait> {
+    if timeout_ms.is_none() {
+        let response = super::send_request(&Request {
+            id: "cli:agent:prompt_tracked".into(),
+            method: Method::AgentPromptTracked(AgentPromptTrackedParams {
+                target: target.to_string(),
+                prefer_workspace_id: scope.prefer_workspace_id.clone(),
+                text: text.to_string(),
+            }),
+        })?;
+        if let Some(request_id) = response["result"]["prompt_request"]["request_id"].as_str() {
+            // Printed before the wait, so a caller whose wait is cut off can resume it.
+            eprintln!("herdr: waiting for the turn of prompt request {request_id}");
+            return wait_for_turn(request_id).map(TurnWait::Done);
+        }
+        if !method_unknown(&response, "agent.prompt_tracked") {
+            if prompt_turn_unavailable(&response) {
+                return Ok(TurnWait::Untracked);
+            }
+            return super::print_response(&response).map(TurnWait::Done);
+        }
+    }
+    let response = super::send_request(&Request {
+        id: "cli:agent:prompt_turn".into(),
+        method: Method::AgentPromptTurn(AgentPromptTurnParams {
+            target: target.to_string(),
+            prefer_workspace_id: scope.prefer_workspace_id.clone(),
+            text: text.to_string(),
+            timeout_ms,
+        }),
+    })?;
+    if prompt_turn_unavailable(&response) {
+        return Ok(TurnWait::Untracked);
+    }
+    super::print_response(&response).map(TurnWait::Done)
+}
+
+fn agent_wait_turn(args: &[String]) -> std::io::Result<i32> {
+    let [request_id] = args else {
+        eprintln!("usage: herdr agent wait-turn <request_id>");
+        return Ok(2);
+    };
+    wait_for_turn(request_id)
+}
+
+/// Waits with `agent.wait_turn` and prints how the turn ended. Exit 0 only for `finished`.
+fn wait_for_turn(request_id: &str) -> std::io::Result<i32> {
+    let response = super::send_request(&Request {
+        id: "cli:agent:wait_turn".into(),
+        method: Method::AgentWaitTurn(AgentWaitTurnParams {
+            request_id: request_id.to_string(),
+        }),
+    })?;
+    let exit_code = super::print_response(&response)?;
+    if exit_code == 0 && response["result"]["reason"] != "finished" {
+        return Ok(1);
+    }
+    Ok(exit_code)
+}
+
+/// Whether an older server refused `method` because it does not know it.
+fn method_unknown(response: &serde_json::Value, method: &str) -> bool {
+    let error = &response["error"];
+    error["code"] == "invalid_request"
+        && error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(method))
 }
 
 /// Whether `agent.prompt_turn` refused before typing anything: the agent does not report
@@ -1187,6 +1261,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent limited [--pane PANE_ID] usage|credits [MESSAGE]");
     eprintln!("  herdr agent set-task [--pane PANE_ID] <task>|--clear");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
+    eprintln!("  herdr agent wait-turn <request_id>");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
@@ -1212,7 +1287,28 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{prompt_turn_unavailable, split_global_flag, NameScope};
+    use super::{method_unknown, prompt_turn_unavailable, split_global_flag, NameScope};
+
+    #[test]
+    fn an_older_server_without_prompt_tracked_is_recognized() {
+        let request = serde_json::json!({
+            "id": "x", "method": "agent.prompt_tracked_from_the_future",
+            "params": {"target": "a", "text": "b"},
+        });
+        let message = format!(
+            "invalid request: {}",
+            serde_json::from_value::<crate::api::schema::Request>(request).unwrap_err()
+        );
+        let older = serde_json::json!({"error": {"code": "invalid_request", "message": message}});
+        assert!(method_unknown(
+            &older,
+            "agent.prompt_tracked_from_the_future"
+        ));
+        let refused = serde_json::json!({
+            "error": {"code": "agent_not_ready", "message": "agent.prompt_tracked"}
+        });
+        assert!(!method_unknown(&refused, "agent.prompt_tracked"));
+    }
 
     #[test]
     fn prompt_turn_falls_back_only_when_nothing_was_typed() {
