@@ -33,10 +33,11 @@ pub(crate) fn apply_pane_base_env(cmd: &mut CommandBuilder) {
 }
 
 pub(crate) fn pi_extension_dir() -> io::Result<PathBuf> {
-    Ok(
-        config_dir_from_env_or_home(PI_CODING_AGENT_DIR_ENV_VAR, &[".pi", "agent"])?
-            .join("extensions"),
-    )
+    Ok(pi_agent_dir()?.join("extensions"))
+}
+
+pub(crate) fn pi_agent_dir() -> io::Result<PathBuf> {
+    config_dir_from_env_or_home(PI_CODING_AGENT_DIR_ENV_VAR, &[".pi", "agent"])
 }
 
 pub(crate) fn omp_extension_dir() -> io::Result<PathBuf> {

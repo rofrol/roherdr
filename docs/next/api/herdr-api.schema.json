@@ -1378,6 +1378,27 @@
     },
     "request": {
       "$defs": {
+        "AgentHandoffParams": {
+          "description": "Hands the session of the agent in `pane_id` over to another agent: a new\ntab after the source tab, in the source pane's directory, starts `to` with\na first prompt that points at the source session's transcript. The source\ntab stays as it is.",
+          "properties": {
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "to": {
+              "description": "The agent to continue the work: `claude`, `pi` or `codex`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "to"
+          ],
+          "type": "object"
+        },
         "AgentLimitKind": {
           "description": "Which limit ended an agent's turn; the remedies differ.",
           "oneOf": [
@@ -6469,6 +6490,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.handoff",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentHandoffParams"
             }
           },
           "required": [

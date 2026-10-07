@@ -29,6 +29,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
+        "handoff" => agent_handoff(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
@@ -595,6 +596,41 @@ fn agent_set_task(args: &[String]) -> std::io::Result<i32> {
     ))
 }
 
+fn agent_handoff(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent handoff <pane> --to claude|pi|codex [--focus]";
+    let mut pane_id = None;
+    let mut to = None;
+    let mut focus = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--to" => match args.next() {
+                Some(agent) => to = Some(agent.clone()),
+                None => {
+                    eprintln!("{USAGE}");
+                    return Ok(2);
+                }
+            },
+            "--focus" => focus = true,
+            pane if pane_id.is_none() && !pane.starts_with('-') => {
+                pane_id = Some(super::normalize_pane_id(pane));
+            }
+            _ => {
+                eprintln!("{USAGE}");
+                return Ok(2);
+            }
+        }
+    }
+    let (Some(pane_id), Some(to)) = (pane_id, to) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:handoff".into(),
+        method: Method::AgentHandoff(crate::api::schema::AgentHandoffParams { pane_id, to, focus }),
+    })?)
+}
+
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
@@ -1058,6 +1094,7 @@ fn print_agent_help() {
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
     );
+    eprintln!("  herdr agent handoff <pane> --to claude|pi|codex [--focus]");
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"

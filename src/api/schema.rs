@@ -167,6 +167,8 @@ pub enum Method {
     AgentKindList(EmptyParams),
     #[serde(rename = "agent.start")]
     AgentStart(AgentStartParams),
+    #[serde(rename = "agent.handoff")]
+    AgentHandoff(AgentHandoffParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

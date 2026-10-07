@@ -175,6 +175,19 @@ pub struct AgentStartParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// Hands the session of the agent in `pane_id` over to another agent: a new
+/// tab after the source tab, in the source pane's directory, starts `to` with
+/// a first prompt that points at the source session's transcript. The source
+/// tab stays as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentHandoffParams {
+    pub pane_id: String,
+    /// The agent to continue the work: `claude`, `pi` or `codex`.
+    pub to: String,
+    #[serde(default)]
+    pub focus: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptParams {
     pub target: String,

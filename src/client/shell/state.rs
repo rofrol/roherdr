@@ -829,6 +829,10 @@ pub(super) enum ClientContextMenuAction {
     DismissQuestions,
     /// Opens the image list to attach image files to the pane.
     AttachImage,
+    /// Opens the agents the tab's session can be handed over to.
+    HandOver,
+    /// Hands the session over to the handoff menu's agent at this index.
+    HandOverTo(usize),
 }
 
 /// The branches the server listed for the branch menu, or why it could not.
@@ -874,6 +878,14 @@ pub(super) enum ClientContextMenuTarget {
         /// Agents of the tab that await a reply, when the server can dismiss
         /// their questions.
         awaiting_panes: usize,
+        /// The server can hand the tab's agent session over to another agent.
+        can_hand_over: bool,
+    },
+    /// The agents a tab's session can be handed over to (`agent.handoff`),
+    /// opened from the tab's menu.
+    Handoff {
+        /// The pane whose agent session is handed over.
+        pane_id: String,
     },
     /// The spaces list's sort choice, opened from the header button.
     SortSpaces(super::space_sort::SpaceSort),

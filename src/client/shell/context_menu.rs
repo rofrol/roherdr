@@ -17,6 +17,11 @@ fn branch_state(branch: &crate::api::schema::GitBranchInfo) -> String {
     }
 }
 
+/// The agents a session can be handed over to, as `agent.handoff` names
+/// them, with their menu labels.
+pub(super) const HANDOFF_AGENTS: [(&str, &str); 3] =
+    [("claude", "Claude"), ("pi", "Pi"), ("codex", "Codex")];
+
 /// A push status chip as a menu title: the shown branch and the counts.
 pub(super) type ChipTitle<'a> = (Option<&'a str>, Option<(usize, usize)>);
 
@@ -125,6 +130,7 @@ impl ClientContextMenuOverlay {
                 bookmarked,
                 in_list,
                 awaiting_panes,
+                can_hand_over,
                 ..
             } => {
                 // The job actions are chips on one `Close jobs:` row, as the
@@ -152,6 +158,9 @@ impl ClientContextMenuOverlay {
                         Action::ToggleBookmark,
                     ));
                 }
+                if *can_hand_over && !*in_list {
+                    items.push(item("Hand over to…", Action::HandOver));
+                }
                 if *running_jobs > 0 {
                     items.push(item(
                         &format!("{} {running_jobs}", crate::ui::motion::job_glyph()),
@@ -170,6 +179,11 @@ impl ClientContextMenuOverlay {
                 items.push(item("Close", Action::Close));
                 items
             }
+            ClientContextMenuTarget::Handoff { .. } => HANDOFF_AGENTS
+                .iter()
+                .enumerate()
+                .map(|(index, (_, label))| item(label, Action::HandOverTo(index)))
+                .collect(),
             ClientContextMenuTarget::AgentPicker { current, kinds, .. } => match kinds {
                 None => vec![item("loading…", Action::Dismiss)],
                 Some(Err(message)) => vec![item(message, Action::Dismiss)],
@@ -378,6 +392,13 @@ impl ClientShellState {
         let awaiting_panes = self
             .awaiting_reply_panes(|agent| agent.tab_id == tab_id)
             .len();
+        let can_hand_over = self.supports_endpoint_method(
+            &crate::api::schema::Method::AgentHandoff(crate::api::schema::AgentHandoffParams {
+                pane_id: String::new(),
+                to: String::new(),
+                focus: false,
+            }),
+        ) && self.handoff_pane(&tab_id).is_some();
         Some(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -388,11 +409,31 @@ impl ClientShellState {
                 bookmarked,
                 in_list,
                 awaiting_panes,
+                can_hand_over,
             },
             x,
             y,
             highlighted: 0,
         })
+    }
+
+    /// The pane whose session a tab hands over: its agent's, else (an agent
+    /// that exited, for example at its usage limit) its focused pane. The
+    /// server reports a pane without a known session.
+    pub(super) fn handoff_pane(&self, tab_id: &str) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.tab_id == tab_id)
+            .map(|agent| agent.pane_id.clone())
+            .or_else(|| {
+                let panes = || snapshot.panes.iter().filter(|pane| pane.tab_id == tab_id);
+                panes()
+                    .find(|pane| pane.focused)
+                    .or_else(|| panes().next())
+                    .map(|pane| pane.pane_id.clone())
+            })
     }
 
     /// Panes whose agent awaits a reply among those `select` picks, when
@@ -569,7 +610,22 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         };
+        let (x, y) = (menu.x, menu.y);
         match menu.target {
+            ClientContextMenuTarget::Tab { tab_id, .. }
+                if action == ClientContextMenuAction::HandOver =>
+            {
+                // The pane now, not when the menu opened.
+                if let Some(pane_id) = self.handoff_pane(&tab_id) {
+                    self.overlay =
+                        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+                            target: ClientContextMenuTarget::Handoff { pane_id },
+                            x,
+                            y,
+                            highlighted: 0,
+                        }));
+                }
+            }
             ClientContextMenuTarget::Workspace {
                 workspace_id,
                 close_group,
@@ -581,6 +637,22 @@ impl ClientShellState {
                 ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Branches { .. } => {}
+            ClientContextMenuTarget::Handoff { pane_id } => {
+                if let ClientContextMenuAction::HandOverTo(index) = action {
+                    if let Some((to, _)) = HANDOFF_AGENTS.get(index) {
+                        self.push_endpoint_method(
+                            crate::api::schema::Method::AgentHandoff(
+                                crate::api::schema::AgentHandoffParams {
+                                    pane_id,
+                                    to: (*to).to_owned(),
+                                    focus: true,
+                                },
+                            ),
+                            outcome,
+                        );
+                    }
+                }
+            }
             ClientContextMenuTarget::AgentPicker {
                 workspace_id,
                 current,

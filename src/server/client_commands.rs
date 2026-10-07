@@ -13,6 +13,7 @@ pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
 const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 
 const CLIENT_SHELL_METHODS: &[&str] = &[
+    "agent.handoff",
     "agent.kind_list",
     "client_shell.surface.set",
     "command.invoke",
@@ -306,6 +307,10 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         // Freeze additive methods separately without rewriting the published fixture.
+        assert_eq!(
+            actual.remove("agent.handoff").as_deref(),
+            Some("9e4ddf4f97ad0b4f8ac64465876862022d6aff9baa90e77f3dd8473517ab65dd")
+        );
         assert_eq!(
             actual.remove("agent.kind_list").as_deref(),
             Some("6755852f82eb78c061dca4393e3ab21214cfbd4cc27e783212ce7e010b1971b0")

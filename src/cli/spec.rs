@@ -501,6 +501,22 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("handoff")
+                .about("Hand an agent's session over to another agent in a new tab")
+                .override_usage("herdr agent handoff <PANE> --to <AGENT> [--focus]")
+                .arg(required("pane", "PANE").help("Pane of the agent whose session to hand over"))
+                .arg(
+                    option("to", "AGENT")
+                        .required(true)
+                        .value_parser(["claude", "pi", "codex"])
+                        .help("Agent that continues the work"),
+                )
+                .arg(flag("focus").help("Focus the new tab"))
+                .after_help(
+                    "Opens a tab after the source tab, in the source pane's directory, and starts the agent with a first prompt naming the source agent, its session id, its transcript and its task. The new agent reads the transcript itself, so this works after the source agent hit its usage limit. The source tab stays as it is. An unknown session or a missing transcript is an error.",
+                ),
+        )
+        .subcommand(
             Command::new("explain")
                 .about("Explain agent detection state")
                 .arg(Arg::new("target").value_name("TARGET"))
