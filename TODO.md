@@ -1538,6 +1538,13 @@ Items agents add. Not approved until the user moves them up.
   auto-mode calls never reach `can_use_tool`. The coordinator's check of
   the commits before cherry-picking stays the gate.
 
+## Needs a decision
+
+Moved here in the 2026-10-06 triage: each item's last line states what the
+user needs to decide or do.
+
+### Decide
+
 - [ ] A legend explaining the UI's dots and symbols (agent state dots,
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
   states, sort buttons, the grip, footer provider codes). A status legend
