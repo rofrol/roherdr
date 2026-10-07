@@ -36,8 +36,12 @@ impl App {
             .collect()
     }
 
-    pub(super) fn reconcile_managed_agent_target(&mut self, target: &str) {
-        let Ok(resolved) = self.resolve_agent_target(target) else {
+    pub(super) fn reconcile_managed_agent_target(
+        &mut self,
+        target: &str,
+        prefer_workspace_id: Option<&str>,
+    ) {
+        let Ok(resolved) = self.resolve_agent_target_preferring(target, prefer_workspace_id) else {
             return;
         };
         let Some(terminal_id) = self
@@ -64,8 +68,9 @@ impl App {
     pub(super) fn agent_info_for_target(
         &self,
         target: &str,
+        prefer_workspace_id: Option<&str>,
     ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
-        let resolved = self.resolve_agent_target(target)?;
+        let resolved = self.resolve_agent_target_preferring(target, prefer_workspace_id)?;
         self.agent_info(resolved.ws_idx, resolved.pane_id)
             .ok_or_else(|| TerminalTargetError::NotFound {
                 target: target.to_string(),
@@ -75,8 +80,9 @@ impl App {
     pub(super) fn focus_agent_target(
         &mut self,
         target: &str,
+        prefer_workspace_id: Option<&str>,
     ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
-        let resolved = self.resolve_agent_target(target)?;
+        let resolved = self.resolve_agent_target_preferring(target, prefer_workspace_id)?;
         self.state
             .focus_pane_in_workspace(resolved.ws_idx, resolved.pane_id);
         self.state.mark_active_tab_seen();
@@ -90,10 +96,11 @@ impl App {
     pub(super) fn rename_agent_target(
         &mut self,
         target: &str,
+        prefer_workspace_id: Option<&str>,
         name: Option<String>,
     ) -> Result<crate::api::schema::AgentInfo, AgentRenameError> {
         let resolved = self
-            .resolve_agent_target(target)
+            .resolve_agent_target_preferring(target, prefer_workspace_id)
             .map_err(AgentRenameError::Target)?;
         let normalized_name = match name {
             Some(name) if valid_agent_name(&name) => Some(name),
@@ -102,7 +109,7 @@ impl App {
         };
 
         if let Some(name) = normalized_name.as_deref() {
-            let conflicts = self.agent_name_conflicts(name, &resolved.terminal_id);
+            let conflicts = self.agent_name_conflicts(name, &resolved.terminal_id, resolved.ws_idx);
             if !conflicts.is_empty() {
                 return Err(AgentRenameError::DuplicateName {
                     name: name.to_string(),
@@ -162,16 +169,16 @@ impl App {
         }
         let persisted_agent_session =
             crate::agent_resume::persisted_session_from_launch_args(kind, &params.args);
-        let conflicts = self.agent_name_conflicts(&name, "");
+        let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
+            return Err(AgentStartError::TargetNotFound(params.pane_id));
+        };
+        let conflicts = self.agent_name_conflicts(&name, "", ws_idx);
         if !conflicts.is_empty() {
             return Err(AgentStartError::DuplicateName {
                 name,
                 candidates: conflicts,
             });
         }
-        let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
-            return Err(AgentStartError::TargetNotFound(params.pane_id));
-        };
         let terminal_id = self
             .state
             .workspaces
@@ -429,13 +436,21 @@ impl App {
         })
     }
 
+    /// Agent names are unique per workspace: callers resolve a name in their
+    /// own workspace first, so another workspace may reuse it.
     fn agent_name_conflicts(
         &self,
         name: &str,
         except_terminal_id: &str,
+        ws_idx: usize,
     ) -> Vec<crate::api::schema::AgentInfo> {
-        self.collect_agent_infos()
-            .into_iter()
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        ws.tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .filter_map(|pane_id| self.agent_info(ws_idx, pane_id))
             .filter(|agent| {
                 agent.name.as_deref() == Some(name) && agent.terminal_id != except_terminal_id
             })

@@ -15,22 +15,26 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
+    // The prompt text is the second positional argument and may be `--global` itself.
+    let text_position = (subcommand == "prompt").then_some(1);
+    let (global, scoped_args) = split_global_flag(&args[1..], text_position);
+    let scope = || NameScope::for_caller(global);
     match subcommand {
+        "get" => agent_get(&scoped_args, scope()),
+        "read" => agent_read(&scoped_args, scope()),
+        "send-keys" => agent_send_keys(&scoped_args, scope()),
+        "prompt" => agent_prompt(&scoped_args, scope()),
+        "rename" => agent_rename(&scoped_args, scope()),
+        "focus" => agent_focus(&scoped_args, scope()),
+        "wait" => agent_wait(&scoped_args, scope()),
+        "attach" => agent_attach(&scoped_args, scope()),
+        "explain" => agent_explain(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
-        "get" => agent_get(&args[1..]),
-        "read" => agent_read(&args[1..]),
-        "send-keys" => agent_send_keys(&args[1..]),
-        "prompt" => agent_prompt(&args[1..]),
-        "rename" => agent_rename(&args[1..]),
-        "focus" => agent_focus(&args[1..]),
         "awaiting-reply" => agent_awaiting_reply(&args[1..]),
         "limited" => agent_limited(&args[1..]),
         "set-task" => agent_set_task(&args[1..]),
-        "wait" => agent_wait(&args[1..]),
-        "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
         "handoff" => agent_handoff(&args[1..]),
-        "explain" => agent_explain(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
             Ok(0)
@@ -42,7 +46,60 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-fn agent_explain(args: &[String]) -> std::io::Result<i32> {
+/// Where an agent name given as a target is looked up first. A pane id or
+/// terminal id target is unaffected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NameScope {
+    prefer_workspace_id: Option<String>,
+}
+
+impl NameScope {
+    /// The caller's workspace (`HERDR_WORKSPACE_ID`) unless `--global` was
+    /// given; a caller outside a pane or on a remote machine has none.
+    fn for_caller(global: bool) -> Self {
+        Self::from_parts(global, super::target::caller_workspace_id().as_deref())
+    }
+
+    fn from_parts(global: bool, caller_workspace_id: Option<&str>) -> Self {
+        Self {
+            prefer_workspace_id: (!global)
+                .then_some(caller_workspace_id)
+                .flatten()
+                .map(super::normalize_workspace_id),
+        }
+    }
+
+    fn workspace(workspace_id: Option<&str>) -> Self {
+        Self {
+            prefer_workspace_id: workspace_id.map(str::to_owned),
+        }
+    }
+
+    fn target(&self, target: &str) -> AgentTarget {
+        AgentTarget {
+            target: target.to_owned(),
+            prefer_workspace_id: self.prefer_workspace_id.clone(),
+        }
+    }
+}
+
+/// Removes every `--global` from `args` except one that lands at
+/// `keep_position` among the remaining arguments, and reports whether one
+/// was removed.
+fn split_global_flag(args: &[String], keep_position: Option<usize>) -> (bool, Vec<String>) {
+    let mut global = false;
+    let mut rest = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--global" && Some(rest.len()) != keep_position {
+            global = true;
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    (global, rest)
+}
+
+fn agent_explain(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let mut file = None;
     let mut agent = None;
     let mut json = false;
@@ -154,9 +211,7 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
 
         let response = super::send_request(&Request {
             id: "cli:agent:explain".into(),
-            method: Method::AgentExplain(AgentTarget {
-                target: target.to_owned(),
-            }),
+            method: Method::AgentExplain(scope.target(&target)),
         })?;
         if response.get("error").is_some() {
             eprintln!("{}", serde_json::to_string(&response).unwrap());
@@ -420,8 +475,11 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     {
         return super::print_response(&agent_name_lost_error("cli:agent:start", name));
     }
+    // Names are unique per workspace, so look the new name up in the started pane's workspace.
+    let scope = NameScope::workspace(response["result"]["agent"]["workspace_id"].as_str());
     let waited = wait_for_named_agent(
         name,
+        &scope,
         &pane_id,
         timeout,
         &expected_kind,
@@ -451,7 +509,7 @@ fn agent_list(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-fn agent_get(args: &[String]) -> std::io::Result<i32> {
+fn agent_get(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent get <target>");
         return Ok(2);
@@ -463,13 +521,11 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
 
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:get".into(),
-        method: Method::AgentGet(AgentTarget {
-            target: target.clone(),
-        }),
+        method: Method::AgentGet(scope.target(target)),
     })?)
 }
 
-fn agent_focus(args: &[String]) -> std::io::Result<i32> {
+fn agent_focus(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent focus <target>");
         return Ok(2);
@@ -481,9 +537,7 @@ fn agent_focus(args: &[String]) -> std::io::Result<i32> {
 
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:focus".into(),
-        method: Method::AgentFocus(AgentTarget {
-            target: target.clone(),
-        }),
+        method: Method::AgentFocus(scope.target(target)),
     })?)
 }
 
@@ -631,14 +685,14 @@ fn agent_handoff(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-fn agent_attach(args: &[String]) -> std::io::Result<i32> {
+fn agent_attach(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
             Ok(parsed) => parsed,
             Err(code) => return Ok(code),
         };
 
-    let response = resolve_agent_target(&target, "cli:agent:attach:resolve")?;
+    let response = resolve_agent_target(&target, &scope, "cli:agent:attach:resolve")?;
     if response.get("error").is_some() {
         eprintln!("{}", serde_json::to_string(&response).unwrap());
         return Ok(1);
@@ -651,7 +705,7 @@ fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn agent_wait(args: &[String]) -> std::io::Result<i32> {
+fn agent_wait(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent wait <target> [--until STATUS]... [--timeout MS]");
         return Ok(2);
@@ -701,6 +755,7 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
         id: "cli:agent:wait".into(),
         method: Method::AgentWait(AgentWaitParams {
             target: target.clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
             until,
             timeout_ms,
         }),
@@ -709,6 +764,7 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
 
 fn wait_for_named_agent(
     name: &str,
+    scope: &NameScope,
     fallback_pane_id: &str,
     timeout: Duration,
     expected_kind: &str,
@@ -720,18 +776,18 @@ fn wait_for_named_agent(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
             // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
+            let _ = resolve_agent_target_unchecked(name, scope, "cli:agent:start:timeout");
             return Ok(Err(agent_wait_timeout()));
         }
         let poll_id = "cli:agent:start";
         let mut response = if first_poll {
             first_poll = false;
-            resolve_agent_target(name, poll_id)?
+            resolve_agent_target(name, scope, poll_id)?
         } else {
-            resolve_agent_target_unchecked(name, poll_id)?
+            resolve_agent_target_unchecked(name, scope, poll_id)?
         };
         if response.get("error").is_some() {
-            response = resolve_agent_target_unchecked(fallback_pane_id, poll_id)?;
+            response = resolve_agent_target_unchecked(fallback_pane_id, scope, poll_id)?;
             if response.get("error").is_some() {
                 std::thread::sleep(AGENT_START_POLL_INTERVAL);
                 continue;
@@ -882,27 +938,30 @@ fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_js
     })
 }
 
-fn resolve_agent_target(target: &str, request_id: &str) -> std::io::Result<serde_json::Value> {
-    super::send_request(&agent_get_request(target, request_id))
+fn resolve_agent_target(
+    target: &str,
+    scope: &NameScope,
+    request_id: &str,
+) -> std::io::Result<serde_json::Value> {
+    super::send_request(&agent_get_request(target, scope, request_id))
 }
 
 fn resolve_agent_target_unchecked(
     target: &str,
+    scope: &NameScope,
     request_id: &str,
 ) -> std::io::Result<serde_json::Value> {
-    super::send_request_unchecked(&agent_get_request(target, request_id))
+    super::send_request_unchecked(&agent_get_request(target, scope, request_id))
 }
 
-fn agent_get_request(target: &str, request_id: &str) -> Request {
+fn agent_get_request(target: &str, scope: &NameScope, request_id: &str) -> Request {
     Request {
         id: request_id.into(),
-        method: Method::AgentGet(AgentTarget {
-            target: target.to_owned(),
-        }),
+        method: Method::AgentGet(scope.target(target)),
     }
 }
 
-fn agent_rename(args: &[String]) -> std::io::Result<i32> {
+fn agent_rename(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let [target, value] = args else {
         eprintln!("usage: herdr agent rename <target> <name>|--clear");
         return Ok(2);
@@ -917,12 +976,13 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
         id: "cli:agent:rename".into(),
         method: Method::AgentRename(AgentRenameParams {
             target: target.clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
             name,
         }),
     })?)
 }
 
-fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
+fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!(
             "usage: herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]"
@@ -987,6 +1047,7 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             target: target.clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
             text: text.clone(),
             wait: wait.then_some(AgentPromptWaitOptions {
                 until,
@@ -998,7 +1059,7 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     super::print_response(&response)
 }
 
-fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
+fn agent_send_keys(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     if args.len() < 2 {
         eprintln!("usage: herdr agent send-keys <target> <key> [key ...]");
         return Ok(2);
@@ -1008,12 +1069,13 @@ fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
         id: "cli:agent:send-keys".into(),
         method: Method::AgentSendKeys(AgentSendKeysParams {
             target: args[0].clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
             keys: args[1..].to_vec(),
         }),
     })?)
 }
 
-fn agent_read(args: &[String]) -> std::io::Result<i32> {
+fn agent_read(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
         return Ok(2);
@@ -1068,6 +1130,7 @@ fn agent_read(args: &[String]) -> std::io::Result<i32> {
         id: "cli:agent:read".into(),
         method: Method::AgentRead(AgentReadParams {
             target: target.clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
             source,
             lines,
             format,
@@ -1100,6 +1163,9 @@ fn print_agent_help() {
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
     );
     eprintln!("  targets accept unique agent names and pane ids that currently host agents");
+    eprintln!("  inside a pane, a name resolves in the caller's workspace first, then in all;");
+    eprintln!("  --global (get, read, send-keys, prompt, rename, focus, wait, attach, explain)");
+    eprintln!("  looks a name up in every workspace at once");
     eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
 }
 
@@ -1108,4 +1174,61 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
         eprintln!("{err}");
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{split_global_flag, NameScope};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).into()).collect()
+    }
+
+    #[test]
+    fn global_flag_is_removed_wherever_it_appears() {
+        assert_eq!(
+            split_global_flag(&args(&["--global", "reviewer"]), None),
+            (true, args(&["reviewer"]))
+        );
+        assert_eq!(
+            split_global_flag(&args(&["reviewer", "--source", "recent", "--global"]), None),
+            (true, args(&["reviewer", "--source", "recent"]))
+        );
+        assert_eq!(
+            split_global_flag(&args(&["reviewer"]), None),
+            (false, args(&["reviewer"]))
+        );
+    }
+
+    #[test]
+    fn global_flag_keeps_a_prompt_text_that_reads_global() {
+        assert_eq!(
+            split_global_flag(&args(&["reviewer", "--global", "--wait"]), Some(1)),
+            (false, args(&["reviewer", "--global", "--wait"]))
+        );
+        assert_eq!(
+            split_global_flag(&args(&["--global", "reviewer", "hello", "--wait"]), Some(1)),
+            (true, args(&["reviewer", "hello", "--wait"]))
+        );
+        assert_eq!(
+            split_global_flag(&args(&["reviewer", "hello", "--global"]), Some(1)),
+            (true, args(&["reviewer", "hello"]))
+        );
+    }
+
+    #[test]
+    fn name_scope_prefers_the_caller_workspace_unless_global() {
+        assert_eq!(
+            NameScope::from_parts(false, Some("w_2"))
+                .target("reviewer")
+                .prefer_workspace_id
+                .as_deref(),
+            Some("w_2")
+        );
+        assert_eq!(
+            NameScope::from_parts(true, Some("w_2")).prefer_workspace_id,
+            None
+        );
+        assert_eq!(NameScope::from_parts(false, None).prefer_workspace_id, None);
+    }
 }

@@ -129,7 +129,7 @@ herdr agent rename w1:p1 reviewer
 herdr agent rename reviewer --clear
 ```
 
-Targets accept a unique live agent name or the pane ID that currently hosts the agent. Terminal IDs and bare agent-kind labels are not accepted.
+Targets accept a live agent name or the pane ID that currently hosts the agent. Terminal IDs and bare agent-kind labels are not accepted. Names are unique per workspace, and a name resolves in the caller's workspace first; add `--global` to look it up in every workspace.
 
 ## Custom status labels
 

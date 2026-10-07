@@ -1422,6 +1422,13 @@
         },
         "AgentPromptParams": {
           "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             },
@@ -1478,6 +1485,13 @@
                 "null"
               ]
             },
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "source": {
               "$ref": "#/schemas/request/$defs/ReadSource"
             },
@@ -1503,6 +1517,13 @@
                 "null"
               ]
             },
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             }
@@ -1519,6 +1540,13 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
               "type": "string"
@@ -1576,6 +1604,13 @@
         },
         "AgentTarget": {
           "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             }
@@ -1864,6 +1899,13 @@
         },
         "AgentWaitParams": {
           "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             },

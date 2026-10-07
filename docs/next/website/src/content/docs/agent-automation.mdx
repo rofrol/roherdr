@@ -37,7 +37,7 @@ Use pane commands for shells, tests, servers, CI watchers, and other ordinary te
 
 A pane ID such as `w1:p2` identifies the terminal location. An agent name such as `reviewer` is a convenient alias for the current agent in that pane. Names must match `[a-z][a-z0-9_-]{0,31}` and be unique among live agents. The alias is cleared when that agent exits, is released, or is replaced; it does not permanently rename the pane.
 
-Agent commands accept either a unique live name or the pane ID that currently hosts the agent.
+Agent commands accept either a live agent name or the pane ID that currently hosts the agent. Names are unique per workspace: an orchestrator in one workspace can address its own `reviewer` while another workspace runs a `reviewer` of its own. A name resolves in the caller's workspace first, then across all workspaces when it is unique there; `--global` skips the caller's workspace and looks in every workspace at once.
 
 An available shell pane is at its interactive shell prompt: the shell itself owns the foreground, with no foreground command, editor, or agent running. Return the pane to its prompt before calling `agent start`.
 

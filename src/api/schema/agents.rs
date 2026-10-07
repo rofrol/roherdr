@@ -7,6 +7,11 @@ use super::common::{AgentStatus, ReadFormat, ReadSource};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentReadParams {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     pub source: ReadSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
@@ -19,12 +24,22 @@ pub struct AgentReadParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentSendKeysParams {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentWaitParams {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub until: Vec<AgentStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +60,11 @@ pub struct AgentPromptWaitOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentRenameParams {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -191,6 +211,11 @@ pub struct AgentHandoffParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptParams {
     pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,

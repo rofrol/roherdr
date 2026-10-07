@@ -3143,6 +3143,7 @@ mod tests {
             method: crate::api::schema::Method::AgentRename(
                 crate::api::schema::AgentRenameParams {
                     target: pane_id,
+                    prefer_workspace_id: None,
                     name: Some("replacement".into()),
                 },
             ),

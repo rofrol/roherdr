@@ -2794,6 +2794,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
             id: "focus-first-agent".into(),
             method: crate::api::schema::Method::AgentFocus(crate::api::schema::AgentTarget {
                 target: first_pane_id.clone(),
+                prefer_workspace_id: None,
             }),
         },
         respond_to,
@@ -4170,6 +4171,7 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
                 id: "read".into(),
                 method: api::schema::Method::AgentRead(api::schema::AgentReadParams {
                     target: public_pane_id.clone(),
+                    prefer_workspace_id: None,
                     source: api::schema::ReadSource::Recent,
                     lines: Some(200),
                     format: api::schema::ReadFormat::Text,

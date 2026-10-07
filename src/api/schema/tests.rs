@@ -114,6 +114,7 @@ fn agent_start_and_prompt_requests_round_trip() {
         id: "prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             target: "reviewer".into(),
+            prefer_workspace_id: None,
             text: "review this".into(),
             wait: None,
         }),
@@ -129,6 +130,7 @@ fn agent_start_and_prompt_requests_round_trip() {
         id: "prompt-and-wait".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             target: "reviewer".into(),
+            prefer_workspace_id: None,
             text: "review this".into(),
             wait: Some(AgentPromptWaitOptions {
                 until: vec![AgentStatus::Idle, AgentStatus::Done],
@@ -264,6 +266,7 @@ fn request_round_trips_for_agent_explain() {
         id: "req_agent_explain".into(),
         method: Method::AgentExplain(AgentTarget {
             target: "agent-1".into(),
+            prefer_workspace_id: None,
         }),
     };
 

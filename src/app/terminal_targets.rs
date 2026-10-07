@@ -75,6 +75,19 @@ impl App {
         &self,
         target: &str,
     ) -> Result<TerminalTarget, TerminalTargetError> {
+        self.resolve_agent_target_preferring(target, None)
+    }
+
+    /// Resolves `target` like `resolve_agent_target`, except that an agent name
+    /// is looked up in `prefer_workspace_id` first. Only when that workspace has
+    /// no agent with the name does the lookup cover every workspace, so a name
+    /// that is unique across the session resolves to the same agent with or
+    /// without a preference. An unknown workspace id adds no preference.
+    pub(crate) fn resolve_agent_target_preferring(
+        &self,
+        target: &str,
+        prefer_workspace_id: Option<&str>,
+    ) -> Result<TerminalTarget, TerminalTargetError> {
         if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target) {
             if let Some(resolved) = self
                 .terminal_target_for_pane(ws_idx, pane_id)
@@ -94,6 +107,16 @@ impl App {
                     .is_some_and(|terminal| terminal.agent_name.as_deref() == Some(target))
             })
             .collect();
+        if let Some(ws_idx) = prefer_workspace_id.and_then(|id| self.parse_workspace_id(id)) {
+            let preferred: Vec<_> = name_matches
+                .iter()
+                .filter(|candidate| candidate.ws_idx == ws_idx)
+                .cloned()
+                .collect();
+            if let Some(resolved) = self.single_terminal_match(target, preferred)? {
+                return Ok(resolved);
+            }
+        }
         if let Some(resolved) = self.single_terminal_match(target, name_matches)? {
             return Ok(resolved);
         }

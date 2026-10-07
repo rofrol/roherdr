@@ -43,8 +43,9 @@ impl App {
     }
 
     pub(super) fn handle_agent_get(&mut self, id: String, target: AgentTarget) -> String {
-        self.reconcile_managed_agent_target(&target.target);
-        let agent = match self.agent_info_for_target(&target.target) {
+        let prefer = target.prefer_workspace_id.as_deref();
+        self.reconcile_managed_agent_target(&target.target, prefer);
+        let agent = match self.agent_info_for_target(&target.target, prefer) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
         };
@@ -53,16 +54,21 @@ impl App {
     }
 
     pub(super) fn handle_agent_focus(&mut self, id: String, target: AgentTarget) -> String {
-        let agent = match self.focus_agent_target(&target.target) {
-            Ok(agent) => agent,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
-        };
+        let agent =
+            match self.focus_agent_target(&target.target, target.prefer_workspace_id.as_deref()) {
+                Ok(agent) => agent,
+                Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            };
 
         encode_success(id, ResponseResult::AgentInfo { agent })
     }
 
     pub(super) fn handle_agent_rename(&mut self, id: String, params: AgentRenameParams) -> String {
-        let agent = match self.rename_agent_target(&params.target, params.name) {
+        let agent = match self.rename_agent_target(
+            &params.target,
+            params.prefer_workspace_id.as_deref(),
+            params.name,
+        ) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_rename_error_body(err)),
         };
@@ -374,7 +380,9 @@ impl App {
                 "agent prompt must not be empty",
             ));
         }
-        let resolved = match self.resolve_agent_target(&params.target) {
+        let resolved = match self
+            .resolve_agent_target_preferring(&params.target, params.prefer_workspace_id.as_deref())
+        {
             Ok(resolved) => resolved,
             Err(err) => return Err(encode_error_body(id, self.agent_target_error_body(err))),
         };
@@ -499,7 +507,9 @@ impl App {
         id: String,
         params: crate::api::schema::AgentReadParams,
     ) -> String {
-        let resolved = match self.resolve_agent_target(&params.target) {
+        let resolved = match self
+            .resolve_agent_target_preferring(&params.target, params.prefer_workspace_id.as_deref())
+        {
             Ok(resolved) => resolved,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
         };
@@ -536,7 +546,9 @@ impl App {
     }
 
     pub(super) fn handle_agent_explain(&mut self, id: String, target: AgentTarget) -> String {
-        let resolved = match self.resolve_agent_target(&target.target) {
+        let resolved = match self
+            .resolve_agent_target_preferring(&target.target, target.prefer_workspace_id.as_deref())
+        {
             Ok(resolved) => resolved,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
         };
@@ -611,7 +623,9 @@ impl App {
         id: String,
         params: AgentSendKeysParams,
     ) -> String {
-        let resolved = match self.resolve_agent_target(&params.target) {
+        let resolved = match self
+            .resolve_agent_target_preferring(&params.target, params.prefer_workspace_id.as_deref())
+        {
             Ok(resolved) => resolved,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
         };
@@ -681,7 +695,7 @@ fn agent_not_found(id: String, target: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        api::schema::{AgentStatus, SuccessResponse},
+        api::schema::{AgentInfo, AgentStatus, SuccessResponse},
         app::Mode,
         config::Config,
         detect::{Agent, AgentState},
@@ -703,6 +717,136 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app
+    }
+
+    /// Two workspaces: the first with two agent panes, the second with one.
+    /// Returns each agent pane as (workspace index, public pane id).
+    fn app_with_agents_in_two_workspaces() -> (App, Vec<(usize, String)>) {
+        let mut app = app_with_agent();
+        let mut first = Workspace::test_new("first");
+        first.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![first, Workspace::test_new("second")];
+        app.state.ensure_test_terminals();
+        let mut agents = Vec::new();
+        for ws_idx in 0..app.state.workspaces.len() {
+            for pane_id in app.state.workspaces[ws_idx].tabs[0].layout.pane_ids() {
+                let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                    .attached_terminal_id
+                    .clone();
+                app.state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .unwrap()
+                    .set_detected_state(Some(Agent::Pi), AgentState::Idle);
+                agents.push((ws_idx, app.public_pane_id(ws_idx, pane_id).unwrap()));
+            }
+        }
+        (app, agents)
+    }
+
+    fn rename_agent(app: &mut App, target: &str, name: &str) -> Result<AgentInfo, String> {
+        let response = app.handle_agent_rename(
+            "req".into(),
+            AgentRenameParams {
+                target: target.into(),
+                prefer_workspace_id: None,
+                name: Some(name.into()),
+            },
+        );
+        agent_info_or_error_code(&response)
+    }
+
+    fn get_agent(app: &mut App, target: &str, prefer: Option<&str>) -> Result<AgentInfo, String> {
+        let response = app.handle_agent_get(
+            "req".into(),
+            AgentTarget {
+                target: target.into(),
+                prefer_workspace_id: prefer.map(str::to_owned),
+            },
+        );
+        agent_info_or_error_code(&response)
+    }
+
+    fn agent_info_or_error_code(response: &str) -> Result<AgentInfo, String> {
+        let value: serde_json::Value = serde_json::from_str(response).unwrap();
+        if let Some(code) = value["error"]["code"].as_str() {
+            return Err(code.to_owned());
+        }
+        let success: SuccessResponse = serde_json::from_str(response).unwrap();
+        let ResponseResult::AgentInfo { agent } = success.result else {
+            panic!("expected agent info response");
+        };
+        Ok(agent)
+    }
+
+    #[test]
+    fn agent_names_are_unique_per_workspace() {
+        let (mut app, agents) = app_with_agents_in_two_workspaces();
+        let [(_, first), (_, second), (_, other_workspace)] = agents.as_slice() else {
+            panic!("expected three agents");
+        };
+
+        assert!(rename_agent(&mut app, first, "reviewer").is_ok());
+        assert!(rename_agent(&mut app, other_workspace, "reviewer").is_ok());
+        assert_eq!(
+            rename_agent(&mut app, second, "reviewer").unwrap_err(),
+            "agent_name_taken"
+        );
+    }
+
+    #[test]
+    fn agent_name_resolves_in_the_preferred_workspace_first() {
+        let (mut app, agents) = app_with_agents_in_two_workspaces();
+        let [(_, first), (_, second), (_, other_workspace)] = agents.as_slice() else {
+            panic!("expected three agents");
+        };
+        rename_agent(&mut app, first, "reviewer").unwrap();
+        rename_agent(&mut app, other_workspace, "reviewer").unwrap();
+        rename_agent(&mut app, second, "solo").unwrap();
+        let first_ws = app.public_workspace_id(0);
+        let second_ws = app.public_workspace_id(1);
+
+        let agent = get_agent(&mut app, "reviewer", Some(&first_ws)).unwrap();
+        assert_eq!(&agent.pane_id, first);
+        let agent = get_agent(&mut app, "reviewer", Some(&second_ws)).unwrap();
+        assert_eq!(&agent.pane_id, other_workspace);
+
+        // Without a preference (`--global`, or a caller outside any pane) the
+        // name stays ambiguous, as does an unknown preferred workspace.
+        assert_eq!(
+            get_agent(&mut app, "reviewer", None).unwrap_err(),
+            "agent_target_ambiguous"
+        );
+        assert_eq!(
+            get_agent(&mut app, "reviewer", Some("w_missing")).unwrap_err(),
+            "agent_target_ambiguous"
+        );
+
+        // A name the preferred workspace lacks still resolves when unique.
+        let agent = get_agent(&mut app, "solo", Some(&second_ws)).unwrap();
+        assert_eq!(&agent.pane_id, second);
+
+        // Pane ids ignore the preference.
+        let agent = get_agent(&mut app, other_workspace, Some(&first_ws)).unwrap();
+        assert_eq!(&agent.pane_id, other_workspace);
+    }
+
+    #[test]
+    fn agent_name_shared_by_other_workspaces_is_ambiguous_from_a_third() {
+        let (mut app, agents) = app_with_agents_in_two_workspaces();
+        let [(_, first), _, (_, other_workspace)] = agents.as_slice() else {
+            panic!("expected three agents");
+        };
+        rename_agent(&mut app, first, "reviewer").unwrap();
+        rename_agent(&mut app, other_workspace, "reviewer").unwrap();
+        app.state.workspaces.push(Workspace::test_new("third"));
+        app.state.ensure_test_terminals();
+        let third_ws = app.public_workspace_id(2);
+
+        assert_eq!(
+            get_agent(&mut app, "reviewer", Some(&third_ws)).unwrap_err(),
+            "agent_target_ambiguous"
+        );
     }
 
     fn start_deferred_agent_prompt(
@@ -746,6 +890,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "A != B".into(),
                 wait: None,
             },
@@ -779,6 +924,7 @@ mod tests {
             "req:before".into(),
             AgentTarget {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
             },
         );
         assert!(
@@ -814,6 +960,7 @@ mod tests {
             "req:after".into(),
             AgentTarget {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
             },
         );
         assert!(
@@ -846,6 +993,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 target: public_pane_id,
+                prefer_workspace_id: None,
                 text: "A != B".into(),
                 wait: None,
             },
@@ -875,6 +1023,7 @@ mod tests {
             "req-raw",
             AgentPromptParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "A != B".into(),
                 wait: None,
             },
@@ -890,6 +1039,7 @@ mod tests {
             "req-label",
             AgentPromptParams {
                 target: "opencode".into(),
+                prefer_workspace_id: None,
                 text: "wrong target".into(),
                 wait: None,
             },
@@ -985,6 +1135,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "unrelated prompt".into(),
                 wait: None,
             },
@@ -1025,6 +1176,7 @@ mod tests {
             "req",
             AgentPromptParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "A != B".into(),
                 wait: None,
             },
@@ -1059,6 +1211,7 @@ mod tests {
             "req-invalid".into(),
             AgentSendKeysParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 keys: vec!["enter".into(), "not-a-key".into()],
             },
         );
@@ -1070,6 +1223,7 @@ mod tests {
             "req-valid".into(),
             AgentSendKeysParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 keys: vec!["up".into(), "enter".into()],
             },
         );
@@ -1104,6 +1258,7 @@ mod tests {
             "req-pending",
             AgentPromptParams {
                 target: "reviewer".into(),
+                prefer_workspace_id: None,
                 text: "A != B".into(),
                 wait: None,
             },
@@ -1138,6 +1293,7 @@ mod tests {
             "req".into(),
             AgentTarget {
                 target: app.public_pane_id(0, pane_id).unwrap(),
+                prefer_workspace_id: None,
             },
         );
 
@@ -1165,6 +1321,7 @@ mod tests {
                 "req".into(),
                 AgentRenameParams {
                     target: target.clone(),
+                    prefer_workspace_id: None,
                     name,
                 },
             );

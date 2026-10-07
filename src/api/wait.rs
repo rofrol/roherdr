@@ -138,7 +138,11 @@ pub(super) fn wait_for_agent(
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let last_event_sequence = event_hub.current_sequence();
-    let initial = match agent_get(&request_id, &params.target, api_tx) {
+    let target = crate::api::schema::AgentTarget {
+        target: params.target,
+        prefer_workspace_id: params.prefer_workspace_id,
+    };
+    let initial = match agent_get(&request_id, &target, api_tx) {
         Ok(agent) => agent,
         Err(response) => {
             return serde_json::to_string(&response)
@@ -154,7 +158,7 @@ pub(super) fn wait_for_agent(
     match wait_for_resolved_agent(
         request_id.clone(),
         ResolvedAgentWait {
-            target: params.target,
+            target,
             until,
             timeout_ms: params.timeout_ms,
             initial,
@@ -194,23 +198,21 @@ pub(super) fn prompt_agent(
     };
 
     let wait_started = std::time::Instant::now();
-    let before_prompt = match agent_get_for_prompt(
-        &request_id,
-        &params.target,
-        api_tx,
-        wait.timeout_ms,
-        wait_started,
-    ) {
-        Ok(agent) => agent,
-        Err(response) => {
-            return serde_json::to_string(&response)
-                .map(Some)
-                .map_err(std::io::Error::other);
-        }
+    let target = crate::api::schema::AgentTarget {
+        target: params.target.clone(),
+        prefer_workspace_id: params.prefer_workspace_id.clone(),
     };
+    let before_prompt =
+        match agent_get_for_prompt(&request_id, &target, api_tx, wait.timeout_ms, wait_started) {
+            Ok(agent) => agent,
+            Err(response) => {
+                return serde_json::to_string(&response)
+                    .map(Some)
+                    .map_err(std::io::Error::other);
+            }
+        };
     let prompt_started_working =
         before_prompt.agent_status == crate::api::schema::AgentStatus::Working;
-    let target = params.target.clone();
     if let Some(prompt_wait) = params.wait.as_mut() {
         prompt_wait.submission_deadline = wait
             .timeout_ms
@@ -235,7 +237,10 @@ pub(super) fn prompt_agent(
     if !agent_wait_identity_matches(
         &prompted,
         &before_prompt.terminal_id,
-        before_prompt.name.as_deref().filter(|name| *name == target),
+        before_prompt
+            .name
+            .as_deref()
+            .filter(|name| *name == target.target),
         before_prompt.agent.as_deref(),
     ) {
         return agent_wait_not_running(request_id).map(Some);
@@ -340,7 +345,7 @@ fn agent_prompt_success(
 }
 
 struct ResolvedAgentWait {
-    target: String,
+    target: crate::api::schema::AgentTarget,
     until: Vec<crate::api::schema::AgentStatus>,
     timeout_ms: Option<u64>,
     initial: crate::api::schema::AgentInfo,
@@ -377,7 +382,7 @@ fn wait_for_resolved_agent(
         .initial
         .name
         .as_ref()
-        .filter(|name| name.as_str() == wait.target)
+        .filter(|name| name.as_str() == wait.target.target)
         .cloned();
     let expected_agent = wait.initial.agent.clone();
     let pane_id = wait.initial.pane_id.clone();
@@ -560,15 +565,13 @@ fn agent_wait_matches(
 
 fn agent_get(
     request_id: &str,
-    target: &str,
+    target: &crate::api::schema::AgentTarget,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
     let response = dispatch_to_app_with_timeout(
         Request {
             id: format!("{request_id}:agent"),
-            method: Method::AgentGet(crate::api::schema::AgentTarget {
-                target: target.to_string(),
-            }),
+            method: Method::AgentGet(target.clone()),
         },
         api_tx,
         Some(APP_RESPONSE_TIMEOUT),
@@ -578,16 +581,14 @@ fn agent_get(
 
 fn agent_get_for_prompt(
     request_id: &str,
-    target: &str,
+    target: &crate::api::schema::AgentTarget,
     api_tx: &ApiRequestSender,
     total_timeout_ms: Option<u64>,
     started: std::time::Instant,
 ) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
     let request = Request {
         id: format!("{request_id}:agent"),
-        method: Method::AgentGet(crate::api::schema::AgentTarget {
-            target: target.to_string(),
-        }),
+        method: Method::AgentGet(target.clone()),
     };
     let remaining_ms = remaining_timeout_ms(total_timeout_ms, started);
     let response = match remaining_ms {
