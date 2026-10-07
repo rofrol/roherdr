@@ -403,6 +403,27 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   made after it finished. Store it somewhere in SQL? Ask the models. I want
   to look through it after the fact. So it would be like a ticket system
   that could even get a web interface later? Ask the models.").
+  Round `20261007-204300-9a56` (sol, MiMo, DeepSeek), agreeing: not a ticket
+  system and no web app now: an audit log of finished items. TODO.md stays
+  the open work; an append-only `.herdr/history.jsonl` committed in the
+  repository holds finished items (SQLite only later as a rebuildable index,
+  never the truth: a per-repo database diverges from clones and discarded
+  worktrees; git alone cannot show aborted or no-commit items, the user's
+  decisions or follow-ups). Each item needs a stable id minted when it is
+  claimed (DeepSeek: a ULID, and a `Todo-Item: <id>` commit trailer, which
+  cherry-pick keeps). Events: `claimed` written before a worker starts, then
+  `done`/`aborted`/`blocked` with the item text at claim and at the end,
+  commits, workers and their journals, review findings, the user's
+  decisions, consult round ids (references into consult-stats), follow-up
+  items created (written at close: not derivable later), checks, timings.
+  A reconcile step at coordinator start reports claims without an end and
+  TODO deletions without a record, loudly, never dropped. Smallest slice:
+  the ledger and the dropdown under the coordinator; then `herdr history
+  --html`, one static page, for review after the fact; GitHub issues or
+  Datasette only as exports. Overlaps the fresh-coordinator item (verified
+  writes, reconcilable records): build them together.
+  Diverged: who writes it (sol, MiMo: herdr's server, the coordinator only
+  proposes; DeepSeek: the coordinator, every TODO edit its own commit).
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
@@ -1048,6 +1069,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   can reconcile (worker id, worktree, branch, base SHA, the event waited
   for), pending menus in TODO.md.
 
+- [ ] A headless worker's line in the sidebar cannot be clicked (user,
+  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
+  header-arrows` and its Bash question: "a headless worker's entry cannot
+  be clicked; ask the models").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1285,4 +1311,14 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
+
+- [ ] Item history: who writes the finished-item records?
+  Options: herdr's server through a `herdr history` call that checks the commits and TODO change before appending (Recommended) | the coordinator appends them itself, each TODO edit its own commit
+  Checked: round on 2026-10-07; sol and MiMo for the server (one writer that validates, survives fresh coordinators), DeepSeek for the coordinator (simpler).
+- [ ] Item history: where does the stable item id live in TODO.md?
+  Options: a short id at the end of the item's first line, e.g. `[t-01J9...]`, minted when the item is claimed (Recommended) | a hidden HTML comment after the line | no id in TODO.md, matched by text
+  Checked: all three models: mutable item text cannot be the key; the id also goes into a `Todo-Item:` commit trailer.
+- [ ] Item history: committed in the repository (public on the fork's GitHub) or kept outside it?
+  Options: `.herdr/history.jsonl` committed in the repository (Recommended) | under herdr's state dir per repository, not committed
+  Checked: the models chose the repository (survives clones and fresh processes); the fork's master is public, so item texts and conclusions become public too.
 
