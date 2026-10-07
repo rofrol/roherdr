@@ -311,6 +311,7 @@ pub(super) fn snapshot_with_completions(
             .into_iter()
             .map(|pending| protocol::ClientShellWorkerQuestion {
                 worker_id: pending.worker_id,
+                request_id: pending.question.request_id,
                 cwd: pending.cwd,
                 tool_name: pending.question.tool_name,
                 text: pending.question.text,

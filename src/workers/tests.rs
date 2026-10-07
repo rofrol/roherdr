@@ -6,7 +6,9 @@
 //! mode classifier), `refuse` (a model refusal, then `result/success`),
 //! `refuse-wait` (a refusal, then the next input line, then the result),
 //! `exit1` (`result/success`, then exit code 1), `denials` (a result with
-//! `permission_denials`), `ask` (an `AskUserQuestion` request), `ignore-term` (SIGTERM is
+//! `permission_denials`), `ask` (an `AskUserQuestion` request), `pair <tool>
+//! <words...>` (two requests at once, `perm-1` and `perm-2`), `cancel <tool>
+//! <words...>` (`perm-1`, cancelled, then `perm-2`), `ignore-term` (SIGTERM is
 //! ignored from then on) and `orphan <fifo>` (a tool process in its own
 //! session that holds `<fifo>` open until it dies).
 #![cfg(unix)]
@@ -107,6 +109,22 @@ while True:
         if text == "deny":
             text += ": " + response["message"]
         result(text=text)
+    elif command in ("pair", "cancel"):
+        rest = " ".join(words[2:])
+        request = {"subtype": "can_use_tool", "tool_name": words[1],
+                   "input": {"file_path": rest, "command": rest}}
+        emit({"type": "control_request", "request_id": "perm-1", "request": request})
+        if command == "cancel":
+            emit({"type": "control_cancel_request", "request_id": "perm-1"})
+            ids = ["perm-2"]
+        else:
+            ids = ["perm-1", "perm-2"]
+        emit({"type": "control_request", "request_id": "perm-2", "request": request})
+        behaviors = {}
+        while len(behaviors) < len(ids):
+            response = read()["response"]
+            behaviors[response["request_id"]] = response["response"]["behavior"]
+        result(text=" ".join(f"{id}={behaviors[id]}" for id in ids))
     elif command == "ask":
         response = ask_host("AskUserQuestion", {"questions": [
             {"question": "Which file?", "header": "File", "multiSelect": False,
@@ -236,6 +254,21 @@ impl Fixture {
             request_id: None,
             decision,
             answers: answers.iter().map(|answer| (*answer).to_owned()).collect(),
+            message: None,
+        })
+    }
+
+    fn answer_request(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+        decision: WorkerDecision,
+    ) -> Result<WorkerInfo, WorkerError> {
+        self.supervisor.answer(&WorkerAnswerParams {
+            worker_id: worker_id.to_owned(),
+            request_id: Some(request_id.to_owned()),
+            decision: Some(decision),
+            answers: Vec::new(),
             message: None,
         })
     }
@@ -750,6 +783,78 @@ fn a_request_left_to_the_user_waits_for_the_answer() {
         .answer(&id, Some(WorkerDecision::Allow), &[])
         .unwrap_err();
     assert_eq!(none.code(), "worker_no_question");
+}
+
+#[test]
+fn an_answer_must_name_one_of_several_questions() {
+    let fixture = Fixture::new("pair");
+    let id = fixture.start("pair Bash git push origin master");
+    fixture.wait_for(&id, |worker| worker.questions.len() == 2);
+
+    let unnamed = fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap_err();
+    assert_eq!(unnamed.code(), "invalid_request");
+    assert!(unnamed.to_string().contains("perm-1, perm-2"), "{unnamed}");
+    assert_eq!(fixture.supervisor.status(&id).unwrap().questions.len(), 2);
+
+    let worker = fixture
+        .answer_request(&id, "perm-2", WorkerDecision::Deny)
+        .unwrap();
+    assert_eq!(worker.questions.len(), 1);
+    let again = fixture
+        .answer_request(&id, "perm-2", WorkerDecision::Allow)
+        .unwrap_err();
+    assert_eq!(again.code(), "worker_question_gone");
+    assert!(again.to_string().contains("answered"), "{again}");
+
+    fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("perm-1=allow perm-2=deny")
+    );
+    let late = fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Deny)
+        .unwrap_err();
+    assert_eq!(late.code(), "worker_question_gone");
+    assert!(late.to_string().contains("answered"), "{late}");
+    let unknown = fixture
+        .answer_request(&id, "perm-9", WorkerDecision::Deny)
+        .unwrap_err();
+    assert_eq!(unknown.code(), "worker_no_question");
+}
+
+#[test]
+fn an_answer_to_a_cancelled_question_says_so() {
+    let fixture = Fixture::new("cancel");
+    let id = fixture.start("cancel Bash git push origin master");
+    // perm-1 is cancelled before perm-2 is asked.
+    let worker = fixture.wait_for(&id, |worker| {
+        worker
+            .questions
+            .iter()
+            .any(|question| question.request_id == "perm-2")
+    });
+    assert_eq!(worker.questions.len(), 1);
+
+    let gone = fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap_err();
+    assert_eq!(gone.code(), "worker_question_gone");
+    assert!(gone.to_string().contains("cancelled"), "{gone}");
+    assert_eq!(fixture.supervisor.status(&id).unwrap().questions.len(), 1);
+
+    fixture
+        .answer_request(&id, "perm-2", WorkerDecision::Allow)
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("perm-2=allow")
+    );
 }
 
 #[test]

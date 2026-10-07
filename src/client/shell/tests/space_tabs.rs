@@ -4831,6 +4831,7 @@ fn a_worker_is_not_offered_for_takeover_while_it_asks() {
         .worker_questions
         .push(crate::protocol::ClientShellWorkerQuestion {
             worker_id: "w1".into(),
+            request_id: "r1".into(),
             cwd: "/tmp/repo".into(),
             tool_name: "Bash".into(),
             text: "git push".into(),
