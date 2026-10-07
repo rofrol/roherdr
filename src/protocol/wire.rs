@@ -983,6 +983,10 @@ pub struct ClientShellWorker {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellWorkerQuestion {
     pub worker_id: String,
+    /// The CLI's control request id, which `worker.answer` names; empty
+    /// from a server that does not send it.
+    #[serde(default)]
+    pub request_id: String,
     pub cwd: String,
     pub tool_name: String,
     /// The Bash command, the question, or the tool's input, on one line.

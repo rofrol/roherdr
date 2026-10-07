@@ -706,13 +706,18 @@ impl ClientShellState {
         } else {
             "allow|deny"
         };
+        let request = if question.request_id.is_empty() {
+            "<request_id>"
+        } else {
+            question.request_id.as_str()
+        };
         NotificationRecord {
             id: 0,
             unix_ms: question.since_ms,
             kind: "asking".into(),
             title: format!("worker {} · {repo}", question.worker_id),
             body: Some(format!(
-                "{}: {} — herdr worker answer {} {how}",
+                "{}: {} — herdr worker answer {} --request {request} {how}",
                 question.tool_name, question.text, question.worker_id
             )),
             agent: None,
@@ -1095,5 +1100,23 @@ mod tests {
         assert_eq!(notification_day(at, 1_790_550_000, 0), "Sep 28");
         // 2027-01-01 00:10 UTC: another year says the year.
         assert_eq!(notification_day(at, 1_798_762_200, 0), "Sep 28 2026");
+    }
+
+    #[test]
+    fn a_worker_question_row_names_its_request() {
+        let row =
+            ClientShellState::worker_question_row(&crate::protocol::ClientShellWorkerQuestion {
+                worker_id: "w2".into(),
+                request_id: "req-7".into(),
+                cwd: "/tmp/repo".into(),
+                tool_name: "Bash".into(),
+                text: "git push".into(),
+                choice: false,
+                since_ms: 1,
+            });
+        assert_eq!(
+            row.body.as_deref(),
+            Some("Bash: git push — herdr worker answer w2 --request req-7 allow|deny")
+        );
     }
 }

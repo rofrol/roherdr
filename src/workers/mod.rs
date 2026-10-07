@@ -18,7 +18,7 @@ mod tests;
 
 pub(crate) use log::log_lines;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -177,6 +177,8 @@ pub(crate) enum WorkerError {
     NotRunning(String),
     Busy(String),
     NoQuestion(String),
+    /// The named question is no longer pending; the message says why.
+    QuestionGone(String),
     Unsupported(String),
     Io(std::io::Error),
 }
@@ -189,6 +191,7 @@ impl WorkerError {
             Self::NotRunning(_) => "worker_not_running",
             Self::Busy(_) => "worker_busy",
             Self::NoQuestion(_) => "worker_no_question",
+            Self::QuestionGone(_) => "worker_question_gone",
             Self::Unsupported(_) => "worker_unsupported",
             Self::Io(_) => "worker_io_error",
         }
@@ -203,6 +206,7 @@ impl std::fmt::Display for WorkerError {
             | Self::NotRunning(message)
             | Self::Busy(message)
             | Self::NoQuestion(message)
+            | Self::QuestionGone(message)
             | Self::Unsupported(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -268,6 +272,9 @@ struct Status {
     exit_signal: Option<i32>,
     /// Requests left to the user, oldest first.
     questions: Vec<Pending>,
+    /// The most recently settled questions, oldest first, with what ended
+    /// each, so an answer to one of them says what happened to it.
+    resolved: VecDeque<(String, &'static str)>,
     stop_requested_ms: Option<u64>,
     takeover_ms: Option<u64>,
     /// The category of a model refusal in the running turn
@@ -277,6 +284,9 @@ struct Status {
     /// `failed` when the exit failed a finished turn.
     exited: bool,
 }
+
+/// How many settled questions a worker remembers for `worker_question_gone`.
+const RESOLVED_QUESTIONS_KEPT: usize = 32;
 
 /// A question with the tool input its answer is built from.
 #[derive(Debug, Clone)]
@@ -303,6 +313,7 @@ impl Status {
             exit_code: None,
             exit_signal: None,
             questions: Vec::new(),
+            resolved: VecDeque::new(),
             stop_requested_ms: None,
             takeover_ms: None,
             refusal: None,
@@ -310,16 +321,43 @@ impl Status {
         }
     }
 
-    /// Drops an answered or cancelled question; the turn goes on once none
-    /// is left.
-    fn settle_question(&mut self, request_id: Option<&str>) {
+    /// Drops an answered or cancelled question, recording `how` it ended;
+    /// the turn goes on once none is left.
+    fn settle_question(&mut self, request_id: Option<&str>, how: &'static str) {
         if let Some(request_id) = request_id {
+            let before = self.questions.len();
             self.questions
                 .retain(|pending| pending.question.request_id != request_id);
+            if self.questions.len() < before {
+                self.remember_resolved(request_id.to_owned(), how);
+            }
         }
         if self.questions.is_empty() && self.state == WorkerState::WaitingApproval {
             self.state = WorkerState::Working;
         }
+    }
+
+    /// Drops every pending question, recording `how` they ended.
+    fn clear_questions(&mut self, how: &'static str) {
+        for pending in std::mem::take(&mut self.questions) {
+            self.remember_resolved(pending.question.request_id, how);
+        }
+    }
+
+    fn remember_resolved(&mut self, request_id: String, how: &'static str) {
+        self.resolved.retain(|(id, _)| *id != request_id);
+        if self.resolved.len() == RESOLVED_QUESTIONS_KEPT {
+            self.resolved.pop_front();
+        }
+        self.resolved.push_back((request_id, how));
+    }
+
+    /// What ended a question that is no longer pending, if it is recent.
+    fn resolution(&self, request_id: &str) -> Option<&'static str> {
+        self.resolved
+            .iter()
+            .find(|(id, _)| id == request_id)
+            .map(|(_, how)| *how)
     }
 
     fn is_gone(&self) -> bool {
@@ -386,7 +424,7 @@ impl Status {
                 self.takeover_ms = event["at_ms"].as_u64();
             }
             (Direction::Herdr, "answer") => {
-                self.settle_question(event["request_id"].as_str());
+                self.settle_question(event["request_id"].as_str(), "answered");
             }
             (Direction::Herdr, "signal") => {
                 if event["signal"].as_str() == Some("SIGTERM") {
@@ -414,7 +452,7 @@ impl Status {
                     }
                     _ => false,
                 };
-                self.questions.clear();
+                self.clear_questions("the worker exited");
                 self.stop_requested_ms = None;
                 self.exited = true;
                 self.state = if failed_turn {
@@ -429,7 +467,7 @@ impl Status {
                     .map(|v| v as i32);
             }
             (Direction::Herdr, "lost") => {
-                self.questions.clear();
+                self.clear_questions("the worker was lost");
                 self.stop_requested_ms = None;
                 self.state = WorkerState::Lost;
             }
@@ -456,10 +494,10 @@ impl Status {
                 }
             }
             (Direction::In, "control_response") => {
-                self.settle_question(event["response"]["request_id"].as_str());
+                self.settle_question(event["response"]["request_id"].as_str(), "answered");
             }
             (Direction::Out, "control_cancel_request") => {
-                self.settle_question(event["request_id"].as_str());
+                self.settle_question(event["request_id"].as_str(), "cancelled");
             }
             (Direction::In, "user") => {
                 // A refusal stays until the turn's `result` takes it: a
@@ -491,7 +529,7 @@ impl Status {
                         .unwrap_or_default(),
                 };
                 self.state = turn_end_state(&result);
-                self.questions.clear();
+                self.clear_questions("its turn ended");
                 self.turns += 1;
                 self.last_result = Some(result);
             }
@@ -1212,8 +1250,9 @@ impl WorkerSupervisor {
         self.status(worker_id)
     }
 
-    /// Answers the worker's oldest pending question, or the one
-    /// `request_id` names, with the user's decision.
+    /// Answers the worker's pending question that `request_id` names, with
+    /// the user's decision. Without `request_id` it answers the only pending
+    /// question and refuses when several are pending.
     pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
         let worker_id = params.worker_id.as_str();
         let (number, live, request_id, response, answer) = {
@@ -1223,6 +1262,18 @@ impl WorkerSupervisor {
                 .workers
                 .get_mut(&number)
                 .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
+            if let Some(request_id) = params.request_id.as_deref() {
+                let is_pending = entry
+                    .status
+                    .questions
+                    .iter()
+                    .any(|pending| pending.question.request_id == request_id);
+                if let (false, Some(how)) = (is_pending, entry.status.resolution(request_id)) {
+                    return Err(WorkerError::QuestionGone(format!(
+                        "question {request_id} of worker {worker_id} is no longer pending: {how}"
+                    )));
+                }
+            }
             let live = match (&entry.live, entry.status.is_gone()) {
                 (Some(live), false) => Arc::clone(live),
                 _ => {
@@ -1231,13 +1282,23 @@ impl WorkerSupervisor {
                     )))
                 }
             };
+            let questions = &entry.status.questions;
             let pending = match params.request_id.as_deref() {
-                Some(request_id) => entry
-                    .status
-                    .questions
+                Some(request_id) => questions
                     .iter()
                     .find(|pending| pending.question.request_id == request_id),
-                None => entry.status.questions.first(),
+                None if questions.len() > 1 => {
+                    let ids: Vec<&str> = questions
+                        .iter()
+                        .map(|pending| pending.question.request_id.as_str())
+                        .collect();
+                    return Err(WorkerError::Invalid(format!(
+                        "worker {worker_id} has {} pending questions; name one with request_id: {}",
+                        ids.len(),
+                        ids.join(", ")
+                    )));
+                }
+                None => questions.first(),
             }
             .ok_or_else(|| {
                 WorkerError::NoQuestion(format!("worker {worker_id} has no such pending question"))

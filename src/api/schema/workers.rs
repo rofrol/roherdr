@@ -155,7 +155,9 @@ pub struct WorkerInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerAnswerParams {
     pub worker_id: String,
-    /// The question to answer; the oldest pending one when absent.
+    /// The question to answer. When absent, the only pending question; an
+    /// answer without it is refused while several are pending. A question
+    /// that is no longer pending is refused with `worker_question_gone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     /// `allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`
@@ -195,7 +197,7 @@ pub enum WorkerQuestionKind {
 /// the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerQuestion {
-    /// The CLI's control request id; `worker.answer` may name it.
+    /// The CLI's control request id; `worker.answer` names it.
     pub request_id: String,
     pub kind: WorkerQuestionKind,
     pub tool_name: String,

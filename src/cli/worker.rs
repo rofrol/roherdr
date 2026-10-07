@@ -15,7 +15,8 @@ const USAGE: &str =
   herdr worker interrupt <worker_id>
   herdr worker stop <worker_id>
   herdr worker kill <worker_id>
-  herdr worker answer <worker_id> [--request REQUEST_ID] [--message TEXT] allow|deny|<choice>...
+  herdr worker answer <worker_id> --request REQUEST_ID [--message TEXT] allow|deny|<choice>...
+    --request names the question (its request_id in worker status or the ? list).
     A choice is an option's label or 1-based number, or free text; give one per
     question, and several options of a multi-select question separated by commas.
   herdr worker log [--follow] <worker_id>
@@ -126,6 +127,11 @@ fn parse_answer(args: &[String]) -> Result<WorkerAnswerParams, String> {
     let Some((worker_id, rest)) = positional.split_first() else {
         return Err("answer takes a worker id and an answer".into());
     };
+    // Naming the question keeps an answer from reaching one that replaced
+    // the question the user read.
+    if request_id.is_none() {
+        return Err("answer takes --request REQUEST_ID, the question it answers".into());
+    }
     let (decision, answers) = match rest {
         [] => return Err("answer takes allow, deny or the chosen options".into()),
         [word] if word == "allow" => (Some(WorkerDecision::Allow), Vec::new()),
@@ -358,9 +364,15 @@ mod tests {
 
     #[test]
     fn parses_answers_as_a_decision_or_choices() {
-        let Ok(Some(Method::WorkerAnswer(params))) =
-            parse_worker_args(&args(&["answer", "w1", "deny", "--message", "no"]))
-        else {
+        let Ok(Some(Method::WorkerAnswer(params))) = parse_worker_args(&args(&[
+            "answer",
+            "w1",
+            "--request",
+            "r1",
+            "deny",
+            "--message",
+            "no",
+        ])) else {
             panic!("answer must parse");
         };
         assert_eq!(params.decision, Some(WorkerDecision::Deny));
@@ -382,6 +394,7 @@ mod tests {
         assert_eq!(params.answers, vec!["blue.txt", "1,3"]);
 
         assert!(parse_worker_args(&args(&["answer", "w1"])).is_err());
+        assert!(parse_worker_args(&args(&["answer", "w1", "allow"])).is_err());
         assert!(parse_worker_args(&args(&["answer"])).is_err());
     }
 }
