@@ -50,6 +50,30 @@ cannot go on without it, otherwise finish the task or stop and say what blocks y
     )
 }
 
+/// Credential files and directories under the home directory that sandboxed
+/// Bash must not read and the file tools must not touch. The CLI itself runs
+/// outside the sandbox, so its own login keeps working.
+/// `true` marks a directory, whose deny rules need `/**`.
+const HOME_CREDENTIALS: &[(&str, bool)] = &[
+    ("~/.ssh", true),
+    ("~/.aws", true),
+    ("~/.gnupg", true),
+    ("~/.config/gh", true),
+    ("~/.claude/.credentials.json", false),
+    ("~/.git-credentials", false),
+    ("~/.netrc", false),
+    ("~/.npmrc", false),
+    ("~/.docker", true),
+    ("~/.kube", true),
+    ("~/.cargo/credentials", false),
+    ("~/.cargo/credentials.toml", false),
+];
+
+/// Environment files in the worktree, at any depth. The sandbox's `denyRead`
+/// takes globs (Observed with 2.1.293: `<worktree>/**/.env` blocked `cat
+/// .env` and `cat sub/.env`).
+const ENV_FILE_GLOBS: &[&str] = &["**/.env", "**/.env.*", "**/.envrc"];
+
 /// The worker's `--settings`: the user's CLAUDE.md, settings and login stay,
 /// the global hooks are off (trial 2, T2-1), the co-author trailer is off
 /// (T3-5), and Bash runs in Claude Code's sandbox: writes only to the
@@ -58,6 +82,35 @@ cannot go on without it, otherwise finish the task or stop and say what blocks y
 /// sandbox (T3-2, T3-3). The deny rules cover the file tools and the
 /// in-process web tools, which the sandbox does not.
 fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
+    let mut deny_read: Vec<String> = HOME_CREDENTIALS
+        .iter()
+        .map(|(path, _)| (*path).to_owned())
+        .collect();
+    deny_read.extend(
+        ENV_FILE_GLOBS
+            .iter()
+            .map(|glob| cwd_real.join(glob).display().to_string()),
+    );
+    let mut deny_rules = Vec::new();
+    for (path, is_dir) in HOME_CREDENTIALS {
+        let pattern = if *is_dir {
+            format!("{path}/**")
+        } else {
+            (*path).to_owned()
+        };
+        deny_rules.push(format!("Read({pattern})"));
+        deny_rules.push(format!("Edit({pattern})"));
+    }
+    // `Read` matters: the CLI reads inside the worktree without asking
+    // herdr. An `Edit(...)` rule also stopped the Write tool (Observed with
+    // 2.1.293), while a `Write(...)` rule did not, so no rule is added per
+    // write tool; herdr's policy denies these files by name as well.
+    for glob in ENV_FILE_GLOBS {
+        deny_rules.push(format!("Read({glob})"));
+        deny_rules.push(format!("Edit({glob})"));
+    }
+    deny_rules.push("WebFetch".into());
+    deny_rules.push("WebSearch".into());
     json!({
         "disableAllHooks": true,
         "attribution": {"commit": "", "pr": "", "sessionUrl": false},
@@ -68,29 +121,53 @@ fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
             "allowUnsandboxedCommands": false,
             "filesystem": {
                 "allowWrite": [temp_dir.display().to_string()],
-                "denyRead": [
-                    "~/.ssh",
-                    "~/.aws",
-                    "~/.gnupg",
-                    "~/.config/gh",
-                    cwd_real.join(".env").display().to_string(),
-                ],
+                "denyRead": deny_read,
             },
             "network": {"allowedDomains": [], "strictAllowlist": true},
         },
-        "permissions": {
-            "deny": [
-                "Read(~/.ssh/**)",
-                "Read(~/.aws/**)",
-                "Read(~/.gnupg/**)",
-                "Read(~/.config/gh/**)",
-                "Read(**/.env)",
-                "Edit(**/.env)",
-                "WebFetch",
-                "WebSearch",
-            ],
-        },
+        "permissions": {"deny": deny_rules},
     })
+}
+
+/// Whether an environment variable carries a credential the worker's tools
+/// could use or leak. What the CLI needs to log in stays: the `ANTHROPIC_*`
+/// and `CLAUDE_CODE_*` variables, and the AWS or Google credentials when the
+/// CLI uses Bedrock or Vertex (`bedrock`, `vertex`).
+fn is_credential_env(name: &str, bedrock: bool, vertex: bool) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if upper.starts_with("ANTHROPIC_") || upper.starts_with("CLAUDE_CODE_") {
+        return false;
+    }
+    if upper.starts_with("AWS_") {
+        return !bedrock;
+    }
+    if upper == "GOOGLE_APPLICATION_CREDENTIALS" || upper.starts_with("CLOUDSDK_AUTH_") {
+        return !vertex;
+    }
+    const NAMES: &[&str] = &[
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "NPM_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "DOCKER_AUTH_CONFIG",
+    ];
+    const PREFIXES: &[&str] = &["AZURE_", "CARGO_REGISTRIES_"];
+    const SUFFIXES: &[&str] = &[
+        "_TOKEN",
+        "_API_KEY",
+        "_APIKEY",
+        "_SECRET",
+        "_SECRET_KEY",
+        "_ACCESS_KEY",
+        "_PASSWORD",
+        "_CREDENTIALS",
+    ];
+    NAMES.contains(&upper.as_str())
+        || PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
+        || SUFFIXES.iter().any(|suffix| upper.ends_with(suffix))
 }
 
 #[derive(Debug)]
@@ -196,6 +273,9 @@ struct Status {
     /// The category of a model refusal in the running turn
     /// (`system/model_refusal_no_fallback`); it fails the turn.
     refusal: Option<String>,
+    /// The process's exit is recorded. The state is then `exited`, or
+    /// `failed` when the exit failed a finished turn.
+    exited: bool,
 }
 
 /// A question with the tool input its answer is built from.
@@ -226,6 +306,7 @@ impl Status {
             stop_requested_ms: None,
             takeover_ms: None,
             refusal: None,
+            exited: false,
         }
     }
 
@@ -242,7 +323,17 @@ impl Status {
     }
 
     fn is_gone(&self) -> bool {
-        matches!(self.state, WorkerState::Exited | WorkerState::Lost)
+        self.exited || matches!(self.state, WorkerState::Exited | WorkerState::Lost)
+    }
+
+    /// Whether the worker's process is known to be gone: its exit is
+    /// recorded, or it was lost and its process group no longer exists.
+    fn process_gone(&self) -> bool {
+        self.exited
+            || (self.state == WorkerState::Lost
+                && self
+                    .pid
+                    .is_none_or(|pid| !crate::platform::process_group_alive(pid)))
     }
 
     fn turn_ended(&self) -> bool {
@@ -305,22 +396,32 @@ impl Status {
             (Direction::Herdr, "exited") => {
                 let code = event.get("code").and_then(Value::as_i64);
                 // A refused turn can end with `result/success` and then
-                // exit code 1 (T3-1). Herdr's own stop and an interrupted
-                // last turn also exit non-zero, but neither is `finished`.
-                if let (Some(code), true, None) = (
+                // exit code 1 (T3-1): that turn is `failed`, not `exited`.
+                // Herdr's own stop and an interrupted last turn also exit
+                // non-zero, but neither follows a `finished` turn.
+                let failed_turn = match (
                     code.filter(|code| *code != 0),
                     self.state == WorkerState::Finished,
                     self.stop_requested_ms,
                 ) {
-                    if let Some(result) = self.last_result.as_mut() {
-                        result.failure.get_or_insert_with(|| {
-                            format!("the CLI exited with code {code} after the turn")
-                        });
+                    (Some(code), true, None) => {
+                        if let Some(result) = self.last_result.as_mut() {
+                            result.failure.get_or_insert_with(|| {
+                                format!("the CLI exited with code {code} after the turn")
+                            });
+                        }
+                        true
                     }
-                }
+                    _ => false,
+                };
                 self.questions.clear();
                 self.stop_requested_ms = None;
-                self.state = WorkerState::Exited;
+                self.exited = true;
+                self.state = if failed_turn {
+                    WorkerState::Failed
+                } else {
+                    WorkerState::Exited
+                };
                 self.exit_code = code.map(|v| v as i32);
                 self.exit_signal = event
                     .get("signal")
@@ -361,7 +462,8 @@ impl Status {
                 self.settle_question(event["request_id"].as_str());
             }
             (Direction::In, "user") => {
-                self.refusal = None;
+                // A refusal stays until the turn's `result` takes it: a
+                // message sent during the turn does not clear it.
                 if self.state != WorkerState::Starting {
                     self.state = WorkerState::Working;
                 }
@@ -701,8 +803,12 @@ impl WorkerSupervisor {
                 }
                 status.apply(Direction::Herdr, &lost);
             }
-            // Every replayed worker is gone; so is its temp dir.
-            remove_temp_dir(&temp_dir_path(&dir, worker_id));
+            // A lost worker's process may still run (a live handoff, a
+            // server that died without its workers): its temp dir stays
+            // until its process is gone, checked again at the next start.
+            if status.process_gone() {
+                remove_temp_dir(&temp_dir_path(&dir, worker_id));
+            }
             registry.next_number = registry.next_number.max(number + 1);
             registry.workers.insert(
                 number,
@@ -798,11 +904,24 @@ impl WorkerSupervisor {
             .stderr(Stdio::piped());
         // The worker's hooks and herdr CLI calls must not act on the
         // server's own pane or session (trial 1).
+        // Nor may it use the user's credentials for other services (the
+        // sandbox has no network, but a token can still end up in a file).
+        let enabled = |name: &str| {
+            std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
+        };
+        let bedrock = enabled("CLAUDE_CODE_USE_BEDROCK");
+        let vertex = enabled("CLAUDE_CODE_USE_VERTEX");
+        let mut removed_env = Vec::new();
         for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("HERDR_") {
-                command.env_remove(key);
+            let name = key.to_string_lossy();
+            if name.starts_with("HERDR_") {
+                command.env_remove(&key);
+            } else if is_credential_env(&name, bedrock, vertex) {
+                removed_env.push(name.into_owned());
+                command.env_remove(&key);
             }
         }
+        removed_env.sort();
         crate::platform::configure_worker_process(&mut command);
         let mut child = command.spawn().map_err(|error| {
             remove_temp_dir(&temp_dir);
@@ -838,6 +957,7 @@ impl WorkerSupervisor {
             "cwd": cwd_real.display().to_string(),
             "model": model,
             "temp_dir": temp_dir.display().to_string(),
+            "removed_env": removed_env,
             "pid": pid,
             "program": self.shared.program.display().to_string(),
             "args": args,
@@ -1270,14 +1390,31 @@ impl WorkerSupervisor {
         self.shared.dir.join(format!("{worker_id}.jsonl"))
     }
 
-    /// Creates the worker's own temp dir, empty, and returns its real path:
-    /// the sandbox and the policy compare real paths. The sandbox's
-    /// `$TMPDIR` is `/tmp/claude-<uid>`, shared by every sandboxed session
-    /// of the user, so workers get this one by its absolute path (T3-2).
+    /// Creates the worker's own temp dir and returns its real path: the
+    /// sandbox and the policy compare real paths. The sandbox's `$TMPDIR` is
+    /// `/tmp/claude-<uid>`, shared by every sandboxed session of the user,
+    /// so workers get this one by its absolute path (T3-2). It is created
+    /// new (anything already at its path, a symlink included, fails the
+    /// start) and private, inside a private parent that is a real directory.
     fn create_temp_dir(&self, worker_id: &str) -> std::io::Result<PathBuf> {
         let path = temp_dir_path(&self.shared.dir, worker_id);
-        remove_temp_dir(&path);
-        std::fs::create_dir_all(&path)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("worker temp dir has no parent"))?;
+        std::fs::create_dir_all(&self.shared.dir)?;
+        match crate::platform::create_private_dir(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        require_real_dir(parent)?;
+        crate::platform::create_private_dir(&path).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("worker temp dir {}: {error}", path.display()),
+            )
+        })?;
+        require_real_dir(&path)?;
         path.canonicalize()
     }
 
@@ -1310,6 +1447,19 @@ impl WorkerSupervisor {
 /// Where a worker's temp dir lives, beside the journals.
 fn temp_dir_path(dir: &Path, worker_id: &str) -> PathBuf {
     dir.join("tmp").join(worker_id)
+}
+
+/// Fails unless `path` itself (not a symlink's target) is a directory.
+fn require_real_dir(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{} is not a real directory",
+            path.display()
+        )))
+    }
 }
 
 fn remove_temp_dir(path: &Path) {

@@ -4,6 +4,7 @@
 //! <words...>` (one `can_use_tool` request whose path or command is the
 //! words), `classifier <tool> <words...>` (the same, escalated by the auto
 //! mode classifier), `refuse` (a model refusal, then `result/success`),
+//! `refuse-wait` (a refusal, then the next input line, then the result),
 //! `exit1` (`result/success`, then exit code 1), `denials` (a result with
 //! `permission_denials`), `ask` (an `AskUserQuestion` request), `ignore-term` (SIGTERM is
 //! ignored from then on) and `orphan <fifo>` (a tool process in its own
@@ -84,6 +85,11 @@ while True:
     elif command == "refuse":
         emit({"type": "system", "subtype": "model_refusal_no_fallback",
               "api_refusal_category": "cyber"})
+        result()
+    elif command == "refuse-wait":
+        emit({"type": "system", "subtype": "model_refusal_no_fallback",
+              "api_refusal_category": "cyber"})
+        read()
         result()
     elif command == "exit1":
         result()
@@ -194,6 +200,24 @@ impl Fixture {
                     .changed
                     .wait_timeout(registry, Duration::from_millis(100)),
             );
+        }
+    }
+
+    /// Waits, woken by state changes, until the worker's internal status
+    /// satisfies `done`.
+    fn wait_for_status(&self, worker_id: &str, done: impl Fn(&Status) -> bool) {
+        let started = Instant::now();
+        let number = worker_number(worker_id).unwrap();
+        let mut registry = lock(&self.supervisor.shared.registry);
+        while !done(&registry.workers[&number].status) {
+            assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+            registry = self
+                .supervisor
+                .shared
+                .changed
+                .wait_timeout(registry, Duration::from_millis(100))
+                .unwrap()
+                .0;
         }
     }
 
@@ -322,6 +346,48 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
     assert_eq!(launch_arg(&journal, "--permission-mode"), "manual");
 
     let settings: Value = serde_json::from_str(&launch_arg(&journal, "--settings")).unwrap();
+    let mut deny_read: Vec<String> = [
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.config/gh",
+        "~/.claude/.credentials.json",
+        "~/.git-credentials",
+        "~/.netrc",
+        "~/.npmrc",
+        "~/.docker",
+        "~/.kube",
+        "~/.cargo/credentials",
+        "~/.cargo/credentials.toml",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    for glob in ["**/.env", "**/.env.*", "**/.envrc"] {
+        deny_read.push(cwd.join(glob).display().to_string());
+    }
+    let mut deny_rules = Vec::new();
+    for pattern in [
+        "~/.ssh/**",
+        "~/.aws/**",
+        "~/.gnupg/**",
+        "~/.config/gh/**",
+        "~/.claude/.credentials.json",
+        "~/.git-credentials",
+        "~/.netrc",
+        "~/.npmrc",
+        "~/.docker/**",
+        "~/.kube/**",
+        "~/.cargo/credentials",
+        "~/.cargo/credentials.toml",
+        "**/.env",
+        "**/.env.*",
+        "**/.envrc",
+    ] {
+        deny_rules.push(format!("Read({pattern})"));
+        deny_rules.push(format!("Edit({pattern})"));
+    }
+    deny_rules.push("WebFetch".into());
+    deny_rules.push("WebSearch".into());
     assert_eq!(
         settings,
         serde_json::json!({
@@ -334,30 +400,14 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
                 "allowUnsandboxedCommands": false,
                 "filesystem": {
                     "allowWrite": [temp.display().to_string()],
-                    "denyRead": [
-                        "~/.ssh",
-                        "~/.aws",
-                        "~/.gnupg",
-                        "~/.config/gh",
-                        cwd.join(".env").display().to_string(),
-                    ],
+                    "denyRead": deny_read,
                 },
                 "network": {"allowedDomains": [], "strictAllowlist": true},
             },
-            "permissions": {
-                "deny": [
-                    "Read(~/.ssh/**)",
-                    "Read(~/.aws/**)",
-                    "Read(~/.gnupg/**)",
-                    "Read(~/.config/gh/**)",
-                    "Read(**/.env)",
-                    "Edit(**/.env)",
-                    "WebFetch",
-                    "WebSearch",
-                ],
-            },
+            "permissions": {"deny": deny_rules},
         })
     );
+    assert!(journal[0]["event"]["removed_env"].is_array());
     let contract = launch_arg(&journal, "--append-system-prompt");
     assert!(
         contract.contains(&format!("under {} by that absolute path", temp.display())),
@@ -370,8 +420,12 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
         serde_json::json!([cwd.display().to_string(), temp.display().to_string()])
     );
 
-    // The temp dir lives as long as the worker and goes with it.
+    // The temp dir is private, lives as long as the worker and goes with it.
     assert!(temp.is_dir());
+    for dir in [&temp, &temp.parent().unwrap().to_path_buf()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+    }
     std::fs::write(temp.join("draft.txt"), "x").unwrap();
     fixture.supervisor.stop(&id).unwrap();
     fixture.wait(&id, WorkerWaitUntil::Exit);
@@ -384,28 +438,106 @@ fn a_worker_runs_in_the_sandbox_with_its_own_temp_dir() {
 }
 
 #[test]
-fn a_restart_removes_the_temp_dirs_of_gone_workers() {
+fn a_restart_removes_temp_dirs_only_of_workers_whose_process_is_gone() {
     let root = std::env::temp_dir().join(format!(
         "herdr-workers-temp-restart-{}-{}",
         std::process::id(),
         now_ms()
     ));
     let dir = root.join("workers");
+    // A process group that is still alive, as an old server's worker during
+    // a live handoff would be.
+    let mut alive = std::process::Command::new("sleep");
+    alive.arg("1000");
+    std::os::unix::process::CommandExt::process_group(&mut alive, 0);
+    let mut alive = alive.spawn().unwrap();
+    let started = |pid: Option<u32>| {
+        serde_json::json!({"ts_ms": 1, "dir": "herdr",
+            "event": {"type": "started", "cwd": "/x", "pid": pid}})
+    };
+    // w1: lost, never had a process; w2: lost, process alive; w3: exited.
+    write_journal(&dir, "w1", &[started(None)]);
+    write_journal(&dir, "w2", &[started(Some(alive.id()))]);
     write_journal(
         &dir,
-        "w1",
+        "w3",
         &[
-            serde_json::json!({"ts_ms": 1, "dir": "herdr", "event": {"type": "started", "cwd": "/x"}}),
+            started(Some(alive.id())),
+            serde_json::json!({"ts_ms": 2, "dir": "herdr", "event": {"type": "exited", "code": 0}}),
         ],
     );
-    let leftover = dir.join("tmp/w1");
-    std::fs::create_dir_all(&leftover).unwrap();
-    std::fs::write(leftover.join("draft.txt"), "x").unwrap();
+    for id in ["w1", "w2", "w3"] {
+        let leftover = dir.join("tmp").join(id);
+        std::fs::create_dir_all(&leftover).unwrap();
+        std::fs::write(leftover.join("draft.txt"), "x").unwrap();
+    }
 
     let supervisor = WorkerSupervisor::open(dir.clone(), PathBuf::from("claude"));
     assert_eq!(supervisor.status("w1").unwrap().state, WorkerState::Lost);
-    assert!(!leftover.exists());
+    assert_eq!(supervisor.status("w2").unwrap().state, WorkerState::Lost);
+    assert!(!dir.join("tmp/w1").exists());
+    assert!(dir.join("tmp/w2/draft.txt").exists());
+    assert!(!dir.join("tmp/w3").exists());
+
+    // Once that process is gone, the next start removes its temp dir.
+    alive.kill().unwrap();
+    alive.wait().unwrap();
+    drop(supervisor);
+    WorkerSupervisor::open(dir.clone(), PathBuf::from("claude"));
+    assert!(!dir.join("tmp/w2").exists());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_worker_does_not_start_over_anything_at_its_temp_path() {
+    let fixture = Fixture::new("temp-taken");
+    let outside = fixture.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let tmp = fixture.root.join("workers/tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::os::unix::fs::symlink(&outside, tmp.join("w1")).unwrap();
+
+    let error = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap_err();
+    assert_eq!(error.code(), "worker_io_error", "{error}");
+    assert!(error.to_string().contains("worker temp dir"), "{error}");
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+    assert!(std::fs::symlink_metadata(tmp.join("w1"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    // A plain directory left there is refused the same way.
+    std::fs::create_dir(tmp.join("w2")).unwrap();
+    let error = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap_err();
+    assert_eq!(error.code(), "worker_io_error", "{error}");
+    // The next number is free: it starts.
+    let id = fixture.start("finish");
+    assert_eq!(id, "w3");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+}
+
+#[test]
+fn a_temp_parent_that_is_a_symlink_is_refused() {
+    let fixture = Fixture::new("temp-parent");
+    let outside = fixture.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(fixture.root.join("workers")).unwrap();
+    std::os::unix::fs::symlink(&outside, fixture.root.join("workers/tmp")).unwrap();
+    let error = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error}"
+    );
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
 }
 
 #[test]
@@ -418,6 +550,20 @@ fn a_refused_turn_fails_even_with_result_success() {
     assert_eq!(result.subtype, "success");
     assert_eq!(
         result.failure.as_deref(),
+        Some("the model refused the turn (cyber)")
+    );
+
+    // A message during a refused turn does not clear the refusal.
+    let id = fixture.start("refuse-wait");
+    fixture.wait_for_status(&id, |status| status.refusal.is_some());
+    let (number, live, _) = fixture.supervisor.live(&id).unwrap();
+    let message = user_message("meanwhile");
+    live.send(&message).unwrap();
+    fixture.supervisor.update(number, Direction::In, &message);
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Failed);
+    assert_eq!(
+        worker.last_result.unwrap().failure.as_deref(),
         Some("the model refused the turn (cyber)")
     );
 
@@ -442,6 +588,19 @@ fn an_exit_code_after_a_finished_turn_records_a_failure() {
     let id = fixture.start("exit1");
     let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
     assert_eq!(worker.exit_code, Some(1));
+    // Visibly failed, not only exited; the process is gone all the same.
+    assert_eq!(worker.state, WorkerState::Failed);
+    assert_eq!(
+        fixture.supervisor.prompt(&id, "finish").unwrap_err().code(),
+        "worker_not_running"
+    );
+    let replayed = replay_journal(
+        &id,
+        &fixture.root.join("workers").join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    assert_eq!(replayed.state, WorkerState::Failed);
+    assert!(replayed.is_gone());
     let result = worker.last_result.unwrap();
     assert_eq!(result.subtype, "success");
     assert_eq!(
@@ -454,6 +613,7 @@ fn an_exit_code_after_a_finished_turn_records_a_failure() {
     fixture.wait(&stopped, WorkerWaitUntil::TurnEnd);
     fixture.supervisor.stop(&stopped).unwrap();
     let worker = fixture.wait(&stopped, WorkerWaitUntil::Exit);
+    assert_eq!(worker.state, WorkerState::Exited);
     assert!(worker.last_result.unwrap().failure.is_none());
 }
 
@@ -466,6 +626,18 @@ fn permission_denials_are_kept_in_the_status() {
     let denials = worker.last_result.unwrap().permission_denials;
     assert_eq!(denials.len(), 1);
     assert_eq!(denials[0]["tool_name"], "Write");
+    assert_eq!(denials[0]["tool_input"]["file_path"], "/outside");
+    let replayed = replay_journal(
+        &id,
+        &fixture.root.join("workers").join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    assert_eq!(replayed.last_result.unwrap().permission_denials, denials);
+
+    // A result without the field has none.
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert!(worker.last_result.unwrap().permission_denials.is_empty());
 }
 
 #[test]
@@ -885,4 +1057,49 @@ fn a_worker_that_asks_is_not_taken_over() {
         Err(WorkerError::Busy(_))
     ));
     assert_eq!(fixture.supervisor.status(&id).unwrap().takeover_ms, None);
+}
+
+#[test]
+fn credential_variables_are_recognized() {
+    for name in [
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_PROFILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "NPM_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "CARGO_REGISTRIES_MY_TOKEN",
+        "AZURE_CLIENT_SECRET",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "HOMEBREW_GITHUB_API_TOKEN",
+        "DB_PASSWORD",
+    ] {
+        assert!(is_credential_env(name, false, false), "{name}");
+    }
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "HOME",
+        "PATH",
+        "TERM",
+        "SSH_AUTH_SOCK",
+        "ZIG",
+        "CARGO_HOME",
+    ] {
+        assert!(!is_credential_env(name, false, false), "{name}");
+    }
+    // The CLI's own login on Bedrock or Vertex stays.
+    assert!(!is_credential_env("AWS_ACCESS_KEY_ID", true, false));
+    assert!(!is_credential_env(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        false,
+        true
+    ));
+    assert!(is_credential_env("GITHUB_TOKEN", true, true));
 }

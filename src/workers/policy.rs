@@ -7,7 +7,10 @@
 //!
 //! - File tools are allowed when the real path of their target is inside the
 //!   worker's directory or its temp dir and denied otherwise (a symlink that
-//!   escapes is resolved and denied).
+//!   escapes is resolved and denied). Environment files (`.env`, `.env.*`,
+//!   `.envrc`) are denied wherever they are. A `Glob` pattern or `Grep` glob
+//!   that is absolute outside those roots, starts with `~` or has a `..`
+//!   component is denied too.
 //! - A request the CLI's auto mode classifier escalated
 //!   (`decision_reason_type: "classifier"`), every Bash request, every
 //!   `AskUserQuestion` and every other tool is asked of the user.
@@ -75,6 +78,18 @@ impl Policy {
         let Some((field, required)) = file_tool_path_field(tool_name) else {
             return Decision::Ask(format!("{tool_name} is not decided by herdr's policy"));
         };
+        if let Some(pattern_field) = file_tool_pattern_field(tool_name) {
+            if let Some(pattern) = input.get(pattern_field).and_then(Value::as_str) {
+                let base = input
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map_or_else(|| self.cwd.clone(), |path| self.cwd.join(path));
+                if let Err(message) = self.check_pattern(pattern, &base) {
+                    return Decision::Deny(message);
+                }
+            }
+        }
         let path = match input.get(field).and_then(Value::as_str) {
             Some(path) if !path.is_empty() => path,
             _ if !required => return Decision::Allow,
@@ -84,19 +99,90 @@ impl Policy {
                 ))
             }
         };
+        self.check_path(path)
+    }
+
+    /// The real-path rule. Known limit: the file tools run outside the
+    /// sandbox and act after this check, so a symlink that sandboxed Bash
+    /// swaps in between the check and the write could send a write outside
+    /// the roots. What bounds it: Bash itself can write only inside the
+    /// roots, so it cannot plant anything elsewhere, the race needs the
+    /// model to aim at it, and the coordinator reviews the worker's diff
+    /// before bringing it in.
+    fn check_path(&self, path: &str) -> Decision {
         let candidate = if Path::new(path).is_absolute() {
             PathBuf::from(path)
         } else {
             self.cwd.join(path)
         };
         match real_path_allowing_missing_tail(&candidate) {
-            Some(real) if self.roots.iter().any(|root| real.starts_with(root)) => Decision::Allow,
-            _ => Decision::Deny(format!(
-                "herdr worker policy: {path} is outside the worker's directory {} and its temp dir {}.",
-                self.roots[0].display(),
-                self.roots[1].display()
-            )),
+            Some(real)
+                if is_env_file(&real) || is_env_file(&candidate) =>
+            {
+                Decision::Deny(format!(
+                    "herdr worker policy: {path} is an environment file; workers do not read or write those."
+                ))
+            }
+            Some(real) if self.inside_roots(&real) => Decision::Allow,
+            _ => Decision::Deny(self.outside_message(path)),
         }
+    }
+
+    fn inside_roots(&self, real: &Path) -> bool {
+        self.roots.iter().any(|root| real.starts_with(root))
+    }
+
+    fn outside_message(&self, path: &str) -> String {
+        format!(
+            "herdr worker policy: {path} is outside the worker's directory {} and its temp dir {}.",
+            self.roots[0].display(),
+            self.roots[1].display()
+        )
+    }
+
+    /// A glob pattern resolves against `base` (the tool's `path`, else the
+    /// working directory); it must not climb out (`..`) or start at the home
+    /// directory (`~`), and its literal prefix, the components before the
+    /// first one with a glob character, joined to `base` (an absolute
+    /// pattern replaces it), must resolve inside the roots, so neither an
+    /// absolute pattern nor a symlinked directory leads outside.
+    fn check_pattern(&self, pattern: &str, base: &Path) -> Result<(), String> {
+        let components: Vec<&str> = pattern.split(['/', '\\']).collect();
+        if pattern.starts_with('~') || components.contains(&"..") {
+            return Err(format!(
+                "herdr worker policy: the pattern {pattern} leaves the worker's directory."
+            ));
+        }
+        let literal: PathBuf = Path::new(pattern)
+            .components()
+            .take_while(|component| {
+                !component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .contains(['*', '?', '[', ']', '{', '}'])
+            })
+            .collect();
+        match real_path_allowing_missing_tail(&base.join(literal)) {
+            Some(real) if self.inside_roots(&real) => Ok(()),
+            _ => Err(self.outside_message(pattern)),
+        }
+    }
+}
+
+/// `.env`, `.env.<anything>` or `.envrc`: files that usually hold secrets.
+fn is_env_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == ".env" || name == ".envrc" || name.starts_with(".env."))
+}
+
+/// The input field of a file tool that holds a glob pattern, if any. `Grep`'s
+/// `pattern` is a regular expression over file contents, not a path.
+fn file_tool_pattern_field(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "Glob" => Some("pattern"),
+        "Grep" => Some("glob"),
+        _ => None,
     }
 }
 
@@ -280,6 +366,145 @@ mod tests {
                 &json!({"file_path": "inside.txt"}),
                 Some("workingDir")
             ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn every_file_tool_maps_its_path_field() {
+        let dirs = Dirs::new("tools");
+        let policy = dirs.policy();
+        let outside = dirs.outside.join("x.txt");
+        for (tool, field) in [
+            ("Read", "file_path"),
+            ("Write", "file_path"),
+            ("Edit", "file_path"),
+            ("MultiEdit", "file_path"),
+            ("NotebookEdit", "notebook_path"),
+            ("NotebookRead", "notebook_path"),
+            ("LS", "path"),
+        ] {
+            assert_eq!(
+                policy.decide(tool, &json!({ field: "inside.ipynb" }), None),
+                Decision::Allow,
+                "{tool}"
+            );
+            assert!(
+                matches!(
+                    policy.decide(tool, &json!({ field: outside }), None),
+                    Decision::Deny(_)
+                ),
+                "{tool}"
+            );
+            if field != "path" {
+                // The wrong field is no path at all: a required one is missing.
+                assert!(
+                    matches!(
+                        policy.decide(tool, &json!({"path": "inside.txt"}), None),
+                        Decision::Deny(_)
+                    ),
+                    "{tool}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn environment_files_are_denied_wherever_they_are() {
+        let dirs = Dirs::new("env");
+        std::fs::create_dir_all(dirs.cwd.join("sub")).unwrap();
+        std::fs::write(dirs.cwd.join("sub/.env"), "SECRET=1").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dirs.cwd.join("sub/.env"), dirs.cwd.join("notes.txt")).unwrap();
+        let policy = dirs.policy();
+        let mut paths = vec![
+            ".env".to_owned(),
+            "sub/.env".to_owned(),
+            "sub/deep/.env.local".to_owned(),
+            ".envrc".to_owned(),
+            dirs.temp.join(".env").display().to_string(),
+        ];
+        if cfg!(unix) {
+            paths.push("notes.txt".to_owned());
+        }
+        for tool in ["Read", "Write", "Edit", "MultiEdit"] {
+            for path in &paths {
+                assert!(
+                    matches!(
+                        policy.decide(tool, &json!({"file_path": path}), None),
+                        Decision::Deny(_)
+                    ),
+                    "{tool} {path}"
+                );
+            }
+        }
+        assert!(matches!(
+            policy.decide("NotebookEdit", &json!({"notebook_path": ".env"}), None),
+            Decision::Deny(_)
+        ));
+        for allowed in [".environment.md", "env", "sub/dotenv.txt"] {
+            assert_eq!(
+                policy.decide("Write", &json!({"file_path": allowed}), None),
+                Decision::Allow,
+                "{allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn glob_patterns_stay_inside_the_roots() {
+        let dirs = Dirs::new("patterns");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dirs.outside, dirs.cwd.join("link-out")).unwrap();
+        let policy = dirs.policy();
+        let cwd_real = dirs.cwd.canonicalize().unwrap();
+
+        for input in [
+            json!({"pattern": "**/*.rs"}),
+            json!({"pattern": "src/*.rs", "path": "."}),
+            json!({"pattern": format!("{}/**/*.rs", cwd_real.display())}),
+            json!({"pattern": format!("{}/*", dirs.temp.display())}),
+        ] {
+            assert_eq!(
+                policy.decide("Glob", &input, None),
+                Decision::Allow,
+                "{input}"
+            );
+        }
+        let mut denied = vec![
+            json!({"pattern": format!("{}/*", dirs.outside.display())}),
+            json!({"pattern": "/etc/*"}),
+            json!({"pattern": "../outside/*"}),
+            json!({"pattern": "src/../../outside/*"}),
+            json!({"pattern": "**/../../*"}),
+            json!({"pattern": "~/.ssh/*"}),
+        ];
+        if cfg!(unix) {
+            denied.push(json!({"pattern": "link-out/*"}));
+        }
+        for input in denied {
+            assert!(
+                matches!(policy.decide("Glob", &input, None), Decision::Deny(_)),
+                "{input}"
+            );
+        }
+
+        // Grep's `pattern` is a regular expression; its `glob` is a path.
+        assert_eq!(
+            policy.decide("Grep", &json!({"pattern": "a/../b|/etc/.*"}), None),
+            Decision::Allow
+        );
+        for glob in ["../**", "/etc/*", "~/*"] {
+            assert!(
+                matches!(
+                    policy.decide("Grep", &json!({"pattern": "x", "glob": glob}), None),
+                    Decision::Deny(_)
+                ),
+                "{glob}"
+            );
+        }
+        assert_eq!(
+            policy.decide("Grep", &json!({"pattern": "x", "glob": "*.rs"}), None),
             Decision::Allow
         );
     }

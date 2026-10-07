@@ -242,6 +242,40 @@ fn configure_worker_process_platform(_command: &mut std::process::Command) {}
 pub(crate) const WORKER_SANDBOX_SUPPORTED: bool =
     cfg!(any(target_os = "linux", target_os = "macos"));
 
+/// Whether any process of the group led by `leader_pid` is still alive.
+pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
+    process_group_alive_platform(leader_pid)
+}
+
+#[cfg(unix)]
+fn process_group_alive_platform(leader_pid: u32) -> bool {
+    unix_common::process_group_alive(leader_pid)
+}
+
+#[cfg(not(unix))]
+fn process_group_alive_platform(leader_pid: u32) -> bool {
+    !session_processes(leader_pid).is_empty()
+}
+
+/// Creates `path` as a new directory only its owner can open (0700 where
+/// the platform has modes); fails when anything already exists there.
+pub(crate) fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    create_private_dir_platform(path)
+}
+
+#[cfg(unix)]
+fn create_private_dir_platform(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new().mode(0o700).create(path)?;
+    // The umask may have narrowed the mode; widen it back to exactly 0700.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn create_private_dir_platform(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
+}
+
 /// Signals the process group led by `leader_pid` (started through
 /// [`configure_worker_process`]). Returns `Ok(false)` when the group is gone.
 pub(crate) fn signal_process_group(leader_pid: u32, signal: Signal) -> std::io::Result<bool> {
