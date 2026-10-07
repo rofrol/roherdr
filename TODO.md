@@ -74,17 +74,6 @@ ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
 
-- [ ] Resolve agent names within the caller's workspace first. Today
-  `resolve_agent_target` (`src/app/terminal_targets.rs`) matches
-  `agent_name` in every workspace, so the post names agents
-  `<workspace-id>-<role>` and its main profile has to say "verify that each
-  target belongs to the intended workspace and project. Never substitute an
-  unnamed, focused, or unrelated agent." Risk: callers that rely on global
-  names from another workspace (sol).
-  Decided by the user 2026-10-06: names resolve in the caller's workspace
-  first; a `--global` flag addresses a name in every workspace; an
-  ambiguous name stays an error.
-
 - [ ] Finish the idle-job mark: a still mauve `z` instead of the dotted ring
   (user chose a worker for it, 2026-10-07). Left uncommitted in the shared
   checkout by the session "Widoczność kółka z przerywaną linią" (tab in the
