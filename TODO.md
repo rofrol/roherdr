@@ -508,8 +508,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     item moves to "Next, in order" only on an explicit approval; writers
     re-read before writing and commit `TODO.md` by path (both). Coordinators
     re-read `TODO.md` before each item, never from memory (MiMo).
-  - The global rule's "herdr collects them from there" is not true yet and
-    should go (sol). Fix the coordinator stopping between items first, or
+  - Done 2026-10-07 (user chose it from a menu): the global rule and the
+    `/todo` skill (dotfiles `9b851dd`) require `Options:` on each question,
+    ask new ones right after starting the next worker, fall back to plain
+    text plus `awaiting-reply`, write answers back, re-read `TODO.md`; the
+    false "herdr collects them" is gone. Left: the cross-repository script
+    plus `/decisions` skill, and the test below.
+  - (sol, before:) The global rule's "herdr collects them from there" was not
+    true and had to go. Fix the coordinator stopping between items first, or
     stalls get blamed on the wrong change (both, round 1).
   - Test: a fixture repo with one trivial item and two questions, no user
     present: the item still lands and both questions are asked once; an
