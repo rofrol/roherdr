@@ -74,6 +74,18 @@ ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
 
+- [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
+  400 tabs, opened by the bussiness-ideas coordinator when it looped on
+  retrying its wait for a worker; it closed them and removed the loop. Ask
+  the models; add it to TODO as next"). `openpty: Device not configured`
+  (`kern.tty.ptmx_max` 511, ~527 `/dev/ttys*` in use): herdr could not open
+  tabs anywhere. Each retry went through `herdr-job run`, which opens a tab
+  per job, and kept failed job tabs open. Consult the default set on
+  guards: a cap on running/failed job tabs per owner pane, a rate limit on
+  `herdr-job run` and tab creation, PTY headroom checks, retries that reuse
+  one job instead of starting a new one, and how herdr reports PTY
+  exhaustion.
+
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
@@ -643,6 +655,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
+
+- [ ] While coordinating, which wins: "ask the models" (consult now, in this
+  turn) or "a new request is queued, everything else goes to a worker"?
+  Report from the email-assistant coordinator (2026-10-07): the user said
+  "do todo: ... ask the models", it ran the consult at once before writing
+  the TODO entry; the user asked why the coordinator works itself. The herdr
+  coordinator ran its consults itself all day too. The rules do not say.
+- [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside
+  herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
+  after 4-5 minutes, four times, while the workers kept running (reported
+  by the email-assistant coordinator, 2026-10-07). Long waits must survive;
+  find where the socket returns an empty response (a server-side timeout?).
 
 - [ ] herdr: `agent start` reports ready before Claude accepts typed input,
   and `agent prompt` returns `agent_prompted` without knowing the prompt
