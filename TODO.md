@@ -113,6 +113,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   sends no Stop on Esc, so an interrupted turn shows only when the next
   turn starts; a coordinator waiting on a worker the user interrupted waits
   until then. Left: acknowledged startup prompt delivery.
+  Bug at first use (2026-10-07): the Keychain worker finished normally
+  (WORKER-DONE at 16:43 UTC) but `wait_turn` returned `interrupted`. The
+  inference "another turn started before this one reported its end" seems
+  to fire when a background task's notification starts a turn inside the
+  same prompt's work; check the hook order for task notifications and
+  derive `interrupted` only from an explicit signal.
 
 - [ ] Why the "added delay is a bug signal" rule did not hold (user,
   2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
@@ -933,6 +939,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   transcripts, Claude and Codex first (DeepSeek), which could feed the
   forecast's pace (MiMo).
 
+- [ ] Experiment: one headless Claude worker through `claude -p
+  --input-format stream-json --output-format stream-json` (user, 2026-10-07,
+  chose it over the SDK and over staying with TUI workers). Plan in "Compare
+  the T3 Code approach" and the question it answered.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1170,12 +1181,3 @@ user needs to decide or do.
   generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
-
-- [ ] Run one headless Claude worker as an experiment before any switch?
-  Options: yes, plain `claude -p` stream-json (Recommended) | yes, through the Agent SDK in a sidecar | no, keep TUI workers with event waits
-  Checked 2026-10-07: see "Compare the T3 Code approach" (rounds with sol,
-  MiMo, DeepSeek; T3 Code source). The experiment runs one worker in a
-  fresh worktree through completion, a tool denial, a question, an
-  interrupt, a crash, a limit and a `--resume` takeover, and checks whether
-  plain stream-json exposes `can_use_tool` control requests and what
-  `AskUserQuestion` does in print mode. It uses a few Claude sessions.
