@@ -569,6 +569,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07,
+  screenshot of the `?` list: "how do I know which tab that is?" for
+  "approve the edit in tab w4:t6Z"). The sidebar shows space names and tab
+  labels, never `w4:t6Z`. A coordinator (and any agent) should name a tab
+  as the user sees it, space plus label (or the worker's role mark), and a
+  worker that needs the user should be the one marked, so its own tab shows
+  `?` instead of the coordinator's. Options for herdr: a `herdr tab focus`
+  link in the ask, or a click on the `↳` line that jumps to a tab named in
+  it.
+
 - [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07:
   `herdr agent wait <worker> --until done --until blocked` returned twice
   while the worker kept working (its screen showed "Thundering…" with a
