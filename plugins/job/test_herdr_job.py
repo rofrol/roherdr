@@ -818,6 +818,16 @@ class WaitAgentTests(unittest.TestCase):
         code, text, _ = self.run_wait([blocked], worker_line=True)
         self.assertEqual(code, 4)
 
+    def test_worker_line_reads_the_visible_screen_of_a_working_agent(self):
+        busy = [1, "", json.dumps({"error": {"code": "agent_not_idle", "message": "cannot read 200 lines"}}) + "\n"]
+        working = [0, "⏺ Editing herdr-job\n\n esc to interrupt\n", ""]
+        finished = [0, "⏺ Committed.\n  WORKER-DONE 1a2b3c4 | visible screen\n\n> \n", ""]
+        code, text, calls = self.run_wait([working, busy, working, finished], worker_line=True)
+        self.assertEqual(code, 0, text)
+        self.assertIn("WORKER-DONE 1a2b3c4 | visible screen", text)
+        self.assertEqual(calls[0], ["agent", "read", "w:p5", "--source", "detection", "--format", "text"])
+        self.assertEqual((len(calls), self.sleeps), (4, [3, 3, 3]))
+
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class CleanTreeTests(unittest.TestCase):

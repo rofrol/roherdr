@@ -1373,6 +1373,9 @@ AGENT_GONE_CODES = {"agent_not_found", "agent_not_running", "pane_not_found", "t
 # live handoff ("server is shutting down") or a request the app could not take.
 # Not `protocol_mismatch`: that one does not pass by waiting.
 TRANSPORT_CODES = {"server_not_running", "server_unavailable"}
+# A read the server refuses while the agent works (`agent_not_idle`, a long
+# read of an alternate screen): poll again, the agent is still there.
+AGENT_BUSY_CODES = {"agent_not_idle"}
 # The line a worker ends with, alone on its line (after an agent's bullet).
 # `<sha>`/`<reason>` placeholders, as in a task text echoed on the screen, do not count.
 WORKER_LINE = re.compile(r"^[\s⏺●•]*(WORKER-DONE [0-9a-f]{7,40}\b.*|WORKER-BLOCKED [^<\s].*)$")
@@ -1383,7 +1386,8 @@ EXIT_TRANSPORT_GAVE_UP = 5
 
 def agent_call(*args):
     """Runs a herdr agent command: ("ok", stdout), ("gone", message),
-    ("transport", message) for a lost connection, or ("error", message)."""
+    ("transport", message) for a lost connection, ("busy", message) for a
+    read refused while the agent works, or ("error", message)."""
     try:
         out = subprocess.run([HERDR, *args], capture_output=True, text=True)
     except OSError as err:
@@ -1398,6 +1402,8 @@ def agent_call(*args):
             continue
         if code in AGENT_GONE_CODES:
             return "gone", line
+        if code in AGENT_BUSY_CODES:
+            return "busy", line
         return ("transport" if code in TRANSPORT_CODES else "error"), line
     # Not a server answer: the socket, an empty answer, a handoff in progress.
     return "transport", text or f"exit {out.returncode}"
@@ -1419,7 +1425,9 @@ def cmd_wait_agent(args):
     say = lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True)
     delay, failing_since = AGENT_RETRY_FIRST_S, None
     if args.worker_line:
-        request = ["agent", "read", args.pane, "--source", "recent", "--format", "text", "--lines", "200"]
+        # The visible screen: herdr refuses a `recent` read of an alternate
+        # screen while the agent works, and a worker's last line is visible.
+        request = ["agent", "read", args.pane, "--source", "detection", "--format", "text"]
     else:
         request = ["agent", "wait", args.pane] + [flag for state in args.until for flag in ("--until", state)]
     say("waiting for a worker line" if args.worker_line else
@@ -1440,7 +1448,10 @@ def cmd_wait_agent(args):
         if kind == "gone":
             say(f"the agent is gone: {short(text, 200)}")
             sys.exit(EXIT_AGENT_GONE)
-        if kind == "error":
+        if kind == "busy" and args.worker_line:
+            time.sleep(WORKER_LINE_POLL_S)
+            continue
+        if kind in ("error", "busy"):
             say(f"failed: {short(text, 200)}")
             sys.exit(2)
         if not args.worker_line:
