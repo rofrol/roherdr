@@ -432,17 +432,46 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   fresh-coordinator-per-item, item-history and handoff items (all three
   models: those build on the event log and verified writes).
 
-- [ ] Review the coordinator's code with the models so its operations are
-  atomic and transactional (user, 2026-10-07, next: "it must be like a
-  database transaction, not hop siup; maybe review this coordinator's code
-  with the models so these operations are atomic, transactional"). Scope:
-  `src/workers/` (start, answer, stop, kill, take-over, journal, registry,
-  `lost` after restart, live handoff), `herdr worker`/`herdr-job` waits,
-  the `/todo` skill's steps (claim, delegate, cherry-pick, check, TODO and
-  DECISIONS edits, install, push) and the coordinator's scratch scripts.
-  For each operation: what is the commit point, what happens on a crash or
-  a concurrent call halfway, what is idempotent, what can be lost. Output:
-  findings verified against the code, fixes as follow-up items in order.
+- [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
+  user 2026-10-07: "it must be like a database transaction"). 15 findings
+  verified by the worker, the critical one also by the coordinator. Until
+  fix 3 lands: no install while a headless worker runs (finding 1: the new
+  server marks every running worker `lost` at start and worker pipes are
+  not handed over, so an install ends them all). In order, one worker
+  each, the doc's "Fixes, in order" has the details:
+  1. Answers name their question: `request_id` required (or refused when
+     several are pending), the `?` list shows it; a gone id is refused
+     with what happened to it (finding 2: the oldest question was
+     answered, possibly one the user never saw).
+  2. Takeover claims recorded in every state and released on failure; no
+     prompt or answer during a takeover (findings 3, 8: two clicks on an
+     exited worker open two tabs on one session).
+  3. A live handoff does not kill or mislabel workers: first refuse or
+     postpone it while a worker runs and mark `lost` only when no server
+     owns the journal (a lock per journal); a later `exited` replaces
+     `lost` on replay. Then a design choice for the user (hand worker pipes
+     over like PTY fds, or a small per-worker broker that outlives the
+     server).
+  4. The coordinator's stopgap wait script: wake on `question`, `lost`,
+     `exited`; open and seek the journal before reading the status; take
+     the path from `worker status` (finding 4: it can miss a question and
+     hangs after a handoff).
+  5. `worker kill` checks process identity (start time) before killing a
+     recorded tool session (finding 5: a reused session id can be a herdr
+     pane's shell).
+  6. Install the build that was checked: build and install under one
+     clean-tree lock, and `herdr_live.sh install` refuses a binary whose
+     build label is not the expected one (finding 11).
+  7. herdr-job's locks follow the command (`pass_fds`), no `lost` verdict
+     after 60 s, `run --key` (findings 10, 13).
+  8. The `/todo` claim under an exclusive lock; cherry-pick only after
+     `git merge-tree` shows it applies (finding 14).
+  Folded into the reliability plan: a sequence on every journal record and
+  prompt/interrupt bound to a turn (step 2, findings 7, 12); answers
+  journaled as intent, sent, settled, idempotent by request id, and
+  `worker.start` with a client key (step 3, findings 6, 7); journal write
+  failures visible as `degraded`, lossy replay, numbers reserved (finding
+  9); the doc's extra fault-injection cases (step 7).
 
 - [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
   next: "the wait that wakes the coordinator on a worker's question is
