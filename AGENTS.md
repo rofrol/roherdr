@@ -436,9 +436,10 @@ To save the coordinator's quota, a session can hand a well-specified task to
   <workspace_id>`), not its tab: a job tab the worker started nests under
   its tab and makes `tab close` fail (`tab_has_children`); then remove the
   worktree and branch.
-- A cold worktree build needs Zig 0.16 (`vendor/libghostty-vt`); Homebrew
-  ships 0.17 since 2026-10, so check and build warm in the shared
-  checkout's clean tree instead.
+- A cold worktree build needs Zig 0.16 (`vendor/libghostty-vt`), not
+  Homebrew's 0.17: `~/.zshenv` sets `ZIG` to `~/.local/share/zig/0.16.0/zig`
+  (2026-10-07). A worker whose shell started before that lacks it: restart
+  the worker or `export ZIG=...` in its commands.
 - Read the full diff, not only `--stat`: the first pilot read
   `HERDR_WORKSPACE_ID` without the remote and empty guards that
   `caller_pane_id()` already had.
