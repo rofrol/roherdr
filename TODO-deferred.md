@@ -3,6 +3,19 @@
 Parked ideas, moved out of `TODO.md` so it stays small. Move an item
 back to `TODO.md` when it becomes next.
 
+- [ ] Follow-ups of "show what an agent asks": a "needs me" filter, a
+  header count for limited agents, outcomes (parked by the user 2026-10-07:
+  "none for now").
+  Checked 2026-10-07: the `?` list and (since `e0bfbce8`) a `↳` line under
+  asking tab lines show the ask. Waiting since the user's 2026-10-06
+  decision: a "needs me" filter in the planned sidebar filter bar, never
+  hiding rows by default (hiding breaks positional `Alt-1…9`, focus and job
+  child tabs); a separate header count for limited agents, and limits for
+  Codex and pi; outcomes ("ready for review"), which sol shows apart from
+  actions and MiMo would not (stale within a day; round
+  `20261006-021127-0eb7`), and if they come only until the tab is viewed,
+  as facts herdr reads itself (branch, `+N -M`), not agent prose.
+
 - [ ] Ideas from pstack-t3 (user, 2026-10-06; https://github.com/creedants/pstack-t3,
   a 3-day-old port of Lauren Tan's pstack to T3 Code's orchestrator; not
   installed: its orchestration only runs inside T3 Code, and 55 skill
