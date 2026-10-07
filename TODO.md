@@ -573,6 +573,44 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 - [ ] `scripts/fork_demo/README.md` still says "oracle stats" where the menu
   item is "consult stats" (left over from the dropped README animations).
 
+- [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
+  and their `?` marks did not come back after `claude --resume` (user,
+  2026-10-03, screenshots of job-seeker and email-assistant showing "Resume
+  this session with:"). At 15:17:35 loginwindow opened the Force Quit panel
+  for Ghostty "because it still has background processes"; at 15:17:39-40
+  ~19 `claude` processes exited gracefully at once, while their zsh shells,
+  the herdr server and ~12 other claude survived. Auto-resume of such agents
+  is done (`DECISIONS.md`, "Auto-resume of agents stopped by a signal").
+  - Cause: the herdr server, every pane shell and agent sit in the resource
+    coalition of the Ghostty that started the server
+    (`proc_pidinfo(PROC_PIDCOALITIONINFO)`); live handoff inherits it. Why
+    ~12 agents in the same coalition survived is unexplained.
+  - Not done: reproduce with disposable agents (quit Ghostty, force-quit
+    its entry, record the signal in a wrapper, `sudo launchctl procinfo` on
+    the server, shells and agents before and after); the fix waits for it.
+  - Fix, if the reproduction confirms it (sol, MiMo, `20261003-153704-1042`):
+    start the macOS server as a per-user LaunchAgent (own coalition):
+    `launchctl bootstrap gui/$UID <plist>`, then `kickstart` (never `-k`),
+    wait for the socket; `RunAtLoad=false`, `ProcessType=Interactive`, no
+    plain `KeepAlive=true`. Costs: send the client's `PATH`,
+    `SSH_AUTH_SOCK` and the like per new pane; TCC grants move to herdr
+    (sign with a stable self-signed identity); `bootstrap` fails over SSH,
+    keep direct spawn as fallback; start the handoff successor through
+    launchd too, or exec in place; existing panes stay in the old
+    coalition. Rejected: `responsibility_spawnattrs_setdisclaim`,
+    `posix_spawnattr_setcoalition_np`, `launchctl submit`.
+  - Gaps of the auto-resume: Windows (the PowerShell hook does not report
+    the stop), SIGKILL (no hook runs), and the limit and the `?` are not
+    saved across a server restart (persist the report keyed by session id,
+    restore only when that session resumes with no user prompt after the
+    question). Consider a "the agent exited, resume?" hint on panes whose
+    agent died.
+  - Until then, the user's side: do not Force Quit a "Ghostty" entry that
+    shows up after Ghostty has quit; Cmd+Q is enough.
+  Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
+  Decided by the user 2026-10-07: reproduce first; a worker prepares the
+  script with disposable agents, the user quits and force-quits Ghostty once.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -789,61 +827,3 @@ user needs to decide or do.
 
 ### Needs you to act or watch
 
-- [ ] Regression from 2026-09-29 (handoff point 3): closing a tab asks to
-  close the space, and cancelling leaves an odd highlight. The screenshots
-  from that session were the wrong ones; the user reproduces it on request.
-  Triage 2026-10-06 (manual): reproduce it once so an agent can fix it.
-
-- [ ] Diagnose multiline copy in Pi versus Claude CLI (2026-10-01).
-  - User reports Claude CLI selection copies as expected, whereas Pi inserts
-    newline characters into copied multiline text. Determine whether these
-    are extra breaks at visual wraps rather than intentional paragraph/code
-    breaks. No exact reproduction or clipboard-byte comparison yet.
-  - Pi 0.99.1 fullscreen `getActiveSelectionText()` joins rendered rows with
-    `\n` (`pi-tui/dist/tui-alt-screen.js`): plausible in fullscreen, not
-    proof for regular mode (the default; global settings omit `tuiMode`).
-  - Consulted DeepSeek and Gemini: compare the same synthetic paragraph,
-    real-newline code block, unwrapped control and Unicode text at 80/120
-    columns, in Pi regular/fullscreen and Claude CLI; record terminal,
-    version, geometry, modifiers and the copy path (terminal selection, Pi
-    copy-on-select, OSC 52); compare exact LF/CRLF bytes. Never fix this by
-    blindly joining every selected row. Do not inspect or overwrite the
-    user's clipboard without permission. No upstream issue without
-    reproduction.
-  Triage 2026-10-06 (manual): Needs your real gesture, terminal, Pi mode and copy path for a live reproduction; the item forbids touching your clipboard without permission.
-
-- [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
-  and their `?` marks did not come back after `claude --resume` (user,
-  2026-10-03, screenshots of job-seeker and email-assistant showing "Resume
-  this session with:"). At 15:17:35 loginwindow opened the Force Quit panel
-  for Ghostty "because it still has background processes"; at 15:17:39-40
-  ~19 `claude` processes exited gracefully at once, while their zsh shells,
-  the herdr server and ~12 other claude survived. Auto-resume of such agents
-  is done (`DECISIONS.md`, "Auto-resume of agents stopped by a signal").
-  - Cause: the herdr server, every pane shell and agent sit in the resource
-    coalition of the Ghostty that started the server
-    (`proc_pidinfo(PROC_PIDCOALITIONINFO)`); live handoff inherits it. Why
-    ~12 agents in the same coalition survived is unexplained.
-  - Not done: reproduce with disposable agents (quit Ghostty, force-quit
-    its entry, record the signal in a wrapper, `sudo launchctl procinfo` on
-    the server, shells and agents before and after); the fix waits for it.
-  - Fix, if the reproduction confirms it (sol, MiMo, `20261003-153704-1042`):
-    start the macOS server as a per-user LaunchAgent (own coalition):
-    `launchctl bootstrap gui/$UID <plist>`, then `kickstart` (never `-k`),
-    wait for the socket; `RunAtLoad=false`, `ProcessType=Interactive`, no
-    plain `KeepAlive=true`. Costs: send the client's `PATH`,
-    `SSH_AUTH_SOCK` and the like per new pane; TCC grants move to herdr
-    (sign with a stable self-signed identity); `bootstrap` fails over SSH,
-    keep direct spawn as fallback; start the handoff successor through
-    launchd too, or exec in place; existing panes stay in the old
-    coalition. Rejected: `responsibility_spawnattrs_setdisclaim`,
-    `posix_spawnattr_setcoalition_np`, `launchctl submit`.
-  - Gaps of the auto-resume: Windows (the PowerShell hook does not report
-    the stop), SIGKILL (no hook runs), and the limit and the `?` are not
-    saved across a server restart (persist the report keyed by session id,
-    restore only when that session resumes with no user prompt after the
-    question). Consider a "the agent exited, resume?" hint on panes whose
-    agent died.
-  - Until then, the user's side: do not Force Quit a "Ghostty" entry that
-    shows up after Ghostty has quit; Cmd+Q is enough.
-  Triage 2026-10-06 (manual): Auto-resume is done (b2f3adb9, 3a8e7f66); reproduce by quitting and force-quitting Ghostty with `sudo launchctl procinfo`; the LaunchAgent fix waits for that.
