@@ -314,8 +314,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   (MiMo: the only SDK-specific win is `canUseTool`). Policy risk either way:
   the auth note targets SDK products; the user's own CLI in print mode is
   the stronger case; verify before building.
-  Next: one experiment (approved by the user's "analyse, add to TODO"? no:
-  ask first): a single headless worker in a fresh worktree through normal
+  Next, waiting on the user's choice below: one experiment, a single headless worker in a fresh worktree through normal
   completion, a tool denial, a question, an interrupt, a crash, a limit and
   a `--resume` takeover; check whether plain stream-json exposes
   `can_use_tool` control requests and what `AskUserQuestion` does in `-p`.
@@ -1172,3 +1171,11 @@ user needs to decide or do.
 
 ### Needs you to act or watch
 
+- [ ] Run one headless Claude worker as an experiment before any switch?
+  Options: yes, plain `claude -p` stream-json (Recommended) | yes, through the Agent SDK in a sidecar | no, keep TUI workers with event waits
+  Checked 2026-10-07: see "Compare the T3 Code approach" (rounds with sol,
+  MiMo, DeepSeek; T3 Code source). The experiment runs one worker in a
+  fresh worktree through completion, a tool denial, a question, an
+  interrupt, a crash, a limit and a `--resume` takeover, and checks whether
+  plain stream-json exposes `can_use_tool` control requests and what
+  `AskUserQuestion` does in print mode. It uses a few Claude sessions.
