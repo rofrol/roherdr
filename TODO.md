@@ -85,6 +85,26 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `herdr-job run` and tab creation, PTY headroom checks, retries that reuse
   one job instead of starting a new one, and how herdr reports PTY
   exhaustion.
+  Round `20261007-131635-9d1d` (sol, MiMo), agreeing:
+  - A tab per wait attempt is the bug: one wait job that reconnects inside
+    (backoff 1 s to 30 s, give up after ~15 min of transport failures),
+    distinguishing a failed worker from a lost connection.
+  - herdr-job caps checked before any PTY is allocated, atomically, counting
+    running and failed jobs and attributing nested jobs to the original
+    owner: per owner pane sol 16 / MiMo 4 running, failed tabs kept 8 / 4
+    (the oldest closed, its log kept, never the focused one); global 64 / 32;
+    launches ~3-6 per minute per owner; refuse a job name that failed 3
+    times in 10 minutes. MiMo: reuse a running/failed job of the same name
+    unless `--new-attempt`, and keep the counters on disk (a restart is what
+    triggered the retries).
+  - herdr core: refuse a spawn below ~64 free PTYs with a clear error naming
+    the counts (MiMo: `EHERDR_PTY_EXHAUSTED`), warn at 80%, a tab cap per
+    workspace (64) and global (128, sol).
+  - Agent rule: one wait command per wait, never a retry loop around
+    `herdr-job run`; on wait infrastructure errors check status once and
+    report; every loop bounded in iterations and time.
+  - Test: set the owner cap to 3, launch three failing jobs, the fourth is
+    refused before a PTY is opened, also under concurrent launches.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
