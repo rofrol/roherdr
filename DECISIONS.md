@@ -360,3 +360,8 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 
 ### A turn ending in blocked tool calls
 - User, 2026-10-06: when a turn's last batch of tool calls all failed or were denied (a permission prompt, the auto-mode classifier), the Stop hook marks the pane awaiting a reply itself (question `blocked tool calls`) and lets the turn end; the agent may have been unable to run `herdr agent awaiting-reply`. No separate error state. It never asks the agent to run a command its tools may deny again, and it may mark the second stop of a turn it already blocked.
+
+### Decided questions, 2026-10-07
+- No `--workspace` hint for agents: `herdr tab create` defaults to the caller's workspace in the fork (`39be3b9b`), and the hint would cost tokens on every turn or wait for a stable release of the herdr skill (user).
+- Fork builds keep the self-updater off; the user installs from `master` with `scripts/herdr_live.sh` (user).
+- Follow-ups of the ask line (a "needs me" filter, a limited-agents count, outcomes) are parked in `TODO-deferred.md` (user: "none for now").
