@@ -57,7 +57,8 @@ def child_env() -> dict[str, str]:
 class Worker:
     """One `claude -p` stream-json session with a JSONL journal."""
 
-    def __init__(self, repo: Path, journal: Path, model: str, extra: list[str]):
+    def __init__(self, repo: Path, journal: Path, model: str, extra: list[str],
+                 max_turns: int = 8):
         self.argv = [
             "claude", "-p",
             "--input-format", "stream-json",
@@ -65,7 +66,7 @@ class Worker:
             "--verbose",
             "--replay-user-messages",
             "--model", model,
-            "--max-turns", "8",
+            "--max-turns", str(max_turns),
             *extra,
         ]
         self.journal = journal.open("w")
