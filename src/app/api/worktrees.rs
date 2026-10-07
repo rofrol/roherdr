@@ -6,7 +6,7 @@ use crate::api::schema::{
 };
 use crate::app::App;
 
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_spawn_error, encode_success};
 
 mod deferred;
 mod reads;
@@ -114,7 +114,7 @@ impl App {
         } else {
             match self.create_workspace_with_options(entry.path.clone(), params.focus) {
                 Ok(ws_idx) => (ws_idx, true),
-                Err(err) => return encode_error(id, "worktree_open_failed", err.to_string()),
+                Err(err) => return encode_spawn_error(id, "worktree_open_failed", &err),
             }
         };
         self.mark_worktree_membership(

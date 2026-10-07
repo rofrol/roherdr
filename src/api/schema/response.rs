@@ -15,7 +15,7 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
-use super::server::ServerCapabilities;
+use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
@@ -47,6 +47,12 @@ pub enum ResponseResult {
         protocol: u32,
         #[serde(default)]
         capabilities: Option<ServerCapabilities>,
+    },
+    PtyUsage {
+        /// Absent where the platform has no fixed pool (Windows) or the
+        /// count cannot be read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system: Option<SystemPtyUsageInfo>,
     },
     SessionSnapshot {
         snapshot: Box<SessionSnapshot>,

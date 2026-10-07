@@ -1385,6 +1385,16 @@ fn process_session_id(pid: u32) -> Option<i32> {
     fields.get(3)?.parse().ok()
 }
 
+pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
+    // devpts keeps the live count and the limit for the whole system here.
+    let read =
+        |path: &str| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    Some(super::SystemPtyUsage {
+        in_use: read("/proc/sys/kernel/pty/nr")?,
+        max: read("/proc/sys/kernel/pty/max")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

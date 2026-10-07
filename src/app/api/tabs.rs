@@ -7,7 +7,7 @@ use crate::api::schema::{
 };
 use crate::app::{App, Mode};
 
-use super::responses::{encode_error, encode_success};
+use super::responses::{encode_error, encode_spawn_error, encode_success};
 
 /// Where `create_tab_in_workspace` puts the new tab.
 #[derive(Clone, Copy)]
@@ -435,7 +435,7 @@ impl App {
                         .expect("new tab should produce a complete create response"),
                 )
             }
-            Err(err) => encode_error(id, "tab_create_failed", err.to_string()),
+            Err(err) => encode_spawn_error(id, "tab_create_failed", &err),
         }
     }
 
