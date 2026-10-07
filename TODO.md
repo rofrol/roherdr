@@ -11,30 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Hand a session over to another agent (user, 2026-10-06: "the handoff
-  would help, now I have to paste a link to the pi or claude session by
-  hand"; queued after the `?` list above). Inspired by
-  https://x.com/MahyadGhassemi/status/2107190376692056222 (T3 Code switches
-  models mid-chat, useful when a usage limit runs out).
-  - A tab menu item "Hand over to… Claude / Pi / Codex" opens a new tab in
-    the same cwd with the chosen agent and a first prompt naming the source
-    agent, its session id, its transcript path and the task title:
-    "Continue the work from <agent> session <id>, transcript <path>, task
-    <title>; read it first". Session ids come from `src/agent_resume.rs`;
-    the transcript path is derived per agent (Claude
-    `~/.claude/projects/<cwd slug>/<id>.jsonl`, Pi's session file; verify
-    both). The new agent reads the transcript itself, so herdr never parses
-    private transcript formats, and it works after the source hit its limit.
-  - The first prompt lists what to carry over, as T3 Code replays it: user
-    and assistant text, commands with output, errors, changed file names,
-    plans. Keep it a provenance pointer (source agent, session id,
-    transcript, repository, revision, time), not a shared context (the
-    Fellowship post below).
-  Decided by the user 2026-10-06: a tab menu item plus a CLI/API form
-  (`herdr agent handoff <pane> --to <agent>`, a neutral server method); the
-  source tab stays, idle; an unknown session id is reported, never guessed.
-
-
 - [ ] Bug: the space `T` button cannot start a coordinator (user,
   2026-10-07, screenshot: toast "TODO chat-hosted / todo-worker: not inside
   herdr"). The client runs `todo_command` from its own process, which lives
