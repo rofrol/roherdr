@@ -396,3 +396,13 @@ working, ✉ history), never `?`. An arrow with no history is drawn dim, not
 hidden (rule from sol, with MiMo's "? never drops"). Done by the first
 headless worker run.
 
+## Atomicity review of the coordinator and headless workers (2026-10-07)
+
+The user asked for the coordinator's operations to behave like database
+transactions. A worker reviewed `src/workers/`, herdr-job, the `/todo` steps
+and the coordinator's wait script with sol and DeepSeek (MiMo timed out):
+21 operations, 15 verified findings, report in
+`docs/atomicity-review-2026-10-07.md`. Critical: a live handoff (every
+install) ends all running headless workers and marks them `lost`. The fixes
+are queued as one TODO item plus steps of the reliability plan.
+
