@@ -453,6 +453,23 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc,
+  2026-10-07, forwarded by the user). After the user answered two "Needs a
+  decision" questions with "do it" (release rormpc-tools, install rormpc, add
+  config lines), the coordinator bumped the version, committed and tagged
+  itself; the user asked why the coordinator worked itself. The global rule
+  "Working through TODO.md" does not say: (1) whether an answer to a "Needs a
+  decision" question is a new request to queue first or an approval to act
+  now; (2) who does release steps workers may not do (push, tag, install,
+  editing the user's config after an install): the coordinator, a worker
+  with that permission, or the user; (3) a rule changed mid-session reaches
+  a running coordinator only partly (it had already done one item itself).
+  Also seen: `herdr agent prompt` right after `herdr agent start` in a fresh
+  worktree was swallowed by Claude's folder-trust dialog (`agent_prompted`
+  returned, the prompt never arrived) until `herdr worktree create` got
+  `--trust-repository`; `herdr pane wait-output` has a short default timeout,
+  so a herdr-job waiting for a worker's last line failed early.
+
 - [ ] `workspace list` shows a space's repository only when the space is in a
   worktree family (its `worktree` object), so tools read `.worktree` as "the
   space's repo" and fail for plain git spaces (2026-10-07: the todo launcher
