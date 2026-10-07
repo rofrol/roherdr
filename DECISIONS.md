@@ -317,6 +317,7 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - The task title stays the row's identity, the ask goes in a second line (sol; rejected MiMo's ask replacing the title: three OAuth tabs become indistinguishable). Explicit reporting, never a heuristic over `last_assistant_message` (round `20261006-021127-0eb7`).
 - Agents report `waiting_since_ms` (blocked, asked, limited); the list ranks longest wait first with the wait in the time column.
 - `Limited` (taken from T3 Code): `pane.report_limit {kind: usage|credits, message}` (`herdr agent limited`) from Claude's `StopFailure` hook (`rate_limit`, `billing_error`), shown like an awaiting-reply report and counted in `?N`; `resets_at` is the latest reset of the provider's full windows in the usage report.
+- 2026-10-07: with vertical tabs, an asking, blocked or limited tab line gets a dim `↳` row under it with the same text as the `?` list (`asking_detail`, the longest-waiting agent of the tab); the row is part of the tab's click target; working and idle rows stay one line.
 
 ### Closing a parent's last pane
 - An explicit close of a parent tab's last pane (cmd+w) is a close of the tab: it asks and closes its job tabs too. A parent whose shell exits or crashes keeps its jobs (an agent may exit after starting a long build on purpose). Consult sol, DeepSeek, MiMo, unanimous (2026-10-03).
