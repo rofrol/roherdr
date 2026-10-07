@@ -126,7 +126,14 @@ pub(super) fn fetch() -> Result<ProviderUsage, FetchError> {
 fn read_credentials() -> Result<OauthCredentials, String> {
     let raw = credentials_file_path()
         .and_then(|path| std::fs::read_to_string(path).ok())
-        .or_else(|| crate::platform::read_keychain_generic_password(KEYCHAIN_SERVICE))
+        .or_else(|| {
+            keychain_service(
+                std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+                std::env::var_os("CLAUDE_CONFIG_DIR"),
+                crate::platform::normalize_nfc,
+            )
+            .and_then(|service| crate::platform::read_keychain_generic_password(&service))
+        })
         .ok_or_else(|| "Claude Code login not found".to_owned())?;
     serde_json::from_str::<CredentialsFile>(&raw)
         .ok()
@@ -141,6 +148,33 @@ fn credentials_file_path() -> Option<std::path::PathBuf> {
             std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".claude"))
         })?;
     Some(config_dir.join(".credentials.json"))
+}
+
+/// Name of Claude Code's macOS Keychain item for the configured account.
+///
+/// Claude Code 2.1.292 uses the bare name only when no config dir is set (or
+/// it is empty); otherwise it appends `-` and the first 8 hex digits of the
+/// SHA-256 of the NFC-normalized dir, taken as the raw string (a trailing
+/// slash changes the name). `CLAUDE_SECURESTORAGE_CONFIG_DIR` overrides the
+/// dir, and set but empty selects the bare name. `None` when the dir cannot be
+/// named: the default item would hold another account's login.
+fn keychain_service(
+    secure_storage_dir: Option<std::ffi::OsString>,
+    config_dir: Option<std::ffi::OsString>,
+    normalize_nfc: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
+    use sha2::{Digest, Sha256};
+
+    let dir = secure_storage_dir.or(config_dir).unwrap_or_default();
+    if dir.is_empty() {
+        return Some(KEYCHAIN_SERVICE.to_owned());
+    }
+    let dir = normalize_nfc(dir.to_str()?)?;
+    let digest = Sha256::digest(dir.as_bytes());
+    Some(format!(
+        "{KEYCHAIN_SERVICE}-{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    ))
 }
 
 fn parse(body: &str) -> Result<ProviderUsage, String> {
@@ -255,6 +289,83 @@ fn capitalize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Golden names: what Claude Code 2.1.292 passed to `security
+    // find-generic-password -s` for these variables, captured with a `security`
+    // shim on PATH. This Mac has no per-dir item of its own to compare with.
+    fn os(value: &str) -> Option<std::ffi::OsString> {
+        Some(value.into())
+    }
+
+    fn keychain_service_as_given(
+        secure_storage_dir: Option<std::ffi::OsString>,
+        config_dir: Option<std::ffi::OsString>,
+    ) -> Option<String> {
+        keychain_service(secure_storage_dir, config_dir, |dir| Some(dir.to_owned()))
+    }
+
+    #[test]
+    fn keychain_service_is_bare_without_a_config_dir() {
+        let bare = Some("Claude Code-credentials".to_owned());
+        assert_eq!(keychain_service_as_given(None, None), bare);
+        assert_eq!(keychain_service_as_given(None, os("")), bare);
+    }
+
+    #[test]
+    fn keychain_service_hashes_the_config_dir_as_given() {
+        assert_eq!(
+            keychain_service_as_given(None, os("/nonexistent/.claude-work")).as_deref(),
+            Some("Claude Code-credentials-25195694")
+        );
+        assert_eq!(
+            keychain_service_as_given(None, os("/nonexistent/.claude-work/")).as_deref(),
+            Some("Claude Code-credentials-9ca80d6e")
+        );
+    }
+
+    #[test]
+    fn keychain_service_secure_storage_dir_overrides_the_config_dir() {
+        let secure = Some("Claude Code-credentials-589a060d".to_owned());
+        assert_eq!(
+            keychain_service_as_given(os("/nonexistent/secure"), os("/nonexistent/.claude-work")),
+            secure
+        );
+        assert_eq!(
+            keychain_service_as_given(os("/nonexistent/secure"), None),
+            secure
+        );
+        assert_eq!(
+            keychain_service_as_given(os(""), os("/nonexistent/.claude-work")).as_deref(),
+            Some("Claude Code-credentials")
+        );
+    }
+
+    #[test]
+    fn keychain_service_hashes_the_nfc_form_of_the_dir() {
+        let golden = "Claude Code-credentials-11af64ad";
+        assert_eq!(
+            keychain_service_as_given(None, os("/nonexistent/Caf\u{e9}")).as_deref(),
+            Some(golden)
+        );
+        // Where the platform has no normalizer there is no Keychain to read.
+        let expected = crate::platform::normalize_nfc("").map(|_| golden.to_owned());
+        assert_eq!(
+            keychain_service(
+                None,
+                os("/nonexistent/Cafe\u{301}"),
+                crate::platform::normalize_nfc
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn keychain_service_never_falls_back_to_the_bare_name() {
+        assert_eq!(
+            keychain_service(None, os("/nonexistent/.claude-work"), |_| None),
+            None
+        );
+    }
 
     #[test]
     fn parses_session_and_weekly_windows() {

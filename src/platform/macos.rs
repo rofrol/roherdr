@@ -1333,6 +1333,127 @@ pub(crate) fn read_keychain_generic_password(service: &str) -> Option<String> {
     (!secret.is_empty()).then(|| secret.to_owned())
 }
 
+type CfIndex = libc::c_long;
+type CfStringEncoding = u32;
+
+const CF_STRING_ENCODING_UTF8: CfStringEncoding = 0x0800_0100;
+const CF_STRING_NORMALIZATION_FORM_C: CfIndex = 2;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct CfRange {
+    location: CfIndex,
+    length: CfIndex,
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    #[link_name = "CFStringCreateWithBytes"]
+    fn cf_string_create_with_bytes(
+        allocator: CfTypeRef,
+        bytes: *const u8,
+        length: CfIndex,
+        encoding: CfStringEncoding,
+        is_external_representation: Boolean,
+    ) -> CfStringRef;
+
+    #[link_name = "CFStringCreateMutableCopy"]
+    fn cf_string_create_mutable_copy(
+        allocator: CfTypeRef,
+        max_length: CfIndex,
+        string: CfStringRef,
+    ) -> CfStringRef;
+
+    #[link_name = "CFStringNormalize"]
+    fn cf_string_normalize(string: CfStringRef, form: CfIndex);
+
+    #[link_name = "CFStringGetLength"]
+    fn cf_string_get_length(string: CfStringRef) -> CfIndex;
+
+    #[link_name = "CFStringGetBytes"]
+    fn cf_string_get_bytes(
+        string: CfStringRef,
+        range: CfRange,
+        encoding: CfStringEncoding,
+        loss_byte: u8,
+        is_external_representation: Boolean,
+        buffer: *mut u8,
+        max_buffer_length: CfIndex,
+        used_buffer_length: *mut CfIndex,
+    ) -> CfIndex;
+}
+
+/// Owns one retain of a CoreFoundation object.
+struct RetainedCf(CfTypeRef);
+
+impl Drop for RetainedCf {
+    fn drop(&mut self) {
+        // SAFETY: the wrapper is built only from non-null `Create`/`Copy` results.
+        unsafe { cf_release(self.0) }
+    }
+}
+
+/// Unicode Normalization Form C of `text`, through CoreFoundation.
+pub(crate) fn normalize_nfc(text: &str) -> Option<String> {
+    let length = CfIndex::try_from(text.len()).ok()?;
+    // SAFETY: every pointer passed below is either a live CF object owned by a
+    // `RetainedCf` or a Rust buffer valid for the length given with it.
+    unsafe {
+        let source = cf_string_create_with_bytes(
+            std::ptr::null(),
+            text.as_ptr(),
+            length,
+            CF_STRING_ENCODING_UTF8,
+            0,
+        );
+        if source.is_null() {
+            return None;
+        }
+        let source = RetainedCf(source);
+        let normalized = cf_string_create_mutable_copy(std::ptr::null(), 0, source.0);
+        if normalized.is_null() {
+            return None;
+        }
+        let normalized = RetainedCf(normalized);
+        cf_string_normalize(normalized.0, CF_STRING_NORMALIZATION_FORM_C);
+        let full = cf_string_get_length(normalized.0);
+        let range = CfRange {
+            location: 0,
+            length: full,
+        };
+        let mut needed: CfIndex = 0;
+        let converted = cf_string_get_bytes(
+            normalized.0,
+            range,
+            CF_STRING_ENCODING_UTF8,
+            0,
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        );
+        if converted != full {
+            return None;
+        }
+        let mut buffer = vec![0u8; usize::try_from(needed).ok()?];
+        let mut used: CfIndex = 0;
+        let converted = cf_string_get_bytes(
+            normalized.0,
+            range,
+            CF_STRING_ENCODING_UTF8,
+            0,
+            0,
+            buffer.as_mut_ptr(),
+            needed,
+            &mut used,
+        );
+        if converted != full || used != needed {
+            return None;
+        }
+        String::from_utf8(buffer).ok()
+    }
+}
+
 pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
     let max = sysctl_u32_by_name(c"kern.tty.ptmx_max")?;
     let names = std::fs::read_dir("/dev")
@@ -1389,6 +1510,16 @@ fn sysctl_u32_by_name(name: &std::ffi::CStr) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_nfc_composes_decomposed_text() {
+        assert_eq!(
+            normalize_nfc("/Users/a/Cafe\u{301}").as_deref(),
+            Some("/Users/a/Caf\u{e9}")
+        );
+        assert_eq!(normalize_nfc("").as_deref(), Some(""));
+        assert_eq!(normalize_nfc("plain/ascii").as_deref(), Some("plain/ascii"));
+    }
 
     #[test]
     fn macos_pty_count_skips_legacy_bsd_nodes() {
