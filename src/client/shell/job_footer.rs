@@ -24,12 +24,12 @@ pub(super) fn render(state: &ClientShellState, buffer: &mut Buffer, area: Rect) 
         Some(crate::api::schema::TabStatus::Failed) => "✗",
         _ => "·",
     };
-    // A running job that does nothing says so, with a ring that does not turn.
+    // A running job that does nothing says so, with a still `z` ("asleep").
     let idle = tab.is_some_and(|t| {
         t.status == Some(crate::api::schema::TabStatus::Running)
             && t.activity == Some(crate::api::schema::TabActivity::Idle)
     });
-    let status = if idle { "◌" } else { status };
+    let status = if idle { "z" } else { status };
     let text = format!(
         "{status} {}{} — {}",
         job.name,

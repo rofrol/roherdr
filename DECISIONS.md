@@ -97,7 +97,7 @@ from `TODO.md` is finished and its reasons would otherwise be lost.
 - User, 2026-10-01: a jump from a header list opens the collapsed space (and worktree group) persistently, like a manual toggle; a new tab the user creates also expands its space. Tabs created by API or agents never change the collapse.
 
 ### Silent job vs stuck job
-- Show only honest evidence (elapsed, time since last output, busiest child, CPU delta labelled "CPU"), never a progress or health verdict. After 5 min of no output at under 2% CPU a job is marked idle (`◌`, still, dimmer).
+- Show only honest evidence (elapsed, time since last output, busiest child, CPU delta labelled "CPU"), never a progress or health verdict. After 5 min of no output at under 2% CPU a job is marked idle with a still mauve `z` ("asleep"). It was a grey dotted ring (`◌`) at first, which rendered as a few faint dots; mauve alone did not help, and Sol and MiMo both proposed `z` (2026-10-06).
 
 ### Consult stats popup width
 - `consult.py stats --width N` splits wide tables into bands repeating the name column; without `--width` output stays byte-identical. Rejected: `less --header`, shorter names, one block per model, hiding old models.

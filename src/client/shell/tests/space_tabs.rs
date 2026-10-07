@@ -3423,7 +3423,7 @@ fn a_tab_line_shows_the_progress_of_the_agents_todo_list() {
 }
 
 #[test]
-fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
+fn an_agent_waiting_on_an_idle_job_gets_a_still_z() {
     use crate::api::schema::TabActivity;
     let mut state = state_with_tabs(true);
     set_agent_status(&mut state, AgentStatus::Idle, false);
@@ -3435,8 +3435,8 @@ fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
     };
     // A running job: the half circle of a job.
     let row = icon(&mut state);
-    assert!(!row.contains('◌'), "{row:?}");
-    // The job reports it is idle: the agent's icon is the still ring.
+    assert!(!row.contains(" z "), "{row:?}");
+    // The job reports it is idle: the agent's icon is the still `z`.
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     for tab in &mut projected.tabs {
         if tab.tab_id == "job_1" {
@@ -3445,7 +3445,7 @@ fn an_agent_waiting_on_an_idle_job_gets_a_ring_that_does_not_turn() {
     }
     state.set_snapshot(Box::new(projected));
     let row = icon(&mut state);
-    assert!(row.contains('◌'), "{row:?}");
+    assert!(row.contains(" z "), "{row:?}");
 }
 
 #[test]
