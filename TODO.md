@@ -1476,6 +1476,23 @@ Items agents add. Not approved until the user moves them up.
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
 
+- [ ] Repository rules reach headless workers mechanically (proposed by the
+  coordinator 2026-10-07 after the user asked why worker `w1` tried to
+  commit with a `Co-Authored-By` line that AGENTS.md forbids: "did it not
+  know or ignore it? ask the models"). Journal: `w1` never read AGENTS.md
+  although its task said so (it read the task file, a TODO grep and the two
+  files it edited); Claude Code loads CLAUDE.md, not AGENTS.md, this repo
+  has none, and Claude Code's built-in prompt adds the co-author line. So
+  it did not know. Round `20261007-211135-e3cb` (sol, MiMo, DeepSeek), agreeing:
+  turn the attribution off in the worker's settings (verify the setting
+  works under `claude -p`); the task quotes the rules it needs instead of
+  "read AGENTS.md" (sol, MiMo); enforcement checks the resulting commits,
+  not the command: before cherry-picking, the coordinator (or herdr)
+  rejects a worker commit whose message breaks the repository's rules
+  (sol), or a `commit-msg` hook does it (MiMo, DeepSeek). Diverged: a
+  CLAUDE.md importing AGENTS.md (DeepSeek yes; sol, MiMo: 47 KB per worker
+  and still no guarantee).
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
