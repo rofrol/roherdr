@@ -169,6 +169,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     automation observes.
   - Test: stub workers (done, blocked, question without marker, kill -9),
     with the pane scrolled away throughout.
+  Superseded by "Event-driven worker waits, no timers" above; the
+  polling/deadline commit of worker `w-worker-end` was not taken.
 
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
