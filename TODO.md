@@ -135,6 +135,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   blind resend not allowed (needs ack + idempotency); 5 s transcript poll
   borderline (external polling of an authoritative file, but the event
   exists). Rule text is the user's file: a worker, with his approval.
+  Rule text done 2026-10-07 (dotfiles `c348422`, approved by the user):
+  the rule covers own commands, scripts and delegated tasks; a label does
+  not qualify a delay; every wait names its positive event and producer; no
+  negative conditions; retries need an acknowledgement and an idempotent
+  action. Left: the hook that flags time constants.
 
 - [ ] Open points an agent reports must not wait in its output (user via the
   omarchy-panel session, 2026-10-07: "who is supposed to settle these? did
@@ -146,6 +151,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   "Needs a decision" with `Options:`; never left only in a final message.
   The coordinator checks each worker's final message for such points when
   it reviews. Rule text: a worker, with the user's approval.
+  Done 2026-10-07 (dotfiles `c348422`, in the global rule and the `/todo`
+  skill).
 
 - [ ] The coordinator noticed a finished worker only when the user scrolled its
   tab to the end (user, 2026-10-07: "you started doing something only when
