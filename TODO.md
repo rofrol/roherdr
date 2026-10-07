@@ -151,6 +151,44 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   for short-lived events. First step: switch the config (a dotfiles
   worker); then the stacking fixes as a herdr worker.
 
+- [ ] Ideas from Omarchy's "agent account" (user, 2026-10-07: "add all of
+  it to the TODO as 4, ask the models"; omacom/omarchy PRs 13770 and 13992:
+  several Claude/Codex/Grok logins, new sessions move to the account with
+  the most headroom near 95%, limit meters with reset times). Round
+  `20261007-132403-eedb` (sol, MiMo): take the provider choice by headroom,
+  skip the meter panel and launch tiles (footer and `usage.read` exist),
+  never migrate a running session (a `Limited` agent gets the explicit
+  handoff), no credential copying. Round `20261007-134745-f39d` on this
+  plan; slices, each shippable alone:
+  1. Bug, verified in Claude Code 2.1.292's binary: its macOS Keychain item
+     is `Claude Code-credentials` only without `CLAUDE_CONFIG_DIR`; with it,
+     the name gets `-` + the first 8 hex chars of sha256 of the
+     NFC-normalized dir (`CLAUDE_SECURESTORAGE_CONFIG_DIR` overrides the dir;
+     set but empty means the default name). `src/usage/claude.rs` honours
+     the variable for `.credentials.json` but always reads the default
+     Keychain item: another account's limits. Tests: unset, empty and set
+     variables, override precedence, NFC, a golden name taken from a real
+     Keychain item (MiMo: a test of our own reimplementation proves
+     nothing); never fall back to the default item when the variable is set.
+  2. `usage.read` gains optional facts per provider: which account it read
+     (MiMo: wrong-account data must be visible), observed time, stale and
+     failed-poll state (stale is unknown, never 0% or 100%). Define per
+     window, not one "tightest %": 5h, weekly and Codex's windows are not
+     comparable, and the tightest window's reset is not when the provider
+     frees up (sol).
+  3. The coordinator picks Claude or pi/sol for a new worker from
+     `usage.read` (both models: a coordinator rule or script first, not a
+     server capability that freezes an unstable policy in the API). Spell
+     out: "used" percentages, threshold and hysteresis, stale or missing
+     data, both providers tight, an explicit kind always wins, and the
+     reason with the data age in the worker task. pi and Codex keep separate
+     logins (`~/.pi/agent/auth.json`, `~/.codex/auth.json`); both are the
+     same account today, so Codex's limits stand for pi's.
+  4. Named accounts (`--account <id>` as an execution profile: config dir,
+     settings, hooks) go to "Needs a decision" only when the user has a
+     second account per provider, together with the subscription terms on
+     several accounts (both models: all of them can be suspended at once).
+
 - [ ] The header's back/forward arrows `‹ ›` disappear now and then (user,
   2026-10-07: "why do the navigation arrows disappear from time to time?
   different builds without them? ask the models"; second in the queue).
