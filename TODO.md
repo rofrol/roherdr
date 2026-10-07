@@ -582,7 +582,19 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `attribution` off, the temp dir, the policy, the outcome check), in
   progress 2026-10-07 (worker `w-wsandbox`); the user asked: "let the
   models review the implementation this worker made afterwards": a consult
-  round on its diff before it is brought in; then
+  round on its diff before it is brought in. Round `20261007-221707-16f1` on
+  `5f9f349c` (sol, MiMo, DeepSeek), checked by the coordinator: real:
+  `.env` denied only at the worktree root for Bash and only for Read/Edit
+  in the deny rules; Glob/Grep patterns unchecked (only `path`); the temp
+  dir made by remove-then-`create_dir_all` with default permissions;
+  replay deleting temp dirs of workers a live handoff may still run;
+  credential env vars and paths (`~/.git-credentials`, `~/.netrc`, ...)
+  not covered; a non-zero exit or refusal not shown as a failed turn in
+  every order. False: "no manual permission mode" (it is there). Sent back
+  to the worker as one fix commit; known limit to document: file tools are
+  not sandboxed, so a symlink race between herdr's check and a write
+  remains (Bash cannot write outside; the coordinator reviews the diff);
+  then
   the policy change in
   `src/workers/policy.rs`. Gap found 2026-10-07: `herdr worker wait` ends
   only at the turn's end or exit, so a coordinator is not woken by a
