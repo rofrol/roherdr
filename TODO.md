@@ -94,6 +94,20 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   working and finished for that request, from the Claude and pi
   integration hooks; other agents answer `unsupported`, never a guess.
 
+- [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
+  2026-10-07: 21 upstream commits behind, 372 fork commits on top
+  (upstream `a124eed7`, "route all pane key encoding through libghostty").
+  The standing approval in AGENTS.md ("Fork Sync") covers the rebase and the
+  leased force-push of `master`. Do it at a boundary: no worker based on the
+  old `master`, the shared checkout clean (another session's idle-mark edits
+  are uncommitted there), then `just check`, build, install.
+
+- [ ] Which roherdr parts could be plugins, which need core, and which are
+  worth a PR upstream (user, 2026-10-07: "think it over with the agents:
+  what can be split out of roherdr as a plugin and what not, where a PR
+  upstream would be needed; or maybe it no longer makes sense, because the
+  plugin is too limiting and we are racing ahead like mad?").
+
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
