@@ -74,16 +74,6 @@ ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
 
-- [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
-  2026-10-07: 21 upstream commits behind, 372 fork commits on top
-  (upstream `a124eed7`, "route all pane key encoding through libghostty").
-  The standing approval in AGENTS.md ("Fork Sync") covers the rebase and the
-  leased force-push of `master`. Do it at a boundary: no worker based on the
-  old `master`, the shared checkout clean (another session's idle-mark edits
-  are uncommitted there), then `just check`, build, install.
-  In progress 2026-10-07 with worker `w-rebase` (branch
-  `todo/rebase-upstream`, `git rerere` on); the shared checkout is clean.
-
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
