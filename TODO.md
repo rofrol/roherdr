@@ -111,6 +111,15 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   structured `awaiting_user_action` state from `agent start` instead of
   `agent_not_ready` (sol); `--trust-repository` on `worktree create` is
   git's `safe.directory`, not Claude's trust (checked).
+  Also (report from the bussiness-ideas coordinator, 2026-10-07): there
+  the trust was already given, `agent start` succeeded, yet the prompt
+  "Rób TODO po kolei." never arrived (the transcript's first user message
+  is the user's "no i?"), and the tab looked like a working coordinator.
+  The launcher must confirm the prompt landed (the agent turns working
+  within seconds; send again once, then report failure). In herdr:
+  `agent start` reports ready before Claude accepts typed input, and
+  `agent prompt` returns `agent_prompted` without knowing it arrived; the
+  coordinator works around both with "send, wait for working, resend".
 
 - [ ] Rebase the fork on upstream (user, 2026-10-07: "rebase on upstream?").
   2026-10-07: 21 upstream commits behind, 372 fork commits on top
