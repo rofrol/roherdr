@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 #[cfg(test)]
@@ -26,10 +27,31 @@ pub(crate) const GROK_HOME_ENV_VAR: &str = "GROK_HOME";
 pub(crate) const HERMES_HOME_ENV_VAR: &str = "HERMES_HOME";
 
 pub(crate) fn apply_pane_base_env(cmd: &mut CommandBuilder) {
-    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path());
-    if let Ok(executable) = crate::platform::launch_executable() {
-        cmd.env("HERDR_BIN_PATH", executable);
+    for (key, value) in local_server_env() {
+        cmd.env(key, value);
     }
+}
+
+/// The variables a herdr pane gets for talking to the local server: its
+/// socket and the herdr binary.
+fn local_server_env() -> Vec<(&'static str, OsString)> {
+    let mut env = vec![(
+        crate::api::SOCKET_PATH_ENV_VAR,
+        crate::api::socket_path().into_os_string(),
+    )];
+    if let Ok(executable) = crate::platform::launch_executable() {
+        env.push(("HERDR_BIN_PATH", executable.into_os_string()));
+    }
+    env
+}
+
+/// The environment of a command that runs outside any pane but acts like one
+/// on the local server, such as a space's `todo_command`: `HERDR_ENV` plus
+/// what `apply_pane_base_env` gives a pane.
+pub(crate) fn local_pane_like_env() -> Vec<(&'static str, OsString)> {
+    let mut env = vec![(crate::HERDR_ENV_VAR, OsString::from(crate::HERDR_ENV_VALUE))];
+    env.extend(local_server_env());
+    env
 }
 
 pub(crate) fn pi_extension_dir() -> io::Result<PathBuf> {
@@ -290,5 +312,20 @@ mod tests {
             Some(value) => std::env::set_var("XDG_STATE_HOME", value),
             None => std::env::remove_var("XDG_STATE_HOME"),
         }
+    }
+
+    #[test]
+    fn local_pane_like_env_has_herdr_env_and_socket() {
+        let env = local_pane_like_env();
+        let value = |key: &str| {
+            env.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(value(crate::HERDR_ENV_VAR), Some(OsString::from("1")));
+        assert_eq!(
+            value(crate::api::SOCKET_PATH_ENV_VAR),
+            Some(crate::api::socket_path().into_os_string())
+        );
     }
 }
