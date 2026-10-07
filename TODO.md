@@ -59,8 +59,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker's pane after the auto-mode classifier blocked a worker): a
   mid-work question does not withdraw the approval; a turn ends only when
   every item waits on the user, Next is empty, the user says stop, or a
-  background wait on a running worker will wake the session. Step 3, the
-  Stop hook, is with a worker.
+  background wait on a running worker will wake the session.
+  Step 3 done 2026-10-07 (`e238621c`, integration reinstalled with the
+  user's consent): the Stop hook blocks a `coordinator`-role tab's stop once
+  when its final text waits for a go-ahead (the audit's `ABANDON`
+  expression, parity-tested) and no background task of the session runs;
+  fails open. Left: step 4 (headless runs, ask first) and step 5 (rerun the
+  audit after a few days of coordinator work and compare with 5.6 per 100).
 
 Three gaps found in https://spznrf.dev/blog/the-fellowship-of-the-pane
 (2026-10-03: a user runs five Pi agents in five visible Herdr panes, a main
