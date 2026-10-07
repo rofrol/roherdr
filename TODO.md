@@ -460,6 +460,20 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   the JSONL journals stay only as a debug export (adds the `rusqlite`
   dependency, the reason recorded here).
 
+- [ ] herdr answers sandboxed Bash requests itself (found 2026-10-07 by the
+  coordinator on worker `w2`, the first item under the sandbox: it asked
+  for `cd <worktree>; awk ...`, `decision_reason_type: "other"`, "This
+  command requires approval": a Claude Code built-in check on compound
+  commands that bypasses `autoAllowBashIfSandboxed`; herdr labelled it "a
+  Bash command that an ask rule sends to the user", which is wrong). With
+  `allowUnsandboxedCommands: false` every Bash command runs inside the
+  sandbox, so the sandbox stays the boundary; decided by the coordinator
+  under the user's "ask almost never" and the sandbox decision: herdr
+  allows Bash requests itself and logs them; only a request whose
+  `decision_reason_type` is `classifier` or that names a path outside the
+  roots goes to the questions. Fix the reason text. Test with a stub
+  request of this shape.
+
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
   verified by the worker, the critical one also by the coordinator. Until
