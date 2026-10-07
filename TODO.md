@@ -116,6 +116,27 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `[ui.toast.herdr] position = "bottom-right"`, `bottom_margin = 6`
   (dotfiles `e85197d`); endpoint notices and lifecycle banners already sit
   top right.
+  History: top-right on 2026-10-01, bottom-right above the input box on
+  2026-10-03 (`DECISIONS.md`, "Toast position"), top-right again now.
+  Round `20261007-132059-d893` (sol, MiMo), agreeing: top-right needs one
+  layout for the corner: endpoint notices and banners first, toasts below
+  them (an offset from their real height), at most 2-3 cards with "+N
+  more", width capped near 48 columns; a sticky error (the launcher's
+  failure) should not cover content: brief toast, then an unread mark and
+  the details in the notification log, dismissable by key. MiMo: the
+  flip-flop says the real need is the notification list, with toasts only
+  for short-lived events. First step: switch the config (a dotfiles
+  worker); then the stacking fixes as a herdr worker.
+
+- [ ] The header's back/forward arrows `‹ ›` disappear now and then (user,
+  2026-10-07: "why do the navigation arrows disappear from time to time?
+  different builds without them? ask the models"; second in the queue).
+  Not builds: `src/client/shell/sidebar.rs` draws them only when they fit
+  after the header's counters ("they give way to the indicators on a narrow
+  sidebar"); with `★8 ◐13 ?1 ✉8` there is no room. The sidebar direction
+  (slice 3: the header keeps only `?` and `!`) frees the room; until then
+  the arrows could take priority over the counters, or the counters could
+  shorten. Ask the models which.
 
 - [ ] Usage summed per workspace. The author asked every session for its
   `/session` accounting by hand and had an agent record the total. The
