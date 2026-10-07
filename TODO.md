@@ -593,8 +593,18 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   every order. False: "no manual permission mode" (it is there). Sent back
   to the worker as one fix commit; known limit to document: file tools are
   not sandboxed, so a symlink race between herdr's check and a write
-  remains (Bash cannot write outside; the coordinator reviews the diff);
-  then
+  remains (Bash cannot write outside; the coordinator reviews the diff).
+  Done 2026-10-07 (`feat: headless workers run in claude code's bash
+  sandbox`, `fix: harden the headless worker sandbox settings and
+  policy`, checked and installed): `.env` files denied at any depth (the
+  sandbox's `denyRead` takes globs on 2.1.293), more credential paths,
+  credential env vars removed, Glob/Grep patterns checked, a private
+  exclusive 0700 temp dir, temp dirs removed only after the process is
+  gone, failed turns on a non-zero exit or refusal; `Write(...)` deny rules
+  are ineffective in 2.1.293, `Edit(...)` covers writes (Observed by the
+  worker). A real smoke run asked 0 questions. Left: an online `cargo
+  build` test (network decision), the post-turn branch check, an upstream
+  report on the shared sandbox `$TMPDIR`; then
   the policy change in
   `src/workers/policy.rs`. Gap found 2026-10-07: `herdr worker wait` ends
   only at the turn's end or exit, so a coordinator is not woken by a
