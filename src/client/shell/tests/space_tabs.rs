@@ -4513,3 +4513,106 @@ fn a_tab_line_shows_its_role_mark_before_its_state() {
             .any(|target| target.text.starts_with(meaning)));
     }
 }
+
+/// Three tab lines: `tab_1` with the agent from [`state_with_tabs`],
+/// `tab_2` with a working agent and `tab_3` with a blocked one.
+fn state_with_three_agent_tabs(sidebar_width: u16) -> ClientShellState {
+    use crate::api::schema::AgentStatus::{Blocked, Working};
+    let mut state = state_with_tabs_and_width(true, sidebar_width);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    for (tab_id, label, pane, status) in [
+        ("tab_2", "working tab", "p2", Working),
+        ("tab_3", "blocked tab", "p3", Blocked),
+    ] {
+        let mut tab = projected.tabs[0].clone();
+        tab.tab_id = tab_id.into();
+        tab.label = label.into();
+        tab.focused = false;
+        tab.agent_status = status;
+        projected.tabs.push(tab);
+        let mut agent = header_agent(pane, status, false, label);
+        agent.tab_id = tab_id.into();
+        projected.agents.push(agent);
+    }
+    state.set_snapshot(Box::new(projected));
+    state
+}
+
+fn tab_line_row(state: &ClientShellState, tab_id: &str) -> u16 {
+    state
+        .hits
+        .space_tabs
+        .iter()
+        .find(|(_, id)| id == tab_id)
+        .map(|(rect, _)| rect.y)
+        .unwrap_or_else(|| panic!("no line for {tab_id}"))
+}
+
+#[test]
+fn an_asking_tab_line_shows_the_agents_question_under_it() {
+    let mut state = state_with_three_agent_tabs(40);
+    state.compose(106, 30).unwrap();
+    let working_row = tab_line_row(&state, "tab_2");
+    let blocked_row = tab_line_row(&state, "tab_3");
+    // Without an ask the working line comes right after the first one.
+    assert_eq!(working_row, tab_line_row(&state, "tab_1") + 1);
+
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].agent_status = AgentStatus::Done;
+    projected.agents[0].agent_status = AgentStatus::Done;
+    projected.agents[0].awaiting_reply = true;
+    projected.agents[0].question = Some("Install now?".into());
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let sidebar = |row: u16| rows[row as usize].chars().take(40).collect::<String>();
+    let asking_row = tab_line_row(&state, "tab_1");
+    assert!(
+        sidebar(asking_row + 1).contains("↳ Install now?"),
+        "{}",
+        rows.join("\n")
+    );
+    // The rows below move down by one; the working tab has no second line.
+    assert_eq!(tab_line_row(&state, "tab_2"), working_row + 1);
+    assert!(
+        !sidebar(working_row + 2).contains('↳'),
+        "{}",
+        rows.join("\n")
+    );
+    // The blocked tab asks for an approval.
+    assert_eq!(tab_line_row(&state, "tab_3"), blocked_row + 1);
+    assert!(
+        sidebar(blocked_row + 2).contains("↳ approval"),
+        "{}",
+        rows.join("\n")
+    );
+
+    // A click on the second line opens its tab, like one on the line.
+    focus_tab(&mut state, "tab_2");
+    state.compose(106, 30).unwrap();
+    let at = (6, tab_line_row(&state, "tab_1") + 1);
+    assert!(left_click(&mut state, at).actions.is_empty());
+    assert!(focuses(&left_release(&mut state, at), "tab_1"));
+}
+
+#[test]
+fn a_cut_question_ends_in_an_ellipsis_with_the_whole_text_on_hover() {
+    let mut state = state_with_three_agent_tabs(26);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[2].question = Some("Run the migration on production now?".into());
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let row = tab_line_row(&state, "tab_3") + 1;
+    let sidebar = rows[row as usize].chars().take(26).collect::<String>();
+    assert!(sidebar.contains("↳ Run the"), "{sidebar}");
+    assert!(sidebar.contains('…'), "{sidebar}");
+    let tooltip = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id == "tab-ask:tab_3")
+        .expect("a tooltip for the cut question");
+    assert_eq!(tooltip.text, "↳ Run the migration on production now?");
+    assert_eq!(tooltip.rect.y, row);
+}

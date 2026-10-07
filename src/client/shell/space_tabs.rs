@@ -57,6 +57,9 @@ pub(super) struct SpaceTabLine {
     /// Whoever opened the tab gave its agent a role (`tab.set_role`): its
     /// mark in the marker column before the state glyph.
     pub(super) role: Option<crate::api::schema::TabRole>,
+    /// What the tab's agent waits on the user for, as the `?` list's `↳`
+    /// line says it: drawn on a row of its own under the line.
+    pub(super) ask: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,35 +105,37 @@ pub(super) fn tab_indent(indented: bool) -> u16 {
     }
 }
 impl SpaceTabLine {
-    /// Rows the line takes: its own and, while unfolded, its squares'.
-    /// Unfolded squares are followed by an empty row, so they do not run
-    /// into the next tab line.
+    /// Rows the line takes: its own, its agent's ask and, while unfolded,
+    /// its squares'. Unfolded squares are followed by an empty row, so they
+    /// do not run into the next tab line.
     pub(super) fn height(&self, width: u16) -> u16 {
         let squares = if self.unfolded {
             self.squares.len().div_ceil(squares_per_row(width)) + 1
         } else {
             0
         };
-        (1 + squares + usize::from(self.hidden_focus.is_some())).min(u16::MAX as usize) as u16
+        (1 + usize::from(self.ask.is_some()) + squares + usize::from(self.hidden_focus.is_some()))
+            .min(u16::MAX as usize) as u16
     }
 }
 
 impl SpaceTabLine {
-    /// The row, among this line's square rows, of the open job's square.
+    /// The row, among the rows under this line, of the open job's square.
     pub(super) fn focused_square_row(&self, width: u16) -> Option<usize> {
+        let ask = usize::from(self.ask.is_some());
         if self
             .hidden_focus
             .as_ref()
             .is_some_and(|square| square.focused)
         {
-            return Some(0);
+            return Some(ask);
         }
         let index = self
             .squares
             .iter()
             .position(|square| square.focused)
             .filter(|_| self.unfolded)?;
-        Some(index / squares_per_row(width))
+        Some(ask + index / squares_per_row(width))
     }
 }
 
@@ -332,6 +337,7 @@ pub(super) fn space_tab_lines_filtered(
                 squares,
                 quiet: Vec::new(),
                 role: tab.role,
+                ask: tab_ask(snapshot, tab),
             }
         })
         .collect::<Vec<_>>();
@@ -369,6 +375,7 @@ pub(super) fn space_tab_lines_filtered(
                 hidden_focus: None,
                 quiet: folded.into_iter().map(|line| line.tab_id).collect(),
                 role: None,
+                ask: None,
             });
         }
     }
@@ -687,6 +694,20 @@ pub(super) fn tab_state_icon(
     }
 }
 
+/// What the tab's agent waits on the user for (see
+/// `ClientShellState::asking_detail`): the one that has waited longest when
+/// several do. None while no agent of the tab asks.
+fn tab_ask(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<String> {
+    snapshot
+        .agents
+        .iter()
+        .filter(|agent| {
+            agent.tab_id == tab.tab_id && super::ClientShellState::agent_is_asking(agent)
+        })
+        .min_by_key(|agent| agent.waiting_since_ms.unwrap_or(u64::MAX))
+        .map(super::ClientShellState::asking_detail)
+}
+
 /// The `plan` token of the tab's focused agent (else its first one).
 fn tab_plan(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<String> {
     let mut agents = snapshot
@@ -859,8 +880,16 @@ pub(super) fn render_space_tab_lines(
             y = y.saturating_add(1);
             continue;
         }
-        hits.lines
-            .push((Rect::new(area.x, y, area.width, 1), line.tab_id.clone()));
+        // The ask's row belongs to the line: one target for both.
+        let line_rows = if line.ask.is_some() && y.saturating_add(1) < area.bottom() {
+            2
+        } else {
+            1
+        };
+        hits.lines.push((
+            Rect::new(area.x, y, area.width, line_rows),
+            line.tab_id.clone(),
+        ));
         let active_text = Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD);
@@ -1099,6 +1128,54 @@ pub(super) fn render_space_tab_lines(
             );
         }
         y = y.saturating_add(1);
+        if let Some(ask) = line.ask.as_deref().filter(|_| line_rows == 2) {
+            // Under the label, dim, on the line's fill, as the `?` list's
+            // second line.
+            buffer.set_style(
+                Rect::new(
+                    fill_x,
+                    y,
+                    fill_right.saturating_add(fill_past).saturating_sub(fill_x),
+                    1,
+                )
+                .intersection(buffer.area),
+                Style::default().bg(bg),
+            );
+            if active && focused_space && fills.focused_active.is_some() && !lifted {
+                super::render::put_text(
+                    buffer,
+                    fill_x,
+                    y,
+                    1,
+                    "▌",
+                    Style::default().fg(palette.accent).bg(bg),
+                );
+            }
+            let text = format!(
+                "↳ {}",
+                ask.replace(|character: char| character.is_control(), " ")
+            );
+            let width = right.saturating_sub(text_x);
+            let shown = truncate(&text, width as usize);
+            if shown != text {
+                hits.tooltips.push(super::tooltip::TooltipTarget {
+                    rect: Rect::new(text_x, y, width, 1),
+                    id: format!("tab-ask:{}", line.tab_id),
+                    text,
+                    bg: Some(bg),
+                    starts_at_target: true,
+                });
+            }
+            super::render::put_text(
+                buffer,
+                text_x,
+                y,
+                width,
+                &shown,
+                on_accent.unwrap_or_else(|| Style::default().fg(palette.overlay1)),
+            );
+            y = y.saturating_add(1);
+        }
         if let Some(square) = line.hidden_focus.as_ref().filter(|_| y < area.bottom()) {
             let rect = Rect::new(fill_x, y, fill_right.saturating_sub(fill_x), 1);
             let bg = square_fill(square, &fills, palette);
