@@ -917,6 +917,7 @@ fn restore_tab(
             crate::workspace::Tab {
                 activity: None,
                 bookmarked: snap.bookmarked,
+                role: snap.role,
                 custom_name: snap.custom_name.clone(),
                 number,
                 parent: snap.parent_tab_number,
@@ -1680,6 +1681,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     bookmarked: false,
+                    role: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1768,6 +1770,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     bookmarked: false,
+                    role: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1838,6 +1841,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let tab = |pane: u32, parent: Option<usize>, status, job: bool| TabSnapshot {
             bookmarked: false,
+            role: None,
             custom_name: None,
             layout: LayoutSnapshot::Pane(pane),
             panes: HashMap::from([(
@@ -1942,6 +1946,7 @@ mod tests {
                 next_public_tab_number: 6,
                 tabs: vec![TabSnapshot {
                     bookmarked: false,
+                    role: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -2063,6 +2068,7 @@ mod tests {
                 tabs: vec![
                     TabSnapshot {
                         bookmarked: false,
+                        role: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
@@ -2075,6 +2081,7 @@ mod tests {
                     },
                     TabSnapshot {
                         bookmarked: false,
+                        role: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
@@ -2087,6 +2094,7 @@ mod tests {
                     },
                     TabSnapshot {
                         bookmarked: false,
+                        role: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
@@ -2099,6 +2107,7 @@ mod tests {
                     },
                     TabSnapshot {
                         bookmarked: false,
+                        role: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
@@ -2163,6 +2172,7 @@ mod tests {
             next_public_tab_number: 0,
             tabs: vec![TabSnapshot {
                 bookmarked: false,
+                role: None,
                 custom_name: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -2208,6 +2218,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     bookmarked: false,
+                    role: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -2577,6 +2588,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     bookmarked: false,
+                    role: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,

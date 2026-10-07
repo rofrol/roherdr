@@ -76,6 +76,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             parent_tab_id: None,
             status: None,
             program: None,
+            role: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),

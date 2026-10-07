@@ -24,6 +24,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "status" => tab_status(&args[1..]),
         "bookmark" => tab_bookmark(&args[1..], true),
         "unbookmark" => tab_bookmark(&args[1..], false),
+        "role" => tab_role(&args[1..]),
         "job-metadata" => tab_job_metadata(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -390,6 +391,31 @@ fn tab_bookmark(args: &[String], bookmarked: bool) -> std::io::Result<i32> {
     })?)
 }
 
+fn tab_role(args: &[String]) -> std::io::Result<i32> {
+    use crate::api::schema::TabRole;
+    let usage = "usage: herdr tab role <tab_id> coordinator|worker|none";
+    let (Some(raw_tab_id), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let role = match value.as_str() {
+        "coordinator" => Some(TabRole::Coordinator),
+        "worker" => Some(TabRole::Worker),
+        "none" => None,
+        _ => {
+            eprintln!("{usage}");
+            return Ok(2);
+        }
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:role".into(),
+        method: Method::TabSetRole(crate::api::schema::TabSetRoleParams {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+            role,
+        }),
+    })?)
+}
+
 fn tab_job_metadata(args: &[String]) -> std::io::Result<i32> {
     let (Some(raw_tab_id), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
         eprintln!("usage: herdr tab job-metadata <tab_id> <JSON|null>");
@@ -426,6 +452,7 @@ fn print_tab_help() {
     eprintln!("  herdr tab status <tab_id> running|succeeded|failed|none [--activity idle]");
     eprintln!("  herdr tab bookmark <tab_id>");
     eprintln!("  herdr tab unbookmark <tab_id>");
+    eprintln!("  herdr tab role <tab_id> coordinator|worker|none");
 }
 
 #[cfg(test)]

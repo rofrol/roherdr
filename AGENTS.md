@@ -412,7 +412,9 @@ To save the coordinator's quota, a session can hand a well-specified task to
 `pi` in its own worktree and only review the result:
 
 - `herdr worktree create --cwd "$PWD" --branch pi/<slug> --base master
-  --path ../herdr-worktrees/pi-<slug> --label "pi: <what>" --no-focus`, then
+  --path ../herdr-worktrees/pi-<slug> --label "pi: <what>" --no-focus`, mark
+  its tab `herdr tab role <tab_id> worker` (`.result.tab.tab_id` in that
+  output; the sidebar shows `⚒`), then
   `herdr agent start <name> --kind pi --pane <pane>`. pi's default model is
   `openai-codex/gpt-6.1-sol` (check the footer); a new folder asks for trust
   first (`herdr agent send-keys <pane> down down enter` picks "this session

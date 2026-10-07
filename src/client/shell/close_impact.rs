@@ -180,6 +180,7 @@ mod tests {
             parent_tab_id: None,
             status,
             program: None,
+            role: None,
         }
     }
 

@@ -1336,6 +1336,7 @@ impl Workspace {
         let tab = Tab {
             activity: None,
             bookmarked: false,
+            role: None,
             custom_name: None,
             number: 1,
             parent: None,
@@ -1399,6 +1400,7 @@ impl Workspace {
         let tab = Tab {
             activity: None,
             bookmarked: false,
+            role: None,
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
             parent: None,

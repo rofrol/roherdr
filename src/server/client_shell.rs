@@ -145,6 +145,7 @@ pub(super) fn snapshot_with_completions(
                 status: tab.status,
                 bookmarked: tab.bookmarked,
                 activity: tab.activity,
+                role: tab.role,
                 program: state
                     .terminal_id(state.layout.focused())
                     .and_then(|terminal_id| app.state.terminals.get(terminal_id))

@@ -2047,6 +2047,7 @@ fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
     let tab = crate::api::schema::TabInfo {
         activity: None,
         bookmarked: false,
+        role: None,
         job: None,
         tab_id: "tab_9".into(),
         workspace_id: "ws_1".into(),
@@ -4472,4 +4473,39 @@ fn a_finished_space_command_shows_its_first_line_and_a_failure_stays() {
     state.space_command_finished("repo", Err("No such file or directory".into()));
     let notice = state.visible_endpoint_notice.as_ref().expect("notice");
     assert!(notice.body.contains("No such file"), "{}", notice.body);
+}
+
+#[test]
+fn a_tab_line_shows_its_role_mark_before_its_state() {
+    let mut state = state_with_tabs(true);
+    let frame = state.compose(106, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(!text.contains('⚒') && !text.contains('♛'), "{text}");
+    for (role, glyph, meaning) in [
+        (crate::api::schema::TabRole::Worker, '⚒', "Worker:"),
+        (
+            crate::api::schema::TabRole::Coordinator,
+            '♛',
+            "Coordinator:",
+        ),
+    ] {
+        let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+        projected.tabs[0].role = Some(role);
+        state.set_snapshot(Box::new(projected));
+        let frame = state.compose(106, 30).unwrap();
+        let rows = frame_rows(&frame);
+        let row = rows
+            .iter()
+            .find(|row| row.contains("agent tab"))
+            .expect("tab line");
+        // The mark, then the state glyph, then the label: nothing else moves.
+        let mark = row.find(glyph).expect("role mark");
+        let label = row.find("agent tab").expect("label");
+        assert!(mark < label, "{row:?}");
+        assert!(state
+            .hits
+            .tooltips
+            .iter()
+            .any(|target| target.text.starts_with(meaning)));
+    }
 }

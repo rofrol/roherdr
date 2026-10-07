@@ -54,6 +54,9 @@ pub(super) struct SpaceTabLine {
     /// header's fold button put away (see [`quiet_tab_ids`]): their ids.
     /// Its `tab_id` is [`quiet_fold_id`], never a real tab's.
     pub(super) quiet: Vec<String>,
+    /// Whoever opened the tab gave its agent a role (`tab.set_role`): its
+    /// mark in the marker column before the state glyph.
+    pub(super) role: Option<crate::api::schema::TabRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,17 @@ pub(super) struct TabSquare {
     pub(super) status: Option<TabStatus>,
     /// The client's focused tab: the open job.
     pub(super) focused: bool,
+}
+
+/// The mark of a tab's role (`tab.set_role`), before its state glyph, and
+/// what it says on hover: the user chose both glyphs from mockups.
+fn role_marker(role: crate::api::schema::TabRole) -> Option<(&'static str, &'static str)> {
+    use crate::api::schema::TabRole;
+    match role {
+        TabRole::Coordinator => Some(("♛", "Coordinator: hands each TODO item to a worker")),
+        TabRole::Worker => Some(("⚒", "Worker: does one item in a worktree")),
+        TabRole::Unknown => None,
+    }
 }
 
 /// A square is ` ◑ `: the glyph with a column of padding on each side.
@@ -317,6 +331,7 @@ pub(super) fn space_tab_lines_filtered(
                 hidden_focus,
                 squares,
                 quiet: Vec::new(),
+                role: tab.role,
             }
         })
         .collect::<Vec<_>>();
@@ -353,6 +368,7 @@ pub(super) fn space_tab_lines_filtered(
                 unfolded: false,
                 hidden_focus: None,
                 quiet: folded.into_iter().map(|line| line.tab_id).collect(),
+                role: None,
             });
         }
     }
@@ -905,6 +921,26 @@ pub(super) fn render_space_tab_lines(
             None => (PROGRAM_ICON, Style::default().fg(palette.overlay0)),
         };
         super::render::put_text(buffer, x, y, 1, icon, icon_style);
+        if let Some((glyph, meaning)) = line.role.and_then(role_marker) {
+            // In the free column before the state glyph, so the state, the
+            // order and the label stay as they are.
+            let marker = Rect::new(x.saturating_sub(1), y, 1, 1);
+            super::render::put_text(
+                buffer,
+                marker.x,
+                y,
+                1,
+                glyph,
+                Style::default().fg(palette.overlay1),
+            );
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: marker,
+                id: format!("tab-role:{}", line.tab_id),
+                text: meaning.to_owned(),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
         // The glyph says what it means on hover; the gap column next to it
         // widens the one-cell target.
         hits.tooltips.push(super::tooltip::TooltipTarget {

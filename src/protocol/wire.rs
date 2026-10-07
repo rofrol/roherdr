@@ -1081,6 +1081,11 @@ pub struct ClientShellTab {
     /// program's terminal title, or the program name.
     #[serde(default)]
     pub program: Option<String>,
+    /// What the tab's agent does for the user (`tab.set_role`); older
+    /// servers do not send it. Always serialized: skipping a field breaks the
+    /// bincode form of this type.
+    #[serde(default)]
+    pub role: Option<crate::api::schema::TabRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2900,6 +2905,7 @@ mod tests {
                 parent_tab_id: None,
                 status: None,
                 program: None,
+                role: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
