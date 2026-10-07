@@ -337,6 +337,6 @@ herdr-job clean-tree --path                                  # where the tree is
 While a job runs, `herdr-job` samples the CPU time of its process tree every 15 seconds and
 watches its output. After 5 minutes with no output and under 2% of one core, it reports the job as
 idle (`herdr tab status <tab> running --activity idle`); the sidebar then shows the agent that
-started it with a still dotted ring instead of the purple turning half circle, and the job's footer
+started it with a still mauve `z` ("asleep") instead of the purple turning half circle, and the job's footer
 says `(idle)`. Output or CPU use clears it. A job can be idle and healthy (a VM waiting for a
 build); the mark says only that nothing is happening.

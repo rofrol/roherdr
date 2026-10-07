@@ -318,8 +318,9 @@ fn agent_icon(
 ) -> &'static str {
     match (mark, style) {
         (AgentMark::AwaitsReply, _) => "?",
-        // A job that runs but does nothing: a dotted ring that does not turn.
-        (AgentMark::WaitsOnIdleJob, _) => "◌",
+        // A job that runs but does nothing: a still `z`, "asleep". A dotted
+        // ring (◌) rendered as a few faint dots and was hard to see.
+        (AgentMark::WaitsOnIdleJob, _) => "z",
         (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Dots) => "●",
         (
             AgentMark::WaitsOnJob,
@@ -332,15 +333,15 @@ fn agent_icon(
 
 /// `status_color`, or mauve while waiting on a job: yellow already means
 /// working, and blue is the accent and means finished elsewhere. A question
-/// keeps the finished colour.
+/// keeps the finished colour. An idle job keeps mauve too, so it reads as
+/// the same job; its still `z` tells it apart.
 fn agent_color(
     status: crate::api::schema::AgentStatus,
     mark: AgentMark,
     palette: &Palette,
 ) -> ratatui::style::Color {
     match mark {
-        AgentMark::WaitsOnJob => palette.mauve,
-        AgentMark::WaitsOnIdleJob => palette.overlay1,
+        AgentMark::WaitsOnJob | AgentMark::WaitsOnIdleJob => palette.mauve,
         AgentMark::AwaitsReply => status_color(crate::api::schema::AgentStatus::Done, palette),
         AgentMark::None => status_color(status, palette),
     }
