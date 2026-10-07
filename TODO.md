@@ -942,11 +942,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   transcripts, Claude and Codex first (DeepSeek), which could feed the
   forecast's pace (MiMo).
 
-- [ ] Experiment: one headless Claude worker through `claude -p
-  --input-format stream-json --output-format stream-json` (user, 2026-10-07,
-  chose it over the SDK and over staying with TUI workers). Plan in "Compare
-  the T3 Code approach" and the question it answered.
-
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
