@@ -85,15 +85,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   first; a `--global` flag addresses a name in every workspace; an
   ambiguous name stays an error.
 
-- [ ] `herdr agent prompt --wait` that waits for the turn it started. Its
-  help says "It does not track turns: if the agent is already working, that
-  active turn's completion may match", and the post's whole delegation runs
-  on it. Screen detection cannot prove a turn ended, so this needs a signal
-  from the integration (sol, MiMo).
-  Decided by the user 2026-10-06: return a request id and report accepted,
-  working and finished for that request, from the Claude and pi
-  integration hooks; other agents answer `unsupported`, never a guess.
-
 - [ ] Finish the idle-job mark: a still mauve `z` instead of the dotted ring
   (user chose a worker for it, 2026-10-07). Left uncommitted in the shared
   checkout by the session "Widoczność kółka z przerywaną linią" (tab in the
