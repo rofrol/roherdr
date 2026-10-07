@@ -927,6 +927,28 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   sol + MiMo + DeepSeek. The coordinator asks DeepSeek in its rounds from
   now on.
 
+- [ ] What the usage footer can take from Magpie (user, 2026-10-07: "what of
+  this for our usage widget, https://usemagpie.ai/? work out a TODO with
+  the models if needed"). Magpie is a local MIT gateway agents route
+  through: per-account used % and resets, tokens, cache hits and cost per
+  agent and model, failover between accounts at limits. Round
+  `20261007-180654-3509` (sol, MiMo, DeepSeek), agreeing: take decision
+  support, not its accounting; herdr must not become a gateway.
+  1. Near-limit alerts from the provider usage endpoints we already read:
+     one notice when a window crosses a threshold, with its reset time,
+     only for providers with running agents (all three).
+  2. A pace-based forecast ("~3%/h, likely out in 30-60 min, resets 17:20"),
+     coarse and labelled an estimate, suppressed when evidence is weak (all
+     three; MiMo and DeepSeek rank it first).
+  3. Next-worker hints: "Anthropic 95%, resets in 48 m: start the next
+     worker with pi/GPT", which a coordinator can act on (sol, MiMo; MiMo:
+     a one-key re-route of the next queued task).
+  Skip: exact cost per agent/model and cache-hit rate (only reliable
+  through a gateway; flat subscriptions make dollars noise), automatic
+  failover. Later and labelled estimated: per-agent burn from local
+  transcripts, Claude and Codex first (DeepSeek), which could feed the
+  forecast's pace (MiMo).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
