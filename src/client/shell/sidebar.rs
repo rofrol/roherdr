@@ -396,9 +396,9 @@ pub(crate) fn render_sidebar(
             if config.mouse_capture {
                 hits.space_sort_buttons = buttons;
             }
-            // The indicators sit right of the sort buttons, right to left: the
-            // history button, then the agents asking, then the agents working;
-            // one that does not fit is left out.
+            // The header keeps its places: the sort buttons, the filter
+            // button, back and forward, and the fold button come first, so
+            // they never move or vanish; the indicators use what is left.
             let mut limit = hits
                 .space_sort_buttons
                 .iter()
@@ -419,88 +419,10 @@ pub(crate) fn render_sidebar(
                 hits.space_filter_button = Rect::new(limit, workspace_area.y, 3, 1);
                 limit += 2;
             }
-            let mut right = workspace_area.right();
-            if let Some(unread) = state
-                .notification_log_button
-                .filter(|_| config.mouse_capture)
-            {
-                hits.notification_log_button = render_notification_log_button(
-                    buffer,
-                    workspace_area,
-                    unread,
-                    state.open_list == Some(super::notification_log::NotificationLogView::History),
-                    palette,
-                );
-                right = hits.notification_log_button.x;
-            }
-            if config.mouse_capture {
-                let (working, asking) = state.agent_counts;
-                // The colours of the tab lines: the question mark's, the
-                // working yellow; the star is neutral (mauve means waiting on
-                // a job, yellow means work).
-                let asking_style = Style::default()
-                    .fg(super::agent_color(
-                        crate::api::schema::AgentStatus::Done,
-                        super::AgentMark::AwaitsReply,
-                        palette,
-                    ))
-                    .add_modifier(Modifier::BOLD);
-                let working_style = Style::default().fg(super::status_color(
-                    crate::api::schema::AgentStatus::Working,
-                    palette,
-                ));
-                let bookmark_style = Style::default().fg(palette.subtext0);
-                use super::notification_log::NotificationLogView as View;
-                for (count, glyph, style, slot, view) in [
-                    (
-                        asking,
-                        "?",
-                        asking_style,
-                        &mut hits.asking_list_button,
-                        View::Asking,
-                    ),
-                    (
-                        working,
-                        crate::ui::motion::working_glyph(),
-                        working_style,
-                        &mut hits.working_list_button,
-                        View::Working,
-                    ),
-                    (
-                        state.bookmark_count,
-                        "★",
-                        bookmark_style,
-                        &mut hits.bookmarks_list_button,
-                        View::Bookmarks,
-                    ),
-                ] {
-                    if count == 0 {
-                        continue;
-                    }
-                    let label = format!("{glyph}{}", count.min(99));
-                    let width = display_width(&label);
-                    if right < limit + width + 2 {
-                        continue;
-                    }
-                    let x = right - width - 1;
-                    // An open list's button is a filled pill, one cell wider on
-                    // each side than its label.
-                    let style = if state.open_list == Some(view) {
-                        let pill = Rect::new(x.saturating_sub(1), workspace_area.y, width + 2, 1);
-                        open_button_style(buffer, pill, style, palette)
-                    } else {
-                        style
-                    };
-                    put_text(buffer, x, workspace_area.y, width, &label, style);
-                    // The pill, so the list opens under its left edge.
-                    *slot = Rect::new(x.saturating_sub(1), workspace_area.y, width + 2, 1);
-                    right = x.saturating_sub(1);
-                }
-            }
             // Back and forward over focus jumps, then the button that puts
             // away the quiet tabs; each takes its glyph and a gap on each side.
-            // They give way to the indicators on a narrow sidebar.
-            if config.mouse_capture && limit + 7 <= right {
+            // An arrow with nothing to go back or forward to is drawn dim.
+            if config.mouse_capture && limit + 7 <= workspace_area.right() {
                 let (back, forward) = state.focus_history;
                 let enabled = |on: bool| {
                     Style::default().fg(if on {
@@ -558,6 +480,10 @@ pub(crate) fn render_sidebar(
                         starts_at_target: false,
                     });
                 }
+                limit += 7;
+            }
+            if config.mouse_capture {
+                render_header_indicators(buffer, workspace_area, limit, state, hits, palette);
             }
         }
     }
@@ -1899,6 +1825,124 @@ pub(in crate::client::shell) fn workspace_rows(
         })
         .filter(|row| !row.is_empty())
         .collect()
+}
+
+/// The header's indicators, right to left from the sidebar's edge: the
+/// notification history, the agents asking, the agents working, the
+/// bookmarks. They use the room right of `limit`; when it is short, whole
+/// buttons give way in a fixed order (bookmarks, then working agents, then
+/// the history), and the asking agents never do.
+fn render_header_indicators(
+    buffer: &mut Buffer,
+    area: Rect,
+    limit: u16,
+    state: &ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+    palette: &Palette,
+) {
+    use super::notification_log::NotificationLogView as View;
+    #[derive(Clone, Copy, PartialEq)]
+    enum Indicator {
+        History,
+        Asking,
+        Working,
+        Bookmarks,
+    }
+    let (working, asking) = state.agent_counts;
+    let label = |indicator: Indicator| match indicator {
+        Indicator::History => state.notification_log_button.map(|unread| {
+            if unread > 0 {
+                format!("✉{}", unread.min(99))
+            } else {
+                "✉".to_owned()
+            }
+        }),
+        Indicator::Asking => (asking > 0).then(|| format!("?{}", asking.min(99))),
+        Indicator::Working => (working > 0)
+            .then(|| format!("{}{}", crate::ui::motion::working_glyph(), working.min(99))),
+        Indicator::Bookmarks => {
+            (state.bookmark_count > 0).then(|| format!("★{}", state.bookmark_count.min(99)))
+        }
+    };
+    // Each button is its label with a cell on each side.
+    let mut shown: Vec<(Indicator, String)> = [
+        Indicator::History,
+        Indicator::Asking,
+        Indicator::Working,
+        Indicator::Bookmarks,
+    ]
+    .into_iter()
+    .filter_map(|indicator| label(indicator).map(|label| (indicator, label)))
+    .collect();
+    let room = area.right().saturating_sub(limit);
+    let needed = |shown: &[(Indicator, String)]| {
+        shown
+            .iter()
+            .map(|(_, label)| display_width(label) + 2)
+            .sum::<u16>()
+    };
+    for dropped in [Indicator::Bookmarks, Indicator::Working, Indicator::History] {
+        if needed(&shown) <= room {
+            break;
+        }
+        shown.retain(|(indicator, _)| *indicator != dropped);
+    }
+    // The colours of the tab lines: the question mark's, the working
+    // yellow; the star is neutral (mauve means waiting on a job, yellow
+    // means work).
+    let asking_style = Style::default()
+        .fg(super::agent_color(
+            crate::api::schema::AgentStatus::Done,
+            super::AgentMark::AwaitsReply,
+            palette,
+        ))
+        .add_modifier(Modifier::BOLD);
+    let working_style = Style::default().fg(super::status_color(
+        crate::api::schema::AgentStatus::Working,
+        palette,
+    ));
+    let bookmark_style = Style::default().fg(palette.subtext0);
+    let mut right = area.right();
+    for (indicator, label) in shown {
+        let width = display_width(&label);
+        if right < limit + width + 2 {
+            continue;
+        }
+        let (style, slot, view) = match indicator {
+            Indicator::History => {
+                hits.notification_log_button = render_notification_log_button(
+                    buffer,
+                    Rect::new(area.x, area.y, right.saturating_sub(area.x), 1),
+                    state.notification_log_button.unwrap_or_default(),
+                    state.open_list == Some(View::History),
+                    palette,
+                );
+                if hits.notification_log_button.width > 0 {
+                    right = hits.notification_log_button.x;
+                }
+                continue;
+            }
+            Indicator::Asking => (asking_style, &mut hits.asking_list_button, View::Asking),
+            Indicator::Working => (working_style, &mut hits.working_list_button, View::Working),
+            Indicator::Bookmarks => (
+                bookmark_style,
+                &mut hits.bookmarks_list_button,
+                View::Bookmarks,
+            ),
+        };
+        let x = right - width - 1;
+        // The pill, so the list opens under its left edge; an open list's
+        // button is a filled pill, one cell wider on each side than its label.
+        let pill = Rect::new(x.saturating_sub(1), area.y, width + 2, 1);
+        let style = if state.open_list == Some(view) {
+            open_button_style(buffer, pill, style, palette)
+        } else {
+            style
+        };
+        put_text(buffer, x, area.y, width, &label, style);
+        *slot = pill;
+        right = x.saturating_sub(1);
+    }
 }
 
 /// The notification history button at the right end of the spaces header:

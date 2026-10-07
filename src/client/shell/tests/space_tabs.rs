@@ -3010,7 +3010,7 @@ fn the_tab_context_menu_hands_the_session_over_to_another_agent() {
 }
 
 #[test]
-fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
+fn at_32_columns_the_arrows_and_all_but_the_bookmarks_fit_beside_the_one_sort_button() {
     use crate::api::schema::AgentStatus::{Blocked, Working};
     let mut state = state_with_tabs(true);
     state.sidebar_width = 32;
@@ -3026,13 +3026,17 @@ fn at_32_columns_every_indicator_fits_beside_the_one_sort_button() {
     let header = frame_rows(&frame)[0].clone();
     assert!(header.starts_with(" ⇅ manual"), "{header:?}");
     for (name, rect) in [
+        ("back", state.hits.focus_back_button),
+        ("forward", state.hits.focus_forward_button),
+        ("fold", state.hits.quiet_fold_button),
         ("working", state.hits.working_list_button),
         ("asking", state.hits.asking_list_button),
-        ("bookmarks", state.hits.bookmarks_list_button),
         ("notifications", state.hits.notification_log_button),
     ] {
         assert!(rect.width > 0, "{name} hidden: {header:?}");
     }
+    // The bookmarks give way first.
+    assert_eq!(state.hits.bookmarks_list_button.width, 0, "{header:?}");
     // The working and asking indicators sit side by side.
     assert!(
         state.hits.working_list_button.right() <= state.hits.asking_list_button.x + 1,
@@ -4136,6 +4140,8 @@ fn reopening_asks_the_server_for_the_closed_tab_and_falls_back_when_it_is_gone()
 fn a_bookmarked_space_is_listed_first_and_its_row_jumps_to_it() {
     use crate::api::schema::Method;
     let mut state = state_with_tabs(true);
+    // Wide enough for the bookmark button: it gives way first.
+    state.sidebar_width = 40;
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.workspaces[0].bookmarked = true;
     projected.tabs[0].bookmarked = true;
@@ -4834,4 +4840,79 @@ fn a_worker_is_not_offered_for_takeover_while_it_asks() {
     state.set_snapshot(Box::new(projected));
     right_click(&mut state);
     assert_eq!(worker_menu_labels(&state), vec!["Open log"]);
+}
+
+#[test]
+fn a_narrow_header_keeps_the_arrows_and_drops_the_bookmarks_then_the_working_count() {
+    use crate::api::schema::AgentStatus::Working;
+    let mut state = state_with_tabs(true);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents = (0..13)
+        .map(|index| header_agent(&format!("w{index}"), Working, false, "work"))
+        .chain(std::iter::once(header_agent(
+            "pane_1", Working, true, "Which?",
+        )))
+        .collect();
+    projected.tabs[0].bookmarked = true;
+    projected.workspaces[0].bookmarked = true;
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(state.agent_indicator_counts(), (13, 1));
+    assert_eq!(state.bookmark_count(), 2);
+
+    let mut dropped_bookmarks_only = false;
+    let mut kept_only_asking = false;
+    let mut arrows_at = None;
+    for width in 26..60 {
+        state.sidebar_width = width;
+        state.compose(140, 30).unwrap();
+        let hits = &state.hits;
+        let back = hits.focus_back_button;
+        let forward = hits.focus_forward_button;
+        let fold = hits.quiet_fold_button;
+        // The arrows and the fold button are always there, in one place.
+        assert!(
+            back.width > 0 && forward.width > 0 && fold.width > 0,
+            "{width}: no arrows"
+        );
+        assert_eq!(*arrows_at.get_or_insert(back), back, "{width}");
+        // The asking count never gives way; the bookmarks go first, then the
+        // working agents.
+        assert!(hits.asking_list_button.width > 0, "{width}: no ?");
+        let working = hits.working_list_button.width > 0;
+        let bookmarks = hits.bookmarks_list_button.width > 0;
+        assert!(!bookmarks || working, "{width}: ★ without ◐");
+        dropped_bookmarks_only |= working && !bookmarks;
+        kept_only_asking |= !working && !bookmarks;
+        // Nothing overlaps the fold button.
+        for rect in [
+            hits.asking_list_button,
+            hits.working_list_button,
+            hits.bookmarks_list_button,
+            hits.notification_log_button,
+        ] {
+            assert!(
+                rect.width == 0 || rect.x >= fold.right(),
+                "{width}: {rect:?}"
+            );
+        }
+        state.hits = Default::default();
+    }
+    assert!(dropped_bookmarks_only && kept_only_asking);
+}
+
+#[test]
+fn the_header_arrows_are_dim_with_no_history_but_still_drawn() {
+    let mut state = state_with_tabs(true);
+    state.sidebar_width = 30;
+    let frame = state.compose(106, 30).unwrap();
+    let palette = state.config.palette.clone();
+    let back = state.hits.focus_back_button;
+    let forward = state.hits.focus_forward_button;
+    assert!(back.width > 0 && forward.width > 0);
+    let cell = |x: u16, y: u16| &frame.cells[y as usize * frame.width as usize + x as usize];
+    for (rect, glyph) in [(back, "‹"), (forward, "›")] {
+        let cell = cell(rect.x + 1, rect.y);
+        assert_eq!(cell.symbol, glyph);
+        assert_eq!(cell.fg, crate::protocol::color_to_u32(palette.surface1));
+    }
 }
