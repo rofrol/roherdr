@@ -560,7 +560,7 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
     endpoint_snapshot.config_diagnostic = Some("one-line warning".into());
     state.set_snapshot(Box::new(endpoint_snapshot));
     state.set_pane_surface(surface());
-    state.visible_notification = Some(ClientVisibleNotification {
+    let notification = || ClientVisibleNotification {
         endpoint_id: ClientEndpointId::Local,
         event: SemanticNotification {
             kind: SemanticNotificationKind::Custom,
@@ -574,7 +574,8 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
             position: Some(crate::config::ToastHerdrPosition::TopRight),
         },
         deadline: std::time::Instant::now(),
-    });
+    };
+    state.visible_notification = Some(notification());
 
     state.compose(106, 20).expect("one-line frame");
     let pane_area = state.layout(106, 20).pane_surface;
@@ -586,7 +587,11 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
         row: targetless_hit.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.visible_notification.is_some());
+    assert!(
+        state.visible_notification.is_none(),
+        "a click dismisses a toast without a target"
+    );
+    state.visible_notification = Some(notification());
 
     let mut endpoint_snapshot = snapshot();
     endpoint_snapshot.config_diagnostic = Some("first warning\nsecond warning".into());
@@ -1400,4 +1405,128 @@ fn usage_settings_tab_reads_the_server_and_confirms_the_admin_key_warning() {
         crate::api::schema::Method::UsageSetProvider(params)
             if params.provider == "openai_api" && params.enabled
     ));
+}
+
+fn corner_toast(title: &str) -> ClientVisibleNotification {
+    ClientVisibleNotification {
+        endpoint_id: ClientEndpointId::Local,
+        event: SemanticNotification {
+            kind: SemanticNotificationKind::Custom,
+            title: title.into(),
+            body: None,
+            sound: None,
+            agent: None,
+            workspace_id: None,
+            tab_id: None,
+            pane_id: None,
+            position: None,
+        },
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+    }
+}
+
+#[test]
+fn top_right_toasts_stack_under_the_banner_and_notice_two_cards_and_more() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.toast_position = crate::config::ToastHerdrPosition::TopRight;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    state.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
+        key: ClientEndpointNoticeKey {
+            boot_id: "boot-1".into(),
+            kind: ClientEndpointNoticeKind::Unavailable,
+            code: "test".into(),
+        },
+        title: "Local".into(),
+        body: "Local is unavailable".into(),
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+    });
+    state.visible_notification = Some(corner_toast("first"));
+    state.queued_notifications.push_back(corner_toast(
+        "second toast with a title far longer than any card may get on screen",
+    ));
+    state.queued_notifications.push_back(corner_toast("third"));
+
+    let (cols, rows) = (120, 30);
+    let frame = state.compose(cols, rows).expect("frame");
+    let text = frame_rows(&frame);
+
+    let notice = state.hits.endpoint_notice_toast;
+    assert!(!notice.is_empty());
+    assert!(
+        text[usize::from(notice.y) - 1].contains("Local"),
+        "the lifecycle banner sits right above the notice: {text:#?}"
+    );
+    let cards = state
+        .hits
+        .notification_toast_cards
+        .iter()
+        .map(|(rect, _)| *rect)
+        .collect::<Vec<_>>();
+    assert_eq!(cards.len(), 2, "at most two cards");
+    let more = state.hits.notification_toast_more;
+    assert_eq!(more.height, 1);
+    assert!(text[usize::from(more.y)].contains("+1 more"), "{text:#?}");
+
+    // Toasts start one row below the notice; nothing in the corner overlaps.
+    assert_eq!(cards[0].y, notice.bottom() + 1);
+    let mut drawn = vec![Rect::new(notice.x, notice.y - 1, notice.width, 1), notice];
+    drawn.extend(&cards);
+    drawn.push(more);
+    for (index, left) in drawn.iter().enumerate() {
+        for right in &drawn[index + 1..] {
+            assert!(
+                left.intersection(*right).is_empty(),
+                "{left:?} overlaps {right:?}"
+            );
+        }
+    }
+    for card in &cards {
+        assert_eq!(card.right(), cols);
+    }
+
+    // Cards are capped at a third of a 120-column frame, the long title cut.
+    let cap = 48.min(cols / 3);
+    assert!(cards.iter().all(|card| card.width <= cap), "{cards:?}");
+    assert_eq!(cards[1].width, cap);
+    let title_row = &text[usize::from(cards[1].y) + 1];
+    assert!(title_row.contains("second toast") && title_row.contains('…'));
+
+    // `+N more` opens the history.
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: more.x,
+        row: more.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::NotificationLog(_))
+    ));
+}
+
+#[test]
+fn prefix_escape_dismisses_the_toasts_and_a_bare_escape_reaches_the_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.visible_notification = Some(corner_toast("first"));
+    state.queued_notifications.push_back(corner_toast("second"));
+    let escape = || {
+        RawInputEvent::Key(crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Esc,
+            KeyModifiers::empty(),
+        ))
+    };
+
+    state.handle_raw_events(vec![escape()]);
+    assert!(state.visible_notification.is_some(), "Esc goes to the pane");
+
+    state.mode = ClientShellMode::Prefix;
+    state.handle_raw_events(vec![escape()]);
+    assert!(state.visible_notification.is_none());
+    assert!(state.queued_notifications.is_empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
 }

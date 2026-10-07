@@ -203,6 +203,7 @@ impl ClientShellState {
                 1,
                 &self.config.palette,
             );
+            self.hits.endpoint_notice_toast = self.hits.notification_toast;
         }
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
     }
@@ -655,6 +656,9 @@ impl ClientShellState {
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
+        self.hits.endpoint_notice_toast = Rect::default();
+        self.hits.notification_toast_cards.clear();
+        self.hits.notification_toast_more = Rect::default();
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -683,57 +687,102 @@ impl ClientShellState {
                     |rect| occlusion.cover(rect),
                 );
             }
-            let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
-                occlusion.cover(endpoint_notices::render_lifecycle_banner(
-                    &mut composed,
-                    Rect::new(0, 0, cols, rows),
-                    label,
-                    *status,
-                    u16::from(has_config_diagnostic) + layout.mobile_header.height,
-                    &self.config.palette,
-                ));
-                1
-            });
+            let frame_area = Rect::new(0, 0, cols, rows);
+            let base_offset = u16::from(has_config_diagnostic);
+            let lifecycle_rect =
+                active_lifecycle
+                    .as_ref()
+                    .map_or(Rect::default(), |(label, status)| {
+                        endpoint_notices::render_lifecycle_banner(
+                            &mut composed,
+                            frame_area,
+                            label,
+                            *status,
+                            base_offset + layout.mobile_header.height,
+                            &self.config.palette,
+                        )
+                    });
+            occlusion.cover(lifecycle_rect);
+            let lifecycle_offset = u16::from(active_lifecycle.is_some());
+            let mut drawn = lifecycle_rect;
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
+                self.hits.endpoint_notice_toast = if layout.mobile_header.is_empty() {
                     endpoint_notices::render_notice(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
+                        frame_area,
                         notice,
-                        u16::from(has_config_diagnostic) + lifecycle_offset,
+                        base_offset + lifecycle_offset,
                         &self.config.palette,
                     )
                 } else {
                     endpoint_notices::render_mobile_banner(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
+                        frame_area,
                         notice,
                         has_config_diagnostic || lifecycle_offset > 0,
                         &self.config.palette,
                     )
                 };
-            } else if let Some(notification) = self.visible_notification.as_ref() {
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
-                    notifications::render_visible_notification(
+                drawn = union_drawn(drawn, self.hits.endpoint_notice_toast);
+            }
+            if let Some(notification) = self.visible_notification.as_ref() {
+                if layout.mobile_header.is_empty() {
+                    // Toasts start a row below what the corner already shows
+                    // this frame, so they never cover a banner or notice.
+                    let top_offset = if drawn.is_empty() {
+                        base_offset
+                    } else {
+                        drawn
+                            .bottom()
+                            .saturating_sub(frame_area.y)
+                            .saturating_add(1)
+                    };
+                    let shown = std::iter::once(notification)
+                        .chain(self.queued_notifications.iter())
+                        .take(notifications::MAX_TOAST_CARDS)
+                        .collect::<Vec<_>>();
+                    let hidden = self
+                        .queued_notifications
+                        .len()
+                        .saturating_sub(shown.len().saturating_sub(1));
+                    let stack = notifications::render_toast_stack(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
-                        notification,
+                        frame_area,
+                        &shown,
+                        hidden,
                         self.config.toast_position,
-                        self.config.toast_bottom_margin,
-                        u16::from(has_config_diagnostic) + lifecycle_offset,
+                        top_offset,
+                        base_offset
+                            .saturating_add(lifecycle_offset)
+                            .saturating_add(self.config.toast_bottom_margin),
                         &self.config.palette,
-                    )
-                } else {
-                    notifications::render_mobile_notification_banner(
+                    );
+                    self.hits.notification_toast_cards = stack.cards;
+                    self.hits.notification_toast_more = stack.more;
+                } else if self.visible_endpoint_notice.is_none() {
+                    // The phone shows one banner line: the notice wins.
+                    let rect = notifications::render_mobile_notification_banner(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
+                        frame_area,
                         notification,
                         has_config_diagnostic || lifecycle_offset > 0,
                         &self.config.palette,
-                    )
-                };
+                    );
+                    self.hits.notification_toast_cards = vec![(rect, 0)];
+                }
             }
-            occlusion.cover(self.hits.notification_toast);
+            occlusion.cover(self.hits.endpoint_notice_toast);
+            for (rect, _) in &self.hits.notification_toast_cards {
+                occlusion.cover(*rect);
+            }
+            occlusion.cover(self.hits.notification_toast_more);
+            self.hits.notification_toast = union_drawn(
+                self.hits.endpoint_notice_toast,
+                self.hits.notification_toast_more,
+            );
+            for (rect, _) in &self.hits.notification_toast_cards {
+                self.hits.notification_toast = union_drawn(self.hits.notification_toast, *rect);
+            }
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
         if let Some(feedback) = self.copy_feedback.as_ref() {
@@ -750,7 +799,10 @@ impl ClientShellState {
                 feedback,
                 base_offset,
                 self.config.clipboard_toast_position,
-                self.hits.notification_toast,
+                toast_column_below(
+                    self.hits.notification_toast,
+                    feedback_area.y.saturating_add(base_offset),
+                ),
             );
             occlusion.cover(crate::ui::render_copy_feedback_buffer(
                 &mut composed,
@@ -845,6 +897,7 @@ impl ClientShellState {
                     active_lifecycle.is_some(),
                     &self.config.palette,
                 );
+                self.hits.endpoint_notice_toast = self.hits.notification_toast;
             }
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
             self.hits.panes.clear();
@@ -1093,6 +1146,30 @@ fn render_client_copy_search_highlights(
             }
         }
     }
+}
+
+/// The smallest rect covering both, where an empty rect covers nothing
+/// (`Rect::union` would stretch it to the origin).
+fn union_drawn(left: Rect, right: Rect) -> Rect {
+    match (left.is_empty(), right.is_empty()) {
+        (true, _) => right,
+        (_, true) => left,
+        _ => left.union(right),
+    }
+}
+
+/// `toast` stretched up to row `top`: the copy feedback moves down by its
+/// height, so it lands below the whole corner stack, gaps included.
+fn toast_column_below(toast: Rect, top: u16) -> Rect {
+    if toast.is_empty() || toast.y <= top {
+        return toast;
+    }
+    Rect::new(
+        toast.x,
+        top,
+        toast.width,
+        toast.bottom().saturating_sub(top),
+    )
 }
 
 fn client_popup_size(size: crate::protocol::ClientShellPopupSize) -> crate::popup_size::PopupSize {

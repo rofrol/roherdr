@@ -111,6 +111,7 @@ pub(super) fn render_notification_card(
     body: &str,
     position: crate::config::ToastHerdrPosition,
     top_offset: u16,
+    max_width: u16,
     dot_color: Color,
     palette: &Palette,
 ) -> Rect {
@@ -122,7 +123,14 @@ pub(super) fn render_notification_card(
         .saturating_add(6);
     let width = u16::try_from(content_width)
         .unwrap_or(u16::MAX)
+        .min(max_width)
         .min(area.width);
+    // A capped card cuts its lines with `…`; the full text stays in the
+    // notification history.
+    let text_width = usize::from(width.saturating_sub(6));
+    let title = super::space_tabs::truncate(title, text_width);
+    let body = super::space_tabs::truncate(body, text_width);
+    let (title, body) = (title.as_str(), body.as_str());
     let height: u16 = if body.is_empty() { 3 } else { 4 }.min(area.height);
     let x = match position {
         crate::config::ToastHerdrPosition::TopLeft
@@ -177,42 +185,142 @@ pub(super) fn render_notification_card(
     rect
 }
 
-pub(super) fn render_visible_notification(
+/// The widest a toast card gets: 48 columns, or a third of the frame when
+/// that is less.
+pub(super) fn toast_max_width(area: Rect) -> u16 {
+    TOAST_MAX_WIDTH.min(area.width / 3)
+}
+
+const TOAST_MAX_WIDTH: u16 = 48;
+
+/// Toast cards shown at once; the rest collapse into one `+N more` line.
+pub(super) const MAX_TOAST_CARDS: usize = 2;
+
+#[derive(Debug, Default)]
+pub(super) struct ToastStackHits {
+    /// Each card and its index among the shown notifications.
+    pub(super) cards: Vec<(Rect, usize)>,
+    pub(super) more: Rect,
+}
+
+/// Draws up to `MAX_TOAST_CARDS` toasts stacked from their corner and a
+/// `+N more` line for `hidden` others after them. A top corner starts
+/// `top_offset` rows down, below what the corner already shows; a bottom
+/// corner starts `bottom_offset` rows up.
+#[allow(clippy::too_many_arguments)] // one call site; a struct would only rename them
+pub(super) fn render_toast_stack(
     buffer: &mut Buffer,
     area: Rect,
-    notification: &ClientVisibleNotification,
+    notifications: &[&ClientVisibleNotification],
+    hidden: usize,
     default_position: crate::config::ToastHerdrPosition,
-    bottom_margin: u16,
     top_offset: u16,
+    bottom_offset: u16,
+    palette: &Palette,
+) -> ToastStackHits {
+    use crate::config::ToastHerdrPosition;
+    let mut hits = ToastStackHits::default();
+    if area.is_empty() {
+        return hits;
+    }
+    let is_top = |position| {
+        matches!(
+            position,
+            ToastHerdrPosition::TopLeft | ToastHerdrPosition::TopRight
+        )
+    };
+    let start = |position| {
+        if is_top(position) {
+            top_offset
+        } else {
+            bottom_offset
+        }
+    };
+    // Rows used so far from each corner, in the order of `ToastHerdrPosition`.
+    let corner = |position| match position {
+        ToastHerdrPosition::TopLeft => 0,
+        ToastHerdrPosition::TopRight => 1,
+        ToastHerdrPosition::BottomLeft => 2,
+        ToastHerdrPosition::BottomRight => 3,
+    };
+    let mut offsets = [None::<u16>; 4];
+    let max_width = toast_max_width(area);
+    let mut last_position = default_position;
+    for (index, notification) in notifications.iter().take(MAX_TOAST_CARDS).enumerate() {
+        let event = &notification.event;
+        let position = event.position.unwrap_or(default_position);
+        last_position = position;
+        let offset = offsets[corner(position)].unwrap_or_else(|| start(position));
+        let dot_color = match event.kind {
+            SemanticNotificationKind::NeedsAttention => palette.red,
+            SemanticNotificationKind::Finished => palette.blue,
+            SemanticNotificationKind::UpdateInstalled | SemanticNotificationKind::Custom => {
+                palette.accent
+            }
+        };
+        let rect = render_notification_card(
+            buffer,
+            area,
+            &event.title,
+            event.body.as_deref().unwrap_or_default(),
+            position,
+            offset,
+            max_width,
+            dot_color,
+            palette,
+        );
+        offsets[corner(position)] = Some(offset.saturating_add(rect.height));
+        hits.cards.push((rect, index));
+    }
+    let hidden = hidden + notifications.len().saturating_sub(MAX_TOAST_CARDS);
+    if hidden > 0 {
+        let offset = offsets[corner(last_position)].unwrap_or_else(|| start(last_position));
+        hits.more = render_more_line(buffer, area, hidden, last_position, offset, palette);
+    }
+    hits
+}
+
+/// The one-line `+N more` card under (or, at the bottom, over) the shown
+/// toasts.
+fn render_more_line(
+    buffer: &mut Buffer,
+    area: Rect,
+    hidden: usize,
+    position: crate::config::ToastHerdrPosition,
+    offset: u16,
     palette: &Palette,
 ) -> Rect {
-    let event = &notification.event;
-    let position = event.position.unwrap_or(default_position);
-    let offset = match position {
-        crate::config::ToastHerdrPosition::TopLeft
-        | crate::config::ToastHerdrPosition::TopRight => top_offset,
-        crate::config::ToastHerdrPosition::BottomLeft
-        | crate::config::ToastHerdrPosition::BottomRight => {
-            top_offset.saturating_add(bottom_margin)
+    use crate::config::ToastHerdrPosition;
+    let text = format!("+{hidden} more");
+    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(text.as_str()) + 2)
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let x = match position {
+        ToastHerdrPosition::TopLeft | ToastHerdrPosition::BottomLeft => area.x,
+        ToastHerdrPosition::TopRight | ToastHerdrPosition::BottomRight => {
+            area.right().saturating_sub(width)
         }
     };
-    let dot_color = match event.kind {
-        SemanticNotificationKind::NeedsAttention => palette.red,
-        SemanticNotificationKind::Finished => palette.blue,
-        SemanticNotificationKind::UpdateInstalled | SemanticNotificationKind::Custom => {
-            palette.accent
+    let max_y = area.bottom().saturating_sub(1).max(area.y);
+    let y = match position {
+        ToastHerdrPosition::TopLeft | ToastHerdrPosition::TopRight => area.y.saturating_add(offset),
+        ToastHerdrPosition::BottomLeft | ToastHerdrPosition::BottomRight => {
+            area.bottom().saturating_sub(offset.saturating_add(1))
         }
-    };
-    render_notification_card(
+    }
+    .clamp(area.y, max_y);
+    let rect = Rect::new(x, y, width, 1);
+    Clear.render(rect, buffer);
+    buffer.set_style(rect, Style::default().bg(palette.surface0));
+    super::render::put_text(
         buffer,
-        area,
-        &event.title,
-        event.body.as_deref().unwrap_or_default(),
-        position,
-        offset,
-        dot_color,
-        palette,
-    )
+        rect.x.saturating_add(1),
+        rect.y,
+        rect.width.saturating_sub(2),
+        &text,
+        Style::default().fg(palette.overlay0).bg(palette.surface0),
+    );
+    rect
 }
 
 #[cfg(test)]
@@ -235,6 +343,30 @@ mod tests {
             },
             deadline: std::time::Instant::now(),
         }
+    }
+
+    /// Places one toast the way the frame does.
+    fn render_visible_notification(
+        buffer: &mut Buffer,
+        area: Rect,
+        notification: &ClientVisibleNotification,
+        position: crate::config::ToastHerdrPosition,
+        bottom_margin: u16,
+        top_offset: u16,
+        palette: &Palette,
+    ) -> Rect {
+        render_toast_stack(
+            buffer,
+            area,
+            &[notification],
+            0,
+            position,
+            top_offset,
+            top_offset + bottom_margin,
+            palette,
+        )
+        .cards[0]
+            .0
     }
 
     #[test]
