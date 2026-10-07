@@ -74,6 +74,10 @@ ops-recon through `herdr agent prompt`, one of them on a remote host).
 Consulted sol and MiMo twice (2026-10-06, rounds `20261006-023800-a481`
 and `20261006-030215-b8ca`); both put the first two at the top.
 
+  Decided by the user 2026-10-07: run step 4 with 5 headless runs (after
+  asking what it tests: whether a coordinator asked "what is happening?"
+  mid-work answers and goes on, or still ends its turn waiting for a
+  go-ahead, with the new rule line and the Stop hook in place).
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
