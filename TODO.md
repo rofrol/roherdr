@@ -563,6 +563,15 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
+- [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07:
+  `herdr agent wait <worker> --until done --until blocked` returned twice
+  while the worker kept working (its screen showed "Thundering…" with a
+  running shell, `agent get` said working right after), so a coordinator
+  waiting on the state alone reviews a worker that is not finished. Capture
+  the detection screen at the flicker (`herdr agent explain --json`) to find
+  which rule matches between tool calls. The coordinator's workaround: wait
+  for the `WORKER-` line, debounce done/idle for 120 s.
+
 - [ ] A live handoff breaks other sessions' waits. 2026-10-07: each
   `scripts/herdr_live.sh install` restarts the server, and the try-roguix
   coordinator's `herdr pane wait-output` on its worker failed with
