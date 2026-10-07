@@ -611,6 +611,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   spaces cut their names to a few letters ("worker: re…", "try-roguix AX…").
   Consult the default set, then show variants as browser mockups and let
   the user choose.
+  Consult round `20261007-043713-4b75` (sol, MiMo); mockups (artifact):
+  https://claude.ai/artifact/N1pThPneSMEGcsq5XQhctp. Variants: A buttons only
+  on hover, B one `⋯` per space (MiMo), C a quiet list with one action bar at
+  the bottom (sol), D two-line space headings. Both: counts once, on the
+  line that owns them; worker lines show the role mark and branch, never a
+  cut name.
 
 ## Proposed
 
