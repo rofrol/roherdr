@@ -5,9 +5,15 @@ use crate::api::schema::{
 
 const USAGE: &str =
     "usage: herdr worker <start|status|list|wait|prompt|interrupt|stop|kill|answer|log|take-over> ...
-  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] (--prompt TEXT | <prompt>)
+  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID]
+                     [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
+                     (--prompt TEXT | <prompt>)
     --name names the worker's line in the sidebar (default: the prompt's first line);
     --workspace is the space it is listed under (default: the caller's space).
+    --folder-slot runs it in the persistent worktree ../herdr-worktrees/NAME of
+    --cwd's repository, on the new branch BRANCH from REF (default: master),
+    one worker at a time, keeping target/ warm; --fresh-build removes the
+    slot's target/ and Zig cache first.
   herdr worker status <worker_id>
   herdr worker list
   herdr worker wait <worker_id> [--exit]
@@ -152,6 +158,10 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
     let mut model = None;
     let mut name = None;
     let mut workspace_id = None;
+    let mut folder_slot = None;
+    let mut branch = None;
+    let mut base = None;
+    let mut fresh_build = false;
     let mut prompt = None;
     let mut index = 0;
     while index < args.len() {
@@ -177,6 +187,22 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
                 workspace_id = Some(value()?);
                 index += 2;
             }
+            "--folder-slot" => {
+                folder_slot = Some(value()?);
+                index += 2;
+            }
+            "--branch" => {
+                branch = Some(value()?);
+                index += 2;
+            }
+            "--base" => {
+                base = Some(value()?);
+                index += 2;
+            }
+            "--fresh-build" => {
+                fresh_build = true;
+                index += 1;
+            }
             "--prompt" if prompt.is_none() => {
                 prompt = Some(value()?);
                 index += 2;
@@ -189,6 +215,12 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         }
     }
     let prompt = prompt.ok_or("start needs a prompt")?;
+    if folder_slot.is_some() != branch.is_some() {
+        return Err("--folder-slot and --branch go together".into());
+    }
+    if folder_slot.is_none() && (base.is_some() || fresh_build) {
+        return Err("--base and --fresh-build need --folder-slot".into());
+    }
     let cwd = match cwd {
         Some(cwd) => std::path::PathBuf::from(cwd),
         None => std::env::current_dir().map_err(|error| error.to_string())?,
@@ -200,6 +232,10 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         model,
         name,
         workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
+        folder_slot,
+        branch,
+        base,
+        fresh_build,
     })
 }
 
@@ -346,6 +382,37 @@ mod tests {
         assert_eq!(params.name.as_deref(), Some("fix login"));
         assert_eq!(params.workspace_id.as_deref(), Some("ws-1"));
         assert_eq!(params.prompt, "do it");
+    }
+
+    #[test]
+    fn parses_start_in_a_folder_slot() {
+        let Ok(Some(Method::WorkerStart(params))) = parse_worker_args(&args(&[
+            "start",
+            "--cwd",
+            "/tmp/repo",
+            "--folder-slot",
+            "worker",
+            "--branch",
+            "w/fix",
+            "--base",
+            "main",
+            "--fresh-build",
+            "do it",
+        ])) else {
+            panic!("start with a folder slot must parse");
+        };
+        assert_eq!(params.folder_slot.as_deref(), Some("worker"));
+        assert_eq!(params.branch.as_deref(), Some("w/fix"));
+        assert_eq!(params.base.as_deref(), Some("main"));
+        assert!(params.fresh_build);
+        for bad in [
+            &["start", "--folder-slot", "worker", "do it"][..],
+            &["start", "--branch", "w/fix", "do it"],
+            &["start", "--fresh-build", "do it"],
+            &["start", "--base", "main", "do it"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

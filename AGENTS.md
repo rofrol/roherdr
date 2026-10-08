@@ -456,6 +456,20 @@ answer its questions with
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
 `last_result.text`.
+To let a headless worker build and test herdr in its sandbox, start it
+with `--folder-slot worker --branch <unique branch>` instead of `--cwd
+<worktree>`: it runs in the persistent worktree `../herdr-worktrees/worker`
+on that new branch from `master` (`--base`), whose `target/` and Zig cache
+stay warm between workers. One worker at a time: stop the previous one
+first, and bring in or drop its commits before reusing the slot; herdr
+refuses a slot with uncommitted changes. `--fresh-build` rebuilds from
+scratch. The worker runs only the tests that work in the sandbox and lists
+the rest; the coordinator still runs `just check`. On macOS the vendored
+`libsystem_override.sh` calls `mktemp -d`, which ignores `$TMPDIR` and
+writes to `/var/folders/.../T/`, which the sandbox blocks, so a slot build
+fails there until that script takes a `$TMPDIR` template (2026-10-08: with
+that one line changed, a cold build plus the policy tests took 134 s and a
+warm one 27 s, no questions).
 
 ### Client requests in the background
 
