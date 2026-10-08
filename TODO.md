@@ -1489,6 +1489,41 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   the question unanswered; live handoff still refuses while a brokered
   worker runs (until slice 4).
 
+- [ ] A deterministic coordinator driver: `herdr todo run` (user, 2026-10-08, [t-s3oaxcki]
+  after the coordinator passed a whole label where `--expect-build` takes
+  an id: "can't a program restrict the options instead of the agent
+  choosing well once and badly once? I dislike the non-determinism in the
+  coordinator's work; ask the models"). Round `20261008-181228-d7a1` (sol, MiMo, DeepSeek),
+  agreeing: the coordinator chooses intent, the driver owns execution.
+  - `herdr todo run <item-id> --task <file> --message <subject> --paths
+    <globs> --check <registered check>`: a run persisted in herdr's SQLite
+    (run id, item, step, attempt, base sha, worker, branch, command ids,
+    last seq, error), an immutable task snapshot, typed argv (never shell
+    strings), checks from a registered list; every side effect recorded as
+    intent before and result after, reconciled after a crash against
+    commit ids, worker ids and remote refs.
+  - Steps: preflight (TODO structure, repo state, disk, slot) → start
+    worker → attention (policy-covered questions answered and acked; others
+    become a question event) → review (base-relative diff and the task:
+    the model approves or asks for changes) → stop and confirm exit →
+    verify → cherry-pick → `just clean-install` → TODO update with
+    `todo_edit` → push → cleanup. A failed verify or rejected review asks
+    the model for the next attempt's task text (attempts capped, then
+    escalate); a conflict or failed check stops as a blocked event; never
+    a silent continue or auto-rebase.
+  - The coordinator waits once on the driver's event stream (`herdr todo
+    wait`), answers with `herdr todo resume <run> --action ...` naming the
+    event id; stale answers refused. No job-id grepping, labels, quoting or
+    sleeps in the coordinator's hands.
+  - Kept to the model: task text, questions outside policy, the diff's
+    intent, retry text, exception approval.
+  - A PreToolUse allowlist for the coordinator: `herdr todo ...`, read-only
+    git and file reads, `todo_edit`; exceptions through an audited
+    `--override --reason` step, never a general shell escape.
+  - First slice: preflight → start → attention → ack → stop → verify
+    (→ cherry-pick), persisted, resumable, one wait; clean-install, TODO,
+    push and the allowlist next.
+
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
