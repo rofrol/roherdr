@@ -16,7 +16,11 @@ Structure it relies on:
 The check after a change: the items of the file, in order and with their
 sections, are exactly the expected ones (every other item byte-identical,
 the changed one as intended), and every non-item line (headings, intros)
-is unchanged. After writing, the file is read back and checked again.
+is unchanged. An insertion (`add`, `append-to`, `insert-after`) is also
+checked line by line: the file grows by exactly the inserted line count and
+every line before and after the insertion is byte-identical, so no line was
+joined to its neighbour or split. After writing, the file is read back and
+checked again.
 """
 
 from __future__ import annotations
@@ -194,15 +198,38 @@ def remove_lines(lines: list[str], start: int, end: int) -> list[str]:
     return out
 
 
-def insert_block(lines: list[str], at: int, block: list[str], blank_before: bool) -> list[str]:
+@dataclass(frozen=True)
+class Insertion:
+    """Old lines [first, last) become `added` more lines; the rest stays as it was.
+
+    `lines`, when given, are the exact new lines starting at `first`.
+    """
+
+    first: int
+    last: int
+    added: int
+    lines: tuple[str, ...] | None = None
+
+
+def terminated(lines: list[str], at: int) -> list[str]:
+    """A copy of `lines` whose line before `at` ends with a newline."""
+    out = list(lines)
+    if at > 0 and not out[at - 1].endswith("\n"):
+        out[at - 1] += "\n"
+    return out
+
+
+def insert_whole_lines(lines: list[str], at: int, chunk: list[str]) -> tuple[list[str], Insertion]:
+    return terminated(lines, at)[:at] + chunk + lines[at:], Insertion(at, at, len(chunk), tuple(chunk))
+
+
+def insert_block(lines: list[str], at: int, block: list[str], blank_before: bool):
     chunk = list(block)
     if blank_before and at > 0 and lines[at - 1].strip():
         chunk.insert(0, "\n")
-    if at > 0 and not lines[at - 1].endswith("\n"):
-        chunk.insert(0, "\n")
     if at < len(lines) and lines[at].strip():
         chunk.append("\n")
-    return lines[:at] + chunk + lines[at:]
+    return insert_whole_lines(lines, at, chunk)
 
 
 def insertion_point(doc: Doc, heading: int, after: str | None, top: bool) -> int:
@@ -226,24 +253,24 @@ def insertion_point(doc: Doc, heading: int, after: str | None, top: bool) -> int
 
 
 def place_item(doc: Doc, heading: int, block: list[str], after: str | None, top: bool):
-    """Insert an item into a section; return the new lines and its ordinal among items."""
+    """Insert an item into a section; return the new lines, its ordinal among items and the insertion."""
     at = insertion_point(doc, heading, after, top)
     ordinal = sum(1 for item in doc.items if item.start < at)
     first_item_of_top = top and after is None and any(i.start == at for i in doc.items)
     if first_item_of_top:
-        new_lines = doc.lines[:at] + block + ["\n"] + doc.lines[at:]
+        new_lines, insertion = insert_whole_lines(doc.lines, at, block + ["\n"])
     else:
-        new_lines = insert_block(doc.lines, at, block, blank_before=True)
-    return new_lines, ordinal
+        new_lines, insertion = insert_block(doc.lines, at, block, blank_before=True)
+    return new_lines, ordinal, insertion
 
 
-def cmd_add(doc: Doc, args) -> tuple[str, list, list, str]:
+def cmd_add(doc: Doc, args):
     block = item_lines(read_text_file(args.text_file))
     heading = doc.find_section(args.section)
-    new_lines, ordinal = place_item(doc, heading, block, args.after, args.top)
+    new_lines, ordinal, insertion = place_item(doc, heading, block, args.after, args.top)
     expected = doc.entries()
     expected.insert(ordinal, (heading, "".join(block).rstrip("\n")))
-    return "".join(new_lines), expected, doc.frame, f"added to {doc.heading_path(heading)!r}"
+    return "".join(new_lines), expected, doc.frame, f"added to {doc.heading_path(heading)!r}", insertion
 
 
 def cmd_append_to(doc: Doc, args):
@@ -256,34 +283,54 @@ def cmd_append_to(doc: Doc, args):
             raise Refusal(f"appended lines must be indented: {line.rstrip()!r}")
     index = doc.find_item(args.title)
     item = doc.items[index]
-    new_lines = doc.lines[: item.end] + block + doc.lines[item.end :]
+    new_lines, insertion = insert_whole_lines(doc.lines, item.end, block)
     expected = doc.entries()
     expected[index] = (item.heading, item.body.rstrip("\n") + "\n" + text)
-    return "".join(new_lines), expected, doc.frame, f"appended to item at line {item.start + 1}"
+    return "".join(new_lines), expected, doc.frame, f"appended to item at line {item.start + 1}", insertion
 
 
 def cmd_insert_after(doc: Doc, args):
     text = read_text_file(args.text_file)
-    if text.endswith("\n"):
-        text = text[:-1]
-    if not text:
-        raise Refusal("the text file is empty")
     index = doc.find_item(args.title)
     item = doc.items[index]
-    count = item.body.count(args.anchor)
+    body = item.body
+    count = body.count(args.anchor)
     if count != 1:
         raise Refusal(
             f"the anchor {args.anchor!r} occurs {count} times in the item at line "
             f"{item.start + 1}; it must occur exactly once"
         )
-    cut = item.body.index(args.anchor) + len(args.anchor)
-    new_body = item.body[:cut] + text + item.body[cut:]
+    cut = body.index(args.anchor) + len(args.anchor)
+    at_line_end = args.anchor.endswith("\n") or cut == len(body) or body[cut] == "\n"
+    if at_line_end:
+        # Whole lines go in after the anchor's line, each ending with a newline.
+        if not args.anchor.endswith("\n"):
+            # The newline the text would start with is the anchor line's own.
+            text = text.removeprefix("\n")
+            cut = min(cut + 1, len(body))
+        text = text.rstrip("\n")
+        if not text:
+            raise Refusal("the text file is empty")
+        text += "\n"
+        if not body[:cut].endswith("\n"):
+            # The item is the file's unterminated last line.
+            body = body + "\n"
+            cut = len(body)
+        first = item.start + body[:cut].count("\n")
+        insertion = Insertion(first, first, text.count("\n"), tuple(text.splitlines(keepends=True)))
+    else:
+        if not text:
+            raise Refusal("the text file is empty")
+        first = item.start + body[:cut].count("\n")
+        insertion = Insertion(first, first + 1, text.count("\n"))
+    new_body = body[:cut] + text + body[cut:]
     before = "".join(doc.lines[: item.start])
     after = "".join(doc.lines[item.end :])
     joiner = "\n" if after and not new_body.endswith("\n") else ""
     expected = doc.entries()
     expected[index] = (item.heading, new_body.rstrip("\n"))
-    return before + new_body + joiner + after, expected, doc.frame, f"inserted into item at line {item.start + 1}"
+    summary = f"inserted into item at line {item.start + 1}"
+    return before + new_body + joiner + after, expected, doc.frame, summary, insertion
 
 
 def cmd_remove(doc: Doc, args):
@@ -292,7 +339,7 @@ def cmd_remove(doc: Doc, args):
     new_lines = remove_lines(doc.lines, item.start, item.end)
     expected = doc.entries()
     del expected[index]
-    return "".join(new_lines), expected, doc.frame, f"removed item from line {item.start + 1}"
+    return "".join(new_lines), expected, doc.frame, f"removed item from line {item.start + 1}", None
 
 
 def cmd_move(doc: Doc, args):
@@ -305,10 +352,10 @@ def cmd_move(doc: Doc, args):
     middle = Doc("".join(remove_lines(doc.lines, item.start, item.end)))
     heading = middle.find_section(target_name)
     block = (item.body.rstrip("\n") + "\n").splitlines(keepends=True)
-    new_lines, ordinal = place_item(middle, heading, block, args.after, args.top)
+    new_lines, ordinal, _ = place_item(middle, heading, block, args.after, args.top)
     expected = middle.entries()
     expected.insert(ordinal, (heading, item.body.rstrip("\n")))
-    return "".join(new_lines), expected, doc.frame, f"moved to {doc.heading_path(heading)!r}"
+    return "".join(new_lines), expected, doc.frame, f"moved to {doc.heading_path(heading)!r}", None
 
 
 def cmd_add_section(doc: Doc, args):
@@ -325,13 +372,34 @@ def cmd_add_section(doc: Doc, args):
     offset = len(doc.headings)
     expected = doc.entries() + [(h + offset, body_) for h, body_ in chunk.entries()]
     frame = doc.frame + [(h + offset, line) for h, line in chunk.frame]
-    return new_text, expected, frame, f"added section {title!r}"
+    return new_text, expected, frame, f"added section {title!r}", None
 
 
 # Verification and writing ------------------------------------------------
 
 
-def verify(new_text: str, expected_items: list, expected_frame: list, old: Doc) -> None:
+def verify_insertion(old_lines: list[str], new_text: str, insertion: Insertion) -> None:
+    """Refuse unless only the lines of `insertion` changed and none were joined or split."""
+    new_lines = new_text.splitlines(keepends=True)
+    first, last, added = insertion.first, insertion.last, insertion.added
+    if len(new_lines) != len(old_lines) + added:
+        raise Refusal(
+            f"the change would join or split lines: the file would have {len(new_lines)} lines, "
+            f"expected {len(old_lines)} + {added} inserted"
+        )
+    # The line before may only have gained the newline a file's last line lacked.
+    if new_lines[:first] != terminated(old_lines, first)[:first]:
+        raise Refusal(f"the change would alter the lines before the insertion at line {first + 1}")
+    tail = len(old_lines) - last
+    if new_lines[len(new_lines) - tail :] != old_lines[last:]:
+        raise Refusal(f"the change would alter the lines after the insertion at line {first + 1}")
+    if insertion.lines is not None and tuple(new_lines[first : first + added]) != insertion.lines:
+        raise Refusal(f"the inserted lines at line {first + 1} are not the intended ones")
+
+
+def verify(new_text: str, expected_items: list, expected_frame: list, old: Doc, insertion=None) -> None:
+    if insertion is not None:
+        verify_insertion(old.lines, new_text, insertion)
     new = Doc(new_text)
     missing = [h.title for h in old.headings if h.title not in {n.title for n in new.headings}]
     if missing:
@@ -379,22 +447,29 @@ def parse_args(argv):
     p = sub.add_parser("find", help="print an item's section and line range")
     p.add_argument("title", help="prefix of the item's text after '- [ ] '")
 
-    p = sub.add_parser("add", help="insert an item at the end of a section or after an item")
+    p = sub.add_parser(
+        "add", help="insert an item at the end of a section or after an item (as whole lines)"
+    )
     p.add_argument("section", help="heading title, e.g. 'Next, in order'")
     where = p.add_mutually_exclusive_group()
     where.add_argument("--after", metavar="TITLE_PREFIX")
     where.add_argument("--top", action="store_true", help="before the section's first item")
     p.add_argument("--text-file", required=True)
 
-    p = sub.add_parser("append-to", help="append indented lines to the end of an item")
+    p = sub.add_parser(
+        "append-to", help="append indented lines to the end of an item (as whole lines, ending with one newline)"
+    )
     p.add_argument("title")
     p.add_argument("--text-file", required=True)
 
-    p = sub.add_parser(
-        "insert-after",
-        help="insert text right after an anchor that occurs once in the item "
-        "(one trailing newline of the text file is dropped)",
+    insert_help = (
+        "insert text after an anchor that occurs once in the item: when the anchor "
+        "ends with a newline or at the end of a line, the text goes in as whole lines "
+        "after that line (ending with exactly one newline; with an anchor that stops "
+        "before its line's newline, one leading newline of the text is dropped); when "
+        "the anchor ends mid-line, the text is inserted literally, byte for byte"
     )
+    p = sub.add_parser("insert-after", help=insert_help, description=insert_help)
     p.add_argument("title")
     p.add_argument("--anchor", required=True)
     p.add_argument("--text-file", required=True)
@@ -430,15 +505,15 @@ def run(argv) -> int:
             item = doc.items[doc.find_item(args.title)]
             print(f"{doc.heading_path(item.heading)}: lines {item.start + 1}-{item.end}")
             return 0
-        new_text, expected, frame, summary = COMMANDS[args.command](doc, args)
+        new_text, expected, frame, summary, insertion = COMMANDS[args.command](doc, args)
         if new_text == original:
             raise Refusal("the change would leave the file unchanged")
-        verify(new_text, expected, frame, doc)
+        verify(new_text, expected, frame, doc, insertion)
         atomic_write(path, new_text, original)
         written = path.read_text(encoding="utf-8")
         if written != new_text:
             raise Refusal(f"{path} does not hold the written text after the rename")
-        verify(written, expected, frame, doc)
+        verify(written, expected, frame, doc, insertion)
     except Refusal as err:
         print(f"todo_edit: {err}", file=sys.stderr)
         return 1
