@@ -1456,6 +1456,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   order first; dismissed by the coordinator: a headless worker's turn end
   is the stream's `result` event in the store, not a Claude hook, so the
   queue does not depend on it (that check concerns TUI agents).
+  Slice 1 done 2026-10-08 (`feat: an install waits for running worker
+  turns`, `w32`, verified, installed). Slice 2 done the same day (`feat: a
+  broker owns the pipes of new headless workers`): the first attempt (`w33`)
+  was rejected by `herdr worker verify` (outside the sandbox its re-attach
+  test failed: Starting instead of Working); the second (`w34`) found the
+  cause (the CLI's `system/init`, the only Starting→Working step, went to
+  the dying server and was never stored) and fixed the fold, verified.
+  Known gaps until slice 3: output a broker writes while no server is
+  attached is lost, so a re-attached worker may lack its `session_id` (a
+  takeover needs it); Windows keeps direct pipes.
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
