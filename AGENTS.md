@@ -478,7 +478,18 @@ questions with
 `herdr worker answer <id> --request <request_id> ...` (they also show in
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
-`last_result.text`.
+`last_result.text`. That line is the worker's summary, not its verdict:
+herdr decides the verdict. Stop the worker, then run `herdr worker verify
+<id> --base <sha the branch started from> --message "<the exact approved
+subject>" --paths <the task's globs> [--cmd "<its tests>"] [--generated
+<path>=<regenerate command>]...`; it checks in the worker's directory,
+outside the sandbox, that there is exactly one commit with exactly that
+message (no body, no trailers), that it touches only those paths, that the
+tree is clean and no worker process is left, that generated files
+regenerate to the committed bytes and that the command exits 0. Cherry-pick
+a worker's commit only after it says `verified`; `failed` names the check
+and its evidence, and `unavailable` (a check could not run) is not a pass.
+The verdict also shows in `herdr worker runs` and the Items list.
 The pane (and agent session) that starts a worker owns it. After handling
 what a wait returned (answering or escalating the question, reviewing the
 turn or the ended worker), acknowledge it with `herdr worker ack <id>

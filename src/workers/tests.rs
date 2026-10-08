@@ -3904,3 +3904,70 @@ fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
     let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(items[0].title.as_deref(), Some("Items popup"));
 }
+
+#[test]
+fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
+    use crate::api::schema::{WorkerCheckOutcome, WorkerVerdict, WorkerVerifyParams};
+    let fixture = Fixture::new("verify");
+    let repo = &fixture.repo;
+    git_in(repo, &["init", "-q", "-b", "master"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git_in(repo, &["add", "."]);
+    git_in(repo, &["commit", "-q", "-m", "init"]);
+    let base = git_in(repo, &["rev-parse", "HEAD"]).trim().to_owned();
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    // The worker's commit.
+    std::fs::write(repo.join("a.txt"), "b\n").unwrap();
+    git_in(repo, &["commit", "-q", "-am", "feat: b"]);
+    let params = WorkerVerifyParams {
+        worker_id: id.clone(),
+        base,
+        expected_message: "feat: b".into(),
+        allowed_paths: vec!["*.txt".into()],
+        command: Some("test \"$(cat a.txt)\" = b".into()),
+        generated: Vec::new(),
+    };
+
+    // While its process runs, the commit is not ready.
+    let running = fixture.supervisor.verify(&params).unwrap();
+    assert_eq!(running.verdict, WorkerVerdict::Failed);
+    let processes = running
+        .checks
+        .iter()
+        .find(|check| check.check == "processes")
+        .unwrap();
+    assert_eq!(processes.outcome, WorkerCheckOutcome::Failed);
+    assert!(processes.detail.contains("stop it first"), "{processes:?}");
+
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let verified = fixture.supervisor.verify(&params).unwrap();
+    assert_eq!(verified.verdict, WorkerVerdict::Verified, "{verified:#?}");
+    // Journaled as the worker's event, the latest one kept with its run.
+    let events = fixture.herdr_events(&id, "verification");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["verification"]["verdict"], "verified");
+    let (_, unassigned) = fixture
+        .supervisor
+        .runs(&WorkerRunsParams::default())
+        .unwrap();
+    assert_eq!(unassigned[0].verification.as_ref(), Some(&verified));
+
+    // It survives a restart, read from the store.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let (_, unassigned) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    assert_eq!(unassigned[0].verification.as_ref(), Some(&verified));
+
+    let missing = fixture
+        .supervisor
+        .verify(&WorkerVerifyParams {
+            worker_id: "w999".into(),
+            ..params
+        })
+        .unwrap_err();
+    assert_eq!(missing.code(), "worker_not_found");
+}

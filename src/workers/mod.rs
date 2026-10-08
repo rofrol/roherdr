@@ -29,6 +29,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 mod todo_titles;
+mod verify;
 
 pub(crate) use log::log_lines;
 
@@ -51,7 +52,8 @@ use crate::api::schema::{
     WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
     WorkerKillReport, WorkerObligation, WorkerPromptParams, WorkerQuestion, WorkerQuestionKind,
     WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerSettledQuestion,
-    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
+    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerVerification, WorkerVerifyParams,
+    WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -438,6 +440,8 @@ struct Status {
     questions_asked: u32,
     /// It exited or was lost while a turn ran.
     ended_mid_turn: bool,
+    /// The latest `worker.verify` of its work (`verification`).
+    verification: Option<WorkerVerification>,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -518,6 +522,7 @@ impl Status {
             done_commits: Vec::new(),
             questions_asked: 0,
             ended_mid_turn: false,
+            verification: None,
         }
     }
 
@@ -806,6 +811,11 @@ impl Status {
                 "answer_expired" => {
                     let how = string_field(event, "how").unwrap_or_else(|| "expired".into());
                     self.settle_question(event["request_id"].as_str(), &how);
+                    return;
+                }
+                // Verified after the worker ended, as it usually is.
+                "verification" => {
+                    self.verification = serde_json::from_value(event["verification"].clone()).ok();
                     return;
                 }
                 // The owner handles a gone worker's end too.
@@ -1130,6 +1140,7 @@ impl Status {
             commits: self.done_commits.clone(),
             questions: self.questions_asked,
             journal_path: journal_path.display().to_string(),
+            verification: self.verification.clone(),
         }
     }
 }
@@ -2899,6 +2910,64 @@ impl WorkerSupervisor {
         Ok((items, unassigned))
     }
 
+    /// Checks the worker's commit in its directory ([`verify::verify`]) and
+    /// records the verdict as its `verification` event, which its run then
+    /// shows. Blocks while a command runs, as long as it takes. A second
+    /// verification of the same directory while one runs is refused: they
+    /// would restore the worktree under each other.
+    pub(crate) fn verify(
+        &self,
+        params: &WorkerVerifyParams,
+    ) -> Result<WorkerVerification, WorkerError> {
+        let (number, status) = {
+            let registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, &params.worker_id)?;
+            (number, registry.workers[&number].status.clone())
+        };
+        if status.cwd.is_empty() {
+            return Err(WorkerError::Invalid(format!(
+                "worker {} has no recorded directory",
+                params.worker_id
+            )));
+        }
+        let dir = PathBuf::from(&status.cwd);
+        let mut processes = Vec::new();
+        if !status.process_gone() {
+            processes.push(format!(
+                "the worker's process{}; stop it first (herdr worker stop {})",
+                status.pid.map(|pid| format!(" {pid}")).unwrap_or_default(),
+                params.worker_id
+            ));
+        }
+        let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        for session in status.tool_sessions.keys() {
+            for pid in crate::platform::session_members(*session) {
+                if slot::runs_in_slot(pid, &real) {
+                    processes.push(format!("tool process {pid} (session {session})"));
+                }
+            }
+        }
+        let _claim = VerifyClaim::take(&real)?;
+        let verification = verify::verify(
+            &verify::Request {
+                dir: &dir,
+                base: &params.base,
+                expected_message: &params.expected_message,
+                allowed_paths: &params.allowed_paths,
+                command: params.command.as_deref(),
+                generated: &params.generated,
+                processes,
+            },
+            now_ms(),
+        );
+        self.record(
+            number,
+            Direction::Herdr,
+            &json!({"type": "verification", "verification": verification}),
+        );
+        Ok(verification)
+    }
+
     pub(crate) fn list(&self) -> Vec<WorkerInfo> {
         let registry = lock(&self.shared.registry);
         registry
@@ -4151,6 +4220,32 @@ fn describe_kill(plan: &WorkerKillReport) -> String {
         ));
     }
     text
+}
+
+/// The directories a `worker.verify` runs in now.
+static VERIFYING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// A directory claimed by one verification until it is dropped.
+struct VerifyClaim(PathBuf);
+
+impl VerifyClaim {
+    fn take(dir: &Path) -> Result<Self, WorkerError> {
+        let mut verifying = lock(&VERIFYING);
+        if verifying.iter().any(|claimed| claimed == dir) {
+            return Err(WorkerError::Busy(format!(
+                "a verification already runs in {}",
+                dir.display()
+            )));
+        }
+        verifying.push(dir.to_owned());
+        Ok(Self(dir.to_owned()))
+    }
+}
+
+impl Drop for VerifyClaim {
+    fn drop(&mut self) {
+        lock(&VERIFYING).retain(|claimed| *claimed != self.0);
+    }
 }
 
 /// Where a worker's temp dir lives, beside the journals.

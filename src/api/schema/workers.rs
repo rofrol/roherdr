@@ -112,6 +112,96 @@ pub struct WorkerRun {
     /// How many questions it asked.
     pub questions: u32,
     pub journal_path: String,
+    /// The latest `worker.verify` of its work; absent when none ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<WorkerVerification>,
+}
+
+/// Herdr checks a worker's commit and decides its verdict, instead of the
+/// worker's own word (`WORKER-DONE`). Runs in the worker's directory,
+/// outside its sandbox, after the worker has ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerVerifyParams {
+    pub worker_id: String,
+    /// The commit the worker's branch started from.
+    pub base: String,
+    /// The exact commit message: one subject line, no body or trailers.
+    pub expected_message: String,
+    /// Git glob pathspecs (`src/**`, `AGENTS.md`) the commit's changed
+    /// paths must stay within.
+    pub allowed_paths: Vec<String>,
+    /// A shell command (`sh -c`) that must exit 0 in the worker's directory,
+    /// such as the tests of the change. It runs as long as it takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Generated files that must regenerate to the committed bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generated: Vec<WorkerGeneratedFile>,
+}
+
+/// A committed file and the shell command that regenerates it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerGeneratedFile {
+    /// Relative to the worker's directory.
+    pub path: String,
+    pub command: String,
+}
+
+/// What `worker.verify` decided, with the evidence of each check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerVerification {
+    pub verdict: WorkerVerdict,
+    pub base: String,
+    /// The branch's head when it was checked; absent when git could not
+    /// read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// The commits from `base` to the head, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<String>,
+    pub checks: Vec<WorkerVerifyCheck>,
+    /// Unix milliseconds when the verdict was reached.
+    pub verified_ms: u64,
+}
+
+/// `verified` only when every check passed; `failed` when any failed;
+/// `unavailable` when none failed but one could not run (a missing
+/// command, git unavailable), which is never a pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerVerdict {
+    Verified,
+    Failed,
+    Unavailable,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One check: `commits`, `message`, `paths`, `clean_tree`, `processes`,
+/// `generated` (with its `path`) or `command`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerVerifyCheck {
+    pub check: String,
+    pub outcome: WorkerCheckOutcome,
+    /// With `generated`: the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The evidence: what failed, or the output's last lines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerCheckOutcome {
+    Passed,
+    Failed,
+    /// It could not run.
+    Unavailable,
+    /// Not run: an earlier check made it meaningless (a dirty worktree).
+    Skipped,
+    #[serde(other)]
+    Unknown,
 }
 
 /// How a run ended.

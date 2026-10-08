@@ -20,7 +20,7 @@ use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workers::{
     WorkerAttentionReason, WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerObligation,
-    WorkerQuestion, WorkerRun,
+    WorkerQuestion, WorkerRun, WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -88,6 +88,10 @@ pub enum ResponseResult {
         items: Vec<WorkerItemRuns>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unassigned: Vec<WorkerRun>,
+    },
+    /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
+    WorkerVerification {
+        verification: WorkerVerification,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

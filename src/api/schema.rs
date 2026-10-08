@@ -96,6 +96,10 @@ pub enum Method {
     /// loud `?` question.
     #[serde(rename = "worker.escalate")]
     WorkerEscalate(WorkerEscalateParams),
+    /// Herdr checks the worker's commit (its message, paths, worktree and
+    /// processes, generated files, a command) and decides its verdict.
+    #[serde(rename = "worker.verify")]
+    WorkerVerify(WorkerVerifyParams),
     /// Opens the worker's journal, read-only, in a popup that follows it.
     #[serde(rename = "worker.open_log")]
     WorkerOpenLog(WorkerTarget),

@@ -28,6 +28,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerObligations(_)
             | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_)
+            | Method::WorkerVerify(_)
     )
 }
 
@@ -112,6 +113,11 @@ fn handle_immediate(
         Method::WorkerRuns(params) => {
             let (items, unassigned) = supervisor.runs(&params)?;
             return Ok(ResponseResult::WorkerRuns { items, unassigned });
+        }
+        Method::WorkerVerify(params) => {
+            return Ok(ResponseResult::WorkerVerification {
+                verification: supervisor.verify(&params)?,
+            })
         }
         Method::WorkerObligations(params) => {
             return Ok(ResponseResult::WorkerObligations {

@@ -5,15 +5,17 @@
 //! opens a dropdown, drawn as the header lists are, of the items with runs,
 //! those in progress first, then the most recently ended, each by its
 //! title and id, and an "Unassigned" entry for runs without an item. An
-//! item opens its runs (worker, start and end, outcome, turns, commits,
-//! questions); a run opens its log.
+//! item opens its runs (worker, start and end, outcome, herdr's verdict on
+//! its commit, turns, commits, questions); a run opens its log.
 //!
 //! The runs are fetched (`worker.runs`) when the dropdown opens, never in
 //! the background: a background request would hold the machine's command
 //! lane, and a click in that moment would be refused as busy. Drawing reads
 //! only what that reply brought.
 
-use crate::api::schema::{WorkerItemRuns, WorkerRun, WorkerRunOutcome, WorkerRunsParams};
+use crate::api::schema::{
+    WorkerItemRuns, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerVerdict,
+};
 
 use super::*;
 
@@ -104,6 +106,16 @@ fn outcome(outcome: WorkerRunOutcome) -> (&'static str, crate::api::schema::Agen
         WorkerRunOutcome::Lost => ("lost", AgentStatus::Idle),
         WorkerRunOutcome::Degraded => ("record incomplete", AgentStatus::Blocked),
         WorkerRunOutcome::Unknown => ("unknown", AgentStatus::Idle),
+    }
+}
+
+/// How the latest `worker.verify` verdict of a run reads.
+fn verdict(verdict: WorkerVerdict) -> &'static str {
+    match verdict {
+        WorkerVerdict::Verified => "verified",
+        WorkerVerdict::Failed => "verify failed",
+        WorkerVerdict::Unavailable => "verify unavailable",
+        WorkerVerdict::Unknown => "verify unknown",
     }
 }
 
@@ -269,6 +281,10 @@ impl WorkerItemsOverlay {
                 None => "now".to_owned(),
             };
             let mut text = format!("{} · {said}", run.worker_id);
+            // Herdr's verdict on its commit, not the worker's own word.
+            if let Some(verification) = &run.verification {
+                text = format!("{text} · {}", verdict(verification.verdict));
+            }
             if matches!(open, ItemKey::Unassigned) && !run.name.is_empty() {
                 text = format!("{text} · {}", run.name);
             }
