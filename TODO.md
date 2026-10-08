@@ -401,6 +401,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   1. Fewer questions first (MiMo: nothing else matters while trivia
      arrives): the item "Headless workers ask the user almost never"
      (sandbox + auto mode).
+  2. (In progress 2026-10-08: slice 1, the SQLite event store, worker
+     `w-sqlite1`; slice 2 `worker.wait --attention --after <seq>`; slice 3
+     command receipts and the answer outbox.)
   2. One durable event log per worker in the server: monotonic sequence,
      question / turn end / exit events, level-triggered `worker.wait
      --attention --after <seq>`; the per-coordinator inbox is a filter on
@@ -545,6 +548,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      `write_meta`.
   8. The `/todo` claim under an exclusive lock; cherry-pick only after
      `git merge-tree` shows it applies (finding 14).
+     Deferred by the coordinator 2026-10-08 to after the reliability
+     steps: it changes the `/todo` skill in the user's dotfiles (outside
+     this repository; a headless worker cannot write there, and edits under
+     `~/.claude` need the user's approval in a worker's pane); lowest
+     severity.
   Folded into the reliability plan: a sequence on every journal record and
   prompt/interrupt bound to a turn (step 2, findings 7, 12); answers
   journaled as intent, sent, settled, idempotent by request id, and
