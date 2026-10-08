@@ -1456,6 +1456,38 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     (→ cherry-pick), persisted, resumable, one wait; clean-install, TODO,
     push and the allowlist next.
 
+- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
+  "the coordinator/worker code, the whole control, could be extracted as a
+  new package; much less code than all of herdr; then various TUIs, GUIs
+  could connect to it; analyse with the models"). Facts: `src/workers/` is
+  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
+  platform layer at 60 places (process groups, sessions, start tokens), API
+  schema types and thread helpers; herdr reaches into it from API handlers,
+  the coordinator tab role, takeover tabs, the live handoff and the client
+  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
+  - the boundary is real but not yet clean: generic orchestration (store,
+    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
+    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
+    takeover, coordinator as a tab role, sidebar, Items popup, live
+    handoff); coordinator authority must not depend on tab identity;
+  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
+    to import nothing from herdr, linked into herdr's server (still the
+    only daemon and API host); platform needs behind ports the crate owns
+    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
+    herdr implementing them, fakes in tests; decide whether Windows is in
+    scope for those ports (MiMo);
+  - a separate daemon only when a second client must run without herdr
+    (a third long-lived process next to the server and the brokers would
+    multiply recovery paths now);
+  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
+    events with sequence numbers, replay and snapshots, capabilities (e.g.
+    takeover); version the envelope, not a two-day-old schema; a web client
+    needs an authenticated gateway, not the local socket;
+  - when: after the driver's first slice lands (churn), together with the
+    planned split of `src/workers/mod.rs` [t-ofobwsra].
+  Approved by the user 2026-10-08 ("add it to the TODO"): after the
+  driver's first slice [t-s3oaxcki].
+
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
@@ -1869,36 +1901,6 @@ Items agents add. Not approved until the user moves them up.
   open issues upstream, and PATH wrappers are bypassable), the fork
   ruleset, the install and push allowlist for the coordinator, its write
   scope, and the CI checks.
-
-- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
-  "the coordinator/worker code, the whole control, could be extracted as a
-  new package; much less code than all of herdr; then various TUIs, GUIs
-  could connect to it; analyse with the models"). Facts: `src/workers/` is
-  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
-  platform layer at 60 places (process groups, sessions, start tokens), API
-  schema types and thread helpers; herdr reaches into it from API handlers,
-  the coordinator tab role, takeover tabs, the live handoff and the client
-  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
-  - the boundary is real but not yet clean: generic orchestration (store,
-    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
-    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
-    takeover, coordinator as a tab role, sidebar, Items popup, live
-    handoff); coordinator authority must not depend on tab identity;
-  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
-    to import nothing from herdr, linked into herdr's server (still the
-    only daemon and API host); platform needs behind ports the crate owns
-    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
-    herdr implementing them, fakes in tests; decide whether Windows is in
-    scope for those ports (MiMo);
-  - a separate daemon only when a second client must run without herdr
-    (a third long-lived process next to the server and the brokers would
-    multiply recovery paths now);
-  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
-    events with sequence numbers, replay and snapshots, capabilities (e.g.
-    takeover); version the envelope, not a two-day-old schema; a web client
-    needs an authenticated gateway, not the local socket;
-  - when: after the driver's first slice lands (churn), together with the
-    planned split of `src/workers/mod.rs` [t-ofobwsra].
 
 ## Needs a decision
 
