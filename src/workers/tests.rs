@@ -311,7 +311,7 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         for worker in self.supervisor.list() {
             if !matches!(worker.state, WorkerState::Exited | WorkerState::Lost) {
-                let _ = self.supervisor.kill(&worker.worker_id);
+                let _ = self.supervisor.kill(&worker.worker_id, false);
             }
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -993,7 +993,7 @@ fn a_worker_alive_after_stop_shows_it_until_it_exits() {
     assert_eq!(again.stop_requested_ms, Some(requested));
     assert_eq!(fixture.herdr_events(&id, "signal").len(), 1);
 
-    fixture.supervisor.kill(&id).unwrap();
+    fixture.supervisor.kill(&id, false).unwrap();
     let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
     assert_eq!(worker.exit_signal, Some(libc::SIGKILL));
     assert_eq!(worker.stop_requested_ms, None);
@@ -1031,7 +1031,7 @@ fn kill_ends_the_worker_and_its_recorded_tool_sessions() {
     };
     assert!(!worker.tool_sessions.contains(&worker.pid.unwrap()));
 
-    fixture.supervisor.kill(&id).unwrap();
+    fixture.supervisor.kill(&id, false).unwrap();
     let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
     assert_eq!(worker.exit_signal, Some(libc::SIGKILL));
     started = Instant::now();
@@ -1040,12 +1040,111 @@ fn kill_ends_the_worker_and_its_recorded_tool_sessions() {
     assert!(started.elapsed() < HANG_GUARD);
     let killed = fixture.herdr_events(&id, "killed_tool_processes");
     assert!(!killed[0]["pids"].as_array().unwrap().is_empty());
+    let recorded = fixture.herdr_events(&id, "tool_sessions");
+    assert!(recorded[0]["sessions"][0]["leader_start"].is_u64());
 }
 
 fn write_journal(dir: &Path, worker_id: &str, lines: &[Value]) {
     std::fs::create_dir_all(dir).unwrap();
     let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
     std::fs::write(dir.join(format!("{worker_id}.jsonl")), text).unwrap();
+}
+
+/// A process leading a session of its own, as Claude Code's Bash tools do.
+fn spawn_session_leader() -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new("sleep");
+    command.arg("1000");
+    // SAFETY: setsid is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn().unwrap()
+}
+
+/// Ends `child` with SIGTERM and returns the signal it died of: SIGTERM
+/// unless something else (a SIGKILL from `kill`) ended it first.
+fn terminate(mut child: std::process::Child) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    child.wait().unwrap().signal()
+}
+
+#[test]
+fn kill_signals_only_tool_sessions_whose_leader_is_the_recorded_process() {
+    use std::os::unix::process::ExitStatusExt;
+    let fixture = Fixture::new("kill-identity");
+    let dir = fixture.root.join("workers");
+    let mut current = spawn_session_leader();
+    let replaced = spawn_session_leader();
+    let unrecorded = spawn_session_leader();
+    let start =
+        |child: &std::process::Child| crate::platform::process_start_token(child.id()).unwrap();
+    write_journal(
+        &dir,
+        "w1",
+        &[
+            serde_json::json!({"dir": "herdr", "event": {
+                "type": "started", "cwd": "/repo", "pid": 99999}}),
+            // A journal from before herdr recorded the leader's start.
+            serde_json::json!({"dir": "herdr", "event": {
+                "type": "tool_sessions", "sessions": [unrecorded.id()]}}),
+            // `replaced` stands for a later process that got the pid of a
+            // recorded leader: it started after the recorded one.
+            serde_json::json!({"dir": "herdr", "event": {
+            "type": "tool_sessions", "sessions": [
+                {"session": current.id(), "leader_start": start(&current)},
+                {"session": replaced.id(), "leader_start": start(&replaced) - 1},
+            ]}}),
+        ],
+    );
+    let supervisor = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    assert_eq!(supervisor.status("w1").unwrap().state, WorkerState::Lost);
+
+    let Err(WorkerError::NeedsForce(message)) = supervisor.kill("w1", false) else {
+        panic!("a lost worker was killed without force");
+    };
+    assert!(
+        message.contains(&format!("pids {}", current.id())),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("not verified, not killed: {}", unrecorded.id())),
+        "{message}"
+    );
+    assert!(current.try_wait().unwrap().is_none());
+
+    let (_, report) = supervisor.kill("w1", true).unwrap();
+    assert_eq!(report.pids, vec![current.id()]);
+    assert_eq!(report.unverified_sessions, vec![unrecorded.id()]);
+    assert_eq!(report.stale_sessions, vec![replaced.id()]);
+    assert_eq!(current.wait().unwrap().signal(), Some(libc::SIGKILL));
+    assert_eq!(terminate(replaced), Some(libc::SIGTERM));
+    assert_eq!(terminate(unrecorded), Some(libc::SIGTERM));
+}
+
+#[test]
+fn a_session_plan_keeps_members_that_started_with_or_after_the_leader() {
+    let starts = BTreeMap::from([(10, 100), (11, 150), (12, 50), (20, 300)]);
+    let sessions = BTreeMap::from([(10, Some(100)), (20, Some(200)), (30, None)]);
+    let plan = plan_session_kill(
+        &sessions,
+        |pid| starts.get(&pid).copied(),
+        |session| match session {
+            // 13 has no start token any more: it is gone.
+            10 => vec![10, 11, 12, 13],
+            20 => vec![20, 21],
+            _ => vec![30],
+        },
+    );
+    assert_eq!(plan.pids, vec![10, 11]);
+    assert_eq!(plan.stale_sessions, vec![20]);
+    assert_eq!(plan.unverified_sessions, vec![30]);
 }
 
 #[test]
@@ -1093,7 +1192,7 @@ fn a_restart_marks_unfinished_workers_lost_and_keeps_exited_ones() {
         .start(&start_params(&fixture.repo, "finish", None))
         .unwrap();
     assert_eq!(next.worker_id, "w8");
-    supervisor.kill("w8").unwrap();
+    supervisor.kill("w8", false).unwrap();
 }
 
 #[test]
@@ -1245,7 +1344,7 @@ fn prompts_and_answers_are_refused_during_a_takeover() {
     fixture.supervisor.begin_takeover(&id).unwrap();
     let prompt = fixture.supervisor.prompt(&id, "finish").unwrap_err();
     assert_eq!(prompt.code(), "worker_busy");
-    fixture.supervisor.kill(&id).unwrap();
+    fixture.supervisor.kill(&id, false).unwrap();
 
     // A question that arrived after the claim (the claim itself is refused
     // while one waits): claimed here directly.
@@ -1267,7 +1366,7 @@ fn prompts_and_answers_are_refused_during_a_takeover() {
         fixture.supervisor.status(&asking).unwrap().questions.len(),
         1
     );
-    fixture.supervisor.kill(&asking).unwrap();
+    fixture.supervisor.kill(&asking, false).unwrap();
 }
 
 #[test]

@@ -56,6 +56,33 @@ pub struct WorkerWaitParams {
     pub until: Option<WorkerWaitUntil>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerKillParams {
+    pub worker_id: String,
+    /// Needed to signal anything for a worker that is `exited` or `lost`:
+    /// without it such a kill is refused with `worker_needs_force`, and the
+    /// message lists what it would signal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
+/// What `worker.kill` did with the worker's recorded tool sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerKillReport {
+    /// Processes sent SIGKILL: the members of each recorded session whose
+    /// leader still is the process recorded with it (same start time) that
+    /// did not start before that leader.
+    pub pids: Vec<u32>,
+    /// Sessions recorded without their leader's start time (journals from
+    /// before herdr recorded it): not verified, not killed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unverified_sessions: Vec<u32>,
+    /// Sessions whose leader is gone or is now another process with the
+    /// same pid: skipped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_sessions: Vec<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerWaitUntil {
@@ -144,7 +171,8 @@ pub struct WorkerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<serde_json::Value>,
     /// Sessions of the worker's tool processes seen so far (Claude Code runs
-    /// each Bash tool with `setsid`); `worker.kill` ends them.
+    /// each Bash tool with `setsid`); `worker.kill` ends those whose leader
+    /// is still the process recorded with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_sessions: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

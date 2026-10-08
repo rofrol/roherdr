@@ -18,7 +18,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::workers::WorkerInfo;
+use super::workers::{WorkerInfo, WorkerKillReport};
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
 
@@ -63,6 +63,11 @@ pub enum ResponseResult {
     },
     WorkerList {
         workers: Vec<WorkerInfo>,
+    },
+    /// `worker.kill`'s reply: the worker and what was signalled.
+    WorkerKilled {
+        worker: WorkerInfo,
+        killed: WorkerKillReport,
     },
     WorkspaceInfo {
         workspace: WorkspaceInfo,

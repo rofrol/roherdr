@@ -5327,6 +5327,21 @@
           ],
           "type": "string"
         },
+        "WorkerKillParams": {
+          "properties": {
+            "force": {
+              "description": "Needed to signal anything for a worker that is `exited` or `lost`:\nwithout it such a kill is refused with `worker_needs_force`, and the\nmessage lists what it would signal.",
+              "type": "boolean"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
         "WorkerPromptParams": {
           "properties": {
             "text": {
@@ -6135,7 +6150,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/schemas/request/$defs/WorkerTarget"
+              "$ref": "#/schemas/request/$defs/WorkerKillParams"
             }
           },
           "required": [
@@ -11633,6 +11648,27 @@
               "type": "object"
             },
             {
+              "description": "`worker.kill`'s reply: the worker and what was signalled.",
+              "properties": {
+                "killed": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerKillReport"
+                },
+                "type": {
+                  "const": "worker_killed",
+                  "type": "string"
+                },
+                "worker": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                }
+              },
+              "required": [
+                "type",
+                "worker",
+                "killed"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "type": {
                   "const": "workspace_info",
@@ -13693,7 +13729,7 @@
               "type": "boolean"
             },
             "tool_sessions": {
-              "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends them.",
+              "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends those whose leader\nis still the process recorded with it.",
               "items": {
                 "format": "uint32",
                 "minimum": 0,
@@ -13724,6 +13760,42 @@
             "cwd",
             "turns",
             "journal_path"
+          ],
+          "type": "object"
+        },
+        "WorkerKillReport": {
+          "description": "What `worker.kill` did with the worker's recorded tool sessions.",
+          "properties": {
+            "pids": {
+              "description": "Processes sent SIGKILL: the members of each recorded session whose\nleader still is the process recorded with it (same start time) that\ndid not start before that leader.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "stale_sessions": {
+              "description": "Sessions whose leader is gone or is now another process with the\nsame pid: skipped.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "unverified_sessions": {
+              "description": "Sessions recorded without their leader's start time (journals from\nbefore herdr recorded it): not verified, not killed.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "pids"
           ],
           "type": "object"
         },

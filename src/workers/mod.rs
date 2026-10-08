@@ -25,7 +25,7 @@ mod tests;
 
 pub(crate) use log::log_lines;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -37,8 +37,9 @@ use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::api::schema::{
-    WorkerAnswerParams, WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerQuestion,
-    WorkerQuestionKind, WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
+    WorkerAnswerParams, WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerKillReport,
+    WorkerQuestion, WorkerQuestionKind, WorkerStartParams, WorkerState, WorkerTurnResult,
+    WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -202,6 +203,9 @@ pub(crate) enum WorkerError {
     NoQuestion(String),
     /// The named question is no longer pending; the message says why.
     QuestionGone(String),
+    /// A kill of an exited or lost worker without `force`; the message says
+    /// what it would signal.
+    NeedsForce(String),
     Unsupported(String),
     Io(std::io::Error),
 }
@@ -215,6 +219,7 @@ impl WorkerError {
             Self::Busy(_) => "worker_busy",
             Self::NoQuestion(_) => "worker_no_question",
             Self::QuestionGone(_) => "worker_question_gone",
+            Self::NeedsForce(_) => "worker_needs_force",
             Self::Unsupported(_) => "worker_unsupported",
             Self::Io(_) => "worker_io_error",
         }
@@ -230,6 +235,7 @@ impl std::fmt::Display for WorkerError {
             | Self::Busy(message)
             | Self::NoQuestion(message)
             | Self::QuestionGone(message)
+            | Self::NeedsForce(message)
             | Self::Unsupported(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -290,7 +296,10 @@ struct Status {
     turns: u32,
     last_result: Option<WorkerTurnResult>,
     rate_limit: Option<Value>,
-    tool_sessions: BTreeSet<u32>,
+    /// Each recorded tool session with its leader's start token
+    /// ([`crate::platform::process_start_token`]); `None` for a session a
+    /// journal recorded before herdr kept it, which `kill` does not trust.
+    tool_sessions: BTreeMap<u32, Option<u64>>,
     exit_code: Option<i32>,
     exit_signal: Option<i32>,
     /// Requests left to the user, oldest first.
@@ -348,7 +357,7 @@ impl Status {
             turns: 0,
             last_result: None,
             rate_limit: None,
-            tool_sessions: BTreeSet::new(),
+            tool_sessions: BTreeMap::new(),
             exit_code: None,
             exit_signal: None,
             questions: Vec::new(),
@@ -474,14 +483,20 @@ impl Status {
                     .map(|pid| pid as u32);
             }
             (Direction::Herdr, "tool_sessions") => {
-                self.tool_sessions.extend(
-                    event["sessions"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_u64)
-                        .map(|session| session as u32),
-                );
+                for recorded in event["sessions"].as_array().into_iter().flatten() {
+                    // Older journals list bare session ids.
+                    let (session, leader_start) = match recorded.as_u64() {
+                        Some(session) => (session, None),
+                        None => match recorded["session"].as_u64() {
+                            Some(session) => (session, recorded["leader_start"].as_u64()),
+                            None => continue,
+                        },
+                    };
+                    let known = self.tool_sessions.entry(session as u32).or_default();
+                    if known.is_none() {
+                        *known = leader_start;
+                    }
+                }
             }
             (Direction::Herdr, "question") => {
                 let question = event
@@ -634,7 +649,7 @@ impl Status {
             turns: self.turns,
             last_result: self.last_result.clone(),
             rate_limit: self.rate_limit.clone(),
-            tool_sessions: self.tool_sessions.iter().copied().collect(),
+            tool_sessions: self.tool_sessions.keys().copied().collect(),
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
             questions: self
@@ -1669,16 +1684,34 @@ impl WorkerSupervisor {
         self.status(worker_id)
     }
 
-    /// Force-stops a worker: SIGKILL to its process group, then to every
-    /// process in the tool sessions recorded for it. Also works on a worker
-    /// that already exited or was lost, to end its orphaned tools.
-    pub(crate) fn kill(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
+    /// Force-stops a worker: SIGKILL to its process group, then to the
+    /// processes of its recorded tool sessions that are still the ones
+    /// recorded ([`plan_session_kill`]). A worker that exited or was lost is
+    /// signalled only with `force`; without it the kill is refused with what
+    /// it would signal, since its sessions may have ended long ago.
+    pub(crate) fn kill(
+        &self,
+        worker_id: &str,
+        force: bool,
+    ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
         let (number, live, status) = {
             let registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let entry = &registry.workers[&number];
             (number, entry.live.clone(), entry.status.clone())
         };
+        if status.is_gone() && !force {
+            let plan = plan_session_kill(
+                &status.tool_sessions,
+                crate::platform::process_start_token,
+                crate::platform::session_members,
+            );
+            let state = if status.exited { "exited" } else { "lost" };
+            return Err(WorkerError::NeedsForce(format!(
+                "worker {worker_id} is {state}, so nothing was signalled; with force, kill would signal {}",
+                describe_kill(&plan)
+            )));
+        }
         let journal = match &live {
             Some(live) => Arc::clone(&live.journal),
             None => Arc::new(Journal::open(&self.journal_path(worker_id))?),
@@ -1692,19 +1725,22 @@ impl WorkerSupervisor {
             crate::platform::signal_process_group(pid, Signal::Kill)?;
         }
         let sessions = self.with_entry(worker_id, |entry| entry.status.tool_sessions.clone())?;
-        let mut killed = Vec::new();
-        for session in sessions {
-            let members = crate::platform::session_members(session);
-            if !members.is_empty() {
-                crate::platform::signal_processes(&members, Signal::Kill);
-                killed.extend(members);
-            }
-        }
+        let plan = plan_session_kill(
+            &sessions,
+            crate::platform::process_start_token,
+            crate::platform::session_members,
+        );
+        crate::platform::signal_processes(&plan.pids, Signal::Kill);
         journal.record(
             Direction::Herdr,
-            &json!({"type": "killed_tool_processes", "pids": killed}),
+            &json!({
+                "type": "killed_tool_processes",
+                "pids": plan.pids,
+                "unverified_sessions": plan.unverified_sessions,
+                "stale_sessions": plan.stale_sessions,
+            }),
         );
-        self.status(worker_id)
+        Ok((self.status(worker_id)?, plan))
     }
 
     /// Why a running worker refuses a prompt or an answer: a takeover is
@@ -1918,7 +1954,7 @@ impl WorkerSupervisor {
                     ended.push(pid);
                 }
             }
-            for session in &status.tool_sessions {
+            for session in status.tool_sessions.keys() {
                 let members: Vec<u32> = crate::platform::session_members(*session)
                     .into_iter()
                     .filter(|pid| slot::runs_in_slot(*pid, path))
@@ -1987,16 +2023,93 @@ impl WorkerSupervisor {
                 return;
             };
             seen.into_iter()
-                .filter(|session| !entry.status.tool_sessions.contains(session))
+                .filter(|session| !entry.status.tool_sessions.contains_key(session))
                 .collect()
         };
         if new.is_empty() {
             return;
         }
-        let event = json!({"type": "tool_sessions", "sessions": new});
+        // A session id is its leader's pid; the leader's start token tells
+        // it apart from a later process that gets the same pid, so `kill`
+        // can check it is still the same session.
+        let sessions: Vec<Value> = new
+            .into_iter()
+            .map(
+                |session| match crate::platform::process_start_token(session) {
+                    Some(start) => json!({"session": session, "leader_start": start}),
+                    None => json!({"session": session}),
+                },
+            )
+            .collect();
+        let event = json!({"type": "tool_sessions", "sessions": sessions});
         journal.record(Direction::Herdr, &event);
         self.update(number, Direction::Herdr, &event);
     }
+}
+
+/// Which processes of the recorded tool `sessions` (each with its leader's
+/// start token) `kill` may signal. A session id is its leader's pid, which a
+/// new session leader, such as a pane's shell, can get once the session has
+/// ended, so a session counts only while its leader still has the recorded
+/// start token, and of its members only those that did not start before
+/// that leader: every process of a session is its leader or was forked
+/// after the leader started. A session without a recorded token is not
+/// verified and not signalled. On Windows nothing records sessions, so the
+/// plan is empty there.
+fn plan_session_kill(
+    sessions: &BTreeMap<u32, Option<u64>>,
+    start_token: impl Fn(u32) -> Option<u64>,
+    members: impl Fn(u32) -> Vec<u32>,
+) -> WorkerKillReport {
+    let mut report = WorkerKillReport {
+        pids: Vec::new(),
+        unverified_sessions: Vec::new(),
+        stale_sessions: Vec::new(),
+    };
+    for (&session, &leader_start) in sessions {
+        let Some(leader_start) = leader_start else {
+            report.unverified_sessions.push(session);
+            continue;
+        };
+        if start_token(session) != Some(leader_start) {
+            report.stale_sessions.push(session);
+            continue;
+        }
+        report.pids.extend(
+            members(session)
+                .into_iter()
+                .filter(|pid| start_token(*pid).is_some_and(|start| start >= leader_start)),
+        );
+    }
+    report
+}
+
+/// `kill`'s plan in words, for the refusal that asks for force.
+fn describe_kill(plan: &WorkerKillReport) -> String {
+    let list = |ids: &[u32]| {
+        ids.iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut text = if plan.pids.is_empty() {
+        "no process".to_owned()
+    } else {
+        format!("pids {}", list(&plan.pids))
+    };
+    if !plan.unverified_sessions.is_empty() {
+        text.push_str(&format!(
+            "; sessions not verified, not killed: {}",
+            list(&plan.unverified_sessions)
+        ));
+    }
+    if !plan.stale_sessions.is_empty() {
+        text.push_str(&format!(
+            "; sessions whose leader is gone or another process, skipped: {}",
+            list(&plan.stale_sessions)
+        ));
+    }
+    text
 }
 
 /// Where a worker's temp dir lives, beside the journals.
