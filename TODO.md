@@ -1466,6 +1466,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Known gaps until slice 3: output a broker writes while no server is
   attached is lost, so a re-attached worker may lack its `session_id` (a
   takeover needs it); Windows keeps direct pipes.
+  User 2026-10-08: "why is there still such a gap? ask the models". Round
+  `20261008-171314-eee8` (sol, MiMo, DeepSeek): shipping the surviving broker was right
+  (before it, a server restart killed every worker), but slice 2's fold
+  (a re-attached Starting worker with a recorded prompt shown as Working)
+  synthesizes state the CLI never confirmed and hides possible loss.
+  Decided: re-attach is healthy only with proven continuity (replay of
+  every line after the last acked seq); otherwise the worker is
+  `degraded` with the reason, takeover and new prompts are refused, no
+  Working or session id is synthesized; the fold goes. Sent to `w35`
+  (slice 3) as part of its commit, after its current turn (a prompt
+  mid-turn is refused).
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
