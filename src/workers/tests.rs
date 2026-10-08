@@ -721,6 +721,8 @@ fn the_policy_answers_the_requests_it_decides() {
         (format!("perm Write {}/w3/msg.txt", temp.display()), "allow"),
         // Another worker's temp dir is outside this one's roots.
         (format!("perm Write {}/w1/msg.txt", temp.display()), "deny"),
+        // Bash runs in the sandbox: herdr allows it and journals it.
+        ("perm Bash cd . && awk NR<5 TODO.md".to_owned(), "allow"),
     ] {
         let id = fixture.start(&prompt);
         let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
@@ -739,7 +741,7 @@ fn the_policy_answers_the_requests_it_decides() {
 #[test]
 fn a_request_left_to_the_user_waits_for_the_answer() {
     let fixture = Fixture::new("approval");
-    let id = fixture.start("perm Bash git push origin master");
+    let id = fixture.start("classifier Bash git push origin master");
 
     let worker = fixture.wait_for_question(&id);
     assert_eq!(worker.state, WorkerState::WaitingApproval);
@@ -788,7 +790,7 @@ fn a_request_left_to_the_user_waits_for_the_answer() {
 #[test]
 fn an_answer_must_name_one_of_several_questions() {
     let fixture = Fixture::new("pair");
-    let id = fixture.start("pair Bash git push origin master");
+    let id = fixture.start("pair WebFetch https://example.com");
     fixture.wait_for(&id, |worker| worker.questions.len() == 2);
 
     let unnamed = fixture
@@ -830,7 +832,7 @@ fn an_answer_must_name_one_of_several_questions() {
 #[test]
 fn an_answer_to_a_cancelled_question_says_so() {
     let fixture = Fixture::new("cancel");
-    let id = fixture.start("cancel Bash git push origin master");
+    let id = fixture.start("cancel WebFetch https://example.com");
     // perm-1 is cancelled before perm-2 is asked.
     let worker = fixture.wait_for(&id, |worker| {
         worker
@@ -927,7 +929,7 @@ fn ask_user_question_answers_flow_back_as_updated_input() {
 #[test]
 fn questions_end_with_the_worker() {
     let fixture = Fixture::new("question-exit");
-    let id = fixture.start("perm Bash rm -rf target");
+    let id = fixture.start("perm WebFetch https://example.com");
     fixture.wait_for_question(&id);
     fixture.supervisor.stop(&id).unwrap();
     let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
@@ -1155,7 +1157,7 @@ fn a_takeover_interrupts_stops_and_waits_for_the_exit() {
 #[test]
 fn a_worker_that_asks_is_not_taken_over() {
     let fixture = Fixture::new("takeover-asks");
-    let id = fixture.start("perm Bash git push origin master");
+    let id = fixture.start("perm WebFetch https://example.com");
     fixture.wait_for_question(&id);
     assert!(matches!(
         fixture.supervisor.begin_takeover(&id),
