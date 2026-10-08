@@ -662,10 +662,17 @@ Standing approval (the user, 2026-10-02: "ta", to the proposal below; he had
 answered yes to every install question): after `just check` is green, build
 and install without asking, and push with a plain fast-forward `git push
 origin master` without asking. Ask first only for what is not routine: a
-force-push or any push that is not a fast-forward, `rollback`, changing an
-integration in `~/.claude` or another agent's config, a failing or uncertain
-check, a build that was not made from a clean commit of current `master`, and
-anything the user has said to hold. The user can withdraw this at any time.
+force-push or any push that is not a fast-forward, `rollback`, other agent
+config (below), a failing or uncertain check, a build that was not made from
+a clean commit of current `master`, and anything the user has said to hold.
+Agent config (`~/.claude`, other agents' config; DECISIONS.md, "Changes to
+the user's agent configuration"): text edits to skills and global rules that
+do not broaden permissions, weaken a safeguard, grant trust or widen this
+approval need no question; the coordinator reviews the diff and commits it
+in the dotfiles by path. Hooks, `settings.json`, permissions, integrations
+and safeguards need one approval of the whole patch, prepared outside `~`
+and applied by the coordinator after a yes. Agents never answer trust
+dialogs or write trust config. The user can withdraw this at any time.
 Say in the final message what was installed and pushed and how to roll back.
 
 Where a decision is still needed, ask with `AskUserQuestion`, putting
