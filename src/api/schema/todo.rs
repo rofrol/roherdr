@@ -24,8 +24,9 @@ pub struct TodoRunParams {
     pub message: String,
     /// Git glob pathspecs (`src/**`, `AGENTS.md`) the commit may touch.
     pub paths: Vec<String>,
-    /// The name of a check in the repository's `.herdr/checks.toml`.
-    pub check: String,
+    /// The names of checks in the repository's `.herdr/checks.toml`, run
+    /// in this order; every one must pass.
+    pub checks: Vec<String>,
     /// The coordinator's pane, which owns the run's workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_pane_id: Option<String>,
@@ -66,6 +67,12 @@ pub struct TodoResumeParams {
     /// With `answer`: the message the model gets with a denial.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The caller's environment, sent again with every resume (`HERDR_*`
+    /// dropped) and kept in the server's memory only, never stored. A
+    /// resume without it leaves the server none: the run's next check is
+    /// then `unavailable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -95,6 +102,11 @@ pub enum TodoAction {
     Retry,
     /// Answer the worker's pending question.
     Answer,
+    /// Run the verify again with the environment this resume sends (after
+    /// a check was `unavailable`).
+    Verify,
+    /// SIGKILL the worker that is still alive after its stop.
+    ForceStop,
     #[serde(other)]
     Unknown,
 }
@@ -141,8 +153,13 @@ pub enum TodoEventKind {
     Question,
     /// The worker's turn ended (or the worker did): review its work.
     Review,
-    /// The verify failed or could not run: give the next attempt's task.
+    /// The verify failed or could not run: give the next attempt's task,
+    /// or verify again.
     VerifyFailed,
+    /// Raised by `todo.status` while the worker has not exited since its
+    /// stop (it ignores SIGTERM): force-stop it. The run goes on by itself
+    /// when the worker exits first.
+    StillAlive,
     Blocked,
     Done,
     #[serde(other)]
@@ -171,7 +188,8 @@ pub struct TodoRunInfo {
     pub task: String,
     pub message: String,
     pub paths: Vec<String>,
-    pub check: String,
+    /// The registered checks the verify runs, in order.
+    pub checks: Vec<String>,
     /// The highest worker event the run has handled (acknowledged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_acked_seq: Option<i64>,
@@ -211,7 +229,7 @@ pub struct TodoRunEvent {
     /// With `verify_failed`: the verdict and each check's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<WorkerVerification>,
-    /// With `blocked`: why.
+    /// With `blocked`: why; with `still_alive`: what is still running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub ts_ms: u64,

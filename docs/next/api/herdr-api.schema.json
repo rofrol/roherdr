@@ -5352,6 +5352,16 @@
               "const": "answer",
               "description": "Answer the worker's pending question.",
               "type": "string"
+            },
+            {
+              "const": "verify",
+              "description": "Run the verify again with the environment this resume sends (after\na check was `unavailable`).",
+              "type": "string"
+            },
+            {
+              "const": "force_stop",
+              "description": "SIGKILL the worker that is still alive after its stop.",
+              "type": "string"
             }
           ]
         },
@@ -5378,6 +5388,16 @@
                 }
               ],
               "description": "With `answer`: allow or deny for an approval."
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment, sent again with every resume (`HERDR_*`\ndropped) and kept in the server's memory only, never stored. A\nresume without it leaves the server none: the run's next check is\nthen `unavailable`.",
+              "type": [
+                "object",
+                "null"
+              ]
             },
             "event": {
               "description": "The event answered: the `event_id` `todo.wait` returned. Any other\nis refused as stale (`todo_event_stale`).",
@@ -5419,9 +5439,12 @@
         "TodoRunParams": {
           "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master`: a persisted, resumable run that starts a headless\nworker in the repository's folder slot, turns what needs the coordinator\n(a question outside the worker policy, the turn's end, a failed verify)\ninto run events, and verifies the worker's commit with a registered\ncheck before picking it.",
           "properties": {
-            "check": {
-              "description": "The name of a check in the repository's `.herdr/checks.toml`.",
-              "type": "string"
+            "checks": {
+              "description": "The names of checks in the repository's `.herdr/checks.toml`, run\nin this order; every one must pass.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "cwd": {
               "description": "A directory in the repository (the CLI sends its working directory).",
@@ -5476,7 +5499,7 @@
             "task",
             "message",
             "paths",
-            "check"
+            "checks"
           ],
           "type": "object"
         },
@@ -14529,6 +14552,16 @@
               "const": "answer",
               "description": "Answer the worker's pending question.",
               "type": "string"
+            },
+            {
+              "const": "verify",
+              "description": "Run the verify again with the environment this resume sends (after\na check was `unavailable`).",
+              "type": "string"
+            },
+            {
+              "const": "force_stop",
+              "description": "SIGKILL the worker that is still alive after its stop.",
+              "type": "string"
             }
           ]
         },
@@ -14555,7 +14588,12 @@
             },
             {
               "const": "verify_failed",
-              "description": "The verify failed or could not run: give the next attempt's task.",
+              "description": "The verify failed or could not run: give the next attempt's task,\nor verify again.",
+              "type": "string"
+            },
+            {
+              "const": "still_alive",
+              "description": "Raised by `todo.status` while the worker has not exited since its\nstop (it ignores SIGTERM): force-stop it. The run goes on by itself\nwhen the worker exits first.",
               "type": "string"
             }
           ]
@@ -14584,7 +14622,7 @@
               ]
             },
             "error": {
-              "description": "With `blocked`: why.",
+              "description": "With `blocked`: why; with `still_alive`: what is still running.",
               "type": [
                 "string",
                 "null"
@@ -14657,8 +14695,12 @@
                 "null"
               ]
             },
-            "check": {
-              "type": "string"
+            "checks": {
+              "description": "The registered checks the verify runs, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "created_ms": {
               "format": "uint64",
@@ -14746,7 +14788,7 @@
             "task",
             "message",
             "paths",
-            "check",
+            "checks",
             "created_ms",
             "updated_ms"
           ],
@@ -15919,7 +15961,7 @@
           "type": "object"
         },
         "WorkerVerifyCheck": {
-          "description": "One check: `commits`, `message`, `paths`, `clean_tree`, `processes`,\n`generated` (with its `path`) or `command`.",
+          "description": "One check: `commits`, `message`, `paths`, `clean_tree`, `processes`,\n`generated` (with its `path`) or `command` (with its `name` when it is a\nregistered check of `todo.run`).",
           "properties": {
             "check": {
               "type": "string"
@@ -15927,6 +15969,13 @@
             "detail": {
               "description": "The evidence: what failed, or the output's last lines.",
               "type": "string"
+            },
+            "name": {
+              "description": "With `command` of a `todo.run`: the registered check's name.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "outcome": {
               "$ref": "#/schemas/success_response/$defs/WorkerCheckOutcome"

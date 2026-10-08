@@ -16,7 +16,7 @@ use std::time::Duration;
 use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use super::runs::Run;
+use super::runs::{Run, RunCheck};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult};
 
@@ -1054,6 +1054,16 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         Ok(serde_json::from_str(&row.get::<_, String>(index)?).unwrap_or_default())
     };
     let parsed = |index: usize| -> StoreResult<Value> { Ok(Value::String(row.get(index)?)) };
+    // `check_argv` holds the run's checks with their names; a run of the
+    // first slice has one check, its argv there and its name in
+    // `check_name`.
+    let check_argv: String = row.get(13)?;
+    let checks = serde_json::from_str::<Vec<RunCheck>>(&check_argv).unwrap_or_else(|_| {
+        vec![RunCheck {
+            name: row.get(12).unwrap_or_default(),
+            argv: serde_json::from_str(&check_argv).unwrap_or_default(),
+        }]
+    });
     Ok(Run {
         info: TodoRunInfo {
             run_id: row.get(0)?,
@@ -1068,7 +1078,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             task: row.get(9)?,
             message: row.get(10)?,
             paths: list(11)?,
-            check: row.get(12)?,
+            checks: checks.iter().map(|check| check.name.clone()).collect(),
             last_acked_seq: row.get(16)?,
             pending_event: row.get(17)?,
             error: row.get(18)?,
@@ -1076,7 +1086,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             created_ms: row.get::<_, i64>(20)? as u64,
             updated_ms: row.get::<_, i64>(21)? as u64,
         },
-        check_argv: list(13)?,
+        checks,
         owner_pane: row.get(14)?,
         owner_session: row.get(15)?,
     })
@@ -1130,8 +1140,8 @@ impl Tx<'_> {
                 info.task,
                 info.message,
                 serde_json::to_string(&info.paths).unwrap_or_else(|_| "[]".into()),
-                info.check,
-                serde_json::to_string(&run.check_argv).unwrap_or_else(|_| "[]".into()),
+                info.checks.join(" "),
+                serde_json::to_string(&run.checks).unwrap_or_else(|_| "[]".into()),
                 run.owner_pane,
                 run.owner_session,
                 info.last_acked_seq,
@@ -1143,6 +1153,17 @@ impl Tx<'_> {
             ],
         )?;
         Ok(seq)
+    }
+
+    /// Appends an event to a run without writing its row: all a driver
+    /// that does not hold the run's lock may write.
+    pub(super) fn run_note(&self, run_id: &str, event: &Value, at_ms: u64) -> StoreResult<i64> {
+        self.event(&EventRow {
+            worker_id: run_id,
+            direction: super::Direction::Herdr,
+            record: &Recorded::Event(event),
+            ts_ms: at_ms,
+        })
     }
 
     /// The run as this transaction sees it.

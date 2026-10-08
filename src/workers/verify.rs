@@ -40,7 +40,9 @@ pub(super) struct Request<'a> {
     pub(super) base: &'a str,
     pub(super) expected_message: &'a str,
     pub(super) allowed_paths: &'a [String],
-    pub(super) command: Option<CheckCommand<'a>>,
+    /// The command checks, run in order, each with its registered name
+    /// when it has one.
+    pub(super) commands: Vec<(Option<&'a str>, CheckCommand<'a>)>,
     pub(super) generated: &'a [WorkerGeneratedFile],
     /// The caller's environment, which the command and the generators run
     /// with instead of the server's; `None` keeps the server's.
@@ -52,11 +54,14 @@ pub(super) struct Request<'a> {
 
 /// The command check: a shell command (`worker.verify --cmd`), or a
 /// program and its arguments run without a shell (a registered check of
-/// `todo.run`), so nothing in them is expanded or split.
+/// `todo.run`), so nothing in them is expanded or split; or a check that
+/// cannot run, and why (a run whose caller's environment the server does
+/// not have).
 #[derive(Debug, Clone, Copy)]
 pub(super) enum CheckCommand<'a> {
     Shell(&'a str),
     Argv(&'a [String]),
+    Unavailable(&'a str),
 }
 
 /// Runs every check and decides the verdict. When it ran anything that
@@ -156,23 +161,35 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
         check.path = Some(generated.path.clone());
         checks.push(check);
     }
-    if let Some(command) = request.command {
-        checks.push(if tree_clean {
-            wrote = true;
-            let ran = match command {
-                CheckCommand::Shell(command) => run_shell(dir, command, request.env),
-                CheckCommand::Argv(argv) => run_argv(dir, argv, request.env),
-            };
-            match ran {
-                Ran::Exited(0, _) => passed("command", String::new()),
-                Ran::Exited(code, tail) => {
-                    failed("command", format!("exited with code {code}:\n{tail}"))
+    // Each command starts from the head: what an earlier one wrote is
+    // restored first.
+    for (name, command) in &request.commands {
+        let ran = match *command {
+            CheckCommand::Unavailable(why) => Some(Ran::Unavailable(why.to_owned())),
+            _ if !tree_clean => None,
+            CheckCommand::Shell(command) => {
+                if std::mem::replace(&mut wrote, true) {
+                    restore(dir);
                 }
-                Ran::Unavailable(why) => unavailable("command", &why),
+                Some(run_shell(dir, command, request.env))
             }
-        } else {
-            skipped("command", "the worktree is not clean")
-        });
+            CheckCommand::Argv(argv) => {
+                if std::mem::replace(&mut wrote, true) {
+                    restore(dir);
+                }
+                Some(run_argv(dir, argv, request.env))
+            }
+        };
+        let mut check = match ran {
+            None => skipped("command", "the worktree is not clean"),
+            Some(Ran::Exited(0, _)) => passed("command", String::new()),
+            Some(Ran::Exited(code, tail)) => {
+                failed("command", format!("exited with code {code}:\n{tail}"))
+            }
+            Some(Ran::Unavailable(why)) => unavailable("command", &why),
+        };
+        check.name = name.map(str::to_owned);
+        checks.push(check);
     }
     if wrote {
         restore(dir);
@@ -390,6 +407,7 @@ fn check(check: &str, outcome: WorkerCheckOutcome, detail: String) -> WorkerVeri
         check: check.to_owned(),
         outcome,
         path: None,
+        name: None,
         detail,
     }
 }
@@ -662,7 +680,10 @@ mod tests {
                 base,
                 expected_message: SUBJECT,
                 allowed_paths: &["src/**".into(), "gen.txt".into()],
-                command: command.map(CheckCommand::Shell),
+                commands: command
+                    .map(|command| (None, CheckCommand::Shell(command)))
+                    .into_iter()
+                    .collect(),
                 generated: &generated,
                 env: None,
                 processes: Vec::new(),
@@ -700,9 +721,12 @@ mod tests {
                 base: &base,
                 expected_message: SUBJECT,
                 allowed_paths: &["src/**".into()],
-                command: Some(CheckCommand::Shell(
-                    "echo \"probe=$VERIFY_PROBE home=${HOME-unset} pane=${HERDR_PANE_ID-unset}\"; exit 1",
-                )),
+                commands: vec![(
+                    None,
+                    CheckCommand::Shell(
+                        "echo \"probe=$VERIFY_PROBE home=${HOME-unset} pane=${HERDR_PANE_ID-unset}\"; exit 1",
+                    ),
+                )],
                 generated: &[],
                 env: Some(&env),
                 processes: Vec::new(),
@@ -992,6 +1016,61 @@ mod tests {
     }
 
     #[test]
+    fn every_named_check_runs_from_the_head_and_all_must_pass() {
+        let (dir, base) = repo("named");
+        commit(&dir, SUBJECT);
+        let argv = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect();
+        // The first writes a file the second must not see.
+        let writes: Vec<String> = argv(&["sh", "-c", "echo x > left.txt"]);
+        let clean: Vec<String> = argv(&["test", "!", "-e", "left.txt"]);
+        let fails: Vec<String> = argv(&["false"]);
+        let checked = |commands: Vec<(Option<&str>, CheckCommand<'_>)>| {
+            verify(
+                &Request {
+                    dir: &dir,
+                    base: &base,
+                    expected_message: SUBJECT,
+                    allowed_paths: &["src/**".into()],
+                    commands,
+                    generated: &[],
+                    env: None,
+                    processes: Vec::new(),
+                },
+                7,
+            )
+        };
+        let verification = checked(vec![
+            (Some("writes"), CheckCommand::Argv(&writes)),
+            (Some("clean"), CheckCommand::Argv(&clean)),
+        ]);
+        assert_eq!(
+            verification.verdict,
+            WorkerVerdict::Verified,
+            "{verification:#?}"
+        );
+        let names: Vec<_> = verification
+            .checks
+            .iter()
+            .filter(|check| check.check == "command")
+            .map(|check| check.name.as_deref())
+            .collect();
+        assert_eq!(names, [Some("writes"), Some("clean")]);
+
+        let verification = checked(vec![
+            (Some("clean"), CheckCommand::Argv(&clean)),
+            (Some("fails"), CheckCommand::Argv(&fails)),
+        ]);
+        assert_eq!(verification.verdict, WorkerVerdict::Failed);
+        let verification = checked(vec![
+            (Some("clean"), CheckCommand::Argv(&clean)),
+            (Some("lint"), CheckCommand::Unavailable("no environment")),
+        ]);
+        assert_eq!(verification.verdict, WorkerVerdict::Unavailable);
+        assert!(git_in(&dir, &["status", "--porcelain"]).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_process_left_behind_fails() {
         let (dir, base) = repo("process");
         commit(&dir, SUBJECT);
@@ -1001,7 +1080,7 @@ mod tests {
                 base: &base,
                 expected_message: SUBJECT,
                 allowed_paths: &["src/**".into()],
-                command: None,
+                commands: Vec::new(),
                 generated: &[],
                 env: None,
                 processes: vec!["the worker's process 42".into()],

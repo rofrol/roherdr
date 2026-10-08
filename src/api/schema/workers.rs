@@ -186,7 +186,8 @@ pub enum WorkerVerdict {
 }
 
 /// One check: `commits`, `message`, `paths`, `clean_tree`, `processes`,
-/// `generated` (with its `path`) or `command`.
+/// `generated` (with its `path`) or `command` (with its `name` when it is a
+/// registered check of `todo.run`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerVerifyCheck {
     pub check: String,
@@ -194,6 +195,9 @@ pub struct WorkerVerifyCheck {
     /// With `generated`: the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// With `command` of a `todo.run`: the registered check's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The evidence: what failed, or the output's last lines.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,

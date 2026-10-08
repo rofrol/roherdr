@@ -535,18 +535,28 @@ warm one 27 s, no questions).
 
 A coordinator drives a TODO item with `herdr todo run <item-id> --task
 <file> --message "<the exact approved subject>" --paths <globs> --check
-<name>` instead of chaining these commands by hand: herdr preflights it,
+<name>...` instead of chaining these commands by hand: herdr preflights it,
 starts the worker in the folder slot (branch `todo/<item>-<attempt>`),
 answers nothing outside the worker policy itself, and records each step,
 so a restart resumes the run. The coordinator then loops on `herdr todo
 wait <run> --after <event_id>` and answers each event with `herdr todo
-resume <run> --event <event_id> --action answer|approve|retry` (`retry`
-with `--task <file>`, at most 3 attempts); the run stops the worker,
-verifies with the check and cherry-picks onto `master` itself, and ends
-`done` or `blocked`. Checks are registered as argv in `.herdr/checks.toml`
-(`--check` names one; never a shell string). This first slice stops at
-the cherry-pick: `just check`, the install, the TODO update and the push
-stay with the coordinator.
+resume <run> --event <event_id> --action
+answer|approve|retry|verify|force-stop` (`retry` with `--task <file>`, at
+most 3 attempts; `verify` again after an unavailable check; `force-stop`
+for the `still_alive` event that `herdr todo status` raises while a
+stopped worker has not exited: no clock raises it and herdr never kills on
+its own, so a `todo wait` that hangs after `approve` is the cue to ask
+`todo status`); herdr appends to the task the exact `--message`, "no body,
+no trailers", the `--paths` and the `WORKER-DONE` line; the run stops
+the worker, verifies with the checks and cherry-picks onto `master` itself, and ends `done` or `blocked`. Every
+resume sends the coordinator's environment again for the checks (never
+stored), so run it from the coordinator's shell. Checks are registered as
+argv in `.herdr/checks.toml` (`--check` names one or more, all must pass;
+never a shell string); pass `windows-lint` too for changes under `src/`.
+One server drives a run at a time (a run lock file next to the worker
+store), so after a live handoff the new server goes on only once the old
+one let go. The run stops at the cherry-pick: `just check`, the install,
+the TODO update and the push stay with the coordinator.
 
 ### Client requests in the background
 
@@ -566,10 +576,18 @@ in `~/personal_projects/agents.md/AGENTS.md`): do not raise the wait. Reproduce 
 first with a stress loop while other processes keep the machine busy:
 
 ```bash
-(for i in $(seq 1 12); do (yes > /dev/null &); done)
-cargo nextest run --no-fail-fast --stress-count 40 -E 'test(<name>)'
-pkill yes
+(
+  pids=()
+  for i in $(seq 1 12); do yes > /dev/null & pids+=($!); done
+  trap 'kill "${pids[@]}" 2>/dev/null' EXIT INT TERM
+  cargo nextest run --no-fail-fast --stress-count 40 -E 'test(<name>)'
+)
 ```
+
+The loads end with the command (the trap kills exactly the PIDs it started,
+also on Ctrl-C), so none outlives it; never start them detached and rely on
+a `pkill yes` afterwards, which a stopped session never runs (a worker once
+left 8 of them, which `verify`'s process check caught).
 
 Known causes here: a UI click sent once while the sidebar redraws is dropped (send
 it again from the current screen until its effect shows); a file read while the

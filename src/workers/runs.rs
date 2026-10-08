@@ -16,19 +16,33 @@
 //! in progress again from its step ([`resume_runs_at_start`]).
 //!
 //! The run waits for the coordinator on its `run_event`s (a question the
-//! worker policy left, the turn's end, a failed verify): `todo.wait` returns
-//! the pending one with its evidence and allowed actions, and `todo.resume`
-//! must name it; an answer to any other event is refused as stale. No timer
-//! moves a run: only worker events and the coordinator's answers do.
+//! worker policy left, the turn's end, a failed verify, a worker still alive
+//! after its stop): `todo.wait` returns the pending one with its evidence and
+//! allowed actions, and `todo.resume` must name it; an answer to any other
+//! event is refused as stale. No timer moves a run: only worker events and
+//! the coordinator's answers do. A worker that ignores its stop is never
+//! killed on a timer: the coordinator force-stops it.
+//!
+//! One server drives a run at a time: its driver holds the run's lock file
+//! next to the store ([`WorkerSupervisor::take_run_lock`]). After a live
+//! handoff the old server's drivers let go ([`WorkerSupervisor::let_go_of_runs`])
+//! and the new server's driver takes the lock once the old one released it
+//! (or ended, which releases it too).
+//!
+//! The checks run with the caller's environment, which `todo.run` and every
+//! `todo.resume` send and the server keeps in memory only: it may hold
+//! credentials. A check without it (a restart, a resume that sent none) is
+//! `unavailable`, never run in the server's environment.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::warn;
@@ -38,8 +52,8 @@ use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervi
 use crate::api::schema::{
     TodoAction, TodoEventKind, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams,
     TodoRunStatus, TodoStep, TodoWaitParams, WorkerAnswerParams, WorkerAttentionReason,
-    WorkerCommandTarget, WorkerInfo, WorkerQuestion, WorkerQuestionState, WorkerStartParams,
-    WorkerState, WorkerVerdict, WorkerVerifyParams, WorkerWaitUntil,
+    WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState,
+    WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerifyParams, WorkerWaitUntil,
 };
 
 /// A run's attempts: the first worker and two retries; a retry asked after
@@ -52,19 +66,26 @@ pub(super) const CHECKS_FILE: &str = ".herdr/checks.toml";
 /// The free disk preflight asks for when the checks file names none: the
 /// threshold `just guard` uses before a build.
 const DEFAULT_MIN_FREE_GIB: f64 = 15.0;
-/// How often a driver blocked on a worker's events re-asks whether to keep
-/// waiting. Only that: the worker's events end the wait, never this.
-const LIVENESS_CHECK: Duration = Duration::from_secs(5);
+/// A driver's wait on its worker has no deadline: the worker's events end
+/// it, and a handoff wakes it ([`WorkerSupervisor::let_go_of_runs`]).
+const NO_DEADLINE: Duration = Duration::MAX;
 
 /// A run as the store holds it: what `todo.status` shows, and what it does
-/// not (the check's argv, the owner).
+/// not (the checks' argv, the owner).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Run {
     pub(super) info: TodoRunInfo,
-    /// The registered check's argv as preflight read it.
-    pub(super) check_argv: Vec<String>,
+    /// The registered checks as preflight read them, in order.
+    pub(super) checks: Vec<RunCheck>,
     pub(super) owner_pane: Option<String>,
     pub(super) owner_session: Option<String>,
+}
+
+/// A registered check of a run: its name and its argv.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct RunCheck {
+    pub(super) name: String,
+    pub(super) argv: Vec<String>,
 }
 
 /// `.herdr/checks.toml`.
@@ -103,8 +124,8 @@ fn announce() {
 }
 
 /// The callers' environments of the runs this server drives, which their
-/// checks run with. Never stored: it may hold credentials. A run a restart
-/// resumes runs its check in the server's environment.
+/// checks run with: the last one `todo.run` or `todo.resume` sent. Never
+/// stored: it may hold credentials. Without one a check is `unavailable`.
 static RUN_ENV: Mutex<BTreeMap<String, HashMap<String, String>>> = Mutex::new(BTreeMap::new());
 
 /// The runs a driver of this process works on, so one runs at a time,
@@ -170,6 +191,13 @@ static CRASH_BEFORE: Mutex<Vec<(String, TodoStep)>> = Mutex::new(Vec::new());
 #[cfg(all(test, unix))]
 pub(super) fn crash_before(repo: &str, step: TodoStep) {
     lock(&CRASH_BEFORE).push((repo.to_owned(), step));
+}
+
+/// Test only: the server forgets the run's caller environment, as a
+/// restart does.
+#[cfg(all(test, unix))]
+pub(super) fn forget_env(run_id: &str) {
+    lock(&RUN_ENV).remove(run_id);
 }
 
 /// Test only: the repositories whose driver returned at a planned crash.
@@ -369,6 +397,22 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// The task a run hands its worker: the coordinator's text, then the
+/// contract the verify checks, so the worker does not invent its own: the
+/// exact commit subject with no body or trailers, the paths it may touch
+/// and its last line.
+fn worker_task(run: &TodoRunInfo) -> String {
+    format!(
+        "{}\n\n---\nCommit your work as exactly one commit whose message is exactly this \
+         subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
+         {}\nEnd your last reply with the line `WORKER-DONE <sha> | <summary>`, or \
+         `WORKER-BLOCKED <reason>` when you cannot finish.\n",
+        run.task.trim_end(),
+        run.message,
+        run.paths.join(" "),
+    )
+}
+
 fn is_gone(worker: &WorkerInfo) -> bool {
     matches!(worker.state, WorkerState::Exited | WorkerState::Lost)
 }
@@ -386,7 +430,8 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
     match kind {
         TodoEventKind::Question => vec![TodoAction::Answer],
         TodoEventKind::Review => vec![TodoAction::Approve, TodoAction::Retry],
-        TodoEventKind::VerifyFailed => vec![TodoAction::Retry],
+        TodoEventKind::VerifyFailed => vec![TodoAction::Retry, TodoAction::Verify],
+        TodoEventKind::StillAlive => vec![TodoAction::ForceStop],
         _ => Vec::new(),
     }
 }
@@ -437,7 +482,7 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
 /// What preflight found.
 struct Preflighted {
     base: String,
-    check_argv: Vec<String>,
+    checks: Vec<RunCheck>,
 }
 
 impl WorkerSupervisor {
@@ -489,7 +534,7 @@ impl WorkerSupervisor {
                 task: params.task.clone(),
                 message: params.message.clone(),
                 paths: params.paths.clone(),
-                check: params.check.clone(),
+                checks: params.checks.clone(),
                 last_acked_seq: None,
                 pending_event: None,
                 error: None,
@@ -497,7 +542,7 @@ impl WorkerSupervisor {
                 created_ms: at,
                 updated_ms: at,
             },
-            check_argv: preflighted.check_argv.clone(),
+            checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
             owner_session: params.owner_session_id.clone(),
         };
@@ -505,8 +550,7 @@ impl WorkerSupervisor {
             "type": "run_created",
             "item": params.item,
             "base": preflighted.base,
-            "check": params.check,
-            "check_argv": preflighted.check_argv,
+            "checks": preflighted.checks,
             "message": params.message,
             "paths": params.paths,
             "task": params.task,
@@ -566,18 +610,34 @@ impl WorkerSupervisor {
             )));
         }
         let checks = read_checks(repo).map_err(refuse)?;
-        let check_argv = checks.checks.get(&params.check).cloned().ok_or_else(|| {
-            refuse(format!(
-                "no check {:?} in {CHECKS_FILE}; it has: {}",
-                params.check,
-                checks.checks.keys().cloned().collect::<Vec<_>>().join(", ")
-            ))
-        })?;
-        if check_argv.first().is_none_or(|program| program.is_empty()) {
+        if params.checks.is_empty() {
             return Err(refuse(format!(
-                "check {:?} in {CHECKS_FILE} has no program",
-                params.check
+                "the run needs at least one check of {CHECKS_FILE}"
             )));
+        }
+        let mut registered = Vec::new();
+        for name in &params.checks {
+            if registered
+                .iter()
+                .any(|check: &RunCheck| &check.name == name)
+            {
+                return Err(refuse(format!("check {name:?} is named twice")));
+            }
+            let argv = checks.checks.get(name).cloned().ok_or_else(|| {
+                refuse(format!(
+                    "no check {name:?} in {CHECKS_FILE}; it has: {}",
+                    checks.checks.keys().cloned().collect::<Vec<_>>().join(", ")
+                ))
+            })?;
+            if argv.first().is_none_or(|program| program.is_empty()) {
+                return Err(refuse(format!(
+                    "check {name:?} in {CHECKS_FILE} has no program"
+                )));
+            }
+            registered.push(RunCheck {
+                name: name.clone(),
+                argv,
+            });
         }
         let min_free = checks
             .preflight
@@ -595,7 +655,10 @@ impl WorkerSupervisor {
             .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
             .trim()
             .to_owned();
-        Ok(Preflighted { base, check_argv })
+        Ok(Preflighted {
+            base,
+            checks: registered,
+        })
     }
 
     /// The folder slot is free: no worker of this server runs in it, and
@@ -642,9 +705,66 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// The run as it is now.
+    /// The run as it is now. Asked while the run waits for its worker's
+    /// exit after the stop and the worker's process is still alive (its
+    /// stop is recorded, its exit is not), it first raises a `still_alive`
+    /// event the run then waits on: the coordinator's question is the
+    /// observable fact, no clock is. `todo.wait` does not raise it, so a
+    /// wait right after `approve` does not report a stop still in flight.
     pub(crate) fn todo_status(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
-        Ok(self.load_run(run_id)?.info)
+        let run = self.load_run(run_id)?;
+        if !Self::stopping(&run) {
+            return Ok(run.info);
+        }
+        let Some(worker_id) = run.info.worker_id.clone() else {
+            return Ok(run.info);
+        };
+        let worker = self.status(&worker_id)?;
+        if is_gone(&worker) || worker.stop_requested_ms.is_none() {
+            return Ok(run.info);
+        }
+        let mut event = new_event(TodoEventKind::StillAlive);
+        event.error = Some(format!(
+            "worker {worker_id} has not exited since its stop (SIGTERM); force-stop it with \
+             SIGKILL, or wait for it to exit"
+        ));
+        let store = self.run_store()?;
+        let raised = store
+            .transaction(|tx| {
+                let Some(mut current) = tx.run(run_id)? else {
+                    return Ok(None);
+                };
+                // The driver moved on (the worker exited) or it was raised.
+                if !Self::stopping(&current) || current.info.worker_id != run.info.worker_id {
+                    return Ok(Some((current, false)));
+                }
+                current.info.status = TodoRunStatus::Waiting;
+                let body = json!({
+                    "type": "run_event",
+                    "kind": event.kind,
+                    "step": current.info.step,
+                    "status": current.info.status,
+                    "attempt": current.info.attempt,
+                    "event": event,
+                });
+                tx.run_event(&mut current, &body, true, now_ms())?;
+                Ok(Some((current, true)))
+            })
+            .map_err(store_error)?;
+        let Some((current, raised)) = raised else {
+            return Ok(run.info);
+        };
+        if raised {
+            announce();
+        }
+        Ok(current.info)
+    }
+
+    /// Whether the run's driver is at its stop, waiting for the worker's
+    /// exit.
+    fn stopping(run: &Run) -> bool {
+        run.info.status == TodoRunStatus::Running
+            && matches!(run.info.step, TodoStep::Stop | TodoStep::Restart)
     }
 
     /// The runs, of the repository `repo` is in when given, oldest first.
@@ -703,8 +823,11 @@ impl WorkerSupervisor {
     /// The coordinator's answer to the run's pending event: `answer` sends
     /// the worker the answer and keeps waiting on it, `approve` takes the
     /// turn to the stop, verify and cherry-pick, `retry` starts the next
-    /// attempt with new task text (after the third, the run is blocked).
-    /// An event that is not the pending one is refused as stale.
+    /// attempt with new task text (after the third, the run is blocked once
+    /// the worker stopped), `verify` runs the verify again, `force-stop`
+    /// SIGKILLs a worker still alive after its stop. An event that is not
+    /// the pending one is refused as stale. The environment it carries
+    /// replaces the one the run's checks run with; none leaves them none.
     pub(crate) fn todo_resume(&self, params: TodoResumeParams) -> Result<TodoRunInfo, WorkerError> {
         let run = self.load_run(&params.run_id)?;
         let stale = |run: &Run| {
@@ -747,7 +870,7 @@ impl WorkerSupervisor {
             )));
         }
         let mut note = None;
-        let mut blocked = None;
+        let mut exhausted = false;
         match params.action {
             TodoAction::Answer => {
                 let worker_id = run
@@ -780,20 +903,44 @@ impl WorkerSupervisor {
                         "retry needs the next attempt's task text".into(),
                     ));
                 }
-                if run.info.attempt >= MAX_ATTEMPTS {
-                    blocked = Some(format!(
-                        "the run used its {MAX_ATTEMPTS} attempts; a retry was asked after the last"
-                    ));
+                exhausted = run.info.attempt >= MAX_ATTEMPTS;
+            }
+            TodoAction::ForceStop => {
+                let worker_id = run
+                    .info
+                    .worker_id
+                    .clone()
+                    .ok_or_else(|| WorkerError::Invalid("the run has no worker".into()))?;
+                let kill = WorkerKillParams {
+                    worker_id,
+                    force: false,
+                    caller_pane_id: run.owner_pane.clone(),
+                    command_id: Some(format!("{}:{}:force-stop", run.info.run_id, params.event)),
+                };
+                match self.kill_command(&kill) {
+                    Ok(_) => {}
+                    // It exited meanwhile: nothing left to stop.
+                    Err(error @ (WorkerError::NeedsForce(_) | WorkerError::NotRunning(_))) => {
+                        note = Some(error.to_string());
+                    }
+                    Err(error) => return Err(error),
                 }
             }
-            TodoAction::Approve | TodoAction::Unknown => {}
+            TodoAction::Approve | TodoAction::Verify | TodoAction::Unknown => {}
         }
+        // Before the run moves on: a driver still waiting on the worker's
+        // stop may reach the verify as soon as the resume is recorded.
+        match &params.env {
+            Some(env) => lock(&RUN_ENV).insert(params.run_id.clone(), env.clone()),
+            None => lock(&RUN_ENV).remove(&params.run_id),
+        };
         let event = json!({
             "type": "run_resumed",
             "event": params.event,
             "action": params.action,
             "task": params.task,
             "request_id": params.request_id,
+            "env_sent": params.env.is_some(),
             "note": note,
         });
         let outcome = store
@@ -811,26 +958,25 @@ impl WorkerSupervisor {
                 match params.action {
                     TodoAction::Answer => current.info.step = TodoStep::Attention,
                     TodoAction::Approve => current.info.step = TodoStep::Stop,
-                    TodoAction::Retry if blocked.is_none() => {
+                    TodoAction::Verify => current.info.step = TodoStep::Verify,
+                    // A retry after the last attempt only stops the worker
+                    // (a retry asked at a review: it still runs in the
+                    // slot); the restart then blocks the run.
+                    TodoAction::Retry => {
                         current.info.step = TodoStep::Restart;
-                        current.info.task = params.task.clone().unwrap_or_default();
+                        if !exhausted {
+                            current.info.task = params.task.clone().unwrap_or_default();
+                        }
                     }
-                    _ => {}
+                    // The stop's wait goes on, at the run's step.
+                    TodoAction::ForceStop | TodoAction::Unknown => {}
                 }
                 tx.run_event(&mut current, &event, false, now_ms())?;
                 Ok(Ok(current))
             })
             .map_err(store_error)?;
-        let mut run = outcome?;
+        let run = outcome?;
         announce();
-        if let Some(mut why) = blocked {
-            // A retry asked at a review: its worker still runs in the slot.
-            if let Err(error) = self.stop_worker(&mut run) {
-                why.push_str(&format!("; stopping its worker failed: {error}"));
-            }
-            self.block_run(&mut run, why);
-            return Ok(run.info);
-        }
         self.spawn_driver(&run.info.run_id);
         Ok(run.info)
     }
@@ -862,6 +1008,81 @@ impl WorkerSupervisor {
         }
     }
 
+    /// Lets go of every run this server drives, after a live handoff
+    /// succeeded: each driver returns at its next step or liveness check,
+    /// without blocking its run, and releases the run's lock for the new
+    /// server's driver. No new driver starts here.
+    pub(crate) fn let_go_of_runs(&self) {
+        {
+            // Under the registry lock, which a driver's wait re-checks the
+            // flag under before it blocks: no wakeup is lost between them.
+            let _registry = lock(&self.shared.registry);
+            self.shared.handed_off.store(true, Ordering::SeqCst);
+            // Wake the drivers blocked on a worker's events.
+            self.shared.changed.notify_all();
+        }
+        announce();
+    }
+
+    fn handed_off(&self) -> bool {
+        self.shared.handed_off.load(Ordering::SeqCst)
+    }
+
+    /// The run's lock file, next to the store.
+    pub(super) fn run_lock_path(&self, run_id: &str) -> PathBuf {
+        self.shared.dir.join(format!("run-{run_id}.lock"))
+    }
+
+    /// Takes the run's lock, which the driving server holds while it
+    /// drives the run. Held by another server (the old one of a live
+    /// handoff, still at a step), it notes that and blocks until that
+    /// server lets go or ends: the operating system releases the lock
+    /// then, so no timer decides when.
+    fn take_run_lock(&self, run_id: &str) -> Result<File, String> {
+        let path = self.run_lock_path(run_id);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("cannot open the run lock {}: {error}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => {
+                return Err(format!("cannot lock {}: {error}", path.display()))
+            }
+        }
+        self.run_note(
+            run_id,
+            json!({"type": "run_lock_wait", "pid": std::process::id()}),
+        );
+        file.lock()
+            .map_err(|error| format!("cannot lock {}: {error}", path.display()))?;
+        self.run_note(
+            run_id,
+            json!({"type": "run_lock_taken", "pid": std::process::id()}),
+        );
+        Ok(file)
+    }
+
+    /// Appends an event to the run without writing its row.
+    fn run_note(&self, run_id: &str, event: Value) {
+        let noted = self
+            .run_store()
+            .map_err(|error| error.to_string())
+            .and_then(|store| {
+                store
+                    .transaction(|tx| tx.run_note(run_id, &event, now_ms()))
+                    .map_err(|error| error.to_string())
+            });
+        match noted {
+            Ok(_) => announce(),
+            Err(error) => warn!(run_id, error, "cannot record a todo run's note"),
+        }
+    }
+
     fn spawn_driver(&self, run_id: &str) {
         let supervisor = self.clone();
         let id = run_id.to_owned();
@@ -876,10 +1097,27 @@ impl WorkerSupervisor {
     /// reads the run from the store, so a driver that starts after a crash
     /// goes on from where the last one recorded.
     fn drive(&self, run_id: &str) {
+        if self.handed_off() {
+            return;
+        }
         let Some(mut driving) = Driving::claim(run_id) else {
             return;
         };
+        let _held = match self.take_run_lock(run_id) {
+            Ok(held) => held,
+            Err(error) => {
+                warn!(run_id, error, "cannot take the todo run's lock");
+                return;
+            }
+        };
         loop {
+            if self.handed_off() {
+                self.run_note(
+                    run_id,
+                    json!({"type": "run_let_go", "pid": std::process::id()}),
+                );
+                return;
+            }
             let mut run = match self.load_run(run_id) {
                 Ok(run) => run,
                 Err(error) => {
@@ -893,6 +1131,8 @@ impl WorkerSupervisor {
                     TodoRunStatus::Done | TodoRunStatus::Blocked
                 ) {
                     lock(&RUN_ENV).remove(run_id);
+                    // Ended: no driver needs its lock again.
+                    let _ = std::fs::remove_file(self.run_lock_path(run_id));
                 }
                 if driving.release() {
                     return;
@@ -918,7 +1158,10 @@ impl WorkerSupervisor {
                 }
             };
             if let Err(why) = stepped {
-                self.block_run(&mut run, why);
+                // A step a handoff cut off is the new server's to run.
+                if !self.handed_off() {
+                    self.block_run(&mut run, why);
+                }
             }
         }
     }
@@ -1014,7 +1257,7 @@ impl WorkerSupervisor {
         )?;
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
-            prompt: run.info.task.clone(),
+            prompt: worker_task(&run.info),
             model: None,
             name: None,
             workspace_id: None,
@@ -1069,7 +1312,9 @@ impl WorkerSupervisor {
             (WorkerAttentionReason::Question, still_pending, seq, now)
         } else {
             let attention = self
-                .wait_attention(&worker_id, run.info.last_acked_seq, LIVENESS_CHECK, || true)
+                .wait_attention(&worker_id, run.info.last_acked_seq, NO_DEADLINE, || {
+                    !self.handed_off()
+                })
                 .map_err(|error| error.to_string())?
                 .ok_or("the wait for the worker ended")?;
             (
@@ -1111,7 +1356,11 @@ impl WorkerSupervisor {
     /// Stops the attempt's worker, when it still runs, and waits for its
     /// exit, which its own exit event reports. The stop carries a command
     /// id derived from the run and the run's owner pane, so the exit it
-    /// causes is acknowledged.
+    /// causes is acknowledged. No clock decides that the worker is stuck:
+    /// the wait ends only with its exit. A coordinator who asks for the
+    /// run's state meanwhile gets a `still_alive` event
+    /// ([`Self::todo_status`]); its `force-stop` SIGKILLs the worker, or
+    /// the worker exits by itself.
     fn stop_worker(&self, run: &mut Run) -> Result<(), String> {
         let Some(worker_id) = run.info.worker_id.clone() else {
             return Ok(());
@@ -1141,9 +1390,18 @@ impl WorkerSupervisor {
                 Ok(_) | Err(WorkerError::NotRunning(_)) => {}
                 Err(error) => return Err(format!("stopping worker {worker_id}: {error}")),
             }
-            self.wait(&worker_id, WorkerWaitUntil::Exit, LIVENESS_CHECK, || true)
-                .map_err(|error| error.to_string())?
-                .ok_or("the wait for the worker's exit ended")?;
+            self.wait(&worker_id, WorkerWaitUntil::Exit, NO_DEADLINE, || {
+                !self.handed_off()
+            })
+            .map_err(|error| error.to_string())?
+            .ok_or("this server handed the run off")?;
+            // `todo.status` may have raised a `still_alive` event meanwhile,
+            // and a force-stop answered it; the run goes on either way, and
+            // that event is stale.
+            *run = self
+                .load_run(&run.info.run_id)
+                .map_err(|error| error.to_string())?;
+            run.info.status = TodoRunStatus::Running;
         }
         let worker = self.status(&worker_id).map_err(|error| error.to_string())?;
         if let Some(seq) = worker.seq {
@@ -1167,6 +1425,11 @@ impl WorkerSupervisor {
     /// branch from the same base, the task text the retry gave.
     fn step_restart(&self, run: &mut Run) -> Result<(), String> {
         self.stop_worker(run)?;
+        if run.info.attempt >= MAX_ATTEMPTS {
+            return Err(format!(
+                "the run used its {MAX_ATTEMPTS} attempts; a retry was asked after the last"
+            ));
+        }
         let previous = run.info.worker_id.take();
         run.info.attempt += 1;
         run.info.branch = Some(branch_of(&run.info.item, run.info.attempt));
@@ -1197,9 +1460,12 @@ impl WorkerSupervisor {
         let base = run.info.base.clone().ok_or("the run has no base")?;
         self.run_step(
             run,
-            json!({"type": "run_verify_intent", "worker_id": worker_id, "check": run.info.check}),
+            json!({"type": "run_verify_intent", "worker_id": worker_id, "checks": run.info.checks}),
         )?;
         let env = lock(&RUN_ENV).get(&run.info.run_id).cloned();
+        let no_env = "this server has not got the caller's environment for the check (a \
+                      restart, or a `herdr todo resume` that sent none); `herdr todo resume \
+                      --action verify` from the coordinator's shell sends it and verifies again";
         let params = WorkerVerifyParams {
             worker_id: worker_id.clone(),
             base,
@@ -1209,9 +1475,20 @@ impl WorkerSupervisor {
             generated: Vec::new(),
             env,
         };
-        let argv = run.check_argv.clone();
+        let checks = run.checks.clone();
+        let commands = checks
+            .iter()
+            .map(|check| {
+                let command = if params.env.is_some() {
+                    CheckCommand::Argv(&check.argv)
+                } else {
+                    CheckCommand::Unavailable(no_env)
+                };
+                (Some(check.name.as_str()), command)
+            })
+            .collect();
         let verification = self
-            .verify_with(&params, Some(CheckCommand::Argv(&argv)))
+            .verify_with(&params, commands)
             .map_err(|error| format!("verifying worker {worker_id}: {error}"))?;
         if verification.verdict == WorkerVerdict::Verified {
             run.info.step = TodoStep::CherryPick;

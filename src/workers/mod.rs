@@ -2016,6 +2016,9 @@ struct Shared {
     /// Held while a folder slot is prepared and its worker registered, so
     /// two starts never prepare one slot at once.
     slot_lock: Mutex<()>,
+    /// Set once a live handoff succeeded: this server's `todo run` drivers
+    /// let go of their runs (and their run locks) for the new server.
+    handed_off: std::sync::atomic::AtomicBool,
     /// Starts each new worker's broker; without one this server owns the
     /// worker's pipes, and the worker ends with the server. Windows has no
     /// broker yet: a documented gap.
@@ -2184,9 +2187,13 @@ pub(crate) fn prepare_for_handoff(force: bool) -> Result<(), String> {
     }
 }
 
-/// After a live handoff succeeded, hands the workers with a broker to the
-/// new server ([`WorkerSupervisor::detach_for_handoff`]).
+/// After a live handoff succeeded, hands the `todo run`s
+/// ([`WorkerSupervisor::let_go_of_runs`]) and the workers with a broker to
+/// the new server ([`WorkerSupervisor::detach_for_handoff`]).
 pub(crate) fn detach_for_handoff() {
+    if let Some(supervisor) = SUPERVISOR.get() {
+        supervisor.let_go_of_runs();
+    }
     #[cfg(unix)]
     if let Some(supervisor) = SUPERVISOR.get() {
         let detached = supervisor.detach_for_handoff();
@@ -2590,6 +2597,7 @@ impl WorkerSupervisor {
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
+                handed_off: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(unix)]
                 broker,
             }),
@@ -4088,16 +4096,21 @@ impl WorkerSupervisor {
     ) -> Result<WorkerVerification, WorkerError> {
         self.verify_with(
             params,
-            params.command.as_deref().map(verify::CheckCommand::Shell),
+            params
+                .command
+                .as_deref()
+                .map(|command| (None, verify::CheckCommand::Shell(command)))
+                .into_iter()
+                .collect(),
         )
     }
 
-    /// [`Self::verify`] with the command check given apart: `params.command`
-    /// is not read.
+    /// [`Self::verify`] with the command checks given apart, each with its
+    /// registered name: `params.command` is not read.
     fn verify_with(
         &self,
         params: &WorkerVerifyParams,
-        command: Option<verify::CheckCommand<'_>>,
+        commands: Vec<(Option<&str>, verify::CheckCommand<'_>)>,
     ) -> Result<WorkerVerification, WorkerError> {
         let (number, status) = {
             let registry = lock(&self.shared.registry);
@@ -4134,7 +4147,7 @@ impl WorkerSupervisor {
                 base: &params.base,
                 expected_message: &params.expected_message,
                 allowed_paths: &params.allowed_paths,
-                command,
+                commands,
                 generated: &params.generated,
                 env: params.env.as_ref(),
                 processes,
@@ -4464,13 +4477,25 @@ impl WorkerSupervisor {
                 return Ok(Some(value));
             }
             let seen = entry.status.last_seq;
+            let handed_off = self
+                .shared
+                .handed_off
+                .load(std::sync::atomic::Ordering::SeqCst);
             drop(registry);
             if !keep_waiting() {
                 return Ok(None);
             }
             registry = lock(&self.shared.registry);
             let entry = registry.workers.get(&number).ok_or_else(missing)?;
-            if entry.status.last_seq != seen {
+            // A handoff between `keep_waiting` and here (it is set under
+            // this lock) asks `keep_waiting` again instead of being lost.
+            if entry.status.last_seq != seen
+                || self
+                    .shared
+                    .handed_off
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != handed_off
+            {
                 continue;
             }
             registry = self
