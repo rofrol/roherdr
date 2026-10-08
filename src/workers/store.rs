@@ -201,6 +201,16 @@ UPDATE workers SET item_title = (SELECT json_extract(body, '$.item_title') FROM 
 -- `verification`), so `worker.runs` shows it. Older workers have none.
 ALTER TABLE workers ADD COLUMN verification TEXT;
 "#,
+    r#"
+-- The takeover claim's id (`takeover`'s `takeover_id`), which its tab
+-- carries, so a restart can find the tab. Filled from the last `takeover`
+-- event of a claim still held; older claims have none.
+ALTER TABLE workers ADD COLUMN takeover_id TEXT;
+UPDATE workers SET takeover_id = (SELECT json_extract(body, '$.takeover_id') FROM events
+    WHERE worker_id = workers.id AND direction = 'herdr' AND type = 'takeover'
+    ORDER BY seq DESC LIMIT 1)
+    WHERE takeover_ms IS NOT NULL;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -598,7 +608,7 @@ impl Tx<'_> {
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
-                    :ended_mid_turn, :item_title, :verification)
+                    :ended_mid_turn, :item_title, :verification, :takeover_id)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -663,6 +673,7 @@ impl Tx<'_> {
                     .verification
                     .as_ref()
                     .and_then(|verification| serde_json::to_string(verification).ok()),
+                ":takeover_id": status.takeover_id,
             },
         )?;
         Ok(())
@@ -674,7 +685,7 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn, item_title, verification";
+ended_mid_turn, item_title, verification, takeover_id";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -732,6 +743,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.ended_mid_turn = row.get(39)?;
     status.item_title = row.get(40)?;
     status.verification = json(41)?.and_then(|value| serde_json::from_value(value).ok());
+    status.takeover_id = row.get(42)?;
     Ok(status)
 }
 
@@ -977,6 +989,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN ended_mid_turn;
                  ALTER TABLE workers DROP COLUMN item_title;
                  ALTER TABLE workers DROP COLUMN verification;
+                 ALTER TABLE workers DROP COLUMN takeover_id;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1019,8 +1032,9 @@ mod tests {
             .execute_batch(&format!(
                 "ALTER TABLE workers DROP COLUMN item_title;
                  ALTER TABLE workers DROP COLUMN verification;
+                 ALTER TABLE workers DROP COLUMN takeover_id;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 2
+                MIGRATIONS.len() - 3
             ))
             .unwrap();
         drop(store);
@@ -1173,7 +1187,10 @@ mod tests {
                 "out",
                 json!({"type": "control_cancel_request", "request_id": "q3"}),
             ),
-            ("herdr", json!({"type": "takeover", "at_ms": 5})),
+            (
+                "herdr",
+                json!({"type": "takeover", "at_ms": 5, "takeover_id": "tk-w1-5"}),
+            ),
             (
                 "herdr",
                 json!({"type": "signal", "signal": "SIGTERM", "at_ms": 6}),

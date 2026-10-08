@@ -54,9 +54,52 @@ impl App {
     /// (see [`crate::workers::WorkerSupervisor::end_for_takeover`]); the
     /// tab that resumes its session opens once it has exited
     /// ([`AppEvent::WorkerTakenOver`]).
-    pub(super) fn handle_worker_take_over(&mut self, id: String, target: WorkerTarget) -> String {
+    ///
+    /// A takeover an earlier server left unfinished is first looked for
+    /// ([`Self::find_unfinished_takeover_tab`]): a tab found is adopted and
+    /// the worker returned as taken over; a process resuming the session
+    /// outside herdr's tabs, or nothing found, refuses the retry unless
+    /// `force` (`worker.force_take_over`).
+    pub(super) fn handle_worker_take_over(
+        &mut self,
+        id: String,
+        target: WorkerTarget,
+        force: bool,
+    ) -> String {
         let supervisor = crate::workers::supervisor().clone();
-        let takeover = match supervisor.begin_takeover(&target.worker_id) {
+        let unfinished = match supervisor.unfinished_takeover(&target.worker_id) {
+            Ok(unfinished) => unfinished,
+            Err(error) => return encode_error(id, error.code(), error.to_string()),
+        };
+        if let Some(unfinished) = unfinished {
+            match self.find_unfinished_takeover_tab(&unfinished) {
+                crate::workers::TakeoverFound::Tab(tab_id) => {
+                    return match supervisor
+                        .adopt_takeover_tab(&unfinished, &tab_id)
+                        .and_then(|()| supervisor.status(&target.worker_id))
+                    {
+                        Ok(worker) => encode_success(id, ResponseResult::WorkerInfo { worker }),
+                        Err(error) => encode_error(id, error.code(), error.to_string()),
+                    };
+                }
+                crate::workers::TakeoverFound::Process(pid) if !force => {
+                    return encode_error(
+                        id,
+                        "worker_busy",
+                        format!(
+                            "worker {}: process {pid} already resumes its session {} outside \
+                             herdr's tabs; end it first. Retrying with --force opens another \
+                             writer of the same session, which forks its transcript",
+                            target.worker_id,
+                            unfinished.session_id.as_deref().unwrap_or_default(),
+                        ),
+                    );
+                }
+                // `begin_takeover` refuses it without force.
+                _ => {}
+            }
+        }
+        let takeover = match supervisor.begin_takeover(&target.worker_id, force) {
             Ok(takeover) => takeover,
             Err(error) => return encode_error(id, error.code(), error.to_string()),
         };
@@ -136,14 +179,24 @@ impl App {
             release_takeover(&takeover.worker_id, "no space to open the tab in");
             return;
         };
+        // The claim's id in the tab's title and its shell's environment, so
+        // a server that starts before the tab is journaled finds the tab.
+        let title = match takeover.name.as_str() {
+            "" => takeover.takeover_id.clone(),
+            name => format!("{name} {}", takeover.takeover_id),
+        };
+        let env = std::collections::HashMap::from([(
+            crate::workers::TAKEOVER_ID_ENV.to_owned(),
+            takeover.takeover_id.clone(),
+        )]);
         let response = self.create_tab_in_workspace(
             format!("worker-takeover:{}", takeover.worker_id),
             ws_idx,
             super::tabs::NewTabPlace::End,
             Some(takeover.cwd.clone()).filter(|cwd| !cwd.is_empty()),
             true,
-            Some(takeover.name.clone()).filter(|name| !name.is_empty()),
-            Default::default(),
+            Some(title),
+            env,
         );
         let Ok(crate::api::schema::SuccessResponse {
             result: ResponseResult::TabCreated { tab, root_pane },
@@ -178,6 +231,63 @@ impl App {
                 "could not resume the worker"
             );
         }
+    }
+}
+
+impl App {
+    /// Adopts the tabs of the takeovers an earlier server left unfinished,
+    /// found by their ids or by a process resuming their sessions; the rest
+    /// stay reported as `takeover_unfinished`. Run once at server start,
+    /// with the restored and handed-over panes in place.
+    pub(crate) fn recover_unfinished_takeovers_at_start(&self) {
+        let supervisor = crate::workers::supervisor();
+        for unfinished in supervisor.unfinished_takeovers() {
+            match self.find_unfinished_takeover_tab(&unfinished) {
+                crate::workers::TakeoverFound::Tab(tab_id) => {
+                    if let Err(err) = supervisor.adopt_takeover_tab(&unfinished, &tab_id) {
+                        tracing::warn!(%err, worker = unfinished.worker_id, "takeover tab not adopted");
+                    }
+                }
+                crate::workers::TakeoverFound::Process(pid) => tracing::warn!(
+                    worker = unfinished.worker_id,
+                    pid,
+                    "an unfinished takeover's session resumes outside herdr's tabs"
+                ),
+                crate::workers::TakeoverFound::Nothing => tracing::info!(
+                    worker = unfinished.worker_id,
+                    "an unfinished takeover's tab was not found"
+                ),
+            }
+        }
+    }
+
+    /// Looks for an unfinished takeover's tab among every space's tabs
+    /// ([`crate::workers::find_takeover_tab`]).
+    fn find_unfinished_takeover_tab(
+        &self,
+        unfinished: &crate::workers::UnfinishedTakeover,
+    ) -> crate::workers::TakeoverFound {
+        let mut tabs = Vec::new();
+        for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
+            for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+                let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+                    continue;
+                };
+                let shell_pids = tab
+                    .panes
+                    .keys()
+                    .filter_map(|pane_id| self.state.terminal_id_for_pane(ws_idx, *pane_id))
+                    .filter_map(|terminal_id| self.terminal_runtimes.get(&terminal_id))
+                    .filter_map(|runtime| runtime.child_pid())
+                    .collect();
+                tabs.push(crate::workers::TakeoverTabCandidate {
+                    tab_id,
+                    title: tab.custom_name.clone().unwrap_or_default(),
+                    shell_pids,
+                });
+            }
+        }
+        crate::workers::find_takeover_tab(unfinished, &tabs, &crate::workers::LiveProcesses)
     }
 }
 

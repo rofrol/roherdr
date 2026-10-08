@@ -238,6 +238,21 @@ pub fn session_members(_session_id: u32) -> Vec<u32> {
 }
 
 /// Unsupported platform stub.
+pub fn process_env_value(_pid: u32, _key: &str) -> Option<String> {
+    None
+}
+
+/// Unsupported platform stub.
+pub fn processes_with_argv(_matches: &dyn Fn(&[String]) -> bool) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Unsupported platform stub.
+pub fn process_parent(_pid: u32) -> Option<u32> {
+    None
+}
+
+/// Unsupported platform stub.
 pub fn signal_processes(_pids: &[u32], _signal: Signal) {}
 
 /// Unsupported platform stub.

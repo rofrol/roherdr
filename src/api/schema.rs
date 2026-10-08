@@ -107,6 +107,13 @@ pub enum Method {
     /// a tab running `claude --resume <session>` in its directory.
     #[serde(rename = "worker.take_over")]
     WorkerTakeOver(WorkerTarget),
+    /// `worker.take_over` that also retries a takeover an earlier server
+    /// left unfinished when no tab or process resuming the session was
+    /// found: a tab it opened unseen would be a second writer of the
+    /// session. A method of its own, since `worker.take_over`'s shape is
+    /// frozen for clients.
+    #[serde(rename = "worker.force_take_over")]
+    WorkerForceTakeOver(WorkerTarget),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

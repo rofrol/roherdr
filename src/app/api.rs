@@ -1336,7 +1336,10 @@ impl App {
                 return self.handle_worker_open_log(request.id, target)
             }
             Method::WorkerTakeOver(target) => {
-                return self.handle_worker_take_over(request.id, target);
+                return self.handle_worker_take_over(request.id, target, false);
+            }
+            Method::WorkerForceTakeOver(target) => {
+                return self.handle_worker_take_over(request.id, target, true);
             }
             Method::AgentRead(params) => return self.handle_agent_read(request.id, params),
             Method::AgentExplain(target) => return self.handle_agent_explain(request.id, target),

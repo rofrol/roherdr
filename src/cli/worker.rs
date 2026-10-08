@@ -70,8 +70,12 @@ const USAGE: &str =
     question, and several options of a multi-select question separated by commas.
   herdr worker log [--follow] <worker_id>
     The worker's journal as text; --follow keeps printing new events until q.
-  herdr worker take-over <worker_id>
+  herdr worker take-over [--force] <worker_id>
     Interrupts and stops the worker, then resumes its session in a new tab.
+    A takeover an earlier server left unfinished is adopted when its tab or a
+    process resuming the session is found; otherwise only --force retries it,
+    and a tab that earlier attempt opened unseen would be a second writer of
+    the session.
   start, prompt, interrupt, stop, kill and answer take --command-id ID: the
   command runs once per ID; repeating it returns the first outcome (the same
   reply or refusal) without doing it again, and reusing ID for another
@@ -217,7 +221,16 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             command_id,
             ..parse_answer(rest)?
         }),
-        "take-over" => Method::WorkerTakeOver(target(rest)?),
+        "take-over" => {
+            let (force, ids): (Vec<String>, Vec<String>) =
+                rest.iter().cloned().partition(|arg| arg == "--force");
+            let worker = target(&ids)?;
+            if force.is_empty() {
+                Method::WorkerTakeOver(worker)
+            } else {
+                Method::WorkerForceTakeOver(worker)
+            }
+        }
         "escalate" => {
             let (request, rest) = take_string_option(rest, "--request")?;
             match (rest.as_slice(), request) {
