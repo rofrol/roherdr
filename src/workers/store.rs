@@ -242,6 +242,13 @@ CREATE INDEX coordinator_bindings_by_pane ON coordinator_bindings (pane_id)
 -- (`started`'s `owner.coordinator_id`); older workers have none.
 ALTER TABLE workers ADD COLUMN owner_coordinator_id TEXT;
 "#,
+    r#"
+-- The broker that owns the worker's pipes (`started`'s `broker`: its pid,
+-- socket and the worker's directory as asked for), as JSON, so a server
+-- that starts while the worker runs re-attaches to it. Workers started
+-- before the broker, or on a platform without one, have none.
+ALTER TABLE workers ADD COLUMN broker TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -732,7 +739,7 @@ impl Tx<'_> {
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
                     :ended_mid_turn, :item_title, :verification, :takeover_id,
-                    :owner_coordinator_id)
+                    :owner_coordinator_id, :broker)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -799,6 +806,10 @@ impl Tx<'_> {
                     .and_then(|verification| serde_json::to_string(verification).ok()),
                 ":takeover_id": status.takeover_id,
                 ":owner_coordinator_id": status.owner_coordinator,
+                ":broker": status
+                    .broker
+                    .as_ref()
+                    .and_then(|broker| serde_json::to_string(broker).ok()),
             },
         )?;
         Ok(())
@@ -892,7 +903,7 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id";
+ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -952,6 +963,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.verification = json(41)?.and_then(|value| serde_json::from_value(value).ok());
     status.takeover_id = row.get(42)?;
     status.owner_coordinator = row.get(43)?;
+    status.broker = json(44)?.and_then(|value| serde_json::from_value(value).ok());
     Ok(status)
 }
 
@@ -1201,6 +1213,7 @@ mod tests {
                  DROP TABLE coordinator_bindings;
                  DROP TABLE coordinators;
                  ALTER TABLE workers DROP COLUMN owner_coordinator_id;
+                 ALTER TABLE workers DROP COLUMN broker;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1247,8 +1260,9 @@ mod tests {
                  DROP TABLE coordinator_bindings;
                  DROP TABLE coordinators;
                  ALTER TABLE workers DROP COLUMN owner_coordinator_id;
+                 ALTER TABLE workers DROP COLUMN broker;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 4
+                MIGRATIONS.len() - 5
             ))
             .unwrap();
         drop(store);
@@ -1364,6 +1378,7 @@ mod tests {
                 "herdr",
                 json!({"type": "started", "cwd": "/repo", "name": "task",
                 "workspace_id": "ws_1", "model": "opus", "pid": 4242,
+                "broker": {"pid": 4241, "socket": "/state/w1.sock", "cwd": "/link"},
                 "folder_slot": {"name": "worker", "branch": "b"}}),
             ),
             (

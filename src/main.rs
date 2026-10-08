@@ -546,6 +546,14 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Hidden: a headless worker's broker, started by the server. First, so
+    // it opens nothing before it forks its guard.
+    #[cfg(unix)]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(workers::broker::BROKER_ARG))
+    {
+        std::process::exit(workers::broker::serve_from_env());
+    }
     let raw_args: Vec<String> = match args_as_utf8(std::env::args_os()) {
         Ok(args) => args,
         Err(err) => {

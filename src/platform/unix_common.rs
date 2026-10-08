@@ -503,6 +503,127 @@ pub(crate) fn process_group_alive(leader_pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+pub(crate) fn start_new_session() -> std::io::Result<()> {
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The parent's end of a death guard ([`fork_death_guard`]).
+pub(crate) struct DeathGuard {
+    pid: libc::pid_t,
+    pipe: Option<std::os::fd::OwnedFd>,
+}
+
+/// Forks a guard that SIGKILLs one process group when this process dies,
+/// however it dies (SIGKILL included): it blocks reading a pipe whose only
+/// writer is this process, so the end of file is this process's death.
+/// The guard leads its own process group, so signalling this process's
+/// group does not end it first. It runs no Rust after the fork, only
+/// async-signal-safe calls, so forking from a threaded process is safe.
+pub(crate) fn fork_death_guard() -> std::io::Result<DeathGuard> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (read_end, write_end) = (fds[0], fds[1]);
+    // Not inherited by what this process starts later (the worker), or the
+    // pipe would not end with this process.
+    for fd in fds {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(read_end);
+            libc::close(write_end);
+        }
+        return Err(error);
+    }
+    if pid == 0 {
+        // SAFETY: the forked child calls only async-signal-safe functions
+        // and leaves through `_exit`.
+        unsafe { run_death_guard(read_end) }
+    }
+    unsafe { libc::close(read_end) };
+    Ok(DeathGuard {
+        pid,
+        pipe: Some(unsafe { OwnedFd::from_raw_fd(write_end) }),
+    })
+}
+
+/// The guard's body: reads the group to kill, then waits for either the
+/// disarming byte (leave it alone) or the end of file (kill it).
+unsafe fn run_death_guard(read_end: libc::c_int) -> ! {
+    libc::setpgid(0, 0);
+    for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+        libc::signal(signal, libc::SIG_IGN);
+    }
+    // Holds nothing of the parent's but stderr: a socket or pipe it kept
+    // open would outlive the parent.
+    for fd in 0..256 {
+        if fd != read_end && fd != libc::STDERR_FILENO {
+            libc::close(fd);
+        }
+    }
+    let mut group = [0_u8; 4];
+    let mut got = 0;
+    while got < group.len() {
+        let read = libc::read(
+            read_end,
+            group[got..].as_mut_ptr().cast(),
+            group.len() - got,
+        );
+        if read > 0 {
+            got += read as usize;
+        } else if read == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            libc::_exit(0);
+        }
+    }
+    let group = libc::pid_t::from_ne_bytes(group);
+    let mut byte = 0_u8;
+    loop {
+        let read = libc::read(read_end, (&mut byte as *mut u8).cast(), 1);
+        if read > 0 {
+            libc::_exit(0);
+        }
+        if read == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break;
+        }
+    }
+    if group > 1 {
+        libc::killpg(group, libc::SIGKILL);
+    }
+    libc::_exit(0)
+}
+
+impl DeathGuard {
+    /// Names the process group the guard kills.
+    pub(crate) fn arm(&mut self, group: u32) -> std::io::Result<()> {
+        use std::io::Write;
+
+        let Some(pipe) = &self.pipe else {
+            return Err(std::io::Error::other("the death guard is disarmed"));
+        };
+        std::fs::File::from(pipe.try_clone()?).write_all(&(group as libc::pid_t).to_ne_bytes())
+    }
+
+    /// Lets the group go (it ended on its own) and reaps the guard.
+    pub(crate) fn disarm(&mut self) {
+        use std::io::Write;
+
+        if let Some(pipe) = self.pipe.take() {
+            let _ = std::fs::File::from(pipe).write_all(b"d");
+            let mut status = 0;
+            unsafe { libc::waitpid(self.pid, &mut status, 0) };
+        }
+    }
+}
+
 pub(crate) fn hostname() -> Option<String> {
     let mut buffer = [0_u8; 256];
     let result =

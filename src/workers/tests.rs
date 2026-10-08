@@ -191,13 +191,30 @@ impl Fixture {
             std::process::id(),
             now_ms()
         ));
+        Self::at(root, None)
+    }
+
+    /// A fixture whose supervisor starts each worker through a broker (this
+    /// test binary as one). Its root is short: a socket's path has at most
+    /// 103 bytes.
+    fn with_broker() -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hb{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        Self::at(root, Some(broker::tests::test_launcher()))
+    }
+
+    fn at(root: PathBuf, broker: Option<broker::Launcher>) -> Self {
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let stub = root.join("claude-stub");
         std::fs::write(&stub, STUB).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let supervisor = WorkerSupervisor::open(root.join("workers"), stub);
+        let supervisor = WorkerSupervisor::open_with(root.join("workers"), stub, broker);
         Self {
             root,
             repo,
@@ -4348,4 +4365,228 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
         })
         .unwrap_err();
     assert_eq!(missing.code(), "worker_not_found");
+}
+
+/// Polls `done` until it holds: a process's end, which sends this test no
+/// event. The hang guard only fails a broken test.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !done() {
+        assert!(started.elapsed() < HANG_GUARD, "{what} hung");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `worker.wait` on another supervisor than the fixture's.
+fn wait_on(supervisor: &WorkerSupervisor, worker_id: &str, until: WorkerWaitUntil) -> WorkerInfo {
+    let started = Instant::now();
+    supervisor
+        .wait(worker_id, until, Duration::from_millis(100), || {
+            assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+            true
+        })
+        .unwrap()
+        .unwrap()
+}
+
+fn broker_of(supervisor: &WorkerSupervisor, worker_id: &str) -> BrokerRecord {
+    let number = worker_number(worker_id).unwrap();
+    lock(&supervisor.shared.registry).workers[&number]
+        .status
+        .broker
+        .clone()
+        .unwrap()
+}
+
+#[test]
+fn through_a_broker_a_turn_runs_and_the_workers_exit_ends_the_broker() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("finish");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    let pid = worker.pid.unwrap();
+    let broker = broker_of(&fixture.supervisor, &id);
+    assert_ne!(broker.pid, pid);
+    assert_eq!(
+        broker.socket,
+        fixture.root.join("workers").join(format!("{id}.sock"))
+    );
+    assert!(broker.socket.exists());
+    // The worker runs in its own process group, outside the broker's.
+    assert!(crate::platform::process_group_alive(pid));
+    assert!(crate::platform::process_group_alive(broker.pid));
+    // The broker's spec does not reach the worker.
+    let init = fixture
+        .journal(&id)
+        .into_iter()
+        .find(|record| record["dir"] == "out" && record["event"]["subtype"] == "init")
+        .unwrap();
+    assert_eq!(init["event"]["herdr_env"], serde_json::json!([]));
+    // Stored, so a later server finds the broker.
+    let store = store::Store::open(&fixture.root.join("workers").join(store::STORE_FILE)).unwrap();
+    assert_eq!(
+        store.load(&id).unwrap().unwrap().broker,
+        Some(broker.clone())
+    );
+
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.turns, 2);
+
+    fixture.supervisor.prompt(&id, "crash").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.exit_code, Some(3));
+    wait_until("the broker's end", || {
+        !crate::platform::process_group_alive(broker.pid)
+    });
+    assert!(!broker.socket.exists());
+    // Nothing went wrong, so its empty log is gone too.
+    assert!(!fixture
+        .root
+        .join("workers")
+        .join(format!("{id}.broker.log"))
+        .exists());
+}
+
+#[test]
+fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("block");
+    let (_, live, status) = fixture.supervisor.live(&id).unwrap();
+    let pid = status.pid.unwrap();
+    let broker = broker_of(&fixture.supervisor, &id);
+    // The server dies mid-turn: its side of the broker's socket goes away
+    // and its reader ends without recording anything.
+    live.sever();
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let number = worker_number(&id).unwrap();
+    {
+        let started = Instant::now();
+        let mut registry = lock(&next.shared.registry);
+        while registry.workers[&number].live.is_none() {
+            assert!(started.elapsed() < HANG_GUARD, "the re-attach hung");
+            registry = next
+                .shared
+                .changed
+                .wait_timeout(registry, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+    }
+    assert!(crate::platform::process_group_alive(pid));
+    assert!(crate::platform::process_group_alive(broker.pid));
+    let worker = next.status(&id).unwrap();
+    assert_eq!(worker.state, WorkerState::Working);
+
+    // The turn the gone server began ends through the new one.
+    next.interrupt(&WorkerInterruptParams {
+        worker_id: id.clone(),
+        turn: None,
+        command_id: None,
+    })
+    .unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Interrupted);
+    next.prompt(&id, "finish").unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.pid, Some(pid));
+    assert_eq!(fixture.herdr_events(&id, "reattached").len(), 1);
+    assert!(fixture.herdr_events(&id, "lost").is_empty());
+
+    next.stop(&id).unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.state, WorkerState::Exited);
+    wait_until("the broker's end", || {
+        !crate::platform::process_group_alive(broker.pid)
+    });
+    assert!(!broker.socket.exists());
+}
+
+/// Folds `events` into a new status as the store does, without one.
+fn folded(events: &[(Direction, Value)]) -> Status {
+    let mut status = Status::new("w1".into());
+    for (seq, (direction, event)) in (1..).zip(events) {
+        let before = status.before();
+        status.apply(*direction, event);
+        status.mark_seq(seq, 0, &before, *direction, &store::Recorded::Event(event));
+    }
+    status
+}
+
+#[test]
+fn a_reattach_after_a_lost_init_shows_the_turn_working() {
+    let started = (
+        Direction::Herdr,
+        json!({"type": "started", "cwd": "/repo", "pid": 4242,
+               "broker": {"pid": 4241, "socket": "/state/w1.sock", "cwd": "/repo"}}),
+    );
+    let prompt = (Direction::In, user_message("block"));
+    let reattached = (
+        Direction::Herdr,
+        json!({"type": "reattached", "broker_pid": 4241}),
+    );
+    let init = (
+        Direction::Out,
+        json!({"type": "system", "subtype": "init", "session_id": "s"}),
+    );
+
+    // The gone server took the CLI's `system/init` and stored nothing.
+    let status = folded(&[started.clone(), prompt.clone()]);
+    assert_eq!(status.state, WorkerState::Starting);
+    let status = folded(&[started.clone(), prompt.clone(), reattached.clone()]);
+    assert_eq!(status.state, WorkerState::Working);
+    // An init the broker still held comes after the re-attach and changes
+    // nothing.
+    let status = folded(&[started.clone(), prompt, reattached.clone(), init]);
+    assert_eq!(status.state, WorkerState::Working);
+    assert_eq!(status.session_id.as_deref(), Some("s"));
+
+    // Without a prompt sent, nothing tells the CLI is past its start.
+    let status = folded(&[started, reattached]);
+    assert_eq!(status.state, WorkerState::Starting);
+}
+
+#[test]
+fn killing_the_broker_ends_its_worker() {
+    let fixture = Fixture::with_broker();
+    // From then on the stub ignores SIGTERM and its closed input: only
+    // SIGKILL, the broker's guard's, ends it.
+    let id = fixture.start("ignore-term");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let pid = worker.pid.unwrap();
+    let broker = broker_of(&fixture.supervisor, &id);
+
+    assert!(crate::platform::signal_process_group(broker.pid, Signal::Kill).unwrap());
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.exit_code, None);
+    let exited = fixture.herdr_events(&id, "exited");
+    assert_eq!(
+        exited[0]["error"],
+        "the worker's broker ended before the worker's exit"
+    );
+    wait_until("the worker's end", || {
+        !crate::platform::process_group_alive(pid)
+    });
+}
+
+#[test]
+fn a_server_finds_a_broker_gone_and_marks_its_worker_lost() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let (_, live, status) = fixture.supervisor.live(&id).unwrap();
+    let pid = status.pid.unwrap();
+    let broker = broker_of(&fixture.supervisor, &id);
+    live.sever();
+    assert!(crate::platform::signal_process_group(broker.pid, Signal::Kill).unwrap());
+    wait_until("the worker's end", || {
+        !crate::platform::process_group_alive(pid)
+    });
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let worker = wait_on(&next, &id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(fixture.herdr_events(&id, "lost").len(), 1);
 }
