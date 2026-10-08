@@ -504,6 +504,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `worker.start` with a client key (step 3, findings 6, 7); journal write
   failures visible as `degraded`, lossy replay, numbers reserved (finding
   9); the doc's extra fault-injection cases (step 7).
+  Found 2026-10-08: a headless worker that finished its turn keeps its
+  process waiting for the next prompt, so the folder slot stays busy until
+  the coordinator runs `herdr worker stop` and `herdr worker wait --exit`;
+  the refusal should say so, or a finished worker in a slot should be
+  stopped once the coordinator has taken its commit.
 
 - [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
   next: "the wait that wakes the coordinator on a worker's question is
