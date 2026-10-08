@@ -8,7 +8,8 @@
 //! `exit1` (`result/success`, then exit code 1), `denials` (a result with
 //! `permission_denials`), `ask` (an `AskUserQuestion` request), `pair <tool>
 //! <words...>` (two requests at once, `perm-1` and `perm-2`), `cancel <tool>
-//! <words...>` (`perm-1`, cancelled, then `perm-2`), `ignore-term` (SIGTERM is
+//! <words...>` (`perm-1`, cancelled, then `perm-2`), `two <tool> <words...>`
+//! (classifier-escalated `perm-1`, its answer, then `perm-2`), `ignore-term` (SIGTERM is
 //! ignored from then on) and `orphan <fifo>` (a tool process in its own
 //! session that holds `<fifo>` open until it dies).
 #![cfg(unix)]
@@ -128,6 +129,18 @@ while True:
             response = read()["response"]
             behaviors[response["request_id"]] = response["response"]["behavior"]
         result(text=" ".join(f"{id}={behaviors[id]}" for id in ids))
+    elif command == "two":
+        rest = " ".join(words[2:])
+        behaviors = []
+        for request_id in ("perm-1", "perm-2"):
+            emit({"type": "control_request", "request_id": request_id, "request": {
+                "subtype": "can_use_tool", "tool_name": words[1],
+                "input": {"file_path": rest, "command": rest},
+                "decision_reason_type": "classifier"}})
+            response = read()["response"]
+            assert response["request_id"] == request_id, response
+            behaviors.append(response["response"]["behavior"])
+        result(text=" ".join(behaviors))
     elif command == "ask":
         response = ask_host("AskUserQuestion", {"questions": [
             {"question": "Which file?", "header": "File", "multiSelect": False,
@@ -240,6 +253,34 @@ impl Fixture {
                 .unwrap()
                 .0;
         }
+    }
+
+    /// `worker.wait --attention --after`, with the liveness re-check as long
+    /// as the hang guard, so a missed wake fails the test. `on_block` runs
+    /// at the first point the wait would block (its first liveness check),
+    /// in the window between its check and its block. Returns the attention
+    /// and how many times the wait got that far.
+    fn attention(
+        &self,
+        worker_id: &str,
+        after: Option<i64>,
+        mut on_block: impl FnMut(),
+    ) -> (Attention, usize) {
+        let started = Instant::now();
+        let mut blocked = 0;
+        let attention = self
+            .supervisor
+            .wait_attention(worker_id, after, HANG_GUARD, || {
+                assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+                blocked += 1;
+                if blocked == 1 {
+                    on_block();
+                }
+                true
+            })
+            .unwrap()
+            .unwrap();
+        (attention, blocked)
     }
 
     fn wait_for_question(&self, worker_id: &str) -> WorkerInfo {
@@ -702,7 +743,13 @@ fn a_prompt_during_a_turn_is_refused() {
 fn an_interrupt_ends_the_turn_as_interrupted() {
     let fixture = Fixture::new("interrupt");
     let id = fixture.start("block");
-    fixture.supervisor.interrupt(&id).unwrap();
+    fixture
+        .supervisor
+        .interrupt(&WorkerInterruptParams {
+            worker_id: id.clone(),
+            turn: None,
+        })
+        .unwrap();
 
     let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
     assert_eq!(worker.state, WorkerState::Interrupted);
@@ -1989,4 +2036,201 @@ fn seq_increases_across_workers_in_the_store_and_the_journals() {
     for worker_id in [&first, &second] {
         fixture.supervisor.kill(worker_id, false).unwrap();
     }
+}
+
+fn request_ids(questions: &[WorkerQuestion]) -> Vec<&str> {
+    questions
+        .iter()
+        .map(|question| question.request_id.as_str())
+        .collect()
+}
+
+#[test]
+fn an_attention_wait_returns_a_question_pending_before_it_at_once() {
+    let fixture = Fixture::new("attention-pending");
+    let id = fixture.start("classifier Bash git push origin master");
+    let worker = fixture.wait_for_question(&id);
+    let (attention, blocked) = fixture.attention(&id, None, || {});
+    assert_eq!(blocked, 0);
+    assert_eq!(attention.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&attention.questions), ["perm-1"]);
+    assert_eq!(attention.worker.state, WorkerState::WaitingApproval);
+    assert_eq!(Some(attention.seq), worker.seq);
+    // Level-triggered: asked again without `after`, the same answer.
+    let (again, blocked) = fixture.attention(&id, None, || {});
+    assert_eq!(
+        (again.reason, blocked),
+        (WorkerAttentionReason::Question, 0)
+    );
+}
+
+#[test]
+fn an_attention_wait_wakes_on_new_events_and_skips_what_after_has_seen() {
+    let fixture = Fixture::new("attention-after");
+    let id = fixture.start("finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
+
+    // The ended turn was seen: the wait blocks, and the question the next
+    // prompt brings wakes it.
+    let (asked, blocked) = fixture.attention(&id, Some(ended.seq), || {
+        fixture
+            .supervisor
+            .prompt(&id, "two Bash git push origin master")
+            .unwrap();
+    });
+    assert!(blocked >= 1);
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&asked.questions), ["perm-1"]);
+    assert!(asked.seq > ended.seq);
+
+    // After its seq the same question does not return; answering it brings
+    // the next one.
+    let (next, blocked) = fixture.attention(&id, Some(asked.seq), || {
+        fixture
+            .answer_request(&id, "perm-1", WorkerDecision::Allow)
+            .unwrap();
+    });
+    assert!(blocked >= 1);
+    assert_eq!(next.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&next.questions), ["perm-2"]);
+
+    // The turn's end wakes it.
+    let (turn_end, blocked) = fixture.attention(&id, Some(next.seq), || {
+        fixture
+            .answer_request(&id, "perm-2", WorkerDecision::Deny)
+            .unwrap();
+    });
+    assert!(blocked >= 1);
+    assert_eq!(turn_end.reason, WorkerAttentionReason::TurnEnd);
+    assert!(turn_end.questions.is_empty());
+    assert_eq!(
+        turn_end.worker.last_result.unwrap().text.as_deref(),
+        Some("allow deny")
+    );
+
+    // A request id the CLI uses again is a new question.
+    fixture
+        .supervisor
+        .prompt(&id, "classifier Bash git push origin master")
+        .unwrap();
+    let (reused, _) = fixture.attention(&id, Some(turn_end.seq), || {});
+    assert_eq!(reused.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&reused.questions), ["perm-1"]);
+
+    // The exit wakes it, and a gone worker answers at once whatever `after`
+    // says: nothing can follow.
+    let (gone, blocked) = fixture.attention(&id, Some(reused.seq), || {
+        fixture.supervisor.stop(&id).unwrap();
+    });
+    assert!(blocked >= 1);
+    assert_eq!(gone.reason, WorkerAttentionReason::Gone);
+    assert!(gone.questions.is_empty());
+    let (still_gone, blocked) = fixture.attention(&id, Some(gone.seq), || {});
+    assert_eq!(
+        (still_gone.reason, still_gone.seq, blocked),
+        (WorkerAttentionReason::Gone, gone.seq, 0)
+    );
+}
+
+#[test]
+fn an_event_committed_between_the_check_and_the_block_is_not_missed() {
+    let fixture = Fixture::new("attention-gap");
+    let id = fixture.start("block");
+    // The stub is quiet once its tool runs: no other event can wake the
+    // wait.
+    fixture.wait_for(&id, |_| {
+        fixture
+            .journal(&id)
+            .iter()
+            .any(|record| record["event"]["type"] == "assistant")
+    });
+    let number = worker_number(&id).unwrap();
+    let (attention, blocked) = fixture.attention(&id, None, || {
+        let question = question_from_request(
+            "gap-1",
+            &serde_json::json!({"tool_name": "Bash", "input": {"command": "ls"}}),
+            "asked",
+        );
+        fixture.supervisor.record(
+            number,
+            Direction::Herdr,
+            &serde_json::json!({"type": "question", "question": question, "input": {}}),
+        );
+    });
+    // Seen at once after the gap, not after the liveness re-check (as long
+    // as the hang guard).
+    assert_eq!(blocked, 1);
+    assert_eq!(attention.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&attention.questions), ["gap-1"]);
+}
+
+#[test]
+fn a_prompt_returns_its_seq_and_an_interrupt_of_an_ended_turn_is_refused() {
+    let fixture = Fixture::new("interrupt-turn");
+    let started = fixture
+        .supervisor
+        .start(&start_params(&fixture.repo, "block", None))
+        .unwrap();
+    let id = started.worker_id;
+    let first = started.turn_seq.unwrap();
+    let interrupt = |turn: Option<i64>| {
+        fixture.supervisor.interrupt(&WorkerInterruptParams {
+            worker_id: id.clone(),
+            turn,
+        })
+    };
+    assert_eq!(interrupt(Some(first)).unwrap().turn_seq, Some(first));
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Interrupted);
+    assert_eq!(worker.turn_seq, Some(first));
+
+    // A repeat after the turn ended sends nothing.
+    let repeated = interrupt(Some(first)).unwrap_err();
+    assert_eq!(repeated.code(), "worker_turn_ended");
+
+    // Nor does it reach the next turn.
+    let second = fixture
+        .supervisor
+        .prompt(&id, "block")
+        .unwrap()
+        .turn_seq
+        .unwrap();
+    assert!(second > first);
+    assert_eq!(
+        interrupt(Some(first)).unwrap_err().code(),
+        "worker_turn_ended"
+    );
+    assert_eq!(
+        interrupt(Some(second + 1000)).unwrap_err().code(),
+        "invalid_request"
+    );
+    let user_seqs: Vec<i64> = fixture
+        .journal(&id)
+        .iter()
+        .filter(|record| record["dir"] == "in" && record["event"]["type"] == "user")
+        .map(|record| record["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(user_seqs, [first, second]);
+    let interrupts = |fixture: &Fixture| {
+        fixture
+            .journal(&id)
+            .iter()
+            .filter(|record| {
+                record["dir"] == "in" && record["event"]["request"]["subtype"] == "interrupt"
+            })
+            .count()
+    };
+    assert_eq!(interrupts(&fixture), 1);
+    assert_eq!(
+        fixture.supervisor.status(&id).unwrap().state,
+        WorkerState::Working
+    );
+
+    assert_eq!(interrupt(Some(second)).unwrap().turn_seq, Some(second));
+    assert_eq!(
+        fixture.wait(&id, WorkerWaitUntil::TurnEnd).state,
+        WorkerState::Interrupted
+    );
+    assert_eq!(interrupts(&fixture), 2);
 }

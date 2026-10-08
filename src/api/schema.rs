@@ -76,7 +76,7 @@ pub enum Method {
     #[serde(rename = "worker.prompt")]
     WorkerPrompt(WorkerPromptParams),
     #[serde(rename = "worker.interrupt")]
-    WorkerInterrupt(WorkerTarget),
+    WorkerInterrupt(WorkerInterruptParams),
     #[serde(rename = "worker.stop")]
     WorkerStop(WorkerTarget),
     #[serde(rename = "worker.kill")]
