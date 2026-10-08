@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 use super::workers::{WorkerDecision, WorkerQuestion, WorkerVerification};
 
 /// Drives one TODO item from preflight to a cherry-pick onto the
-/// repository's `master`: a persisted, resumable run that starts a headless
-/// worker in the repository's folder slot, turns what needs the coordinator
-/// (a question outside the worker policy, the turn's end, a failed verify)
-/// into run events, and verifies the worker's commit with a registered
-/// check before picking it.
+/// repository's `master` and on through the registered install, the TODO
+/// update, a fast-forward push to `origin` and the cleanup of its merged
+/// branches: a persisted, resumable run that starts a headless worker in the
+/// repository's folder slot, turns what needs the coordinator (a question
+/// outside the worker policy, the turn's end, a failed verify, install, TODO
+/// edit or push) into run events, and verifies the worker's commit with a
+/// registered check before picking it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoRunParams {
     /// A directory in the repository (the CLI sends its working directory).
@@ -73,6 +75,17 @@ pub struct TodoResumeParams {
     /// then `unavailable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// With `approve`: lines the run appends to the item in `TODO.md` after
+    /// the install (`scripts/todo_edit.py append-to`), committed by path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// With `approve`: the decision that closes the item. The run removes
+    /// the item from `TODO.md` and adds the decision to `DECISIONS.md` as a
+    /// section (its first line, when it starts with `#`, is the section's
+    /// title; otherwise the item's title is), committed by path. Excludes
+    /// `note`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -107,6 +120,19 @@ pub enum TodoAction {
     Verify,
     /// SIGKILL the worker that is still alive after its stop.
     ForceStop,
+    /// Run the registered install again (after `install_failed`).
+    RetryInstall,
+    /// Go on without the install (after `install_failed`).
+    SkipInstall,
+    /// Edit and commit the TODO again (after `todo_failed`).
+    RetryTodo,
+    /// Go on without the TODO edit (after `todo_failed`).
+    SkipTodo,
+    /// Push again (after `push_failed`), still only as a fast-forward.
+    RetryPush,
+    /// End the run as blocked where it stands (after a failed install,
+    /// TODO edit or push); the commit stays on `master`.
+    Abort,
     #[serde(other)]
     Unknown,
 }
@@ -124,6 +150,15 @@ pub enum TodoStep {
     /// Stops the attempt's worker before the next attempt starts.
     Restart,
     CherryPick,
+    /// Runs the repository's registered install command.
+    Install,
+    /// Appends the coordinator's note to the item, or closes it into
+    /// `DECISIONS.md`, and commits that by path.
+    Todo,
+    /// Pushes `master` to `origin`, only as a fast-forward.
+    Push,
+    /// Deletes the run's branches that are fully merged.
+    Cleanup,
     Done,
     #[serde(other)]
     Unknown,
@@ -139,7 +174,8 @@ pub enum TodoRunStatus {
     /// It stopped and needs a person: a refused preflight, a conflict, the
     /// attempts used up. Nothing more happens.
     Blocked,
-    /// The commit is on `master`.
+    /// The commit is on `master`, installed, recorded and pushed (each as
+    /// far as registered and approved), and the merged branches are gone.
     Done,
     #[serde(other)]
     Unknown,
@@ -160,6 +196,14 @@ pub enum TodoEventKind {
     /// stop (it ignores SIGTERM): force-stop it. The run goes on by itself
     /// when the worker exits first.
     StillAlive,
+    /// The registered install failed or could not run: retry it, skip it
+    /// or abort.
+    InstallFailed,
+    /// The TODO edit or its commit failed: retry it, skip it or abort.
+    TodoFailed,
+    /// `master` could not be pushed as a fast-forward (or the push failed):
+    /// retry it or abort. Never forced.
+    PushFailed,
     Blocked,
     Done,
     #[serde(other)]
@@ -202,6 +246,21 @@ pub struct TodoRunInfo {
     /// The commit the cherry-pick made on `master`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<String>,
+    /// The build the install reported (the registered `build_id` command's
+    /// first line), or `installed` when none is registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_build: Option<String>,
+    /// The commit of the TODO update on `master`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_commit: Option<String>,
+    /// The `master` commit `origin` has after the push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed: Option<String>,
+    /// Merged branches of the run the cleanup kept because a worktree has
+    /// them checked out (the folder slot); a later run's cleanup deletes
+    /// them once the slot moved on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_branches: Vec<String>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -229,7 +288,9 @@ pub struct TodoRunEvent {
     /// With `verify_failed`: the verdict and each check's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<WorkerVerification>,
-    /// With `blocked`: why; with `still_alive`: what is still running.
+    /// With `blocked`: why; with `still_alive`: what is still running;
+    /// with `install_failed`, `todo_failed` and `push_failed`: what failed,
+    /// with the output's last lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub ts_ms: u64,

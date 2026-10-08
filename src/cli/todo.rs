@@ -1,6 +1,7 @@
-//! `herdr todo`: drives a TODO item from preflight to a cherry-pick onto
-//! `master` (`todo.run`), and lets the coordinator wait on and answer the
-//! run's events.
+//! `herdr todo`: drives a TODO item from preflight through the cherry-pick
+//! onto `master`, the install, the TODO update, the push and the cleanup
+//! (`todo.run`), and lets the coordinator wait on and answer the run's
+//! events.
 
 use crate::api::schema::{
     Method, Request, TodoAction, TodoResumeParams, TodoRunParams, TodoRunTarget, TodoRunsParams,
@@ -27,17 +28,28 @@ const USAGE: &str = "usage:
       event with its event_id, the actions it takes and its evidence
       (questions, diff stat, commits, the verify).
   herdr todo resume <run-id> --event EVENT_ID
-                    --action approve|retry|answer|verify|force-stop
-                    [--task FILE] [--request REQUEST_ID] [--message TEXT]
+                    --action approve|retry|answer|verify|force-stop|
+                             retry-install|skip-install|retry-todo|skip-todo|
+                             retry-push|abort
+                    [--task FILE] [--note FILE | --close FILE]
+                    [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
-      approve stops the worker, verifies its commit with the checks and
-      cherry-picks it onto master; retry starts the next attempt with FILE's
-      text (at most 3 attempts, then the run is blocked); answer sends the
-      worker allow, deny or one choice per question; verify runs the verify
-      again; force-stop SIGKILLs a worker still alive after its stop. Every
-      resume sends this shell's environment again, which the checks run
-      with (the server never stores it); without it a check is unavailable.
+      approve stops the worker, verifies its commit with the checks,
+      cherry-picks it onto master, runs the [install] of .herdr/checks.toml,
+      appends --note FILE's lines to the item in TODO.md (or, with --close
+      FILE, removes the item and adds FILE as a section of DECISIONS.md)
+      with scripts/todo_edit.py and commits that by path, pushes master to
+      origin only as a fast-forward, and deletes the run's merged branches;
+      retry starts the next attempt with FILE's text (at most 3 attempts,
+      then the run is blocked); answer sends the worker allow, deny or one
+      choice per question; verify runs the verify again; force-stop SIGKILLs
+      a worker still alive after its stop. After install_failed, todo_failed
+      or push_failed: retry-install, skip-install, retry-todo, skip-todo,
+      retry-push, or abort (the run ends blocked, the commit stays on
+      master). Every resume sends this shell's environment again, which the
+      checks, the install and the push run with (the server never stores
+      it); without it a check is unavailable and an install or push fails.
   herdr todo status <run-id>
       Prints the run. Asked while its worker has not exited since the stop,
       it raises a still_alive event first, which takes force-stop.
@@ -63,9 +75,14 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn read_task(path: &str) -> Result<String, String> {
-    let text = std::fs::read_to_string(path).map_err(|error| format!("--task {path}: {error}"))?;
+    read_text("--task", path)
+}
+
+fn read_text(option: &str, path: &str) -> Result<String, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{option} {path}: {error}"))?;
     if text.trim().is_empty() {
-        return Err(format!("--task {path} is empty"));
+        return Err(format!("{option} {path} is empty"));
     }
     Ok(text)
 }
@@ -164,6 +181,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (task, rest) = take_string_option(&rest, "--task")?;
             let (request_id, rest) = take_string_option(&rest, "--request")?;
             let (message, rest) = take_string_option(&rest, "--message")?;
+            let (note, rest) = take_string_option(&rest, "--note")?;
+            let (close, rest) = take_string_option(&rest, "--close")?;
             let event = event
                 .ok_or("resume takes --event EVENT_ID, the event it answers")?
                 .parse::<i64>()
@@ -174,10 +193,17 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 Some("answer") => TodoAction::Answer,
                 Some("verify") => TodoAction::Verify,
                 Some("force-stop") => TodoAction::ForceStop,
+                Some("retry-install") => TodoAction::RetryInstall,
+                Some("skip-install") => TodoAction::SkipInstall,
+                Some("retry-todo") => TodoAction::RetryTodo,
+                Some("skip-todo") => TodoAction::SkipTodo,
+                Some("retry-push") => TodoAction::RetryPush,
+                Some("abort") => TodoAction::Abort,
                 _ => {
-                    return Err(
-                        "resume takes --action approve, retry, answer, verify or force-stop".into(),
-                    )
+                    return Err("resume takes --action approve, retry, answer, verify, \
+                         force-stop, retry-install, skip-install, retry-todo, skip-todo, \
+                         retry-push or abort"
+                        .into())
                 }
             };
             let Some((run_id, answer)) = rest.split_first() else {
@@ -189,6 +215,14 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if action != TodoAction::Retry && task.is_some() {
                 return Err("only --action retry takes --task".into());
             }
+            if action != TodoAction::Approve && (note.is_some() || close.is_some()) {
+                return Err("only --action approve takes --note or --close".into());
+            }
+            if note.is_some() && close.is_some() {
+                return Err("--note and --close exclude each other".into());
+            }
+            let note = note.map(|path| read_text("--note", &path)).transpose()?;
+            let close = close.map(|path| read_text("--close", &path)).transpose()?;
             let task = task.map(|path| read_task(&path)).transpose()?;
             if action == TodoAction::Retry && task.is_none() {
                 return Err("--action retry needs --task FILE, the next attempt's task".into());
@@ -211,6 +245,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 answers,
                 message,
                 env: super::worker::caller_env(),
+                note,
+                close,
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {
@@ -308,6 +344,45 @@ mod tests {
             panic!("force-stop did not parse");
         };
         assert_eq!(params.action, TodoAction::ForceStop);
+        let Ok(Some(Method::TodoResume(params))) = parse(&args(&[
+            "resume",
+            "r-abcd2345",
+            "--event",
+            "9",
+            "--action",
+            "retry-install",
+        ])) else {
+            panic!("retry-install did not parse");
+        };
+        assert_eq!(params.action, TodoAction::RetryInstall);
+        let dir = std::env::temp_dir().join(format!("herdr-cli-todo-note-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("note.md");
+        std::fs::write(&note, "Done by w1.\n").unwrap();
+        let note = note.display().to_string();
+        let Ok(Some(Method::TodoResume(params))) = parse(&args(&[
+            "resume",
+            "r-abcd2345",
+            "--event",
+            "9",
+            "--action",
+            "approve",
+            "--note",
+            &note,
+        ])) else {
+            panic!("approve --note did not parse");
+        };
+        assert_eq!(params.note.as_deref(), Some("Done by w1.\n"));
+        assert_eq!(params.close, None);
+        for bad in [
+            &["--action", "approve", "--note", &note, "--close", &note][..],
+            &["--action", "abort", "--note", &note][..],
+        ] {
+            let mut words = vec!["resume", "r-abcd2345", "--event", "9"];
+            words.extend_from_slice(bad);
+            assert!(parse(&args(&words)).is_err(), "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
         assert!(parse(&args(&["resume", "r-abcd2345", "--action", "approve"])).is_err());
         assert!(parse(&args(&[
             "resume",

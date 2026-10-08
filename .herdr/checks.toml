@@ -1,4 +1,5 @@
-# Checks `herdr todo run --check NAME...` may run to verify a worker's commit:
+# Checks `herdr todo run --check NAME...` may run to verify a worker's commit
+# (and the command that installs master after the cherry-pick):
 # each name maps to a program and its arguments, run as they are in the
 # worker's folder (no shell, so nothing is expanded or split). The driver
 # reads this file from the shared checkout at preflight and keeps the argv
@@ -16,3 +17,13 @@ windows-lint = ["python3", "scripts/windows_cross.py", "lint"]
 [preflight]
 # The free disk below which preflight refuses a run (`just guard`'s limit).
 min_free_gib = 15
+
+[install]
+# After the cherry-pick, `herdr todo run` installs master with this argv, in
+# the shared checkout with the coordinator's environment: `just check`, the
+# release build and the live install in the clean tree, under one lock (the
+# path is one `clean-tree` applies; it needs one). `build_id` prints the
+# installed build: its first word is master's commit for a clean build, which
+# lets a run cut off after its install see that it is done.
+command = ["just", "clean-install", "TODO.md"]
+build_id = ["herdr", "--build-commit"]

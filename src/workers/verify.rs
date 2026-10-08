@@ -591,7 +591,7 @@ fn environment_failure(output: &str) -> Option<&str> {
     })
 }
 
-fn tail(output: &str) -> String {
+pub(super) fn tail(output: &str) -> String {
     let lines: Vec<&str> = output.trim_end().lines().collect();
     let text = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
     let chars = text.chars().count();

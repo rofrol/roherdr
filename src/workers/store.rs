@@ -16,7 +16,7 @@ use std::time::Duration;
 use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use super::runs::{Run, RunCheck};
+use super::runs::{Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult};
 
@@ -295,6 +295,14 @@ CREATE TABLE runs (
 -- is the claim.
 CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
     WHERE status IN ('running', 'waiting');
+"#,
+    r#"
+-- What a run does after the cherry-pick, as a JSON object: the registered
+-- install as preflight read it, the coordinator's TODO note or closing
+-- decision, and the results (the installed build, the TODO commit, the
+-- pushed commit, the merged branches kept while checked out). NULL for runs
+-- from before these steps.
+ALTER TABLE runs ADD COLUMN finish TEXT;
 "#,
 ];
 
@@ -1047,7 +1055,7 @@ impl Store {
 
 const RUN_COLUMNS: &str = "id, repo, item, step, status, attempt, base, worker_id, branch, task, \
 message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq, pending_event, \
-error, picked, created_ms, updated_ms";
+error, picked, created_ms, updated_ms, finish";
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
     let list = |index: usize| -> StoreResult<Vec<String>> {
@@ -1064,6 +1072,10 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             argv: serde_json::from_str(&check_argv).unwrap_or_default(),
         }]
     });
+    let finish: RunFinish = row
+        .get::<_, Option<String>>(22)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
     Ok(Run {
         info: TodoRunInfo {
             run_id: row.get(0)?,
@@ -1085,8 +1097,13 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             picked: row.get(19)?,
             created_ms: row.get::<_, i64>(20)? as u64,
             updated_ms: row.get::<_, i64>(21)? as u64,
+            installed_build: finish.installed_build.clone(),
+            todo_commit: finish.todo_commit.clone(),
+            pushed: finish.pushed.clone(),
+            kept_branches: finish.kept_branches.clone(),
         },
         checks,
+        finish,
         owner_pane: row.get(14)?,
         owner_session: row.get(15)?,
     })
@@ -1118,7 +1135,8 @@ impl Tx<'_> {
             // of the repository instead of letting the index refuse this one.
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
-                 ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22) \
+                 ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
+                 ?23) \
                  ON CONFLICT (id) DO UPDATE SET {}",
                 RUN_COLUMNS
                     .split(", ")
@@ -1150,6 +1168,7 @@ impl Tx<'_> {
                 info.picked,
                 info.created_ms as i64,
                 info.updated_ms as i64,
+                serde_json::to_string(&run.finish_with_results()).ok(),
             ],
         )?;
         Ok(seq)
@@ -1227,6 +1246,17 @@ impl Store {
             )
             .optional()?;
         Ok(row.map(|(seq, body)| (seq, serde_json::from_str(&body).unwrap_or(Value::Null))))
+    }
+
+    /// Every event of a run of `kind`, oldest first, as its body.
+    #[cfg(all(test, unix))]
+    pub(super) fn run_events_of(&self, run_id: &str, kind: &str) -> StoreResult<Vec<Value>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn
+            .prepare("SELECT body FROM events WHERE worker_id = ?1 AND type = ?2 ORDER BY seq")?;
+        let rows = statement.query_map([run_id, kind], |row| row.get::<_, String>(0))?;
+        rows.map(|body| Ok(serde_json::from_str(&body?).unwrap_or(Value::Null)))
+            .collect()
     }
 
     /// Every event of a run, oldest first, as `(seq, type)`.
@@ -1614,7 +1644,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 7
+                MIGRATIONS.len() - 8
             ))
             .unwrap();
         drop(store);
