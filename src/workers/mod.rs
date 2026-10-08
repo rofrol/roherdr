@@ -43,9 +43,9 @@ use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::api::schema::{
-    WorkerAnswerParams, WorkerChoiceQuestion, WorkerDecision, WorkerInfo, WorkerKillReport,
-    WorkerQuestion, WorkerQuestionKind, WorkerStartParams, WorkerState, WorkerTurnResult,
-    WorkerWaitUntil,
+    WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
+    WorkerInterruptParams, WorkerKillReport, WorkerQuestion, WorkerQuestionKind, WorkerStartParams,
+    WorkerState, WorkerTurnResult, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -212,6 +212,8 @@ pub(crate) enum WorkerError {
     /// A kill of an exited or lost worker without `force`; the message says
     /// what it would signal.
     NeedsForce(String),
+    /// An interrupt named a turn that has already ended.
+    TurnEnded(String),
     Unsupported(String),
     Io(std::io::Error),
 }
@@ -226,6 +228,7 @@ impl WorkerError {
             Self::NoQuestion(_) => "worker_no_question",
             Self::QuestionGone(_) => "worker_question_gone",
             Self::NeedsForce(_) => "worker_needs_force",
+            Self::TurnEnded(_) => "worker_turn_ended",
             Self::Unsupported(_) => "worker_unsupported",
             Self::Io(_) => "worker_io_error",
         }
@@ -242,6 +245,7 @@ impl std::fmt::Display for WorkerError {
             | Self::NoQuestion(message)
             | Self::QuestionGone(message)
             | Self::NeedsForce(message)
+            | Self::TurnEnded(message)
             | Self::Unsupported(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -339,8 +343,18 @@ struct Status {
     end_note: Option<String>,
     /// The folder slot it runs in, if any.
     slot: Option<String>,
-    /// The `seq` of the last event the store recorded for it.
+    /// The `seq` of its latest event: the store's, or, after a store write
+    /// failed, one counted on in this server's memory, so waits still see
+    /// each event as new ([`WorkerSupervisor::commit_locked`]).
     last_seq: i64,
+    /// The `seq` of the user message that began the current or last turn.
+    turn_seq: Option<i64>,
+    /// The `seq` of the event that last ended a turn (a `result`, the exit,
+    /// `lost`); meaningful while [`Status::turn_ended`].
+    turn_end_seq: i64,
+    /// The `seq` of the event that made the worker gone; meaningful while
+    /// [`Status::is_gone`].
+    gone_seq: i64,
     /// Why the worker's record is incomplete: a store or journal write
     /// failed. Not an event: it lives only in this server's memory.
     degraded: Option<String>,
@@ -354,6 +368,16 @@ const RESOLVED_QUESTIONS_KEPT: usize = 32;
 struct Pending {
     question: WorkerQuestion,
     input: Value,
+    /// The `seq` of the event that asked it.
+    asked_seq: i64,
+}
+
+/// What an event's `seq` marks, taken before the event is folded in
+/// ([`Status::before`], [`Status::mark_seq`]).
+struct Before {
+    pending: Vec<String>,
+    turn_ended: bool,
+    gone: (bool, bool),
 }
 
 impl Status {
@@ -386,6 +410,9 @@ impl Status {
             end_note: None,
             slot: None,
             last_seq: 0,
+            turn_seq: None,
+            turn_end_seq: 0,
+            gone_seq: 0,
             degraded: None,
         }
     }
@@ -435,6 +462,66 @@ impl Status {
             .iter()
             .map(|pending| pending.question.request_id.clone())
             .collect()
+    }
+
+    fn before(&self) -> Before {
+        Before {
+            pending: self.pending_ids(),
+            turn_ended: self.turn_ended(),
+            gone: (self.exited, self.lost),
+        }
+    }
+
+    /// Marks what the event just folded in, which got `seq`, changed: the
+    /// questions it asked, the turn it began, ended or the end it brought.
+    fn mark_seq(
+        &mut self,
+        seq: i64,
+        before: &Before,
+        direction: Direction,
+        record: &store::Recorded<'_>,
+    ) {
+        self.last_seq = seq;
+        for pending in &mut self.questions {
+            if !before.pending.contains(&pending.question.request_id) {
+                pending.asked_seq = seq;
+            }
+        }
+        let kind = match record {
+            store::Recorded::Event(event) => event.get("type").and_then(Value::as_str),
+            store::Recorded::Raw(_) => None,
+        };
+        if (direction, kind) == (Direction::In, Some("user")) && !self.is_gone() {
+            self.turn_seq = Some(seq);
+        }
+        let result = (direction, kind) == (Direction::Out, Some("result"));
+        if self.turn_ended() && (!before.turn_ended || result) {
+            self.turn_end_seq = seq;
+        }
+        if self.is_gone() && (self.exited, self.lost) != before.gone {
+            self.gone_seq = seq;
+        }
+    }
+
+    /// Why a waiter that has seen everything up to `after` should look at
+    /// the worker now, if it should: a pending question asked after it, a
+    /// turn ended after it, or the worker's end, which counts however old,
+    /// since nothing can follow it.
+    fn attention(&self, after: Option<i64>) -> Option<WorkerAttentionReason> {
+        let after = after.unwrap_or(i64::MIN);
+        if self.is_gone() {
+            Some(WorkerAttentionReason::Gone)
+        } else if self
+            .questions
+            .iter()
+            .any(|pending| pending.asked_seq > after)
+        {
+            Some(WorkerAttentionReason::Question)
+        } else if self.turn_ended() && self.turn_end_seq > after {
+            Some(WorkerAttentionReason::TurnEnd)
+        } else {
+            None
+        }
     }
 
     /// A takeover claimed by a server that is gone without recording its
@@ -538,6 +625,7 @@ impl Status {
                     self.questions.push(Pending {
                         question,
                         input: event.get("input").cloned().unwrap_or_else(|| json!({})),
+                        asked_seq: 0,
                     });
                 }
             }
@@ -696,6 +784,8 @@ impl Status {
             end_note: self.end_note.clone(),
             degraded: self.degraded.clone(),
             journal_path: journal_path.display().to_string(),
+            seq: Some(self.last_seq),
+            turn_seq: self.turn_seq,
         }
     }
 }
@@ -770,6 +860,8 @@ impl Journal {
 
 /// One line of a JSONL journal.
 struct JournalLine {
+    /// The `seq` the store gave the record, when it was exported with one.
+    seq: Option<i64>,
     ts_ms: u64,
     direction: Direction,
     /// The event, or the line the CLI wrote that was not JSON.
@@ -795,6 +887,7 @@ fn read_journal(path: &Path) -> std::io::Result<Vec<JournalLine>> {
             (None, None) => continue,
         };
         lines.push(JournalLine {
+            seq: record["seq"].as_i64(),
             ts_ms: record["ts_ms"].as_u64().unwrap_or(0),
             direction,
             record: record_value,
@@ -803,13 +896,24 @@ fn read_journal(path: &Path) -> std::io::Result<Vec<JournalLine>> {
     Ok(lines)
 }
 
-/// Folds a journal into a state in memory, without the store.
+/// Folds a journal into a state in memory, without the store. A record
+/// exported without a `seq` counts on from the one before it.
 fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
     let mut status = Status::new(worker_id.to_owned());
     for line in read_journal(path)? {
-        if let Ok(event) = &line.record {
-            status.apply(line.direction, event);
-        }
+        let before = status.before();
+        let record = match &line.record {
+            Ok(event) => {
+                status.apply(line.direction, event);
+                store::Recorded::Event(event)
+            }
+            Err(raw) => store::Recorded::Raw(raw),
+        };
+        let seq = line
+            .seq
+            .filter(|seq| *seq > status.last_seq)
+            .unwrap_or(status.last_seq + 1);
+        status.mark_seq(seq, &before, line.direction, &record);
     }
     status.mark_unfinished_takeover();
     Ok(status)
@@ -826,7 +930,7 @@ fn import_journal(store: &store::Store, worker_id: &str, path: &Path) -> Result<
         .transaction(|tx| {
             let mut seq = 0;
             for line in &lines {
-                let before = status.pending_ids();
+                let before = status.before();
                 let record = match &line.record {
                     Ok(event) => {
                         status.apply(line.direction, event);
@@ -840,9 +944,9 @@ fn import_journal(store: &store::Store, worker_id: &str, path: &Path) -> Result<
                     record: &record,
                     ts_ms: line.ts_ms,
                 })?;
-                tx.questions(seq, &before, &status)?;
+                tx.questions(seq, &before.pending, &status)?;
+                status.mark_seq(seq, &before, line.direction, &record);
             }
-            status.last_seq = seq;
             tx.worker(&status, seq)
         })
         .map_err(|error| error.to_string())?;
@@ -910,21 +1014,59 @@ struct Live {
 }
 
 impl Live {
-    /// Writes one line to the CLI and records it, in that order under one
-    /// lock, so the recorded order of inputs is the order the CLI saw.
-    fn send(&self, supervisor: &WorkerSupervisor, event: &Value) -> Result<(), WorkerError> {
+    fn send(&self, supervisor: &WorkerSupervisor, event: &Value) -> Result<i64, WorkerError> {
+        self.send_checked(supervisor, event, |_| Ok(()))
+    }
+
+    /// Records one line for the CLI, then writes it, both under the input
+    /// lock, so the recorded order of inputs is the order the CLI saw and
+    /// the line is folded in before anything the CLI answers it with (a
+    /// fast `result` folded first would be undone by its own prompt).
+    /// `check` runs on the worker's status under the registry lock, in the
+    /// same hold as the record, so two senders cannot both pass it; when it
+    /// refuses, nothing is recorded or sent. A failed write is recorded as
+    /// `input_failed` naming the line's `seq`. Returns that `seq`.
+    fn send_checked(
+        &self,
+        supervisor: &WorkerSupervisor,
+        event: &Value,
+        check: impl FnOnce(&Status) -> Result<(), WorkerError>,
+    ) -> Result<i64, WorkerError> {
         let mut stdin = lock(&self.stdin);
         let Some(pipe) = stdin.as_mut() else {
             return Err(WorkerError::NotRunning(
                 "the worker's input is closed".into(),
             ));
         };
+        let committed = {
+            let mut registry = lock(&supervisor.shared.registry);
+            let Some(entry) = registry.workers.get(&self.number) else {
+                return Err(WorkerError::NotFound(format!("w{}", self.number)));
+            };
+            check(&entry.status)?;
+            supervisor.commit_locked(
+                &mut registry,
+                self.number,
+                Direction::In,
+                store::Recorded::Event(event),
+            )
+        };
+        supervisor.shared.changed.notify_all();
+        if committed.shown_changed {
+            notify_clients();
+        }
+        let seq = committed.seq.unwrap_or_default();
         let mut line = event.to_string();
         line.push('\n');
-        pipe.write_all(line.as_bytes())?;
-        pipe.flush()?;
-        supervisor.record(self.number, Direction::In, event);
-        Ok(())
+        if let Err(error) = pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush()) {
+            supervisor.record(
+                self.number,
+                Direction::Herdr,
+                &json!({"type": "input_failed", "seq": seq, "error": error.to_string()}),
+            );
+            return Err(error.into());
+        }
+        Ok(seq)
     }
 
     fn close_input(&self) {
@@ -954,6 +1096,24 @@ impl Entry {
             export: None,
         }
     }
+}
+
+/// What `worker.wait` with `until: attention` returns
+/// ([`WorkerSupervisor::wait_attention`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Attention {
+    pub(crate) reason: WorkerAttentionReason,
+    pub(crate) questions: Vec<WorkerQuestion>,
+    pub(crate) seq: i64,
+    pub(crate) worker: WorkerInfo,
+}
+
+/// What [`WorkerSupervisor::commit_locked`] did.
+struct Committed {
+    /// What the clients show of the worker changed.
+    shown_changed: bool,
+    /// The event's `seq` in memory; `None` for an unknown worker.
+    seq: Option<i64>,
 }
 
 #[derive(Default)]
@@ -1580,8 +1740,10 @@ impl WorkerSupervisor {
         }
 
         // The CLI buffers input written before `system/init` (trial 1).
-        live.send(self, &user_message(prompt))?;
-        self.status(&worker_id)
+        let turn_seq = live.send(self, &user_message(prompt))?;
+        let mut info = self.status(&worker_id)?;
+        info.turn_seq = Some(turn_seq);
+        Ok(info)
     }
 
     /// Records one event of a worker and wakes those waiting on it.
@@ -1595,12 +1757,12 @@ impl WorkerSupervisor {
     }
 
     fn record_any(&self, number: u64, direction: Direction, record: store::Recorded<'_>) {
-        let shown_changed = {
+        let committed = {
             let mut registry = lock(&self.shared.registry);
             self.commit_locked(&mut registry, number, direction, record)
         };
         self.shared.changed.notify_all();
-        if shown_changed {
+        if committed.shown_changed {
             notify_clients();
         }
     }
@@ -1611,36 +1773,46 @@ impl WorkerSupervisor {
     /// the projections it changes in one transaction (which gives it its
     /// `seq`), then exported to the JSONL journal. A failed write is not
     /// swallowed: the status keeps the event (it happened) and is marked
-    /// degraded with the error. The caller wakes the waiters; returns
-    /// whether what the clients show changed.
+    /// degraded with the error. The caller wakes the waiters.
+    ///
+    /// The event's `seq` in memory is the store's, which only grows; after a
+    /// failed write it counts on from the worker's last one instead, so a
+    /// wait still sees the event as new, and a later stored event still
+    /// counts higher than that.
     fn commit_locked(
         &self,
         registry: &mut Registry,
         number: u64,
         direction: Direction,
         record: store::Recorded<'_>,
-    ) -> bool {
+    ) -> Committed {
         let Some(entry) = registry.workers.get_mut(&number) else {
-            return false;
+            return Committed {
+                shown_changed: false,
+                seq: None,
+            };
         };
         let shown_before = Self::shown(&entry.status);
-        let pending_before = entry.status.pending_ids();
+        let before = entry.status.before();
         if let store::Recorded::Event(event) = record {
             entry.status.apply(direction, event);
         }
         let ts_ms = now_ms();
+        let status = &mut entry.status;
+        let foreign = entry.foreign;
         let written = match &self.shared.store {
             Ok(store) => store
                 .transaction(|tx| {
                     let seq = tx.event(&store::EventRow {
-                        worker_id: &entry.status.worker_id,
+                        worker_id: &status.worker_id,
                         direction,
                         record: &record,
                         ts_ms,
                     })?;
-                    if !entry.foreign {
-                        tx.questions(seq, &pending_before, &entry.status)?;
-                        tx.worker(&entry.status, seq)?;
+                    status.mark_seq(seq.max(status.last_seq + 1), &before, direction, &record);
+                    if !foreign {
+                        tx.questions(seq, &before.pending, status)?;
+                        tx.worker(status, seq)?;
                     }
                     Ok(seq)
                 })
@@ -1648,16 +1820,16 @@ impl WorkerSupervisor {
             Err(error) => Err(error.clone()),
         };
         let seq = match written {
-            Ok(seq) => {
-                entry.status.last_seq = seq;
-                Some(seq)
-            }
+            Ok(seq) => Some(seq),
             Err(error) => {
-                warn!(%error, worker_id = entry.status.worker_id, "worker event not stored");
-                entry.status.degraded = Some(error);
+                warn!(%error, worker_id = status.worker_id, "worker event not stored");
+                status.degraded = Some(error);
+                // Marked again past whatever a failed commit marked.
+                status.mark_seq(status.last_seq + 1, &before, direction, &record);
                 None
             }
         };
+        let in_memory = status.last_seq;
         let export = match &entry.export {
             Some(journal) => Ok(Arc::clone(journal)),
             None => Journal::open(&entry.journal_path).map(Arc::new),
@@ -1670,7 +1842,10 @@ impl WorkerSupervisor {
             warn!(%error, worker_id = entry.status.worker_id, "worker journal write failed");
             entry.status.degraded = Some(format!("a worker journal write failed: {error}"));
         }
-        Self::shown(&entry.status) != shown_before
+        Committed {
+            shown_changed: Self::shown(&entry.status) != shown_before,
+            seq: Some(in_memory),
+        }
     }
 
     /// The parts of a status the clients show. Questions are only added or
@@ -1750,30 +1925,91 @@ impl WorkerSupervisor {
             .collect()
     }
 
-    /// Blocks until the worker reaches `until`, woken by its state changes.
-    /// `keep_waiting` runs at least every `liveness_check` so a caller whose
-    /// client went away or whose server stops can give up; it never decides
-    /// the outcome. Returns `None` when the caller gave up.
+    /// Blocks until the worker reaches `until` (`turn_end` or `exit`),
+    /// woken by its events ([`Self::wait_on`]). Returns `None` when the
+    /// caller gave up.
     pub(crate) fn wait(
         &self,
         worker_id: &str,
         until: WorkerWaitUntil,
         liveness_check: Duration,
-        mut keep_waiting: impl FnMut() -> bool,
+        keep_waiting: impl FnMut() -> bool,
     ) -> Result<Option<WorkerInfo>, WorkerError> {
+        if until == WorkerWaitUntil::Attention {
+            return Err(WorkerError::Invalid(
+                "until: attention answers with worker_attention".into(),
+            ));
+        }
+        self.wait_on(worker_id, liveness_check, keep_waiting, |entry| {
+            let reached = match until {
+                WorkerWaitUntil::Exit => entry.status.is_gone(),
+                _ => entry.status.turn_ended(),
+            };
+            reached.then(|| entry.status.info(&entry.journal_path))
+        })
+    }
+
+    /// Blocks until the worker needs its coordinator: a pending question
+    /// asked after `after`, a turn ended after it, or its end (gone counts
+    /// however old: nothing follows it). Level-triggered: what is already
+    /// there returns at once. The reply's `seq` is the worker's latest
+    /// event's; passed back as `after`, the same state does not wake the
+    /// caller again. Returns `None` when the caller gave up.
+    pub(crate) fn wait_attention(
+        &self,
+        worker_id: &str,
+        after: Option<i64>,
+        liveness_check: Duration,
+        keep_waiting: impl FnMut() -> bool,
+    ) -> Result<Option<Attention>, WorkerError> {
+        self.wait_on(worker_id, liveness_check, keep_waiting, |entry| {
+            let status = &entry.status;
+            status.attention(after).map(|reason| Attention {
+                reason,
+                questions: status
+                    .questions
+                    .iter()
+                    .map(|pending| pending.question.clone())
+                    .collect(),
+                seq: status.last_seq,
+                worker: status.info(&entry.journal_path),
+            })
+        })
+    }
+
+    /// Blocks until `reached` returns something for the worker, woken by
+    /// its events: every commit notifies `changed`. Subscribe before check:
+    /// the check and the `seq` it saw are read in one hold of the registry
+    /// lock; the lock is let go only to run `keep_waiting`, and an event
+    /// committed meanwhile has a higher `seq`, so it is checked before the
+    /// wait blocks rather than missed. `keep_waiting` runs at least every
+    /// `liveness_check`, only so that a caller whose client went away or
+    /// whose server stops can give up; that interval never decides the
+    /// outcome. Returns `None` when the caller gave up.
+    fn wait_on<T>(
+        &self,
+        worker_id: &str,
+        liveness_check: Duration,
+        mut keep_waiting: impl FnMut() -> bool,
+        mut reached: impl FnMut(&Entry) -> Option<T>,
+    ) -> Result<Option<T>, WorkerError> {
+        let missing = || WorkerError::NotFound(worker_id.to_owned());
         let mut registry = lock(&self.shared.registry);
         let number = Self::entry_number(&registry, worker_id)?;
         loop {
-            let entry = &registry.workers[&number];
-            let reached = match until {
-                WorkerWaitUntil::TurnEnd => entry.status.turn_ended(),
-                WorkerWaitUntil::Exit => entry.status.is_gone(),
-            };
-            if reached {
-                return Ok(Some(entry.status.info(&entry.journal_path)));
+            let entry = registry.workers.get(&number).ok_or_else(missing)?;
+            if let Some(value) = reached(entry) {
+                return Ok(Some(value));
             }
+            let seen = entry.status.last_seq;
+            drop(registry);
             if !keep_waiting() {
                 return Ok(None);
+            }
+            registry = lock(&self.shared.registry);
+            let entry = registry.workers.get(&number).ok_or_else(missing)?;
+            if entry.status.last_seq != seen {
+                continue;
             }
             registry = self
                 .shared
@@ -1796,38 +2032,77 @@ impl WorkerSupervisor {
         }
     }
 
-    /// Sends the next user message. Accepted only between turns, so a
-    /// `worker.wait` after it waits for this turn's end.
+    /// Sends the next user message. Accepted only between turns, checked in
+    /// the same hold as its record, so a `worker.wait` after it waits for
+    /// this turn's end and two prompts never both start one. The reply's
+    /// `turn_seq` is the `seq` of the message it appended.
     pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
         if text.trim().is_empty() {
             return Err(WorkerError::Invalid("text must not be empty".into()));
         }
-        let (_, live, status) = self.live(worker_id)?;
-        if status.takeover_ms.is_some() {
-            return Err(Self::taken_over(worker_id));
-        }
-        if !status.turn_ended() {
-            return Err(WorkerError::Busy(format!(
-                "worker {worker_id} is in a turn; wait for it or interrupt it first"
-            )));
-        }
-        live.send(self, &user_message(text))?;
-        self.status(worker_id)
+        let (_, live, _) = self.live(worker_id)?;
+        let turn_seq = live.send_checked(self, &user_message(text), |status| {
+            if status.takeover_ms.is_some() {
+                return Err(Self::taken_over(worker_id));
+            }
+            if status.is_gone() {
+                return Err(WorkerError::NotRunning(format!(
+                    "worker {worker_id} is not running"
+                )));
+            }
+            if !status.turn_ended() {
+                return Err(WorkerError::Busy(format!(
+                    "worker {worker_id} is in a turn; wait for it or interrupt it first"
+                )));
+            }
+            Ok(())
+        })?;
+        let mut info = self.status(worker_id)?;
+        info.turn_seq = Some(turn_seq);
+        Ok(info)
     }
 
     /// Asks the CLI to interrupt its turn (a control request). The turn
     /// then ends with a `result` whose `terminal_reason` is `aborted_*`.
-    pub(crate) fn interrupt(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
+    /// With `turn`, only that turn: once it has ended the interrupt is
+    /// refused with `worker_turn_ended` and nothing is sent, so a repeated
+    /// interrupt never aborts the next turn. The reply's `turn_seq` names
+    /// the turn it interrupted (none when no turn ran).
+    pub(crate) fn interrupt(
+        &self,
+        params: &WorkerInterruptParams,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let worker_id = params.worker_id.as_str();
         let (number, live, _) = self.live(worker_id)?;
-        live.send(
-            self,
-            &json!({
+        let mut interrupted = None;
+        let request = json!({
             "type": "control_request",
             "request_id": format!("herdr-interrupt-{number}-{}", now_ms()),
             "request": {"subtype": "interrupt"},
-            }),
-        )?;
-        self.status(worker_id)
+        });
+        live.send_checked(self, &request, |status| {
+            let running = (!status.turn_ended()).then_some(status.turn_seq).flatten();
+            if let Some(turn) = params.turn {
+                match status.turn_seq {
+                    _ if running == Some(turn) => {}
+                    Some(last) if turn <= last => {
+                        return Err(WorkerError::TurnEnded(format!(
+                            "turn {turn} of worker {worker_id} has already ended; nothing was sent"
+                        )))
+                    }
+                    _ => {
+                        return Err(WorkerError::Invalid(format!(
+                            "worker {worker_id} has no turn {turn}"
+                        )))
+                    }
+                }
+            }
+            interrupted = running;
+            Ok(())
+        })?;
+        let mut info = self.status(worker_id)?;
+        info.turn_seq = interrupted;
+        Ok(info)
     }
 
     /// Closes the worker's input, sends SIGTERM to its process group and
@@ -2130,7 +2405,15 @@ impl WorkerSupervisor {
             WorkerState::Finished | WorkerState::Failed | WorkerState::Interrupted
         );
         if in_turn {
-            self.interrupt(worker_id)?;
+            let interrupt = WorkerInterruptParams {
+                worker_id: worker_id.to_owned(),
+                turn: status.turn_seq,
+            };
+            match self.interrupt(&interrupt) {
+                // The turn ended on its own meanwhile.
+                Ok(_) | Err(WorkerError::TurnEnded(_)) => {}
+                Err(error) => return Err(error),
+            }
             self.wait(worker_id, WorkerWaitUntil::TurnEnd, RECHECK, || true)?;
         }
         match self.stop(worker_id) {

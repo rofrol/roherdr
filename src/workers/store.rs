@@ -30,7 +30,8 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// Schema migrations, in order; the database's `meta.schema_version` counts
 /// how many have run. Never edit one that has shipped: append a new one.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     worker_id TEXT NOT NULL,
@@ -84,7 +85,27 @@ CREATE TABLE questions (
     settled_seq INTEGER,
     PRIMARY KEY (worker_id, request_id)
 );
-"#];
+"#,
+    r#"
+-- What `worker.wait` with `until: attention` compares with `after`: the
+-- user message that began the last turn, the event that ended a turn, the
+-- one that made the worker gone. Filled from the events for workers
+-- recorded before.
+ALTER TABLE workers ADD COLUMN turn_seq INTEGER;
+ALTER TABLE workers ADD COLUMN turn_end_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN gone_seq INTEGER NOT NULL DEFAULT 0;
+UPDATE workers SET
+    turn_seq = (SELECT max(seq) FROM events
+        WHERE worker_id = workers.id AND direction = 'in' AND type = 'user'),
+    turn_end_seq = coalesce((SELECT max(seq) FROM events
+        WHERE worker_id = workers.id
+          AND ((direction = 'out' AND type = 'result')
+            OR (direction = 'herdr' AND type IN ('exited', 'lost')))), 0),
+    gone_seq = coalesce((SELECT max(seq) FROM events
+        WHERE worker_id = workers.id
+          AND direction = 'herdr' AND type IN ('exited', 'lost')), 0);
+"#,
+];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
 
@@ -308,7 +329,8 @@ impl Tx<'_> {
                     :session_id, :turns, :last_result, :rate_limit, :tool_sessions,
                     :exit_code, :exit_signal, :stop_requested_ms, :takeover_ms,
                     :takeover_tab, :takeover_error, :takeover_unfinished, :refusal,
-                    :exited, :lost, :end_note, :last_seq)
+                    :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
+                    :gone_seq)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -347,6 +369,9 @@ impl Tx<'_> {
                 ":lost": status.lost,
                 ":end_note": status.end_note,
                 ":last_seq": seq,
+                ":turn_seq": status.turn_seq,
+                ":turn_end_seq": status.turn_end_seq,
+                ":gone_seq": status.gone_seq,
             },
         )?;
         Ok(())
@@ -356,7 +381,7 @@ impl Tx<'_> {
 const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, pid, \
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
-exited, lost, end_note, last_seq";
+exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -395,6 +420,9 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.lost = row.get(22)?;
     status.end_note = row.get(23)?;
     status.last_seq = row.get(24)?;
+    status.turn_seq = row.get(25)?;
+    status.turn_end_seq = row.get(26)?;
+    status.gone_seq = row.get(27)?;
     Ok(status)
 }
 
@@ -402,14 +430,18 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
 /// settled ones.
 fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
     let mut pending = conn.prepare(
-        "SELECT question, input FROM questions
+        "SELECT question, input, asked_seq FROM questions
          WHERE worker_id = ?1 AND state = 'pending' ORDER BY asked_seq, rowid",
     )?;
     let rows = pending.query_map([&status.worker_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })?;
     for row in rows {
-        let (question, input) = row?;
+        let (question, input, asked_seq) = row?;
         let Ok(question) = serde_json::from_str(&question) else {
             continue;
         };
@@ -417,6 +449,7 @@ fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
             question,
             input: serde_json::from_str(&input)
                 .unwrap_or_else(|_| Value::Object(Default::default())),
+            asked_seq,
         });
     }
     let mut settled = conn.prepare(
@@ -566,6 +599,62 @@ mod tests {
         assert!(error.contains("forced failure"), "{error}");
         assert_eq!((count(&store, "events"), count(&store, "workers")), (1, 1));
         assert_eq!(store.load("w1").unwrap().unwrap().last_seq, seq);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_attention_columns_are_filled_from_the_events_of_older_rows() {
+        let dir = scratch("attention-columns");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        let events = [
+            (Direction::Herdr, json!({"type": "started", "cwd": "/repo"})),
+            (
+                Direction::In,
+                json!({"type": "user", "message": {"content": "go"}}),
+            ),
+            (
+                Direction::Out,
+                json!({"type": "result", "subtype": "success", "is_error": false}),
+            ),
+            (Direction::Herdr, json!({"type": "exited", "code": 0})),
+        ];
+        let mut status = Status::new("w1".to_owned());
+        let mut seqs = Vec::new();
+        for (direction, event) in &events {
+            status.apply(*direction, event);
+            seqs.push(
+                store
+                    .transaction(|tx| {
+                        let seq = tx.event(&EventRow {
+                            worker_id: "w1",
+                            direction: *direction,
+                            record: &Recorded::Event(event),
+                            ts_ms: 1,
+                        })?;
+                        tx.worker(&status, seq)?;
+                        Ok(seq)
+                    })
+                    .unwrap(),
+            );
+        }
+        // A database from before the columns: written as the first
+        // migration left it.
+        store
+            .connection()
+            .execute_batch(
+                "ALTER TABLE workers DROP COLUMN turn_seq;
+                 ALTER TABLE workers DROP COLUMN turn_end_seq;
+                 ALTER TABLE workers DROP COLUMN gone_seq;
+                 UPDATE meta SET value = '1' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        drop(store);
+        let loaded = Store::open(&path).unwrap().load("w1").unwrap().unwrap();
+        assert_eq!(
+            (loaded.turn_seq, loaded.turn_end_seq, loaded.gone_seq),
+            (Some(seqs[1]), seqs[3], seqs[3])
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

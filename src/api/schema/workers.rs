@@ -54,6 +54,22 @@ pub struct WorkerWaitParams {
     /// What to wait for; `turn_end` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<WorkerWaitUntil>,
+    /// With `until: attention` only: the `seq` the previous attention reply
+    /// carried. A pending question asked or a turn ended at or before it does
+    /// not count again; only what later events bring does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerInterruptParams {
+    pub worker_id: String,
+    /// The turn to interrupt: its `turn_seq` (the `seq` of the user message
+    /// that began it, as `worker.prompt` returns it). Refused with
+    /// `worker_turn_ended` once that turn has ended, so a repeated interrupt
+    /// never reaches the next turn. When absent, whatever runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -90,6 +106,24 @@ pub enum WorkerWaitUntil {
     TurnEnd,
     /// The process's end (`exited` or `lost`).
     Exit,
+    /// The first of a pending question, a finished, failed or interrupted
+    /// turn, or the process's end; answered with `worker_attention`.
+    Attention,
+}
+
+/// Why `worker.wait` with `until: attention` returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerAttentionReason {
+    /// A question waits for an answer.
+    Question,
+    /// The turn finished, failed or was interrupted.
+    TurnEnd,
+    /// The process ended (`exited` or `lost`); nothing more will happen.
+    Gone,
+    /// A reason this client does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -216,6 +250,15 @@ pub struct WorkerInfo {
     /// The JSONL journal of every event in and out, exported after each
     /// event is stored; `herdr worker log` reads it.
     pub journal_path: String,
+    /// The `seq` of the worker's latest event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    /// The `seq` of the user message that began the current or last turn;
+    /// `worker.interrupt` takes it as `turn`. In `worker.prompt`'s reply it
+    /// is the message that prompt appended; in `worker.interrupt`'s, the
+    /// turn it interrupted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_seq: Option<i64>,
 }
 
 /// Answers a worker's pending question: a tool approval or an

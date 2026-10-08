@@ -38,19 +38,41 @@ pub(super) fn handle_worker_request(
     let supervisor = crate::workers::supervisor();
     let result = match method {
         Method::WorkerWait(params) => {
-            let mut disconnected = false;
-            let waited = supervisor.wait(
-                &params.worker_id,
-                params.until.unwrap_or(WorkerWaitUntil::TurnEnd),
-                CONNECTION_POLL_INTERVAL,
-                || {
-                    disconnected = should_stop_connection(stream, running).unwrap_or(true);
-                    !disconnected
-                },
-            );
+            // Only to notice a client that went away or a stopping server;
+            // the worker's events end the wait.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            let until = params.until.unwrap_or(WorkerWaitUntil::TurnEnd);
+            let waited = match (until, params.after) {
+                (WorkerWaitUntil::Attention, after) => supervisor
+                    .wait_attention(
+                        &params.worker_id,
+                        after,
+                        CONNECTION_POLL_INTERVAL,
+                        keep_waiting,
+                    )
+                    .map(|attention| {
+                        attention.map(|attention| ResponseResult::WorkerAttention {
+                            reason: attention.reason,
+                            questions: attention.questions,
+                            seq: attention.seq,
+                            worker: attention.worker,
+                        })
+                    }),
+                (_, Some(_)) => Err(WorkerError::Invalid(
+                    "after is taken only with until: attention".into(),
+                )),
+                (until, None) => supervisor
+                    .wait(
+                        &params.worker_id,
+                        until,
+                        CONNECTION_POLL_INTERVAL,
+                        keep_waiting,
+                    )
+                    .map(|worker| worker.map(|worker| ResponseResult::WorkerInfo { worker })),
+            };
             match waited {
                 Ok(None) => return None,
-                Ok(Some(worker)) => Ok(ResponseResult::WorkerInfo { worker }),
+                Ok(Some(result)) => Ok(result),
                 Err(error) => Err(error),
             }
         }
@@ -72,7 +94,7 @@ fn handle_immediate(
             })
         }
         Method::WorkerPrompt(params) => supervisor.prompt(&params.worker_id, &params.text)?,
-        Method::WorkerInterrupt(target) => supervisor.interrupt(&target.worker_id)?,
+        Method::WorkerInterrupt(params) => supervisor.interrupt(&params)?,
         Method::WorkerStop(target) => supervisor.stop(&target.worker_id)?,
         Method::WorkerKill(params) => {
             let (worker, killed) = supervisor.kill(&params.worker_id, params.force)?;

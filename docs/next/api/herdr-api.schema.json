@@ -5327,6 +5327,25 @@
           ],
           "type": "string"
         },
+        "WorkerInterruptParams": {
+          "properties": {
+            "turn": {
+              "description": "The turn to interrupt: its `turn_seq` (the `seq` of the user message\nthat began it, as `worker.prompt` returns it). Refused with\n`worker_turn_ended` once that turn has ended, so a repeated interrupt\nnever reaches the next turn. When absent, whatever runs.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
         "WorkerKillParams": {
           "properties": {
             "force": {
@@ -5435,6 +5454,14 @@
         },
         "WorkerWaitParams": {
           "properties": {
+            "after": {
+              "description": "With `until: attention` only: the `seq` the previous attention reply\ncarried. A pending question asked or a turn ended at or before it does\nnot count again; only what later events bring does.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "until": {
               "anyOf": [
                 {
@@ -5465,6 +5492,11 @@
             {
               "const": "exit",
               "description": "The process's end (`exited` or `lost`).",
+              "type": "string"
+            },
+            {
+              "const": "attention",
+              "description": "The first of a pending question, a finished, failed or interrupted\nturn, or the process's end; answered with `worker_attention`.",
               "type": "string"
             }
           ]
@@ -6118,7 +6150,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/schemas/request/$defs/WorkerTarget"
+              "$ref": "#/schemas/request/$defs/WorkerInterruptParams"
             }
           },
           "required": [
@@ -11648,6 +11680,38 @@
               "type": "object"
             },
             {
+              "description": "`worker.wait`'s reply with `until: attention`: why it returned, the\nquestions pending then, the worker, and `seq`, its latest event's,\nwhich the next wait passes as `after`.",
+              "properties": {
+                "questions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+                  },
+                  "type": "array"
+                },
+                "reason": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerAttentionReason"
+                },
+                "seq": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "worker_attention",
+                  "type": "string"
+                },
+                "worker": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                }
+              },
+              "required": [
+                "type",
+                "reason",
+                "seq",
+                "worker"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -13585,6 +13649,31 @@
           ],
           "type": "object"
         },
+        "WorkerAttentionReason": {
+          "description": "Why `worker.wait` with `until: attention` returned.",
+          "oneOf": [
+            {
+              "const": "question",
+              "description": "A question waits for an answer.",
+              "type": "string"
+            },
+            {
+              "const": "turn_end",
+              "description": "The turn finished, failed or was interrupted.",
+              "type": "string"
+            },
+            {
+              "const": "gone",
+              "description": "The process ended (`exited` or `lost`); nothing more will happen.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A reason this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerChoiceQuestion": {
           "properties": {
             "header": {
@@ -13689,6 +13778,14 @@
             "rate_limit": {
               "description": "`rate_limit_info` of the last `rate_limit_event`, as the CLI sent it."
             },
+            "seq": {
+              "description": "The `seq` of the worker's latest event.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "session_id": {
               "description": "Claude Code's session id from `system/init`.",
               "type": [
@@ -13743,6 +13840,14 @@
                 "type": "integer"
               },
               "type": "array"
+            },
+            "turn_seq": {
+              "description": "The `seq` of the user message that began the current or last turn;\n`worker.interrupt` takes it as `turn`. In `worker.prompt`'s reply it\nis the message that prompt appended; in `worker.interrupt`'s, the\nturn it interrupted.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "turns": {
               "description": "Turns that ended with a `result`.",

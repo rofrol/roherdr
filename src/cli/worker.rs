@@ -1,6 +1,7 @@
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAnswerParams, WorkerDecision, WorkerKillParams,
-    WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams, WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAnswerParams, WorkerDecision, WorkerInterruptParams,
+    WorkerKillParams, WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams,
+    WorkerWaitUntil,
 };
 
 const USAGE: &str =
@@ -16,9 +17,15 @@ const USAGE: &str =
     slot's target/ and Zig cache first.
   herdr worker status <worker_id>
   herdr worker list
-  herdr worker wait <worker_id> [--exit]
+  herdr worker wait <worker_id> [--exit | --attention [--after SEQ]]
+    Returns at the end of the turn, or with --exit when the process ended.
+    --attention returns at once or at the first of a pending question, a
+    turn's end or the worker's end, with the reason, the questions and seq;
+    --after SEQ (the seq it returned) skips the state that seq already showed.
   herdr worker prompt <worker_id> <text>
-  herdr worker interrupt <worker_id>
+    Its reply's turn_seq is the seq of the message it sent.
+  herdr worker interrupt <worker_id> [--turn SEQ]
+    --turn interrupts only that turn (its turn_seq); refused once it ended.
   herdr worker stop <worker_id>
   herdr worker kill <worker_id> [--force]
     SIGKILL to the worker and to its recorded tool sessions whose leader is
@@ -72,21 +79,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "start" => Method::WorkerStart(parse_start(rest)?),
         "status" => Method::WorkerStatus(target(rest)?),
         "list" if rest.is_empty() => Method::WorkerList(EmptyParams::default()),
-        "wait" => {
-            let (exit, ids): (Vec<&String>, Vec<&String>) =
-                rest.iter().partition(|arg| arg.as_str() == "--exit");
-            let [worker_id] = ids.as_slice() else {
-                return Err("wait takes one worker id".into());
-            };
-            Method::WorkerWait(WorkerWaitParams {
-                worker_id: (*worker_id).clone(),
-                until: Some(if exit.is_empty() {
-                    WorkerWaitUntil::TurnEnd
-                } else {
-                    WorkerWaitUntil::Exit
-                }),
-            })
-        }
+        "wait" => Method::WorkerWait(parse_wait(rest)?),
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
                 worker_id: worker_id.clone(),
@@ -94,7 +87,16 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             }),
             _ => return Err("prompt takes a worker id and one text argument".into()),
         },
-        "interrupt" => Method::WorkerInterrupt(target(rest)?),
+        "interrupt" => {
+            let (turn, ids) = take_seq_option(rest, "--turn")?;
+            let [worker_id] = ids.as_slice() else {
+                return Err("interrupt takes one worker id".into());
+            };
+            Method::WorkerInterrupt(WorkerInterruptParams {
+                worker_id: worker_id.clone(),
+                turn,
+            })
+        }
         "stop" => Method::WorkerStop(target(rest)?),
         "kill" => {
             let (force, ids): (Vec<&String>, Vec<&String>) =
@@ -112,6 +114,60 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "help" | "--help" | "-h" => return Ok(None),
         _ => return Err(format!("unknown worker command: {subcommand}")),
     }))
+}
+
+fn parse_wait(args: &[String]) -> Result<WorkerWaitParams, String> {
+    let (after, rest) = take_seq_option(args, "--after")?;
+    let mut until = None;
+    let mut ids = Vec::new();
+    for arg in rest {
+        let flag = match arg.as_str() {
+            "--exit" => WorkerWaitUntil::Exit,
+            "--attention" => WorkerWaitUntil::Attention,
+            _ => {
+                ids.push(arg);
+                continue;
+            }
+        };
+        if until.replace(flag).is_some_and(|before| before != flag) {
+            return Err("wait takes --exit or --attention, not both".into());
+        }
+    }
+    let [worker_id] = ids.as_slice() else {
+        return Err("wait takes one worker id".into());
+    };
+    let until = until.unwrap_or(WorkerWaitUntil::TurnEnd);
+    if after.is_some() && until != WorkerWaitUntil::Attention {
+        return Err("--after needs --attention".into());
+    }
+    Ok(WorkerWaitParams {
+        worker_id: worker_id.clone(),
+        until: Some(until),
+        after,
+    })
+}
+
+/// Takes `flag SEQ` out of `args`; returns the seq and the other arguments.
+fn take_seq_option(args: &[String], flag: &str) -> Result<(Option<i64>, Vec<String>), String> {
+    let mut seq = None;
+    let mut rest = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg != flag {
+            rest.push(arg.clone());
+            continue;
+        }
+        let value = args
+            .next()
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        let parsed = value
+            .parse()
+            .map_err(|_| format!("{flag} takes a seq number, not {value}"))?;
+        if seq.replace(parsed).is_some() {
+            return Err(format!("{flag} given twice"));
+        }
+    }
+    Ok((seq, rest))
 }
 
 /// `allow` or `deny` alone is a decision; anything else are the answers to
@@ -439,6 +495,49 @@ mod tests {
         assert!(parse_worker_args(&args(&["wait", "w1", "w2"])).is_err());
         assert!(parse_worker_args(&args(&["stop"])).is_err());
         assert!(parse_worker_args(&args(&["start"])).is_err());
+    }
+
+    #[test]
+    fn parses_wait_for_attention_after_a_seq_and_interrupt_of_a_turn() {
+        assert!(matches!(
+            parse_worker_args(&args(&["wait", "w1", "--attention", "--after", "42"])),
+            Ok(Some(Method::WorkerWait(WorkerWaitParams {
+                until: Some(WorkerWaitUntil::Attention),
+                after: Some(42),
+                ..
+            })))
+        ));
+        assert!(matches!(
+            parse_worker_args(&args(&["wait", "--attention", "w1"])),
+            Ok(Some(Method::WorkerWait(WorkerWaitParams {
+                until: Some(WorkerWaitUntil::Attention),
+                after: None,
+                ..
+            })))
+        ));
+        for bad in [
+            &["wait", "w1", "--after", "42"][..],
+            &["wait", "w1", "--attention", "--exit"],
+            &["wait", "w1", "--attention", "--after"],
+            &["wait", "w1", "--attention", "--after", "x"],
+            &["interrupt", "w1", "--turn"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+        assert!(matches!(
+            parse_worker_args(&args(&["interrupt", "w1", "--turn", "7"])),
+            Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
+                turn: Some(7),
+                ..
+            })))
+        ));
+        assert!(matches!(
+            parse_worker_args(&args(&["interrupt", "w1"])),
+            Ok(Some(Method::WorkerInterrupt(WorkerInterruptParams {
+                turn: None,
+                ..
+            })))
+        ));
     }
 
     #[test]

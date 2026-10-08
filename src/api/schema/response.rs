@@ -18,7 +18,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::workers::{WorkerInfo, WorkerKillReport};
+use super::workers::{WorkerAttentionReason, WorkerInfo, WorkerKillReport, WorkerQuestion};
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
 
@@ -63,6 +63,16 @@ pub enum ResponseResult {
     },
     WorkerList {
         workers: Vec<WorkerInfo>,
+    },
+    /// `worker.wait`'s reply with `until: attention`: why it returned, the
+    /// questions pending then, the worker, and `seq`, its latest event's,
+    /// which the next wait passes as `after`.
+    WorkerAttention {
+        reason: WorkerAttentionReason,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        questions: Vec<WorkerQuestion>,
+        seq: i64,
+        worker: WorkerInfo,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

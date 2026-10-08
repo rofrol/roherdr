@@ -456,8 +456,12 @@ or PTY: `herdr worker start --name <task> --cwd <worktree> --prompt <text>`
 space; `--workspace <id>` names another). The sidebar shows it as one line
 named `<task>` with its state; a click opens its log, and its right-click
 menu takes it over (ends it, then resumes its session in a tab; not while
-it asks). Wait for its turn with `herdr-job run -- herdr worker wait <id>`,
-answer its questions with
+it asks). Wait for it with `herdr-job run -- herdr worker wait <id>
+--attention --after <seq>` (no `--after` the first time): it returns at
+once or at the first new question, turn end or exit, with the `reason`,
+the pending `questions` and `seq`; pass that `seq` as `--after` to the
+next wait, so a question already seen does not wake you again. Answer its
+questions with
 `herdr worker answer <id> --request <request_id> ...` (they also show in
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
