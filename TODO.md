@@ -1515,8 +1515,8 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   is read from `models/issues/` (issue.go, issue_index.go for the per-repo
   number, comment.go, content_history.go for edit history, issue_label.go,
   dependency.go for blocks/blocked-by, issue_xref.go for references),
-  copying concepts, not code (Forgejo is GPL-3.0-or-later; herdr is
-  AGPL/its own license: check before copying any code).
+  copying concepts, not code: Forgejo is GPL-3.0, herdr is Apache-2.0,
+  so copied code would force the GPL onto herdr.
 
 ## Proposed
 
