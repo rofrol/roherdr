@@ -41,8 +41,10 @@ impl App {
         for terminal_id in terminal_ids {
             self.shutdown_terminal_runtime(terminal_id);
         }
-        // Panes closed: a headless worker's owner may be among them.
+        // Panes closed: a headless worker's owner or a coordinator may be
+        // among them.
         self.sync_worker_owner_panes();
+        self.sync_coordinator_roles();
     }
 
     pub(crate) fn sync_agent_metadata_deadline(&mut self) {

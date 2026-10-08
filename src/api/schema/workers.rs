@@ -559,6 +559,10 @@ pub struct WorkerInfo {
     pub owner_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    /// The coordination tenure (`c-...`, see `coordinator.start`) its owner
+    /// pane was bound to when it started; absent when it had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_coordinator_id: Option<String>,
     /// The highest `seq` its owner acknowledged (`worker.ack`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acked_seq: Option<i64>,

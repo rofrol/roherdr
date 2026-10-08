@@ -2101,6 +2101,65 @@
           ],
           "type": "object"
         },
+        "CoordinatorEndParams": {
+          "description": "Ends a tenure: the one named, else the one bound to the pane.",
+          "properties": {
+            "coordinator_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The CLI sends its `HERDR_PANE_ID`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why it ends, stored as its `end_reason`; `ended` when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorStartParams": {
+          "description": "Claims a repository's coordination: starts a tenure bound to the pane\n(one active tenure per repository). Setting a tab's role to\n`coordinator` starts one for the tab's focused pane.",
+          "properties": {
+            "pane_id": {
+              "description": "The coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "A directory in the repository; the repository of the pane's\ndirectory when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorStatusParams": {
+          "description": "Lists the active tenures, of one repository when given.",
+          "properties": {
+            "repo": {
+              "description": "A directory in the repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -6603,6 +6662,57 @@
           "type": "object"
         },
         {
+          "description": "Claims a repository's coordination for a pane: a tenure, refused\nwhile another one of the repository is active.",
+          "properties": {
+            "method": {
+              "const": "coordinator.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ends a coordination tenure with a reason.",
+          "properties": {
+            "method": {
+              "const": "coordinator.end",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorEndParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The active coordination tenures.",
+          "properties": {
+            "method": {
+              "const": "coordinator.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "notification.show",
@@ -9316,6 +9426,73 @@
             "failed"
           ],
           "type": "string"
+        },
+        "CoordinatorInfo": {
+          "description": "One coordination tenure: who coordinated a repository's TODO, from when\nto when. Its id is its own, never a pane's or an agent session's: those\nare its bindings.",
+          "properties": {
+            "coordinator_id": {
+              "description": "`c-` and 8 lowercase base32 characters.",
+              "type": "string"
+            },
+            "end_reason": {
+              "description": "Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's\nrole was cleared), `orphaned` (its pane closed or its agent exited,\nalso when found at server start), or the reason `coordinator.end`\nwas given.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ended_ms": {
+              "description": "Absent while it is active.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "epoch": {
+              "description": "Grows by one with each tenure of the repository.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "item": {
+              "description": "The TODO item it works on; not recorded yet.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "Its latest binding's pane and agent session.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "The repository: the parent of its git common directory.",
+              "type": "string"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "coordinator_id",
+            "repo",
+            "started_ms",
+            "epoch"
+          ],
+          "type": "object"
         },
         "EventData": {
           "oneOf": [
@@ -12150,6 +12327,43 @@
               "type": "object"
             },
             {
+              "description": "`coordinator.start`'s and `coordinator.end`'s reply.",
+              "properties": {
+                "coordinator": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                },
+                "type": {
+                  "const": "coordinator",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "coordinator"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.status`'s reply: the active tenures, oldest first.",
+              "properties": {
+                "coordinators": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "coordinators",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "coordinators"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -14233,6 +14447,13 @@
             "name": {
               "description": "The worker's task: the `name` given at start, else the prompt's\nfirst line.",
               "type": "string"
+            },
+            "owner_coordinator_id": {
+              "description": "The coordination tenure (`c-...`, see `coordinator.start`) its owner\npane was bound to when it started; absent when it had none.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "owner_pane_id": {
               "description": "The pane that started the worker, its owner (`worker.start`'s\n`owner_pane_id`).",

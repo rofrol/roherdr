@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
+use super::coordinators::CoordinatorInfo;
 use super::events::EventEnvelope;
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
@@ -92,6 +93,14 @@ pub enum ResponseResult {
     /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
     WorkerVerification {
         verification: WorkerVerification,
+    },
+    /// `coordinator.start`'s and `coordinator.end`'s reply.
+    Coordinator {
+        coordinator: CoordinatorInfo,
+    },
+    /// `coordinator.status`'s reply: the active tenures, oldest first.
+    Coordinators {
+        coordinators: Vec<CoordinatorInfo>,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

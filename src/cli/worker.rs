@@ -301,7 +301,7 @@ fn take_seq_option(args: &[String], flag: &str) -> Result<(Option<i64>, Vec<Stri
 
 /// Takes `flag VALUE` out of `args`; returns the value and the other
 /// arguments.
-fn take_string_option(
+pub(super) fn take_string_option(
     args: &[String],
     flag: &str,
 ) -> Result<(Option<String>, Vec<String>), String> {

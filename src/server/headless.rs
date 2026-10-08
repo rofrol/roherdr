@@ -425,6 +425,8 @@ impl HeadlessServer {
         }));
         // What a previous server saw of the workers' owners is gone.
         self.app.reevaluate_worker_owners_at_start();
+        // The coordinator role follows the tenures still active.
+        self.app.sync_coordinator_roles();
         // A takeover tab opened by a previous server that ended before
         // journaling it is found by its id and adopted.
         self.app.recover_unfinished_takeovers_at_start();

@@ -22,6 +22,7 @@
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
+pub(crate) mod coordinators;
 mod log;
 mod policy;
 mod slot;
@@ -31,6 +32,9 @@ mod tests;
 mod todo_titles;
 mod verify;
 
+pub(crate) use coordinators::coordinators;
+#[cfg(test)]
+pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use log::log_lines;
 
 use std::cell::Cell;
@@ -230,6 +234,10 @@ pub(crate) enum WorkerError {
     CommandInterrupted(String),
     /// The refusal a command id got the first time, returned again.
     Replayed(&'static str, String),
+    /// The repository has an active coordinator, or the pane coordinates
+    /// another one; the message names it.
+    CoordinatorActive(String),
+    CoordinatorNotFound(String),
     Io(std::io::Error),
 }
 
@@ -247,6 +255,8 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "worker_command_conflict",
     "worker_command_interrupted",
     "worker_io_error",
+    "coordinator_active",
+    "coordinator_not_found",
 ];
 
 impl WorkerError {
@@ -265,6 +275,8 @@ impl WorkerError {
             Self::CommandInterrupted(_) => "worker_command_interrupted",
             Self::Replayed(code, _) => code,
             Self::Io(_) => "worker_io_error",
+            Self::CoordinatorActive(_) => "coordinator_active",
+            Self::CoordinatorNotFound(_) => "coordinator_not_found",
         }
     }
 
@@ -293,7 +305,9 @@ impl std::fmt::Display for WorkerError {
             | Self::Unsupported(message)
             | Self::CommandConflict(message)
             | Self::CommandInterrupted(message)
-            | Self::Replayed(_, message) => f.write_str(message),
+            | Self::Replayed(_, message)
+            | Self::CoordinatorActive(message)
+            | Self::CoordinatorNotFound(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -420,6 +434,9 @@ struct Status {
     /// The pane and agent session that started it (`started`'s `owner`).
     owner_pane: Option<String>,
     owner_session: Option<String>,
+    /// The coordination tenure the owner pane was bound to then
+    /// (`started`'s `owner.coordinator_id`).
+    owner_coordinator: Option<String>,
     /// The highest `seq` its owner acknowledged (`acked`); only grows.
     acked_seq: i64,
     /// Why its owner is gone for good (`owner_gone`: its pane closed, its
@@ -517,6 +534,7 @@ impl Status {
             degraded: None,
             owner_pane: None,
             owner_session: None,
+            owner_coordinator: None,
             acked_seq: 0,
             owner_gone: None,
             item: None,
@@ -850,6 +868,8 @@ impl Status {
                 self.slot = event["folder_slot"]["name"].as_str().map(str::to_owned);
                 self.owner_pane = event["owner"]["pane_id"].as_str().map(str::to_owned);
                 self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
+                self.owner_coordinator =
+                    event["owner"]["coordinator_id"].as_str().map(str::to_owned);
                 self.item = string_field(event, "item");
                 self.item_title = string_field(event, "item_title");
                 self.repo = string_field(event, "repo");
@@ -1109,6 +1129,7 @@ impl Status {
             turn_seq: self.turn_seq,
             owner_pane_id: self.owner_pane.clone(),
             owner_session_id: self.owner_session.clone(),
+            owner_coordinator_id: self.owner_coordinator.clone(),
             acked_seq: (self.acked_seq > 0).then_some(self.acked_seq),
             item: self.item.clone(),
             repo: self.repo.clone(),
@@ -1842,7 +1863,7 @@ impl OwnerEvent {
 /// Reports an owner's event to the server's supervisor; nothing when no
 /// supervisor was opened or no running worker is owned by `pane_id`.
 pub(crate) fn owner_event(pane_id: &str, event: OwnerEvent) {
-    if let Some(supervisor) = SUPERVISOR.get() {
+    if let Some(supervisor) = coordinators::installed() {
         supervisor.owner_event(pane_id, event, "");
     }
 }
@@ -1850,8 +1871,7 @@ pub(crate) fn owner_event(pane_id: &str, event: OwnerEvent) {
 /// The owner panes [`owner_event`] can still act on, to check after panes
 /// close; empty when no supervisor was opened.
 pub(crate) fn owner_panes() -> Vec<String> {
-    SUPERVISOR
-        .get()
+    coordinators::installed()
         .map(WorkerSupervisor::owner_panes)
         .unwrap_or_default()
 }
@@ -1861,7 +1881,7 @@ pub(crate) fn owner_panes() -> Vec<String> {
 /// will see. `state` tells, for an owner pane, what it finds there now
 /// (`None`: it works, nothing to do).
 pub(crate) fn owners_at_start(state: impl Fn(&str) -> Option<OwnerEvent>) {
-    if let Some(supervisor) = SUPERVISOR.get() {
+    if let Some(supervisor) = coordinators::installed() {
         supervisor.owners_at_start(state);
     }
 }
@@ -2608,6 +2628,7 @@ impl WorkerSupervisor {
             "owner": params.owner_pane_id.as_ref().map(|pane_id| json!({
                 "pane_id": pane_id,
                 "session_id": params.owner_session_id,
+                "coordinator_id": self.coordinator_of_pane(pane_id).map(|tenure| tenure.coordinator_id),
             })),
             "item": params.item,
             "item_title": item_title,
@@ -3299,14 +3320,20 @@ impl WorkerSupervisor {
     }
 
     /// The owner panes of the workers that have not ended and whose owner is
-    /// not gone: those [`Self::owner_event`] can still act on.
+    /// not gone, and the panes of the active coordination tenures: those
+    /// [`Self::owner_event`] can still act on.
     fn owner_panes(&self) -> Vec<String> {
+        let tenure_panes = self.coordinator_panes().unwrap_or_else(|error| {
+            warn!(%error, "cannot read the coordination tenures' panes");
+            Vec::new()
+        });
         let registry = lock(&self.shared.registry);
         let mut panes: Vec<String> = registry
             .workers
             .values()
             .filter(|entry| !entry.status.is_gone() && entry.status.owner_gone.is_none())
             .filter_map(|entry| entry.status.owner_pane.clone())
+            .chain(tenure_panes)
             .collect();
         panes.sort();
         panes.dedup();
@@ -3333,6 +3360,12 @@ impl WorkerSupervisor {
     /// quiet; the `?` list shows them as awaiting the coordinator with the
     /// age of the owner's last event, so the user can see it and act.
     pub(crate) fn owner_event(&self, pane_id: &str, event: OwnerEvent, cause_suffix: &str) {
+        // The pane's coordination tenure ends with its pane or agent.
+        if let (OwnerEvent::PaneClosed | OwnerEvent::AgentExited, Some(cause)) =
+            (event, event.cause())
+        {
+            self.orphan_coordinator(pane_id, &format!("{cause}{cause_suffix}"));
+        }
         let mut any = false;
         {
             let mut registry = lock(&self.shared.registry);

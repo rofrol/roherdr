@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod agents;
 pub mod commands;
 pub mod common;
+pub mod coordinators;
 pub mod events;
 pub mod integrations;
 pub mod panes;
@@ -19,6 +20,7 @@ pub mod worktrees;
 pub use agents::*;
 pub use commands::*;
 pub use common::*;
+pub use coordinators::*;
 pub use events::*;
 pub use integrations::*;
 pub use panes::*;
@@ -114,6 +116,16 @@ pub enum Method {
     /// frozen for clients.
     #[serde(rename = "worker.force_take_over")]
     WorkerForceTakeOver(WorkerTarget),
+    /// Claims a repository's coordination for a pane: a tenure, refused
+    /// while another one of the repository is active.
+    #[serde(rename = "coordinator.start")]
+    CoordinatorStart(CoordinatorStartParams),
+    /// Ends a coordination tenure with a reason.
+    #[serde(rename = "coordinator.end")]
+    CoordinatorEnd(CoordinatorEndParams),
+    /// The active coordination tenures.
+    #[serde(rename = "coordinator.status")]
+    CoordinatorStatus(CoordinatorStatusParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

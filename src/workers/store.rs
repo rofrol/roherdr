@@ -211,6 +211,37 @@ UPDATE workers SET takeover_id = (SELECT json_extract(body, '$.takeover_id') FRO
     ORDER BY seq DESC LIMIT 1)
     WHERE takeover_ms IS NOT NULL;
 "#,
+    r#"
+-- Coordination tenures: who coordinates a repository's TODO, from when to
+-- when, projected from the `coordinator_started` and `coordinator_ended`
+-- events (whose `worker_id` is the tenure's id) in the same transaction.
+-- Times are Unix milliseconds. `epoch` grows by one per tenure of the repo.
+CREATE TABLE coordinators (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    item TEXT,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    end_reason TEXT,
+    epoch INTEGER NOT NULL
+);
+-- One active coordinator per repository: this index is the claim.
+CREATE UNIQUE INDEX coordinators_one_active_per_repo ON coordinators (repo)
+    WHERE ended_at IS NULL;
+-- The panes and agent sessions a tenure ran in; `to_at` is NULL while bound.
+CREATE TABLE coordinator_bindings (
+    coordinator_id TEXT NOT NULL REFERENCES coordinators (id),
+    pane_id TEXT NOT NULL,
+    session_id TEXT,
+    from_at INTEGER NOT NULL,
+    to_at INTEGER
+);
+CREATE INDEX coordinator_bindings_by_pane ON coordinator_bindings (pane_id)
+    WHERE to_at IS NULL;
+-- The tenure of the coordinator whose pane started the worker
+-- (`started`'s `owner.coordinator_id`); older workers have none.
+ALTER TABLE workers ADD COLUMN owner_coordinator_id TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -591,6 +622,98 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Records `coordinator_started` and its projection: the tenure's row,
+    /// with the repository's next epoch, and its first binding. The unique
+    /// index refuses a second active tenure of the repository, also one
+    /// another server wrote; the caller checks first with
+    /// [`Self::active_coordinator`] to refuse it by name.
+    pub(super) fn coordinator_started(
+        &self,
+        tenure: &NewTenure<'_>,
+        at_ms: u64,
+    ) -> StoreResult<StoredTenure> {
+        let epoch: i64 = self.tx.query_row(
+            "SELECT coalesce(max(epoch), 0) + 1 FROM coordinators WHERE repo = ?1",
+            [tenure.repo],
+            |row| row.get(0),
+        )?;
+        let event = serde_json::json!({
+            "type": "coordinator_started",
+            "coordinator_id": tenure.id,
+            "repo": tenure.repo,
+            "pane_id": tenure.pane_id,
+            "session_id": tenure.session_id,
+            "epoch": epoch,
+        });
+        self.coordinator_event(tenure.id, &event, at_ms)?;
+        self.tx.execute(
+            "INSERT INTO coordinators (id, repo, item, started_at, ended_at, end_reason, epoch)
+             VALUES (?1, ?2, NULL, ?3, NULL, NULL, ?4)",
+            params![tenure.id, tenure.repo, at_ms as i64, epoch],
+        )?;
+        self.tx.execute(
+            "INSERT INTO coordinator_bindings (coordinator_id, pane_id, session_id, from_at, to_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![tenure.id, tenure.pane_id, tenure.session_id, at_ms as i64],
+        )?;
+        tenure_by_id(self.tx, tenure.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Records `coordinator_ended` with its reason (and `cause`, what herdr
+    /// saw) and ends the tenure and its binding; nothing when it has ended
+    /// already. Returns the tenure as it is now.
+    pub(super) fn coordinator_ended(
+        &self,
+        id: &str,
+        reason: &str,
+        cause: Option<&str>,
+        at_ms: u64,
+    ) -> StoreResult<Option<StoredTenure>> {
+        let Some(tenure) = tenure_by_id(self.tx, id)? else {
+            return Ok(None);
+        };
+        if tenure.ended_at.is_some() {
+            return Ok(Some(tenure));
+        }
+        let event = serde_json::json!({
+            "type": "coordinator_ended",
+            "coordinator_id": id,
+            "reason": reason,
+            "cause": cause,
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE coordinators SET ended_at = ?2, end_reason = ?3
+             WHERE id = ?1 AND ended_at IS NULL",
+            params![id, at_ms as i64, reason],
+        )?;
+        self.tx.execute(
+            "UPDATE coordinator_bindings SET to_at = ?2
+             WHERE coordinator_id = ?1 AND to_at IS NULL",
+            params![id, at_ms as i64],
+        )?;
+        tenure_by_id(self.tx, id)
+    }
+
+    /// The repository's active tenure, as this transaction sees it.
+    pub(super) fn active_coordinator(&self, repo: &str) -> StoreResult<Option<StoredTenure>> {
+        Ok(tenures(self.tx, "t.repo = ?1 AND t.ended_at IS NULL", [repo])?.pop())
+    }
+
+    /// The active tenure bound to `pane_id`, as this transaction sees it.
+    pub(super) fn coordinator_of_pane(&self, pane_id: &str) -> StoreResult<Option<StoredTenure>> {
+        Ok(tenures(self.tx, ACTIVE_OF_PANE, [pane_id])?.pop())
+    }
+
+    fn coordinator_event(&self, id: &str, event: &Value, at_ms: u64) -> StoreResult<i64> {
+        self.event(&EventRow {
+            worker_id: id,
+            direction: super::Direction::Herdr,
+            record: &Recorded::Event(event),
+            ts_ms: at_ms,
+        })
+    }
+
     /// Writes the worker's projection row as of event `seq`.
     pub(super) fn worker(&self, status: &Status, seq: i64) -> StoreResult<()> {
         let tool_sessions: Vec<(u32, Option<u64>)> = status
@@ -608,7 +731,8 @@ impl Tx<'_> {
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
-                    :ended_mid_turn, :item_title, :verification, :takeover_id)
+                    :ended_mid_turn, :item_title, :verification, :takeover_id,
+                    :owner_coordinator_id)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -674,9 +798,92 @@ impl Tx<'_> {
                     .as_ref()
                     .and_then(|verification| serde_json::to_string(verification).ok()),
                 ":takeover_id": status.takeover_id,
+                ":owner_coordinator_id": status.owner_coordinator,
             },
         )?;
         Ok(())
+    }
+}
+
+/// A tenure as `coordinator.start` asks for it.
+pub(super) struct NewTenure<'a> {
+    pub(super) id: &'a str,
+    pub(super) repo: &'a str,
+    pub(super) pane_id: &'a str,
+    pub(super) session_id: Option<&'a str>,
+}
+
+/// One coordination tenure with its latest binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StoredTenure {
+    pub(super) id: String,
+    pub(super) repo: String,
+    pub(super) item: Option<String>,
+    pub(super) started_at: u64,
+    pub(super) ended_at: Option<u64>,
+    pub(super) end_reason: Option<String>,
+    pub(super) epoch: i64,
+    pub(super) pane_id: Option<String>,
+    pub(super) session_id: Option<String>,
+}
+
+const ACTIVE_OF_PANE: &str = "t.ended_at IS NULL AND t.id IN (SELECT coordinator_id \
+    FROM coordinator_bindings WHERE pane_id = ?1 AND to_at IS NULL)";
+
+/// The tenures `filter` (over `coordinators t`) selects, oldest first, each
+/// with its latest binding.
+fn tenures(
+    conn: &Connection,
+    filter: &str,
+    params: impl rusqlite::Params,
+) -> StoreResult<Vec<StoredTenure>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT t.id, t.repo, t.item, t.started_at, t.ended_at, t.end_reason, t.epoch,
+             b.pane_id, b.session_id
+         FROM coordinators t
+         LEFT JOIN coordinator_bindings b ON b.rowid = (SELECT rowid FROM coordinator_bindings
+             WHERE coordinator_id = t.id ORDER BY from_at DESC, rowid DESC LIMIT 1)
+         WHERE {filter}
+         ORDER BY t.started_at, t.rowid"
+    ))?;
+    let rows = statement.query_map(params, |row| {
+        Ok(StoredTenure {
+            id: row.get(0)?,
+            repo: row.get(1)?,
+            item: row.get(2)?,
+            started_at: row.get::<_, i64>(3)? as u64,
+            ended_at: row.get::<_, Option<i64>>(4)?.map(|ms| ms as u64),
+            end_reason: row.get(5)?,
+            epoch: row.get(6)?,
+            pane_id: row.get(7)?,
+            session_id: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
+fn tenure_by_id(conn: &Connection, id: &str) -> StoreResult<Option<StoredTenure>> {
+    Ok(tenures(conn, "t.id = ?1", [id])?.pop())
+}
+
+impl Store {
+    /// The active tenures, of one repository when given.
+    pub(super) fn active_coordinators(&self, repo: Option<&str>) -> StoreResult<Vec<StoredTenure>> {
+        let conn = lock(&self.conn);
+        match repo {
+            Some(repo) => tenures(&conn, "t.ended_at IS NULL AND t.repo = ?1", [repo]),
+            None => tenures(&conn, "t.ended_at IS NULL", []),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn coordinator(&self, id: &str) -> StoreResult<Option<StoredTenure>> {
+        tenure_by_id(&lock(&self.conn), id)
+    }
+
+    /// The active tenure bound to `pane_id`.
+    pub(super) fn coordinator_of_pane(&self, pane_id: &str) -> StoreResult<Option<StoredTenure>> {
+        Ok(tenures(&lock(&self.conn), ACTIVE_OF_PANE, [pane_id])?.pop())
     }
 }
 
@@ -685,7 +892,7 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn, item_title, verification, takeover_id";
+ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -744,6 +951,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.item_title = row.get(40)?;
     status.verification = json(41)?.and_then(|value| serde_json::from_value(value).ok());
     status.takeover_id = row.get(42)?;
+    status.owner_coordinator = row.get(43)?;
     Ok(status)
 }
 
@@ -990,6 +1198,9 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN item_title;
                  ALTER TABLE workers DROP COLUMN verification;
                  ALTER TABLE workers DROP COLUMN takeover_id;
+                 DROP TABLE coordinator_bindings;
+                 DROP TABLE coordinators;
+                 ALTER TABLE workers DROP COLUMN owner_coordinator_id;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1033,8 +1244,11 @@ mod tests {
                 "ALTER TABLE workers DROP COLUMN item_title;
                  ALTER TABLE workers DROP COLUMN verification;
                  ALTER TABLE workers DROP COLUMN takeover_id;
+                 DROP TABLE coordinator_bindings;
+                 DROP TABLE coordinators;
+                 ALTER TABLE workers DROP COLUMN owner_coordinator_id;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 3
+                MIGRATIONS.len() - 4
             ))
             .unwrap();
         drop(store);

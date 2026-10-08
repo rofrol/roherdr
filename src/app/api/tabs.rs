@@ -713,9 +713,48 @@ impl App {
         id: String,
         params: crate::api::schema::TabSetRoleParams,
     ) -> String {
+        use crate::api::schema::TabRole;
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        let focused = tab.layout.focused();
+        // The coordinator role is a coordination tenure's: setting it starts
+        // one for the tab's focused pane (unless a pane of the tab has one),
+        // clearing it ends the tab's; the role then follows the tenures.
+        if let Some(coordinators) = crate::workers::coordinators() {
+            let bound: Vec<String> = self
+                .tab_public_pane_ids(ws_idx, tab_idx)
+                .into_iter()
+                .filter_map(|pane| coordinators.coordinator_of_pane(&pane))
+                .map(|tenure| tenure.coordinator_id)
+                .collect();
+            if params.role == Some(TabRole::Coordinator) {
+                if bound.is_empty() {
+                    if let Err(error) = self.start_coordinator(coordinators, ws_idx, focused, None)
+                    {
+                        return encode_error(id, error.code(), error.to_string());
+                    }
+                }
+            } else {
+                for tenure in bound {
+                    if let Err(error) = coordinators.coordinator_end(
+                        &tenure,
+                        crate::workers::coordinators::ROLE_CLEARED,
+                        None,
+                    ) {
+                        return encode_error(id, error.code(), error.to_string());
+                    }
+                }
+            }
+        }
         let Some(tab) = self
             .state
             .workspaces
@@ -728,6 +767,7 @@ impl App {
             tab.role = params.role;
             self.schedule_session_save();
         }
+        self.sync_coordinator_roles();
         match self.tab_info(ws_idx, tab_idx) {
             Some(tab) => encode_success(id, ResponseResult::TabInfo { tab }),
             None => tab_not_found(id, &params.tab_id),

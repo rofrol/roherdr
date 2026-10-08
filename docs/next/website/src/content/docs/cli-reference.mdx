@@ -417,6 +417,16 @@ herdr worker take-over [--force] <worker_id>
 
 A live handoff (`herdr server live-handoff`, which `herdr update --handoff` also sends) does not carry the workers' pipes. It is refused while any worker's process is alive, in a turn or idle between turns, with a message naming them; end them first with `herdr worker stop <id>` (safe for one idle between turns) and `herdr worker wait <id> --exit`, or hand off anyway with `--force`, which sends them SIGTERM. The server never waits for them inside the handoff. `scripts/herdr_live.sh install` stops the idle workers and waits for their exits itself, and refuses while a worker is in a turn. The server that runs a worker holds a lock on `<id>.lock` beside its journal, so a server started by a handoff marks a worker `lost` only once the old server has let go of it, and an exit journaled later replaces `lost`. A worker whose server ended while it was between turns keeps its last turn's state, with `end_note` "ended by a server restart", instead of `lost`.
 
+A repository has one coordinator at a time (see `coordinator.*` in the socket API):
+
+```bash
+herdr coordinator start [--repo DIR]
+herdr coordinator end [--reason TEXT] [--id COORDINATOR_ID]
+herdr coordinator status [--repo DIR]
+```
+
+`coordinator start` claims the coordination of the repository of `--repo` (default: the caller pane's directory) for the caller's pane (`HERDR_PANE_ID`): a tenure with an id of its own (`c-...`). It is refused with `coordinator_active`, naming the other tenure and its pane, while another pane coordinates that repository. `herdr tab role <tab> coordinator` does the same for the tab's focused pane, and the tab's `♛` follows the tenure: `coordinator end` (this pane's tenure, or `--id`'s) or `herdr tab role <tab> none` ends it, and so does closing its pane or exiting its agent. `coordinator status` lists the active tenures. Workers started from a coordinator's pane carry its tenure's id (`owner_coordinator_id`).
+
 ## Direct terminal attach
 
 ```bash
