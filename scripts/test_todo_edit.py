@@ -2,6 +2,7 @@ import contextlib
 import fcntl
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import todo_edit
+
+ID_RE = re.compile(r" \[t-[a-z2-7]{8}\]|(?<=- \[ \] )\[t-[a-z2-7]{8}\] ")
 
 TODO = """\
 # TODO
@@ -58,6 +61,31 @@ Durable decisions.
 Something decided.
 """
 
+def decision_questions(text):
+    """The "Needs a decision" questions as the rule reads them.
+
+    A question is an item under "Needs a decision" (or its subsections) whose
+    first line ends with `?`, followed by an `Options:` line. Returns
+    (question without the checkbox and id, options) pairs.
+    """
+    doc = todo_edit.Doc(text)
+    root = doc.find_section("Needs a decision")
+    level = doc.headings[root].level
+    inside = {root}
+    for i in range(root + 1, len(doc.headings)):
+        if doc.headings[i].level <= level:
+            break
+        inside.add(i)
+    found = []
+    for item in doc.items:
+        lines = item.body.split("\n")
+        if item.heading not in inside or not lines[0].rstrip().endswith("?"):
+            continue
+        options = next((l.strip()[len("Options:"):].strip() for l in lines[1:] if l.strip().startswith("Options:")), None)
+        question = ID_RE.sub("", lines[0])[len("- [ ] "):].strip()
+        found.append((question, options))
+    return found
+
 
 class TodoEditTests(unittest.TestCase):
     def setUp(self):
@@ -71,6 +99,10 @@ class TodoEditTests(unittest.TestCase):
         path = self.root / f"text{len(list(self.root.iterdir()))}.txt"
         path.write_text(content)
         return str(path)
+
+    def read_without_ids(self):
+        """The file with the minted ids removed, for tests of where text goes."""
+        return ID_RE.sub("", self.todo.read_text())
 
     def files(self):
         return sorted(p.name for p in self.root.iterdir())
@@ -118,7 +150,7 @@ class TodoEditTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, err)
         self.assertEqual(
-            self.todo.read_text(),
+            self.read_without_ids(),
             TODO.replace("  continues here.\n", "  continues here.\n\n- [ ] Third\n  body\n"),
         )
 
@@ -127,15 +159,15 @@ class TodoEditTests(unittest.TestCase):
             "add", "Next, in order", "--after", "First", "--text-file", self.text_file("- [ ] Between\n")
         )
         self.assertEqual(code, 0, err)
-        self.assertIn("  Decided: keep it.\n\n- [ ] Between\n\n- [ ] Second", self.todo.read_text())
+        self.assertIn("  Decided: keep it.\n\n- [ ] Between\n\n- [ ] Second", self.read_without_ids())
         code, _, err = self.run_tool("add", "Proposed", "--top", "--text-file", self.text_file("- [ ] Top\n"))
         self.assertEqual(code, 0, err)
-        self.assertIn("Items agents add.\n\n- [ ] Top\n\n- [ ] Proposed thing", self.todo.read_text())
+        self.assertIn("Items agents add.\n\n- [ ] Top\n\n- [ ] Proposed thing", self.read_without_ids())
 
     def test_add_to_a_section_with_subsections_stays_before_them(self):
         code, _, err = self.run_tool("add", "Needs a decision", "--text-file", self.text_file("- [ ] Here\n"))
         self.assertEqual(code, 0, err)
-        self.assertIn("Moved here in the triage.\n\n- [ ] Here\n\n### Decide\n", self.todo.read_text())
+        self.assertIn("Moved here in the triage.\n\n- [ ] Here\n\n### Decide\n", self.read_without_ids())
 
     def test_add_refuses_bad_input(self):
         self.assert_refused("add", "Nowhere", "--text-file", self.text_file("- [ ] X\n"), message="no heading 'Nowhere'")
@@ -217,13 +249,13 @@ class TodoEditTests(unittest.TestCase):
         self.todo.write_text(TODO.rstrip("\n"))
         code, _, err = self.run_tool("append-to", "Watch this", "--text-file", self.text_file("  More."))
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.todo.read_text(), TODO + "  More.\n")
+        self.assertEqual(self.read_without_ids(), TODO + "  More.\n")
         self.todo.write_text(TODO.rstrip("\n"))
         code, _, err = self.run_tool(
             "add", "Needs you to act or watch", "--text-file", self.text_file("- [ ] Next")
         )
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.todo.read_text(), TODO + "\n- [ ] Next\n")
+        self.assertEqual(self.read_without_ids(), TODO + "\n- [ ] Next\n")
 
     def test_verify_insertion_refuses_a_joined_line(self):
         old = TODO.splitlines(keepends=True)
@@ -445,10 +477,142 @@ class TodoEditTests(unittest.TestCase):
         results = [run.communicate() + (run.returncode,) for run in runs]
         for out, err, code in results:
             self.assertEqual(code, 0, err)
-        text = self.todo.read_text()
+        text = self.read_without_ids()
         for title in ("Third", "Fourth", "Under the lock"):
             self.assertIn(f"- [ ] {title}\n", text)
 
+
+    # Stable ids ------------------------------------------------------------
+
+    QUESTION = TODO.replace(
+        "- [ ] Last decide item\n  Options: a | b\n",
+        "- [ ] Which colour should the dot be?\n  Options: green | blue\n",
+    )
+
+    def ids_of(self, text):
+        return [item.id for item in todo_edit.Doc(text).items]
+
+    def test_assign_gives_every_item_a_unique_id_and_changes_nothing_else(self):
+        code, out, err = self.run_tool("ids", "--assign")
+        self.assertEqual(code, 0, err)
+        self.assertIn("assigned 5 ids", out)
+        ids = self.ids_of(self.todo.read_text())
+        self.assertEqual(len(ids), 5)
+        self.assertNotIn(None, ids)
+        self.assertEqual(len(set(ids)), 5)
+        self.assertEqual(self.read_without_ids(), TODO)
+        self.assertIn(f"- [ ] Second item [{ids[1]}]\n  continues here.\n", self.todo.read_text())
+        # A second run keeps them and writes nothing.
+        before = self.todo.read_text()
+        code, out, _ = self.run_tool("ids", "--assign")
+        self.assertEqual(code, 0)
+        self.assertIn("every item already has an id", out)
+        self.assertEqual(self.todo.read_text(), before)
+
+    def test_assign_on_a_copy_of_the_real_todo(self):
+        real = Path(__file__).resolve().parent.parent / "TODO.md"
+        original = real.read_text()
+        self.todo.write_text(original)
+        code, out, err = self.run_tool("ids", "--assign")
+        self.assertEqual(code, 0, err)
+        text = self.todo.read_text()
+        ids = self.ids_of(text)
+        self.assertEqual(len(ids), len(todo_edit.Doc(original).items))
+        self.assertNotIn(None, ids)
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertIn(f"assigned {len(ids)} ids", out)
+        self.assertEqual(self.read_without_ids(), original)
+        code, _, err = self.run_tool("ids", "--check")
+        self.assertEqual(code, 0, err)
+
+    def test_a_question_keeps_ending_with_a_question_mark(self):
+        self.todo.write_text(self.QUESTION)
+        code, _, err = self.run_tool("ids", "--assign")
+        self.assertEqual(code, 0, err)
+        text = self.todo.read_text()
+        self.assertEqual(self.read_without_ids(), self.QUESTION)
+        question_id = self.ids_of(text)[3]
+        self.assertIn(f"- [ ] [{question_id}] Which colour should the dot be?\n  Options: green | blue\n", text)
+        self.assertEqual(decision_questions(text), decision_questions(self.QUESTION))
+        self.assertEqual(decision_questions(text), [("Which colour should the dot be?", "green | blue")])
+        code, out, _ = self.run_tool("find", "Which colour")
+        self.assertEqual(code, 0)
+        self.assertIn(f"[{question_id}]", out)
+
+    def test_the_decision_questions_of_the_real_todo_survive_assign(self):
+        real = Path(__file__).resolve().parent.parent / "TODO.md"
+        original = real.read_text()
+        self.todo.write_text(original)
+        code, _, err = self.run_tool("ids", "--assign")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(decision_questions(self.todo.read_text()), decision_questions(original))
+
+    def test_check_refuses_duplicates_and_malformed_ids(self):
+        self.run_tool("ids", "--assign")
+        code, out, err = self.run_tool("ids", "--check")
+        self.assertEqual(code, 0, err)
+        self.assertIn("5 items with an id, 0 without", out)
+        good = self.todo.read_text()
+        first, second = self.ids_of(good)[:2]
+        self.todo.write_text(good.replace(f"[{second}]", f"[{first}]"))
+        code, _, err = self.run_tool("ids", "--check")
+        self.assertEqual(code, 1)
+        self.assertIn(f"id {first} is used by 2 items (lines 9, 13)", err)
+        self.assert_refused("find", first, message=f"2 items have the id {first}")
+        self.assert_refused("ids", "--assign", message="fix these ids first")
+        for bad in ("t-ABCDEFGH", "t-abc", "t-abcdefg1"):
+            self.todo.write_text(good.replace(f"[{second}]", f"[{bad}]"))
+            code, _, err = self.run_tool("ids", "--check")
+            self.assertEqual(code, 1, bad)
+            self.assertIn(f"line 13: malformed id [{bad}]", err)
+        self.todo.write_text(good.replace(f"- [ ] Second item [{second}]", f"- [ ] [t-aaaaaaaa] Second item [{second}]"))
+        code, _, err = self.run_tool("ids", "--check")
+        self.assertEqual(code, 1)
+        self.assertIn("line 13: two ids", err)
+
+    def test_find_and_other_commands_accept_an_id(self):
+        self.run_tool("ids", "--assign")
+        ids = self.ids_of(self.todo.read_text())
+        for arg in (ids[1], f"[{ids[1]}]"):
+            code, out, err = self.run_tool("find", arg)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out.strip(), f"TODO > Next, in order: lines 13-14 [{ids[1]}]")
+        # A title prefix still matches across the id at the end of the first line.
+        code, out, _ = self.run_tool("find", "Second item continues")
+        self.assertEqual(code, 0)
+        self.assert_refused("find", "t-aaaaaaaa", message="no item has the id t-aaaaaaaa")
+        code, _, err = self.run_tool("move", ids[2], "Next, in order", "--after", ids[0])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"keep it.\n\n- [ ] Proposed thing [{ids[2]}]\n", self.todo.read_text())
+        code, _, err = self.run_tool("remove", ids[2])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Proposed thing", self.todo.read_text())
+
+    def test_add_mints_an_id_and_refuses_a_taken_one(self):
+        self.run_tool("ids", "--assign")
+        taken = self.ids_of(self.todo.read_text())
+        code, _, err = self.run_tool("add", "Proposed", "--text-file", self.text_file("- [ ] New one\n  body\n"))
+        self.assertEqual(code, 0, err)
+        ids = self.ids_of(self.todo.read_text())
+        minted = (set(ids) - set(taken)).pop()
+        self.assertRegex(minted, r"^t-[a-z2-7]{8}$")
+        self.assertIn(f"- [ ] New one [{minted}]\n  body\n", self.todo.read_text())
+        code, _, err = self.run_tool("add", "Proposed", "--text-file", self.text_file("- [ ] Ask this?\n  Options: x | y\n"))
+        self.assertEqual(code, 0, err)
+        self.assertRegex(self.todo.read_text(), r"- \[ \] \[t-[a-z2-7]{8}\] Ask this\?\n  Options: x \| y\n")
+        self.assert_refused(
+            "add", "Proposed", "--text-file", self.text_file(f"- [ ] Copy [{taken[0]}]\n"), message="already used"
+        )
+        self.assert_refused(
+            "add", "Proposed", "--text-file", self.text_file("- [ ] Bad [t-XYZ]\n"), message="malformed"
+        )
+        code, _, err = self.run_tool("add", "Proposed", "--text-file", self.text_file("- [ ] Kept [t-zzzzzzzz]\n"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("- [ ] Kept [t-zzzzzzzz]\n", self.todo.read_text())
+
+    def test_minted_ids_are_40_random_bits_in_lowercase_base32(self):
+        with mock.patch.object(todo_edit.secrets, "token_bytes", side_effect=[b"\0" * 5, b"\xff" * 5]):
+            self.assertEqual(todo_edit.mint_id({"t-aaaaaaaa"}), "t-77777777")
 
 if __name__ == "__main__":
     unittest.main()
