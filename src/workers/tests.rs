@@ -267,23 +267,9 @@ impl Fixture {
         &self,
         worker_id: &str,
         after: Option<i64>,
-        mut on_block: impl FnMut(),
+        on_block: impl FnMut(),
     ) -> (Attention, usize) {
-        let started = Instant::now();
-        let mut blocked = 0;
-        let attention = self
-            .supervisor
-            .wait_attention(worker_id, after, HANG_GUARD, || {
-                assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
-                blocked += 1;
-                if blocked == 1 {
-                    on_block();
-                }
-                true
-            })
-            .unwrap()
-            .unwrap();
-        (attention, blocked)
+        attention_on(&self.supervisor, worker_id, after, on_block)
     }
 
     fn wait_for_question(&self, worker_id: &str) -> WorkerInfo {
@@ -337,6 +323,29 @@ impl Fixture {
             .map(|record| record["event"].clone())
             .collect()
     }
+}
+
+/// [`Fixture::attention`] on any supervisor (another server).
+fn attention_on(
+    supervisor: &WorkerSupervisor,
+    worker_id: &str,
+    after: Option<i64>,
+    mut on_block: impl FnMut(),
+) -> (Attention, usize) {
+    let started = Instant::now();
+    let mut blocked = 0;
+    let attention = supervisor
+        .wait_attention(worker_id, after, HANG_GUARD, || {
+            assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+            blocked += 1;
+            if blocked == 1 {
+                on_block();
+            }
+            true
+        })
+        .unwrap()
+        .unwrap();
+    (attention, blocked)
 }
 
 fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartParams {
@@ -3123,4 +3132,355 @@ fn a_worker_that_exits_resolves_its_questions_without_escalating() {
         .supervisor
         .owner_event("p1", OwnerEvent::PaneClosed, "");
     assert!(fixture.herdr_events(&id, "owner_gone").is_empty());
+}
+
+// Fault injection (plan step 7 of "Make coordinating headless workers
+// reliable", docs/headless-worker-fault-tests.md). Pass: no event lost,
+// every question resolved or explicitly escalated, no effect twice.
+
+/// The live pipe of a running worker.
+fn live_of(fixture: &Fixture, worker_id: &str) -> Arc<Live> {
+    let registry = lock(&fixture.supervisor.shared.registry);
+    registry.workers[&worker_number(worker_id).unwrap()]
+        .live
+        .clone()
+        .unwrap()
+}
+
+#[test]
+fn a_coordinator_killed_mid_answer_retries_its_command_and_nothing_is_sent_twice() {
+    let fixture = Fixture::new("fault-mid-answer");
+    let id = owned_question(&fixture, "p1");
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    *lock(&live_of(&fixture, &id).hold_next_write) = Some((reached_tx, release_rx));
+    let params = answer_params(&id, WorkerDecision::Allow, Some("a1"));
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| fixture.supervisor.answer(&params));
+        // The answer's intent is stored, its write not done: the
+        // coordinator that sent it dies here.
+        reached.recv_timeout(HANG_GUARD).unwrap();
+        assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answering");
+        assert!(fixture.herdr_events(&id, "answer_sent").is_empty());
+        // Handled as far as its owner is concerned, and off the `?` list.
+        assert!(obligation_of(&fixture, "p1", &id).is_none());
+        assert!(fixture.supervisor.pending_questions().is_empty());
+
+        // A new coordinator that answers again without the id, or with a
+        // new one, is refused: the answer is on its way.
+        for command_id in [None, Some("a2")] {
+            let refused = fixture
+                .supervisor
+                .answer(&answer_params(&id, WorkerDecision::Deny, command_id))
+                .unwrap_err();
+            assert_eq!(refused.code(), "worker_question_gone", "{command_id:?}");
+            assert!(refused.to_string().contains("being sent"), "{refused}");
+        }
+        // Its retry with the same id gets the first call's outcome.
+        let retry = scope.spawn(|| fixture.supervisor.answer(&params));
+        release.send(()).unwrap();
+        let first = first.join().unwrap().unwrap();
+        assert_eq!(retry.join().unwrap().unwrap(), first);
+    });
+    // A retry after it settled replays the stored reply.
+    fixture.supervisor.answer(&params).unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(responses_to(&fixture, &id, "perm-1"), 1);
+    assert_eq!(fixture.herdr_events(&id, "answer_intent").len(), 1);
+    assert_eq!(fixture.herdr_events(&id, "answer_sent").len(), 1);
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answered");
+}
+
+#[test]
+fn a_turn_end_before_the_wait_is_re_armed_still_wakes_it() {
+    let fixture = Fixture::new("fault-re-arm");
+    let id = owned_question(&fixture, "p1");
+    let (asked, _) = fixture.attention(&id, None, || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    // The coordinator dies before it waits again; the turn ends meanwhile.
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let (ended, blocked) = fixture.attention(&id, Some(asked.seq), || {});
+    assert_eq!((ended.reason, blocked), (WorkerAttentionReason::TurnEnd, 0));
+    assert!(ended.seq > asked.seq);
+    // And it is owed until acknowledged, to whichever session comes back.
+    let owed = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(
+        (owed.reason, owed.seq),
+        (WorkerAttentionReason::TurnEnd, ended.seq)
+    );
+}
+
+#[test]
+fn two_questions_at_once_reach_the_wait_and_each_answer_lands_once() {
+    let fixture = Fixture::new("fault-two-questions");
+    let id = fixture.start("pair WebFetch https://example.com");
+    fixture.wait_for(&id, |worker| worker.questions.len() == 2);
+    let (asked, blocked) = fixture.attention(&id, None, || {});
+    assert_eq!(
+        (asked.reason, blocked),
+        (WorkerAttentionReason::Question, 0)
+    );
+    assert_eq!(request_ids(&asked.questions), ["perm-1", "perm-2"]);
+    // Answered at once, by two callers.
+    let (one, two) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| fixture.answer_request(&id, "perm-1", WorkerDecision::Allow));
+        let two = scope.spawn(|| fixture.answer_request(&id, "perm-2", WorkerDecision::Deny));
+        (one.join().unwrap(), two.join().unwrap())
+    });
+    one.unwrap();
+    two.unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("perm-1=allow perm-2=deny")
+    );
+    for request_id in ["perm-1", "perm-2"] {
+        assert_eq!(responses_to(&fixture, &id, request_id), 1, "{request_id}");
+        assert_eq!(question_row_state(&fixture, &id, request_id), "answered");
+    }
+}
+
+#[test]
+fn two_answers_without_a_request_id_send_one() {
+    let fixture = Fixture::new("fault-two-answers");
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let (allow, deny) = std::thread::scope(|scope| {
+        let allow = scope.spawn(|| fixture.answer(&id, Some(WorkerDecision::Allow), &[]));
+        let deny = scope.spawn(|| fixture.answer(&id, Some(WorkerDecision::Deny), &[]));
+        (allow.join().unwrap(), deny.join().unwrap())
+    });
+    let (won, lost) = match (&allow, &deny) {
+        (Ok(_), Err(lost)) => ("allow", lost),
+        (Err(lost), Ok(_)) => ("deny", lost),
+        _ => panic!("exactly one answer must win: {allow:?} {deny:?}"),
+    };
+    assert!(
+        ["worker_no_question", "worker_question_gone"].contains(&lost.code()),
+        "{lost}"
+    );
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let text = worker.last_result.unwrap().text.unwrap();
+    assert!(text.starts_with(won), "{won}: {text}");
+    assert_eq!(responses_to(&fixture, &id, "perm-1"), 1);
+    assert_eq!(fixture.herdr_events(&id, "answer_intent").len(), 1);
+}
+
+#[test]
+fn a_wait_on_the_next_server_wakes_when_the_old_one_lets_its_worker_go() {
+    let fixture = Fixture::new("fault-handoff-wait");
+    let id = owned_question(&fixture, "p1");
+    let (asked, _) = fixture.attention(&id, None, || {});
+    // The next server shares the store, so the coordinator's `after` means
+    // the same there.
+    let next = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let seen = next.status(&id).unwrap();
+    assert_eq!(seen.seq, Some(asked.seq));
+    assert_eq!(request_ids(&seen.questions), ["perm-1"]);
+    // Re-armed on the next server while a forced handoff ends the worker
+    // on the old one.
+    let (gone, blocked) = attention_on(&next, &id, Some(asked.seq), || {
+        assert_eq!(
+            fixture.supervisor.prepare_for_handoff(true).unwrap(),
+            std::slice::from_ref(&id)
+        );
+    });
+    assert!(blocked >= 1);
+    assert_eq!(gone.reason, WorkerAttentionReason::Gone);
+    assert!(gone.seq > asked.seq);
+    let worker = next.status(&id).unwrap();
+    assert_eq!(worker.state, WorkerState::Exited);
+    assert!(worker.questions.is_empty());
+    assert_eq!(worker.settled_questions[0].how, "the worker exited");
+    assert!(fixture.herdr_events(&id, "lost").is_empty());
+    // Not an exit its owner asked for: the owner has to review it.
+    assert_eq!(
+        next.obligations(Some("p1"))[0].reason,
+        WorkerAttentionReason::Gone
+    );
+}
+
+#[test]
+fn a_restart_with_an_answer_in_flight_to_a_live_process_says_so() {
+    let fixture = Fixture::new("fault-restart-answering");
+    let dir = fixture.root.join("workers");
+    // The previous server died with its worker's process still running
+    // and an answer not confirmed sent.
+    let leader = spawn_session_leader();
+    let question = question_from_request(
+        "perm-1",
+        &serde_json::json!({"tool_name": "Bash", "input": {"command": "ls"}}),
+        "asked",
+    );
+    write_journal(
+        &dir,
+        "w3",
+        &[
+            serde_json::json!({"ts_ms": 1, "dir": "herdr", "event": {
+                "type": "started", "cwd": "/repo", "name": "old", "pid": leader.id()}}),
+            serde_json::json!({"ts_ms": 2, "dir": "herdr", "event": {
+                "type": "question", "question": question, "input": {"command": "ls"}}}),
+            serde_json::json!({"ts_ms": 3, "dir": "herdr", "event": {
+                "type": "answer_intent", "request_id": "perm-1", "decision": "allow"}}),
+        ],
+    );
+    let supervisor = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    let worker = supervisor.status("w3").unwrap();
+    terminate(leader);
+    assert_eq!(worker.state, WorkerState::Lost);
+    // Not guessed at and not dropped: reported, the question still shown.
+    let degraded = worker.degraded.unwrap();
+    assert!(
+        degraded.contains("may or may not have received it"),
+        "{degraded}"
+    );
+    assert_eq!(request_ids(&worker.questions), ["perm-1"]);
+    assert_eq!(worker.questions[0].state, WorkerQuestionState::Answering);
+    // A wait answers at once: the worker is gone for this server.
+    let (gone, blocked) = attention_on(&supervisor, "w3", None, || {});
+    assert_eq!((gone.reason, blocked), (WorkerAttentionReason::Gone, 0));
+}
+
+#[test]
+fn a_lost_ack_leaves_the_obligation_and_the_wait_returns_it_again() {
+    let fixture = Fixture::new("fault-lost-ack");
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    // The coordinator handled the turn end but died before its ack.
+    let owed = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(owed.seq, ended.seq);
+    // Its next session waits from scratch and gets the same event.
+    let (again, blocked) = fixture.attention(&id, None, || {});
+    assert_eq!(
+        (again.reason, again.seq, blocked),
+        (WorkerAttentionReason::TurnEnd, ended.seq, 0)
+    );
+    // Owed across a server restart too.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let owed = reopened.obligations(Some("p1"));
+    assert_eq!(owed.len(), 1);
+    assert_eq!(
+        (owed[0].reason, owed[0].seq),
+        (WorkerAttentionReason::TurnEnd, ended.seq)
+    );
+    // The late ack clears it; repeated, it records nothing more.
+    fixture.supervisor.ack(&id, ended.seq).unwrap();
+    fixture.supervisor.ack(&id, ended.seq).unwrap();
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+    assert_eq!(fixture.herdr_events(&id, "acked").len(), 1);
+}
+
+#[test]
+fn two_takeovers_of_an_exited_worker_at_once_claim_it_once() {
+    let fixture = Fixture::new("fault-two-takeovers");
+    let id = fixture.start("crash");
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let (one, two) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| fixture.supervisor.begin_takeover(&id));
+        let two = scope.spawn(|| fixture.supervisor.begin_takeover(&id));
+        (one.join().unwrap(), two.join().unwrap())
+    });
+    let refused = match (one, two) {
+        (Ok(_), Err(refused)) | (Err(refused), Ok(_)) => refused,
+        (one, two) => panic!(
+            "exactly one takeover must win: {:?} {:?}",
+            one.map(|takeover| takeover.session_id),
+            two.map(|takeover| takeover.session_id)
+        ),
+    };
+    assert_eq!(refused.code(), "worker_busy");
+    assert_eq!(fixture.herdr_events(&id, "takeover").len(), 1);
+}
+
+#[test]
+fn a_failed_journal_write_marks_the_worker_degraded_and_loses_no_event() {
+    let fixture = Fixture::new("fault-journal");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    // The export can no longer be written: its open file is dropped and a
+    // directory stands at its path.
+    let journal = {
+        let mut registry = lock(&fixture.supervisor.shared.registry);
+        let entry = registry
+            .workers
+            .get_mut(&worker_number(&id).unwrap())
+            .unwrap();
+        entry.export = None;
+        entry.journal_path.clone()
+    };
+    std::fs::remove_file(&journal).unwrap();
+    std::fs::create_dir(&journal).unwrap();
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    let worker = fixture.wait_for(&id, |worker| worker.turns == 2);
+    let degraded = worker.degraded.unwrap();
+    assert!(
+        degraded.contains("a worker journal write failed"),
+        "{degraded}"
+    );
+    // The store, the worker's record, has both turns.
+    let results: i64 = store_of(&fixture.supervisor)
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM events WHERE worker_id = ?1 AND type = 'result'",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(results, 2);
+    assert!(fixture
+        .supervisor
+        .summaries()
+        .iter()
+        .any(|summary| summary.worker_id == id));
+}
+
+#[test]
+fn a_question_asked_while_the_store_fails_is_not_lost() {
+    let fixture = Fixture::new("fault-store-question");
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    store_of(&fixture.supervisor)
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER forced BEFORE INSERT ON events
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    fixture.supervisor.prompt(&id, ASKS).unwrap();
+    // The wait wakes on it, the owner owes it, the `?` list has it.
+    let (asked, _) = fixture.attention(&id, Some(ended.seq), || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&asked.questions), ["perm-1"]);
+    assert!(asked.seq > ended.seq);
+    let degraded = asked.worker.degraded.unwrap();
+    assert!(degraded.contains("disk full"), "{degraded}");
+    assert_eq!(
+        obligation_of(&fixture, "p1", &id).unwrap().reason,
+        WorkerAttentionReason::Question
+    );
+    assert_eq!(shown_questions(&fixture.supervisor, &id).len(), 1);
+    // It is answered as usual, once.
+    fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(responses_to(&fixture, &id, "perm-1"), 1);
+    // The journal export kept what the store could not, without a seq.
+    let question = fixture
+        .journal(&id)
+        .into_iter()
+        .find(|record| record["event"]["type"] == "question")
+        .unwrap();
+    assert!(question.get("seq").is_none(), "{question}");
 }
