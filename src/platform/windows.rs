@@ -2563,6 +2563,22 @@ pub fn session_members(_session_id: u32) -> Vec<u32> {
     Vec::new()
 }
 
+/// Not read on Windows: another process's environment needs its memory.
+/// A takeover tab is then found by its title only.
+pub fn process_env_value(_pid: u32, _key: &str) -> Option<String> {
+    None
+}
+
+/// Not read on Windows: another process's command line needs its memory.
+pub fn processes_with_argv(_matches: &dyn Fn(&[String]) -> bool) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Not read on Windows; see [`processes_with_argv`].
+pub fn process_parent(_pid: u32) -> Option<u32> {
+    None
+}
+
 pub fn signal_processes(pids: &[u32], signal: Signal) {
     if signal == Signal::Hangup {
         return;

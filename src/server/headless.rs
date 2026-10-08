@@ -425,6 +425,9 @@ impl HeadlessServer {
         }));
         // What a previous server saw of the workers' owners is gone.
         self.app.reevaluate_worker_owners_at_start();
+        // A takeover tab opened by a previous server that ended before
+        // journaling it is found by its id and adopted.
+        self.app.recover_unfinished_takeovers_at_start();
 
         let mut needs_render = true;
         let mut needs_full_render = true;

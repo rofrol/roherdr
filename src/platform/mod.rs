@@ -748,6 +748,26 @@ pub(crate) fn parse_agent_env_hint(environ: &[u8]) -> Option<crate::detect::Agen
     None
 }
 
+/// The value of `key` in a NUL-separated `KEY=value` environment block.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn env_record_value(environ: &[u8], key: &str) -> Option<String> {
+    environ.split(|&byte| byte == 0).find_map(|record| {
+        let value = record.strip_prefix(key.as_bytes())?.strip_prefix(b"=")?;
+        std::str::from_utf8(value).ok().map(str::to_owned)
+    })
+}
+
+/// Whether a command line resumes the agent session `session_id`
+/// (`--resume <id>` or `--resume=<id>`, as `claude` takes it).
+pub(crate) fn argv_resumes_session(argv: &[String], session_id: &str) -> bool {
+    argv.iter().enumerate().any(|(index, arg)| {
+        (arg == "--resume" && argv.get(index + 1).is_some_and(|next| next == session_id))
+            || arg
+                .strip_prefix("--resume=")
+                .is_some_and(|value| value == session_id)
+    })
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[derive(Debug)]
 pub(crate) struct InputSourceRestore;
@@ -837,6 +857,40 @@ mod tests {
             sessions_of_descendants(10, &parents, 5, session_of),
             vec![12, 14]
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn env_record_value_matches_the_whole_key() {
+        let environ = b"HERDR_TAKEOVER_ID_OLD=x\0HERDR_TAKEOVER_ID=tk-1\0PATH=/bin\0";
+        assert_eq!(
+            env_record_value(environ, "HERDR_TAKEOVER_ID").as_deref(),
+            Some("tk-1")
+        );
+        assert_eq!(env_record_value(environ, "HOME"), None);
+    }
+
+    #[test]
+    fn argv_resumes_session_takes_both_spellings_and_only_that_session() {
+        let argv = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| part.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(argv_resumes_session(
+            &argv(&["node", "/bin/claude", "--resume", "s-1"]),
+            "s-1"
+        ));
+        assert!(argv_resumes_session(
+            &argv(&["claude", "--resume=s-1"]),
+            "s-1"
+        ));
+        assert!(!argv_resumes_session(
+            &argv(&["claude", "--resume", "s-2"]),
+            "s-1"
+        ));
+        assert!(!argv_resumes_session(&argv(&["claude", "s-1"]), "s-1"));
     }
 
     #[test]

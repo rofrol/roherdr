@@ -1126,6 +1126,28 @@ pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
     super::parse_agent_env_hint(procargs2_env(&buf)?)
 }
 
+/// The value of `key` in the environment `pid` was started with.
+pub fn process_env_value(pid: u32, key: &str) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    let buf = kern_procargs2(pid)?;
+    super::env_record_value(procargs2_env(&buf)?, key)
+}
+
+/// The live processes whose arguments `matches` accepts.
+pub fn processes_with_argv(matches: &dyn Fn(&[String]) -> bool) -> Vec<u32> {
+    all_pids()
+        .into_iter()
+        .filter(|pid| process_argv(*pid).is_some_and(|argv| matches(&argv)))
+        .collect()
+}
+
+/// The parent of a live process.
+pub fn process_parent(pid: u32) -> Option<u32> {
+    process_bsdinfo(pid).map(|info| info.pbi_ppid)
+}
+
 fn procargs2_argv_start(rest: &[u8]) -> Option<usize> {
     let exec_end = rest.iter().position(|&byte| byte == 0)?;
     let mut pos = exec_end;

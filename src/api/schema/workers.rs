@@ -506,6 +506,10 @@ pub struct WorkerInfo {
     /// worker is being ended so its session can resume in a tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takeover_ms: Option<u64>,
+    /// The takeover's unique id: its tab carries it in `HERDR_TAKEOVER_ID`
+    /// and its title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_id: Option<String>,
     /// The tab the takeover opened to resume the worker's session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takeover_tab_id: Option<String>,
@@ -514,8 +518,9 @@ pub struct WorkerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takeover_error: Option<String>,
     /// A takeover claimed by an earlier server that did not record opening
-    /// its tab: a tab may or may not resume the session. A new takeover is
-    /// accepted.
+    /// its tab, and whose tab (by its id) or a process resuming the session
+    /// was not found: a tab may or may not resume the session. Only
+    /// `worker.force_take_over` retries it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takeover_unfinished: bool,
     /// How a worker ended that keeps its last turn's state: one that had

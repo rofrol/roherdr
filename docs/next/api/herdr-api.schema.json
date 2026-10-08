@@ -6576,6 +6576,23 @@
           "type": "object"
         },
         {
+          "description": "`worker.take_over` that also retries a takeover an earlier server\nleft unfinished when no tab or process resuming the session was\nfound: a tab it opened unseen would be a second writer of the\nsession. A method of its own, since `worker.take_over`'s shape is\nfrozen for clients.",
+          "properties": {
+            "method": {
+              "const": "worker.force_take_over",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "notification.show",
@@ -14287,6 +14304,13 @@
                 "null"
               ]
             },
+            "takeover_id": {
+              "description": "The takeover's unique id: its tab carries it in `HERDR_TAKEOVER_ID`\nand its title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "takeover_ms": {
               "description": "Unix milliseconds when a takeover began (`worker.take_over`): the\nworker is being ended so its session can resume in a tab.",
               "format": "uint64",
@@ -14304,7 +14328,7 @@
               ]
             },
             "takeover_unfinished": {
-              "description": "A takeover claimed by an earlier server that did not record opening\nits tab: a tab may or may not resume the session. A new takeover is\naccepted.",
+              "description": "A takeover claimed by an earlier server that did not record opening\nits tab, and whose tab (by its id) or a process resuming the session\nwas not found: a tab may or may not resume the session. Only\n`worker.force_take_over` retries it.",
               "type": "boolean"
             },
             "tool_sessions": {

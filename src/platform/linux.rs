@@ -795,6 +795,31 @@ pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
     super::parse_agent_env_hint(&environ)
 }
 
+/// The value of `key` in the environment `pid` was started with.
+pub fn process_env_value(pid: u32, key: &str) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    let (_, comm, state) = process_pgrp_comm_and_state(pid)?;
+    if !process_allows_remote_memory_read(state, &comm, running_inside_wsl()) {
+        return None;
+    }
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    super::env_record_value(&environ, key)
+}
+
+/// The live processes whose arguments `matches` accepts.
+pub fn processes_with_argv(matches: &dyn Fn(&[String]) -> bool) -> Vec<u32> {
+    proc_pids()
+        .filter(|pid| process_argv(*pid).is_some_and(|argv| matches(&argv)))
+        .collect()
+}
+
+/// The parent of a live process.
+pub fn process_parent(pid: u32) -> Option<u32> {
+    process_name_and_parent(pid).map(|(_, parent)| parent)
+}
+
 pub fn session_processes(child_pid: u32) -> Vec<u32> {
     let Some(session_id) = process_session_id(child_pid) else {
         return Vec::new();
