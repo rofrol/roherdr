@@ -1321,7 +1321,8 @@ impl App {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
-            | Method::WorkerEscalate(_) => {
+            | Method::WorkerEscalate(_)
+            | Method::WorkerVerify(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

@@ -4954,6 +4954,7 @@ fn worker_run(
         commits: vec!["abc1234".into()],
         questions: 1,
         journal_path: format!("/state/{worker_id}.jsonl"),
+        verification: None,
     }
 }
 
@@ -4976,12 +4977,22 @@ fn worker_runs_reply() -> crate::api::schema::ResponseResult {
                 item: "t-abcd2345".into(),
                 repo: Some("/repo".into()),
                 runs: vec![
-                    worker_run(
-                        "w1",
-                        WorkerRunOutcome::Finished,
-                        1_790_632_000_000,
-                        Some(1_790_632_500_000),
-                    ),
+                    crate::api::schema::WorkerRun {
+                        verification: Some(crate::api::schema::WorkerVerification {
+                            verdict: crate::api::schema::WorkerVerdict::Verified,
+                            base: "base1".into(),
+                            head: Some("abc1234".into()),
+                            commits: vec!["abc1234".into()],
+                            checks: Vec::new(),
+                            verified_ms: 1_790_632_600_000,
+                        }),
+                        ..worker_run(
+                            "w1",
+                            WorkerRunOutcome::Finished,
+                            1_790_632_000_000,
+                            Some(1_790_632_500_000),
+                        )
+                    },
                     worker_run("w2", WorkerRunOutcome::Running, 1_790_632_600_000, None),
                 ],
                 title: Some("Items popup from the server".into()),
@@ -5139,7 +5150,9 @@ fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
     let rows = items_rows_text(&state, &frame);
     assert_eq!(rows.len(), 3, "{rows:#?}");
     assert!(rows[1].contains("w2 · running"), "{rows:#?}");
-    assert!(rows[2].contains("w1 · finished"), "{rows:#?}");
+    // With herdr's verdict on its commit.
+    assert!(rows[2].contains("w1 · finished · verified"), "{rows:#?}");
+    assert!(!rows[1].contains("verif"), "{rows:#?}");
     assert!(
         rows[2].contains("2 turns · 1 question · abc1234"),
         "{rows:#?}"

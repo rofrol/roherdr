@@ -196,6 +196,11 @@ UPDATE workers SET item_title = (SELECT json_extract(body, '$.item_title') FROM 
     WHERE worker_id = workers.id AND direction = 'herdr' AND type = 'started'
     ORDER BY seq LIMIT 1);
 "#,
+    r#"
+-- The latest `worker.verify` verdict with its evidence (`verification`'s
+-- `verification`), so `worker.runs` shows it. Older workers have none.
+ALTER TABLE workers ADD COLUMN verification TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -593,7 +598,7 @@ impl Tx<'_> {
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
-                    :ended_mid_turn, :item_title)
+                    :ended_mid_turn, :item_title, :verification)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -654,6 +659,10 @@ impl Tx<'_> {
                 ":questions_asked": status.questions_asked,
                 ":ended_mid_turn": status.ended_mid_turn,
                 ":item_title": status.item_title,
+                ":verification": status
+                    .verification
+                    .as_ref()
+                    .and_then(|verification| serde_json::to_string(verification).ok()),
             },
         )?;
         Ok(())
@@ -665,7 +674,7 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn, item_title";
+ended_mid_turn, item_title, verification";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -722,6 +731,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.questions_asked = row.get(38)?;
     status.ended_mid_turn = row.get(39)?;
     status.item_title = row.get(40)?;
+    status.verification = json(41)?.and_then(|value| serde_json::from_value(value).ok());
     Ok(status)
 }
 
@@ -966,6 +976,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN questions_asked;
                  ALTER TABLE workers DROP COLUMN ended_mid_turn;
                  ALTER TABLE workers DROP COLUMN item_title;
+                 ALTER TABLE workers DROP COLUMN verification;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -984,6 +995,7 @@ mod tests {
         assert_eq!((loaded.item, loaded.repo), (None, None));
         assert_eq!(loaded.item_title, None);
         assert!(loaded.done_commits.is_empty());
+        assert_eq!(loaded.verification, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1006,8 +1018,9 @@ mod tests {
             .connection()
             .execute_batch(&format!(
                 "ALTER TABLE workers DROP COLUMN item_title;
+                 ALTER TABLE workers DROP COLUMN verification;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 1
+                MIGRATIONS.len() - 2
             ))
             .unwrap();
         drop(store);

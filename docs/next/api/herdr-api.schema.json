@@ -5427,6 +5427,23 @@
           ],
           "type": "object"
         },
+        "WorkerGeneratedFile": {
+          "description": "A committed file and the shell command that regenerates it.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "path": {
+              "description": "Relative to the worker's directory.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "command"
+          ],
+          "type": "object"
+        },
         "WorkerInterruptParams": {
           "properties": {
             "command_id": {
@@ -5637,6 +5654,50 @@
           },
           "required": [
             "worker_id"
+          ],
+          "type": "object"
+        },
+        "WorkerVerifyParams": {
+          "description": "Herdr checks a worker's commit and decides its verdict, instead of the\nworker's own word (`WORKER-DONE`). Runs in the worker's directory,\noutside its sandbox, after the worker has ended.",
+          "properties": {
+            "allowed_paths": {
+              "description": "Git glob pathspecs (`src/**`, `AGENTS.md`) the commit's changed\npaths must stay within.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "base": {
+              "description": "The commit the worker's branch started from.",
+              "type": "string"
+            },
+            "command": {
+              "description": "A shell command (`sh -c`) that must exit 0 in the worker's directory,\nsuch as the tests of the change. It runs as long as it takes.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "expected_message": {
+              "description": "The exact commit message: one subject line, no body or trailers.",
+              "type": "string"
+            },
+            "generated": {
+              "description": "Generated files that must regenerate to the committed bytes.",
+              "items": {
+                "$ref": "#/schemas/request/$defs/WorkerGeneratedFile"
+              },
+              "type": "array"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "base",
+            "expected_message",
+            "allowed_paths"
           ],
           "type": "object"
         },
@@ -6455,6 +6516,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerEscalateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Herdr checks the worker's commit (its message, paths, worktree and\nprocesses, generated files, a command) and decides its verdict.",
+          "properties": {
+            "method": {
+              "const": "worker.verify",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerVerifyParams"
             }
           },
           "required": [
@@ -12028,6 +12106,23 @@
               "type": "object"
             },
             {
+              "description": "`worker.verify`'s reply: the verdict herdr decided and its evidence.",
+              "properties": {
+                "type": {
+                  "const": "worker_verification",
+                  "type": "string"
+                },
+                "verification": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerification"
+                }
+              },
+              "required": [
+                "type",
+                "verification"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -13990,6 +14085,28 @@
             }
           ]
         },
+        "WorkerCheckOutcome": {
+          "oneOf": [
+            {
+              "enum": [
+                "passed",
+                "failed",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "It could not run.",
+              "type": "string"
+            },
+            {
+              "const": "skipped",
+              "description": "Not run: an earlier check made it meaningless (a dirty worktree).",
+              "type": "string"
+            }
+          ]
+        },
         "WorkerChoiceQuestion": {
           "properties": {
             "header": {
@@ -14513,6 +14630,17 @@
               "minimum": 0,
               "type": "integer"
             },
+            "verification": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerification"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The latest `worker.verify` of its work; absent when none ran."
+            },
             "worker_id": {
               "type": "string"
             }
@@ -14682,6 +14810,87 @@
           "required": [
             "subtype",
             "is_error"
+          ],
+          "type": "object"
+        },
+        "WorkerVerdict": {
+          "description": "`verified` only when every check passed; `failed` when any failed;\n`unavailable` when none failed but one could not run (a missing\ncommand, git unavailable), which is never a pass.",
+          "enum": [
+            "verified",
+            "failed",
+            "unavailable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "WorkerVerification": {
+          "description": "What `worker.verify` decided, with the evidence of each check.",
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "checks": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerVerifyCheck"
+              },
+              "type": "array"
+            },
+            "commits": {
+              "description": "The commits from `base` to the head, oldest first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "head": {
+              "description": "The branch's head when it was checked; absent when git could not\nread it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "verdict": {
+              "$ref": "#/schemas/success_response/$defs/WorkerVerdict"
+            },
+            "verified_ms": {
+              "description": "Unix milliseconds when the verdict was reached.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "verdict",
+            "base",
+            "checks",
+            "verified_ms"
+          ],
+          "type": "object"
+        },
+        "WorkerVerifyCheck": {
+          "description": "One check: `commits`, `message`, `paths`, `clean_tree`, `processes`,\n`generated` (with its `path`) or `command`.",
+          "properties": {
+            "check": {
+              "type": "string"
+            },
+            "detail": {
+              "description": "The evidence: what failed, or the output's last lines.",
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/WorkerCheckOutcome"
+            },
+            "path": {
+              "description": "With `generated`: the file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "check",
+            "outcome"
           ],
           "type": "object"
         },
