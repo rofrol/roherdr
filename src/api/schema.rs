@@ -80,7 +80,7 @@ pub enum Method {
     #[serde(rename = "worker.stop")]
     WorkerStop(WorkerTarget),
     #[serde(rename = "worker.kill")]
-    WorkerKill(WorkerTarget),
+    WorkerKill(WorkerKillParams),
     #[serde(rename = "worker.answer")]
     WorkerAnswer(WorkerAnswerParams),
     /// Opens the worker's journal, read-only, in a popup that follows it.

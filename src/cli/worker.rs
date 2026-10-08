@@ -1,6 +1,6 @@
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAnswerParams, WorkerDecision, WorkerPromptParams,
-    WorkerStartParams, WorkerTarget, WorkerWaitParams, WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAnswerParams, WorkerDecision, WorkerKillParams,
+    WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
@@ -20,7 +20,9 @@ const USAGE: &str =
   herdr worker prompt <worker_id> <text>
   herdr worker interrupt <worker_id>
   herdr worker stop <worker_id>
-  herdr worker kill <worker_id>
+  herdr worker kill <worker_id> [--force]
+    SIGKILL to the worker and to its recorded tool sessions whose leader is
+    still the recorded process; an exited or lost worker needs --force.
   herdr worker answer <worker_id> --request REQUEST_ID [--message TEXT] allow|deny|<choice>...
     --request names the question (its request_id in worker status or the ? list).
     A choice is an option's label or 1-based number, or free text; give one per
@@ -94,7 +96,17 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         },
         "interrupt" => Method::WorkerInterrupt(target(rest)?),
         "stop" => Method::WorkerStop(target(rest)?),
-        "kill" => Method::WorkerKill(target(rest)?),
+        "kill" => {
+            let (force, ids): (Vec<&String>, Vec<&String>) =
+                rest.iter().partition(|arg| arg.as_str() == "--force");
+            let [worker_id] = ids.as_slice() else {
+                return Err("kill takes one worker id".into());
+            };
+            Method::WorkerKill(WorkerKillParams {
+                worker_id: (*worker_id).clone(),
+                force: !force.is_empty(),
+            })
+        }
         "answer" => Method::WorkerAnswer(parse_answer(rest)?),
         "take-over" => Method::WorkerTakeOver(target(rest)?),
         "help" | "--help" | "-h" => return Ok(None),
@@ -427,6 +439,25 @@ mod tests {
         assert!(parse_worker_args(&args(&["wait", "w1", "w2"])).is_err());
         assert!(parse_worker_args(&args(&["stop"])).is_err());
         assert!(parse_worker_args(&args(&["start"])).is_err());
+    }
+
+    #[test]
+    fn parses_kill_with_and_without_force() {
+        assert!(matches!(
+            parse_worker_args(&args(&["kill", "w1"])),
+            Ok(Some(Method::WorkerKill(WorkerKillParams {
+                force: false,
+                ..
+            })))
+        ));
+        assert!(matches!(
+            parse_worker_args(&args(&["kill", "--force", "w1"])),
+            Ok(Some(Method::WorkerKill(WorkerKillParams {
+                force: true,
+                ..
+            })))
+        ));
+        assert!(parse_worker_args(&args(&["kill", "--force"])).is_err());
     }
 
     #[test]

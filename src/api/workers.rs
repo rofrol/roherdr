@@ -74,7 +74,10 @@ fn handle_immediate(
         Method::WorkerPrompt(params) => supervisor.prompt(&params.worker_id, &params.text)?,
         Method::WorkerInterrupt(target) => supervisor.interrupt(&target.worker_id)?,
         Method::WorkerStop(target) => supervisor.stop(&target.worker_id)?,
-        Method::WorkerKill(target) => supervisor.kill(&target.worker_id)?,
+        Method::WorkerKill(params) => {
+            let (worker, killed) = supervisor.kill(&params.worker_id, params.force)?;
+            return Ok(ResponseResult::WorkerKilled { worker, killed });
+        }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
         _ => return Err(WorkerError::Invalid("not a worker method".into())),
     };
