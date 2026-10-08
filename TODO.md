@@ -11,7 +11,7 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The sidebar shows only live workers; ended work is reached through its
+- [ ] The sidebar shows only live workers; ended work is reached through its [t-huexxrlp]
   TODO item (user, 2026-10-08, with a screenshot of 18 "exited" lines:
   "exited but not closed? what for? wouldn't a UI be better where I go to
   the log tied to a given TODO item, and there may be several when workers
@@ -40,7 +40,7 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     only; the item history table and tenures later. MiMo's "stale after
     24 h" was dismissed: no timers (the user's events-only decision).
 
-- [ ] A coordinator stops between items without being asked (user,
+- [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
   the herdr coordinator answered the user's mid-turn questions, wrote a
@@ -115,7 +115,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the Stop hook's nudge itself. Left: step 5 (the audit over real
   coordinator transcripts after a few days, compare with 5.6 per 100); a
   variant of the trial that asks while the coordinator idles.
-- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of
+- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
   about 30 minutes? too much? why any asynchronous workaround at all? make
   a TODO with the models to fix this and do it next"). Supersedes the
   polling/deadline design below (worker `w-worker-end`'s commit is not taken).
@@ -162,7 +162,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `interrupted`); an explicit signal for it could come from the
   transcript's `[Request interrupted by user` marker, verified live first.
 
-- [ ] Why the "added delay is a bug signal" rule did not hold (user,
+- [ ] Why the "added delay is a bug signal" rule did not hold (user, [t-v65dxbip]
   2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
   apply it? ask the models"). It is in `~/.claude/CLAUDE.md` ("Added delay
   is a bug signal") and Rule 10 of `~/personal_projects/agents.md/AGENTS.md`.
@@ -198,7 +198,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Known gap: headless workers start with `disableAllHooks`, so it does not
   reach them.
 
-- [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
+- [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about [t-ul4yd4ll]
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
   the models; add it to TODO as next"). `openpty: Device not configured`
@@ -253,7 +253,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `invalidate` are dead code on Windows; a worker gates them with cfg
   (AGENTS.md: platform code compile-gated) before push and install.
 
-- [ ] Ideas from Omarchy's "agent account" (user, 2026-10-07: "add all of
+- [ ] Ideas from Omarchy's "agent account" (user, 2026-10-07: "add all of [t-gtzcciut]
   it to the TODO as 4, ask the models"; omacom/omarchy PRs 13770 and 13992:
   several Claude/Codex/Grok logins, new sessions move to the account with
   the most headroom near 95%, limit meters with reset times). Round
@@ -302,7 +302,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      second account per provider, together with the subscription terms on
      several accounts (both models: all of them can be suspended at once).
 
-- [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY
+- [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY [t-fjbflpho]
   per agent (user, 2026-10-07: "we ran out of pseudo-terminals today;
   analyse whether T3 Code's approach with an SDK is better here; ask the
   models"; third in the queue). Today each agent, shell and herdr-job runs
@@ -438,7 +438,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      steps 1-2 (fewer questions, the wake on questions) and the commit
      rule item.
 
-- [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
+- [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`, [t-5dqymmsm]
   user 2026-10-07: "it must be like a database transaction"). 15 findings
   verified by the worker, the critical one also by the coordinator. Until
   fix 3 lands: no install while a headless worker runs (finding 1: the new
@@ -549,7 +549,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   slot's `target/` under 10 GiB before each start, removes it when the
   disk stays under the guard threshold, else refuses the start.
 
-- [ ] Headless workers ask the user almost never (user, 2026-10-07, after
+- [ ] Headless workers ask the user almost never (user, 2026-10-07, after [t-u4znflk7]
   two approval questions from worker `w1` for a heredoc draft in `/tmp`:
   "why do you ask me about such trivia? allow. It was supposed to be
   without me, or as little as possible. Ask the models"). Until this lands
@@ -628,7 +628,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `can_use_tool` event), so whatever still needs an answer reaches the
   coordinator first and the user only when the coordinator cannot decide.
 
-- [ ] A history of finished TODO items to look through afterwards (user,
+- [ ] A history of finished TODO items to look through afterwards (user, [t-jlw2bqrz]
   2026-10-07, next: "some dropdown list under the coordinator with the TODO
   text, what was done and what conclusions, whether new TODO entries were
   made after it finished. Store it somewhere in SQL? Ask the models. I want
@@ -662,7 +662,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   history is kept outside the repository, under herdr's state dir per
   repository, not committed (so it is private and local to this machine).
 
-- [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user,
+- [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user, [t-e3wrhvox]
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
   many for the current terminal, now Ghostty, e.g. 450/500; ask the models";
   fourth in the queue). The macOS limit `kern.tty.ptmx_max` is system-wide,
@@ -680,7 +680,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   seen in the incident): counting `/dev/ttys*` may not track live
   allocations; find an accurate source (`lsof /dev/ptmx`, sysctl) first.
 
-- [ ] Usage summed per workspace. The author asked every session for its
+- [ ] Usage summed per workspace. The author asked every session for its [t-kjpuc4zm]
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
   with the provider's bill, and resumed sessions counted twice (sol).
@@ -688,7 +688,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   similar), resumed sessions counted once by session id, labelled an
   estimate, not the bill; no sidebar total yet.
 
-- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
+- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job, [t-xieekngb]
   but it did not close the job." The explicit close is fixed (`DECISIONS.md`,
   "Closing a parent's last pane"); a parent whose shell exits by itself
   keeps its jobs on purpose, but nothing shows it.
@@ -697,7 +697,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   mark on the orphaned rows (sol, DeepSeek, MiMo); no new "Close tab, keep
   jobs" button.
 
-- [ ] The tab state does not show that something runs in the background
+- [ ] The tab state does not show that something runs in the background [t-fyd7ts3f]
   (user, 2026-10-06, screenshot: "the tab state doesn't show that something
   is running in the background"). Space `music-mpd`: the tab showed idle
   while Claude waited for a finite `musicdb update` (about 2 minutes), its
@@ -719,7 +719,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     text, not colour (16-colour themes, `NO_COLOR`). Consult calls
     `557d6c84`, `56fe2bac`, `f2132f2c`, `9c834783`.
 
-- [ ] Consult cost per model and the coordinator's extra spend (user,
+- [ ] Consult cost per model and the coordinator's extra spend (user, [t-4hgsm43b]
   2026-10-03: "how much money/tokens a model used on a consult, and how much
   more the coordinator burned by asking it"). Today every call logs normalized
   usage, but no money, and the coordinator's own tokens are not logged at all.
@@ -741,14 +741,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   usage summed per round from the transcript, labelled "consult-
   associated".
 
-- [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py`
+- [ ] Naming: `ask_*` scripts versus the `consult` plugin and `consult.py` [t-xl4wcb52]
   (user, 2026-10-03: "do we need to unify ask in one place and consult in
   another?"). `consult` names the bundle and the stats, `ask_*` are the
   per-vendor adapters; renaming would split the log keys (`skill` field).
   Decided by the user 2026-10-06: keep the names; add one README line
   explaining them.
 
-- [ ] Consult stats default view: mixed rows, too much data, and why `astra
+- [ ] Consult stats default view: mixed rows, too much data, and why `astra [t-puirz3p4]
   -r` ranks above `astra` (user, 2026-10-03: "astra -r better than astra, why?
   how do you rate these models now? The table is mixed up, deepseek is third;
   maybe show last week as the first table. Very much data; is it needed? ask
@@ -767,7 +767,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-06: default to the current set over the last
   7 days; merge the unknown-version DeepSeek alias row into V4.1.
 
-- [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats
+- [ ] Consult stats by lineup (user, 2026-10-03: "shouldn't consult stats [t-xxmtseue]
   show which models were tested together, e.g. sol ds mimo, and now a new
   stage sol mimo? ask the models"). Unique per call only compares models
   asked beside the same companions; the log has 32 distinct lineups. Round
@@ -789,7 +789,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   --lineups`, the current lineup first by default; no named stages (the
   consult skill records set changes).
 
-- [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple
+- [ ] "Consult: models" menu with checkboxes (user, 2026-10-03: "a simple [t-hdb3644s]
   menu: which models are used for consultation now, a checkbox to enable or
   disable, its rank, uniqueness, error rate, and maybe how much the
   coordinator's token cost increases"). Narrows the deferred settings >
@@ -821,7 +821,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     cost item above. Subscription models show "included", never `$0`.
   - Later: a `doctor` mark for an enabled model without a key or CLI.
 
-- [ ] Consult stats per model over time, to spot a silently "nerfed" model
+- [ ] Consult stats per model over time, to spot a silently "nerfed" model [t-62w3fpsp]
   (user, 2026-10-03: "what if we showed stats for a model over time? we could
   detect a nerfed model. How to display those graphs then? ask the models").
   `model_version` exists for DeepSeek, MiMo and Claude, never for the GPT
@@ -835,7 +835,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   rule fixed in advance; text in the `page-consult` popup, no kitty-graphics
   PNG (`less -R` strips it).
 
-- [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot
+- [ ] No `?` on a tab that ended with a question (user, 2026-10-01, screenshot [t-goai2j6u]
   of this very session: the tab showed the idle green ring after a turn that
   ended "Install this build, push the commits, or fix the flaky test first?").
   The Claude Code Stop-hook check is done (`DECISIONS.md`, "Stop-hook check
@@ -853,7 +853,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   agree on; if not, move the item back under Needs a decision with their
   findings.
 
-- [ ] Consider adding a subtle gradient in the empty space between the job
+- [ ] Consider adding a subtle gradient in the empty space between the job [t-azup3ly4]
   indicators and the next tab in the sidebar (screenshot, 2026-09-29 23:53).
   Show several visual variants in the terminal before choosing one; generate
   the demos with Python, as Claude did previously.
@@ -861,7 +861,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   for the user to view in a tab, then moves the item back under Needs a
   decision with the variants named, so the user picks one with a click.
 
-- [ ] Remove the agents panel; fold agents into spaces. The spaces list
+- [ ] Remove the agents panel; fold agents into spaces. The spaces list [t-kuaojupm]
   already shows vertical tabs with job squares (`DECISIONS.md`, "Vertical
   tabs and job squares"); the old panel is only hidden by
   `ui.sidebar.show_agents_panel = false`.
@@ -872,7 +872,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Also open: space drag and drop in the multi-machine sidebar still works
     from the drawn spaces only.
 
-- [ ] Dragging a space does not show where it will land (screenshot
+- [ ] Dragging a space does not show where it will land (screenshot [t-llnkot6j]
   2026-09-26, dragging `herdr`). The live reorder is done (`DECISIONS.md`,
   "Dragging spaces"). Open:
   - A collapsed space does not show that it is the focused one (screenshot
@@ -898,7 +898,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   moves the item back under Needs a decision with the variants named, so
   the user picks with a click.
 
-- [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update,
+- [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update, [t-wbgh3nrb]
   resuming their sessions, e.g. when Claude reports that a new version is
   available. Should herdr tell the instances to restart once they finish
   their work? The manual restart exists (`DECISIONS.md`, "Restart agents").
@@ -913,7 +913,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     draft check. Restart only an idle pane: not blocked, no draft, no
     subagents (`SubagentStop` hook), no jobs; one at a time.
 
-- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn
+- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
   ends with new commits, list them as "to review" until I acknowledge them.
   Decided by the user 2026-10-06: start with lazygit in a popup on the
   tab's repository, no new code beyond that; a herdr-native list only if
@@ -925,14 +925,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   range); only an explicit acknowledgement clears "to review". Codex and pi
   need an equivalent of the trailer.
 
-- [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06,
+- [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06, [t-cdr6gn32]
   after a consult round on GLM and Kimi, `20261006-221442-cf9e`, where both
   models advised checking this before adding any model.) From consult-stats,
   compare MiMo with Sol over shared rounds (`consult.py stats --vs`):
   accepted unique findings per call, dismissed share, errors, latency. Then
   propose keep, replace or drop, with the numbers, under Needs a decision.
 
-- [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in
+- [ ] Pin a tab: pinned tabs are marked with a pin icon (or similar) in [t-grbntule]
   the tab bar and stay at its start, before the unpinned tabs, like
   pinned tabs in Chrome or Firefox.
   Decided by the user 2026-10-06: like pinned spaces: pinned tabs come
@@ -940,7 +940,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   in the tab menu plus a keybinding; a 1-cell glyph in a fixed column; no
   drag across the pinned boundary.
 
-- [ ] Pin a space, like a pinned tab: a pin icon on the space row, and
+- [ ] Pin a space, like a pinned tab: a pin icon on the space row, and [t-rqpbuado]
   pinned spaces stay at the top of the spaces list. Consulted (GPT-6 Astra,
   DeepSeek, 2026-09-28), both agreed on:
   - Pinned first in every sort mode (manual, name, prio); the sort and its
@@ -962,7 +962,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   unpinned spaces; unpin from the menu. Pinned spaces come first in every
   sort mode, as consulted.
 
-- [ ] Audit whether colours and symbols are consistent across the UI
+- [ ] Audit whether colours and symbols are consistent across the UI [t-atqpgouz]
   (sidebar, mobile layout, tabs, toasts, job statuses `⧖ ✓ !`, state dots).
   Consulted (GPT-6 Astra, DeepSeek, 2026-09-28): one colour meaning
   different things in different contexts is not automatically a conflict;
@@ -996,7 +996,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   then moves the item back under Needs a decision with the variants named,
   so the user picks with a click; the legend item waits for that choice.
 
-- [ ] No view of how much memory and CPU spaces, tabs and jobs use (user,
+- [ ] No view of how much memory and CPU spaces, tabs and jobs use (user, [t-xgvnwfyp]
   2026-10-03). Round `20261003-163010-4ae0` (sol, MiMo).
   Decided by the user 2026-10-06: start with a `herdr top` prototype
   computed from `ps` and each pane's process tree, with no new API
@@ -1020,14 +1020,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - Tests: aggregation over a synthetic process graph (reparenting, pid
     reuse, a shared daemon, tty holders).
 
-- [ ] Track which buttons the user never clicks, to drop them from roherdr
+- [ ] Track which buttons the user never clicks, to drop them from roherdr [t-4frwhqjr]
   (user, 2026-10-07: "it would be useful to somehow track which buttons I
   never click at all, so maybe I can throw them out of roherdr? like
   telemetry? ask the models"). Consult the default set first (local-only
   counters vs. anything sent out, where to store them, how to show the
   never-clicked list), then propose the design.
 
-- [ ] A standing self-improvement process over agent sessions (user,
+- [ ] A standing self-improvement process over agent sessions (user, [t-avp4qzo2]
   2026-10-07: "today's analysis of all Claude sessions was good, that most of
   the time is waiting for my decision. Also include pi in the analysis, and
   maybe other agents when I use them. A standing self-improvement process,
@@ -1037,7 +1037,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   then consult the default set on making it a recurring process (how often,
   what it reports, where findings go).
 
-- [ ] No tab line is lit for the focused tab of a collapsed worktree space
+- [ ] No tab line is lit for the focused tab of a collapsed worktree space [t-j543tp6e]
   (user, 2026-10-07, three screenshots: "why does this session have no
   highlighted tab? probably opened by Claude as a todo-worker; ask the
   models"). The focused pane was `worker: shuffle prev`, a worktree space a
@@ -1047,12 +1047,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   collapse is chosen for API-created worktree spaces and what a collapsed
   space should show when it holds the focused tab; consult the default set.
 
-- [ ] Navigation history survives a client restart (user, 2026-10-07: "the
+- [ ] Navigation history survives a client restart (user, 2026-10-07: "the [t-77zz4rei]
   navigation history is cleared after a client restart, I can't go back").
   The header's back/forward (`focus_history.rs`) lives in client memory, so
   every reattach, and every install's live handoff, empties it.
 
-- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07,
+- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
   screenshot: "this circle is grey, it looks as if the coordinator is not
   working"). Its only running job is `herdr agent wait <worker pane>`: no
   output and no CPU, so after 5 minutes herdr-job reports it `--activity
@@ -1063,7 +1063,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
   state instead of its own CPU and output.
 
-- [ ] Coordinators present "Needs a decision" questions as clickable
+- [ ] Coordinators present "Needs a decision" questions as clickable [t-vs3664vc]
   options (user via the try-roguix coordinator, 2026-10-07: it moved four
   items there and only mentioned them; "fix the process so a coordinator
   that records questions also presents them as clickable options at once or
@@ -1113,7 +1113,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     cache) depends on the repository; it belongs in each repository's
     AGENTS.md, the global rule stays language-neutral.
 
-- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in
+- [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in [t-74laujmv]
   consult stats? we have Rust. ask the models"). `page-consult` pages
   `consult.py` output with `less -R`; a popup is a real PTY pane
   (`spawn_popup_command`, `src/app/popup.rs`). Round `20261003-022724-693a`
@@ -1132,7 +1132,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-07 ("I don't know. A popup spike?"): do the
   spike; a worker prepares the test popup, the user watches it scroll.
 
-- [ ] Phone notifications when I am away from the Mac (agent blocked,
+- [ ] Phone notifications when I am away from the Mac (agent blocked, [t-p76rjpzl]
   agent done, herdr-job finished).
   - Consulted models (DeepSeek, GPT-6 Astra, GPT-6 Sol, 2026-09-26): a
     Telegram bot sending to my private chat (`chat_id`); Instagram rejected
@@ -1156,10 +1156,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   above stands, with ntfy instead of the Telegram bot; Telegram rejected for
   now.
 
-- [ ] `scripts/fork_demo/README.md` still says "oracle stats" where the menu
+- [ ] `scripts/fork_demo/README.md` still says "oracle stats" where the menu [t-6aparioe]
   item is "consult stats" (left over from the dropped README animations).
 
-- [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes,
+- [ ] Force-quitting a quit Ghostty killed ~19 Claude agents in herdr panes, [t-upz2ppt4]
   and their `?` marks did not come back after `claude --resume` (user,
   2026-10-03, screenshots of job-seeker and email-assistant showing "Resume
   this session with:"). At 15:17:35 loginwindow opened the Force Quit panel
@@ -1197,10 +1197,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Decided by the user 2026-10-07: reproduce first; a worker prepares the
   script with disposable agents, the user quits and force-quits Ghostty once.
 
-- [ ] An `×` that clears the spaces filter field (user, 2026-10-07: "in the
+- [ ] An `×` that clears the spaces filter field (user, 2026-10-07: "in the [t-qrtnlvgf]
   filter for searching tabs and spaces, add some x to clear the field").
 
-- [ ] The space lines are hard to read (user, 2026-10-07, screenshot of the
+- [ ] The space lines are hard to read (user, 2026-10-07, screenshot of the [t-nssjdkde]
   sidebar: "this can hardly be read; propose something, ask the models, show
   nice visualisations, in the browser?"). Every space name line carries the
   branch, `↑N`, job counts and three buttons (`❏ T A`); nested worktree
@@ -1246,7 +1246,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      overview offering "Set up coordinator" (create a TODO.md, then start
      one), not a coordinator.
 
-- [ ] DeepSeek back in the default consult set (user, 2026-10-07: "add
+- [ ] DeepSeek back in the default consult set (user, 2026-10-07: "add [t-sjngd5gy]
   DeepSeek to the consultations; it is fast, and since I have Claude Max 20
   the tokens Claude spends reading its answer do not hurt as much"). The
   `consult` skill (`plugins/consult/skills/consult/SKILL.md`) names sol +
@@ -1254,7 +1254,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   sol + MiMo + DeepSeek. The coordinator asks DeepSeek in its rounds from
   now on.
 
-- [ ] What the usage footer can take from Magpie (user, 2026-10-07: "what of
+- [ ] What the usage footer can take from Magpie (user, 2026-10-07: "what of [t-wdfmvf66]
   this for our usage widget, https://usemagpie.ai/? work out a TODO with
   the models if needed"). Magpie is a local MIT gateway agents route
   through: per-account used % and resets, tokens, cache hits and cost per
@@ -1276,7 +1276,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   transcripts, Claude and Codex first (DeepSeek), which could feed the
   forecast's pace (MiMo).
 
-- [ ] A fresh coordinator per item instead of one long-lived session (user,
+- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
   2026-10-07: "can't it be compacted or cleared now and then? ask the
   models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
   per item, state only in files, herdr owns the waits, a thin chat session
@@ -1306,7 +1306,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   can reconcile (worker id, worktree, branch, base SHA, the event waited
   for), pending menus in TODO.md.
 
-- [ ] A headless worker's line in the sidebar cannot be clicked (user,
+- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
   2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
   header-arrows` and its Bash question: "a headless worker's entry cannot
   be clicked; ask the models").
@@ -1324,7 +1324,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   next opens after the answer. No "allow this pattern" for now (both: a
   single command does not show a safe pattern). Keyboard works too.
 
-- [ ] Clicking outside the popup does not close it, only Escape does (user,
+- [ ] Clicking outside the popup does not close it, only Escape does (user, [t-aonxduu7]
   2026-10-07, with a screenshot of a headless worker's log popup titled
   "popup": "clicking outside the modal does not close it, only escape
   works; ask the models").
@@ -1339,7 +1339,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   "popup". Chosen by the coordinator from the agreement: sol's and
   DeepSeek's rule.
 
-- [ ] One wait over all of a coordinator's workers (user, 2026-10-07:
+- [ ] One wait over all of a coordinator's workers (user, 2026-10-07: [t-cguvhgwu]
   "waiting for several workers at once was deferred: so work out a new TODO
   entry with the models"). Builds on "A coordinator is woken by its
   worker's question". Round `20261007-205522-d711` (sol, MiMo, DeepSeek), all
@@ -1388,7 +1388,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and restart keep the sequence; re-owning during a wait and a stale answer
   from the old owner; a wake while the coordinator's turn is busy.
 
-- [ ] A headless worker's line shows how long it has been working and which
+- [ ] A headless worker's line shows how long it has been working and which [t-jfo7bcvb]
   TODO task it got (user, 2026-10-08: "I don't see how long a given worker
   has been working, nor which task from the TODO it got; ask the models").
   Round `20261008-031505-ffde` (sol, MiMo, DeepSeek), agreeing, chosen by the
@@ -1414,7 +1414,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     their work is done") but stay reachable in a history view (sol,
     DeepSeek), which the item history can provide.
 
-- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it
+- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
   coordinating at T? ask the models"). Today: no; workers store only
   `owner_pane`/`owner_session`; being a coordinator is a tab role flag.
@@ -1443,7 +1443,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     wired to the tab role, the unique index, `owner_coordinator_id`;
     handoff epochs with the handoff item, item history later.
 
-- [ ] Waiting for a worker without shell state (user, 2026-10-08, after the
+- [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
   `20261008-104136-8de5` (sol, MiMo, DeepSeek): a shell-care rule alone is a
@@ -1477,7 +1477,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   The per-coordinator inbox (planned) replaces the two-layer wait later;
   no `--then-wait` glue until then (MiMo, sol).
 
-- [ ] Compare the current headless worker implementation with T3 Code again,
+- [ ] Compare the current headless worker implementation with T3 Code again, [t-ofobwsra]
   with the models (user, 2026-10-08: "in spare time, maybe give the models
   the current implementation to analyse again and let them compare it with
   t3code"). A worker reads `src/workers/` (store, wait, receipts, outbox,
@@ -1508,7 +1508,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      separate integration review of cross-module paths (start, answer,
      takeover, handoff), where atomicity bugs live (sol).
 
-- [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08:
+- [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08: [t-dklsfhg4]
   "maybe it's time for the TODO to be in an SQL database? ask the models";
   "like jira or github issues"). Rounds `20261008-115256-4ae4` and `20261008-115345-2e9e` (sol, MiMo,
   DeepSeek): a private database as the source of truth would strand the
@@ -1557,7 +1557,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   keeping tracker items with the repository rather than in a private
   database (git-bug is the git analogue).
 
-- [ ] Headless worker lines in the sidebar after their work is done
+- [ ] Headless worker lines in the sidebar after their work is done [t-nulti42o]
   (proposed by the coordinator 2026-10-08 from the user's screenshot of the
   herdr space: "header arrows lost", "answers name their q… lost",
   "vendored mktemp us… exited", "takeover claimed o… exited", each with
@@ -1592,19 +1592,19 @@ and `20261006-030215-b8ca`); both put the first two at the top.
 
 Items agents add. Not approved until the user moves them up.
 
-- [ ] While coordinating, which wins: "ask the models" (consult now, in this
+- [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
   turn) or "a new request is queued, everything else goes to a worker"?
   Report from the email-assistant coordinator (2026-10-07): the user said
   "do todo: ... ask the models", it ran the consult at once before writing
   the TODO entry; the user asked why the coordinator works itself. The herdr
   coordinator ran its consults itself all day too. The rules do not say.
-- [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside
+- [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside [t-jnema5dg]
   herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
   after 4-5 minutes, four times, while the workers kept running (reported
   by the email-assistant coordinator, 2026-10-07). Long waits must survive;
   find where the socket returns an empty response (a server-side timeout?).
 
-- [ ] herdr: `agent start` reports ready before Claude accepts typed input,
+- [ ] herdr: `agent start` reports ready before Claude accepts typed input, [t-gp6n6qbx]
   and `agent prompt` returns `agent_prompted` without knowing the prompt
   arrived (2026-10-07: the bussiness-ideas coordinator's first prompt was
   lost; workers' prompts too until the coordinator resent them). A
@@ -1614,7 +1614,7 @@ Items agents add. Not approved until the user moves them up.
   both: it waits up to 10 minutes for the user to answer Claude's trust
   prompt and resends the first prompt once unless the agent turns working.
 
-- [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07,
+- [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07, [t-7a2ext64]
   screenshot of the `?` list: "how do I know which tab that is?" for
   "approve the edit in tab w4:t6Z"). The sidebar shows space names and tab
   labels, never `w4:t6Z`. A coordinator (and any agent) should name a tab
@@ -1624,7 +1624,7 @@ Items agents add. Not approved until the user moves them up.
   link in the ask, or a click on the `↳` line that jumps to a tab named in
   it.
 
-- [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07:
+- [ ] A working Claude agent's detected state flickers to done/idle. 2026-10-07: [t-evgrqenz]
   `herdr agent wait <worker> --until done --until blocked` returned twice
   while the worker kept working (its screen showed "Thundering…" with a
   running shell, `agent get` said working right after), so a coordinator
@@ -1633,14 +1633,14 @@ Items agents add. Not approved until the user moves them up.
   which rule matches between tool calls. The coordinator's workaround: wait
   for the `WORKER-` line, debounce done/idle for 120 s.
 
-- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each
+- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
   `scripts/herdr_live.sh install` restarts the server, and the try-roguix
   coordinator's `herdr pane wait-output` on its worker failed with
   `server_unavailable` ("server is shutting down"); it then wrapped the wait in
   a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
   reconnect across a handoff instead of failing.
 
-- [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc,
+- [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc, [t-e5tslo5h]
   2026-10-07, forwarded by the user). After the user answered two "Needs a
   decision" questions with "do it" (release rormpc-tools, install rormpc, add
   config lines), the coordinator bumped the version, committed and tagged
@@ -1692,7 +1692,7 @@ Items agents add. Not approved until the user moves them up.
   --timings` cold, `du` of `target/{debug,incremental,nextest}`, `cargo
   check -v` after switching worktrees (dirty units, did build.rs rerun).
 
-- [ ] `workspace list` shows a space's repository only when the space is in a
+- [ ] `workspace list` shows a space's repository only when the space is in a [t-uckv7wa5]
   worktree family (its `worktree` object), so tools read `.worktree` as "the
   space's repo" and fail for plain git spaces (2026-10-07: the todo launcher
   found no repo for job-seeker). Expose the cached `git_space()` on every
@@ -1700,7 +1700,7 @@ Items agents add. Not approved until the user moves them up.
   non-git space) and document `worktree` as worktree-family membership only
   (consult round `20261007-015141-b75b`, MiMo).
 
-- [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of
+- [ ] `herdr tab rename <tab> ""` leaves an empty custom label instead of [t-dxhugzpt]
   clearing it, so the tab shows nothing rather than its automatic name (the
   agent's task or the terminal title); there is no way to return to the
   automatic name (2026-10-07: the todo-worker launcher's `--label TODO`
@@ -1708,12 +1708,12 @@ Items agents add. Not approved until the user moves them up.
   `handle_tab_rename` calls `set_custom_name(Some(label))`; an empty or
   whitespace-only label should clear it (`None`), in the TUI rename too.
 
-- [ ] `herdr-job clean-tree` should refuse a path that matches nothing.
+- [ ] `herdr-job clean-tree` should refuse a path that matches nothing. [t-bd7wsdn6]
   2026-10-07: from zsh, `clean-tree $PATHS -- just check` with `PATHS="a b"`
   passed one path with spaces (zsh does not split words); the tree got
   "0 changed paths" and the check ran on bare `HEAD` without a warning.
 
-- [ ] Replace job pinning and folding with an explicit pin (user,
+- [ ] Replace job pinning and folding with an explicit pin (user, [t-5rsujy34]
   2026-10-06: "I don't like this pinning of herdr jobs and the whole
   folding logic. Throw it out."). Remove the automatic attachment of job
   rows to their parent and the fold/unfold logic for job squares (see
@@ -1725,7 +1725,7 @@ Items agents add. Not approved until the user moves them up.
   same context menu. Before starting, record in `DECISIONS.md` which
   earlier fold decisions this supersedes.
 
-- [ ] Flatten worktree spaces instead of nesting them under the creator
+- [ ] Flatten worktree spaces instead of nesting them under the creator [t-g7igxlgs]
   tab (user, 2026-10-06: "why is a worktree tab indented and with
   different logic? Could it be flattened and just marked as a worktree?"
   Example: this session created the worktree space "pi: tab create" for a
@@ -1753,7 +1753,7 @@ Items agents add. Not approved until the user moves them up.
   working i…`: three levels of indent for one delegation, and the
   worktree's own line shows no job count until its agent starts a job.
 
-- [ ] Header `?` list: tell the kinds of waiting apart and use the row's
+- [ ] Header `?` list: tell the kinds of waiting apart and use the row's [t-dp7pa7y5]
   agent, not the tab (user, 2026-10-06: "now you cannot tell which tab is
   a plain `?` question and which is a question with a choice"; agreed to
   the mockup). Rows draw `tab_state_icon`, the tab's dominant state, so in
@@ -1766,7 +1766,7 @@ Items agents add. Not approved until the user moves them up.
   fixed on branch `pi/list-icons` (`(.., icon)` bound `detail` after
   7f55e2c5).
 
-- [ ] Every header button looks like a button (user, 2026-10-06: "all
+- [ ] Every header button looks like a button (user, 2026-10-06: "all [t-6o6ow3qe]
   buttons in the top bar should be like buttons: a space on the left and
   right, a highlight on hover"). Consulted Sol (read the code) and MiMo.
   - Padding: one space each side, both cells part of the button's paint
@@ -1793,7 +1793,7 @@ Items agents add. Not approved until the user moves them up.
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
 
-- [ ] Workers follow the repository's commit rules mechanically (proposed by
+- [ ] Workers follow the repository's commit rules mechanically (proposed by [t-ti3yszn6]
   the coordinator 2026-10-07 after the user asked why worker `w1` tried to
   commit with a `Co-Authored-By` line that AGENTS.md forbids: "did it not
   know or ignore it? ask the models", then: "Claude Code already reads
@@ -1833,7 +1833,7 @@ Items agents add. Not approved until the user moves them up.
   auto-mode calls never reach `can_use_tool`. The coordinator's check of
   the commits before cherry-picking stays the gate.
 
-- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly
+- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
   baby-sitting the models through rules in AGENTS.md etc.; where are the
   hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
   the coordinator, holding push and install rights, is the riskiest actor;
@@ -1864,7 +1864,7 @@ user needs to decide or do.
 
 ### Decide
 
-- [ ] A legend explaining the UI's dots and symbols (agent state dots,
+- [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
   states, sort buttons, the grip, footer provider codes). A status legend
   for agent and job states exists (`DECISIONS.md`, "Status legend",
