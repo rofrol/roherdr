@@ -5390,7 +5390,7 @@
             },
             {
               "const": "abort",
-              "description": "End the run as blocked where it stands (after a failed install,\nTODO edit or push); the commit stays on `master`.",
+              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on `master`) stay as\nthey are.",
               "type": "string"
             }
           ]
@@ -5573,7 +5573,7 @@
         "TodoWaitParams": {
           "properties": {
             "after": {
-              "description": "The `event_id` the previous wait returned: only a later event\ncounts. A run that ended (`done`, `blocked`) returns its last event\nhowever old.",
+              "description": "The `event_id` the previous wait returned: only a later event\ncounts. A run that ended (`done`, `blocked`, `aborted`) returns its\nlast event however old.",
               "format": "int64",
               "type": [
                 "integer",
@@ -14634,7 +14634,7 @@
             },
             {
               "const": "abort",
-              "description": "End the run as blocked where it stands (after a failed install,\nTODO edit or push); the commit stays on `master`.",
+              "description": "End the run as `aborted` where it stands, from any event it waits\non or from `blocked`: its worker is stopped when it still runs, and\nits branches and commits (also one already on `master`) stay as\nthey are.",
               "type": "string"
             }
           ]
@@ -14644,7 +14644,6 @@
           "oneOf": [
             {
               "enum": [
-                "blocked",
                 "done",
                 "unknown"
               ],
@@ -14684,6 +14683,16 @@
               "const": "push_failed",
               "description": "`master` could not be pushed as a fast-forward (or the push failed):\nretry it or abort. Never forced.",
               "type": "string"
+            },
+            {
+              "const": "blocked",
+              "description": "The run is blocked; it takes `abort`.",
+              "type": "string"
+            },
+            {
+              "const": "aborted",
+              "description": "The run was aborted: why, its branches and its commits.",
+              "type": "string"
             }
           ]
         },
@@ -14711,7 +14720,7 @@
               ]
             },
             "error": {
-              "description": "With `blocked`: why; with `still_alive`: what is still running;\nwith `install_failed`, `todo_failed` and `push_failed`: what failed,\nwith the output's last lines.",
+              "description": "With `blocked` and `aborted`: why (`aborted` also names the run's\nbranches); with `still_alive`: what is still running;\nwith `install_failed`, `todo_failed` and `push_failed`: what failed,\nwith the output's last lines.",
               "type": [
                 "string",
                 "null"
@@ -14797,7 +14806,7 @@
               "type": "integer"
             },
             "error": {
-              "description": "Why it is blocked.",
+              "description": "Why it is blocked or was aborted.",
               "type": [
                 "string",
                 "null"
@@ -14931,12 +14940,17 @@
             },
             {
               "const": "blocked",
-              "description": "It stopped and needs a person: a refused preflight, a conflict, the\nattempts used up. Nothing more happens.",
+              "description": "It stopped and needs a person: a refused preflight, a conflict, the\nattempts used up. Nothing more happens unless the coordinator\naborts it.",
               "type": "string"
             },
             {
               "const": "done",
               "description": "The commit is on `master`, installed, recorded and pushed (each as\nfar as registered and approved), and the merged branches are gone.",
+              "type": "string"
+            },
+            {
+              "const": "aborted",
+              "description": "The coordinator aborted it; its worker exited, its branches and\ncommits are left as they were.",
               "type": "string"
             }
           ]
@@ -14981,6 +14995,11 @@
             {
               "const": "cleanup",
               "description": "Deletes the run's branches that are fully merged.",
+              "type": "string"
+            },
+            {
+              "const": "abort",
+              "description": "The coordinator aborted the run: its worker is stopped, then the\nrun ends `aborted`.",
               "type": "string"
             }
           ]

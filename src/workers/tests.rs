@@ -5205,9 +5205,13 @@ mod todo_runs {
             .collect()
     }
 
+    /// The run's next event; for a run that waits or ended, only once its
+    /// driver let go, so the test's next resume or planned crash meets
+    /// one driver. A `still_alive` event is raised beside the driver, which
+    /// goes on waiting for the worker's exit.
     fn wait(fixture: &Fixture, run_id: &str, after: Option<i64>) -> (TodoRunEvent, TodoRunInfo) {
         let started = Instant::now();
-        fixture
+        let (event, run) = fixture
             .supervisor
             .todo_wait(
                 &TodoWaitParams {
@@ -5221,7 +5225,11 @@ mod todo_runs {
                 },
             )
             .unwrap()
-            .unwrap()
+            .unwrap();
+        if run.status != TodoRunStatus::Running && event.kind != TodoEventKind::StillAlive {
+            runs::wait_undriven(run_id, HANG_GUARD);
+        }
+        (event, run)
     }
 
     fn resume(
@@ -5260,6 +5268,36 @@ mod todo_runs {
         wait(fixture, run_id, Some(review.event_id))
     }
 
+    /// Aborts the run at `event` with the reason `superseded` and waits for
+    /// it to end: `aborted`, final, its event taking nothing more.
+    fn abort(fixture: &Fixture, run_id: &str, event: i64) -> (TodoRunEvent, TodoRunInfo) {
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                message: Some("superseded".into()),
+                ..resume_params(run_id, event, TodoAction::Abort)
+            })
+            .unwrap();
+        let (aborted, ended) = wait(fixture, run_id, Some(event));
+        assert_eq!(aborted.kind, TodoEventKind::Aborted, "{aborted:#?}");
+        assert!(aborted.actions.is_empty(), "{aborted:#?}");
+        assert_eq!(
+            (ended.status, ended.step, ended.pending_event),
+            (TodoRunStatus::Aborted, TodoStep::Abort, None)
+        );
+        assert_eq!(ended.error, aborted.error);
+        // A second abort of the same event is stale: the run has ended.
+        let again = resume(fixture, run_id, event, TodoAction::Abort, None).unwrap_err();
+        assert_eq!(again.code(), "todo_event_stale", "{again}");
+        // An ended run returns its last event to every wait.
+        assert_eq!(
+            wait(fixture, run_id, Some(aborted.event_id)).0.event_id,
+            aborted.event_id
+        );
+        assert!(!fixture.supervisor.run_lock_path(run_id).exists());
+        (aborted, ended)
+    }
+
     #[test]
     fn a_run_goes_from_preflight_to_the_cherry_pick() {
         let fixture = todo_repo("todo-full");
@@ -5276,7 +5314,10 @@ mod todo_runs {
 
         let (review, waiting) = wait(&fixture, &run.run_id, None);
         assert_eq!(review.kind, TodoEventKind::Review);
-        assert_eq!(review.actions, [TodoAction::Approve, TodoAction::Retry]);
+        assert_eq!(
+            review.actions,
+            [TodoAction::Approve, TodoAction::Retry, TodoAction::Abort]
+        );
         assert_eq!(review.commits.len(), 1, "{review:#?}");
         assert!(
             review
@@ -5435,7 +5476,7 @@ mod todo_runs {
             .unwrap();
         let (question, _) = wait(&fixture, &run.run_id, None);
         assert_eq!(question.kind, TodoEventKind::Question, "{question:#?}");
-        assert_eq!(question.actions, [TodoAction::Answer]);
+        assert_eq!(question.actions, [TodoAction::Answer, TodoAction::Abort]);
         assert_eq!(question.questions.len(), 1);
         assert_eq!(question.questions[0].tool_name, "WebFetch");
         // Not an action of a question.
@@ -5527,7 +5568,10 @@ mod todo_runs {
         .unwrap();
         let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
-        assert_eq!(failed.actions, [TodoAction::Retry, TodoAction::Verify]);
+        assert_eq!(
+            failed.actions,
+            [TodoAction::Retry, TodoAction::Verify, TodoAction::Abort]
+        );
         let verification = failed.verification.as_ref().unwrap();
         assert_eq!(verification.verdict, WorkerVerdict::Failed);
         assert!(verification
@@ -5723,7 +5767,10 @@ mod todo_runs {
         fixture.supervisor.resume_runs();
         let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
-        assert_eq!(failed.actions, [TodoAction::Retry, TodoAction::Verify]);
+        assert_eq!(
+            failed.actions,
+            [TodoAction::Retry, TodoAction::Verify, TodoAction::Abort]
+        );
         assert_eq!(
             failed.verification.as_ref().unwrap().verdict,
             WorkerVerdict::Unavailable
@@ -5924,7 +5971,7 @@ mod todo_runs {
                 .pending_event,
             Some(alive.event_id)
         );
-        assert_eq!(alive.actions, [TodoAction::ForceStop]);
+        assert_eq!(alive.actions, [TodoAction::ForceStop, TodoAction::Abort]);
         assert!(
             alive
                 .error
@@ -6303,27 +6350,136 @@ mod todo_runs {
         .unwrap();
         let (again, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
         assert_eq!(again.kind, TodoEventKind::PushFailed, "{again:#?}");
-        resume(
-            &fixture,
-            &run.run_id,
-            again.event_id,
-            TodoAction::Abort,
-            None,
-        )
-        .unwrap();
-        let (blocked, ended) = wait(&fixture, &run.run_id, Some(again.event_id));
-        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        let (aborted, ended) = abort(&fixture, &run.run_id, again.event_id);
         assert!(
-            ended
+            aborted
                 .error
                 .as_deref()
                 .unwrap_or_default()
-                .contains("aborted"),
-            "{ended:#?}"
+                .starts_with("the coordinator aborted the run at its push step: superseded"),
+            "{aborted:#?}"
         );
-        assert_eq!(ended.status, TodoRunStatus::Blocked);
+        let picked = ended.picked.clone().unwrap();
+        assert!(
+            aborted
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains(&format!("commit {picked} stays on master")),
+            "{aborted:#?}"
+        );
         assert_eq!(rev(&remote, "master"), theirs);
         assert_eq!(master_subjects(&fixture)[0], SUBJECT);
+    }
+
+    #[test]
+    fn a_run_blocked_at_its_start_is_aborted_and_a_stale_event_is_refused() {
+        let fixture = todo_repo("todo-abort-blocked");
+        let repo = repository_of(&fixture.repo).unwrap();
+        // The driver ends before the start; then the folder slot cannot be
+        // made (a file is in its place), so the next driver blocks there.
+        runs::crash_before(&repo, TodoStep::Start);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        runs::wait_crashed(&repo, HANG_GUARD);
+        let slot = fixture.root.join("herdr-worktrees/worker");
+        std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+        std::fs::write(&slot, "not a directory\n").unwrap();
+        fixture.supervisor.resume_runs();
+        let (blocked, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        assert_eq!(
+            (waiting.status, waiting.step, waiting.worker_id.clone()),
+            (TodoRunStatus::Blocked, TodoStep::Start, None)
+        );
+        // A blocked run's last event takes only an abort.
+        assert_eq!(blocked.actions, [TodoAction::Abort]);
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            blocked.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        let stale = resume(
+            &fixture,
+            &run.run_id,
+            blocked.event_id - 1,
+            TodoAction::Abort,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code(), "todo_event_stale", "{stale}");
+        assert_eq!(
+            fixture.supervisor.todo_status(&run.run_id).unwrap().status,
+            TodoRunStatus::Blocked
+        );
+
+        let (aborted, _) = abort(&fixture, &run.run_id, blocked.event_id);
+        let error = aborted.error.unwrap_or_default();
+        assert!(
+            error.starts_with(
+                "the coordinator aborted the run blocked at its start step: superseded"
+            ),
+            "{error}"
+        );
+        assert!(error.contains("the run has no branch left"), "{error}");
+        assert!(aborted.commits.is_empty());
+        std::fs::remove_file(slot).unwrap();
+    }
+
+    #[test]
+    fn a_run_waiting_on_its_review_is_aborted_after_its_worker_exits() {
+        let fixture = todo_repo("todo-abort-review");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let worker_id = waiting.worker_id.clone().unwrap();
+        assert_ne!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+        let (aborted, _) = abort(&fixture, &run.run_id, review.event_id);
+        // The worker was stopped and its exit seen before the run ended.
+        assert_eq!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+        let types = event_types(&fixture, &run.run_id);
+        let at = |kind: &str| types.iter().rposition(|seen| seen == kind).unwrap();
+        assert!(at("run_stop_intent") < at("run_event"), "{types:?}");
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+        // The branch and its commit stay; master has nothing of it.
+        let branch = format!("todo/{ITEM}-{}-1", run.run_id);
+        let error = aborted.error.clone().unwrap_or_default();
+        assert!(
+            error.starts_with("the coordinator aborted the run at its review step: superseded"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("branches left as they are: {branch} at "))
+                && error.contains("(1 commit since the base)"),
+            "{error}"
+        );
+        assert_eq!(aborted.commits, review.commits);
+        assert_eq!(
+            rev(&fixture.repo, &branch),
+            *aborted.commits.last().unwrap()
+        );
+        assert_eq!(master_subjects(&fixture), ["init"]);
+        // The repository is free for the next run.
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        assert!(store.active_run(&run.repo).unwrap().is_none());
     }
 
     #[test]
@@ -6550,15 +6706,6 @@ mod todo_runs {
         assert_eq!(rev(&remote, "master"), before);
         let leaked = files_holding(&fixture.supervisor.shared.dir, &secret);
         assert!(leaked.is_empty(), "{leaked:?}");
-        resume(
-            &fixture,
-            &run.run_id,
-            failed.event_id,
-            TodoAction::Abort,
-            None,
-        )
-        .unwrap();
-        let (blocked, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
-        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        abort(&fixture, &run.run_id, failed.event_id);
     }
 }
