@@ -639,11 +639,109 @@ impl WorkerSupervisor {
     /// with a change `master` lacks (a rejected attempt) stays. Then the run
     /// is done.
     pub(super) fn step_cleanup(&self, run: &mut Run) -> Result<(), String> {
+        let own: Vec<String> = (1..=run.info.attempt)
+            .map(|attempt| super::branch_of(&run.info.item, &run.info.run_id, attempt))
+            .collect();
+        let swept = self.sweep_branches(run, &own)?;
+        run.info.kept_branches = swept.kept.clone();
+        self.run_step(
+            run,
+            json!({
+                "type": "run_cleaned",
+                "deleted": swept.deleted,
+                "kept": swept.kept,
+                "unmerged": swept.unmerged,
+                "errors": swept.errors,
+            }),
+        )?;
+        run.info.step = TodoStep::Done;
+        run.info.status = TodoRunStatus::Done;
+        let mut event = new_event(TodoEventKind::Done);
+        event.commits = run
+            .info
+            .picked
+            .iter()
+            .chain(run.info.todo_commit.iter())
+            .cloned()
+            .collect();
+        self.record_run_event(run, &event)?;
+        lock(&RUN_ENV).remove(&run.info.run_id);
+        Ok(())
+    }
+}
+
+/// What [`WorkerSupervisor::sweep_branches`] did.
+struct Swept {
+    deleted: Vec<String>,
+    kept: Vec<String>,
+    unmerged: Vec<String>,
+    errors: Vec<String>,
+}
+
+impl WorkerSupervisor {
+    /// Before an attempt's worker starts: a folder slot still on a branch an
+    /// earlier, finished run kept is detached (preflight found it clean and
+    /// free), and the kept branches no worktree has checked out any more are
+    /// deleted, so no run's branch outlives the next run's start. Recorded
+    /// only when it changed something; a git failure is recorded, not fatal:
+    /// the worker's start does not need it.
+    pub(super) fn release_slot(&self, run: &mut Run) -> Result<(), String> {
+        let repo = PathBuf::from(&run.info.repo);
+        let kept: BTreeSet<String> = self
+            .run_store()
+            .map_err(|error| error.to_string())?
+            .runs(Some(&run.info.repo))
+            .map_err(|error| format!("the worker store failed: {error}"))?
+            .into_iter()
+            .filter(|other| other.info.run_id != run.info.run_id)
+            .flat_map(|other| other.info.kept_branches)
+            .collect();
+        if kept.is_empty() {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        let slot = super::slot_dir(&repo).filter(|slot| slot.is_dir());
+        let head = slot.as_deref().and_then(|slot| {
+            git(slot, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .ok()
+                .map(|head| head.trim().to_owned())
+        });
+        let detached = match (slot, head) {
+            (Some(slot), Some(head)) if kept.contains(&head) => {
+                match git(&slot, &["switch", "--quiet", "--detach"]) {
+                    Ok(_) => Some(head),
+                    Err(error) => {
+                        errors.push(error);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let swept = self.sweep_branches(run, &[])?;
+        errors.extend(swept.errors);
+        if detached.is_none() && swept.deleted.is_empty() && errors.is_empty() {
+            return Ok(());
+        }
+        self.run_step(
+            run,
+            json!({
+                "type": "run_slot_released",
+                "detached": detached,
+                "deleted": swept.deleted,
+                "errors": errors,
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Deletes `own` and the branches earlier runs of the repository kept
+    /// when `master` has their changes and no worktree has them checked
+    /// out; keeps a checked-out one of `own`, and leaves an unmerged one.
+    /// Earlier runs no longer keep what is deleted or gone.
+    fn sweep_branches(&self, run: &Run, own: &[String]) -> Result<Swept, String> {
         let repo = PathBuf::from(&run.info.repo);
         let checked_out = checked_out(&repo)?;
-        let own: Vec<String> = (1..=run.info.attempt)
-            .map(|attempt| super::branch_of(&run.info.item, attempt))
-            .collect();
         let earlier: Vec<Run> = self
             .run_store()
             .map_err(|error| error.to_string())?
@@ -703,30 +801,12 @@ impl WorkerSupervisor {
             });
             self.run_write(&mut other, event, false)?;
         }
-        run.info.kept_branches = kept.clone();
-        self.run_step(
-            run,
-            json!({
-                "type": "run_cleaned",
-                "deleted": deleted,
-                "kept": kept,
-                "unmerged": unmerged,
-                "errors": errors,
-            }),
-        )?;
-        run.info.step = TodoStep::Done;
-        run.info.status = TodoRunStatus::Done;
-        let mut event = new_event(TodoEventKind::Done);
-        event.commits = run
-            .info
-            .picked
-            .iter()
-            .chain(run.info.todo_commit.iter())
-            .cloned()
-            .collect();
-        self.record_run_event(run, &event)?;
-        lock(&RUN_ENV).remove(&run.info.run_id);
-        Ok(())
+        Ok(Swept {
+            deleted,
+            kept,
+            unmerged,
+            errors,
+        })
     }
 }
 

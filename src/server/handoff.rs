@@ -12,6 +12,9 @@ use std::process::{Child, Command};
 use std::time::Duration;
 
 #[cfg(unix)]
+use std::collections::{BTreeMap, HashMap};
+
+#[cfg(unix)]
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use tracing::{info, warn};
@@ -51,6 +54,13 @@ pub(crate) struct HandoffManifest {
     /// Absent from manifests written before this field existed.
     #[serde(default)]
     pub api_window_title: Option<String>,
+    /// The `todo run`s' caller environments, by run id, which the server
+    /// keeps only in memory (they may hold credentials): the new server
+    /// takes them so a run's install and push go on after the handoff. This
+    /// manifest crosses the handoff's socket only and is never written to
+    /// disk. Absent from manifests written before this field existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub run_envs: BTreeMap<String, HashMap<String, String>>,
 }
 
 #[cfg(unix)]
@@ -311,6 +321,7 @@ pub(crate) fn manifest_for(
     expected_protocol: Option<u32>,
     expected_version: Option<String>,
     api_window_title: Option<String>,
+    run_envs: BTreeMap<String, HashMap<String, String>>,
 ) -> HandoffManifest {
     HandoffManifest {
         version: HANDOFF_VERSION,
@@ -321,6 +332,7 @@ pub(crate) fn manifest_for(
         snapshot,
         panes,
         api_window_title,
+        run_envs,
     }
 }
 
@@ -553,6 +565,7 @@ mod tests {
             None,
             None,
             Some("deploying".to_string()),
+            BTreeMap::new(),
         );
 
         assert_eq!(manifest.api_window_title.as_deref(), Some("deploying"));
@@ -566,6 +579,7 @@ mod tests {
             None,
             None,
             Some("deploying".to_string()),
+            BTreeMap::new(),
         );
         let mut value = serde_json::to_value(&manifest).expect("manifest should serialize");
         value
@@ -577,5 +591,49 @@ mod tests {
             serde_json::from_value(value).expect("an older manifest should still load");
 
         assert!(older.api_window_title.is_none());
+        assert!(older.run_envs.is_empty());
+    }
+
+    #[test]
+    fn a_handoff_carries_the_runs_environments_over_its_socket_only() {
+        let secret = format!("run-env-secret-{}", std::process::id());
+        let env = HashMap::from([("PUSH_TOKEN".to_string(), secret.clone())]);
+        let run_envs = BTreeMap::from([("r-abcdefgh".to_string(), env)]);
+        let manifest = manifest_for(
+            empty_snapshot(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            run_envs.clone(),
+        );
+        let dir = std::env::temp_dir().join(format!("herdr-handoff-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let socket_path = dir.join("h.sock");
+        let listener = bind_listener(&socket_path).expect("bind the handoff socket");
+        let receiver = {
+            let socket_path = socket_path.clone();
+            std::thread::spawn(move || receive(&socket_path, "token"))
+        };
+        let _stream = accept_and_validate_on(listener, &socket_path, "token", &manifest)
+            .expect("the manifest is sent");
+        let received = receiver
+            .join()
+            .expect("the receiver thread")
+            .expect("the manifest is received");
+
+        assert_eq!(received.manifest.run_envs, run_envs);
+        // Nothing of the environment is left in the handoff's directory.
+        for entry in std::fs::read_dir(&dir).expect("read the test dir") {
+            let path = entry.expect("dir entry").path();
+            let bytes = std::fs::read(&path).unwrap_or_default();
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(&secret),
+                "{} holds the environment",
+                path.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

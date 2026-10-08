@@ -44,6 +44,8 @@ pub(crate) use coordinators::coordinators;
 pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use log::log_lines;
 pub(crate) use runs::resume_runs_at_start;
+#[cfg(unix)]
+pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
