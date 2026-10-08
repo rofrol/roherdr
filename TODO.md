@@ -1474,6 +1474,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `windows-lint` check (`python3 scripts/windows_cross.py lint`) in
   `.herdr/checks.toml` and pass it with `--check` for changes under `src/`,
   so `verify` catches it before the cherry-pick.
+  Second slice done 2026-10-08 through the driver itself (run `r-5wjbvf3m`,
+  the first item done by `herdr todo run` end to end: attempt 1 rejected in
+  review for a 5 s timer and a missing commit subject in the worker's task;
+  attempt 2 approved, verified, cherry-picked as `be9b9a7b`; installed).
+  Next slice: clean-install, TODO update, push, cleanup in the driver, then
+  the coordinator's allowlist hook.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
