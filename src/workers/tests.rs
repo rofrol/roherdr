@@ -596,10 +596,9 @@ fn a_refused_turn_fails_even_with_result_success() {
     // A message during a refused turn does not clear the refusal.
     let id = fixture.start("refuse-wait");
     fixture.wait_for_status(&id, |status| status.refusal.is_some());
-    let (number, live, _) = fixture.supervisor.live(&id).unwrap();
-    let message = user_message("meanwhile");
-    live.send(&message).unwrap();
-    fixture.supervisor.update(number, Direction::In, &message);
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    live.send(&fixture.supervisor, &user_message("meanwhile"))
+        .unwrap();
     let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
     assert_eq!(worker.state, WorkerState::Failed);
     assert_eq!(
@@ -1493,10 +1492,15 @@ fn a_restart_leaves_a_journal_another_server_owns_until_it_lets_go() {
     }
 
     // The owner journals the exit, then lets go: the exit is adopted.
-    Journal::open(&dir.join("w1.jsonl")).unwrap().record(
-        Direction::Herdr,
-        &serde_json::json!({"type": "exited", "code": 0}),
-    );
+    Journal::open(&dir.join("w1.jsonl"))
+        .unwrap()
+        .export(
+            None,
+            now_ms(),
+            Direction::Herdr,
+            store::Recorded::Event(&serde_json::json!({"type": "exited", "code": 0})),
+        )
+        .unwrap();
     drop(w1_lock);
     // The owner ends without journaling an exit: now it is lost.
     drop(w2_lock);
@@ -1773,4 +1777,216 @@ fn credential_variables_are_recognized() {
         true
     ));
     assert!(is_credential_env("GITHUB_TOKEN", true, true));
+}
+
+fn store_of(supervisor: &WorkerSupervisor) -> &store::Store {
+    supervisor.shared.store.as_ref().unwrap()
+}
+
+#[test]
+fn a_reopened_supervisor_rebuilds_the_same_workers_from_the_store() {
+    let fixture = Fixture::new("store-reopen");
+    let finished = fixture.start("finish");
+    fixture.wait(&finished, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.stop(&finished).unwrap();
+    fixture.wait(&finished, WorkerWaitUntil::Exit);
+    let asked = fixture.start("pair WebFetch https://example.com");
+    fixture.wait_for(&asked, |worker| worker.questions.len() == 2);
+    fixture
+        .answer_request(&asked, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    fixture
+        .answer_request(&asked, "perm-2", WorkerDecision::Deny)
+        .unwrap();
+    fixture.wait(&asked, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.kill(&asked, false).unwrap();
+    fixture.wait(&asked, WorkerWaitUntil::Exit);
+    let before = fixture.supervisor.list();
+
+    // The journals are only an export now: the store alone rebuilds them.
+    for worker in &before {
+        std::fs::remove_file(&worker.journal_path).unwrap();
+    }
+    let reopened = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(reopened.list(), before);
+    assert_eq!(
+        reopened
+            .answer_request_gone(&asked, "perm-1")
+            .unwrap_err()
+            .to_string(),
+        format!("question perm-1 of worker {asked} is no longer pending: answered")
+    );
+}
+
+impl WorkerSupervisor {
+    fn answer_request_gone(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+    ) -> Result<WorkerInfo, WorkerError> {
+        self.answer(&WorkerAnswerParams {
+            worker_id: worker_id.to_owned(),
+            request_id: Some(request_id.to_owned()),
+            decision: Some(WorkerDecision::Allow),
+            answers: Vec::new(),
+            message: None,
+        })
+    }
+}
+
+#[test]
+fn journals_from_before_the_store_are_imported_once() {
+    let fixture = Fixture::new("store-import");
+    let dir = fixture.root.join("workers");
+    let started = serde_json::json!({"ts_ms": 3, "dir": "herdr", "event": {
+        "type": "started", "cwd": "/repo", "name": "old", "pid": 99999}});
+    let init = serde_json::json!({"ts_ms": 4, "dir": "out", "event": {
+        "type": "system", "subtype": "init", "session_id": "s-2"}});
+    let exited = serde_json::json!({"ts_ms": 5, "dir": "herdr", "event": {
+        "type": "exited", "code": 0}});
+    let stderr = serde_json::json!({"ts_ms": 5, "dir": "err", "raw": "a warning"});
+    write_journal(&dir, "w2", &[started.clone(), init.clone(), stderr, exited]);
+    write_journal(&dir, "w5", &[started, init]);
+    // The fixture's supervisor opened the store before the journals were
+    // there; a new server imports them.
+    let supervisor = WorkerSupervisor::open(dir.clone(), fixture.root.join("claude-stub"));
+    let listed: Vec<(String, WorkerState, String)> = supervisor
+        .list()
+        .into_iter()
+        .map(|worker| (worker.worker_id, worker.state, worker.name))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("w2".to_owned(), WorkerState::Exited, "old".to_owned()),
+            ("w5".to_owned(), WorkerState::Lost, "old".to_owned()),
+        ]
+    );
+    let events = |supervisor: &WorkerSupervisor| -> Vec<(String, String, Option<String>, i64)> {
+        store_of(supervisor)
+            .connection()
+            .prepare("SELECT worker_id, direction, type, ts_ms FROM events ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let imported = events(&supervisor);
+    let kinds: Vec<(&str, &str, Option<&str>)> = imported
+        .iter()
+        .map(|(worker, dir, kind, _)| (worker.as_str(), dir.as_str(), kind.as_deref()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("w2", "herdr", Some("started")),
+            ("w2", "out", Some("system")),
+            ("w2", "err", None),
+            ("w2", "herdr", Some("exited")),
+            ("w5", "herdr", Some("started")),
+            ("w5", "out", Some("system")),
+            ("w5", "herdr", Some("lost")),
+        ]
+    );
+    assert_eq!(imported[0].3, 3);
+
+    // Opened again, nothing is imported twice and the numbers stay taken.
+    let again = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    assert_eq!(events(&again), imported);
+    assert_eq!(again.list(), supervisor.list());
+    let next = again
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap();
+    assert_eq!(next.worker_id, "w6");
+    again.kill("w6", false).unwrap();
+}
+
+#[test]
+fn an_unreadable_journal_still_reserves_its_number() {
+    let fixture = Fixture::new("store-unreadable");
+    let dir = fixture.root.join("workers");
+    std::fs::create_dir_all(dir.join("w4.jsonl")).unwrap();
+    let supervisor = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    let next = supervisor
+        .start(&start_params(&fixture.repo, "finish", None))
+        .unwrap();
+    assert_eq!(next.worker_id, "w5");
+    supervisor.kill("w5", false).unwrap();
+}
+
+#[test]
+fn a_failed_store_write_marks_the_worker_degraded() {
+    let fixture = Fixture::new("store-degraded");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(fixture.supervisor.status(&id).unwrap().degraded, None);
+    store_of(&fixture.supervisor)
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER forced BEFORE INSERT ON events
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    // The status still follows the worker, and says what was not stored.
+    let worker = fixture.wait_for(&id, |worker| worker.turns == 2);
+    let degraded = worker.degraded.unwrap();
+    assert!(degraded.contains("worker store write failed"), "{degraded}");
+    assert!(degraded.contains("disk full"), "{degraded}");
+    // The journal export still has the events, without a seq.
+    let last = fixture.journal(&id).pop().unwrap();
+    assert!(last.get("seq").is_none(), "{last}");
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
+fn seq_increases_across_workers_in_the_store_and_the_journals() {
+    let fixture = Fixture::new("store-seq");
+    let first = fixture.start("finish");
+    let second = fixture.start("finish");
+    fixture.wait(&first, WorkerWaitUntil::TurnEnd);
+    fixture.wait(&second, WorkerWaitUntil::TurnEnd);
+    let stored: Vec<(i64, String)> = store_of(&fixture.supervisor)
+        .connection()
+        .prepare("SELECT seq, worker_id FROM events ORDER BY rowid")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(stored.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    let mut exported = Vec::new();
+    for worker_id in [&first, &second] {
+        let seqs: Vec<i64> = fixture
+            .journal(worker_id)
+            .iter()
+            .map(|record| record["seq"].as_i64().unwrap())
+            .collect();
+        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+        let mine: Vec<i64> = stored
+            .iter()
+            .filter(|(_, id)| id == worker_id)
+            .map(|(seq, _)| *seq)
+            .collect();
+        assert_eq!(seqs, mine);
+        exported.extend(seqs);
+        assert_eq!(
+            fixture
+                .supervisor
+                .with_entry(worker_id, |entry| entry.status.last_seq)
+                .unwrap(),
+            *mine.last().unwrap()
+        );
+    }
+    exported.sort_unstable();
+    assert_eq!(
+        exported,
+        stored.iter().map(|(seq, _)| *seq).collect::<Vec<_>>()
+    );
+    for worker_id in [&first, &second] {
+        fixture.supervisor.kill(worker_id, false).unwrap();
+    }
 }

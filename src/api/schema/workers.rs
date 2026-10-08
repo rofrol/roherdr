@@ -208,7 +208,13 @@ pub struct WorkerInfo {
     /// "ended by a server restart", not `lost`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_note: Option<String>,
-    /// The JSONL journal of every event in and out.
+    /// Why the worker's record is incomplete: writing one of its events to
+    /// the worker store or its journal failed, with the error. The status
+    /// still follows the worker; a restart may not show what was lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
+    /// The JSONL journal of every event in and out, exported after each
+    /// event is stored; `herdr worker log` reads it.
     pub journal_path: String,
 }
 

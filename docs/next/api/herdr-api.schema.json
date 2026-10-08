@@ -13618,6 +13618,13 @@
             "cwd": {
               "type": "string"
             },
+            "degraded": {
+              "description": "Why the worker's record is incomplete: writing one of its events to\nthe worker store or its journal failed, with the error. The status\nstill follows the worker; a restart may not show what was lost.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "end_note": {
               "description": "How a worker ended that keeps its last turn's state: one that had\nfinished its turn when its server ended shows that turn's state with\n\"ended by a server restart\", not `lost`.",
               "type": [
@@ -13640,7 +13647,7 @@
               ]
             },
             "journal_path": {
-              "description": "The JSONL journal of every event in and out.",
+              "description": "The JSONL journal of every event in and out, exported after each\nevent is stored; `herdr worker log` reads it.",
               "type": "string"
             },
             "last_result": {
