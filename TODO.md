@@ -460,6 +460,21 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   the JSONL journals stay only as a debug export (adds the `rusqlite`
   dependency, the reason recorded here).
 
+- [ ] Vendored `libsystem_override.sh` uses `$TMPDIR` for `mktemp` (found
+  2026-10-08 by worker `w-bashslot`: on macOS `mktemp -d` ignores
+  `$TMPDIR` and writes to `/var/folders/.../T/`, which the worker sandbox
+  blocks, so `libghostty-vt` does not build in a headless worker; the smoke
+  runs passed only with the line changed to `mktemp -d
+  "${TMPDIR:-/tmp}/libsystem_override.XXXXXX"`; probably also why tests
+  needing a temp dir failed on `w2`). Decided by the coordinator under the
+  "do not widen the sandbox" decision (trial 3 round): a tracked local
+  patch per AGENTS.md "Vendored libghostty-vt" (patch file under
+  `vendor/patches/libghostty-vt/`, an index entry with reason, upstream
+  link or "to report", base commit, verification, removal condition),
+  rather than letting workers write to the shared `/var/folders/.../T/`.
+  Verify: a headless worker in the `worker` folder slot builds and runs
+  `cargo nextest run -E 'test(/workers::policy/)'` with zero questions.
+
 - [ ] herdr answers sandboxed Bash requests itself (found 2026-10-07 by the
   coordinator on worker `w2`, the first item under the sandbox: it asked
   for `cd <worktree>; awk ...`, `decision_reason_type: "other"`, "This
@@ -507,6 +522,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   sandbox write to that folder and its caches only; a "build from
   scratch" switch for a suspicious build; ~8 GB disk. A cold build once,
   then only the changes compile.
+  Done 2026-10-08 with the Bash part (`fix: herdr answers sandboxed bash
+  requests itself`, `feat: headless workers share one persistent worker
+  folder`): `herdr worker start --folder-slot worker --branch <b>`;
+  measured in the sandbox, 0 questions: cold 134 s, warm 27 s for
+  `cargo nextest run -E 'test(/workers::policy/)'`. The Zig cache lives in
+  `<slot>/target/zig-cache` (ignored, so `git clean -fd` keeps it), its
+  `p` package dir links read-only to `~/.cache/zig/p` (no network in the
+  sandbox). Known limits: the busy check sees only this server's workers
+  (the clean-status check guards the rest); the build needs the
+  `mktemp` patch (next item).
 
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
