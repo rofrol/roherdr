@@ -11,6 +11,35 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The sidebar shows only live workers; ended work is reached through its
+  TODO item (user, 2026-10-08, with a screenshot of 18 "exited" lines:
+  "exited but not closed? what for? wouldn't a UI be better where I go to
+  the log tied to a given TODO item, and there may be several when workers
+  worked on it several times? ask the models"). Round `20261008-132343-d1e1` (sol, MiMo,
+  DeepSeek), agreeing, chosen by the coordinator; it replaces the
+  collapsed "N ended workers" group decided earlier in "Headless worker
+  lines in the sidebar after their work is done":
+  - the sidebar lists only live workers (working, waiting for the
+    coordinator or the user); an ended worker leaves once its handoff is
+    resolved (acked, no open question); a failure, a crash or a result
+    waiting for review shows as the item's state (needs review, failed,
+    blocked), not as a lingering worker line (sol);
+  - the coordinator's line gets a visible "Items" button with a badge
+    (e.g. "3 in progress · 1 failed"): a popup lists items in progress and
+    recently finished; an item opens its runs (worker id, start and end,
+    outcome, commits, questions) with the log one click away; worker,
+    run and turn stay distinct (a worker sent back for fixes adds turns, a
+    new worker is another run);
+  - `worker.start --item <id>`: coordinators pass the item; optional and
+    prompted elsewhere; runs without an item go to an "Unassigned" bucket,
+    never grouped by name (names collide and change: wrong history is worse
+    than missing history, MiMo);
+  - first slice, shipped together so nothing becomes unreachable: item ids
+    (from "The TODO as a tracker"), `--item`, the Items popup reading
+    TODO.md and the worker store, and the sidebar showing live workers
+    only; the item history table and tenures later. MiMo's "stale after
+    24 h" was dismissed: no timers (the user's events-only decision).
+
 - [ ] A coordinator stops between items without being asked (user,
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
