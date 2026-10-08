@@ -1833,6 +1833,30 @@ Items agents add. Not approved until the user moves them up.
   auto-mode calls never reach `can_use_tool`. The coordinator's check of
   the commits before cherry-picking stays the gate.
 
+- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly
+  baby-sitting the models through rules in AGENTS.md etc.; where are the
+  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
+  the coordinator, holding push and install rights, is the riskiest actor;
+  a boundary is hard only if the actor cannot remove it (a hook in `.git`
+  is not; a GitHub ruleset or a credential the agent lacks is). Their
+  five, in order: protect the fork's history (a ruleset against
+  force-push and deletion, which conflicts with the rebase-and-force-push
+  fork sync unless agents get a separate credential without bypass);
+  remove upstream write paths; install only through `just clean-install`
+  (a PreToolUse deny for anything else); restrict the coordinator's writes
+  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
+  commit messages (no co-author lines) and `unwrap()` in production code.
+  Guidance stays guidance for consult rounds, language and "do not touch
+  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
+  now; done the same day by the coordinator in this checkout's
+  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
+  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
+  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
+  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
+  open issues upstream, and PATH wrappers are bypassable), the fork
+  ruleset, the install and push allowlist for the coordinator, its write
+  scope, and the CI checks.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
