@@ -1489,6 +1489,35 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     their work is done") but stay reachable in a history view (sol,
     DeepSeek), which the item history can provide.
 
+- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it
+  written to SQL that there is now a coordinator with id X that started
+  coordinating at T? ask the models"). Today: no; workers store only
+  `owner_pane`/`owner_session`; being a coordinator is a tab role flag.
+  Round `20261008-104011-d7f1` (sol, MiMo, DeepSeek), agreeing, chosen by the
+  coordinator:
+  - a coordination tenure with its own id (`c-...`), never the pane or
+    Claude session id: those are bindings that change on resume or a move
+    to another pane (a `coordinator_bindings` table: pane, session, from,
+    to); a resume keeps the tenure, a handoff starts a new one;
+  - events `coordinator_started` / `coordinator_ended` (with the reason) /
+    later `handoff` in the same events log, the `coordinators` table their
+    projection in the same transaction (repo, current item, started_at,
+    ended_at, end reason, epoch);
+  - one active coordinator per repository (the TODO rule), enforced by a
+    partial unique index on the repo where `ended_at IS NULL`;
+  - the server is the source of truth: setting the tab role coordinator
+    calls `coordinator.start`, the crown is drawn from the table, ending it
+    calls `coordinator.end`; `workers.owner_coordinator_id` points at the
+    tenure, the pane/session stay for routing and escalation; obligations
+    key on the tenure;
+  - a crashed coordinator: closed on the owner events herdr already has
+    (pane closed, agent exited) and re-evaluated at server start
+    (`end_reason = orphaned`), no heartbeat reaper (DeepSeek's, dismissed
+    under the user's events-only decision of 2026-10-08);
+  - first slice: the table, the bindings, the two events, start/end calls
+    wired to the tab role, the unique index, `owner_coordinator_id`;
+    handoff epochs with the handoff item, item history later.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
