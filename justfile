@@ -37,10 +37,15 @@ test: guard
 clean-check +paths:
     {{python}} plugins/job/herdr-job clean-tree {{paths}} -- just check
 
-# Release build in the clean tree; install it with "$(plugins/job/herdr-job clean-tree --path)"/scripts/herdr_live.sh install.
+# Release build in the clean tree, without installing it (`clean-install` checks, builds and installs).
 [unix]
 clean-release +paths:
     {{python}} plugins/job/herdr-job clean-tree {{paths}} -- {{slot}} cargo build --release --locked
+
+# `just check`, the release build and its install, all in the clean tree under one lock, so another run cannot swap the build in between; install refuses a binary that is not the tree's build.
+[unix]
+clean-install +paths:
+    {{python}} plugins/job/herdr-job clean-tree --then 'scripts/herdr_live.sh install --expect-build "$HERDR_CLEAN_TREE_BUILD"' {{paths}} -- sh -c 'just check && {{slot}} cargo build --release --locked'
 
 # Run repository maintenance contract tests
 maintenance-test:

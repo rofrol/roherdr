@@ -371,6 +371,7 @@ name.
 herdr-job clean-tree src/foo.rs tests/foo.rs -- cargo test   # HEAD + these paths' changes
 herdr-job clean-tree -- make check                           # HEAD as committed
 herdr-job run --slot --name "check foo" -- herdr-job clean-tree src/foo.rs -- just check
+herdr-job clean-tree --then 'make install' -- make check    # then this, under the same lock
 herdr-job clean-tree --path                                  # where the tree is
 ```
 
@@ -382,9 +383,19 @@ herdr-job clean-tree --path                                  # where the tree is
   whose. Edits and deletions come as a patch against `HEAD`, new files as
   copies. A file another session also edits brings their hunks too: check
   `git diff -- <path>` first.
+- `HEAD` and the named paths are read once, into a snapshot (the commit and
+  a tree object written from a throwaway index), and the tree is built from
+  that: a commit another session makes meanwhile does not mix in.
 - One run at a time per repository (an `flock` under `.git/`); another run
   waits and says for whom. The command gets `HERDR_CLEAN_TREE_BASE`, the
-  commit it was built on.
+  commit it was built on, and `HERDR_CLEAN_TREE_BUILD`, the identity a herdr
+  build of that tree prints first in `--build-commit` (`<hash>` or
+  `<hash>~<tree>`, as build.rs computes it).
+- `--then SHELL-COMMAND` runs after the command succeeds (not after a
+  failure), with `sh -c` in the clean tree and under the same lock. Use it
+  for a step that needs the command's output, such as installing the build:
+  a separate command after the run could find the tree reset and rebuilt by
+  another run (`just clean-install` in herdr).
 - Worth it where several sessions edit and build one checkout; a checkout
   only you edit needs none.
 
