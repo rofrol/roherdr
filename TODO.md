@@ -401,9 +401,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   1. Fewer questions first (MiMo: nothing else matters while trivia
      arrives): the item "Headless workers ask the user almost never"
      (sandbox + auto mode).
-  2. (In progress 2026-10-08: slice 1, the SQLite event store, worker
-     `w-sqlite1`; slice 2 `worker.wait --attention --after <seq>`; slice 3
-     command receipts and the answer outbox.)
+  2. (2026-10-08: slice 1 done, `feat: worker state in sqlite, the event
+     store (slice 1)` and `build: cross-compile bundled sqlite for
+     windows`, installed; `workers.sqlite3` imported all 8 journals. Slice
+     2 `worker.wait --attention --after <seq>` in progress; slice 3 command
+     receipts and the answer outbox.)
   2. One durable event log per worker in the server: monotonic sequence,
      question / turn end / exit events, level-triggered `worker.wait
      --attention --after <seq>`; the per-coordinator inbox is a filter on
