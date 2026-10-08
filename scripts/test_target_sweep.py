@@ -51,6 +51,41 @@ class LockTests(unittest.TestCase):
             self.assertGreater(freed, 0)
             self.assertFalse((target / "debug").exists())
 
+    def test_a_slot_is_swept_to_its_own_limit_or_refused_when_the_disk_stays_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            for name in ("debug", "release"):
+                (target / name).mkdir()
+            fake = {"debug": 12 * GIB, "release": 2 * GIB}
+            size = lambda directory: fake[directory.name]
+            slot_max = target_sweep.DEFAULT_SLOT_MAX_TARGET_GIB * GIB
+            min_free = target_sweep.DEFAULT_MIN_FREE_GIB * GIB
+
+            def bound(free_values):
+                frees = iter(free_values)
+                return target_sweep.bound_slot(
+                    target, slot_max, min_free, dry_run=True, size=size, free=lambda _: next(frees)
+                )
+
+            # Plenty of room: swept to the slot limit only, and used.
+            self.assertIsNone(bound([100 * GIB]))
+            # 14 GiB is under the shared limit but over the slot's: debug goes.
+            self.assertEqual(
+                [d.name for d in target_sweep.plan(target, {target / n: s for n, s in fake.items()}, slot_max)],
+                ["debug"],
+            )
+            # Short of room after that, but fine once the whole target/ goes.
+            self.assertIsNone(bound([1 * GIB, 100 * GIB]))
+            # Short even then: refused, with why.
+            refusal = bound([1 * GIB, 1 * GIB])
+            self.assertIn("GiB free", refusal)
+            self.assertIn("not starting a worker", refusal)
+            # A build holding cargo's lock refuses the start.
+            with open(target / "debug" / ".cargo-lock", "a") as building:
+                fcntl.flock(building, fcntl.LOCK_EX)
+                self.assertIn("cargo build", bound([100 * GIB]))
+            self.assertTrue((target / "debug").exists())
+
     def test_dry_run_removes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)

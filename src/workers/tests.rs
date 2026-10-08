@@ -2419,6 +2419,7 @@ fn a_repeated_prompt_or_refusal_does_nothing_twice() {
     // Nor is an id reused across methods.
     let stop = fixture.supervisor.stop_command(&WorkerCommandTarget {
         worker_id: id.clone(),
+        caller_pane_id: None,
         command_id: Some("p2".into()),
     });
     assert_eq!(stop.unwrap_err().code(), "worker_command_conflict");
@@ -2767,6 +2768,82 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
     assert_eq!(gone.reason, WorkerAttentionReason::Gone);
     fixture.supervisor.ack(&id, gone.seq).unwrap();
     assert!(obligation_of(&fixture, "p1", &id).is_none());
+}
+
+#[test]
+fn an_exit_the_owner_asked_for_creates_no_obligation() {
+    let fixture = Fixture::new("owner-stop");
+    let stop = |id: &str, caller: Option<&str>| {
+        fixture
+            .supervisor
+            .stop_command(&WorkerCommandTarget {
+                worker_id: id.to_owned(),
+                caller_pane_id: caller.map(str::to_owned),
+                command_id: None,
+            })
+            .unwrap();
+        fixture.wait(id, WorkerWaitUntil::Exit)
+    };
+
+    // The owner stops it, with its turn end not acknowledged yet: the exit
+    // acknowledges everything up to itself.
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert!(obligation_of(&fixture, "p1", &id).is_some());
+    let worker = stop(&id, Some("p1"));
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+    assert_eq!(worker.acked_seq, worker.seq);
+    // Acknowledged as it was recorded, so it survives a restart.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    assert!(reopened
+        .obligations(Some("p1"))
+        .iter()
+        .all(|obligation| obligation.worker_id != id));
+
+    // Another pane's stop, or one with no caller, is an end the owner has
+    // to review.
+    for caller in [Some("p2"), None] {
+        let id = start_owned(&fixture, "p1", "finish");
+        fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        stop(&id, caller);
+        let gone = obligation_of(&fixture, "p1", &id).unwrap();
+        assert_eq!(gone.reason, WorkerAttentionReason::Gone, "{caller:?}");
+    }
+
+    // The owner's kill too.
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    fixture
+        .supervisor
+        .kill_command(&WorkerKillParams {
+            worker_id: id.clone(),
+            force: false,
+            caller_pane_id: Some("p1".into()),
+            command_id: None,
+        })
+        .unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+    // Another pane's kill is not.
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    fixture
+        .supervisor
+        .kill_command(&WorkerKillParams {
+            worker_id: id.clone(),
+            force: false,
+            caller_pane_id: Some("p2".into()),
+            command_id: None,
+        })
+        .unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(
+        obligation_of(&fixture, "p1", &id).unwrap().reason,
+        WorkerAttentionReason::Gone
+    );
 }
 
 #[test]
