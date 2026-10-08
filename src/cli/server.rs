@@ -205,7 +205,7 @@ fn print_agent_manifest_status(response: &serde_json::Value) {
 fn server_live_handoff(args: &[String]) -> std::io::Result<i32> {
     let Some(params) = parse_live_handoff_params(args) else {
         eprintln!(
-            "usage: herdr server live-handoff [--import-exe <path>] [--expected-protocol <n>] [--expected-version <version>]"
+            "usage: herdr server live-handoff [--force] [--import-exe <path>] [--expected-protocol <n>] [--expected-version <version>]"
         );
         return Ok(2);
     };
@@ -216,6 +216,15 @@ fn server_live_handoff(args: &[String]) -> std::io::Result<i32> {
         id: "cli:server:live-handoff".into(),
         method: Method::ServerLiveHandoff(params),
     })?;
+    if response["error"]["code"] == "handoff_refused" {
+        eprintln!(
+            "{}",
+            response["error"]["message"]
+                .as_str()
+                .unwrap_or("handoff refused")
+        );
+        return Ok(1);
+    }
     if response.get("error").is_some() {
         let rendered = serde_json::to_string(&response).unwrap_or_else(|err| {
             format!(
@@ -240,6 +249,11 @@ fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams>
     let mut idx = 0;
     while idx < args.len() {
         let arg = &args[idx];
+        if arg == "--force" {
+            params.force = true;
+            idx += 1;
+            continue;
+        }
         let (flag, value) = if let Some((flag, value)) = arg.split_once('=') {
             (flag, Some(value.to_string()))
         } else {
@@ -374,5 +388,20 @@ mod tests {
         );
         assert_eq!(params.expected_protocol, Some(9));
         assert_eq!(params.expected_version.as_deref(), Some("0.6.2"));
+        assert!(!params.force);
+    }
+
+    #[test]
+    fn live_handoff_params_parse_force() {
+        let args = vec![
+            "--force".to_string(),
+            "--import-exe".to_string(),
+            "/bin/herdr".to_string(),
+        ];
+
+        let params = parse_live_handoff_params(&args).expect("params");
+
+        assert!(params.force);
+        assert_eq!(params.import_exe.as_deref(), Some("/bin/herdr"));
     }
 }

@@ -9,6 +9,13 @@
 //! it without a time limit. The same fold replays a journal after a server
 //! restart, where a worker that had not exited is recorded as `lost`.
 //!
+//! The server that runs a worker holds an exclusive lock on the lock file
+//! beside its journal (`<id>.lock`) until the worker's exit is journaled, so
+//! a server started by a live handoff marks `lost` only workers whose server
+//! is gone. Worker pipes are not handed over: a handoff is refused while a
+//! worker is in a turn, and stops the idle ones first
+//! ([`prepare_for_handoff`]).
+//!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
 mod log;
@@ -20,12 +27,12 @@ mod tests;
 pub(crate) use log::log_lines;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tracing::warn;
@@ -309,6 +316,13 @@ struct Status {
     /// The process's exit is recorded. The state is then `exited`, or
     /// `failed` when the exit failed a finished turn.
     exited: bool,
+    /// A later server recorded the worker `lost`: the server that ran it
+    /// ended first. The state is then `lost`, or the last turn's end state
+    /// when that turn had ended (with `end_note`). A later `exited` replaces
+    /// it.
+    lost: bool,
+    /// Why a worker that keeps its last turn's state is gone.
+    end_note: Option<String>,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -347,6 +361,8 @@ impl Status {
             takeover_unfinished: false,
             refusal: None,
             exited: false,
+            lost: false,
+            end_note: None,
         }
     }
 
@@ -390,14 +406,14 @@ impl Status {
     }
 
     fn is_gone(&self) -> bool {
-        self.exited || matches!(self.state, WorkerState::Exited | WorkerState::Lost)
+        self.exited || self.lost
     }
 
     /// Whether the worker's process is known to be gone: its exit is
     /// recorded, or it was lost and its process group no longer exists.
     fn process_gone(&self) -> bool {
         self.exited
-            || (self.state == WorkerState::Lost
+            || (self.lost
                 && self
                     .pid
                     .is_none_or(|pid| !crate::platform::process_group_alive(pid)))
@@ -440,7 +456,11 @@ impl Status {
                 _ => {}
             }
         }
-        if self.is_gone() {
+        // An exit recorded after `lost` (by the server that still ran the
+        // worker) replaces it.
+        let exit_after_lost =
+            self.lost && !self.exited && (direction, kind) == (Direction::Herdr, "exited");
+        if self.is_gone() && !exit_after_lost {
             return;
         }
         match (direction, kind) {
@@ -508,6 +528,8 @@ impl Status {
                 self.clear_questions("the worker exited");
                 self.stop_requested_ms = None;
                 self.exited = true;
+                self.lost = false;
+                self.end_note = None;
                 self.state = if failed_turn {
                     WorkerState::Failed
                 } else {
@@ -520,9 +542,19 @@ impl Status {
                     .map(|v| v as i32);
             }
             (Direction::Herdr, "lost") => {
+                // A worker between turns lost nothing but its process: it
+                // keeps its last turn's state. A stop request stays, so a
+                // later `exited` is judged as the stop's.
                 self.clear_questions("the worker was lost");
-                self.stop_requested_ms = None;
-                self.state = WorkerState::Lost;
+                self.lost = true;
+                if matches!(
+                    self.state,
+                    WorkerState::Finished | WorkerState::Failed | WorkerState::Interrupted
+                ) {
+                    self.end_note = Some("ended by a server restart".into());
+                } else {
+                    self.state = WorkerState::Lost;
+                }
             }
             (Direction::Out, "system") => {
                 if event.get("subtype").and_then(Value::as_str) == Some("model_refusal_no_fallback")
@@ -616,6 +648,7 @@ impl Status {
             takeover_tab_id: self.takeover_tab.clone(),
             takeover_error: self.takeover_error.clone(),
             takeover_unfinished: self.takeover_unfinished,
+            end_note: self.end_note.clone(),
             journal_path: journal_path.display().to_string(),
         }
     }
@@ -702,6 +735,75 @@ fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
     // unknown.
     status.takeover_unfinished = status.takeover_ms.is_some() && status.takeover_tab.is_none();
     Ok(status)
+}
+
+/// Replays a journal no server owns any more. A worker it does not show
+/// ended was left by a server that is gone: it is marked `lost` there and
+/// in the returned state.
+fn replay_unowned_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
+    let mut status = replay_journal(worker_id, path)?;
+    if !status.is_gone() {
+        let lost = json!({"type": "lost", "reason": "server restarted"});
+        match Journal::open(path) {
+            Ok(journal) => journal.record(Direction::Herdr, &lost),
+            Err(error) => warn!(%error, "cannot mark worker lost in its journal"),
+        }
+        status.apply(Direction::Herdr, &lost);
+    }
+    Ok(status)
+}
+
+/// The lock file beside a worker's journal, held by the server that runs
+/// the worker.
+fn owner_lock_path(journal_path: &Path) -> PathBuf {
+    journal_path.with_extension("lock")
+}
+
+/// Takes the lock of a new worker's journal for this server; taken before
+/// the journal exists, so another server never sees the journal unowned.
+fn own_journal(journal_path: &Path, worker_id: &str) -> Result<File, WorkerError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(owner_lock_path(journal_path))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(WorkerError::Busy(format!(
+            "worker {worker_id} is run by another server"
+        ))),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+/// Who owns a journal found at start.
+enum Ownership {
+    /// No server runs the worker; the lock, if the journal has one, is
+    /// held while the journal is replayed.
+    Unowned { _held: Option<File> },
+    /// Another server holds the lock: its worker may still run.
+    Owned(File),
+}
+
+fn journal_ownership(journal_path: &Path) -> std::io::Result<Ownership> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(owner_lock_path(journal_path))
+    {
+        Ok(file) => file,
+        // Written by a server from before the lock files.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Ownership::Unowned { _held: None })
+        }
+        Err(error) => return Err(error),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Ownership::Unowned { _held: Some(file) }),
+        Err(TryLockError::WouldBlock) => Ok(Ownership::Owned(file)),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
 }
 
 /// A running worker's pipes and journal; absent for one replayed from disk.
@@ -808,6 +910,22 @@ pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
         .unwrap_or_default()
 }
 
+/// How long a live handoff waits for the workers it stopped to exit. The
+/// server's main loop waits here, so a worker that ignores SIGTERM must not
+/// hold it for ever; the CLI exits within a second of SIGTERM.
+const HANDOFF_STOP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Readies the server's workers for a live handoff
+/// ([`WorkerSupervisor::prepare_for_handoff`]); the refusal says why.
+pub(crate) fn prepare_for_handoff(force: bool) -> Result<(), String> {
+    match SUPERVISOR.get() {
+        Some(supervisor) => supervisor
+            .prepare_for_handoff(force, HANDOFF_STOP_DEADLINE)
+            .map(|_| ()),
+        None => Ok(()),
+    }
+}
+
 /// What the sidebar shows of a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkerSummary {
@@ -867,8 +985,11 @@ pub(crate) fn supervisor() -> &'static WorkerSupervisor {
 
 impl WorkerSupervisor {
     /// Opens the journal directory and replays it. A worker whose journal
-    /// does not end in an exit was left by a previous server: it is marked
-    /// `lost` there and here.
+    /// does not end in an exit and whose lock no server holds was left by a
+    /// previous server: it is marked `lost` there and here. One whose lock
+    /// another server holds (the old server of a live handoff) is replayed
+    /// as it is, and marked `lost` only if its exit is not journaled once
+    /// that server lets go of it ([`Self::adopt_when_released`]).
     pub(crate) fn open(dir: PathBuf, program: PathBuf) -> Self {
         let mut registry = Registry {
             next_number: 1,
@@ -877,6 +998,7 @@ impl WorkerSupervisor {
         if let Err(error) = std::fs::create_dir_all(&dir) {
             warn!(%error, dir = %dir.display(), "worker journal directory unavailable");
         }
+        let mut owned_elsewhere = Vec::new();
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
@@ -888,26 +1010,31 @@ impl WorkerSupervisor {
             let Some(number) = worker_number(worker_id) else {
                 continue;
             };
-            let mut status = match replay_journal(worker_id, &path) {
+            let ownership = journal_ownership(&path).unwrap_or_else(|error| {
+                warn!(%error, path = %path.display(), "worker journal lock unavailable");
+                Ownership::Unowned { _held: None }
+            });
+            let replayed = match &ownership {
+                Ownership::Unowned { .. } => replay_unowned_journal(worker_id, &path),
+                Ownership::Owned(_) => replay_journal(worker_id, &path),
+            };
+            let status = match replayed {
                 Ok(status) => status,
                 Err(error) => {
                     warn!(%error, path = %path.display(), "worker journal unreadable");
                     continue;
                 }
             };
-            if !status.is_gone() {
-                let lost = json!({"type": "lost", "reason": "server restarted"});
-                match Journal::open(&path) {
-                    Ok(journal) => journal.record(Direction::Herdr, &lost),
-                    Err(error) => warn!(%error, "cannot mark worker lost in its journal"),
+            match ownership {
+                Ownership::Owned(lock) => owned_elsewhere.push((number, path.clone(), lock)),
+                // A lost worker's process may still run (a server that died
+                // without its workers): its temp dir stays until its
+                // process is gone, checked again at the next start.
+                Ownership::Unowned { .. } => {
+                    if status.process_gone() {
+                        remove_temp_dir(&temp_dir_path(&dir, worker_id));
+                    }
                 }
-                status.apply(Direction::Herdr, &lost);
-            }
-            // A lost worker's process may still run (a live handoff, a
-            // server that died without its workers): its temp dir stays
-            // until its process is gone, checked again at the next start.
-            if status.process_gone() {
-                remove_temp_dir(&temp_dir_path(&dir, worker_id));
             }
             registry.next_number = registry.next_number.max(number + 1);
             registry.workers.insert(
@@ -919,7 +1046,7 @@ impl WorkerSupervisor {
                 },
             );
         }
-        Self {
+        let supervisor = Self {
             shared: Arc::new(Shared {
                 dir,
                 program,
@@ -927,7 +1054,153 @@ impl WorkerSupervisor {
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
             }),
+        };
+        for (number, path, owner_lock) in owned_elsewhere {
+            supervisor.adopt_when_released(number, path, owner_lock);
         }
+        supervisor
+    }
+
+    /// Waits, in a thread, until the server that holds a worker's journal
+    /// lets go of it (the worker's exit is journaled, or that server ended),
+    /// then replays the journal again and marks the worker `lost` if its
+    /// exit is not there.
+    fn adopt_when_released(&self, number: u64, path: PathBuf, owner_lock: File) {
+        let supervisor = self.clone();
+        let spawned = crate::thread_spawn::spawn_named("herdr-worker-owner", move || {
+            if let Err(error) = owner_lock.lock() {
+                warn!(%error, path = %path.display(), "cannot wait for the worker journal's lock");
+                return;
+            }
+            let worker_id = format!("w{number}");
+            let status = match replay_unowned_journal(&worker_id, &path) {
+                Ok(status) => status,
+                Err(error) => {
+                    warn!(%error, path = %path.display(), "worker journal unreadable");
+                    return;
+                }
+            };
+            if status.process_gone() {
+                remove_temp_dir(&temp_dir_path(&supervisor.shared.dir, &worker_id));
+            }
+            {
+                let mut registry = lock(&supervisor.shared.registry);
+                if let Some(entry) = registry.workers.get_mut(&number) {
+                    if entry.live.is_none() {
+                        entry.status = status;
+                    }
+                }
+            }
+            supervisor.shared.changed.notify_all();
+            notify_clients();
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "worker journal owner wait unavailable");
+        }
+    }
+
+    /// Readies this server's workers for a live handoff, which cannot carry
+    /// their pipes. Refuses while a worker is in a turn (starting, working
+    /// or waiting for an answer), naming them, unless `force`. Then stops
+    /// every running worker with SIGTERM and waits up to `deadline` for
+    /// their exits to be journaled, so none is left to die with this server.
+    /// Returns the workers it stopped.
+    pub(crate) fn prepare_for_handoff(
+        &self,
+        force: bool,
+        deadline: Duration,
+    ) -> Result<Vec<String>, String> {
+        let running: Vec<(u64, String, WorkerState, bool)> = {
+            let registry = lock(&self.shared.registry);
+            registry
+                .workers
+                .iter()
+                .filter(|(_, entry)| entry.live.is_some() && !entry.status.is_gone())
+                .map(|(number, entry)| {
+                    (
+                        *number,
+                        entry.status.worker_id.clone(),
+                        entry.status.state,
+                        entry.status.turn_ended(),
+                    )
+                })
+                .collect()
+        };
+        let in_turn: Vec<String> = running
+            .iter()
+            .filter(|(_, _, _, turn_ended)| !turn_ended)
+            .map(|(_, worker_id, state, _)| {
+                let doing = match state {
+                    WorkerState::Starting => "starting",
+                    WorkerState::WaitingApproval => "waiting for an answer",
+                    _ => "working",
+                };
+                format!("{worker_id} ({doing})")
+            })
+            .collect();
+        if !in_turn.is_empty() && !force {
+            return Err(format!(
+                "refusing the live handoff: headless workers are in a turn: {}. Their pipes \
+                 are not handed over, so the handoff would end them. Wait for their turns to \
+                 end, stop them with `herdr worker stop <id>`, or hand off anyway with \
+                 `herdr server live-handoff --force`.",
+                in_turn.join(", ")
+            ));
+        }
+        for (_, worker_id, _, _) in &running {
+            match self.stop(worker_id) {
+                Ok(_) | Err(WorkerError::NotRunning(_)) => {}
+                Err(error) if force => {
+                    warn!(%error, worker_id, "cannot stop worker before a forced handoff");
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "refusing the live handoff: cannot stop worker {worker_id}: {error}"
+                    ))
+                }
+            }
+        }
+        let until = Instant::now() + deadline;
+        let mut registry = lock(&self.shared.registry);
+        loop {
+            let left: Vec<&str> = running
+                .iter()
+                .filter(|(number, ..)| {
+                    registry
+                        .workers
+                        .get(number)
+                        .is_some_and(|entry| !entry.status.is_gone())
+                })
+                .map(|(_, worker_id, ..)| worker_id.as_str())
+                .collect();
+            if left.is_empty() {
+                break;
+            }
+            let now = Instant::now();
+            if now >= until {
+                if force {
+                    warn!(workers = ?left, "workers still run after SIGTERM; handing off anyway");
+                    break;
+                }
+                return Err(format!(
+                    "refusing the live handoff: workers still run {} s after SIGTERM: {}. End \
+                     them with `herdr worker kill <id>`, or hand off anyway with \
+                     `herdr server live-handoff --force`.",
+                    deadline.as_secs(),
+                    left.join(", ")
+                ));
+            }
+            registry = self
+                .shared
+                .changed
+                .wait_timeout(registry, until - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        Ok(running
+            .into_iter()
+            .map(|(_, worker_id, ..)| worker_id)
+            .collect())
     }
 
     pub(crate) fn start(&self, params: &WorkerStartParams) -> Result<WorkerInfo, WorkerError> {
@@ -992,6 +1265,7 @@ impl WorkerSupervisor {
         let worker_id = format!("w{number}");
         std::fs::create_dir_all(&self.shared.dir)?;
         let journal_path = self.shared.dir.join(format!("{worker_id}.jsonl"));
+        let owner_lock = own_journal(&journal_path, &worker_id)?;
         let journal = Arc::new(Journal::open(&journal_path)?);
         let temp_dir = self.create_temp_dir(&worker_id)?;
         let settings = worker_settings(&cwd_real, &temp_dir, &slot_caches).to_string();
@@ -1146,6 +1420,7 @@ impl WorkerSupervisor {
             policy,
             temp_dir: temp_dir.clone(),
             live: Arc::clone(&live),
+            owner_lock,
         };
         if let Err(error) =
             crate::thread_spawn::spawn_named("herdr-worker", move || reader.run(stdout, child))
@@ -1487,7 +1762,8 @@ impl WorkerSupervisor {
     /// Claims a worker for a takeover and journals it. Refused while a
     /// question waits on the user (answer it first, or the interrupt would
     /// throw the answer away), for a worker without a session yet, for one
-    /// that was lost (its process is not ours to end), and while another
+    /// that was lost while its process still runs (it is not ours to end),
+    /// and while another
     /// takeover holds the claim or has opened its tab. The claim is kept in
     /// every state, so an exited worker is taken over once too; a failed
     /// takeover releases it ([`Self::fail_takeover`]), and one an earlier
@@ -1501,7 +1777,7 @@ impl WorkerSupervisor {
                 .get_mut(&number)
                 .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
             let status = &entry.status;
-            if status.state == WorkerState::Lost {
+            if status.lost && !status.process_gone() {
                 return Err(WorkerError::NotRunning(format!(
                     "worker {worker_id} was lost: its process is not this server's to end"
                 )));
@@ -1605,8 +1881,13 @@ impl WorkerSupervisor {
         // Only to look at nothing: the waits below end on the worker's
         // events, never on this interval.
         const RECHECK: Duration = Duration::from_secs(60);
-        let status = self.status(worker_id)?;
-        if matches!(status.state, WorkerState::Exited | WorkerState::Lost) {
+        let (gone, status) = self.with_entry(worker_id, |entry| {
+            (
+                entry.status.is_gone(),
+                entry.status.info(&entry.journal_path),
+            )
+        })?;
+        if gone {
             return Ok(status);
         }
         let in_turn = !matches!(
@@ -1972,6 +2253,8 @@ struct Reader {
     policy: policy::Policy,
     temp_dir: PathBuf,
     live: Arc<Live>,
+    /// This server's lock on the journal, let go once the exit is in it.
+    owner_lock: File,
 }
 
 impl Reader {
@@ -2006,6 +2289,7 @@ impl Reader {
             Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
         };
         self.live.journal.record(Direction::Herdr, &exited);
+        drop(self.owner_lock);
         remove_temp_dir(&self.temp_dir);
         self.supervisor
             .update(self.number, Direction::Herdr, &exited);

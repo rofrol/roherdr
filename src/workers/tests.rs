@@ -1320,6 +1320,186 @@ fn a_restart_replays_takeover_steps() {
     supervisor.begin_takeover("w1").unwrap();
 }
 
+#[test]
+fn a_later_exit_replaces_lost_and_a_finished_worker_keeps_its_state() {
+    let fixture = Fixture::new("lost-replay");
+    let dir = fixture.root.join("workers");
+    let started = serde_json::json!({"dir": "herdr", "event": {
+        "type": "started", "cwd": "/repo", "pid": 99999}});
+    let init = serde_json::json!({"dir": "out", "event": {
+        "type": "system", "subtype": "init", "session_id": "s-1"}});
+    let lost = serde_json::json!({"dir": "herdr", "event": {
+        "type": "lost", "reason": "server restarted"}});
+    let finished = serde_json::json!({"dir": "out", "event": {
+        "type": "result", "subtype": "success", "is_error": false,
+        "terminal_reason": "completed", "result": "done"}});
+    write_journal(
+        &dir,
+        "w1",
+        &[
+            started.clone(),
+            init.clone(),
+            lost.clone(),
+            serde_json::json!({"dir": "herdr", "event": {"type": "exited", "code": 3}}),
+        ],
+    );
+    write_journal(&dir, "w2", &[started, init, finished, lost]);
+
+    let supervisor = WorkerSupervisor::open(dir.clone(), fixture.root.join("claude-stub"));
+    let exited = supervisor.status("w1").unwrap();
+    assert_eq!(exited.state, WorkerState::Exited);
+    assert_eq!(exited.exit_code, Some(3));
+    assert_eq!(exited.end_note, None);
+
+    let ended = supervisor.status("w2").unwrap();
+    assert_eq!(ended.state, WorkerState::Finished);
+    assert_eq!(ended.end_note.as_deref(), Some("ended by a server restart"));
+    assert_eq!(ended.last_result.unwrap().text.as_deref(), Some("done"));
+    // It is gone: an exit wait returns, and no second `lost` is appended.
+    supervisor
+        .wait("w2", WorkerWaitUntil::Exit, Duration::ZERO, || false)
+        .unwrap()
+        .unwrap();
+    let journal = std::fs::read_to_string(dir.join("w2.jsonl")).unwrap();
+    assert_eq!(journal.matches("\"lost\"").count(), 1);
+    // Its process is gone, so its session can be taken over.
+    supervisor.begin_takeover("w2").unwrap();
+}
+
+#[test]
+fn a_restart_leaves_a_journal_another_server_owns_until_it_lets_go() {
+    let fixture = Fixture::new("lost-owned");
+    let dir = fixture.root.join("workers");
+    let started = serde_json::json!({"dir": "herdr", "event": {
+        "type": "started", "cwd": "/repo", "pid": 99999}});
+    let init = serde_json::json!({"dir": "out", "event": {
+        "type": "system", "subtype": "init", "session_id": "s-1"}});
+    write_journal(&dir, "w1", &[started.clone(), init.clone()]);
+    write_journal(&dir, "w2", &[started, init]);
+    let hold = |worker_id: &str| {
+        let lock = File::create(dir.join(format!("{worker_id}.lock"))).unwrap();
+        lock.try_lock().unwrap();
+        lock
+    };
+    let (w1_lock, w2_lock) = (hold("w1"), hold("w2"));
+
+    let supervisor = WorkerSupervisor::open(dir.clone(), fixture.root.join("claude-stub"));
+    for worker_id in ["w1", "w2"] {
+        assert_eq!(
+            supervisor.status(worker_id).unwrap().state,
+            WorkerState::Working
+        );
+        let journal = std::fs::read_to_string(dir.join(format!("{worker_id}.jsonl"))).unwrap();
+        assert!(!journal.contains("\"lost\""), "{journal}");
+    }
+
+    // The owner journals the exit, then lets go: the exit is adopted.
+    Journal::open(&dir.join("w1.jsonl")).unwrap().record(
+        Direction::Herdr,
+        &serde_json::json!({"type": "exited", "code": 0}),
+    );
+    drop(w1_lock);
+    // The owner ends without journaling an exit: now it is lost.
+    drop(w2_lock);
+    let started = Instant::now();
+    for (worker_id, state) in [("w1", WorkerState::Exited), ("w2", WorkerState::Lost)] {
+        let number = worker_number(worker_id).unwrap();
+        let mut registry = lock(&supervisor.shared.registry);
+        while registry.workers[&number].status.state != state {
+            assert!(started.elapsed() < HANG_GUARD, "{worker_id} not adopted");
+            registry = supervisor
+                .shared
+                .changed
+                .wait_timeout(registry, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+    }
+    let w2 = std::fs::read_to_string(dir.join("w2.jsonl")).unwrap();
+    assert_eq!(w2.matches("\"lost\"").count(), 1);
+    let w1 = std::fs::read_to_string(dir.join("w1.jsonl")).unwrap();
+    assert!(!w1.contains("\"lost\""));
+}
+
+#[test]
+fn a_running_worker_is_not_marked_lost_by_another_server() {
+    let fixture = Fixture::new("lost-live");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let other = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(other.status(&id).unwrap().state, WorkerState::Finished);
+    assert!(fixture.herdr_events(&id, "lost").is_empty());
+}
+
+#[test]
+fn a_handoff_is_refused_while_a_worker_is_in_a_turn() {
+    let fixture = Fixture::new("handoff-busy");
+    let busy = fixture.start("block");
+    fixture.wait_for(&busy, |worker| worker.state == WorkerState::Working);
+    let idle = fixture.start("finish");
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+
+    let refused = fixture
+        .supervisor
+        .prepare_for_handoff(false, HANG_GUARD)
+        .unwrap_err();
+    assert!(refused.contains(&format!("{busy} (working)")), "{refused}");
+    assert!(!refused.contains(&idle), "{refused}");
+    assert!(refused.contains("--force"), "{refused}");
+    // Nothing was stopped.
+    assert_eq!(
+        fixture.supervisor.status(&busy).unwrap().state,
+        WorkerState::Working
+    );
+    assert!(fixture.herdr_events(&idle, "signal").is_empty());
+
+    // Forced, both are stopped and their exits journaled first.
+    let stopped = fixture
+        .supervisor
+        .prepare_for_handoff(true, HANG_GUARD)
+        .unwrap();
+    assert_eq!(stopped, vec![busy.clone(), idle.clone()]);
+    for worker_id in [&busy, &idle] {
+        assert_eq!(fixture.herdr_events(worker_id, "exited").len(), 1);
+        assert_eq!(
+            fixture.herdr_events(worker_id, "signal")[0]["signal"],
+            "SIGTERM"
+        );
+    }
+}
+
+#[test]
+fn a_handoff_stops_workers_between_turns() {
+    let fixture = Fixture::new("handoff-idle");
+    let idle = fixture.start("finish");
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+    let stopped = fixture
+        .supervisor
+        .prepare_for_handoff(false, HANG_GUARD)
+        .unwrap();
+    assert_eq!(stopped, vec![idle.clone()]);
+    let worker = fixture.supervisor.status(&idle).unwrap();
+    assert_eq!(worker.state, WorkerState::Exited);
+    assert_eq!(fixture.herdr_events(&idle, "exited").len(), 1);
+    // A next server finds the exit, not a lost worker.
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(next.status(&idle).unwrap().state, WorkerState::Exited);
+    assert!(fixture.herdr_events(&idle, "lost").is_empty());
+}
+
+#[test]
+fn a_handoff_waits_no_longer_than_its_deadline_for_a_worker_that_ignores_sigterm() {
+    let fixture = Fixture::new("handoff-ignores");
+    let id = fixture.start("ignore-term");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let refused = fixture
+        .supervisor
+        .prepare_for_handoff(false, Duration::from_millis(200))
+        .unwrap_err();
+    assert!(refused.contains("still run"), "{refused}");
+    assert!(refused.contains(&id), "{refused}");
+}
+
 fn git_in(dir: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")

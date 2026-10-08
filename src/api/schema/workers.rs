@@ -84,8 +84,9 @@ pub enum WorkerState {
     Interrupted,
     /// The process ended; `exit_code` or `exit_signal` says how.
     Exited,
-    /// The server that ran it ended before it did; its process is not ours
-    /// any more.
+    /// The server that ran it ended before it did, during a turn; its
+    /// process is not ours any more. One between turns keeps its last
+    /// turn's state with `end_note` instead.
     Lost,
     /// A state this client does not know.
     #[serde(other)]
@@ -174,6 +175,11 @@ pub struct WorkerInfo {
     /// accepted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takeover_unfinished: bool,
+    /// How a worker ended that keeps its last turn's state: one that had
+    /// finished its turn when its server ended shows that turn's state with
+    /// "ended by a server restart", not `lost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_note: Option<String>,
     /// The JSONL journal of every event in and out.
     pub journal_path: String,
 }
