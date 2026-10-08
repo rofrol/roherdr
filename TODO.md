@@ -438,6 +438,19 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      timer) detects that. Decided by the user 2026-10-07: yes, a lease the
      coordinator renews by its own activity, its expiry hands its questions
      to the user, the value stated next to it as a designed bound.
+     Reversed by the user 2026-10-08 ("the coordinator is silent for 15
+     minutes? does t3code do that? again async workarounds? ask the
+     models"), round `20261008-103538-de75` (sol, MiMo, DeepSeek): events only.
+     A question escalates when the owner escalates it, its pane closes or
+     agent exits, its agent reports `limited`, its agent goes idle/done
+     while the question is unanswered (acknowledging is not answering),
+     its agent is blocked on its own question to the user, or herdr
+     restarts (re-evaluated at start); a worker exiting resolves its
+     questions. A coordinator alive but hung ("working" for ever, no
+     event) is a known limitation, not hidden: the quiet entry reads
+     "awaiting the coordinator", with the owner's last event age shown
+     (display only, deciding nothing). T3 Code has no coordinator agent;
+     its approvals go to the human without a timeout.
   6. Verified TODO.md/DECISIONS.md writes (read back, refuse on a missing
      anchor) and an acknowledged prompt at worker start.
   7. Fault-injection tests: the coordinator killed mid-answer and between
