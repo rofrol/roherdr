@@ -268,6 +268,7 @@ mod tests {
             build_commit: None,
             worker_questions: Vec::new(),
             workers: Vec::new(),
+            worker_item_counts: None,
         }
     }
 

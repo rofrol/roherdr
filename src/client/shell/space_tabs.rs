@@ -63,6 +63,10 @@ pub(super) struct SpaceTabLine {
     /// Set on a headless worker's line (see [`worker_lines`]); its `tab_id`
     /// is [`worker_line_id`], never a real tab's.
     pub(super) worker: Option<WorkerLine>,
+    /// A coordinator's line: the counts its Items button shows (see
+    /// [`super::worker_items`]); none on other lines, and from a server
+    /// that cannot list worker runs.
+    pub(super) items: Option<crate::protocol::ClientShellWorkerItemCounts>,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -285,6 +289,7 @@ pub(super) fn worker_lines(
                     worker_id: worker.worker_id.clone(),
                     tooltip,
                 }),
+                items: None,
             }
         })
         .collect()
@@ -470,6 +475,9 @@ pub(super) fn space_tab_lines_filtered(
                 role: tab.role,
                 ask: tab_ask(snapshot, tab),
                 worker: None,
+                items: snapshot
+                    .worker_item_counts
+                    .filter(|_| tab.role == Some(crate::api::schema::TabRole::Coordinator)),
             }
         })
         .collect::<Vec<_>>();
@@ -509,6 +517,7 @@ pub(super) fn space_tab_lines_filtered(
                 role: None,
                 ask: None,
                 worker: None,
+                items: None,
             });
         }
     }
@@ -947,6 +956,8 @@ fn is_dark(color: Color) -> Option<bool> {
 pub(super) struct SpaceTabHits {
     pub(super) lines: Vec<(Rect, String)>,
     pub(super) folds: Vec<(Rect, String)>,
+    /// Coordinator lines' Items buttons, with their tab.
+    pub(super) items: Vec<(Rect, String)>,
     pub(super) squares: Vec<(Rect, String)>,
     /// Blank slots of closed tabs; a click there does nothing.
     pub(super) gone: Vec<Rect>,
@@ -1157,7 +1168,51 @@ pub(super) fn render_space_tab_lines(
             (true, 0) => 1,
             (true, jobs) => jobs + 2,
         };
-        let area_width = available.saturating_sub(if fold_width > 0 { fold_width + 1 } else { 0 });
+        let fold_room = if fold_width > 0 { fold_width + 1 } else { 0 };
+        // A coordinator's Items button sits left of the triangle while the
+        // label keeps a few columns.
+        let items = line.items.as_ref().map(|counts| {
+            (
+                super::worker_items::items_button_text(&super::worker_items::items_badge(counts)),
+                counts,
+            )
+        });
+        let items = items.filter(|(text, _)| {
+            available.saturating_sub(fold_room) >= super::render::display_width(text) + 1 + 6
+        });
+        let items_room = items
+            .as_ref()
+            .map_or(0, |(text, _)| super::render::display_width(text) + 1);
+        let area_width = available.saturating_sub(fold_room + items_room);
+        if let Some((text, counts)) = &items {
+            let items_x = text_x + area_width + 1;
+            let width = super::render::display_width(text);
+            super::render::put_text(
+                buffer,
+                items_x,
+                y,
+                width,
+                text,
+                on_accent.unwrap_or_else(|| {
+                    let style = Style::default().fg(palette.accent);
+                    if counts.attention > 0 {
+                        style.add_modifier(Modifier::BOLD)
+                    } else {
+                        style
+                    }
+                }),
+            );
+            // Its padding takes clicks too.
+            let rect = Rect::new(items_x.saturating_sub(1), y, width + 2, 1);
+            hits.items.push((rect, line.tab_id.clone()));
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect,
+                id: format!("tab-items:{}", line.tab_id),
+                text: super::worker_items::items_tooltip(counts),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
         // The todo progress sits at the right end of the label's room, dim,
         // when the label keeps at least a few columns.
         let plan = line

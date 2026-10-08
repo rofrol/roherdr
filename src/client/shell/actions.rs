@@ -647,6 +647,9 @@ impl ClientShellState {
         if let PendingEndpointKind::NotificationList { endpoint_id } = pending.kind {
             return self.complete_notification_list(endpoint_id, result);
         }
+        if let PendingEndpointKind::WorkerRuns { endpoint_id } = pending.kind {
+            return self.complete_worker_runs(endpoint_id, result);
+        }
         if let PendingEndpointKind::GitBranchList { workspace_id } = pending.kind {
             return self.complete_git_branch_list(workspace_id, result);
         }

@@ -778,6 +778,7 @@ impl ClientShellState {
         let on =
             |hits: &[(Rect, String)]| hits.iter().any(|(rect, _)| super::contains(*rect, point));
         if on(&self.hits.space_tab_folds)
+            || on(&self.hits.space_tab_items)
             || on(&self.hits.space_tab_squares)
             || self.on_gone_square(point)
         {
@@ -2107,6 +2108,33 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::WorkerItems(_))) {
+            let row_hit = self
+                .hits
+                .worker_items_rows
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, index)| *index);
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let Some(index) = row_hit {
+                        self.highlight_worker_items_row(index);
+                        outcome.repaint = true;
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) = row_hit {
+                        self.activate_worker_items_row(index, outcome);
+                    } else {
+                        // Also the button: it closes what it opened.
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             let row_hit = self
                 .hits
@@ -2999,6 +3027,11 @@ impl ClientShellState {
                     }
                     let method = self.new_tab_method(workspace_id, None);
                     self.push_endpoint_method(method, outcome);
+                    return;
+                }
+                // A coordinator line's Items button opens its dropdown.
+                if let Some(button) = self.worker_items_button_at(point) {
+                    self.toggle_worker_items(button, outcome);
                     return;
                 }
                 // A worker's line opens its log.

@@ -989,6 +989,22 @@ impl ClientShellState {
                     self.hits.list_menu_rows = menu_render.menu_rows;
                 }
                 None
+            } else if let ClientShellOverlay::WorkerItems(items) = overlay {
+                let rows = self
+                    .worker_items_rows()
+                    .into_iter()
+                    .map(|row| row.row)
+                    .collect::<Vec<_>>();
+                let rendered = render::render_notification_log(
+                    &mut composed,
+                    items.button,
+                    items.highlighted,
+                    &rows,
+                    &self.config.palette,
+                )?;
+                occlusion.cover(rendered.area);
+                self.hits.worker_items_rows = rendered.menu_rows;
+                None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(
                     &mut composed,

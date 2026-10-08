@@ -80,6 +80,11 @@ pub struct WorkerItemRuns {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     pub runs: Vec<WorkerRun>,
+    /// The item's title: its first line in the repository's `TODO.md`,
+    /// without the box and the id, cut to 80 characters; absent when the
+    /// file has no item with that id (a finished item leaves it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// One run: one worker process from its start to its end. A worker sent
