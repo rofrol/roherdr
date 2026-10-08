@@ -8,6 +8,44 @@ constrain it.
 
 ## Next, in order
 
+- [ ] Program-decided worker outcomes instead of the model's word (user, [t-a4gw5vfo]
+  2026-10-08: "I feel control is inverted: the worker works and we count on
+  the model, through hooks or AGENTS.md, to return the right status; but
+  it is a process, don't we have exit codes? ask the models; do not
+  implement, analyse"). Analysis, round `20261008-140635-4093` (sol, MiMo, DeepSeek),
+  agreeing: yes, inverted. herdr owns the process but the model owns the
+  terminal condition: `WORKER-DONE <sha>` (prose another model parses)
+  decides readiness; reported test runs are anecdotes; hooks decide
+  interrupted vs finished for TUI agents. Exit codes do not fix it alone:
+  `claude -p`'s exit code and the `result` message describe the CLI's
+  turn (it ran, no API error), not the task; a worker kept alive between
+  turns only exits at `worker stop`. Both incidents (a co-author trailer, a
+  hand-edited generated schema) were mechanically detectable. Proposed
+  shape: a task is `(base sha, allowed paths, exact commit message,
+  verification command) -> verdict`, decided by herdr: the commit exists
+  on the branch and descends from base, the message and trailers match,
+  `git diff --name-only` stays within allowed paths, generated files
+  regenerate cleanly, the worktree is clean and no task process remains,
+  and herdr itself runs the verification command (outside the sandbox
+  where needed; "verification unavailable" is not "passed"); verdict
+  `verified | failed | blocked` with evidence; the model's last line is a
+  summary only, a blocked reason typed with evidence. Kept to models: the
+  diff's intent and design quality, as advisory review that the program
+  gates can veto. One process per attempt (sol, DeepSeek: real exit code,
+  clean accounting, fixes as new attempts) vs kept alive (fine once the
+  verdict is herdr's). Smallest step they name: `WORKER-DONE` only asks
+  for verification; a `herdr worker verify` (or the wait handler) checks
+  commit, message, paths and runs the command; the coordinator
+  cherry-picks only on `verified`.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
+  Approved 2026-10-08: the user said "decide with the models what next";
+  round `20261008-144310-fce1` (sol, MiMo; DeepSeek partly) put this first, then atomicity
+  fix 8 with the takeover tab marker, then the live check that closes
+  "Event-driven worker waits".
+
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
@@ -1559,10 +1597,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the item history keep them reachable; per-state glyphs instead of
   one green circle.
 
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
-
 - [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
   turn) or "a new request is queued, everything else goes to a worker"?
   Report from the email-assistant coordinator (2026-10-07): the user said
@@ -1827,36 +1861,6 @@ Items agents add. Not approved until the user moves them up.
   open issues upstream, and PATH wrappers are bypassable), the fork
   ruleset, the install and push allowlist for the coordinator, its write
   scope, and the CI checks.
-
-- [ ] Program-decided worker outcomes instead of the model's word (user, [t-a4gw5vfo]
-  2026-10-08: "I feel control is inverted: the worker works and we count on
-  the model, through hooks or AGENTS.md, to return the right status; but
-  it is a process, don't we have exit codes? ask the models; do not
-  implement, analyse"). Analysis, round `20261008-140635-4093` (sol, MiMo, DeepSeek),
-  agreeing: yes, inverted. herdr owns the process but the model owns the
-  terminal condition: `WORKER-DONE <sha>` (prose another model parses)
-  decides readiness; reported test runs are anecdotes; hooks decide
-  interrupted vs finished for TUI agents. Exit codes do not fix it alone:
-  `claude -p`'s exit code and the `result` message describe the CLI's
-  turn (it ran, no API error), not the task; a worker kept alive between
-  turns only exits at `worker stop`. Both incidents (a co-author trailer, a
-  hand-edited generated schema) were mechanically detectable. Proposed
-  shape: a task is `(base sha, allowed paths, exact commit message,
-  verification command) -> verdict`, decided by herdr: the commit exists
-  on the branch and descends from base, the message and trailers match,
-  `git diff --name-only` stays within allowed paths, generated files
-  regenerate cleanly, the worktree is clean and no task process remains,
-  and herdr itself runs the verification command (outside the sandbox
-  where needed; "verification unavailable" is not "passed"); verdict
-  `verified | failed | blocked` with evidence; the model's last line is a
-  summary only, a blocked reason typed with evidence. Kept to models: the
-  diff's intent and design quality, as advisory review that the program
-  gates can veto. One process per attempt (sol, DeepSeek: real exit code,
-  clean accounting, fixes as new attempts) vs kept alive (fine once the
-  verdict is herdr's). Smallest step they name: `WORKER-DONE` only asks
-  for verification; a `herdr worker verify` (or the wait handler) checks
-  commit, message, paths and runs the command; the coordinator
-  cherry-picks only on `verified`.
 
 ## Needs a decision
 
