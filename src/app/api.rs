@@ -1335,6 +1335,8 @@ impl App {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
+            | Method::WorkerDrain(_)
+            | Method::WorkerWaitDrained(_)
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_) => {
                 return responses::encode_error(

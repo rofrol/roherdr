@@ -91,6 +91,14 @@ pub enum Method {
     /// The owned workers with an event their owner has not acknowledged.
     #[serde(rename = "worker.obligations")]
     WorkerObligations(WorkerObligationsParams),
+    /// Stops admitting new worker turns before an install, reports the
+    /// workers still in a turn, or admits them again.
+    #[serde(rename = "worker.drain")]
+    WorkerDrain(WorkerDrainParams),
+    /// Blocks until the workers in a turn differ from the caller's list, or
+    /// none is in a turn.
+    #[serde(rename = "worker.wait_drained")]
+    WorkerWaitDrained(WorkerWaitDrainedParams),
     /// The workers' runs, grouped by the TODO item given at start.
     #[serde(rename = "worker.runs")]
     WorkerRuns(WorkerRunsParams),

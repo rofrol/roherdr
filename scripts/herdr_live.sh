@@ -17,11 +17,18 @@ The handoff keeps every pane running but disconnects attached clients: run
 `herdr` again to reattach. From a plain terminal the script reattaches itself.
 
 Headless workers do not survive a handoff, and the server refuses one
-while a worker's process is alive. The script first stops each worker idle
-between turns (`herdr worker stop`, then `herdr worker wait --exit`); a
-worker in a turn makes it stop without installing. `--force` skips that and
-hands off anyway: the server sends the workers SIGTERM (it needs a running
-build that knows the flag).
+while a worker's process is alive. The script first drains the workers
+(`herdr worker drain start`): the server admits no new turns (prompts and
+starts are refused, naming this install), and when a worker is in a turn
+the script says which and waits for those turns to end
+(`herdr worker wait-drained`, woken by their turn-end events, without a
+timeout). Cancel the wait with `herdr worker drain cancel` from another
+shell or Ctrl-C here; either admits turns again and installs nothing. Then
+it stops each worker idle between turns (`herdr worker stop`, then
+`herdr worker wait --exit`) and hands off; the new server does not drain.
+A running build without the drain refuses the install while a worker is in
+a turn. `--force` skips all of that and hands off anyway: the server sends
+the workers SIGTERM (it needs a running build that knows the flag).
 
 `--expect-build ID` makes install refuse, installing nothing, unless the
 first word of the build's `--build-commit` is that identity (`<hash>`
@@ -91,11 +98,55 @@ handoff() {
   "$1" server live-handoff ${force[@]+"${force[@]}"} --import-exe "$installed"
 }
 
+# The running build that started a drain this script has not seen end; the
+# exit trap cancels it, so an install that stops early admits turns again.
+drain_runner=""
+
+cancel_drain() {
+  if [[ -n "$drain_runner" ]]; then
+    "$drain_runner" worker drain cancel >/dev/null 2>&1 ||
+      echo "could not cancel the worker drain; run: herdr worker drain cancel" >&2
+    drain_runner=""
+  fi
+}
+
+# Ctrl-C (or a TERM) during the wait gives the install up; the exit trap
+# cancels the drain and removes the lock.
+trap 'echo "interrupted; nothing installed" >&2; exit 130' INT TERM
+
+# Drains the workers with the running build $1 (`worker drain start`) and,
+# when some are in a turn, waits for those turns to end
+# (`worker wait-drained`, woken by their turn-end events). A build without
+# the drain goes on to end_idle_workers, which refuses then.
+drain_workers() {
+  local started pending
+  ((${#force[@]} == 0)) || return 0
+  started="$("$1" worker drain start --reason "$2 by scripts/herdr_live.sh (pid $$)" 2>/dev/null)" || return 0
+  drain_runner="$1"
+  pending="$(printf '%s' "$started" | python3 -c '
+import json, sys
+drain = json.load(sys.stdin).get("result", {}).get("drain", {})
+names = [w["worker_id"] + " (" + w.get("state", "?") + ")" for w in drain.get("in_turn", [])]
+if drain.get("starting"):
+    names.append(str(drain["starting"]) + " worker start(s)")
+print(", ".join(names))
+')"
+  [[ -n "$pending" ]] || return 0
+  echo "headless workers are in a turn: $pending."
+  echo "no new turns are admitted; the $2 waits for these turns to end (a question one asks still needs its answer)."
+  echo "to give the $2 up and admit turns again: herdr worker drain cancel, or Ctrl-C here"
+  if ! "$1" worker wait-drained; then
+    echo "the drain was cancelled or its wait failed; nothing installed" >&2
+    exit 1
+  fi
+}
+
 # Stops the workers idle between turns and waits for each one's exit event,
 # with the running build $1. The server never waits inside the handoff (its
 # main loop would freeze every pane, and a deadline would let a timer decide
 # the outcome), so the waiting happens here, on `worker wait --exit`, which
-# ends on the worker's exit event. A worker in a turn refuses the install.
+# ends on the worker's exit event. After drain_workers no worker is in a
+# turn; one still is only with a build without the drain, which refuses.
 end_idle_workers() {
   local listing workers kind id state busy=()
   ((${#force[@]} == 0)) || return 0
@@ -167,11 +218,11 @@ case "${1:-}" in
     [[ -x "$candidate" ]] || { echo "no build at $candidate; run cargo build --release --locked" >&2; exit 1; }
     [[ -x "$installed" ]] || { echo "no installed herdr at $installed" >&2; exit 1; }
     take_lock
-    trap 'rm -rf "$lock"' EXIT
+    trap 'cancel_drain; rm -rf "$lock"' EXIT
     # Stage a copy first: another session's cargo build may rewrite the
     # candidate while this runs.
     staged="$(mktemp "$HOME/.cache/herdr/staged.XXXXXX")"
-    trap 'rm -rf "$lock"; rm -f "$staged"' EXIT
+    trap 'cancel_drain; rm -rf "$lock"; rm -f "$staged"' EXIT
     cp "$candidate" "$staged"
     chmod 755 "$staged"
     "$staged" --version >/dev/null || { echo "the build does not run; nothing installed" >&2; exit 1; }
@@ -187,6 +238,7 @@ case "${1:-}" in
       echo "$installed is already this build ($(describe "$installed"))"
       exit 0
     fi
+    drain_workers "$installed" install
     end_idle_workers "$installed"
     mkdir -p "$backups"
     backup="$backups/$(date +%Y%m%d-%H%M%S)_$(describe "$installed")"
@@ -198,6 +250,8 @@ case "${1:-}" in
       echo "handoff failed or refused (see above); restored the previous binary, the server still runs it" >&2
       exit 1
     fi
+    # The new server does not drain.
+    drain_runner=""
     find "$backups" -mindepth 1 -maxdepth 1 -type f | LC_ALL=C sort -r |
       tail -n "+$((keep_backups + 1))" | while read -r old; do rm -f "$old"; done
     echo "Installed $(describe "$installed")."
@@ -211,13 +265,14 @@ case "${1:-}" in
     latest="$(newest_backup)"
     [[ -n "$latest" ]] || { echo "no backups in $backups" >&2; exit 1; }
     take_lock
-    trap 'rm -rf "$lock"' EXIT
+    trap 'cancel_drain; rm -rf "$lock"' EXIT
     latest="$(newest_backup)"
+    drain_workers "$installed" rollback
     end_idle_workers "$installed"
     # Keep the replaced build until the handoff succeeds, to restore it
     # otherwise: the server still runs it then.
     current="$(mktemp "$HOME/.cache/herdr/replaced.XXXXXX")"
-    trap 'rm -rf "$lock"; rm -f "$current"' EXIT
+    trap 'cancel_drain; rm -rf "$lock"; rm -f "$current"' EXIT
     cp -p "$installed" "$current"
     replace_installed "$latest"
     if ! handoff "$latest"; then
@@ -225,6 +280,7 @@ case "${1:-}" in
       echo "handoff failed or refused (see above); kept $(describe "$current")" >&2
       exit 1
     fi
+    drain_runner=""
     # Popped: the next rollback goes one build further back.
     rm -f "$latest"
     echo "Rolled back from $(describe "$current") to $(describe "$installed")."
