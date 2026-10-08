@@ -1486,6 +1486,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   `push_failed` until `retry-push`. Next: the old server hands the runs'
   in-memory environments to the new one inside the live handoff payload
   (like the PTY fds), never on disk.
+  Run `r-5gsvuqm6` (2026-10-08): the first run of an item the second time blocked
+  at start on a branch-name collision; fixed in this run (branches carry the
+  run id). Also found: `herdr todo resume --action abort` on a blocked run
+  (`r-cese4nxv`) changed nothing; a blocked run must be abortable.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
