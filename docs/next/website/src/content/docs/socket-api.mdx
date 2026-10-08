@@ -109,6 +109,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
 | Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.ack`, `worker.obligations`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over` |
+| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -924,6 +925,36 @@ null `role` to clear it. Whoever opens the tab sets it (`herdr tab role <tab_id>
 worker`); it is never derived from the agent's name or title. Tab objects carry
 it as `role`, and the sidebar draws `♛` (coordinator) or `⚒` (worker) before the
 tab's state. Like a bookmark, it survives a restart and ends with the tab.
+The `coordinator` role is a coordination tenure's mark: setting it starts a
+tenure for the tab's focused pane (as `coordinator.start` does, refused with
+`coordinator_active` when the repository has another coordinator; a pane of the
+tab that has a tenure already keeps it), clearing it ends the tab's tenure with
+`end_reason` `role_cleared`, and the server marks as `coordinator` exactly the
+tabs with a pane bound to an active tenure, so a role set before tenures
+existed is cleared.
+`coordinator.start` (optional `repo`, a directory in the repository; `pane_id`,
+the coordinator's pane, which the CLI sends from `HERDR_PANE_ID`) claims a
+repository's coordination: a tenure with its own id (`c-` and 8 lowercase
+base32 characters), bound to the pane and its agent session, of the
+repository of `repo` or else of the pane's directory (the parent of its git
+common directory). One tenure per repository is active at a time; the worker
+store's unique index enforces it, also across the two servers of a live
+handoff. A second start is refused with `coordinator_active`, naming the
+active tenure and its pane, as is a start from a pane that coordinates another
+repository; the pane's own active tenure is returned again. It answers
+`coordinator` with `coordinator_id`, `repo`, `started_ms`, `epoch` (one more
+than the repository's previous tenure), `pane_id` and `session_id`, and once
+ended `ended_ms` and `end_reason`. `coordinator.end` (optional `reason`, default
+`ended`; `coordinator_id`, else the tenure bound to `pane_id`) ends it and
+answers `coordinator`; ending an ended tenure changes nothing, and an unknown
+one is refused with `coordinator_not_found`. `coordinator.status` (optional
+`repo`) answers `coordinators`, the active tenures, oldest first. A tenure
+also ends, with `end_reason` `orphaned`, when its pane closes or its agent
+exits, and a server re-evaluates the active tenures' panes when it starts; no
+timer ends one. The tenures are recorded as `coordinator_started` and
+`coordinator_ended` events in the worker store's event log, with their tables
+written in the same transaction. A worker started by a pane bound to an
+active tenure carries its id as `owner_coordinator_id`.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

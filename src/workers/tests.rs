@@ -2970,6 +2970,40 @@ fn start_owned(fixture: &Fixture, pane: &str, prompt: &str) -> String {
         .worker_id
 }
 
+#[test]
+fn workers_started_by_a_coordinators_pane_carry_its_tenure() {
+    let fixture = Fixture::new("owner-tenure");
+    let tenure = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("p1-session"))
+        .unwrap();
+    let owned = start_owned(&fixture, "p1", "finish");
+    let other = start_owned(&fixture, "p2", "finish");
+    let worker = fixture.wait(&owned, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.owner_coordinator_id.as_deref(),
+        Some(tenure.coordinator_id.as_str())
+    );
+    // A pane bound to no tenure gives its workers none.
+    let worker = fixture.wait(&other, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.owner_coordinator_id, None);
+    // The tenure's end does not change what a worker started under.
+    fixture
+        .supervisor
+        .coordinator_end(&tenure.coordinator_id, "ended", None)
+        .unwrap();
+    let stored = fixture
+        .supervisor
+        .shared
+        .store
+        .as_ref()
+        .unwrap()
+        .load(&owned)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.owner_coordinator, Some(tenure.coordinator_id));
+}
+
 fn obligation_of(fixture: &Fixture, pane: &str, id: &str) -> Option<WorkerObligation> {
     fixture
         .supervisor

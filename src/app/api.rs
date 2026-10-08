@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod coordinators;
 mod env;
 mod integrations;
 mod layouts;
@@ -737,6 +738,9 @@ impl App {
             update.agent_released,
         ) {
             crate::workers::owner_event(&pane_id, event);
+            if event == crate::workers::OwnerEvent::AgentExited {
+                self.sync_coordinator_roles();
+            }
         }
 
         if previous_agent_status != agent_status
@@ -822,13 +826,14 @@ impl App {
                 | EventData::WorkspaceClosed { .. }
         ) {
             self.sync_worker_owner_panes();
+            self.sync_coordinator_roles();
         }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }
 
-    /// Reports each headless worker owner whose pane no longer exists as
-    /// gone. Called when panes close, so it never polls.
+    /// Reports each headless worker owner and coordinator whose pane no
+    /// longer exists as gone. Called when panes close, so it never polls.
     pub(crate) fn sync_worker_owner_panes(&self) {
         for pane in crate::workers::owner_panes() {
             if self.parse_pane_id(&pane).is_none() {
@@ -1248,6 +1253,15 @@ impl App {
             Method::TabSetStatus(params) => return self.handle_tab_set_status(request.id, params),
             Method::TabBookmark(params) => return self.handle_tab_bookmark(request.id, params),
             Method::TabSetRole(params) => return self.handle_tab_set_role(request.id, params),
+            Method::CoordinatorStart(params) => {
+                return self.handle_coordinator_start(request.id, params);
+            }
+            Method::CoordinatorEnd(params) => {
+                return self.handle_coordinator_end(request.id, params);
+            }
+            Method::CoordinatorStatus(params) => {
+                return self.handle_coordinator_status(request.id, params);
+            }
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }

@@ -43,6 +43,7 @@ pub(super) fn command() -> Command {
         .subcommand(notification_command())
         .subcommand(agent_command())
         .subcommand(worker_command())
+        .subcommand(coordinator_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -392,6 +393,27 @@ fn worker_command() -> Command {
             )
             .arg(option("request", "REQUEST_ID"))
             .arg(option("message", "TEXT")),
+        )
+}
+
+fn coordinator_command() -> Command {
+    Command::new("coordinator")
+        .about("Claim a repository's coordination: one coordinator per repository")
+        .subcommand(
+            Command::new("start")
+                .about("Claim the repository's coordination for this pane")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
+        .subcommand(
+            Command::new("end")
+                .about("End this pane's coordination tenure, or the one named")
+                .arg(option("reason", "TEXT"))
+                .arg(option("id", "COORDINATOR_ID")),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("List the active coordination tenures")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
         )
 }
 

@@ -457,6 +457,10 @@ To save the coordinator's quota, a session can hand a well-specified task to
   `HERDR_WORKSPACE_ID` without the remote and empty guards that
   `caller_pane_id()` already had.
 
+A repository has one coordinator: `herdr coordinator start` (or `herdr tab
+role <tab> coordinator`) claims it and is refused, naming the holder, while
+another pane holds it.
+
 A coordinator can also start a headless Claude worker, which needs no tab
 or PTY: `herdr worker start --name <task> --item <t-xxxxxxxx> --cwd
 <worktree> --prompt <text>` (run it from the coordinator's pane, so the
