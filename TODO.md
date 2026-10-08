@@ -1455,6 +1455,19 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - First slice: preflight → start → attention → ack → stop → verify
     (→ cherry-pick), persisted, resumable, one wait; clean-install, TODO,
     push and the allowlist next.
+  First slice done 2026-10-08 by `w38` (`feat: herdr todo run drives an
+  item from preflight to cherry-pick`, verified after the coordinator ended
+  8 `yes` load processes the worker left: `verify`'s process check caught
+  them). Decided by the coordinator for the next slice, from earlier
+  decisions: `herdr todo resume` sends the caller's environment again (never
+  stored: it may hold credentials); without it a resumed check is
+  `unavailable`; a per-run lock held by the server driving it, so after a
+  live handoff the new server drives the run only once the old one let go
+  (the cherry-pick race w38 named); a worker ignoring SIGTERM gives a
+  "still alive" event to the coordinator, no kill on a timer; `todo.*`
+  stays local like `worker.*`. Also: AGENTS.md's flaky-test stress recipe
+  starts `yes` loads with `&` and relies on `pkill yes`; make the loads end
+  with the command (a trap or one process group killed at exit).
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
