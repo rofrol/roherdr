@@ -1468,6 +1468,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   stays local like `worker.*`. Also: AGENTS.md's flaky-test stress recipe
   starts `yes` loads with `&` and relies on `pkill yes`; make the loads end
   with the command (a trap or one process group killed at exit).
+  Pattern seen three times on 2026-10-08 (prompt/kill, then the driver's
+  test helpers): unix-only test helpers dead on Windows fail
+  `just windows-lint` only at the coordinator's clean-install. Register a
+  `windows-lint` check (`python3 scripts/windows_cross.py lint`) in
+  `.herdr/checks.toml` and pass it with `--check` for changes under `src/`,
+  so `verify` catches it before the cherry-pick.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
