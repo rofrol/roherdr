@@ -228,3 +228,37 @@ just test-one kitty_file_image_survives
 (cd vendor/libghostty-vt && zig build test-lib-vt -Dtest-filter='experimental PNG')
 just check
 ```
+
+## 0008 libsystem override uses TMPDIR for its temporary directory
+
+status: active
+
+patch: `vendor/patches/libghostty-vt/0008-libsystem-override-tmpdir.patch`
+
+herdr issue: none; found while building in herdr's headless worker sandbox
+
+upstream discussion: not reported yet
+
+upstream pr: not reported yet
+
+vendored base: `44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51`
+
+local files:
+
+- `vendor/libghostty-vt/src/build/libsystem_override.sh`
+
+reason: On macOS `mktemp -d` without a template ignores `$TMPDIR` and creates
+its directory under the per-user system temp dir (`/var/folders/.../T/`). The
+headless worker sandbox allows writes only to its own `$TMPDIR`, so the script
+failed and libghostty-vt did not build in a worker. An explicit template under
+`${TMPDIR:-/tmp}` honours `$TMPDIR` and keeps the previous behaviour otherwise.
+
+remove when: upstream creates this directory under `$TMPDIR`, or the worker
+sandbox allows the system temp dir.
+
+verification:
+
+```sh
+cargo nextest run -E 'test(/workers::policy/)'   # cold build inside a headless worker
+just maintenance-test
+```

@@ -28,7 +28,7 @@ set -eu
 in="$1"
 out="$2"
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/libsystem_override.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 cp -f "$in" "$out"
