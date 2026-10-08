@@ -167,7 +167,7 @@ impl Drop for Driving {
 #[cfg(test)]
 static CRASH_BEFORE: Mutex<Vec<(String, TodoStep)>> = Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn crash_before(repo: &str, step: TodoStep) {
     lock(&CRASH_BEFORE).push((repo.to_owned(), step));
 }
@@ -178,7 +178,7 @@ static CRASHED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Test only: blocks until a driver of `repo` returned at a planned crash,
 /// woken by its announcement.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn wait_crashed(repo: &str, hang_guard: Duration) {
     let started = std::time::Instant::now();
     let mut generation = lock(&CHANGES.generation);

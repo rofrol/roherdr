@@ -1209,7 +1209,7 @@ impl Store {
     }
 
     /// Every event of a run, oldest first, as `(seq, type)`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn run_event_types(&self, run_id: &str) -> StoreResult<Vec<(i64, String)>> {
         let conn = lock(&self.conn);
         let mut statement = conn.prepare(
