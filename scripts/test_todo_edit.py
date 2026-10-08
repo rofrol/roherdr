@@ -12,7 +12,7 @@ from unittest import mock
 
 from scripts import todo_edit
 
-ID_RE = re.compile(r" \[t-[a-z2-7]{8}\]|(?<=- \[ \] )\[t-[a-z2-7]{8}\] ")
+ID_RE = re.compile(rf" \[{todo_edit.ID_BODY}\]|(?<=- \[ \] )\[{todo_edit.ID_BODY}\] ")
 
 TODO = """\
 # TODO
@@ -509,9 +509,15 @@ class TodoEditTests(unittest.TestCase):
         self.assertIn("every item already has an id", out)
         self.assertEqual(self.todo.read_text(), before)
 
-    def test_assign_on_a_copy_of_the_real_todo(self):
+    def real_todo_without_ids(self):
+        """The live TODO.md with every id stripped, whatever ids it has now."""
         real = Path(__file__).resolve().parent.parent / "TODO.md"
-        original = real.read_text()
+        original = ID_RE.sub("", real.read_text())
+        self.assertEqual(set(self.ids_of(original)), {None})
+        return original
+
+    def test_assign_on_a_copy_of_the_real_todo(self):
+        original = self.real_todo_without_ids()
         self.todo.write_text(original)
         code, out, err = self.run_tool("ids", "--assign")
         self.assertEqual(code, 0, err)
@@ -540,8 +546,7 @@ class TodoEditTests(unittest.TestCase):
         self.assertIn(f"[{question_id}]", out)
 
     def test_the_decision_questions_of_the_real_todo_survive_assign(self):
-        real = Path(__file__).resolve().parent.parent / "TODO.md"
-        original = real.read_text()
+        original = self.real_todo_without_ids()
         self.todo.write_text(original)
         code, _, err = self.run_tool("ids", "--assign")
         self.assertEqual(code, 0, err)
