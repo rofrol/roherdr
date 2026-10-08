@@ -161,6 +161,81 @@ class TodoEditTests(unittest.TestCase):
             TODO.replace("  More about the first.\n", "  More about the first.\n  Inserted line.\n"),
         )
 
+    def test_insert_after_an_anchor_ending_in_a_newline_keeps_separate_lines(self):
+        # Historical bug 3: the text file's last line was glued to the next line.
+        code, _, err = self.run_tool(
+            "insert-after", "First item", "--anchor", "More about the first.\n",
+            "--text-file", self.text_file("  Inserted line.\n  Second inserted line."),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            self.todo.read_text(),
+            TODO.replace(
+                "  More about the first.\n",
+                "  More about the first.\n  Inserted line.\n  Second inserted line.\n",
+            ),
+        )
+
+    def test_insert_after_an_anchor_at_a_line_end_inserts_whole_lines(self):
+        code, _, err = self.run_tool(
+            "insert-after", "First item", "--anchor", "More about the first.",
+            "--text-file", self.text_file("  Inserted line.\n\n\n"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            self.todo.read_text(),
+            TODO.replace("  More about the first.\n", "  More about the first.\n  Inserted line.\n"),
+        )
+
+    def test_insert_after_the_unterminated_last_line_of_the_file(self):
+        self.todo.write_text(TODO.rstrip("\n"))
+        code, _, err = self.run_tool(
+            "insert-after", "Watch this", "--anchor", "Watch this", "--text-file", self.text_file("  Note."),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.todo.read_text(), TODO + "  Note.\n")
+
+    def test_insert_after_a_mid_line_anchor_is_literal(self):
+        code, _, err = self.run_tool(
+            "insert-after", "First item", "--anchor", "More about", "--text-file", self.text_file(" (much)"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.todo.read_text(), TODO.replace("More about the first.", "More about (much) the first."))
+        code, _, err = self.run_tool(
+            "insert-after", "First item", "--anchor", "Decided:", "--text-file", self.text_file(" yes\n  and"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("  Decided: yes\n  and keep it.\n", self.todo.read_text())
+
+    def test_append_to_and_add_after_the_unterminated_last_line(self):
+        self.todo.write_text(TODO.rstrip("\n"))
+        code, _, err = self.run_tool("append-to", "Watch this", "--text-file", self.text_file("  More."))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.todo.read_text(), TODO + "  More.\n")
+        self.todo.write_text(TODO.rstrip("\n"))
+        code, _, err = self.run_tool(
+            "add", "Needs you to act or watch", "--text-file", self.text_file("- [ ] Next")
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.todo.read_text(), TODO + "\n- [ ] Next\n")
+
+    def test_verify_insertion_refuses_a_joined_line(self):
+        old = TODO.splitlines(keepends=True)
+        at = old.index("  More about the first.\n") + 1
+        insertion = todo_edit.Insertion(at, at, 1, ("  Inserted line.\n",))
+        glued = TODO.replace("  More about the first.\n", "  More about the first.\n  Inserted line.")
+        with self.assertRaisesRegex(todo_edit.Refusal, "join or split lines"):
+            todo_edit.verify_insertion(old, glued, insertion)
+        # Same line count, but a neighbouring line changed.
+        shifted = TODO.replace(
+            "  More about the first.\n  Decided: keep it.\n",
+            "  More about the first.\n  Inserted line.\n  Decided: keep it!\n",
+        )
+        with self.assertRaisesRegex(todo_edit.Refusal, "lines after the insertion"):
+            todo_edit.verify_insertion(old, shifted, insertion)
+        good = TODO.replace("  More about the first.\n", "  More about the first.\n  Inserted line.\n")
+        todo_edit.verify_insertion(old, good, insertion)
+
     def test_missing_anchor_refuses(self):
         # Historical bug 1: a replace whose anchor did not match changed nothing silently.
         self.assert_refused(
