@@ -535,6 +535,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      one snapshot of HEAD and the paths; first used for its own install.
   7. herdr-job's locks follow the command (`pass_fds`), no `lost` verdict
      after 60 s, `run --key` (findings 10, 13).
+     Done 2026-10-08 by headless worker `w8` (`fix: herdr-job locks
+     follow the command and jobs dedupe by key`, no questions). Decided by
+     the coordinator under the event rule: a daemon that inherits the lock
+     keeps the slot after its job ends (documented; our builds leave none;
+     `herdr-job slots` names the holder); a job whose `pane run` failed
+     stays `pending` until its tab is closed (not `lost` by a timer). Left:
+     the orphan tab when the process dies between `tab create` and
+     `write_meta`.
   8. The `/todo` claim under an exclusive lock; cherry-pick only after
      `git merge-tree` shows it applies (finding 14).
   Folded into the reliability plan: a sequence on every journal record and
