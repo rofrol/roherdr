@@ -718,8 +718,13 @@ Every pane, including yours, keeps running, but attached clients disconnect:
 tell the user to run `herdr` to reattach. If the handoff fails, the script
 restores the previous binary and the server keeps running it.
 
-Headless workers do not survive the handoff yet, so `install` (and
-`rollback`) first drains them (`herdr worker drain start`): the server
+A headless worker whose broker owns its pipes (every new worker on Unix;
+`survives_handoff` in `herdr worker list`) survives the handoff, even
+mid-turn: the old server lets go of it and the new one re-attaches, replays
+its output and sends again an answer it cannot prove written, which the
+broker writes at most once. The others (started by a build before the
+broker, or on Windows) do not, so `install` (and `rollback`) first drains
+them (`herdr worker drain start`): the server
 refuses new turns (`worker prompt` and `worker start` get
 `workers_draining`, naming the install), and when a worker is in a turn the
 script names it and waits for that turn's end event (`herdr worker

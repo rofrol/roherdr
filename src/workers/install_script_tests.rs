@@ -22,7 +22,8 @@ case "$*" in
   --version) echo "herdr fake" ;;
   --build-commit) echo "abc1234 fake: build" ;;
   "worker list")
-    printf '{"result":{"workers":[{"worker_id":"w1","state":"%s"}]}}\n' "$(cat "$dir/w1-state")" ;;
+    printf '{"result":{"workers":[{"worker_id":"w1","state":"%s"%s}]}}\n' \
+      "$(cat "$dir/w1-state")" "$(cat "$dir/w1-extra" 2>/dev/null)" ;;
   "worker drain start"*) cat "$dir/drain.json" ;;
   "worker drain cancel") echo '{}' ;;
   "worker wait-drained")
@@ -327,4 +328,18 @@ fn a_second_install_waits_for_the_first_installs_lock() {
     assert!(status.success(), "{printed}");
     assert!(printed.contains("is already this build"), "{printed}");
     assert_eq!(sandbox.called("server live-handoff"), 1);
+}
+
+#[test]
+fn an_install_keeps_a_brokered_worker_running_mid_turn() {
+    // The server's drain does not count a worker the handoff keeps.
+    let sandbox = Sandbox::new("brokered", "working", false);
+    std::fs::write(sandbox.path("fake/w1-extra"), r#","survives_handoff":true"#).unwrap();
+    let (status, printed) = sandbox.install().finish();
+    assert!(status.success(), "{printed}");
+    assert!(printed.contains("keeping worker w1 (working)"), "{printed}");
+    assert_eq!(sandbox.called("worker wait-drained"), 0);
+    assert_eq!(sandbox.called("worker stop w1"), 0);
+    assert_eq!(sandbox.called("server live-handoff"), 1);
+    assert!(sandbox.installed_is_candidate());
 }

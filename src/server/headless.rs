@@ -423,6 +423,8 @@ impl HeadlessServer {
             render_dirty.request_generic();
             render_notify.notify_one();
         }));
+        // Workers a previous server ran through brokers are re-attached.
+        crate::workers::resume_brokered_at_start();
         // What a previous server saw of the workers' owners is gone.
         self.app.reevaluate_worker_owners_at_start();
         // The coordinator role follows the tenures still active.
@@ -2955,9 +2957,9 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
-            // Worker pipes are not handed over: refuse while a worker's
-            // process is alive. Never waits here: the caller ends them and
-            // waits for their exit events first.
+            // Worker pipes are not handed over: refuse while a worker
+            // without a broker is alive. Never waits here: the caller ends
+            // them and waits for their exit events first.
             let handoff_result = crate::workers::prepare_for_handoff(params.force)
                 .map_err(|message| ("handoff_refused", message))
                 .and_then(|()| {
@@ -2981,6 +2983,9 @@ impl HeadlessServer {
             .unwrap_or_else(|_| "{}".to_string());
             let _ = msg.respond_to.send(response);
             if handoff_succeeded {
+                // The new server re-attaches to the brokered workers once
+                // this one lets go of them.
+                crate::workers::detach_for_handoff();
                 wait_for_live_handoff_response_write(msg.response_write_complete);
                 self.finish_live_handoff_shutdown();
             }

@@ -636,6 +636,12 @@ pub struct WorkerInfo {
     /// common directory, so every worktree of one repository has the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The worker runs and a live handoff keeps it running: a broker owns
+    /// its pipes, so the new server takes it over mid-turn. Absent for one
+    /// whose pipes the server owns (started by an older build, or on
+    /// Windows), which a handoff would end.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub survives_handoff: bool,
 }
 
 /// Answers a worker's pending question: a tool approval or an

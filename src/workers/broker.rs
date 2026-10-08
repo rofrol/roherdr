@@ -45,18 +45,30 @@
 //! - broker to server: `p <pid> <protocol>` (the worker's pid and
 //!   [`PROTOCOL`], first on every connection), then the spool's records,
 //!   each `<tag> <seq> <payload>`: `o` (a stdout line), `e` (a stderr line),
-//!   `l <seq> <count>` (lines dropped while the spool was full), `x <seq>
-//!   <json>` (the worker's `exited` event, last);
+//!   `l <seq> <count>` (lines dropped while the spool was full), `n <seq>
+//!   <id>[ again]` (a stdin line was written, or was not because its id
+//!   was), `x <seq> <json>` (the worker's `exited` event, last);
 //! - broker to server, right after an attach: `s <seq>`, the last seq it
 //!   had dropped as acknowledged; past the attach's seq it proves a gap;
 //! - server to broker: `a <seq>` (attach, first: send the records after
-//!   `seq`), `k <seq>` (every record up to `seq` is stored), `i <line>` (one
-//!   stdin line), `c` (close stdin).
+//!   `seq`), `k <seq>` (every record up to `seq` is stored), `i <id> <line>`
+//!   (one stdin line), `c` (close stdin); a broker of protocol 2 takes
+//!   `i <line>`, without an id, and spools no `n` records.
 //!
 //! The spool file holds the same records. A line without its newline (a
 //! peer that died mid-write, a write cut short) is dropped.
+//!
+//! Stdin (slice 4): every line a server sends carries an id, the command's
+//! receipt id or, for a `control_response`, its request's id
+//! ([`Writer::write_input`]). The broker writes a line to the worker once
+//! and then spools an `n <seq> <id>` record (the line was written); a line
+//! whose id it already wrote is not written again, and its record says
+//! `n <seq> <id> again`. So a server that does not know whether a gone
+//! server's line reached the worker sends it again: it goes at most once,
+//! and the record tells which. Ids are tokens: a byte that is whitespace,
+//! `%` or not printable is written `%XX`.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -88,8 +100,13 @@ const SPOOL_LIMIT: usize = 64 << 20;
 /// rewritten for every acknowledgement.
 const COMPACT_BYTES: u64 = 1 << 20;
 /// The wire's version, in the greeting: a broker of another herdr build
-/// that speaks another one is not re-attached to.
-const PROTOCOL: u32 = 2;
+/// that speaks another one is not re-attached to, but for
+/// [`PROTOCOL_NO_INPUT_IDS`].
+const PROTOCOL: u32 = 3;
+/// The protocol of slice 3's brokers, which take stdin lines without ids:
+/// still re-attached to, so a worker such a build started survives this
+/// one's start, but a line it is sent again may go twice.
+const PROTOCOL_NO_INPUT_IDS: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Spec {
@@ -224,6 +241,8 @@ pub(super) struct Link {
     /// The last seq the broker had dropped as acknowledged when this
     /// server attached: it replays only the records after it.
     pub(super) floor: u64,
+    /// The broker's protocol, [`PROTOCOL`] or [`PROTOCOL_NO_INPUT_IDS`].
+    protocol: u32,
     reader: BufReader<UnixStream>,
 }
 
@@ -242,7 +261,7 @@ fn attach(stream: UnixStream, after: u64) -> std::io::Result<Link> {
     let mut reader = BufReader::new(stream);
     let greeting = read_message(&mut reader)?
         .ok_or_else(|| std::io::Error::other("the worker broker closed the connection"))?;
-    let pid = greeted_pid(&greeting)?;
+    let (pid, protocol) = greeted_pid(&greeting)?;
     reader
         .get_mut()
         .write_all(format!("a {after}\n").as_bytes())?;
@@ -257,12 +276,18 @@ fn attach(stream: UnixStream, after: u64) -> std::io::Result<Link> {
                 String::from_utf8_lossy(&attached)
             ))
         })?;
-    Ok(Link { pid, floor, reader })
+    Ok(Link {
+        pid,
+        floor,
+        protocol,
+        reader,
+    })
 }
 
-/// The worker's pid in a greeting of this [`PROTOCOL`]; a greeting of
-/// another one is `Unsupported`, naming it.
-fn greeted_pid(greeting: &[u8]) -> std::io::Result<u32> {
+/// The worker's pid and the protocol in a greeting of this [`PROTOCOL`] or
+/// [`PROTOCOL_NO_INPUT_IDS`]; a greeting of another one is `Unsupported`,
+/// naming it.
+fn greeted_pid(greeting: &[u8]) -> std::io::Result<(u32, u32)> {
     let unexpected = || {
         std::io::Error::other(format!(
             "unexpected broker greeting: {}",
@@ -275,7 +300,7 @@ fn greeted_pid(greeting: &[u8]) -> std::io::Result<u32> {
         .ok_or_else(unexpected)?;
     let pid = pid.parse().map_err(|_| unexpected())?;
     match protocol.parse::<u32>() {
-        Ok(PROTOCOL) => Ok(pid),
+        Ok(protocol @ (PROTOCOL | PROTOCOL_NO_INPUT_IDS)) => Ok((pid, protocol)),
         Ok(protocol) => Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             format!(
@@ -311,7 +336,10 @@ pub(super) fn attach_gap(floor: u64, after: u64) -> Option<String> {
 impl Link {
     /// What writes to the broker, and the worker's output.
     pub(super) fn split(self) -> std::io::Result<(Writer, Messages)> {
-        let writer = Writer(Arc::new(Mutex::new(self.reader.get_ref().try_clone()?)));
+        let writer = Writer {
+            stream: Arc::new(Mutex::new(self.reader.get_ref().try_clone()?)),
+            ids: self.protocol >= PROTOCOL,
+        };
         Ok((
             writer.clone(),
             Messages {
@@ -362,6 +390,17 @@ fn parse_record(line: &[u8]) -> Option<(u64, Message)> {
         b'o' => Message::Out(text()),
         b'e' => Message::Err(text()),
         b'l' => Message::Lost(parse_seq(payload)?),
+        b'n' => {
+            let text = std::str::from_utf8(payload).ok()?;
+            let (id, again) = match text.strip_suffix(" again") {
+                Some(id) => (id, true),
+                None => (text, false),
+            };
+            Message::Written {
+                id: decode_id(id)?,
+                again,
+            }
+        }
         b'x' => Message::Exit(
             serde_json::from_slice(payload)
                 .unwrap_or_else(|_| json!({"type": "exited", "code": null})),
@@ -424,6 +463,12 @@ pub(super) enum Message {
     Err(String),
     /// Lines dropped while the spool was full.
     Lost(u64),
+    /// The stdin line with this id was written to the worker; `again` when
+    /// it had been already, and this one was not.
+    Written {
+        id: String,
+        again: bool,
+    },
     /// The worker's `exited` event; the last message.
     Exit(Value),
 }
@@ -456,19 +501,29 @@ impl Messages {
 /// Writes to a worker's broker: stdin lines and acknowledgements, from
 /// several threads, each message in one write under one lock.
 #[derive(Clone)]
-pub(super) struct Writer(Arc<Mutex<UnixStream>>);
+pub(super) struct Writer {
+    stream: Arc<Mutex<UnixStream>>,
+    /// The broker takes stdin lines with ids ([`PROTOCOL`]).
+    ids: bool,
+}
 
 impl Writer {
     fn send(&self, message: &[u8]) -> std::io::Result<()> {
-        let mut stream = lock(&self.0);
+        let mut stream = lock(&self.stream);
         stream.write_all(message).and_then(|()| stream.flush())
     }
 
     /// Writes one stdin line (`line` ends with its newline) in one write,
     /// so a failed write leaves at most a cut line, which the broker drops.
-    pub(super) fn write_input(&self, line: &str) -> std::io::Result<()> {
-        let mut message = Vec::with_capacity(line.len() + 2);
+    /// The broker writes it to the worker unless it already wrote a line
+    /// with this `id`, and spools which it did (a [`Message::Written`]).
+    pub(super) fn write_input(&self, id: &str, line: &str) -> std::io::Result<()> {
+        let mut message = Vec::with_capacity(line.len() + id.len() + 3);
         message.extend_from_slice(b"i ");
+        if self.ids {
+            message.extend_from_slice(encode_id(id).as_bytes());
+            message.push(b' ');
+        }
         message.extend_from_slice(line.as_bytes());
         if !message.ends_with(b"\n") {
             message.push(b'\n');
@@ -481,11 +536,41 @@ impl Writer {
         let _ = self.send(b"c\n");
     }
 
-    /// Cuts the connection, as a server that died would.
-    #[cfg(test)]
-    pub(super) fn shutdown(&self) {
-        let _ = lock(&self.0).shutdown(std::net::Shutdown::Both);
+    /// Cuts the connection for a server that hands its workers over: its
+    /// reader ends, and the broker waits for the next server.
+    pub(super) fn detach(&self) {
+        let _ = lock(&self.stream).shutdown(std::net::Shutdown::Both);
     }
+}
+
+/// An input id as a token ([`Writer::write_input`]).
+fn encode_id(id: &str) -> String {
+    let mut encoded = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if byte.is_ascii_graphic() && byte != b'%' {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+/// The id [`encode_id`] encoded; `None` for what it cannot have written.
+fn decode_id(token: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(token.len());
+    let mut rest = token.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        if byte == b'%' {
+            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(byte);
+            rest = tail;
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// The records a broker keeps: those not written to the spool file yet
@@ -724,10 +809,17 @@ struct State {
     cursor: u64,
 }
 
+/// The worker's stdin, and the ids of the lines written to it.
+#[derive(Default)]
+struct Stdin {
+    pipe: Option<ChildStdin>,
+    written: HashSet<String>,
+}
+
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
-    stdin: Mutex<Option<ChildStdin>>,
+    stdin: Mutex<Stdin>,
     pid: u32,
 }
 
@@ -802,7 +894,10 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
-        stdin: Mutex::new(Some(stdin)),
+        stdin: Mutex::new(Stdin {
+            pipe: Some(stdin),
+            written: HashSet::new(),
+        }),
         pid,
     });
     let accepting = Arc::clone(&shared);
@@ -819,7 +914,7 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
     pump(&shared, stdout, b'o');
     // EOF: the worker closed stdout, so it exited or is about to; closing
     // its stdin lets one that waits for it end.
-    lock(&shared.stdin).take();
+    lock(&shared.stdin).pipe.take();
     let mut exited = match child.wait() {
         Ok(status) => json!({
             "type": "exited",
@@ -954,25 +1049,54 @@ fn receive(shared: &Shared, stream: Arc<UnixStream>) {
         let _ = previous.shutdown(std::net::Shutdown::Both);
     }
     while let Ok(Some(message)) = read_message(&mut reader) {
-        if let Some(line) = message.strip_prefix(b"i ") {
-            let mut stdin = lock(&shared.stdin);
-            let written = stdin.as_mut().map(|pipe| {
-                pipe.write_all(line)
-                    .and_then(|()| pipe.write_all(b"\n"))
-                    .and_then(|()| pipe.flush())
-            });
-            if let Some(Err(_)) = written {
-                // The worker is gone; its exit follows.
-                stdin.take();
-            }
+        if let Some(input) = message.strip_prefix(b"i ") {
+            write_input(shared, input);
         } else if let Some(seq) = message.strip_prefix(b"k ").and_then(parse_seq) {
             lock(&shared.state).spool.ack(seq);
             // The flusher may rewrite the file now.
             shared.changed.notify_all();
         } else if message == b"c" {
-            lock(&shared.stdin).take();
+            lock(&shared.stdin).pipe.take();
         }
     }
+}
+
+/// Writes one `<id> <line>` to the worker unless a line with that id was
+/// written, and spools which happened. The record is queued after the
+/// write, so it never claims a line the worker could not read; a line the
+/// worker answers quickly may be spooled before it.
+fn write_input(shared: &Shared, input: &[u8]) {
+    let Some(space) = input.iter().position(|byte| *byte == b' ') else {
+        return;
+    };
+    let (id, line) = (&input[..space], &input[space + 1..]);
+    let id = String::from_utf8_lossy(id).into_owned();
+    let mut stdin = lock(&shared.stdin);
+    let again = stdin.written.contains(&id);
+    if !again {
+        let Some(pipe) = stdin.pipe.as_mut() else {
+            // Closed: the worker ends; nothing was written.
+            return;
+        };
+        let written = pipe
+            .write_all(line)
+            .and_then(|()| pipe.write_all(b"\n"))
+            .and_then(|()| pipe.flush());
+        if written.is_err() {
+            // The worker is gone; its exit follows.
+            stdin.pipe.take();
+            return;
+        }
+        stdin.written.insert(id.clone());
+    }
+    let mut payload = id.into_bytes();
+    if again {
+        payload.extend_from_slice(b" again");
+    }
+    // Under the stdin lock, so two writes' records keep their order.
+    lock(&shared.state).spool.queue(b'n', &payload, SPOOL_LIMIT);
+    drop(stdin);
+    shared.changed.notify_all();
 }
 
 /// Sends the published records after the attached server's cursor, oldest
@@ -1282,7 +1406,7 @@ pub(super) mod tests {
                 ..State::default()
             }),
             changed: Condvar::new(),
-            stdin: Mutex::new(None),
+            stdin: Mutex::new(Stdin::default()),
             pid: 42,
         })
     }
@@ -1398,8 +1522,10 @@ pub(super) mod tests {
     fn a_greeting_of_another_protocol_is_refused() {
         assert_eq!(
             greeted_pid(format!("p 42 {PROTOCOL}").as_bytes()).unwrap(),
-            42
+            (42, PROTOCOL)
         );
+        // Slice 3's brokers are still re-attached to.
+        assert_eq!(greeted_pid(b"p 42 2").unwrap(), (42, PROTOCOL_NO_INPUT_IDS));
         let kind = |greeting: &[u8]| greeted_pid(greeting).unwrap_err().kind();
         assert_eq!(
             kind(format!("p 42 {}", PROTOCOL + 1).as_bytes()),
@@ -1414,11 +1540,14 @@ pub(super) mod tests {
         let (mut broker, server) = UnixStream::pair().unwrap();
         broker
             .write_all(
-                b"o 1 {\"a\":1}\ne 2 oops\no 3 \nl 4 3\nq 5 ignored\no x bad\nx 6 {\"type\":\"exited\",\"code\":0}\no 7 cut",
+                b"o 1 {\"a\":1}\ne 2 oops\no 3 \nl 4 3\nq 5 ignored\no x bad\nn 5 r:perm%201 again\nx 6 {\"type\":\"exited\",\"code\":0}\no 7 cut",
             )
             .unwrap();
         drop(broker);
-        let writer = Writer(Arc::new(Mutex::new(server.try_clone().unwrap())));
+        let writer = Writer {
+            stream: Arc::new(Mutex::new(server.try_clone().unwrap())),
+            ids: true,
+        };
         let mut messages = Messages {
             reader: BufReader::new(server),
             writer,
@@ -1429,8 +1558,80 @@ pub(super) mod tests {
         assert_eq!(messages.next(), Some((4, Message::Lost(3))));
         assert_eq!(
             messages.next(),
+            Some((
+                5,
+                Message::Written {
+                    id: "r:perm 1".into(),
+                    again: true
+                }
+            ))
+        );
+        assert_eq!(
+            messages.next(),
             Some((6, Message::Exit(json!({"type": "exited", "code": 0}))))
         );
         assert_eq!(messages.next(), None);
+    }
+
+    #[test]
+    fn input_ids_round_trip_as_tokens() {
+        for id in ["c:abc", "r:perm 1", "s:12", "100%\n\tü"] {
+            let token = encode_id(id);
+            assert!(!token.contains(|c: char| c.is_whitespace()), "{token}");
+            assert_eq!(decode_id(&token).as_deref(), Some(id));
+        }
+        assert_eq!(decode_id("bad%2"), None);
+    }
+
+    /// A broker over a socket pair whose worker's stdin is a pipe this test
+    /// reads, with records 1..=`published` published.
+    fn with_stdin(published: u64) -> (Arc<Shared>, std::io::PipeReader) {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let shared = shared_with(published, 0);
+        // A `ChildStdin` from a plain pipe's write end, as the worker's.
+        let pipe = ChildStdin::from(std::os::fd::OwnedFd::from(writer));
+        lock(&shared.stdin).pipe = Some(pipe);
+        (shared, reader)
+    }
+
+    #[test]
+    fn a_stdin_line_whose_id_was_written_is_acknowledged_without_a_second_write() {
+        let (shared, mut stdin) = with_stdin(1);
+        write_input(&shared, b"r:perm-1 {\"answer\":1}");
+        // The same id again, from a server that does not know whether the
+        // first went (a re-attach after a crash), with another line: only
+        // acknowledged.
+        write_input(&shared, b"r:perm-1 {\"answer\":2}");
+        write_input(&shared, b"c:cmd%201 {\"prompt\":1}");
+        lock(&shared.stdin).pipe.take();
+        let mut written = String::new();
+        stdin.read_to_string(&mut written).unwrap();
+        assert_eq!(written, "{\"answer\":1}\n{\"prompt\":1}\n");
+        let mut spool = std::mem::take(&mut lock(&shared.state).spool);
+        let batch = spool.next_batch().unwrap();
+        spool.written(batch, Ok(()));
+        assert_eq!(
+            sent(&spool, 1),
+            ["n 2 r:perm-1", "n 3 r:perm-1 again", "n 4 c:cmd%201"]
+        );
+        // A closed stdin writes nothing and claims nothing.
+        write_input(&shared, b"s:9 {}");
+        assert!(lock(&shared.state).spool.pending.is_empty());
+    }
+
+    #[test]
+    fn a_writer_sends_ids_only_to_a_broker_that_takes_them() {
+        for (ids, expected) in [(true, "i r:perm%201 {\"a\":1}\n"), (false, "i {\"a\":1}\n")] {
+            let (mut broker, server) = UnixStream::pair().unwrap();
+            let writer = Writer {
+                stream: Arc::new(Mutex::new(server)),
+                ids,
+            };
+            writer.write_input("r:perm 1", "{\"a\":1}\n").unwrap();
+            drop(writer);
+            let mut sent = String::new();
+            broker.read_to_string(&mut sent).unwrap();
+            assert_eq!(sent, expected);
+        }
     }
 }
