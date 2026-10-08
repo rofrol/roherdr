@@ -464,6 +464,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      its approvals go to the human without a timeout.
   6. Verified TODO.md/DECISIONS.md writes (read back, refuse on a missing
      anchor) and an acknowledged prompt at worker start.
+     Tool done 2026-10-08 by headless worker `w15` (`feat: a verified
+     editing tool for todo.md and decisions.md`): `scripts/todo_edit.py`
+     (find, add, append-to, insert-after, remove, move, add-section), each
+     refusing a missing or ambiguous anchor, never crossing a heading,
+     verifying and writing atomically; the coordinator uses it from now on.
+     Found at its first use (2026-10-08): `insert-after` drops the text
+     file's final newline, so text inserted after an anchor ending in a
+     newline glued its last line to the next item's first; it should keep
+     line structure (end the inserted text with a newline when the anchor
+     ends with one) and its check should compare the lines around the
+     insertion.
   7. Fault-injection tests: the coordinator killed mid-answer and between
      answer and re-arm; two questions at once; a worker exiting during a
      wait; a server restart and live handoff mid-wait; a duplicate or lost
