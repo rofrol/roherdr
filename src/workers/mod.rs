@@ -1,16 +1,21 @@
 //! Headless Claude workers owned by the server.
 //!
 //! A worker is `claude -p` over stream-json pipes, without a terminal, in its
-//! own process group. One reader thread per worker journals every line in and
-//! out (`<state dir>/workers/<id>.jsonl`), answers `can_use_tool` requests
-//! through [`policy`], and folds the events into the worker's state. A request
-//! the policy leaves to the user becomes a pending question, shown in the
+//! own process group. One reader thread per worker records every line in and
+//! out, answers `can_use_tool` requests through [`policy`], and folds the
+//! events into the worker's state. Every event goes through
+//! [`WorkerSupervisor::commit_locked`]: folded, then stored with the
+//! projections it changes in one transaction ([`store`],
+//! `<state dir>/workers/workers.sqlite3`), then exported to the worker's JSONL
+//! journal (`<id>.jsonl`), which `herdr worker log` reads. A request the
+//! policy leaves to the user becomes a pending question, shown in the
 //! client's `?` list and answered with `worker.answer`; the worker waits for
-//! it without a time limit. The same fold replays a journal after a server
-//! restart, where a worker that had not exited is recorded as `lost`.
+//! it without a time limit. After a server restart the workers are rebuilt
+//! from the store's projections, and one that had not exited is recorded as
+//! `lost`.
 //!
 //! The server that runs a worker holds an exclusive lock on the lock file
-//! beside its journal (`<id>.lock`) until the worker's exit is journaled, so
+//! beside its journal (`<id>.lock`) until the worker's exit is stored, so
 //! a server started by a live handoff marks `lost` only workers whose server
 //! is gone. Worker pipes are not handed over: a handoff is refused while a
 //! worker's process is alive ([`prepare_for_handoff`]).
@@ -20,6 +25,7 @@
 mod log;
 mod policy;
 mod slot;
+mod store;
 #[cfg(test)]
 mod tests;
 
@@ -306,7 +312,7 @@ struct Status {
     questions: Vec<Pending>,
     /// The most recently settled questions, oldest first, with what ended
     /// each, so an answer to one of them says what happened to it.
-    resolved: VecDeque<(String, &'static str)>,
+    resolved: VecDeque<(String, String)>,
     stop_requested_ms: Option<u64>,
     /// The takeover claim: set by `takeover`, cleared by `takeover_failed`.
     /// Kept in every state, an exited worker's too.
@@ -331,6 +337,13 @@ struct Status {
     lost: bool,
     /// Why a worker that keeps its last turn's state is gone.
     end_note: Option<String>,
+    /// The folder slot it runs in, if any.
+    slot: Option<String>,
+    /// The `seq` of the last event the store recorded for it.
+    last_seq: i64,
+    /// Why the worker's record is incomplete: a store or journal write
+    /// failed. Not an event: it lives only in this server's memory.
+    degraded: Option<String>,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -371,6 +384,9 @@ impl Status {
             exited: false,
             lost: false,
             end_note: None,
+            slot: None,
+            last_seq: 0,
+            degraded: None,
         }
     }
 
@@ -397,20 +413,34 @@ impl Status {
         }
     }
 
-    fn remember_resolved(&mut self, request_id: String, how: &'static str) {
+    fn remember_resolved(&mut self, request_id: String, how: &str) {
         self.resolved.retain(|(id, _)| *id != request_id);
         if self.resolved.len() == RESOLVED_QUESTIONS_KEPT {
             self.resolved.pop_front();
         }
-        self.resolved.push_back((request_id, how));
+        self.resolved.push_back((request_id, how.to_owned()));
     }
 
     /// What ended a question that is no longer pending, if it is recent.
-    fn resolution(&self, request_id: &str) -> Option<&'static str> {
+    fn resolution(&self, request_id: &str) -> Option<&str> {
         self.resolved
             .iter()
             .find(|(id, _)| id == request_id)
-            .map(|(_, how)| *how)
+            .map(|(_, how)| how.as_str())
+    }
+
+    /// The ids of the pending questions, to tell which an event settled.
+    fn pending_ids(&self) -> Vec<String> {
+        self.questions
+            .iter()
+            .map(|pending| pending.question.request_id.clone())
+            .collect()
+    }
+
+    /// A takeover claimed by a server that is gone without recording its
+    /// tab: whether it opened the tab is unknown.
+    fn mark_unfinished_takeover(&mut self) {
+        self.takeover_unfinished = self.takeover_ms.is_some() && self.takeover_tab.is_none();
     }
 
     fn is_gone(&self) -> bool {
@@ -477,6 +507,7 @@ impl Status {
                 self.name = string_field(event, "name").unwrap_or_default();
                 self.workspace_id = string_field(event, "workspace_id");
                 self.model = string_field(event, "model");
+                self.slot = event["folder_slot"]["name"].as_str().map(str::to_owned);
                 self.pid = event
                     .get("pid")
                     .and_then(Value::as_u64)
@@ -663,6 +694,7 @@ impl Status {
             takeover_error: self.takeover_error.clone(),
             takeover_unfinished: self.takeover_unfinished,
             end_note: self.end_note.clone(),
+            degraded: self.degraded.clone(),
             journal_path: journal_path.display().to_string(),
         }
     }
@@ -699,7 +731,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// One worker's append-only JSONL journal.
+/// One worker's append-only JSONL journal: an export of its events for
+/// `herdr worker log` and debugging, written after each event's store
+/// commit. The store, not this file, is the worker's record.
 struct Journal {
     file: Mutex<File>,
 }
@@ -712,58 +746,107 @@ impl Journal {
         })
     }
 
-    fn record(&self, direction: Direction, event: &Value) {
-        self.write(json!({"ts_ms": now_ms(), "dir": direction.as_str(), "event": event}));
-    }
-
-    fn record_raw(&self, direction: Direction, line: &str) {
-        self.write(json!({"ts_ms": now_ms(), "dir": direction.as_str(), "raw": line}));
-    }
-
-    fn write(&self, record: Value) {
-        let mut line = record.to_string();
-        line.push('\n');
-        let mut file = lock(&self.file);
-        if let Err(error) = file.write_all(line.as_bytes()) {
-            warn!(%error, "worker journal write failed");
+    /// Appends one record with the `seq` the store gave it, if any.
+    fn export(
+        &self,
+        seq: Option<i64>,
+        ts_ms: u64,
+        direction: Direction,
+        record: store::Recorded<'_>,
+    ) -> std::io::Result<()> {
+        let mut line = json!({"ts_ms": ts_ms, "dir": direction.as_str()});
+        if let Some(seq) = seq {
+            line["seq"] = json!(seq);
         }
+        match record {
+            store::Recorded::Event(event) => line["event"] = event.clone(),
+            store::Recorded::Raw(raw) => line["raw"] = json!(raw),
+        }
+        let mut line = line.to_string();
+        line.push('\n');
+        lock(&self.file).write_all(line.as_bytes())
     }
 }
 
-/// Reads a journal back into a state. Unknown or broken lines are skipped.
-fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
-    let mut status = Status::new(worker_id.to_owned());
-    for line in BufReader::new(File::open(path)?).lines() {
-        let line = line?;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+/// One line of a JSONL journal.
+struct JournalLine {
+    ts_ms: u64,
+    direction: Direction,
+    /// The event, or the line the CLI wrote that was not JSON.
+    record: Result<Value, String>,
+}
+
+/// Reads a journal's records. A line that is not a record (torn, unknown)
+/// is skipped; bytes that are not UTF-8 are replaced, so one torn character
+/// loses only its line.
+fn read_journal(path: &Path) -> std::io::Result<Vec<JournalLine>> {
+    let bytes = std::fs::read(path)?;
+    let mut lines = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(record) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
             continue;
         };
         let Some(direction) = record["dir"].as_str().and_then(Direction::parse) else {
             continue;
         };
-        if let Some(event) = record.get("event") {
-            status.apply(direction, event);
+        let record_value = match (record.get("event"), record["raw"].as_str()) {
+            (Some(event), _) => Ok(event.clone()),
+            (None, Some(raw)) => Err(raw.to_owned()),
+            (None, None) => continue,
+        };
+        lines.push(JournalLine {
+            ts_ms: record["ts_ms"].as_u64().unwrap_or(0),
+            direction,
+            record: record_value,
+        });
+    }
+    Ok(lines)
+}
+
+/// Folds a journal into a state in memory, without the store.
+fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
+    let mut status = Status::new(worker_id.to_owned());
+    for line in read_journal(path)? {
+        if let Ok(event) = &line.record {
+            status.apply(line.direction, event);
         }
     }
-    // The server that claimed it is gone; whether it opened the tab is
-    // unknown.
-    status.takeover_unfinished = status.takeover_ms.is_some() && status.takeover_tab.is_none();
+    status.mark_unfinished_takeover();
     Ok(status)
 }
 
-/// Replays a journal no server owns any more. A worker it does not show
-/// ended was left by a server that is gone: it is marked `lost` there and
-/// in the returned state.
-fn replay_unowned_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
-    let mut status = replay_journal(worker_id, path)?;
-    if !status.is_gone() {
-        let lost = json!({"type": "lost", "reason": "server restarted"});
-        match Journal::open(path) {
-            Ok(journal) => journal.record(Direction::Herdr, &lost),
-            Err(error) => warn!(%error, "cannot mark worker lost in its journal"),
-        }
-        status.apply(Direction::Herdr, &lost);
-    }
+/// Imports a journal written before the store (or while it failed) into
+/// it, in one transaction: its events in order, each with the questions it
+/// asked or settled, then the worker's row. A worker the store already
+/// holds is never imported again, since its row exists.
+fn import_journal(store: &store::Store, worker_id: &str, path: &Path) -> Result<Status, String> {
+    let lines = read_journal(path).map_err(|error| error.to_string())?;
+    let mut status = Status::new(worker_id.to_owned());
+    store
+        .transaction(|tx| {
+            let mut seq = 0;
+            for line in &lines {
+                let before = status.pending_ids();
+                let record = match &line.record {
+                    Ok(event) => {
+                        status.apply(line.direction, event);
+                        store::Recorded::Event(event)
+                    }
+                    Err(raw) => store::Recorded::Raw(raw),
+                };
+                seq = tx.event(&store::EventRow {
+                    worker_id,
+                    direction: line.direction,
+                    record: &record,
+                    ts_ms: line.ts_ms,
+                })?;
+                tx.questions(seq, &before, &status)?;
+            }
+            status.last_seq = seq;
+            tx.worker(&status, seq)
+        })
+        .map_err(|error| error.to_string())?;
+    status.mark_unfinished_takeover();
     Ok(status)
 }
 
@@ -820,16 +903,16 @@ fn journal_ownership(journal_path: &Path) -> std::io::Result<Ownership> {
     }
 }
 
-/// A running worker's pipes and journal; absent for one replayed from disk.
+/// A running worker's input pipe; absent for one loaded from the store.
 struct Live {
-    journal: Arc<Journal>,
+    number: u64,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
 }
 
 impl Live {
-    /// Writes one line to the CLI and journals it, in that order under one
-    /// lock, so the journal's order of inputs is the order the CLI saw.
-    fn send(&self, event: &Value) -> Result<(), WorkerError> {
+    /// Writes one line to the CLI and records it, in that order under one
+    /// lock, so the recorded order of inputs is the order the CLI saw.
+    fn send(&self, supervisor: &WorkerSupervisor, event: &Value) -> Result<(), WorkerError> {
         let mut stdin = lock(&self.stdin);
         let Some(pipe) = stdin.as_mut() else {
             return Err(WorkerError::NotRunning(
@@ -840,7 +923,7 @@ impl Live {
         line.push('\n');
         pipe.write_all(line.as_bytes())?;
         pipe.flush()?;
-        self.journal.record(Direction::In, event);
+        supervisor.record(self.number, Direction::In, event);
         Ok(())
     }
 
@@ -853,6 +936,24 @@ struct Entry {
     status: Status,
     journal_path: PathBuf,
     live: Option<Arc<Live>>,
+    /// Another server runs the worker (the old server of a live handoff)
+    /// and writes its projection; this one appends only events for it
+    /// until that server lets go ([`WorkerSupervisor::adopt_when_released`]).
+    foreign: bool,
+    /// The JSONL export, opened on the first event this server records.
+    export: Option<Arc<Journal>>,
+}
+
+impl Entry {
+    fn new(status: Status, journal_path: PathBuf) -> Self {
+        Self {
+            status,
+            journal_path,
+            live: None,
+            foreign: false,
+            export: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -864,6 +965,9 @@ struct Registry {
 struct Shared {
     dir: PathBuf,
     program: PathBuf,
+    /// The worker store, or why it could not be opened; then every event's
+    /// write fails and marks its worker degraded.
+    store: Result<store::Store, String>,
     registry: Mutex<Registry>,
     changed: Condvar,
     /// Held while a folder slot is prepared and its worker registered, so
@@ -993,105 +1097,169 @@ pub(crate) fn supervisor() -> &'static WorkerSupervisor {
 }
 
 impl WorkerSupervisor {
-    /// Opens the journal directory and replays it. A worker whose journal
-    /// does not end in an exit and whose lock no server holds was left by a
-    /// previous server: it is marked `lost` there and here. One whose lock
-    /// another server holds (the old server of a live handoff) is replayed
-    /// as it is, and marked `lost` only if its exit is not journaled once
-    /// that server lets go of it ([`Self::adopt_when_released`]).
+    /// Opens the worker directory and its store, and rebuilds the workers
+    /// from the store's projections. A journal the store does not hold yet
+    /// (written before the store) is imported into it once. A worker that
+    /// has not ended and whose lock no server holds was left by a previous
+    /// server: it is marked `lost`. One whose lock another server holds
+    /// (the old server of a live handoff) is loaded as it is, and marked
+    /// `lost` only if its exit is not recorded once that server lets go of
+    /// it ([`Self::adopt_when_released`]).
     pub(crate) fn open(dir: PathBuf, program: PathBuf) -> Self {
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            warn!(%error, dir = %dir.display(), "worker journal directory unavailable");
+        }
+        // A store whose projections cannot be read is not written either:
+        // importing the journals again would duplicate its events.
+        let opened = store::Store::open(&dir.join(store::STORE_FILE))
+            .and_then(|store| Ok((store.load_all()?, store)))
+            .map_err(|error| {
+                warn!(%error, dir = %dir.display(), "worker store unavailable");
+                format!("the worker store is unavailable: {error}")
+            });
+        let (mut stored, store) = match opened {
+            Ok((stored, store)) => (stored, Ok(store)),
+            Err(error) => (BTreeMap::new(), Err(error)),
+        };
+        // Every journal's number is reserved, readable or not, so a new
+        // worker never appends to an old one's journal.
+        let mut numbers: Vec<u64> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+                    .then(|| path.file_stem()?.to_str().and_then(worker_number))
+                    .flatten()
+            })
+            .collect();
+        numbers.extend(stored.keys().copied());
+        numbers.sort_unstable();
+        numbers.dedup();
+
         let mut registry = Registry {
             next_number: 1,
             ..Registry::default()
         };
-        if let Err(error) = std::fs::create_dir_all(&dir) {
-            warn!(%error, dir = %dir.display(), "worker journal directory unavailable");
-        }
         let mut owned_elsewhere = Vec::new();
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Some(worker_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            let Some(number) = worker_number(worker_id) else {
-                continue;
-            };
+        // Held until the workers left by a gone server are marked lost.
+        let mut unowned = Vec::new();
+        for number in numbers {
+            registry.next_number = registry.next_number.max(number + 1);
+            let worker_id = format!("w{number}");
+            let path = dir.join(format!("{worker_id}.jsonl"));
             let ownership = journal_ownership(&path).unwrap_or_else(|error| {
                 warn!(%error, path = %path.display(), "worker journal lock unavailable");
                 Ownership::Unowned { _held: None }
             });
-            let replayed = match &ownership {
-                Ownership::Unowned { .. } => replay_unowned_journal(worker_id, &path),
-                Ownership::Owned(_) => replay_journal(worker_id, &path),
+            let loaded = match (stored.remove(&number), &ownership, &store) {
+                (Some(mut status), ..) => {
+                    status.mark_unfinished_takeover();
+                    Ok(status)
+                }
+                // A server from before the store runs it and writes only
+                // its journal: imported once it lets go.
+                (None, Ownership::Owned(_), _) | (None, _, Err(_)) => {
+                    replay_journal(&worker_id, &path).map_err(|error| error.to_string())
+                }
+                (None, Ownership::Unowned { .. }, Ok(store)) => {
+                    import_journal(store, &worker_id, &path)
+                }
             };
-            let status = match replayed {
+            let status = match loaded {
                 Ok(status) => status,
                 Err(error) => {
                     warn!(%error, path = %path.display(), "worker journal unreadable");
                     continue;
                 }
             };
+            let mut entry = Entry::new(status, path);
             match ownership {
-                Ownership::Owned(lock) => owned_elsewhere.push((number, path.clone(), lock)),
-                // A lost worker's process may still run (a server that died
-                // without its workers): its temp dir stays until its
-                // process is gone, checked again at the next start.
-                Ownership::Unowned { .. } => {
-                    if status.process_gone() {
-                        remove_temp_dir(&temp_dir_path(&dir, worker_id));
-                    }
+                Ownership::Owned(lock) => {
+                    entry.foreign = true;
+                    owned_elsewhere.push((number, lock));
                 }
+                Ownership::Unowned { _held } => unowned.push((number, _held)),
             }
-            registry.next_number = registry.next_number.max(number + 1);
-            registry.workers.insert(
-                number,
-                Entry {
-                    status,
-                    journal_path: path,
-                    live: None,
-                },
-            );
+            registry.workers.insert(number, entry);
         }
         let supervisor = Self {
             shared: Arc::new(Shared {
                 dir,
                 program,
+                store,
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
             }),
         };
-        for (number, path, owner_lock) in owned_elsewhere {
-            supervisor.adopt_when_released(number, path, owner_lock);
+        for (number, _held) in unowned {
+            supervisor.settle_unowned(number);
+        }
+        for (number, owner_lock) in owned_elsewhere {
+            supervisor.adopt_when_released(number, owner_lock);
         }
         supervisor
     }
 
+    /// For a worker no server runs any more: records it `lost` unless it
+    /// has ended, then removes its temp dir once its process is gone. A
+    /// lost worker's process may still run (a server that died without its
+    /// workers); its temp dir is then checked again at the next start.
+    fn settle_unowned(&self, number: u64) {
+        let process_gone = {
+            let mut registry = lock(&self.shared.registry);
+            let Some(entry) = registry.workers.get_mut(&number) else {
+                return;
+            };
+            entry.foreign = false;
+            if !entry.status.is_gone() {
+                let lost = json!({"type": "lost", "reason": "server restarted"});
+                self.commit_locked(
+                    &mut registry,
+                    number,
+                    Direction::Herdr,
+                    store::Recorded::Event(&lost),
+                );
+            }
+            registry.workers[&number].status.process_gone()
+        };
+        if process_gone {
+            remove_temp_dir(&temp_dir_path(&self.shared.dir, &format!("w{number}")));
+        }
+    }
+
     /// Waits, in a thread, until the server that holds a worker's journal
-    /// lets go of it (the worker's exit is journaled, or that server ended),
-    /// then replays the journal again and marks the worker `lost` if its
-    /// exit is not there.
-    fn adopt_when_released(&self, number: u64, path: PathBuf, owner_lock: File) {
+    /// lets go of it (the worker's exit is recorded, or that server ended),
+    /// then loads the worker again (from the store, or by importing the
+    /// journal a server from before the store wrote) and marks it `lost`
+    /// if its exit is not there.
+    fn adopt_when_released(&self, number: u64, owner_lock: File) {
         let supervisor = self.clone();
         let spawned = crate::thread_spawn::spawn_named("herdr-worker-owner", move || {
+            let worker_id = format!("w{number}");
+            let path = supervisor.journal_path(&worker_id);
             if let Err(error) = owner_lock.lock() {
                 warn!(%error, path = %path.display(), "cannot wait for the worker journal's lock");
                 return;
             }
-            let worker_id = format!("w{number}");
-            let status = match replay_unowned_journal(&worker_id, &path) {
+            let loaded = match &supervisor.shared.store {
+                Ok(store) => match store.load(&worker_id) {
+                    Ok(Some(status)) => Ok(status),
+                    Ok(None) => import_journal(store, &worker_id, &path),
+                    Err(error) => Err(error.to_string()),
+                },
+                Err(_) => replay_journal(&worker_id, &path).map_err(|error| error.to_string()),
+            };
+            let mut status = match loaded {
                 Ok(status) => status,
                 Err(error) => {
                     warn!(%error, path = %path.display(), "worker journal unreadable");
                     return;
                 }
             };
-            if status.process_gone() {
-                remove_temp_dir(&temp_dir_path(&supervisor.shared.dir, &worker_id));
-            }
+            status.mark_unfinished_takeover();
             {
                 let mut registry = lock(&supervisor.shared.registry);
                 if let Some(entry) = registry.workers.get_mut(&number) {
@@ -1100,6 +1268,8 @@ impl WorkerSupervisor {
                     }
                 }
             }
+            supervisor.settle_unowned(number);
+            drop(owner_lock);
             supervisor.shared.changed.notify_all();
             notify_clients();
         });
@@ -1237,7 +1407,6 @@ impl WorkerSupervisor {
         std::fs::create_dir_all(&self.shared.dir)?;
         let journal_path = self.shared.dir.join(format!("{worker_id}.jsonl"));
         let owner_lock = own_journal(&journal_path, &worker_id)?;
-        let journal = Arc::new(Journal::open(&journal_path)?);
         let temp_dir = self.create_temp_dir(&worker_id)?;
         let settings = worker_settings(&cwd_real, &temp_dir, &slot_caches).to_string();
         let contract = worker_contract(&temp_dir, slot.as_ref());
@@ -1351,35 +1520,38 @@ impl WorkerSupervisor {
                 "killed_leftover_pids": slot_killed,
             })),
         });
-        journal.record(Direction::Herdr, &started);
-        journal.record(
-            Direction::Herdr,
-            &json!({"type": "policy", "file_tool_roots": policy.roots()}),
-        );
-        let mut status = Status::new(worker_id.clone());
-        status.apply(Direction::Herdr, &started);
-
         let live = Arc::new(Live {
-            journal: Arc::clone(&journal),
+            number,
             stdin: Arc::new(Mutex::new(Some(stdin))),
         });
         {
             let mut registry = lock(&self.shared.registry);
-            registry.workers.insert(
+            let mut entry = Entry::new(Status::new(worker_id.clone()), journal_path);
+            entry.live = Some(Arc::clone(&live));
+            registry.workers.insert(number, entry);
+            self.commit_locked(
+                &mut registry,
                 number,
-                Entry {
-                    status,
-                    journal_path: journal_path.clone(),
-                    live: Some(Arc::clone(&live)),
-                },
+                Direction::Herdr,
+                store::Recorded::Event(&started),
+            );
+            self.commit_locked(
+                &mut registry,
+                number,
+                Direction::Herdr,
+                store::Recorded::Event(
+                    &json!({"type": "policy", "file_tool_roots": policy.roots()}),
+                ),
             );
         }
+        self.shared.changed.notify_all();
+        notify_clients();
 
-        let stderr_journal = Arc::clone(&journal);
+        let stderr_supervisor = self.clone();
         if let Err(error) = crate::thread_spawn::spawn_named("herdr-worker-err", move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { break };
-                stderr_journal.record_raw(Direction::Err, &line);
+                stderr_supervisor.record_raw(number, Direction::Err, &line);
             }
         }) {
             warn!(%error, "worker stderr reader unavailable");
@@ -1399,7 +1571,7 @@ impl WorkerSupervisor {
             // Without a reader nobody would reap or journal the process.
             let _ = crate::platform::signal_process_group(pid, Signal::Kill);
             remove_temp_dir(&temp_dir);
-            self.update(
+            self.record(
                 number,
                 Direction::Herdr,
                 &json!({"type": "exited", "code": null}),
@@ -1408,33 +1580,108 @@ impl WorkerSupervisor {
         }
 
         // The CLI buffers input written before `system/init` (trial 1).
-        live.send(&user_message(prompt))?;
+        live.send(self, &user_message(prompt))?;
         self.status(&worker_id)
     }
 
-    fn update(&self, number: u64, direction: Direction, event: &Value) {
-        let mut registry = lock(&self.shared.registry);
-        let mut shown_changed = false;
-        if let Some(entry) = registry.workers.get_mut(&number) {
-            let before = Self::shown(&entry.status);
-            entry.status.apply(direction, event);
-            shown_changed = Self::shown(&entry.status) != before;
-        }
-        drop(registry);
+    /// Records one event of a worker and wakes those waiting on it.
+    fn record(&self, number: u64, direction: Direction, event: &Value) {
+        self.record_any(number, direction, store::Recorded::Event(event));
+    }
+
+    /// Records a line the CLI wrote that is not a JSON event.
+    fn record_raw(&self, number: u64, direction: Direction, line: &str) {
+        self.record_any(number, direction, store::Recorded::Raw(line));
+    }
+
+    fn record_any(&self, number: u64, direction: Direction, record: store::Recorded<'_>) {
+        let shown_changed = {
+            let mut registry = lock(&self.shared.registry);
+            self.commit_locked(&mut registry, number, direction, record)
+        };
         self.shared.changed.notify_all();
         if shown_changed {
             notify_clients();
         }
     }
 
+    /// The one way an event enters a worker's record, under the registry
+    /// lock, so the recorded order is the order it is folded in: the event
+    /// is folded into the worker's status, then appended to the store with
+    /// the projections it changes in one transaction (which gives it its
+    /// `seq`), then exported to the JSONL journal. A failed write is not
+    /// swallowed: the status keeps the event (it happened) and is marked
+    /// degraded with the error. The caller wakes the waiters; returns
+    /// whether what the clients show changed.
+    fn commit_locked(
+        &self,
+        registry: &mut Registry,
+        number: u64,
+        direction: Direction,
+        record: store::Recorded<'_>,
+    ) -> bool {
+        let Some(entry) = registry.workers.get_mut(&number) else {
+            return false;
+        };
+        let shown_before = Self::shown(&entry.status);
+        let pending_before = entry.status.pending_ids();
+        if let store::Recorded::Event(event) = record {
+            entry.status.apply(direction, event);
+        }
+        let ts_ms = now_ms();
+        let written = match &self.shared.store {
+            Ok(store) => store
+                .transaction(|tx| {
+                    let seq = tx.event(&store::EventRow {
+                        worker_id: &entry.status.worker_id,
+                        direction,
+                        record: &record,
+                        ts_ms,
+                    })?;
+                    if !entry.foreign {
+                        tx.questions(seq, &pending_before, &entry.status)?;
+                        tx.worker(&entry.status, seq)?;
+                    }
+                    Ok(seq)
+                })
+                .map_err(|error| format!("a worker store write failed: {error}")),
+            Err(error) => Err(error.clone()),
+        };
+        let seq = match written {
+            Ok(seq) => {
+                entry.status.last_seq = seq;
+                Some(seq)
+            }
+            Err(error) => {
+                warn!(%error, worker_id = entry.status.worker_id, "worker event not stored");
+                entry.status.degraded = Some(error);
+                None
+            }
+        };
+        let export = match &entry.export {
+            Some(journal) => Ok(Arc::clone(journal)),
+            None => Journal::open(&entry.journal_path).map(Arc::new),
+        };
+        let exported = export.and_then(|journal| {
+            entry.export = Some(Arc::clone(&journal));
+            journal.export(seq, ts_ms, direction, record)
+        });
+        if let Err(error) = exported {
+            warn!(%error, worker_id = entry.status.worker_id, "worker journal write failed");
+            entry.status.degraded = Some(format!("a worker journal write failed: {error}"));
+        }
+        Self::shown(&entry.status) != shown_before
+    }
+
     /// The parts of a status the clients show. Questions are only added or
     /// removed, never replaced in place, so their count tells a change.
-    fn shown(status: &Status) -> (WorkerState, usize, bool, bool) {
+    fn shown(status: &Status) -> (WorkerState, usize, bool, bool, bool) {
         (
             status.state,
             status.questions.len(),
             status.session_id.is_some(),
             status.takeover_ms.is_some(),
+            status.degraded.is_some(),
         )
     }
 
@@ -1555,7 +1802,7 @@ impl WorkerSupervisor {
         if text.trim().is_empty() {
             return Err(WorkerError::Invalid("text must not be empty".into()));
         }
-        let (number, live, status) = self.live(worker_id)?;
+        let (_, live, status) = self.live(worker_id)?;
         if status.takeover_ms.is_some() {
             return Err(Self::taken_over(worker_id));
         }
@@ -1564,9 +1811,7 @@ impl WorkerSupervisor {
                 "worker {worker_id} is in a turn; wait for it or interrupt it first"
             )));
         }
-        let message = user_message(text);
-        live.send(&message)?;
-        self.update(number, Direction::In, &message);
+        live.send(self, &user_message(text))?;
         self.status(worker_id)
     }
 
@@ -1574,11 +1819,14 @@ impl WorkerSupervisor {
     /// then ends with a `result` whose `terminal_reason` is `aborted_*`.
     pub(crate) fn interrupt(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
         let (number, live, _) = self.live(worker_id)?;
-        live.send(&json!({
+        live.send(
+            self,
+            &json!({
             "type": "control_request",
             "request_id": format!("herdr-interrupt-{number}-{}", now_ms()),
             "request": {"subtype": "interrupt"},
-        }))?;
+            }),
+        )?;
         self.status(worker_id)
     }
 
@@ -1596,10 +1844,9 @@ impl WorkerSupervisor {
         let pid = status
             .pid
             .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} has no process")))?;
-        self.record_tool_sessions(number, pid, &live.journal);
+        self.record_tool_sessions(number, pid);
         let signal = json!({"type": "signal", "signal": "SIGTERM", "at_ms": now_ms()});
-        live.journal.record(Direction::Herdr, &signal);
-        self.update(number, Direction::Herdr, &signal);
+        self.record(number, Direction::Herdr, &signal);
         live.close_input();
         crate::platform::signal_process_group(pid, Signal::Terminate)?;
         self.status(worker_id)
@@ -1610,7 +1857,7 @@ impl WorkerSupervisor {
     /// question and refuses when several are pending.
     pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
         let worker_id = params.worker_id.as_str();
-        let (number, live, request_id, response, answer) = {
+        let (live, request_id, response) = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let entry = registry
@@ -1672,15 +1919,17 @@ impl WorkerSupervisor {
                 "by": "user",
             });
             // Settled under the lock, so a second answer finds no question.
-            entry.status.apply(Direction::Herdr, &answer);
-            (number, live, request_id, response, answer)
+            self.commit_locked(
+                &mut registry,
+                number,
+                Direction::Herdr,
+                store::Recorded::Event(&answer),
+            );
+            (live, request_id, response)
         };
         self.shared.changed.notify_all();
         notify_clients();
-        live.journal.record(Direction::Herdr, &answer);
-        let message = control_response(&request_id, response);
-        live.send(&message)?;
-        self.update(number, Direction::In, &message);
+        live.send(self, &control_response(&request_id, response))?;
         self.status(worker_id)
     }
 
@@ -1694,11 +1943,10 @@ impl WorkerSupervisor {
         worker_id: &str,
         force: bool,
     ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
-        let (number, live, status) = {
+        let (number, status) = {
             let registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
-            let entry = &registry.workers[&number];
-            (number, entry.live.clone(), entry.status.clone())
+            (number, registry.workers[&number].status.clone())
         };
         if status.is_gone() && !force {
             let plan = plan_session_kill(
@@ -1712,13 +1960,10 @@ impl WorkerSupervisor {
                 describe_kill(&plan)
             )));
         }
-        let journal = match &live {
-            Some(live) => Arc::clone(&live.journal),
-            None => Arc::new(Journal::open(&self.journal_path(worker_id))?),
-        };
         if let (Some(pid), false) = (status.pid, status.is_gone()) {
-            self.record_tool_sessions(number, pid, &journal);
-            journal.record(
+            self.record_tool_sessions(number, pid);
+            self.record(
+                number,
                 Direction::Herdr,
                 &json!({"type": "signal", "signal": "SIGKILL"}),
             );
@@ -1731,7 +1976,8 @@ impl WorkerSupervisor {
             crate::platform::session_members,
         );
         crate::platform::signal_processes(&plan.pids, Signal::Kill);
-        journal.record(
+        self.record(
+            number,
             Direction::Herdr,
             &json!({
                 "type": "killed_tool_processes",
@@ -1761,7 +2007,7 @@ impl WorkerSupervisor {
     /// takeover releases it ([`Self::fail_takeover`]), and one an earlier
     /// server left unfinished can be tried again.
     pub(crate) fn begin_takeover(&self, worker_id: &str) -> Result<Takeover, WorkerError> {
-        let (takeover, journal, event) = {
+        let takeover = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let entry = registry
@@ -1797,13 +2043,16 @@ impl WorkerSupervisor {
                 cwd: status.cwd.clone(),
                 session_id,
             };
-            let journal = Self::journal_of(entry)?;
             let event = json!({"type": "takeover", "at_ms": now_ms()});
             // Claimed under the lock, so a second takeover is refused.
-            entry.status.apply(Direction::Herdr, &event);
-            (takeover, journal, event)
+            self.commit_locked(
+                &mut registry,
+                number,
+                Direction::Herdr,
+                store::Recorded::Event(&event),
+            );
+            takeover
         };
-        journal.record(Direction::Herdr, &event);
         self.shared.changed.notify_all();
         notify_clients();
         Ok(takeover)
@@ -1832,9 +2081,9 @@ impl WorkerSupervisor {
         )
     }
 
-    /// Applies a step of a claimed takeover under the lock and journals it.
+    /// Records a step of a claimed takeover under the lock.
     fn record_takeover_step(&self, worker_id: &str, event: Value) -> Result<(), WorkerError> {
-        let journal = {
+        {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let entry = registry
@@ -1846,22 +2095,16 @@ impl WorkerSupervisor {
                     "worker {worker_id} has no takeover claimed"
                 )));
             }
-            let journal = Self::journal_of(entry)?;
-            entry.status.apply(Direction::Herdr, &event);
-            journal
-        };
-        journal.record(Direction::Herdr, &event);
+            self.commit_locked(
+                &mut registry,
+                number,
+                Direction::Herdr,
+                store::Recorded::Event(&event),
+            );
+        }
         self.shared.changed.notify_all();
         notify_clients();
         Ok(())
-    }
-
-    /// The worker's journal: the live one, else opened for appending.
-    fn journal_of(entry: &Entry) -> Result<Arc<Journal>, WorkerError> {
-        Ok(match &entry.live {
-            Some(live) => Arc::clone(&live.journal),
-            None => Arc::new(Journal::open(&entry.journal_path)?),
-        })
     }
 
     /// Ends a worker being taken over, so its session has one writer: the
@@ -1965,12 +2208,12 @@ impl WorkerSupervisor {
             if ended.is_empty() {
                 continue;
             }
-            match Journal::open(&self.journal_path(&status.worker_id)) {
-                Ok(journal) => journal.record(
+            if let Some(number) = worker_number(&status.worker_id) {
+                self.record(
+                    number,
                     Direction::Herdr,
                     &json!({"type": "killed_tool_processes", "pids": ended, "reason": "folder slot reused"}),
-                ),
-                Err(error) => warn!(%error, "cannot journal the slot's leftover processes"),
+                );
             }
             killed.extend(ended);
         }
@@ -2012,7 +2255,7 @@ impl WorkerSupervisor {
     /// Records the sessions of the CLI's descendants that are new. Claude
     /// Code runs each Bash tool with `setsid`, so after a crash only these
     /// recorded sessions find its tools (trial 2, T2-3).
-    fn record_tool_sessions(&self, number: u64, pid: u32, journal: &Journal) {
+    fn record_tool_sessions(&self, number: u64, pid: u32) {
         let seen = crate::platform::descendant_sessions(pid);
         if seen.is_empty() {
             return;
@@ -2041,9 +2284,11 @@ impl WorkerSupervisor {
                 },
             )
             .collect();
-        let event = json!({"type": "tool_sessions", "sessions": sessions});
-        journal.record(Direction::Herdr, &event);
-        self.update(number, Direction::Herdr, &event);
+        self.record(
+            number,
+            Direction::Herdr,
+            &json!({"type": "tool_sessions", "sessions": sessions}),
+        );
     }
 }
 
@@ -2322,7 +2567,7 @@ struct Reader {
     policy: policy::Policy,
     temp_dir: PathBuf,
     live: Arc<Live>,
-    /// This server's lock on the journal, let go once the exit is in it.
+    /// This server's lock on the journal, let go once the exit is stored.
     owner_lock: File,
 }
 
@@ -2334,13 +2579,12 @@ impl Reader {
                 continue;
             }
             let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                self.live.journal.record_raw(Direction::Out, &line);
+                self.supervisor
+                    .record_raw(self.number, Direction::Out, &line);
                 continue;
             };
-            self.live.journal.record(Direction::Out, &event);
-            self.supervisor.update(self.number, Direction::Out, &event);
-            self.supervisor
-                .record_tool_sessions(self.number, self.pid, &self.live.journal);
+            self.supervisor.record(self.number, Direction::Out, &event);
+            self.supervisor.record_tool_sessions(self.number, self.pid);
             if event["type"].as_str() == Some("control_request")
                 && event["request"]["subtype"].as_str() == Some("can_use_tool")
             {
@@ -2357,11 +2601,12 @@ impl Reader {
             }),
             Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
         };
-        self.live.journal.record(Direction::Herdr, &exited);
-        drop(self.owner_lock);
+        // The temp dir goes first, so a worker shown exited has none; the
+        // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);
         self.supervisor
-            .update(self.number, Direction::Herdr, &exited);
+            .record(self.number, Direction::Herdr, &exited);
+        drop(self.owner_lock);
     }
 
     fn answer_permission(&self, event: &Value) {
@@ -2380,7 +2625,8 @@ impl Reader {
             policy::Decision::Deny(message) => ("deny", Value::String(message.clone())),
             policy::Decision::Ask(reason) => ("ask", Value::String(reason.clone())),
         };
-        self.live.journal.record(
+        self.supervisor.record(
+            self.number,
             Direction::Herdr,
             &json!({
                 "type": "permission",
@@ -2398,16 +2644,14 @@ impl Reader {
                 // No timer: the worker waits until the user answers.
                 let question = question_from_request(request_id, request, &reason);
                 let event = json!({"type": "question", "question": question, "input": input});
-                self.live.journal.record(Direction::Herdr, &event);
                 self.supervisor
-                    .update(self.number, Direction::Herdr, &event);
+                    .record(self.number, Direction::Herdr, &event);
                 return;
             }
         };
         let answer = control_response(request_id, response);
-        match self.live.send(&answer) {
-            Ok(()) => self.supervisor.update(self.number, Direction::In, &answer),
-            Err(error) => warn!(%error, "worker permission answer not delivered"),
+        if let Err(error) = self.live.send(&self.supervisor, &answer) {
+            warn!(%error, "worker permission answer not delivered");
         }
     }
 }
