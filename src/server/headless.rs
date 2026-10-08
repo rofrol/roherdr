@@ -2948,8 +2948,9 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
-            // Worker pipes are not handed over: refuse while a worker is in
-            // a turn, and stop the idle ones cleanly first.
+            // Worker pipes are not handed over: refuse while a worker's
+            // process is alive. Never waits here: the caller ends them and
+            // waits for their exit events first.
             let handoff_result = crate::workers::prepare_for_handoff(params.force)
                 .map_err(|message| ("handoff_refused", message))
                 .and_then(|()| {

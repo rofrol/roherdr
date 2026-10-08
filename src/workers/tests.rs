@@ -1432,35 +1432,30 @@ fn a_running_worker_is_not_marked_lost_by_another_server() {
 }
 
 #[test]
-fn a_handoff_is_refused_while_a_worker_is_in_a_turn() {
+fn a_handoff_is_refused_while_any_worker_process_is_alive() {
     let fixture = Fixture::new("handoff-busy");
     let busy = fixture.start("block");
     fixture.wait_for(&busy, |worker| worker.state == WorkerState::Working);
     let idle = fixture.start("finish");
     fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
 
-    let refused = fixture
-        .supervisor
-        .prepare_for_handoff(false, HANG_GUARD)
-        .unwrap_err();
+    let refused = fixture.supervisor.prepare_for_handoff(false).unwrap_err();
     assert!(refused.contains(&format!("{busy} (working)")), "{refused}");
-    assert!(!refused.contains(&idle), "{refused}");
+    assert!(
+        refused.contains(&format!("{idle} (idle between turns)")),
+        "{refused}"
+    );
+    assert!(refused.contains("herdr worker stop"), "{refused}");
     assert!(refused.contains("--force"), "{refused}");
     // Nothing was stopped.
-    assert_eq!(
-        fixture.supervisor.status(&busy).unwrap().state,
-        WorkerState::Working
-    );
-    assert!(fixture.herdr_events(&idle, "signal").is_empty());
-
-    // Forced, both are stopped and their exits journaled first.
-    let stopped = fixture
-        .supervisor
-        .prepare_for_handoff(true, HANG_GUARD)
-        .unwrap();
-    assert_eq!(stopped, vec![busy.clone(), idle.clone()]);
     for worker_id in [&busy, &idle] {
-        assert_eq!(fixture.herdr_events(worker_id, "exited").len(), 1);
+        assert!(fixture.herdr_events(worker_id, "signal").is_empty());
+    }
+
+    // Forced, both get SIGTERM; the server does not wait for them.
+    let signalled = fixture.supervisor.prepare_for_handoff(true).unwrap();
+    assert_eq!(signalled, vec![busy.clone(), idle.clone()]);
+    for worker_id in [&busy, &idle] {
         assert_eq!(
             fixture.herdr_events(worker_id, "signal")[0]["signal"],
             "SIGTERM"
@@ -1469,35 +1464,28 @@ fn a_handoff_is_refused_while_a_worker_is_in_a_turn() {
 }
 
 #[test]
-fn a_handoff_stops_workers_between_turns() {
+fn a_handoff_goes_ahead_once_stopped_workers_have_exited() {
     let fixture = Fixture::new("handoff-idle");
     let idle = fixture.start("finish");
     fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
-    let stopped = fixture
-        .supervisor
-        .prepare_for_handoff(false, HANG_GUARD)
-        .unwrap();
-    assert_eq!(stopped, vec![idle.clone()]);
-    let worker = fixture.supervisor.status(&idle).unwrap();
-    assert_eq!(worker.state, WorkerState::Exited);
+    assert!(fixture.supervisor.prepare_for_handoff(false).is_err());
+
+    // What the install script does: stop, then wait for the exit event.
+    fixture.supervisor.stop(&idle).unwrap();
+    let refused = fixture.supervisor.prepare_for_handoff(false);
+    if let Err(refused) = &refused {
+        assert!(refused.contains(&format!("{idle} (stopping)")), "{refused}");
+    }
+    fixture.wait(&idle, WorkerWaitUntil::Exit);
+    assert_eq!(
+        fixture.supervisor.prepare_for_handoff(false).unwrap(),
+        Vec::<String>::new()
+    );
     assert_eq!(fixture.herdr_events(&idle, "exited").len(), 1);
     // A next server finds the exit, not a lost worker.
     let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
     assert_eq!(next.status(&idle).unwrap().state, WorkerState::Exited);
     assert!(fixture.herdr_events(&idle, "lost").is_empty());
-}
-
-#[test]
-fn a_handoff_waits_no_longer_than_its_deadline_for_a_worker_that_ignores_sigterm() {
-    let fixture = Fixture::new("handoff-ignores");
-    let id = fixture.start("ignore-term");
-    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
-    let refused = fixture
-        .supervisor
-        .prepare_for_handoff(false, Duration::from_millis(200))
-        .unwrap_err();
-    assert!(refused.contains("still run"), "{refused}");
-    assert!(refused.contains(&id), "{refused}");
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
