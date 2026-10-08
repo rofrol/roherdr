@@ -4923,13 +4923,17 @@ fn the_header_arrows_are_dim_with_no_history_but_still_drawn() {
 fn with_coordinator(state: &mut ClientShellState, counts: Option<(u32, u32)>) {
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
     projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
-    projected.worker_item_counts =
-        counts.map(
-            |(in_progress, attention)| crate::protocol::ClientShellWorkerItemCounts {
+    projected.worker_items = counts
+        .map(
+            |(in_progress, attention)| crate::protocol::ClientShellWorkerItems {
+                tab_id: "tab_1".into(),
+                repo: "/repo".into(),
                 in_progress,
                 attention,
             },
-        );
+        )
+        .into_iter()
+        .collect();
     state.set_snapshot(Box::new(projected));
 }
 
@@ -5055,7 +5059,11 @@ fn a_coordinators_line_has_an_items_button_with_its_badge() {
     // Only a coordinator's line has one.
     let mut state = state_with_tabs_and_width(true, 40);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
-    projected.worker_item_counts = Some(Default::default());
+    projected.worker_items = vec![crate::protocol::ClientShellWorkerItems {
+        tab_id: "tab_1".into(),
+        repo: "/repo".into(),
+        ..Default::default()
+    }];
     state.set_snapshot(Box::new(projected));
     state.compose(120, 30).unwrap();
     assert!(state.hits.space_tab_items.is_empty());
@@ -5076,7 +5084,9 @@ fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
             .filter(|action| {
                 matches!(action,
                 ClientShellAction::Endpoint { request, .. }
-                    if matches!(&request.method, crate::api::schema::Method::WorkerRuns(_)))
+                    if matches!(&request.method, crate::api::schema::Method::WorkerRuns(params)
+                        // Only the coordinator's repository.
+                        if params.repo.as_deref() == Some("/repo") && params.item.is_none()))
             })
             .count()
     };

@@ -961,16 +961,21 @@ pub struct ClientShellSnapshot {
     /// the end.
     #[serde(default)]
     pub workers: Vec<ClientShellWorker>,
-    /// What the coordinator's Items button counts. Its presence also says
-    /// the server answers `worker.runs` for this client; none from a server
-    /// that does not.
+    /// What each coordinator tab's Items button counts, for the tabs whose
+    /// pane is in a git repository. An entry also says the server answers
+    /// `worker.runs` for this client; none from a server that does not.
     #[serde(default)]
-    pub worker_item_counts: Option<ClientShellWorkerItemCounts>,
+    pub worker_items: Vec<ClientShellWorkerItems>,
 }
 
-/// TODO items with workers on them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientShellWorkerItemCounts {
+/// The TODO items with workers on them in a coordinator tab's repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellWorkerItems {
+    /// The coordinator tab.
+    pub tab_id: String,
+    /// Its repository, as `worker.runs` names it (`repo`): the parent of
+    /// the git common directory of its pane's directory.
+    pub repo: String,
     /// Items with a running worker.
     pub in_progress: u32,
     /// Items with an ended run whose owner has not acknowledged its end: a
@@ -3005,10 +3010,12 @@ mod tests {
                 session_id: None,
                 takeover: false,
             }],
-            worker_item_counts: Some(ClientShellWorkerItemCounts {
+            worker_items: vec![ClientShellWorkerItems {
+                tab_id: "t1".into(),
+                repo: "/repo".into(),
                 in_progress: 3,
                 attention: 1,
-            }),
+            }],
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

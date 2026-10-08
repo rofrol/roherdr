@@ -121,7 +121,7 @@ pub(super) fn snapshot_with_completions(
             }
         })
         .collect();
-    let tabs = snapshot
+    let tabs: Vec<protocol::ClientShellTab> = snapshot
         .tabs
         .into_iter()
         .zip(
@@ -153,7 +153,7 @@ pub(super) fn snapshot_with_completions(
             }
         })
         .collect();
-    let panes = snapshot
+    let panes: Vec<protocol::ClientShellPane> = snapshot
         .panes
         .into_iter()
         .map(|pane| {
@@ -282,6 +282,7 @@ pub(super) fn snapshot_with_completions(
                 preview: notes.preview,
             });
 
+    let worker_items = client_shell_worker_items(&tabs, &panes, crate::workers::repository_of_dir);
     let shell = protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
         revision,
@@ -322,7 +323,7 @@ pub(super) fn snapshot_with_completions(
             })
             .collect(),
         workers: client_shell_workers(crate::workers::summaries()),
-        worker_item_counts: Some(client_shell_item_counts(crate::workers::item_counts())),
+        worker_items,
     };
     (shell, completions)
 }
@@ -710,18 +711,94 @@ fn client_shell_workers(
         .collect()
 }
 
-fn client_shell_item_counts(
-    counts: crate::workers::ItemCounts,
-) -> protocol::ClientShellWorkerItemCounts {
-    protocol::ClientShellWorkerItemCounts {
-        in_progress: counts.in_progress,
-        attention: counts.attention,
-    }
+/// Each coordinator tab's Items counts, of the repository its first pane's
+/// directory (its program's, else its shell's) is in; none for a tab outside
+/// git. `repository_of` finds a directory's repository.
+fn client_shell_worker_items(
+    tabs: &[protocol::ClientShellTab],
+    panes: &[protocol::ClientShellPane],
+    repository_of: impl Fn(&str) -> Option<String>,
+) -> Vec<protocol::ClientShellWorkerItems> {
+    tabs.iter()
+        .filter(|tab| tab.role == Some(crate::api::schema::TabRole::Coordinator))
+        .filter_map(|tab| {
+            let pane = panes.iter().find(|pane| pane.tab_id == tab.tab_id)?;
+            let dir = pane.foreground_cwd.as_deref().or(pane.cwd.as_deref())?;
+            let repo = repository_of(dir)?;
+            let counts = crate::workers::item_counts(&repo);
+            Some(protocol::ClientShellWorkerItems {
+                tab_id: tab.tab_id.clone(),
+                repo,
+                in_progress: counts.in_progress,
+                attention: counts.attention,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_coordinator_tab_counts_the_items_of_its_panes_repository() {
+        let tab = |tab_id: &str, role| protocol::ClientShellTab {
+            tab_id: tab_id.into(),
+            workspace_id: "ws_1".into(),
+            number: 1,
+            label: tab_id.into(),
+            custom_label: false,
+            zoomed: false,
+            focused: false,
+            agent_status: crate::api::schema::AgentStatus::Idle,
+            parent_tab_id: None,
+            status: None,
+            bookmarked: false,
+            activity: None,
+            program: None,
+            role,
+        };
+        let pane = |tab_id: &str, cwd: &str, foreground: Option<&str>| protocol::ClientShellPane {
+            pane_id: format!("p-{tab_id}"),
+            workspace_id: "ws_1".into(),
+            tab_id: tab_id.into(),
+            label: None,
+            cwd: Some(cwd.into()),
+            foreground_cwd: foreground.map(str::to_owned),
+            focused: false,
+            right_click_passthrough: false,
+            running_program: None,
+        };
+        use crate::api::schema::TabRole::{Coordinator, Worker};
+        let tabs = [
+            tab("t1", Some(Coordinator)),
+            tab("t2", Some(Worker)),
+            tab("t3", Some(Coordinator)),
+            tab("t4", Some(Coordinator)),
+        ];
+        let panes = [
+            pane("t1", "/shell", Some("/home/herdr/src")),
+            pane("t2", "/home/herdr", None),
+            pane("t3", "/other/sub", None),
+            pane("t4", "/not-git", None),
+        ];
+        let items = client_shell_worker_items(&tabs, &panes, |dir| {
+            if dir.starts_with("/home/herdr") {
+                Some("/home/herdr".into())
+            } else if dir.starts_with("/other") {
+                Some("/other".into())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            items
+                .iter()
+                .map(|items| (items.tab_id.as_str(), items.repo.as_str()))
+                .collect::<Vec<_>>(),
+            [("t1", "/home/herdr"), ("t3", "/other")]
+        );
+    }
 
     #[test]
     fn the_snapshot_leaves_out_workers_the_sidebar_does_not_list() {

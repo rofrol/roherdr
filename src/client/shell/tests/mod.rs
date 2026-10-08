@@ -94,7 +94,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         build_commit: None,
         worker_questions: Vec::new(),
         workers: Vec::new(),
-        worker_item_counts: None,
+        worker_items: Vec::new(),
     }
 }
 

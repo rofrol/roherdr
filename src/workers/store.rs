@@ -186,6 +186,16 @@ UPDATE workers SET
     ended_mid_turn = gone_seq > 0 AND coalesce(turn_seq, 0) > coalesce((SELECT max(seq)
         FROM events WHERE worker_id = workers.id AND direction = 'out' AND type = 'result'), 0);
 "#,
+    r#"
+-- The item's title in TODO.md when the worker started (`started`'s
+-- `item_title`), since a finished item leaves the file. Filled from the
+-- `started` event where it has one; older workers have none, and
+-- `worker.runs` reads TODO.md for them.
+ALTER TABLE workers ADD COLUMN item_title TEXT;
+UPDATE workers SET item_title = (SELECT json_extract(body, '$.item_title') FROM events
+    WHERE worker_id = workers.id AND direction = 'herdr' AND type = 'started'
+    ORDER BY seq LIMIT 1);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -583,7 +593,7 @@ impl Tx<'_> {
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
-                    :ended_mid_turn)
+                    :ended_mid_turn, :item_title)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -643,6 +653,7 @@ impl Tx<'_> {
                     .unwrap_or_else(|_| "[]".into()),
                 ":questions_asked": status.questions_asked,
                 ":ended_mid_turn": status.ended_mid_turn,
+                ":item_title": status.item_title,
             },
         )?;
         Ok(())
@@ -654,7 +665,7 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn";
+ended_mid_turn, item_title";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -710,6 +721,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
         .unwrap_or_default();
     status.questions_asked = row.get(38)?;
     status.ended_mid_turn = row.get(39)?;
+    status.item_title = row.get(40)?;
     Ok(status)
 }
 
@@ -953,6 +965,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN done_commits;
                  ALTER TABLE workers DROP COLUMN questions_asked;
                  ALTER TABLE workers DROP COLUMN ended_mid_turn;
+                 ALTER TABLE workers DROP COLUMN item_title;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -969,7 +982,41 @@ mod tests {
             (Some(10), Some(13), false)
         );
         assert_eq!((loaded.item, loaded.repo), (None, None));
+        assert_eq!(loaded.item_title, None);
         assert!(loaded.done_commits.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_item_title_is_kept_and_filled_from_the_started_event_of_older_rows() {
+        let dir = scratch("item-title");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        let started = json!({"type": "started", "cwd": "/repo", "item": "t-abcd2345",
+            "item_title": "Items popup"});
+        append(&store, "w1", &started).unwrap();
+        append(&store, "w2", &json!({"type": "started", "cwd": "/repo"})).unwrap();
+        assert_eq!(
+            store.load("w1").unwrap().unwrap().item_title.as_deref(),
+            Some("Items popup")
+        );
+        // A database from before the column: the migration fills it from
+        // the `started` event.
+        store
+            .connection()
+            .execute_batch(&format!(
+                "ALTER TABLE workers DROP COLUMN item_title;
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.load("w1").unwrap().unwrap().item_title.as_deref(),
+            Some("Items popup")
+        );
+        assert_eq!(store.load("w2").unwrap().unwrap().item_title, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
