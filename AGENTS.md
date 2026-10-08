@@ -466,6 +466,12 @@ questions with
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
 `last_result.text`.
+The pane (and agent session) that starts a worker owns it. After handling
+what a wait returned (answering or escalating the question, reviewing the
+turn or the ended worker), acknowledge it with `herdr worker ack <id>
+<seq>`, that wait's `seq`; ack after handling, never before. Until then
+`herdr worker obligations` lists it, and in a `coordinator` tab the Stop
+hook blocks every stop of yours, naming each worker and what it needs.
 Pass `--command-id <id>` to every `start`, `prompt`, `interrupt`, `stop`,
 `kill` and `answer`, derived from the task, not random: for a start the
 TODO item and the branch (`<item>:<branch>`), for an answer the worker and

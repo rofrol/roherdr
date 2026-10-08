@@ -97,6 +97,10 @@ fi
 # In a tab with the role `coordinator`, a turn that ends by waiting for the user's go-ahead ("when
 # you say continue", "should I continue?") while no background task of the session runs is blocked
 # once too, so the coordinator goes on with the next approved item or asks its open questions.
+# A coordinator's stop is also blocked, every time, while `herdr worker obligations` lists a worker
+# event it has not acknowledged (a question, a turn end, the worker's end); the server derives that
+# list, so it ends once the coordinator answers or acknowledges (`herdr worker ack`). When herdr
+# cannot be asked, the stop goes through and the reason goes to stderr.
 # A stop the check blocks does not end the turn; any other stop reports the turn finished.
 stop_check() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -110,6 +114,8 @@ import json
 import os
 import re
 import socket
+import subprocess
+import sys
 import time
 
 mode = os.environ.get("HERDR_AWAITING_REPLY_STOP", "block")
@@ -278,6 +284,63 @@ def tab_role():
     return role if isinstance(role, str) else None
 
 
+def runs_workers(path):
+    """Whether the session's transcript shows a `herdr worker` command. Only such a session can own
+    workers, so no other stop asks herdr anything."""
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        with open(path, "rb") as handle:
+            return b"herdr worker " in handle.read()
+    except OSError:
+        return False
+
+
+def worker_obligations():
+    """The caller's workers' unacknowledged events (`herdr worker obligations`), or None when
+    herdr cannot tell; why goes to stderr."""
+    herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
+    try:
+        done = subprocess.run(
+            [herdr, "worker", "obligations", "--pane", os.environ["HERDR_PANE_ID"]],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        print(f"herdr stop check: cannot run {herdr} worker obligations: {error}", file=sys.stderr)
+        return None
+    if done.returncode != 0:
+        print(
+            f"herdr stop check: {herdr} worker obligations failed ({done.returncode}): "
+            + done.stderr.strip()[-300:],
+            file=sys.stderr,
+        )
+        return None
+    try:
+        obligations = json.loads(done.stdout)["result"]["obligations"]
+    except (ValueError, KeyError, TypeError):
+        print("herdr stop check: unreadable worker obligations: " + done.stdout.strip()[-300:],
+              file=sys.stderr)
+        return None
+    return [entry for entry in obligations if isinstance(entry, dict)] if isinstance(
+        obligations, list) else None
+
+
+def obligation_text(entry):
+    """One worker's obligation, as the block reason names it."""
+    worker = entry.get("worker_id", "?")
+    reason = entry.get("reason")
+    if reason == "question":
+        ids = [q.get("request_id") for q in entry.get("questions") or [] if isinstance(q, dict)]
+        return f"{worker}: question {', '.join(str(i) for i in ids) or '?'}"
+    if reason == "turn_end":
+        return f"{worker}: turn ended, review it"
+    if reason == "gone":
+        return f"{worker}: exited, review it"
+    return f"{worker}: {reason}"
+
+
 try:
     with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
         hook_input = json.loads(handle.read() or "{}")
@@ -285,6 +348,46 @@ except Exception:
     raise SystemExit(0)
 if hook_input.get("hook_event_name") != "Stop" or hook_input.get("agent_id"):
     raise SystemExit(0)
+
+# A coordinator's workers that need it: checked before anything else and on every stop (the
+# server's list, not this hook, ends the block). Shadow mode only logs.
+role = None
+role_known = False
+obligations = None
+if runs_workers(hook_input.get("transcript_path")):
+    role = tab_role()
+    role_known = True
+    if role == COORDINATOR_ROLE:
+        obligations = worker_obligations()
+if obligations:
+    seqs = ", ".join(f"`herdr worker ack {e.get('worker_id')} {e.get('seq')}`" for e in obligations)
+    try:
+        state_dir = os.path.join(
+            os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
+        )
+        os.makedirs(state_dir, exist_ok=True)
+        with open(os.path.join(state_dir, "awaiting-reply-stop.jsonl"), "a", encoding="utf-8") as log:
+            log.write(json.dumps({
+                "time": time.time(),
+                "pane": os.environ.get("HERDR_PANE_ID"),
+                "session": hook_input.get("session_id"),
+                "role": role,
+                "obligations": [obligation_text(e) for e in obligations],
+                "blocked": mode != "shadow",
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    if mode != "shadow":
+        print(json.dumps({
+            "decision": "block",
+            "reason": (
+                "Herdr: workers you started need you before you stop: "
+                + "; ".join(obligation_text(e) for e in obligations)
+                + ". Handle each (answer the question or escalate it to the user, review the "
+                "ended turn or the ended worker), then acknowledge it: " + seqs + "."
+            ),
+        }))
+        raise SystemExit(0)
 # The second stop of a turn the hook already blocked is never blocked again, but it may still
 # be marked: the command the agent was asked to run may have been denied too.
 stop_hook_active = bool(hook_input.get("stop_hook_active"))
@@ -387,7 +490,6 @@ block = question and not reported and not blocked_calls and not stop_hook_active
 # the go-ahead text). Any missing input or failed request leaves the stop alone.
 abandon = is_abandon_text(final_text)
 pending = None
-role = None
 coordinator_block = False
 if (
     abandon
@@ -408,7 +510,8 @@ if (
     if lines:
         pending = pending_background(lines)
     if pending == 0:
-        role = tab_role()
+        if not role_known:
+            role = tab_role()
         coordinator_block = role == COORDINATOR_ROLE
 try:
     state_dir = os.path.join(

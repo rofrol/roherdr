@@ -24,6 +24,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
             | Method::WorkerAnswer(_)
+            | Method::WorkerAck(_)
+            | Method::WorkerObligations(_)
     )
 }
 
@@ -101,6 +103,12 @@ fn handle_immediate(
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
+        Method::WorkerAck(params) => supervisor.ack(&params.worker_id, params.seq)?,
+        Method::WorkerObligations(params) => {
+            return Ok(ResponseResult::WorkerObligations {
+                obligations: supervisor.obligations(params.owner_pane_id.as_deref()),
+            })
+        }
         _ => return Err(WorkerError::Invalid("not a worker method".into())),
     };
     Ok(ResponseResult::WorkerInfo { worker })

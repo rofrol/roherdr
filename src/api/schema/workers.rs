@@ -34,6 +34,16 @@ pub struct WorkerStartParams {
     /// With `folder_slot`: removes the slot's `target/` and Zig cache first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh_build: bool,
+    /// The pane of the coordinator that starts the worker (the CLI sends its
+    /// `HERDR_PANE_ID`): the worker's owner, whose `worker.obligations` list
+    /// the worker's events it has not acknowledged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    /// The owner's agent session (the CLI sends Claude Code's
+    /// `CLAUDE_CODE_SESSION_ID`), so the owner is the session, not only the
+    /// pane that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
     /// A client's id for this command, unique per command it means
     /// (`worker_command_conflict` when reused with other parameters). A
     /// repeated id returns the stored outcome without doing it again: the
@@ -45,6 +55,45 @@ pub struct WorkerStartParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerTarget {
     pub worker_id: String,
+}
+
+/// The owner acknowledges having handled the worker's events up to `seq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAckParams {
+    pub worker_id: String,
+    /// The `seq` handled: the one `worker.wait` with `until: attention` or
+    /// `worker.obligations` returned. An ack at or below the acknowledged
+    /// one changes nothing; one past the worker's latest event is refused.
+    pub seq: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerObligationsParams {
+    /// Only the workers this pane owns; every owned worker when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+}
+
+/// A worker whose owner has an event of it to handle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerObligation {
+    pub worker_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// What it needs: `question` (an unanswered question asked after the
+    /// acknowledged `seq`), `turn_end` (a turn ended after it, to review) or
+    /// `gone` (the worker exited or was lost after it).
+    pub reason: WorkerAttentionReason,
+    /// The worker's latest event's `seq`; `worker.ack` with it settles
+    /// everything listed here.
+    pub seq: i64,
+    /// With `question`: the pending questions asked after the acknowledged
+    /// `seq`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<WorkerQuestion>,
+    pub owner_pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
 }
 
 /// A worker and the client's id for a command on it (`worker.stop`).
@@ -300,6 +349,15 @@ pub struct WorkerInfo {
     /// turn it interrupted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_seq: Option<i64>,
+    /// The pane that started the worker, its owner (`worker.start`'s
+    /// `owner_pane_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    /// The highest `seq` its owner acknowledged (`worker.ack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acked_seq: Option<i64>,
 }
 
 /// Answers a worker's pending question: a tool approval or an

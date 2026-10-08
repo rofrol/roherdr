@@ -350,6 +350,8 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
         branch: None,
         base: None,
         fresh_build: false,
+        owner_pane_id: None,
+        owner_session_id: None,
         command_id: None,
     }
 }
@@ -2667,4 +2669,132 @@ fn a_command_a_restart_cut_off_says_so_and_a_start_returns_its_worker() {
     assert_eq!(cut_off.code(), "worker_command_interrupted");
     assert!(cut_off.to_string().contains(&id), "{cut_off}");
     assert_eq!(fixture.supervisor.status(&id).unwrap().turns, 1);
+}
+
+/// Starts a worker owned by `pane`.
+fn start_owned(fixture: &Fixture, pane: &str, prompt: &str) -> String {
+    fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            owner_pane_id: Some(pane.to_owned()),
+            owner_session_id: Some(format!("{pane}-session")),
+            ..start_params(&fixture.repo, prompt, None)
+        })
+        .unwrap()
+        .worker_id
+}
+
+fn obligation_of(fixture: &Fixture, pane: &str, id: &str) -> Option<WorkerObligation> {
+    fixture
+        .supervisor
+        .obligations(Some(pane))
+        .into_iter()
+        .find(|obligation| obligation.worker_id == id)
+}
+
+#[test]
+fn a_worker_is_owned_by_the_pane_and_session_that_started_it() {
+    let fixture = Fixture::new("owner");
+    let id = start_owned(&fixture, "p1", "finish");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.owner_pane_id.as_deref(), Some("p1"));
+    assert_eq!(worker.owner_session_id.as_deref(), Some("p1-session"));
+    assert_eq!(worker.acked_seq, None);
+    // A worker without an owner owes nobody.
+    let unowned = fixture.start("finish");
+    fixture.wait(&unowned, WorkerWaitUntil::TurnEnd);
+    let all: Vec<String> = fixture
+        .supervisor
+        .obligations(None)
+        .into_iter()
+        .map(|obligation| obligation.worker_id)
+        .collect();
+    assert_eq!(all, std::slice::from_ref(&id));
+    assert!(fixture.supervisor.obligations(Some("p2")).is_empty());
+
+    // The owner survives a server restart: it is in the store.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let worker = reopened.status(&id).unwrap();
+    assert_eq!(worker.owner_pane_id.as_deref(), Some("p1"));
+    assert_eq!(worker.owner_session_id.as_deref(), Some("p1-session"));
+}
+
+#[test]
+fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
+    let fixture = Fixture::new("obligations");
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
+    let turn_end = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(turn_end.reason, WorkerAttentionReason::TurnEnd);
+    assert_eq!(turn_end.seq, ended.seq);
+    assert_eq!(turn_end.owner_pane_id, "p1");
+
+    let worker = fixture.supervisor.ack(&id, turn_end.seq).unwrap();
+    assert_eq!(worker.acked_seq, Some(turn_end.seq));
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+
+    // A newer event, a question, brings it back.
+    fixture
+        .supervisor
+        .prompt(&id, "classifier Bash git push origin master")
+        .unwrap();
+    let (asked, _) = fixture.attention(&id, Some(ended.seq), || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    let question = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(question.reason, WorkerAttentionReason::Question);
+    assert_eq!(request_ids(&question.questions), ["perm-1"]);
+    fixture.supervisor.ack(&id, question.seq).unwrap();
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+
+    // Its answer ends the turn: a turn end after the ack.
+    fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let next = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(next.reason, WorkerAttentionReason::TurnEnd);
+    assert!(next.seq > question.seq);
+    fixture.supervisor.ack(&id, next.seq).unwrap();
+
+    // The worker's end is one too, until acknowledged.
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let gone = obligation_of(&fixture, "p1", &id).unwrap();
+    assert_eq!(gone.reason, WorkerAttentionReason::Gone);
+    fixture.supervisor.ack(&id, gone.seq).unwrap();
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+}
+
+#[test]
+fn an_ack_is_idempotent_and_monotonic() {
+    let fixture = Fixture::new("ack");
+    let id = start_owned(&fixture, "p1", "finish");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let seq = worker.seq.unwrap();
+
+    // Past the latest event: refused, it would hide what has not happened.
+    let refused = fixture.supervisor.ack(&id, seq + 1).unwrap_err();
+    assert_eq!(refused.code(), "invalid_request");
+
+    let acked = fixture.supervisor.ack(&id, seq).unwrap();
+    assert_eq!(acked.acked_seq, Some(seq));
+    let after = acked.seq.unwrap();
+    // The same ack, and an older one, record nothing and lower nothing.
+    for again in [seq, seq - 1] {
+        let worker = fixture.supervisor.ack(&id, again).unwrap();
+        assert_eq!((worker.acked_seq, worker.seq), (Some(seq), Some(after)));
+    }
+    assert_eq!(fixture.herdr_events(&id, "acked").len(), 1);
+    assert!(fixture.supervisor.ack("w99", 1).is_err());
+
+    // The acknowledged seq survives a server restart.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    assert_eq!(reopened.status(&id).unwrap().acked_seq, Some(seq));
 }
