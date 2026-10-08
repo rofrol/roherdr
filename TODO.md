@@ -1487,6 +1487,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     planned split of `src/workers/mod.rs` [t-ofobwsra].
   Approved by the user 2026-10-08 ("add it to the TODO"): after the
   driver's first slice [t-s3oaxcki].
+  User 2026-10-08: "one could even design the protocol and make an
+  implementation in Odin etc.": so the protocol is specified language-
+  neutrally (a written spec plus JSON schemas for commands, events and
+  receipts, and a conformance test suite any implementation runs against
+  a socket), not defined by the Rust types; the Rust crate is the reference
+  implementation, and a second one (Odin or another language) is possible
+  once the spec and the conformance tests exist.
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
