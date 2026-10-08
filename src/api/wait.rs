@@ -17,8 +17,6 @@ use crate::api::subscriptions::{match_output, output_match_read_source};
 use crate::api::{ApiRequestSender, EventHub};
 use crate::ipc::LocalStream;
 
-const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
-
 pub(super) fn wait_for_output(
     request_id: String,
     params: crate::api::schema::PaneWaitForOutputParams,
@@ -165,7 +163,6 @@ pub(super) fn wait_for_agent(
             last_event_sequence,
             after_state_change_seq: None,
             accept_transient_status: true,
-            timeout_kind: AgentWaitTimeoutKind::Status,
         },
         stream,
         api_tx,
@@ -211,12 +208,11 @@ pub(super) fn prompt_agent(
                     .map_err(std::io::Error::other);
             }
         };
-    let prompt_started_working =
-        before_prompt.agent_status == crate::api::schema::AgentStatus::Working;
+    let deadline = wait
+        .timeout_ms
+        .map(|timeout_ms| wait_started + std::time::Duration::from_millis(timeout_ms));
     if let Some(prompt_wait) = params.wait.as_mut() {
-        prompt_wait.submission_deadline = wait
-            .timeout_ms
-            .map(|timeout_ms| wait_started + std::time::Duration::from_millis(timeout_ms));
+        prompt_wait.submission_deadline = deadline;
     }
     let last_event_sequence = event_hub.current_sequence();
     let prompt_request = Request {
@@ -247,54 +243,54 @@ pub(super) fn prompt_agent(
         return agent_wait_not_running(request_id).map(Some);
     }
 
-    let prompt_activity_observed = prompt_started_working
-        || matches!(
-            prompted.agent_status,
-            crate::api::schema::AgentStatus::Working | crate::api::schema::AgentStatus::Blocked
-        );
-    let prompt_state_change_seq = prompted.state_change_seq;
     let until = agent_wait_statuses(wait.until);
-    let mut initial = prompted;
-
-    if !prompt_activity_observed {
-        let remaining_timeout_ms = remaining_timeout_ms(wait.timeout_ms, wait_started);
-        let (effect_timeout_ms, timeout_kind) = match remaining_timeout_ms {
-            Some(timeout_ms) if timeout_ms <= AGENT_PROMPT_EFFECT_TIMEOUT_MS => {
-                (timeout_ms, AgentWaitTimeoutKind::Status)
+    // The prompt counts as accepted only on the agent's acknowledgement (see
+    // `await_prompt_acknowledgement`), never after a fixed time: unrelated `idle`, `done` or
+    // session changes do not complete the wait.
+    let acknowledgement = await_prompt_acknowledgement(
+        &request_id,
+        PromptAcknowledgementWait {
+            target: &target,
+            before: &before_prompt,
+            prompted,
+            prompt_request,
+            last_event_sequence,
+            deadline,
+        },
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )?;
+    let (initial, prompt_request) = match acknowledgement {
+        None => return Ok(None),
+        Some(PromptAcknowledgement::Accepted {
+            agent,
+            prompt_request,
+        }) => (*agent, prompt_request),
+        // A dialog the caller waits for is its answer, as before; any other dialog
+        // before the acknowledgement means the prompt may not have arrived.
+        Some(PromptAcknowledgement::Blocked {
+            agent,
+            prompt_request,
+        }) => {
+            if until.contains(&crate::api::schema::AgentStatus::Blocked) {
+                return agent_prompt_success(request_id, *agent, prompt_request).map(Some);
             }
-            _ => (
-                AGENT_PROMPT_EFFECT_TIMEOUT_MS,
-                AgentWaitTimeoutKind::PromptStalled {
-                    timeout_ms: AGENT_PROMPT_EFFECT_TIMEOUT_MS,
-                },
-            ),
-        };
-        let Some(outcome) = wait_for_resolved_agent(
-            request_id.clone(),
-            ResolvedAgentWait {
-                target: target.clone(),
-                until: prompt_activity_statuses(),
-                timeout_ms: Some(effect_timeout_ms),
-                initial,
-                last_event_sequence,
-                after_state_change_seq: Some(prompt_state_change_seq),
-                accept_transient_status: true,
-                timeout_kind,
-            },
-            stream,
-            api_tx,
-            event_hub,
-            running,
-        )?
-        else {
-            return Ok(None);
-        };
-        initial = match outcome {
-            AgentWaitOutcome::Matched(agent) => *agent,
-            AgentWaitOutcome::Response(response) => return Ok(Some(response)),
-        };
-    }
-    if agent_wait_matches(&initial, &until, None) {
+            return agent_prompt_blocked(request_id, &target, prompt_request.as_ref(), api_tx)
+                .map(Some);
+        }
+        Some(PromptAcknowledgement::Unacknowledged { agent }) => {
+            return agent_prompt_stalled(request_id, &agent).map(Some);
+        }
+        Some(PromptAcknowledgement::Response(response)) => return Ok(Some(response)),
+    };
+    // After a prompt typed into a non-working agent, only a state reached since then answers:
+    // the agent read when the turn report arrived may still show the state from before.
+    let after_state_change_seq = (before_prompt.agent_status
+        != crate::api::schema::AgentStatus::Working)
+        .then_some(before_prompt.state_change_seq);
+    if agent_wait_matches(&initial, &until, after_state_change_seq) {
         return agent_prompt_success(request_id, initial, prompt_request).map(Some);
     }
 
@@ -306,11 +302,10 @@ pub(super) fn prompt_agent(
             timeout_ms: remaining_timeout_ms(wait.timeout_ms, wait_started),
             initial,
             // Replay from before submission so terminal lifecycle events consumed by
-            // the activity gate still terminate this settled-state wait.
+            // the acknowledgement still terminate this settled-state wait.
             last_event_sequence,
-            after_state_change_seq: None,
+            after_state_change_seq,
             accept_transient_status: false,
-            timeout_kind: AgentWaitTimeoutKind::Status,
         },
         stream,
         api_tx,
@@ -489,13 +484,7 @@ pub(super) fn prompt_agent_tracked(
 }
 
 /// `agent.prompt_confirmed`: types the prompt like `agent.prompt`, then answers only once the
-/// agent shows it accepted it. The acknowledgement is an event, never a duration:
-/// - an agent that reports turns: the followed request leaves `accepted`, which happens when
-///   the agent reports the turn this prompt started (Claude's `UserPromptSubmit` hook);
-/// - any other agent: its state turns `working` after the prompt was typed;
-/// - an agent already `working` when the prompt is typed: its input is open and queues the
-///   prompt, so the written submission is the acknowledgement (a prompt typed into a working
-///   Pi joins its running turn and is never reported as a turn of its own).
+/// agent shows it accepted it (see `await_prompt_acknowledgement`).
 ///
 /// A dialog that is on screen before typing is refused by `agent.prompt` itself; one that
 /// appears afterwards without an acknowledgement answers `agent_prompt_blocked`, and both name
@@ -509,8 +498,6 @@ pub(super) fn prompt_agent_confirmed(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
-    use crate::api::schema::{AgentPromptRequestState, AgentStatus};
-
     let target = crate::api::schema::AgentTarget {
         target: params.target.clone(),
         prefer_workspace_id: params.prefer_workspace_id.clone(),
@@ -525,7 +512,7 @@ pub(super) fn prompt_agent_confirmed(
     };
     // Taken before typing, so an acknowledgement that arrives while the prompt call is
     // answered is still seen below.
-    let mut last_event_sequence = event_hub.current_sequence();
+    let last_event_sequence = event_hub.current_sequence();
     let prompt_response = dispatch_to_app_with_timeout(
         Request {
             id: request_id.clone(),
@@ -559,7 +546,7 @@ pub(super) fn prompt_agent_confirmed(
                 .map_err(std::io::Error::other);
         }
     };
-    let Some(mut prompt_request) = prompt_request_from_response(&prompt_response) else {
+    let Some(prompt_request) = prompt_request_from_response(&prompt_response) else {
         return internal_error(request_id, "agent prompt returned no request").map(Some);
     };
     if !agent_wait_identity_matches(
@@ -570,10 +557,114 @@ pub(super) fn prompt_agent_confirmed(
     ) {
         return agent_wait_not_running(request_id).map(Some);
     }
-    if before.agent_status == AgentStatus::Working {
-        return agent_prompt_success(request_id, prompted, Some(prompt_request)).map(Some);
+    let acknowledgement = await_prompt_acknowledgement(
+        &request_id,
+        PromptAcknowledgementWait {
+            target: &target,
+            before: &before,
+            prompted,
+            prompt_request: Some(prompt_request),
+            last_event_sequence,
+            deadline: None,
+        },
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )?;
+    match acknowledgement {
+        None => Ok(None),
+        Some(PromptAcknowledgement::Accepted {
+            agent,
+            prompt_request,
+        }) => agent_prompt_success(request_id, *agent, prompt_request).map(Some),
+        Some(PromptAcknowledgement::Blocked { prompt_request, .. }) => {
+            agent_prompt_blocked(request_id, &target, prompt_request.as_ref(), api_tx).map(Some)
+        }
+        // Without a deadline the wait never ends unacknowledged.
+        Some(PromptAcknowledgement::Unacknowledged { .. }) => internal_error(
+            request_id,
+            "agent prompt acknowledgement ended without a deadline",
+        )
+        .map(Some),
+        Some(PromptAcknowledgement::Response(response)) => Ok(Some(response)),
     }
-    let followed = prompt_request.state == AgentPromptRequestState::Accepted;
+}
+
+struct PromptAcknowledgementWait<'a> {
+    target: &'a crate::api::schema::AgentTarget,
+    /// The agent as read before the prompt was typed.
+    before: &'a crate::api::schema::AgentInfo,
+    /// The agent as `agent.prompt` answered after typing.
+    prompted: crate::api::schema::AgentInfo,
+    prompt_request: Option<crate::api::schema::AgentPromptRequest>,
+    /// The event cursor taken before typing.
+    last_event_sequence: u64,
+    /// The caller's own deadline, if it gave one; herdr adds none.
+    deadline: Option<std::time::Instant>,
+}
+
+enum PromptAcknowledgement {
+    Accepted {
+        agent: Box<crate::api::schema::AgentInfo>,
+        prompt_request: Option<crate::api::schema::AgentPromptRequest>,
+    },
+    /// A dialog appeared after typing, before any acknowledgement.
+    Blocked {
+        agent: Box<crate::api::schema::AgentInfo>,
+        prompt_request: Option<crate::api::schema::AgentPromptRequest>,
+    },
+    /// The caller's deadline passed before any acknowledgement.
+    Unacknowledged {
+        agent: Box<crate::api::schema::AgentInfo>,
+    },
+    Response(String),
+}
+
+/// Waits until the agent shows it accepted a typed prompt. The acknowledgement is an event,
+/// never a duration:
+/// - an agent that reports turns: the followed request leaves `accepted`, which happens when
+///   the agent reports the turn this prompt started (Claude's `UserPromptSubmit` hook);
+/// - any other agent: its state turns `working` after the prompt was typed;
+/// - an agent already `working` when the prompt is typed: its input is open and queues the
+///   prompt, so the written submission is the acknowledgement (a prompt typed into a working
+///   Pi joins its running turn and is never reported as a turn of its own).
+///
+/// A dialog that appears after typing without an acknowledgement ends it as `Blocked`. Without
+/// any of these events it waits until the agent exits, the caller disconnects, or the caller's
+/// own deadline passes.
+fn await_prompt_acknowledgement(
+    request_id: &str,
+    wait: PromptAcknowledgementWait<'_>,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<PromptAcknowledgement>> {
+    use crate::api::schema::{AgentPromptRequestState, AgentStatus};
+
+    let not_running = |request_id: &str| {
+        agent_wait_not_running(request_id.to_string())
+            .map(PromptAcknowledgement::Response)
+            .map(Some)
+    };
+    let PromptAcknowledgementWait {
+        target,
+        before,
+        prompted,
+        mut prompt_request,
+        mut last_event_sequence,
+        deadline,
+    } = wait;
+    if before.agent_status == AgentStatus::Working {
+        return Ok(Some(PromptAcknowledgement::Accepted {
+            agent: Box::new(prompted),
+            prompt_request,
+        }));
+    }
+    let followed = prompt_request
+        .as_ref()
+        .is_some_and(|request| request.state == AgentPromptRequestState::Accepted);
     let baseline_seq = before.state_change_seq;
     let pane_id = prompted.pane_id.clone();
     let expected_name = prompted.name.clone().filter(|name| *name == target.target);
@@ -631,15 +722,16 @@ pub(super) fn prompt_agent_confirmed(
                 should_probe = true;
             }
         }
-        if should_probe || pane_gone {
+        let past_deadline = deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline);
+        if should_probe || pane_gone || past_deadline {
             should_probe = false;
-            if followed {
+            if let Some(request) = prompt_request.as_mut().filter(|_| followed) {
                 let status = dispatch_to_app_with_timeout(
                     Request {
                         id: format!("{request_id}:prompt_status"),
                         method: Method::AgentPromptStatus(
                             crate::api::schema::AgentPromptStatusParams {
-                                request_id: prompt_request.request_id.clone(),
+                                request_id: request.request_id.clone(),
                             },
                         ),
                     },
@@ -651,27 +743,31 @@ pub(super) fn prompt_agent_confirmed(
                 match serde_json::from_value::<crate::api::schema::AgentPromptRequest>(
                     value["result"]["prompt_request"].clone(),
                 ) {
-                    Ok(current) => prompt_request = current,
+                    Ok(current) => *request = current,
                     // The request went with its pane or its agent.
-                    Err(_) => return agent_wait_not_running(request_id).map(Some),
+                    Err(_) => return not_running(request_id),
                 }
-                match prompt_request.state {
+                match request.state {
                     AgentPromptRequestState::Accepted => {}
-                    AgentPromptRequestState::Exited => {
-                        return agent_wait_not_running(request_id).map(Some);
-                    }
+                    AgentPromptRequestState::Exited => return not_running(request_id),
                     _ => {
-                        return agent_prompt_success(request_id, agent, Some(prompt_request))
-                            .map(Some);
+                        return Ok(Some(PromptAcknowledgement::Accepted {
+                            agent: Box::new(agent),
+                            prompt_request,
+                        }));
                     }
                 }
             }
             if pane_gone {
-                return agent_wait_not_running(request_id).map(Some);
+                return not_running(request_id);
             }
-            agent = match agent_get(&request_id, &target, api_tx) {
+            agent = match agent_get(request_id, target, api_tx) {
                 Ok(current) => current,
-                Err(response) => return agent_wait_probe_error(response).map(Some),
+                Err(response) => {
+                    return agent_wait_probe_error(response)
+                        .map(PromptAcknowledgement::Response)
+                        .map(Some);
+                }
             };
             if !agent_wait_identity_matches(
                 &agent,
@@ -679,31 +775,55 @@ pub(super) fn prompt_agent_confirmed(
                 expected_name.as_deref(),
                 expected_agent.as_deref(),
             ) {
-                return agent_wait_not_running(request_id).map(Some);
+                return not_running(request_id);
             }
             let changed = agent.state_change_seq > baseline_seq;
             if !followed && (saw_working || changed && agent.agent_status == AgentStatus::Working) {
-                return agent_prompt_success(request_id, agent, Some(prompt_request)).map(Some);
+                return Ok(Some(PromptAcknowledgement::Accepted {
+                    agent: Box::new(agent),
+                    prompt_request,
+                }));
             }
             if changed && agent.agent_status == AgentStatus::Blocked {
-                let dialog = blocking_dialog(&request_id, &target, api_tx)
-                    .unwrap_or_else(|| "a dialog".to_string());
-                return serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "agent_prompt_blocked".into(),
-                        message: format!(
-                            "the prompt was typed, but before agent {} accepted it, it showed {dialog}; it may still arrive after the dialog, so check the agent before sending it again (prompt request {})",
-                            target.target, prompt_request.request_id
-                        ),
-                    },
-                })
-                .map(Some)
-                .map_err(std::io::Error::other);
+                return Ok(Some(PromptAcknowledgement::Blocked {
+                    agent: Box::new(agent),
+                    prompt_request,
+                }));
+            }
+            if past_deadline {
+                return Ok(Some(PromptAcknowledgement::Unacknowledged {
+                    agent: Box::new(agent),
+                }));
             }
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
+}
+
+/// `agent_prompt_blocked`: the prompt was typed, then a dialog appeared before the agent
+/// acknowledged it. Names the dialog when herdr recognizes it.
+fn agent_prompt_blocked(
+    request_id: String,
+    target: &crate::api::schema::AgentTarget,
+    prompt_request: Option<&crate::api::schema::AgentPromptRequest>,
+    api_tx: &ApiRequestSender,
+) -> std::io::Result<String> {
+    let dialog =
+        blocking_dialog(&request_id, target, api_tx).unwrap_or_else(|| "a dialog".to_string());
+    let request = prompt_request
+        .map(|request| format!(" (prompt request {})", request.request_id))
+        .unwrap_or_default();
+    serde_json::to_string(&ErrorResponse {
+        id: request_id,
+        error: ErrorBody {
+            code: "agent_prompt_blocked".into(),
+            message: format!(
+                "the prompt was typed, but before agent {} accepted it, it showed {dialog}; it may still arrive after the dialog, so check the agent before sending it again{request}",
+                target.target
+            ),
+        },
+    })
+    .map_err(std::io::Error::other)
 }
 
 /// The dialog the agent shows: `the "<rule>" dialog` when a blocking screen-detection rule
@@ -887,13 +1007,6 @@ struct ResolvedAgentWait {
     last_event_sequence: u64,
     after_state_change_seq: Option<u64>,
     accept_transient_status: bool,
-    timeout_kind: AgentWaitTimeoutKind,
-}
-
-#[derive(Clone, Copy)]
-enum AgentWaitTimeoutKind {
-    Status,
-    PromptStalled { timeout_ms: u64 },
 }
 
 enum AgentWaitOutcome {
@@ -1045,19 +1158,12 @@ fn wait_for_resolved_agent(
             if agent_wait_matches(&current, &wait.until, wait.after_state_change_seq) {
                 return Ok(Some(AgentWaitOutcome::Matched(Box::new(current))));
             }
-            return agent_wait_timeout(request_id, wait.timeout_kind, &current)
+            return agent_wait_timeout(request_id)
                 .map(AgentWaitOutcome::Response)
                 .map(Some);
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
-}
-
-fn prompt_activity_statuses() -> Vec<crate::api::schema::AgentStatus> {
-    vec![
-        crate::api::schema::AgentStatus::Working,
-        crate::api::schema::AgentStatus::Blocked,
-    ]
 }
 
 fn agent_wait_statuses(
@@ -1183,30 +1289,32 @@ fn agent_wait_success(
     .map_err(std::io::Error::other)
 }
 
-fn agent_wait_timeout(
-    request_id: String,
-    kind: AgentWaitTimeoutKind,
-    current: &crate::api::schema::AgentInfo,
-) -> std::io::Result<String> {
-    let (code, message) = match kind {
-        AgentWaitTimeoutKind::Status => {
-            ("timeout", "timed out waiting for agent status".to_string())
-        }
-        AgentWaitTimeoutKind::PromptStalled { timeout_ms } => {
-            let status = format!("{:?}", current.agent_status).to_ascii_lowercase();
-            (
-                "agent_prompt_stalled",
-                format!(
-                    "agent prompt produced no observed working or blocked state within {timeout_ms} ms; current status is {status}"
-                ),
-            )
-        }
-    };
+fn agent_wait_timeout(request_id: String) -> std::io::Result<String> {
     serde_json::to_string(&ErrorResponse {
         id: request_id,
         error: ErrorBody {
-            code: code.into(),
-            message,
+            code: "timeout".into(),
+            message: "timed out waiting for agent status".into(),
+        },
+    })
+    .map_err(std::io::Error::other)
+}
+
+/// `agent_prompt_stalled`: the caller's timeout passed after the prompt was typed and before
+/// the agent acknowledged it (the prompt's turn report or a `working` state).
+fn agent_prompt_stalled(
+    request_id: String,
+    current: &crate::api::schema::AgentInfo,
+) -> std::io::Result<String> {
+    let status = format!("{:?}", current.agent_status).to_ascii_lowercase();
+    serde_json::to_string(&ErrorResponse {
+        id: request_id,
+        error: ErrorBody {
+            code: "agent_prompt_stalled".into(),
+            message: format!(
+                "the prompt was typed, but agent {} did not acknowledge it (its turn report or a working state) before the caller's timeout; current status is {status}; it may still arrive, so check the agent before sending it again",
+                current.name.as_deref().unwrap_or(&current.pane_id)
+            ),
         },
     })
     .map_err(std::io::Error::other)

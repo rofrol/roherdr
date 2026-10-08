@@ -426,24 +426,15 @@ fn agent_start_command_works() {
     };
 
     assert!(report_agent("idle"));
-    let stale_idle = prompt_wait("do not transition", "500");
-    assert_eq!(stale_idle.status.code(), Some(1));
-    let stale_idle: serde_json::Value = serde_json::from_slice(&stale_idle.stderr).unwrap();
-    assert_eq!(stale_idle["error"]["code"], "timeout");
-
-    let stalled = prompt_wait("do not transition", "6000");
-    assert_eq!(stalled.status.code(), Some(1));
-    let stalled: serde_json::Value = serde_json::from_slice(&stalled.stderr).unwrap();
-    assert_eq!(stalled["error"]["code"], "agent_prompt_stalled");
-    assert!(stalled["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("no observed working or blocked state")));
-
-    for prompt in ["done churn", "session churn"] {
-        let settled_only = prompt_wait(prompt, "500");
-        assert_eq!(settled_only.status.code(), Some(1));
-        let settled_only: serde_json::Value = serde_json::from_slice(&settled_only.stderr).unwrap();
-        assert_eq!(settled_only["error"]["code"], "timeout");
+    // Without the agent's acknowledgement, only the caller's timeout ends the wait.
+    for prompt in ["do not transition", "done churn", "session churn"] {
+        let stalled = prompt_wait(prompt, "500");
+        assert_eq!(stalled.status.code(), Some(1));
+        let stalled: serde_json::Value = serde_json::from_slice(&stalled.stderr).unwrap();
+        assert_eq!(stalled["error"]["code"], "agent_prompt_stalled");
+        assert!(stalled["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("did not acknowledge it")));
     }
 
     let blocked_after_submit = prompt_wait("block after submit", "2000");
@@ -454,6 +445,25 @@ fn agent_start_command_works() {
         blocked_after_submit["result"]["agent"]["agent_status"],
         "blocked"
     );
+    assert!(report_agent("idle"));
+    let blocked_unrequested = run_cli(
+        &socket_path,
+        &[
+            "agent",
+            "prompt",
+            "main",
+            "block after submit",
+            "--wait",
+            "--until",
+            "idle",
+            "--timeout",
+            "2000",
+        ],
+    );
+    assert_eq!(blocked_unrequested.status.code(), Some(1));
+    let blocked_unrequested: serde_json::Value =
+        serde_json::from_slice(&blocked_unrequested.stderr).unwrap();
+    assert_eq!(blocked_unrequested["error"]["code"], "agent_prompt_blocked");
     assert!(report_agent("idle"));
     assert!(report_agent("working"));
     let already_working = prompt_wait("finish active", "2000");
