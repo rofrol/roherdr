@@ -1436,6 +1436,22 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   new workers only at first. Rejected: passing pipe fds in the handoff
   (does not survive a crash, split reader/writer at the cut) and running
   workers under a PTY (corrupts stream-json).
+  Made next by the user 2026-10-08 ("make the survival the next item; ask
+  the models"). Round `20261008-154818-561e` (sol, MiMo, DeepSeek): slices, each its own
+  worker, verified with `herdr worker verify` and `just clean-install`:
+  (1) the install queue, released by turn-end events (test: a running turn
+  defers an install, which proceeds at the turn's end; no turn installs at
+  once; concurrent requests); (2) the broker owns the pipes of new workers
+  (test: killing the server mid-turn leaves the worker alive; killing the
+  broker ends the worker, no orphan); (3) the stdout spool with sequence
+  numbers and re-attach from the last acked seq (test: server crash
+  mid-turn, re-attach, no gap or duplicate, a truncated spool recovers);
+  (4) stdin through the broker keyed by command receipts (test: a command
+  across a server crash is delivered once). `verify` must keep working
+  through the broker (MiMo). All three put the live check of Claude's hook
+  order first; dismissed by the coordinator: a headless worker's turn end
+  is the stream's `result` event in the store, not a Claude hook, so the
+  queue does not depend on it (that check concerns TUI agents).
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
