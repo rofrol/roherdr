@@ -144,6 +144,14 @@ CREATE TABLE receipts (
     settled_ms INTEGER
 );
 "#,
+    r#"
+-- The worker's owner (the pane and agent session that started it) and the
+-- highest `seq` that owner acknowledged (`acked`). Workers recorded before
+-- have no owner, so no obligations.
+ALTER TABLE workers ADD COLUMN owner_pane TEXT;
+ALTER TABLE workers ADD COLUMN owner_session TEXT;
+ALTER TABLE workers ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -519,12 +527,17 @@ impl Tx<'_> {
                     :exit_code, :exit_signal, :stop_requested_ms, :takeover_ms,
                     :takeover_tab, :takeover_error, :takeover_unfinished, :refusal,
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
-                    :gone_seq)
+                    :gone_seq, :owner_pane, :owner_session, :acked_seq)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
                     .filter(|column| *column != "id")
-                    .map(|column| format!("{column} = excluded.{column}"))
+                    .map(|column| match column {
+                        // Only grows, whichever server writes the row.
+                        "acked_seq" =>
+                            "acked_seq = max(workers.acked_seq, excluded.acked_seq)".to_owned(),
+                        _ => format!("{column} = excluded.{column}"),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -561,6 +574,9 @@ impl Tx<'_> {
                 ":turn_seq": status.turn_seq,
                 ":turn_end_seq": status.turn_end_seq,
                 ":gone_seq": status.gone_seq,
+                ":owner_pane": status.owner_pane,
+                ":owner_session": status.owner_session,
+                ":acked_seq": status.acked_seq,
             },
         )?;
         Ok(())
@@ -570,7 +586,8 @@ impl Tx<'_> {
 const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, pid, \
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
-exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq";
+exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
+acked_seq";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -612,6 +629,9 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.turn_seq = row.get(25)?;
     status.turn_end_seq = row.get(26)?;
     status.gone_seq = row.get(27)?;
+    status.owner_pane = row.get(28)?;
+    status.owner_session = row.get(29)?;
+    status.acked_seq = row.get(30)?;
     Ok(status)
 }
 
@@ -840,6 +860,9 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN turn_end_seq;
                  ALTER TABLE workers DROP COLUMN gone_seq;
                  DROP TABLE receipts;
+                 ALTER TABLE workers DROP COLUMN owner_pane;
+                 ALTER TABLE workers DROP COLUMN owner_session;
+                 ALTER TABLE workers DROP COLUMN acked_seq;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();

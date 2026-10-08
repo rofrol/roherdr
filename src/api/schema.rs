@@ -83,6 +83,12 @@ pub enum Method {
     WorkerKill(WorkerKillParams),
     #[serde(rename = "worker.answer")]
     WorkerAnswer(WorkerAnswerParams),
+    /// The owner acknowledges the worker's events up to a `seq`.
+    #[serde(rename = "worker.ack")]
+    WorkerAck(WorkerAckParams),
+    /// The owned workers with an event their owner has not acknowledged.
+    #[serde(rename = "worker.obligations")]
+    WorkerObligations(WorkerObligationsParams),
     /// Opens the worker's journal, read-only, in a popup that follows it.
     #[serde(rename = "worker.open_log")]
     WorkerOpenLog(WorkerTarget),

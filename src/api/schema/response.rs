@@ -18,7 +18,9 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::workers::{WorkerAttentionReason, WorkerInfo, WorkerKillReport, WorkerQuestion};
+use super::workers::{
+    WorkerAttentionReason, WorkerInfo, WorkerKillReport, WorkerObligation, WorkerQuestion,
+};
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
 
@@ -73,6 +75,11 @@ pub enum ResponseResult {
         questions: Vec<WorkerQuestion>,
         seq: i64,
         worker: WorkerInfo,
+    },
+    /// `worker.obligations`' reply: the owned workers with an event their
+    /// owner has not acknowledged, oldest worker first.
+    WorkerObligations {
+        obligations: Vec<WorkerObligation>,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

@@ -5276,6 +5276,24 @@
           ],
           "type": "object"
         },
+        "WorkerAckParams": {
+          "description": "The owner acknowledges having handled the worker's events up to `seq`.",
+          "properties": {
+            "seq": {
+              "description": "The `seq` handled: the one `worker.wait` with `until: attention` or\n`worker.obligations` returned. An ack at or below the acknowledged\none changes nothing; one past the worker's latest event is refused.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "seq"
+          ],
+          "type": "object"
+        },
         "WorkerAnswerParams": {
           "description": "Answers a worker's pending question: a tool approval or an\n`AskUserQuestion`. The worker waits for it without a time limit.",
           "properties": {
@@ -5401,6 +5419,18 @@
           ],
           "type": "object"
         },
+        "WorkerObligationsParams": {
+          "properties": {
+            "owner_pane_id": {
+              "description": "Only the workers this pane owns; every owned worker when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "WorkerPromptParams": {
           "properties": {
             "command_id": {
@@ -5472,6 +5502,20 @@
             },
             "name": {
               "description": "The worker's task, as the sidebar names it; the prompt's first line\nwhen absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_pane_id": {
+              "description": "The pane of the coordinator that starts the worker (the CLI sends its\n`HERDR_PANE_ID`): the worker's owner, whose `worker.obligations` list\nthe worker's events it has not acknowledged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "description": "The owner's agent session (the CLI sends Claude Code's\n`CLAUDE_CODE_SESSION_ID`), so the owner is the session, not only the\npane that holds it.",
               "type": [
                 "string",
                 "null"
@@ -6253,6 +6297,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerAnswerParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner acknowledges the worker's events up to a `seq`.",
+          "properties": {
+            "method": {
+              "const": "worker.ack",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerAckParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owned workers with an event their owner has not acknowledged.",
+          "properties": {
+            "method": {
+              "const": "worker.obligations",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerObligationsParams"
             }
           },
           "required": [
@@ -11766,6 +11844,26 @@
               "type": "object"
             },
             {
+              "description": "`worker.obligations`' reply: the owned workers with an event their\nowner has not acknowledged, oldest worker first.",
+              "properties": {
+                "obligations": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerObligation"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "worker_obligations",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "obligations"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -13758,6 +13856,14 @@
         },
         "WorkerInfo": {
           "properties": {
+            "acked_seq": {
+              "description": "The highest `seq` its owner acknowledged (`worker.ack`).",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "cwd": {
               "type": "string"
             },
@@ -13812,6 +13918,19 @@
             "name": {
               "description": "The worker's task: the `name` given at start, else the prompt's\nfirst line.",
               "type": "string"
+            },
+            "owner_pane_id": {
+              "description": "The pane that started the worker, its owner (`worker.start`'s\n`owner_pane_id`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "pid": {
               "description": "The CLI's process id, which also leads the worker's process group.",
@@ -13969,6 +14088,49 @@
           },
           "required": [
             "pids"
+          ],
+          "type": "object"
+        },
+        "WorkerObligation": {
+          "description": "A worker whose owner has an event of it to handle.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "owner_pane_id": {
+              "type": "string"
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "questions": {
+              "description": "With `question`: the pending questions asked after the acknowledged\n`seq`.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+              },
+              "type": "array"
+            },
+            "reason": {
+              "$ref": "#/schemas/success_response/$defs/WorkerAttentionReason",
+              "description": "What it needs: `question` (an unanswered question asked after the\nacknowledged `seq`), `turn_end` (a turn ended after it, to review) or\n`gone` (the worker exited or was lost after it)."
+            },
+            "seq": {
+              "description": "The worker's latest event's `seq`; `worker.ack` with it settles\neverything listed here.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "reason",
+            "seq",
+            "owner_pane_id"
           ],
           "type": "object"
         },

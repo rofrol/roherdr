@@ -4879,3 +4879,261 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
 }
+
+/// A herdr socket for the Claude stop check: answers `pane.get` and `tab.get` with a tab of
+/// `role`, `{}` to anything else, and records each method until a `quit` request.
+#[cfg(unix)]
+struct StopCheckServer {
+    path: PathBuf,
+    methods: std::thread::JoinHandle<Vec<String>>,
+}
+
+#[cfg(unix)]
+impl StopCheckServer {
+    fn start(role: &'static str) -> Self {
+        use std::io::{BufRead, BufReader, Write};
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        // Short: a Unix socket path holds at most 104 bytes on macOS.
+        let path = std::env::temp_dir().join(format!(
+            "hsc-{}-{}.sock",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let methods = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let method = request["method"].as_str().unwrap_or_default().to_owned();
+                if method == "quit" {
+                    return methods;
+                }
+                let result = match method.as_str() {
+                    "pane.get" => json!({"type": "pane_info", "pane": {"tab_id": "w1:t1"}}),
+                    "tab.get" => {
+                        json!({"type": "tab_info", "tab": {"tab_id": "w1:t1", "role": role}})
+                    }
+                    _ => json!({}),
+                };
+                let reply = json!({"id": request["id"], "result": result});
+                let _ = writeln!(stream, "{reply}");
+                methods.push(method);
+            }
+            methods
+        });
+        Self { path, methods }
+    }
+
+    /// The methods it was asked, once the hook has exited.
+    fn methods(self) -> Vec<String> {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.path).unwrap();
+        writeln!(stream, "{}", json!({"id": "q", "method": "quit"})).unwrap();
+        let methods = self.methods.join().unwrap();
+        let _ = fs::remove_file(&self.path);
+        methods
+    }
+}
+
+/// Runs the Claude hook's `stop-check` on a Stop with this transcript, `herdr` being a stub that
+/// records its arguments and answers `worker obligations` with `obligations` (exit code
+/// `herdr_exit`). Returns the hook's stdout, stderr, the stub's arguments and the socket methods.
+#[cfg(unix)]
+fn run_stop_check_with_workers(
+    transcript_lines: &[Value],
+    stop_hook_active: bool,
+    role: &'static str,
+    obligations: &str,
+    herdr_exit: i32,
+) -> (String, String, String, Vec<String>) {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+
+    let base = unique_base();
+    fs::create_dir_all(&base).unwrap();
+    let transcript = base.join("t.jsonl");
+    let text: String = transcript_lines
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(&transcript, text).unwrap();
+    let capture = base.join("args.txt");
+    let reply = base.join("reply.json");
+    fs::write(&reply, obligations).unwrap();
+    let fake_herdr = base.join("herdr");
+    fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncat '{}'\necho 'stub failure' >&2\nexit {herdr_exit}\n",
+            capture.display(),
+            reply.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_herdr, permissions).unwrap();
+    let server = StopCheckServer::start(role);
+
+    let mut child = Command::new("sh")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/integration/assets/claude/herdr-agent-state.sh"),
+        )
+        .arg("stop-check")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "p1")
+        .env("HERDR_SOCKET_PATH", &server.path)
+        .env("HERDR_BIN_PATH", &fake_herdr)
+        .env("XDG_STATE_HOME", base.join("state"))
+        .env_remove("CURSOR_VERSION")
+        .env_remove("HERDR_AWAITING_REPLY_STOP")
+        .env_remove("HERDR_AWAITING_REPLY_INSTRUCTIONS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = json!({
+        "hook_event_name": "Stop",
+        "session_id": "s",
+        "transcript_path": transcript,
+        "stop_hook_active": stop_hook_active,
+        "last_assistant_message": "Item 3 is committed.",
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let methods = server.methods();
+    let args = fs::read_to_string(&capture).unwrap_or_default();
+    let _ = fs::remove_dir_all(base);
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+        args,
+        methods,
+    )
+}
+
+#[cfg(unix)]
+fn coordinator_transcript(command: &str) -> Vec<Value> {
+    vec![
+        json!({"type": "user", "message": {"role": "user", "content": "rób TODO po kolei"}}),
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": command}}]}}),
+        json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": false}]}}),
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Item 3 is committed."}]}}),
+    ]
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_stop_check_blocks_a_coordinator_while_its_workers_need_it() {
+    let obligations = json!({"id": "cli:worker:obligations", "result": {
+        "type": "worker_obligations",
+        "obligations": [
+            {"worker_id": "w12", "reason": "question", "seq": 40, "owner_pane_id": "p1",
+             "questions": [{"request_id": "perm-1", "kind": "approval", "tool_name": "Bash",
+                            "text": "git push", "since_ms": 1}]},
+            {"worker_id": "w13", "reason": "turn_end", "seq": 41, "owner_pane_id": "p1"},
+            {"worker_id": "w14", "reason": "gone", "seq": 42, "owner_pane_id": "p1"},
+        ],
+    }})
+    .to_string();
+    let transcript = coordinator_transcript("herdr worker start --name w12 --prompt go");
+    // Every stop, the one after a block too: the server's list ends the block, not the hook.
+    for stop_hook_active in [false, true] {
+        let (stdout, _, args, methods) = run_stop_check_with_workers(
+            &transcript,
+            stop_hook_active,
+            "coordinator",
+            &obligations,
+            0,
+        );
+        let decision: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(decision["decision"], "block");
+        let reason = decision["reason"].as_str().unwrap();
+        for named in [
+            "w12: question perm-1",
+            "w13: turn ended, review it",
+            "w14: exited, review it",
+            "`herdr worker ack w12 40`",
+        ] {
+            assert!(reason.contains(named), "{named} missing from {reason}");
+        }
+        assert_eq!(args.trim(), "worker obligations --pane p1");
+        // A blocked stop does not end the turn.
+        assert!(
+            !methods.iter().any(|method| method == "pane.report_turn"),
+            "{methods:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_stop_check_lets_a_coordinator_stop_without_obligations_or_herdr() {
+    let transcript = coordinator_transcript("herdr worker wait w12 --attention");
+    let empty =
+        json!({"id": "x", "result": {"type": "worker_obligations", "obligations": []}}).to_string();
+    let (stdout, _, args, methods) =
+        run_stop_check_with_workers(&transcript, false, "coordinator", &empty, 0);
+    assert_eq!(stdout.trim(), "");
+    assert_eq!(args.trim(), "worker obligations --pane p1");
+    assert!(
+        methods.iter().any(|method| method == "pane.report_turn"),
+        "{methods:?}"
+    );
+
+    // herdr cannot answer: the stop goes through, and stderr says why.
+    let (stdout, stderr, _, _) =
+        run_stop_check_with_workers(&transcript, true, "coordinator", "", 1);
+    assert_eq!(stdout.trim(), "");
+    assert!(stderr.contains("worker obligations failed (1)"), "{stderr}");
+    assert!(stderr.contains("stub failure"), "{stderr}");
+    let (stdout, stderr, _, _) =
+        run_stop_check_with_workers(&transcript, true, "coordinator", "not json", 0);
+    assert_eq!(stdout.trim(), "");
+    assert!(stderr.contains("unreadable worker obligations"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_stop_check_asks_about_workers_only_in_a_coordinator_that_ran_them() {
+    let obligations = json!({"id": "x", "result": {"type": "worker_obligations",
+        "obligations": [{"worker_id": "w12", "reason": "turn_end", "seq": 4, "owner_pane_id": "p1"}]}})
+    .to_string();
+    // Another tab's role: herdr is not asked about workers.
+    let (stdout, _, args, _) = run_stop_check_with_workers(
+        &coordinator_transcript("herdr worker start --prompt go"),
+        false,
+        "worker",
+        &obligations,
+        0,
+    );
+    assert_eq!((stdout.trim(), args.as_str()), ("", ""));
+    // A session that never ran a worker command asks herdr nothing for it.
+    let (stdout, _, args, methods) = run_stop_check_with_workers(
+        &coordinator_transcript("cargo test"),
+        false,
+        "coordinator",
+        &obligations,
+        0,
+    );
+    assert_eq!((stdout.trim(), args.as_str()), ("", ""));
+    assert_eq!(methods, ["pane.report_turn"]);
+}

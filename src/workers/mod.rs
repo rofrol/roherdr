@@ -48,7 +48,7 @@ use tracing::warn;
 use crate::api::schema::{
     WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
     WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerKillParams, WorkerKillReport,
-    WorkerPromptParams, WorkerQuestion, WorkerQuestionKind, WorkerQuestionState,
+    WorkerObligation, WorkerPromptParams, WorkerQuestion, WorkerQuestionKind, WorkerQuestionState,
     WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
 };
 use crate::platform::Signal;
@@ -401,6 +401,11 @@ struct Status {
     /// Why the worker's record is incomplete: a store or journal write
     /// failed. Not an event: it lives only in this server's memory.
     degraded: Option<String>,
+    /// The pane and agent session that started it (`started`'s `owner`).
+    owner_pane: Option<String>,
+    owner_session: Option<String>,
+    /// The highest `seq` its owner acknowledged (`acked`); only grows.
+    acked_seq: i64,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -465,6 +470,9 @@ impl Status {
             turn_end_seq: 0,
             gone_seq: 0,
             degraded: None,
+            owner_pane: None,
+            owner_session: None,
+            acked_seq: 0,
         }
     }
 
@@ -611,6 +619,31 @@ impl Status {
         }
     }
 
+    /// What the owner has to handle that it has not acknowledged: the
+    /// worker's end after `acked_seq`, else the unanswered questions asked
+    /// after it, else a turn that ended after it. Unlike [`Self::attention`]
+    /// the end counts only once acknowledged, and a question whose answer
+    /// is in flight is handled already.
+    fn obligation(&self) -> Option<(WorkerAttentionReason, Vec<WorkerQuestion>)> {
+        let acked = self.acked_seq;
+        if self.is_gone() {
+            return (self.gone_seq > acked).then(|| (WorkerAttentionReason::Gone, Vec::new()));
+        }
+        let questions: Vec<WorkerQuestion> = self
+            .questions
+            .iter()
+            .filter(|pending| !pending.answering && pending.asked_seq > acked)
+            .map(Pending::shown)
+            .collect();
+        if !questions.is_empty() {
+            Some((WorkerAttentionReason::Question, questions))
+        } else if self.turn_ended() && self.turn_end_seq > acked {
+            Some((WorkerAttentionReason::TurnEnd, Vec::new()))
+        } else {
+            None
+        }
+    }
+
     /// A takeover claimed by a server that is gone without recording its
     /// tab: whether it opened the tab is unknown.
     fn mark_unfinished_takeover(&mut self) {
@@ -680,6 +713,12 @@ impl Status {
                     self.settle_question(event["request_id"].as_str(), &how);
                     return;
                 }
+                // The owner handles a gone worker's end too.
+                "acked" => {
+                    let seq = event["seq"].as_i64().unwrap_or(0);
+                    self.acked_seq = self.acked_seq.max(seq);
+                    return;
+                }
                 _ => {}
             }
         }
@@ -697,6 +736,8 @@ impl Status {
                 self.workspace_id = string_field(event, "workspace_id");
                 self.model = string_field(event, "model");
                 self.slot = event["folder_slot"]["name"].as_str().map(str::to_owned);
+                self.owner_pane = event["owner"]["pane_id"].as_str().map(str::to_owned);
+                self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
                 self.pid = event
                     .get("pid")
                     .and_then(Value::as_u64)
@@ -911,6 +952,9 @@ impl Status {
             journal_path: journal_path.display().to_string(),
             seq: Some(self.last_seq),
             turn_seq: self.turn_seq,
+            owner_pane_id: self.owner_pane.clone(),
+            owner_session_id: self.owner_session.clone(),
+            acked_seq: (self.acked_seq > 0).then_some(self.acked_seq),
         }
     }
 }
@@ -1962,6 +2006,10 @@ impl WorkerSupervisor {
             "pid": pid,
             "program": self.shared.program.display().to_string(),
             "args": args,
+            "owner": params.owner_pane_id.as_ref().map(|pane_id| json!({
+                "pane_id": pane_id,
+                "session_id": params.owner_session_id,
+            })),
             "folder_slot": slot.as_ref().map(|slot| json!({
                 "name": params.folder_slot,
                 "branch": slot.branch,
@@ -2301,6 +2349,70 @@ impl WorkerSupervisor {
                 worker: status.info(&entry.journal_path),
             })
         })
+    }
+
+    /// Records that the worker's owner handled its events up to `seq`
+    /// (an `acked` event). Idempotent and monotonic: an ack at or below the
+    /// acknowledged `seq` records nothing. A `seq` past the worker's latest
+    /// event is refused, since it would hide events that have not happened.
+    pub(crate) fn ack(&self, worker_id: &str, seq: i64) -> Result<WorkerInfo, WorkerError> {
+        let committed = {
+            let mut registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, worker_id)?;
+            let status = &registry.workers[&number].status;
+            if seq > status.last_seq {
+                return Err(WorkerError::Invalid(format!(
+                    "seq {seq} is past worker {worker_id}'s latest event ({})",
+                    status.last_seq
+                )));
+            }
+            if seq <= status.acked_seq {
+                None
+            } else {
+                Some(self.commit_locked(
+                    &mut registry,
+                    number,
+                    Direction::Herdr,
+                    store::Recorded::Event(&json!({"type": "acked", "seq": seq})),
+                ))
+            }
+        };
+        if let Some(committed) = committed {
+            self.shared.changed.notify_all();
+            if committed.shown_changed {
+                notify_clients();
+            }
+        }
+        self.status(worker_id)
+    }
+
+    /// The owned workers with an event their owner has not acknowledged
+    /// ([`Status::obligation`]), only those `owner_pane` owns when given.
+    /// Derived from the workers' state on every call: nothing to deliver,
+    /// nothing to lose.
+    pub(crate) fn obligations(&self, owner_pane: Option<&str>) -> Vec<WorkerObligation> {
+        let registry = lock(&self.shared.registry);
+        registry
+            .workers
+            .values()
+            .filter_map(|entry| {
+                let status = &entry.status;
+                let owner = status.owner_pane.as_deref()?;
+                if owner_pane.is_some_and(|pane| pane != owner) {
+                    return None;
+                }
+                let (reason, questions) = status.obligation()?;
+                Some(WorkerObligation {
+                    worker_id: status.worker_id.clone(),
+                    name: status.name.clone(),
+                    reason,
+                    seq: status.last_seq,
+                    questions,
+                    owner_pane_id: owner.to_owned(),
+                    owner_session_id: status.owner_session.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Blocks until `reached` returns something for the worker, woken by

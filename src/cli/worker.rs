@@ -1,11 +1,11 @@
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
-    WorkerInterruptParams, WorkerKillParams, WorkerPromptParams, WorkerStartParams, WorkerTarget,
-    WorkerWaitParams, WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
+    WorkerDecision, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
+    WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|wait|prompt|interrupt|stop|kill|answer|log|take-over> ...
+    "usage: herdr worker <start|status|list|wait|ack|obligations|prompt|interrupt|stop|kill|answer|log|take-over> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
@@ -15,6 +15,8 @@ const USAGE: &str =
     --cwd's repository, on the new branch BRANCH from REF (default: master),
     one worker at a time, keeping target/ warm; --fresh-build removes the
     slot's target/ and Zig cache first.
+    The caller's pane (HERDR_PANE_ID) and agent session (CLAUDE_CODE_SESSION_ID)
+    become the worker's owner.
   herdr worker status <worker_id>
   herdr worker list
   herdr worker wait <worker_id> [--exit | --attention [--after SEQ]]
@@ -22,6 +24,13 @@ const USAGE: &str =
     --attention returns at once or at the first of a pending question, a
     turn's end or the worker's end, with the reason, the questions and seq;
     --after SEQ (the seq it returned) skips the state that seq already showed.
+  herdr worker ack <worker_id> <seq>
+    The owner handled the worker's events up to SEQ (the seq a wait or
+    obligations returned); acknowledge after handling, not before.
+  herdr worker obligations [--pane PANE_ID]
+    The workers owned by PANE_ID (default: the caller's pane; all owned
+    workers outside a pane) with a question, a turn end or an end not
+    acknowledged yet, each with its reason and seq.
   herdr worker prompt <worker_id> <text>
     Its reply's turn_seq is the seq of the message it sent.
   herdr worker interrupt <worker_id> [--turn SEQ]
@@ -96,6 +105,24 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "status" => Method::WorkerStatus(target(rest)?),
         "list" if rest.is_empty() => Method::WorkerList(EmptyParams::default()),
         "wait" => Method::WorkerWait(parse_wait(rest)?),
+        "ack" => match rest {
+            [worker_id, seq] => Method::WorkerAck(WorkerAckParams {
+                worker_id: worker_id.clone(),
+                seq: seq
+                    .parse()
+                    .map_err(|_| format!("ack takes a seq number, not {seq}"))?,
+            }),
+            _ => return Err("ack takes a worker id and a seq".into()),
+        },
+        "obligations" => {
+            let (pane, rest) = take_string_option(rest, "--pane")?;
+            if !rest.is_empty() {
+                return Err("obligations takes only --pane".into());
+            }
+            Method::WorkerObligations(WorkerObligationsParams {
+                owner_pane_id: pane.or_else(super::target::caller_pane_id),
+            })
+        }
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
                 worker_id: worker_id.clone(),
@@ -340,6 +367,10 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         model,
         name,
         workspace_id: workspace_id.or_else(super::target::caller_workspace_id),
+        owner_pane_id: super::target::caller_pane_id(),
+        owner_session_id: super::target::caller_pane_id()
+            .and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+            .filter(|session| !session.trim().is_empty()),
         folder_slot,
         branch,
         base,
@@ -655,5 +686,32 @@ mod tests {
         assert!(parse_worker_args(&args(&["answer", "w1"])).is_err());
         assert!(parse_worker_args(&args(&["answer", "w1", "allow"])).is_err());
         assert!(parse_worker_args(&args(&["answer"])).is_err());
+    }
+
+    #[test]
+    fn parses_ack_and_obligations() {
+        assert_eq!(
+            parse_worker_args(&args(&["ack", "w12", "40"])),
+            Ok(Some(Method::WorkerAck(WorkerAckParams {
+                worker_id: "w12".into(),
+                seq: 40,
+            })))
+        );
+        assert_eq!(
+            parse_worker_args(&args(&["obligations", "--pane", "w1-2"])),
+            Ok(Some(Method::WorkerObligations(WorkerObligationsParams {
+                owner_pane_id: Some("w1-2".into()),
+            })))
+        );
+        for bad in [
+            &["ack", "w12"][..],
+            &["ack", "w12", "x"],
+            &["ack", "w12", "4", "5"],
+            &["ack", "--command-id", "c", "w12", "4"],
+            &["obligations", "w12"],
+            &["obligations", "--pane"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 }
