@@ -406,3 +406,18 @@ and the coordinator's wait script with sol and DeepSeek (MiMo timed out):
 install) ends all running headless workers and marks them `lost`. The fixes
 are queued as one TODO item plus steps of the reliability plan.
 
+## Headless workers: sandboxed Bash, one persistent folder (2026-10-08)
+
+Headless workers run Bash in Claude Code's sandbox (manual mode, no network,
+credential reads denied, `allowUnsandboxedCommands: false`), so herdr allows
+their Bash requests itself (Claude Code's compound-command check asked about
+harmless `cd ...;` commands seven times on one item); only classifier
+escalations and paths outside the roots reach the user. Workers do not work
+around the sandbox for tests; the coordinator runs `just check`. They build
+in one persistent worktree (`herdr worker start --folder-slot worker`),
+decided by the user because Cargo and Zig caches record absolute paths, so a
+copied cache is cold: measured 134 s cold, 27 s warm. The vendored
+`libsystem_override.sh` gets a tracked patch (0008) so `mktemp` honours
+`$TMPDIR` inside the sandbox, rather than widening the sandbox to the system
+temp dir. The first item done this way (that patch) asked no questions.
+
