@@ -11,7 +11,14 @@ Structure it relies on:
   next item, the next heading or the end of the file, never beyond; its
   trailing blank lines are not part of it;
 - a section's own region runs from its heading to the next heading of any
-  level, so items under `### Decide` are not items of `## Needs a decision`.
+  level, so items under `### Decide` are not items of `## Needs a decision`;
+- an item's stable id `[t-<8 lowercase base32 chars>]` (40 random bits) sits
+  at the end of its first line, except when that line ends with `?`: a
+  "Needs a decision" question is one line ending in `?` followed by an
+  `Options:` line, so there the id goes right after the checkbox
+  (`- [ ] [t-abcd2345] Which one?`) and the line still ends with `?`.
+  Title prefixes are matched with the id removed; every command that takes a
+  title prefix also takes an id (`t-abcd2345` or `[t-abcd2345]`).
 
 The check after a change: the items of the file, in order and with their
 sections, are exactly the expected ones (every other item byte-identical,
@@ -34,10 +41,12 @@ rename itself can still be overwritten.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import fcntl
 import os
 import re
+import secrets
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -45,10 +54,52 @@ from pathlib import Path
 
 ITEM_RE = re.compile(r"- \[[ xX]\] ")
 HEADING_RE = re.compile(r"(#+)\s*(.*?)\s*$")
+ID_BODY = r"t-[a-z2-7]{8}"
+ID_ARG_RE = re.compile(rf"\[?({ID_BODY})\]?")
+# The id slots of a first line: right after the checkbox, or at its end.
+LEAD_SLOT_RE = re.compile(r"(- \[[ xX]\] )\[(t-[^\]\s]*)\] ?")
+TAIL_SLOT_RE = re.compile(r" ?\[(t-[^\]\s]*)\](\s*)$")
+STRICT_ID_RE = re.compile(ID_BODY)
+
+
+def split_id(first: str) -> tuple[str, list[str]]:
+    """A first line without its id slots, and the slot contents found (valid or not)."""
+    found = []
+    match = LEAD_SLOT_RE.match(first)
+    if match:
+        found.append(match.group(2))
+        first = match.group(1) + first[match.end() :]
+    match = TAIL_SLOT_RE.search(first)
+    if match:
+        found.append(match.group(1))
+        first = first[: match.start()] + match.group(2)
+    return first, found
+
+
+def with_id(first: str, item_id: str) -> str:
+    """`first` (a line without an id) with `item_id` in its slot."""
+    content = first.rstrip("\r\n")
+    ending = first[len(content) :]
+    content = content.rstrip()
+    if content.endswith("?"):
+        marker = ITEM_RE.match(content).group(0)
+        return f"{marker}[{item_id}] {content[len(marker):]}{ending}"
+    return f"{content} [{item_id}]{ending}"
+
+
+def mint_id(taken) -> str:
+    while True:
+        item_id = "t-" + base64.b32encode(secrets.token_bytes(5)).decode("ascii").lower()
+        if item_id not in taken:
+            return item_id
 
 
 class Refusal(Exception):
     """The command cannot be applied safely; nothing was written."""
+
+
+class NothingToDo(Exception):
+    """The command has nothing to change; nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -66,9 +117,26 @@ class Item:
     body: str
 
     @property
+    def first_line(self) -> str:
+        return self.body.split("\n", 1)[0]
+
+    @property
+    def id_slots(self) -> list[str]:
+        return split_id(self.first_line)[1]
+
+    @property
+    def id(self) -> str | None:
+        """The item's id when it has exactly one well-formed id."""
+        slots = self.id_slots
+        if len(slots) == 1 and STRICT_ID_RE.fullmatch(slots[0]):
+            return slots[0]
+        return None
+
+    @property
     def text(self) -> str:
-        """The item without its marker, whitespace collapsed, for matching."""
-        return " ".join(self.body[len("- [ ] ") :].split())
+        """The item without its marker and id, whitespace collapsed, for matching."""
+        first, rest = split_id(self.first_line)[0], self.body[len(self.first_line) :]
+        return " ".join((first + rest)[len("- [ ] ") :].split())
 
     @property
     def title(self) -> str:
@@ -141,6 +209,15 @@ class Doc:
         wanted = " ".join(prefix.split())
         if not wanted:
             raise Refusal("an empty title prefix matches every item")
+        by_id = ID_ARG_RE.fullmatch(wanted)
+        if by_id:
+            matches = [i for i, item in enumerate(self.items) if item.id == by_id.group(1)]
+            if not matches:
+                raise Refusal(f"no item has the id {by_id.group(1)}")
+            if len(matches) > 1:
+                lines = ", ".join(str(self.items[i].start + 1) for i in matches)
+                raise Refusal(f"{len(matches)} items have the id {by_id.group(1)} (lines {lines}); run 'ids --check'")
+            return matches[0]
         matches = [i for i, item in enumerate(self.items) if item.text.startswith(wanted)]
         if not matches:
             raise Refusal(f"no item starts with {prefix!r}")
@@ -170,6 +247,28 @@ class Doc:
 
     def entries(self) -> list[tuple[int, str]]:
         return [(item.heading, item.body.rstrip("\n")) for item in self.items]
+
+    def ids(self) -> set[str]:
+        return {slot for item in self.items for slot in item.id_slots}
+
+    def id_problems(self) -> list[str]:
+        """Malformed ids, items with two ids and ids used by more than one item."""
+        problems = []
+        seen: dict[str, list[int]] = {}
+        for item in self.items:
+            slots = item.id_slots
+            line = item.start + 1
+            if len(slots) > 1:
+                problems.append(f"line {line}: two ids ({', '.join(slots)})")
+            for slot in slots:
+                if not STRICT_ID_RE.fullmatch(slot):
+                    problems.append(f"line {line}: malformed id [{slot}]")
+            if item.id is not None:
+                seen.setdefault(item.id, []).append(line)
+        for item_id, lines in seen.items():
+            if len(lines) > 1:
+                problems.append(f"id {item_id} is used by {len(lines)} items (lines {', '.join(map(str, lines))})")
+        return problems
 
 
 # Edits -------------------------------------------------------------------
@@ -276,6 +375,14 @@ def place_item(doc: Doc, heading: int, block: list[str], after: str | None, top:
 
 def cmd_add(doc: Doc, args):
     block = item_lines(read_text_file(args.text_file))
+    new_item = Item(0, len(block), -1, "".join(block))
+    slots = new_item.id_slots
+    if not slots:
+        block[0] = with_id(block[0], mint_id(doc.ids()))
+    elif new_item.id is None:
+        raise Refusal(f"the new item's id is malformed: {', '.join(slots)}")
+    elif new_item.id in doc.ids():
+        raise Refusal(f"the id {new_item.id} is already used in {args.file}")
     heading = doc.find_section(args.section)
     new_lines, ordinal, insertion = place_item(doc, heading, block, args.after, args.top)
     expected = doc.entries()
@@ -366,6 +473,49 @@ def cmd_move(doc: Doc, args):
     expected = middle.entries()
     expected.insert(ordinal, (heading, item.body.rstrip("\n")))
     return "".join(new_lines), expected, doc.frame, f"moved to {doc.heading_path(heading)!r}", None
+
+
+def cmd_ids_assign(doc: Doc, args):
+    problems = doc.id_problems()
+    if problems:
+        raise Refusal("fix these ids first:\n  " + "\n  ".join(problems))
+    taken = doc.ids()
+    lines = list(doc.lines)
+    expected = doc.entries()
+    count = 0
+    for index, item in enumerate(doc.items):
+        if item.id is not None:
+            continue
+        item_id = mint_id(taken)
+        taken.add(item_id)
+        lines[item.start] = with_id(lines[item.start], item_id)
+        rest = item.body[len(item.first_line) :]
+        expected[index] = (item.heading, (with_id(item.first_line, item_id) + rest).rstrip("\n"))
+        count += 1
+    if count == 0:
+        raise NothingToDo("every item already has an id")
+    return "".join(lines), expected, doc.frame, f"assigned {count} ids", None
+
+
+def verify_ids_assigned(old: Doc, new_text: str) -> None:
+    """Refuse unless only items' first lines changed, each item has an id and no id repeats."""
+    new = Doc(new_text)
+    new_lines = new_text.splitlines(keepends=True)
+    if len(new_lines) != len(old.lines):
+        raise Refusal("assigning ids would join or split lines")
+    firsts = {item.start for item in old.items}
+    for i, (before, after) in enumerate(zip(old.lines, new_lines)):
+        if i in firsts:
+            if split_id(after)[0] != split_id(before)[0]:
+                raise Refusal(f"assigning ids would change more than the id on line {i + 1}")
+        elif before != after:
+            raise Refusal(f"assigning ids would change line {i + 1}, which is not an item's first line")
+    problems = new.id_problems()
+    if problems:
+        raise Refusal("assigning ids would leave bad ids:\n  " + "\n  ".join(problems))
+    missing = [str(item.start + 1) for item in new.items if item.id is None]
+    if missing:
+        raise Refusal(f"items without an id after assigning: lines {', '.join(missing)}")
 
 
 def cmd_add_section(doc: Doc, args):
@@ -477,6 +627,7 @@ COMMANDS = {
     "remove": cmd_remove,
     "move": cmd_move,
     "add-section": cmd_add_section,
+    "ids": cmd_ids_assign,
 }
 
 
@@ -485,8 +636,13 @@ def parse_args(argv):
     parser.add_argument("--file", default="TODO.md", help="file to edit (default: TODO.md)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("find", help="print an item's section and line range")
-    p.add_argument("title", help="prefix of the item's text after '- [ ] '")
+    p = sub.add_parser("find", help="print an item's section, line range and id")
+    p.add_argument("title", help="prefix of the item's text after '- [ ] ' (without its id), or its id 't-...'")
+
+    p = sub.add_parser("ids", help="give every item an id, or check the ids")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--assign", action="store_true", help="give every item without an id a new unique id")
+    mode.add_argument("--check", action="store_true", help="refuse malformed and duplicate ids (exit 1)")
 
     p = sub.add_parser(
         "add", help="insert an item at the end of a section or after an item (as whole lines)"
@@ -552,11 +708,15 @@ def edit(args, path: Path) -> str:
         if new_text == original:
             raise Refusal("the change would leave the file unchanged")
         verify(new_text, expected, frame, doc, insertion)
+        if args.command == "ids":
+            verify_ids_assigned(doc, new_text)
         atomic_write(path, new_text, raw)
         written = path.read_text(encoding="utf-8")
         if written != new_text:
             raise Refusal(f"{path} does not hold the written text after the rename")
         verify(written, expected, frame, doc, insertion)
+        if args.command == "ids":
+            verify_ids_assigned(doc, written)
     return summary
 
 
@@ -567,9 +727,21 @@ def run(argv) -> int:
         if args.command == "find":
             doc = Doc(read_file(path)[1])
             item = doc.items[doc.find_item(args.title)]
-            print(f"{doc.heading_path(item.heading)}: lines {item.start + 1}-{item.end}")
+            suffix = f" [{item.id}]" if item.id else ""
+            print(f"{doc.heading_path(item.heading)}: lines {item.start + 1}-{item.end}{suffix}")
+            return 0
+        if args.command == "ids" and args.check:
+            doc = Doc(read_file(path)[1])
+            problems = doc.id_problems()
+            if problems:
+                raise Refusal("bad ids:\n  " + "\n  ".join(problems))
+            missing = sum(1 for item in doc.items if item.id is None)
+            print(f"{path}: ids ok, {len(doc.items) - missing} items with an id, {missing} without")
             return 0
         summary = edit(args, path)
+    except NothingToDo as err:
+        print(f"{path}: {err}")
+        return 0
     except Refusal as err:
         print(f"todo_edit: {err}", file=sys.stderr)
         return 1
