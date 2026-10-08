@@ -5342,9 +5342,34 @@
         "WorkerStartParams": {
           "description": "Starts a headless Claude worker: `claude -p` over stream-json pipes, no\nterminal. The server owns the process; clients only ask about it.",
           "properties": {
+            "base": {
+              "description": "With `folder_slot`: what the branch starts from; `master` when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "description": "With `folder_slot`: the new branch checked out in the slot; it must\nnot exist yet.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "description": "Working directory; file tools are allowed only inside its real path.",
               "type": "string"
+            },
+            "folder_slot": {
+              "description": "Runs the worker in the persistent git worktree\n`<repository parent>/herdr-worktrees/<folder_slot>` of `cwd`'s\nrepository instead of in `cwd`, one worker at a time, so its build\ncaches stay warm. Needs `branch`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fresh_build": {
+              "description": "With `folder_slot`: removes the slot's `target/` and Zig cache first.",
+              "type": "boolean"
             },
             "model": {
               "description": "Passed to `claude --model`; the CLI's default when absent.",

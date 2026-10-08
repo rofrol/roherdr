@@ -18,6 +18,22 @@ pub struct WorkerStartParams {
     /// The space the worker belongs to, which the sidebar lists it under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Runs the worker in the persistent git worktree
+    /// `<repository parent>/herdr-worktrees/<folder_slot>` of `cwd`'s
+    /// repository instead of in `cwd`, one worker at a time, so its build
+    /// caches stay warm. Needs `branch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_slot: Option<String>,
+    /// With `folder_slot`: the new branch checked out in the slot; it must
+    /// not exist yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// With `folder_slot`: what the branch starts from; `master` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// With `folder_slot`: removes the slot's `target/` and Zig cache first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh_build: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

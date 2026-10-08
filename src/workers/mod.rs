@@ -13,6 +13,7 @@
 
 mod log;
 mod policy;
+mod slot;
 #[cfg(test)]
 mod tests;
 
@@ -35,10 +36,11 @@ use crate::api::schema::{
 };
 use crate::platform::Signal;
 
-/// Appended to the worker's system prompt; names the worker's temp dir.
-fn worker_contract(temp_dir: &Path) -> String {
+/// Appended to the worker's system prompt; names the worker's temp dir and,
+/// in a folder slot, its branch.
+fn worker_contract(temp_dir: &Path, slot: Option<&slot::Slot>) -> String {
     let temp = temp_dir.display();
-    format!(
+    let mut contract = format!(
         "You are a headless worker started by herdr. Nobody watches your output live. Work \
 only inside your working directory. Bash runs in a sandbox without asking: it can write only \
 to your working directory and your temp dir {temp}, has no network and cannot read \
@@ -49,7 +51,16 @@ check outside it. Put drafts and scratch files under {temp} by that absolute pat
 $TMPDIR, it is shared with other sessions. File tools work only inside your working directory and \
 {temp}. Your questions wait until the user answers, which can take long: ask only when you \
 cannot go on without it, otherwise finish the task or stop and say what blocks you."
-    )
+    );
+    if let Some(slot) = slot {
+        contract.push_str(&format!(
+            " Your working directory is herdr's persistent worker folder, on the new branch \
+{} from {}; commit your work on that branch. Its target/ and Zig cache stay warm between \
+workers, so cargo builds and tests in the sandbox compile only what changed.",
+            slot.branch, slot.base
+        ));
+    }
+    contract
 }
 
 /// Credential files and directories under the home directory that sandboxed
@@ -83,7 +94,9 @@ const ENV_FILE_GLOBS: &[&str] = &["**/.env", "**/.env.*", "**/.envrc"];
 /// no network, no unsandboxed escape, and no start at all without the
 /// sandbox (T3-2, T3-3). The deny rules cover the file tools and the
 /// in-process web tools, which the sandbox does not.
-fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
+/// `extra_write` are further directories Bash may write, a folder slot's
+/// build caches.
+fn worker_settings(cwd_real: &Path, temp_dir: &Path, extra_write: &[PathBuf]) -> Value {
     let mut deny_read: Vec<String> = HOME_CREDENTIALS
         .iter()
         .map(|(path, _)| (*path).to_owned())
@@ -113,6 +126,8 @@ fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
     }
     deny_rules.push("WebFetch".into());
     deny_rules.push("WebSearch".into());
+    let mut allow_write = vec![temp_dir.display().to_string()];
+    allow_write.extend(extra_write.iter().map(|dir| dir.display().to_string()));
     json!({
         "disableAllHooks": true,
         "attribution": {"commit": "", "pr": "", "sessionUrl": false},
@@ -122,7 +137,7 @@ fn worker_settings(cwd_real: &Path, temp_dir: &Path) -> Value {
             "autoAllowBashIfSandboxed": true,
             "allowUnsandboxedCommands": false,
             "filesystem": {
-                "allowWrite": [temp_dir.display().to_string()],
+                "allowWrite": allow_write,
                 "denyRead": deny_read,
             },
             "network": {"allowedDomains": [], "strictAllowlist": true},
@@ -693,6 +708,9 @@ struct Shared {
     program: PathBuf,
     registry: Mutex<Registry>,
     changed: Condvar,
+    /// Held while a folder slot is prepared and its worker registered, so
+    /// two starts never prepare one slot at once.
+    slot_lock: Mutex<()>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -865,6 +883,7 @@ impl WorkerSupervisor {
                 program,
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
+                slot_lock: Mutex::new(()),
             }),
         }
     }
@@ -895,6 +914,32 @@ impl WorkerSupervisor {
                     .into(),
             ));
         }
+        // Held until the worker is registered, so the next start into the
+        // same slot sees it running.
+        let _slot_guard = params
+            .folder_slot
+            .as_ref()
+            .map(|_| lock(&self.shared.slot_lock));
+        let (slot, slot_killed) = match params.folder_slot.as_deref() {
+            Some(name) => {
+                let (slot, killed) = self.prepare_slot(&cwd_real, name, params)?;
+                (Some(slot), killed)
+            }
+            None if params.branch.is_some() || params.base.is_some() || params.fresh_build => {
+                return Err(WorkerError::Invalid(
+                    "branch, base and fresh_build need folder_slot".into(),
+                ))
+            }
+            None => (None, Vec::new()),
+        };
+        let (cwd_path, cwd_real) = match &slot {
+            Some(slot) => (slot.path.clone(), slot.path.clone()),
+            None => (cwd_path, cwd_real),
+        };
+        let slot_caches: Vec<PathBuf> = slot
+            .iter()
+            .flat_map(|slot| [slot.target_dir(), slot.zig_cache_dir()])
+            .collect();
 
         let number = {
             let mut registry = lock(&self.shared.registry);
@@ -907,8 +952,8 @@ impl WorkerSupervisor {
         let journal_path = self.shared.dir.join(format!("{worker_id}.jsonl"));
         let journal = Arc::new(Journal::open(&journal_path)?);
         let temp_dir = self.create_temp_dir(&worker_id)?;
-        let settings = worker_settings(&cwd_real, &temp_dir).to_string();
-        let contract = worker_contract(&temp_dir);
+        let settings = worker_settings(&cwd_real, &temp_dir, &slot_caches).to_string();
+        let contract = worker_contract(&temp_dir, slot.as_ref());
 
         let mut args: Vec<String> = [
             "-p",
@@ -962,6 +1007,15 @@ impl WorkerSupervisor {
             }
         }
         removed_env.sort();
+        // The slot's caches, inside the slot, so a sandboxed build writes
+        // only there instead of the user's `~/.cache/zig` or another target.
+        if let Some(slot) = &slot {
+            let zig_cache = slot.zig_cache_dir();
+            command
+                .env("CARGO_TARGET_DIR", slot.target_dir())
+                .env("ZIG_GLOBAL_CACHE_DIR", &zig_cache)
+                .env("ZIG_LOCAL_CACHE_DIR", &zig_cache);
+        }
         crate::platform::configure_worker_process(&mut command);
         let mut child = command.spawn().map_err(|error| {
             remove_temp_dir(&temp_dir);
@@ -1001,6 +1055,14 @@ impl WorkerSupervisor {
             "pid": pid,
             "program": self.shared.program.display().to_string(),
             "args": args,
+            "folder_slot": slot.as_ref().map(|slot| json!({
+                "name": params.folder_slot,
+                "branch": slot.branch,
+                "base": slot.base,
+                "created": slot.created,
+                "fresh_build": params.fresh_build,
+                "killed_leftover_pids": slot_killed,
+            })),
         });
         journal.record(Direction::Herdr, &started);
         journal.record(
@@ -1447,6 +1509,84 @@ impl WorkerSupervisor {
         }
         self.wait(worker_id, WorkerWaitUntil::Exit, RECHECK, || true)?
             .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} wait ended")))
+    }
+
+    /// Readies the folder slot `name` of `caller_cwd`'s repository for a new
+    /// worker: refuses while a worker still runs there, ends what the
+    /// earlier workers there left running, then cleans and switches it
+    /// ([`slot::prepare`]). Returns the slot and the pids it ended.
+    fn prepare_slot(
+        &self,
+        caller_cwd: &Path,
+        name: &str,
+        params: &WorkerStartParams,
+    ) -> Result<(slot::Slot, Vec<u32>), WorkerError> {
+        let branch = params
+            .branch
+            .as_deref()
+            .ok_or_else(|| WorkerError::Invalid("folder_slot needs branch".into()))?;
+        let base = params.base.as_deref().unwrap_or("master");
+        let (path, created) = slot::locate_or_create(caller_cwd, name, base)?;
+        let killed = self.end_slot_leftovers(&path)?;
+        let slot = slot::prepare(&path, branch, base, params.fresh_build, created)?;
+        Ok((slot, killed))
+    }
+
+    /// Refuses while one of this server's workers still runs in the slot
+    /// (also between turns: stop it first). Then SIGKILLs what earlier
+    /// workers there left: a lost worker's process group and the recorded
+    /// tool sessions, each process only when its working directory is
+    /// inside the slot (a reused pid or session is someone else's).
+    fn end_slot_leftovers(&self, path: &Path) -> Result<Vec<u32>, WorkerError> {
+        let shown = path.display().to_string();
+        let previous: Vec<(Status, bool)> = {
+            let registry = lock(&self.shared.registry);
+            registry
+                .workers
+                .values()
+                .filter(|entry| entry.status.cwd == shown)
+                .map(|entry| (entry.status.clone(), entry.live.is_some()))
+                .collect()
+        };
+        if let Some((status, _)) = previous
+            .iter()
+            .find(|(status, live)| *live && !status.is_gone())
+        {
+            return Err(WorkerError::Busy(format!(
+                "worker {} still runs in folder slot {shown}; wait for it and stop it first",
+                status.worker_id
+            )));
+        }
+        let mut killed = Vec::new();
+        for (status, _) in previous {
+            let mut ended = Vec::new();
+            if let (Some(pid), false) = (status.pid, status.exited) {
+                if crate::platform::process_group_alive(pid) && slot::runs_in_slot(pid, path) {
+                    crate::platform::signal_process_group(pid, Signal::Kill)?;
+                    ended.push(pid);
+                }
+            }
+            for session in &status.tool_sessions {
+                let members: Vec<u32> = crate::platform::session_members(*session)
+                    .into_iter()
+                    .filter(|pid| slot::runs_in_slot(*pid, path))
+                    .collect();
+                crate::platform::signal_processes(&members, Signal::Kill);
+                ended.extend(members);
+            }
+            if ended.is_empty() {
+                continue;
+            }
+            match Journal::open(&self.journal_path(&status.worker_id)) {
+                Ok(journal) => journal.record(
+                    Direction::Herdr,
+                    &json!({"type": "killed_tool_processes", "pids": ended, "reason": "folder slot reused"}),
+                ),
+                Err(error) => warn!(%error, "cannot journal the slot's leftover processes"),
+            }
+            killed.extend(ended);
+        }
+        Ok(killed)
     }
 
     fn journal_path(&self, worker_id: &str) -> PathBuf {

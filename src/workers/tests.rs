@@ -36,7 +36,10 @@ def result(subtype="success", is_error=False, reason="completed", text="ok"):
           "session_id": "stub-session"})
 
 emit({"type": "system", "subtype": "init", "session_id": "stub-session",
-      "herdr_env": sorted(k for k in os.environ if k.startswith("HERDR_"))})
+      "herdr_env": sorted(k for k in os.environ if k.startswith("HERDR_")),
+      "cwd": os.getcwd(),
+      "cache_env": {k: os.environ.get(k) for k in
+                    ("CARGO_TARGET_DIR", "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR")}})
 
 ignore_term = False
 
@@ -297,6 +300,10 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
         model: model.map(str::to_owned),
         name: None,
         workspace_id: None,
+        folder_slot: None,
+        branch: None,
+        base: None,
+        fresh_build: false,
     }
 }
 
@@ -1164,6 +1171,149 @@ fn a_worker_that_asks_is_not_taken_over() {
         Err(WorkerError::Busy(_))
     ));
     assert_eq!(fixture.supervisor.status(&id).unwrap().takeover_ms, None);
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn a_folder_slot_is_reused_clean_by_one_worker_at_a_time() {
+    let fixture = Fixture::new("slot");
+    let repo = &fixture.repo;
+    git_in(repo, &["init", "-q", "-b", "master"]);
+    std::fs::write(repo.join(".gitignore"), "/target\n").unwrap();
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git_in(repo, &["add", "."]);
+    git_in(repo, &["commit", "-q", "-m", "init"]);
+    let in_slot = |branch: &str| WorkerStartParams {
+        folder_slot: Some("worker".into()),
+        branch: Some(branch.into()),
+        ..start_params(repo, "finish", None)
+    };
+
+    let first = fixture.supervisor.start(&in_slot("w/one")).unwrap();
+    let slot = fixture
+        .root
+        .join("herdr-worktrees/worker")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(first.cwd, slot.display().to_string());
+    assert_eq!(git_in(&slot, &["branch", "--show-current"]).trim(), "w/one");
+    let target = slot.join("target");
+    let zig_cache = slot.join("target/zig-cache");
+    assert!(zig_cache.is_dir());
+    let packages = zig_cache.join("p");
+    if packages.exists() {
+        assert!(std::fs::symlink_metadata(&packages)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+    let started = &fixture.herdr_events(&first.worker_id, "started")[0];
+    assert_eq!(started["folder_slot"]["branch"], "w/one");
+    assert_eq!(started["folder_slot"]["created"], true);
+    let args: Vec<&str> = started["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    let settings_at = args.iter().position(|arg| *arg == "--settings").unwrap();
+    let settings: Value = serde_json::from_str(args[settings_at + 1]).unwrap();
+    let allow_write = &settings["sandbox"]["filesystem"]["allowWrite"];
+    for dir in [&target, &zig_cache] {
+        assert!(
+            allow_write
+                .as_array()
+                .unwrap()
+                .contains(&Value::String(dir.display().to_string())),
+            "{allow_write}"
+        );
+    }
+    fixture.wait(&first.worker_id, WorkerWaitUntil::TurnEnd);
+    let init = fixture
+        .journal(&first.worker_id)
+        .into_iter()
+        .find(|record| record["event"]["subtype"] == "init")
+        .unwrap();
+    let cache_env = &init["event"]["cache_env"];
+    assert_eq!(cache_env["CARGO_TARGET_DIR"], target.display().to_string());
+    assert_eq!(
+        cache_env["ZIG_GLOBAL_CACHE_DIR"],
+        zig_cache.display().to_string()
+    );
+    assert_eq!(
+        cache_env["ZIG_LOCAL_CACHE_DIR"],
+        zig_cache.display().to_string()
+    );
+
+    // A worker between turns still holds the slot.
+    let busy = fixture.supervisor.start(&in_slot("w/two")).unwrap_err();
+    assert_eq!(busy.code(), "worker_busy", "{busy}");
+    fixture.supervisor.stop(&first.worker_id).unwrap();
+    fixture.wait(&first.worker_id, WorkerWaitUntil::Exit);
+
+    // What a worker left uncommitted is not thrown away.
+    std::fs::write(slot.join("left.txt"), "x").unwrap();
+    let dirty = fixture.supervisor.start(&in_slot("w/two")).unwrap_err();
+    assert_eq!(dirty.code(), "worker_busy", "{dirty}");
+    assert!(dirty.to_string().contains("left.txt"), "{dirty}");
+    std::fs::remove_file(slot.join("left.txt")).unwrap();
+    let taken = fixture.supervisor.start(&in_slot("w/one")).unwrap_err();
+    assert_eq!(taken.code(), "invalid_request", "{taken}");
+    assert!(fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            branch: None,
+            ..in_slot("unused")
+        })
+        .is_err());
+
+    // Ignored build output stays warm for the next worker.
+    let marker = target.join("debug/marker");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "warm").unwrap();
+    let second = fixture.supervisor.start(&in_slot("w/two")).unwrap();
+    assert_eq!(git_in(&slot, &["branch", "--show-current"]).trim(), "w/two");
+    assert!(marker.exists());
+    assert_eq!(
+        fixture.herdr_events(&second.worker_id, "started")[0]["folder_slot"]["created"],
+        false
+    );
+    fixture.wait(&second.worker_id, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.stop(&second.worker_id).unwrap();
+    fixture.wait(&second.worker_id, WorkerWaitUntil::Exit);
+
+    // A fresh build starts from empty caches.
+    let third = fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            fresh_build: true,
+            ..in_slot("w/three")
+        })
+        .unwrap();
+    assert!(!marker.exists());
+    assert!(zig_cache.is_dir());
+    fixture.wait(&third.worker_id, WorkerWaitUntil::TurnEnd);
 }
 
 #[test]
