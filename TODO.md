@@ -1490,6 +1490,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   at start on a branch-name collision; fixed in this run (branches carry the
   run id). Also found: `herdr todo resume --action abort` on a blocked run
   (`r-cese4nxv`) changed nothing; a blocked run must be abortable.
+  Run `r-5gsvuqm6` went end to end through the driver (verify, cherry-pick,
+  install, TODO note, push) on 2026-10-08; its push needed one
+  `retry-push` because the old binary did the install (the next run carries
+  the environment). Found: `herdr todo wait` dies with `EmptyResponse` when
+  the install's live handoff replaces the server; it should reconnect to
+  the new server and keep waiting on the same run.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
