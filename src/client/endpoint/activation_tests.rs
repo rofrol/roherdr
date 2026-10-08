@@ -70,6 +70,7 @@ fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSn
         build_commit: None,
         worker_questions: Vec::new(),
         workers: Vec::new(),
+        worker_item_counts: None,
     }
 }
 
@@ -440,6 +441,7 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
         build_commit: None,
         worker_questions: Vec::new(),
         workers: Vec::new(),
+        worker_item_counts: None,
     };
     assert_eq!(
         activation.receive_snapshot(&target, 7, &snapshot),

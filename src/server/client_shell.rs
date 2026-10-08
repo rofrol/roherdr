@@ -322,6 +322,7 @@ pub(super) fn snapshot_with_completions(
             })
             .collect(),
         workers: client_shell_workers(crate::workers::summaries()),
+        worker_item_counts: Some(client_shell_item_counts(crate::workers::item_counts())),
     };
     (shell, completions)
 }
@@ -684,13 +685,16 @@ fn split_hit_rect(
     Some(hit)
 }
 
-/// The workers as the snapshot carries them to the sidebar, their state as
-/// `worker.status` names it.
+/// The workers the sidebar lists as the snapshot carries them, their state
+/// as `worker.status` names it.
 fn client_shell_workers(
     workers: Vec<crate::workers::WorkerSummary>,
 ) -> Vec<protocol::ClientShellWorker> {
     workers
         .into_iter()
+        // An ended worker leaves once its owner acknowledged its end; its
+        // run stays reachable through its item (`worker.runs`).
+        .filter(|worker| worker.listed)
         .map(|worker| protocol::ClientShellWorker {
             worker_id: worker.worker_id,
             workspace_id: worker.workspace_id,
@@ -706,9 +710,40 @@ fn client_shell_workers(
         .collect()
 }
 
+fn client_shell_item_counts(
+    counts: crate::workers::ItemCounts,
+) -> protocol::ClientShellWorkerItemCounts {
+    protocol::ClientShellWorkerItemCounts {
+        in_progress: counts.in_progress,
+        attention: counts.attention,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_snapshot_leaves_out_workers_the_sidebar_does_not_list() {
+        let worker = |worker_id: &str, listed: bool| crate::workers::WorkerSummary {
+            worker_id: worker_id.into(),
+            workspace_id: None,
+            name: String::new(),
+            cwd: "/repo".into(),
+            state: crate::api::schema::WorkerState::Exited,
+            session_id: None,
+            takeover: false,
+            listed,
+        };
+        let workers = client_shell_workers(vec![worker("w1", false), worker("w2", true)]);
+        assert_eq!(
+            workers
+                .iter()
+                .map(|worker| worker.worker_id.as_str())
+                .collect::<Vec<_>>(),
+            ["w2"]
+        );
+    }
 
     #[test]
     fn the_snapshot_carries_workers_with_their_space_task_and_state() {
@@ -720,6 +755,7 @@ mod tests {
             state: crate::api::schema::WorkerState::WaitingApproval,
             session_id: Some("session-1".into()),
             takeover: false,
+            listed: true,
         }]);
         assert_eq!(
             workers,

@@ -28,11 +28,12 @@ mod slot;
 mod store;
 #[cfg(test)]
 mod tests;
+mod todo_titles;
 
 pub(crate) use log::log_lines;
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -718,6 +719,20 @@ impl Status {
 
     fn is_gone(&self) -> bool {
         self.exited || self.lost
+    }
+
+    /// An ended worker whose owner has not acknowledged its end yet: its
+    /// handoff is open, so its result still waits for review.
+    fn end_unacked(&self) -> bool {
+        self.is_gone() && self.owner_pane.is_some() && self.gone_seq > self.acked_seq
+    }
+
+    /// Whether the sidebar lists the worker: while it runs, and after its
+    /// end until its owner acknowledges that end. A worker without an owner
+    /// leaves at its end: nobody would acknowledge it, and its run stays in
+    /// its item's history (`worker.runs`).
+    fn listed(&self) -> bool {
+        !self.is_gone() || self.end_unacked()
     }
 
     /// Whether the worker's process is known to be gone: its exit is
@@ -1847,6 +1862,28 @@ pub(crate) struct WorkerSummary {
     pub(crate) state: WorkerState,
     pub(crate) session_id: Option<String>,
     pub(crate) takeover: bool,
+    /// Whether the sidebar lists it ([`Status::listed`]): while it runs,
+    /// and after its end until its owner acknowledges that end.
+    pub(crate) listed: bool,
+}
+
+/// How many TODO items have workers on them, for the coordinator's Items
+/// button: items with a running worker, and items with an ended run whose
+/// owner has not acknowledged its end (a result or a failure to review).
+/// Ids of different repositories count apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ItemCounts {
+    pub(crate) in_progress: u32,
+    pub(crate) attention: u32,
+}
+
+/// [`ItemCounts`] of the server's supervisor; zero when no supervisor was
+/// opened.
+pub(crate) fn item_counts() -> ItemCounts {
+    SUPERVISOR
+        .get()
+        .map(WorkerSupervisor::item_counts)
+        .unwrap_or_default()
 }
 
 /// Every worker of the server's supervisor, oldest first; empty when no
@@ -2647,9 +2684,12 @@ impl WorkerSupervisor {
     /// The parts of a status the clients show. Questions are only added or
     /// removed, never replaced in place, and only ever go from quiet to
     /// escalated, so the two counts tell a change.
-    fn shown(status: &Status) -> (WorkerState, usize, usize, bool, bool, bool) {
+    #[allow(clippy::type_complexity)] // Only compared with itself, never taken apart.
+    fn shown(status: &Status) -> (WorkerState, bool, bool, usize, usize, bool, bool, bool) {
         (
             status.state,
+            status.is_gone(),
+            status.listed(),
             status.questions.len(),
             status
                 .questions
@@ -2675,8 +2715,31 @@ impl WorkerSupervisor {
                 state: entry.status.state,
                 session_id: entry.status.session_id.clone(),
                 takeover: entry.status.takeover_ms.is_some() && !entry.status.takeover_unfinished,
+                listed: entry.status.listed(),
             })
             .collect()
+    }
+
+    fn item_counts(&self) -> ItemCounts {
+        let registry = lock(&self.shared.registry);
+        let mut in_progress = std::collections::BTreeSet::new();
+        let mut attention = std::collections::BTreeSet::new();
+        for entry in registry.workers.values() {
+            let status = &entry.status;
+            let Some(item) = &status.item else {
+                continue;
+            };
+            let key = (status.repo.as_deref(), item.as_str());
+            if !status.is_gone() {
+                in_progress.insert(key);
+            } else if status.end_unacked() {
+                attention.insert(key);
+            }
+        }
+        ItemCounts {
+            in_progress: in_progress.len().try_into().unwrap_or(u32::MAX),
+            attention: attention.len().try_into().unwrap_or(u32::MAX),
+        }
     }
 
     fn pending_questions(&self) -> Vec<PendingWorkerQuestion> {
@@ -2766,8 +2829,22 @@ impl WorkerSupervisor {
                     item: item.clone(),
                     repo: status.repo.clone(),
                     runs: vec![run],
+                    title: None,
                 }),
             }
+        }
+        drop(registry);
+        // Read after the registry is released: a slow disk must not hold
+        // the workers' events.
+        let mut titles: HashMap<String, HashMap<String, String>> = HashMap::new();
+        for group in &mut items {
+            let Some(repo) = &group.repo else {
+                continue;
+            };
+            let repo_titles = titles
+                .entry(repo.clone())
+                .or_insert_with(|| todo_titles::read_titles(Path::new(repo)));
+            group.title = repo_titles.get(&group.item).cloned();
         }
         Ok((items, unassigned))
     }

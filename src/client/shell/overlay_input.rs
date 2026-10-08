@@ -636,6 +636,34 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::WorkerItems(_))) {
+            match key.code {
+                // Esc goes back from an item's runs, then closes.
+                KeyCode::Esc => {
+                    if !self.worker_items_back() {
+                        self.overlay = None;
+                    }
+                }
+                KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
+                    self.worker_items_back();
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.move_worker_items_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_worker_items_selection(1),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                    let highlighted = match self.overlay.as_ref() {
+                        Some(ClientShellOverlay::WorkerItems(overlay)) => overlay.highlighted,
+                        _ => None,
+                    };
+                    if let Some(index) = highlighted {
+                        self.activate_worker_items_row(index, outcome);
+                    }
+                }
+                _ => {}
+            }
+            outcome.repaint = true;
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             match key.code {
                 KeyCode::Esc => {

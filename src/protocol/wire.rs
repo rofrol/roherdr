@@ -956,9 +956,26 @@ pub struct ClientShellSnapshot {
     /// answers them.
     #[serde(default)]
     pub worker_questions: Vec<ClientShellWorkerQuestion>,
-    /// Headless workers, oldest first, for their lines under their space.
+    /// Headless workers, oldest first, for their lines under their space:
+    /// those still running, and ended ones until their owner acknowledges
+    /// the end.
     #[serde(default)]
     pub workers: Vec<ClientShellWorker>,
+    /// What the coordinator's Items button counts. Its presence also says
+    /// the server answers `worker.runs` for this client; none from a server
+    /// that does not.
+    #[serde(default)]
+    pub worker_item_counts: Option<ClientShellWorkerItemCounts>,
+}
+
+/// TODO items with workers on them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellWorkerItemCounts {
+    /// Items with a running worker.
+    pub in_progress: u32,
+    /// Items with an ended run whose owner has not acknowledged its end: a
+    /// result or a failure to review.
+    pub attention: u32,
 }
 
 /// A headless worker as the sidebar shows it.
@@ -2988,6 +3005,10 @@ mod tests {
                 session_id: None,
                 takeover: false,
             }],
+            worker_item_counts: Some(ClientShellWorkerItemCounts {
+                in_progress: 3,
+                attention: 1,
+            }),
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

@@ -4919,3 +4919,250 @@ fn the_header_arrows_are_dim_with_no_history_but_still_drawn() {
         assert_eq!(cell.fg, crate::protocol::color_to_u32(palette.surface1));
     }
 }
+
+fn with_coordinator(state: &mut ClientShellState, counts: Option<(u32, u32)>) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    projected.worker_item_counts =
+        counts.map(
+            |(in_progress, attention)| crate::protocol::ClientShellWorkerItemCounts {
+                in_progress,
+                attention,
+            },
+        );
+    state.set_snapshot(Box::new(projected));
+}
+
+fn worker_run(
+    worker_id: &str,
+    outcome: crate::api::schema::WorkerRunOutcome,
+    started_ms: u64,
+    ended_ms: Option<u64>,
+) -> crate::api::schema::WorkerRun {
+    crate::api::schema::WorkerRun {
+        worker_id: worker_id.into(),
+        name: format!("task of {worker_id}"),
+        repo: Some("/repo".into()),
+        started_ms: Some(started_ms),
+        ended_ms,
+        outcome,
+        turns: 2,
+        commits: vec!["abc1234".into()],
+        questions: 1,
+        journal_path: format!("/state/{worker_id}.jsonl"),
+    }
+}
+
+fn worker_runs_reply() -> crate::api::schema::ResponseResult {
+    use crate::api::schema::{WorkerItemRuns, WorkerRunOutcome};
+    crate::api::schema::ResponseResult::WorkerRuns {
+        items: vec![
+            WorkerItemRuns {
+                item: "t-qrst6723".into(),
+                repo: Some("/repo".into()),
+                runs: vec![worker_run(
+                    "w3",
+                    WorkerRunOutcome::Failed,
+                    1_790_633_000_000,
+                    Some(1_790_633_100_000),
+                )],
+                title: None,
+            },
+            WorkerItemRuns {
+                item: "t-abcd2345".into(),
+                repo: Some("/repo".into()),
+                runs: vec![
+                    worker_run(
+                        "w1",
+                        WorkerRunOutcome::Finished,
+                        1_790_632_000_000,
+                        Some(1_790_632_500_000),
+                    ),
+                    worker_run("w2", WorkerRunOutcome::Running, 1_790_632_600_000, None),
+                ],
+                title: Some("Items popup from the server".into()),
+            },
+        ],
+        unassigned: vec![worker_run(
+            "w4",
+            WorkerRunOutcome::Exited,
+            1_790_631_000_000,
+            Some(1_790_631_100_000),
+        )],
+    }
+}
+
+fn items_button(state: &ClientShellState) -> Rect {
+    state
+        .hits
+        .space_tab_items
+        .first()
+        .map(|(rect, _)| *rect)
+        .expect("an Items button")
+}
+
+/// The text of the Items dropdown's rows, as drawn.
+fn items_rows_text(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
+    let rows = frame_rows(frame);
+    state
+        .hits
+        .worker_items_rows
+        .iter()
+        .map(|(rect, _)| {
+            (rect.y..rect.bottom())
+                .map(|y| {
+                    rows[y as usize]
+                        .chars()
+                        .skip(rect.x as usize)
+                        .take(rect.width as usize)
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join(" / ")
+        })
+        .collect()
+}
+
+#[test]
+fn a_coordinators_line_has_an_items_button_with_its_badge() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    with_coordinator(&mut state, Some((3, 1)));
+    let frame = state.compose(120, 30).unwrap();
+    let button = items_button(&state);
+    assert_eq!(state.hits.space_tab_items[0].1, "tab_1");
+    let row = &frame_rows(&frame)[button.y as usize];
+    let text = row
+        .chars()
+        .skip(button.x as usize)
+        .take(button.width as usize)
+        .collect::<String>();
+    assert_eq!(text, " Items 3·1! ", "{row}");
+    assert_eq!(button.y, tab_line_row(&state, "tab_1"));
+
+    // Nothing to count: the button alone.
+    with_coordinator(&mut state, Some((0, 0)));
+    let frame = state.compose(120, 30).unwrap();
+    let button = items_button(&state);
+    let row = &frame_rows(&frame)[button.y as usize];
+    assert!(row.contains(" Items "), "{row}");
+    assert!(!row.contains("Items 0"), "{row}");
+
+    // A server that cannot list runs sends no counts: no button.
+    with_coordinator(&mut state, None);
+    state.compose(120, 30).unwrap();
+    assert!(state.hits.space_tab_items.is_empty());
+
+    // Only a coordinator's line has one.
+    let mut state = state_with_tabs_and_width(true, 40);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.worker_item_counts = Some(Default::default());
+    state.set_snapshot(Box::new(projected));
+    state.compose(120, 30).unwrap();
+    assert!(state.hits.space_tab_items.is_empty());
+}
+
+#[test]
+fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    with_coordinator(&mut state, Some((1, 1)));
+    state.compose(120, 30).unwrap();
+    let button = items_button(&state);
+    // Opening it fetches the runs, once; nothing was fetched before.
+    let outcome = left_click(&mut state, (button.x + 2, button.y));
+    let fetches = |outcome: &ClientShellInput| {
+        outcome
+            .actions
+            .iter()
+            .filter(|action| {
+                matches!(action,
+                ClientShellAction::Endpoint { request, .. }
+                    if matches!(&request.method, crate::api::schema::Method::WorkerRuns(_)))
+            })
+            .count()
+    };
+    assert_eq!(fetches(&outcome), 1);
+    assert!(
+        !focuses(&outcome, "tab_1"),
+        "the button does not open the tab"
+    );
+    let frame = state.compose(120, 30).unwrap();
+    assert_eq!(items_rows_text(&state, &frame).len(), 1);
+    assert!(items_rows_text(&state, &frame)[0].contains("loading"));
+
+    state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    let pending = state.pending_requests.len();
+    let frame = state.compose(120, 30).unwrap();
+    // Drawing again asks for nothing: the rows come from the reply.
+    state.compose(120, 30).unwrap();
+    assert_eq!(state.pending_requests.len(), pending);
+    let rows = items_rows_text(&state, &frame);
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    // The item in progress first, by its title and id, then the ended one.
+    assert!(
+        rows[0].contains("Items popup from the server · t-abcd2345")
+            && rows[0].contains("2 runs · last running"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[1].contains("(not in TODO.md) · t-qrst6723") && rows[1].contains("last failed"),
+        "{rows:#?}"
+    );
+    assert!(rows[2].contains("Unassigned"), "{rows:#?}");
+
+    // The unassigned entry lists its runs with their task.
+    let unassigned = state.hits.worker_items_rows[2].0;
+    left_click(&mut state, (unassigned.x + 3, unassigned.y));
+    let frame = state.compose(120, 30).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert!(rows[0].contains("‹ Unassigned"), "{rows:#?}");
+    assert!(rows[1].contains("w4 · exited · task of w4"), "{rows:#?}");
+    // Back to the items.
+    let back = state.hits.worker_items_rows[0].0;
+    left_click(&mut state, (back.x + 3, back.y));
+    state.compose(120, 30).unwrap();
+
+    // An item lists its runs, newest first, with their turns, questions
+    // and commits.
+    let item = state.hits.worker_items_rows[0].0;
+    left_click(&mut state, (item.x + 3, item.y));
+    let frame = state.compose(120, 30).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    assert!(rows[1].contains("w2 · running"), "{rows:#?}");
+    assert!(rows[2].contains("w1 · finished"), "{rows:#?}");
+    assert!(
+        rows[2].contains("2 turns · 1 question · abc1234"),
+        "{rows:#?}"
+    );
+
+    // A run opens its log in the worker log popup, and the list closes.
+    let run = state.hits.worker_items_rows[2].0;
+    let outcome = left_click(&mut state, (run.x + 3, run.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
+                if target.worker_id == "w1"))));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn esc_goes_back_from_an_items_runs_then_closes_the_popup() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    with_coordinator(&mut state, Some((1, 0)));
+    state.compose(120, 30).unwrap();
+    let button = items_button(&state);
+    left_click(&mut state, (button.x + 2, button.y));
+    state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    state.compose(120, 30).unwrap();
+    let item = state.hits.worker_items_rows[0].0;
+    left_click(&mut state, (item.x + 3, item.y));
+    let open = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::WorkerItems(overlay)) => Some(overlay.open.is_some()),
+        _ => None,
+    };
+    assert_eq!(open(&state), Some(true));
+    state.handle_input_bytes(b"\x1b");
+    assert_eq!(open(&state), Some(false));
+    state.handle_input_bytes(b"\x1b");
+    assert_eq!(open(&state), None);
+}

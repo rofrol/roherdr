@@ -14251,6 +14251,13 @@
                 "$ref": "#/schemas/success_response/$defs/WorkerRun"
               },
               "type": "array"
+            },
+            "title": {
+              "description": "The item's title: its first line in the repository's `TODO.md`,\nwithout the box and the id, cut to 80 characters; absent when the\nfile has no item with that id (a finished item leaves it).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

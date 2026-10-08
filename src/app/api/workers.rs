@@ -1,14 +1,26 @@
 //! The worker actions a client starts that need the app: `worker.open_log`
-//! (a popup) and `worker.take_over` (a tab). The other `worker.*` methods
-//! run on the API connection's thread (`crate::api::workers`).
+//! (a popup) and `worker.take_over` (a tab), and `worker.runs` for its
+//! Items popup. The other `worker.*` methods, and `worker.runs` from the
+//! JSON API, run on the API connection's thread (`crate::api::workers`).
 
 use super::responses::{encode_error, encode_success};
-use crate::api::schema::{ResponseResult, WorkerTarget};
+use crate::api::schema::{ResponseResult, WorkerRunsParams, WorkerTarget};
 use crate::app::App;
 use crate::events::AppEvent;
 use crate::popup_size::PopupSize;
 
 impl App {
+    /// The workers' runs by item, for a client's Items popup, which asks
+    /// when the user opens it.
+    pub(super) fn handle_worker_runs(&mut self, id: String, params: WorkerRunsParams) -> String {
+        match crate::workers::supervisor().runs(&params) {
+            Ok((items, unassigned)) => {
+                encode_success(id, ResponseResult::WorkerRuns { items, unassigned })
+            }
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
     /// Opens the worker's journal in a popup running `herdr worker log
     /// --follow`, read-only, which follows new events until it is closed.
     pub(super) fn handle_worker_open_log(&mut self, id: String, target: WorkerTarget) -> String {

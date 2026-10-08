@@ -1321,7 +1321,6 @@ impl App {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
-            | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_) => {
                 return responses::encode_error(
                     request.id,
@@ -1329,6 +1328,9 @@ impl App {
                     "worker methods are handled by the local JSON API server",
                 );
             }
+            // A client's Items popup asks for it when it opens; the local
+            // JSON API server answers it before it gets here.
+            Method::WorkerRuns(params) => return self.handle_worker_runs(request.id, params),
             Method::WorkerOpenLog(target) => {
                 return self.handle_worker_open_log(request.id, target)
             }

@@ -1131,6 +1131,7 @@ pub(crate) fn render_sidebar(
         }
         block_hits.space_tabs.extend(tab_hits.lines);
         block_hits.space_tab_folds.extend(tab_hits.folds);
+        block_hits.space_tab_items.extend(tab_hits.items);
         block_hits.space_tab_squares.extend(tab_hits.squares);
         block_hits.space_tab_gone.extend(tab_hits.gone);
         block_hits.tooltips.extend(tab_hits.tooltips);

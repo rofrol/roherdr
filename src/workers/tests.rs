@@ -3605,6 +3605,12 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
     let fixture = Fixture::new("runs");
     let repo = git_init(&fixture.repo);
     let other_repo = git_init(&fixture.root.join("other"));
+    // The item's title comes from its repository's TODO.md.
+    std::fs::write(
+        fixture.repo.join("TODO.md"),
+        format!("# TODO\n\n- [ ] Items popup for the coordinator [{ITEM}]\n  more\n"),
+    )
+    .unwrap();
     let start = |cwd: &Path, prompt: &str, item: Option<&str>| {
         fixture
             .supervisor
@@ -3663,6 +3669,12 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
             (ITEM, Some(other_repo.as_str()), 1)
         ]
     );
+    assert_eq!(
+        items[0].title.as_deref(),
+        Some("Items popup for the coordinator")
+    );
+    // No TODO.md there: no title.
+    assert_eq!(items[1].title, None);
     let runs = &items[0].runs;
     assert_eq!(runs[0].worker_id, first.worker_id);
     assert_eq!(runs[0].outcome, WorkerRunOutcome::Finished);
@@ -3750,4 +3762,71 @@ fn done_commits_are_read_from_worker_done_lines() {
     assert!(
         done_commits("WORKER-DONE <sha> | x\nWORKER-BLOCKED no\nWORKER-DONE abc | x").is_empty()
     );
+}
+
+#[test]
+fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
+    const ITEM: &str = "t-abcd2345";
+    let fixture = Fixture::new("listed");
+    let start = |prompt: &str, owner: Option<&str>, item: Option<&str>| {
+        fixture
+            .supervisor
+            .start(&WorkerStartParams {
+                owner_pane_id: owner.map(str::to_owned),
+                item: item.map(str::to_owned),
+                ..start_params(&fixture.repo, prompt, None)
+            })
+            .unwrap()
+            .worker_id
+    };
+    let listed = |id: &str| {
+        fixture
+            .supervisor
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.worker_id == id)
+            .unwrap()
+            .listed
+    };
+    let owned = start("finish", Some("p1"), Some(ITEM));
+    let crashed = start("crash", Some("p1"), Some("t-qrst6723"));
+    let loose = start("finish", None, None);
+    fixture.wait(&owned, WorkerWaitUntil::TurnEnd);
+    fixture.wait(&crashed, WorkerWaitUntil::Exit);
+    assert!(listed(&owned), "a running worker is listed");
+    // The crash is not hidden while its owner has not handled it.
+    assert!(listed(&crashed));
+    assert_eq!(
+        fixture.supervisor.item_counts(),
+        ItemCounts {
+            in_progress: 1,
+            attention: 1
+        }
+    );
+    let gone = obligation_of(&fixture, "p1", &crashed).unwrap();
+    fixture.supervisor.ack(&crashed, gone.seq).unwrap();
+    assert!(!listed(&crashed), "acknowledged: it leaves the sidebar");
+
+    // An end its owner did not ask for stays until acknowledged.
+    fixture.supervisor.stop(&owned).unwrap();
+    fixture.wait(&owned, WorkerWaitUntil::Exit);
+    assert!(listed(&owned));
+    assert_eq!(
+        fixture.supervisor.item_counts(),
+        ItemCounts {
+            in_progress: 0,
+            attention: 1
+        }
+    );
+    let gone = obligation_of(&fixture, "p1", &owned).unwrap();
+    fixture.supervisor.ack(&owned, gone.seq).unwrap();
+    assert!(!listed(&owned));
+    assert_eq!(fixture.supervisor.item_counts(), ItemCounts::default());
+
+    // Nobody acknowledges a worker without an owner: it leaves at its end.
+    fixture.wait(&loose, WorkerWaitUntil::TurnEnd);
+    assert!(listed(&loose));
+    fixture.supervisor.stop(&loose).unwrap();
+    fixture.wait(&loose, WorkerWaitUntil::Exit);
+    assert!(!listed(&loose));
 }

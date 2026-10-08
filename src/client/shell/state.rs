@@ -127,6 +127,10 @@ pub(super) struct ShellHitMap {
     /// Disclosure triangles and counts at the end of tab lines, with the
     /// tab whose squares they fold.
     pub(super) space_tab_folds: Vec<(Rect, String)>,
+    /// The Items buttons on coordinator tab lines, with their tab.
+    pub(super) space_tab_items: Vec<(Rect, String)>,
+    /// Rows of the open Items dropdown.
+    pub(super) worker_items_rows: Vec<(Rect, usize)>,
     /// Squares of nested tabs under an unfolded tab line, with their tab.
     pub(super) space_tab_squares: Vec<(Rect, String)>,
     /// Blank slots of job tabs that closed while the pointer was over the
@@ -436,6 +440,7 @@ impl ShellHitMap {
             })
             .collect();
         shift_all(&mut self.space_tab_folds);
+        shift_all(&mut self.space_tab_items);
         shift_all(&mut self.space_tab_squares);
         self.space_tab_gone = std::mem::take(&mut self.space_tab_gone)
             .into_iter()
@@ -464,6 +469,7 @@ impl ShellHitMap {
             space_to_top: self.space_to_top.clone(),
             tooltips: self.tooltips.clone(),
             space_tab_folds: self.space_tab_folds.clone(),
+            space_tab_items: self.space_tab_items.clone(),
             space_tab_squares: self.space_tab_squares.clone(),
             space_tab_gone: self.space_tab_gone.clone(),
             ..ShellHitMap::default()
@@ -481,6 +487,7 @@ impl ShellHitMap {
         self.space_to_top.extend(block.space_to_top);
         self.tooltips.extend(block.tooltips);
         self.space_tab_folds.extend(block.space_tab_folds);
+        self.space_tab_items.extend(block.space_tab_items);
         self.space_tab_squares.extend(block.space_tab_squares);
         self.space_tab_gone.extend(block.space_tab_gone);
         self.space_tab_square_order
@@ -559,6 +566,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     NotificationLog,
+    WorkerItems,
     Settings,
     Usage,
     ImagePicker,
@@ -986,6 +994,8 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     NotificationLog(super::notification_log::ClientNotificationLogOverlay),
+    /// The coordinator's Items dropdown.
+    WorkerItems(super::worker_items::WorkerItemsOverlay),
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
     ImagePicker(super::image_picker::ImagePickerOverlay),
@@ -1007,6 +1017,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::NotificationLog(_) => ClientShellOverlayKind::NotificationLog,
+            Self::WorkerItems(_) => ClientShellOverlayKind::WorkerItems,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
             Self::ImagePicker(_) => ClientShellOverlayKind::ImagePicker,
@@ -1041,6 +1052,10 @@ pub(super) enum PendingEndpointKind {
         endpoint_id: ClientEndpointId,
     },
     NotificationList {
+        endpoint_id: ClientEndpointId,
+    },
+    /// `worker.runs` for the Items dropdown.
+    WorkerRuns {
         endpoint_id: ClientEndpointId,
     },
     GitBranchList {
