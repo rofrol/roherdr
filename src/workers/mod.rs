@@ -3101,6 +3101,7 @@ impl WorkerSupervisor {
                 allowed_paths: &params.allowed_paths,
                 command: params.command.as_deref(),
                 generated: &params.generated,
+                env: params.env.as_ref(),
                 processes,
             },
             now_ms(),

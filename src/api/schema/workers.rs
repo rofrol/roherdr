@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Starts a headless Claude worker: `claude -p` over stream-json pipes, no
@@ -137,6 +139,12 @@ pub struct WorkerVerifyParams {
     /// Generated files that must regenerate to the committed bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generated: Vec<WorkerGeneratedFile>,
+    /// The caller's environment, which `command` and the `generated`
+    /// commands run with instead of the server's (`HERDR_*` variables are
+    /// dropped). The CLI sends its own; absent, they run in the server's
+    /// environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
 }
 
 /// A committed file and the shell command that regenerates it.

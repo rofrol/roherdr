@@ -8,9 +8,18 @@
 //! committed bytes, and a command (the tests) exits 0.
 //!
 //! A check that cannot run (git missing, the command not found, killed by
-//! a signal) is `unavailable`, which is never a pass. Commands run as long
+//! a signal) is `unavailable`, which is never a pass. So is a command that
+//! failed on its build environment before the project's own work, as its
+//! output shows ([`environment_failure`]): a missing tool or a wrong
+//! toolchain version says nothing about the commit. Commands run as long
 //! as they take: no timer of ours decides a verdict.
+//!
+//! The command and the generators run with the caller's environment when
+//! the request carries it: the herdr server may have been started without
+//! the user's shell profile (`ZIG` from `~/.zshenv`), and its environment
+//! would build with another toolchain than the user's.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -33,6 +42,9 @@ pub(super) struct Request<'a> {
     pub(super) allowed_paths: &'a [String],
     pub(super) command: Option<&'a str>,
     pub(super) generated: &'a [WorkerGeneratedFile],
+    /// The caller's environment, which the command and the generators run
+    /// with instead of the server's; `None` keeps the server's.
+    pub(super) env: Option<&'a HashMap<String, String>>,
     /// The worker's processes still running, found by the supervisor: its
     /// own, or a tool process working in `dir`. Empty when none remains.
     pub(super) processes: Vec<String>,
@@ -126,7 +138,7 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
     for generated in request.generated {
         let mut check = if tree_clean {
             wrote = true;
-            let check = check_generated(dir, generated);
+            let check = check_generated(dir, generated, request.env);
             restore(dir);
             check
         } else {
@@ -138,7 +150,7 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
     if let Some(command) = request.command {
         checks.push(if tree_clean {
             wrote = true;
-            match run_shell(dir, command) {
+            match run_shell(dir, command, request.env) {
                 Ran::Exited(0, _) => passed("command", String::new()),
                 Ran::Exited(code, tail) => {
                     failed("command", format!("exited with code {code}:\n{tail}"))
@@ -302,14 +314,18 @@ fn check_clean(dir: &Path) -> WorkerVerifyCheck {
     }
 }
 
-fn check_generated(dir: &Path, generated: &WorkerGeneratedFile) -> WorkerVerifyCheck {
+fn check_generated(
+    dir: &Path,
+    generated: &WorkerGeneratedFile,
+    env: Option<&HashMap<String, String>>,
+) -> WorkerVerifyCheck {
     let path = generated.path.as_str();
     match git(dir, &["ls-files", "--error-unmatch", "--", path]) {
         Ok(_) => {}
         Err(Git::Unavailable(error)) => return unavailable("generated", &error),
         Err(Git::Failed(_)) => return failed("generated", format!("{path} is not committed")),
     }
-    match run_shell(dir, &generated.command) {
+    match run_shell(dir, &generated.command, env) {
         Ran::Exited(0, _) => {}
         Ran::Exited(code, tail) => {
             return failed(
@@ -417,10 +433,19 @@ enum Ran {
     Unavailable(String),
 }
 
-/// Runs `command` with `sh -c` in `dir`, stderr merged into stdout. Exit
-/// 126 and 127 are the shell's "cannot execute" and "not found".
-fn run_shell(dir: &Path, command: &str) -> Ran {
-    let output = match Command::new("sh")
+/// Runs `command` with `sh -c` in `dir`, stderr merged into stdout, with
+/// `env` (without `HERDR_*`) in place of the server's environment when
+/// given. Exit 126 and 127 are the shell's "cannot execute" and "not
+/// found"; another failure whose output shows a broken build environment
+/// ([`environment_failure`]) is unavailable too.
+fn run_shell(dir: &Path, command: &str, env: Option<&HashMap<String, String>>) -> Ran {
+    let mut shell = Command::new("sh");
+    if let Some(env) = env {
+        shell
+            .env_clear()
+            .envs(env.iter().filter(|(name, _)| !name.starts_with("HERDR_")));
+    }
+    let output = match shell
         .arg("-c")
         .arg(format!("exec 2>&1\n{command}"))
         .current_dir(dir)
@@ -434,14 +459,62 @@ fn run_shell(dir: &Path, command: &str) -> Ran {
         Ok(output) => output,
         Err(error) => return Ran::Unavailable(format!("cannot run sh: {error}")),
     };
-    let tail = tail(&String::from_utf8_lossy(&output.stdout));
+    let text = String::from_utf8_lossy(&output.stdout);
+    let tail = tail(&text);
     match output.status.code() {
         Some(code @ (126 | 127)) => {
             Ran::Unavailable(format!("{command:?} could not run (exit {code}):\n{tail}"))
         }
-        Some(code) => Ran::Exited(code, tail),
+        Some(0) => Ran::Exited(0, tail),
+        Some(code) => match environment_failure(&text) {
+            Some(line) => Ran::Unavailable(format!(
+                "{command:?} failed on its build environment, not the project \
+                 (exit {code}; {line:?}):\n{tail}"
+            )),
+            None => Ran::Exited(code, tail),
+        },
         None => Ran::Unavailable(format!("{command:?} was ended by a signal:\n{tail}")),
     }
+}
+
+/// The line of a failed command's output that shows it failed on its
+/// build environment before the project's own work: a tool missing or of
+/// the wrong version. Conservative: any sign of the project's own failure
+/// (a rustc error code, a failing test) keeps it `failed`, and so does an
+/// output matching none of these patterns:
+///
+/// - Zig's version check (`does not meet the required build version`) and
+///   herdr's build script (`requires Zig `, `zig executable not found`);
+/// - a missing cargo subcommand (`error: no such command: `, as for
+///   `cargo nextest` without cargo-nextest);
+/// - a rustup toolchain not installed (`error: toolchain '...' is not
+///   installed`);
+/// - a missing linker (`error: linker `...` not found`);
+/// - a program the shell did not find (`sh: ...: command not found`,
+///   `zsh: command not found: ...`, or `sh: 1: ...: not found` from dash),
+///   in a script the command ran.
+fn environment_failure(output: &str) -> Option<&str> {
+    let lines = || output.lines().map(str::trim);
+    let project_failed = lines().any(|line| {
+        line.contains("error[E")
+            || line.contains("test result: FAILED")
+            || line.starts_with("FAIL [")
+    });
+    if project_failed {
+        return None;
+    }
+    lines().find(|line| {
+        line.contains("does not meet the required build version")
+            || line.contains("requires Zig ")
+            || line.contains("zig executable not found")
+            || line.starts_with("error: no such command: ")
+            || (line.starts_with("error: toolchain '") && line.contains("is not installed"))
+            || (line.starts_with("error: linker `") && line.ends_with("not found"))
+            || (["sh: ", "bash: ", "zsh: ", "/bin/sh: "]
+                .iter()
+                .any(|shell| line.starts_with(shell))
+                && (line.contains("command not found") || line.ends_with(": not found")))
+    })
 }
 
 fn tail(output: &str) -> String {
@@ -535,10 +608,138 @@ mod tests {
                 allowed_paths: &["src/**".into(), "gen.txt".into()],
                 command,
                 generated: &generated,
+                env: None,
                 processes: Vec::new(),
             },
             7,
         )
+    }
+
+    fn detail<'a>(verification: &'a WorkerVerification, name: &str) -> &'a str {
+        &verification
+            .checks
+            .iter()
+            .find(|check| check.check == name)
+            .unwrap_or_else(|| panic!("no {name} check: {verification:#?}"))
+            .detail
+    }
+
+    #[test]
+    fn the_command_runs_with_the_callers_environment_not_the_servers() {
+        let (dir, base) = repo("env");
+        commit(&dir, SUBJECT);
+        let env: HashMap<String, String> = [
+            ("PATH", std::env::var("PATH").unwrap_or_default()),
+            ("VERIFY_PROBE", "from the caller".into()),
+            ("HERDR_PANE_ID", "p_caller".into()),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect();
+        // The test process has HOME; the caller's environment here does not.
+        assert!(std::env::var_os("HOME").is_some());
+        let verification = verify(
+            &Request {
+                dir: &dir,
+                base: &base,
+                expected_message: SUBJECT,
+                allowed_paths: &["src/**".into()],
+                command: Some(
+                    "echo \"probe=$VERIFY_PROBE home=${HOME-unset} pane=${HERDR_PANE_ID-unset}\"; exit 1",
+                ),
+                generated: &[],
+                env: Some(&env),
+                processes: Vec::new(),
+            },
+            7,
+        );
+        assert_eq!(
+            outcome(&verification, "command"),
+            WorkerCheckOutcome::Failed
+        );
+        assert!(
+            detail(&verification, "command")
+                .contains("probe=from the caller home=unset pane=unset"),
+            "{verification:#?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_toolchain_version_mismatch_is_unavailable() {
+        let (dir, base) = repo("zig");
+        commit(&dir, SUBJECT);
+        let output = "   Compiling ghostty-vt v0.1.0\n\
+            error: failed to run custom build command for `ghostty-vt v0.1.0`\n\
+            error: Your Zig version v0.17.0 does not meet the required build version of v0.16.0\n\
+            zig build for vendored libghostty-vt failed: exit status: 1. Building Herdr \
+            requires Zig 0.16.0; check `zig version`";
+        let verification = run(
+            &dir,
+            &base,
+            Some(&format!("printf '%s\\n' '{output}'; exit 101")),
+            false,
+        );
+        assert_eq!(
+            verification.verdict,
+            WorkerVerdict::Unavailable,
+            "{verification:#?}"
+        );
+        assert!(detail(&verification, "command").contains("build environment"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failing_test_fails_even_beside_an_environment_message() {
+        let (dir, base) = repo("test-fails");
+        commit(&dir, SUBJECT);
+        let output = "sh: helper: command not found\n\
+            thread 'tests::it_works' panicked at src/lib.rs:3:5\n\
+            test result: FAILED. 0 passed; 1 failed";
+        let verification = run(
+            &dir,
+            &base,
+            Some(&format!("printf '%s\\n' '{output}'; exit 101")),
+            false,
+        );
+        assert_eq!(verification.verdict, WorkerVerdict::Failed);
+        assert_eq!(
+            outcome(&verification, "command"),
+            WorkerCheckOutcome::Failed
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn environment_failure_patterns() {
+        for (output, environment) in [
+            ("error: Your Zig version v0.17.0 does not meet the required build version of v0.16.0", true),
+            ("Building Herdr requires Zig 0.16.0; check `zig version`", true),
+            ("zig executable not found (looked for \"zig\")", true),
+            ("error: no such command: `nextest`", true),
+            ("error: toolchain '1.95.0-aarch64-apple-darwin' is not installed", true),
+            ("error: linker `cc` not found", true),
+            ("sh: just: command not found", true),
+            ("sh: line 1: just: command not found", true),
+            ("zsh: command not found: just", true),
+            ("sh: 1: just: not found", true),
+            // The project's own failures.
+            ("error[E0308]: mismatched types", false),
+            ("test result: FAILED. 3 passed; 1 failed", false),
+            ("FAIL [   0.012s] herdr workers::tests::it_works", false),
+            ("error: could not compile `herdr` (lib) due to 2 previous errors", false),
+            ("assertion failed: requires zig", false),
+            // Ambiguous: the project's test prints it, not the shell.
+            ("expected \"sh: x: command not found\"", false),
+            // Both: the project's failure wins.
+            ("error: no such command: `x`\nerror[E0425]: cannot find value", false),
+        ] {
+            assert_eq!(
+                environment_failure(output).is_some(),
+                environment,
+                "{output:?}"
+            );
+        }
     }
 
     fn outcome(verification: &WorkerVerification, name: &str) -> WorkerCheckOutcome {
@@ -746,6 +947,7 @@ mod tests {
                 allowed_paths: &["src/**".into()],
                 command: None,
                 generated: &[],
+                env: None,
                 processes: vec!["the worker's process 42".into()],
             },
             7,
