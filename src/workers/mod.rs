@@ -421,6 +421,10 @@ struct Status {
     owner_gone: Option<String>,
     /// The TODO item it works on (`started`'s `item`).
     item: Option<String>,
+    /// That item's title in its repository's `TODO.md` when the worker
+    /// started (`started`'s `item_title`): a finished item leaves the file,
+    /// and its runs keep the title.
+    item_title: Option<String>,
     /// The repository of its directory (`started`'s `repo`): the parent of
     /// its git common directory.
     repo: Option<String>,
@@ -507,6 +511,7 @@ impl Status {
             acked_seq: 0,
             owner_gone: None,
             item: None,
+            item_title: None,
             repo: None,
             started_ms: None,
             ended_ms: None,
@@ -829,6 +834,7 @@ impl Status {
                 self.owner_pane = event["owner"]["pane_id"].as_str().map(str::to_owned);
                 self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
                 self.item = string_field(event, "item");
+                self.item_title = string_field(event, "item_title");
                 self.repo = string_field(event, "repo");
                 self.pid = event
                     .get("pid")
@@ -1867,23 +1873,44 @@ pub(crate) struct WorkerSummary {
     pub(crate) listed: bool,
 }
 
-/// How many TODO items have workers on them, for the coordinator's Items
-/// button: items with a running worker, and items with an ended run whose
-/// owner has not acknowledged its end (a result or a failure to review).
-/// Ids of different repositories count apart.
+/// How many TODO items of one repository have workers on them, for the
+/// coordinator's Items button: items with a running worker, and items with
+/// an ended run whose owner has not acknowledged its end (a result or a
+/// failure to review).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ItemCounts {
     pub(crate) in_progress: u32,
     pub(crate) attention: u32,
 }
 
-/// [`ItemCounts`] of the server's supervisor; zero when no supervisor was
-/// opened.
-pub(crate) fn item_counts() -> ItemCounts {
+/// [`ItemCounts`] of repository `repo` in the server's supervisor; zero
+/// when no supervisor was opened.
+pub(crate) fn item_counts(repo: &str) -> ItemCounts {
     SUPERVISOR
         .get()
-        .map(WorkerSupervisor::item_counts)
+        .map(|supervisor| supervisor.item_counts(repo))
         .unwrap_or_default()
+}
+
+/// Repositories found for directories, so a snapshot does not search the
+/// file system again for a coordinator's directory. Only found ones are
+/// kept: a directory may become a repository later.
+static REPOSITORIES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// The repository `dir` is in, as workers' `repo` names it (the parent of
+/// its git common directory); none outside git. Cached by directory.
+pub(crate) fn repository_of_dir(dir: &str) -> Option<String> {
+    if let Some(repo) = lock(&REPOSITORIES).get(dir) {
+        return Some(repo.clone());
+    }
+    let repo = repository_of(Path::new(dir))?;
+    let mut cache = lock(&REPOSITORIES);
+    // A bound against a server that sees many directories over its life.
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    cache.insert(dir.to_owned(), repo.clone());
+    Some(repo)
 }
 
 /// Every worker of the server's supervisor, oldest first; empty when no
@@ -2403,6 +2430,13 @@ impl WorkerSupervisor {
             .map(|name| one_line(name, 80))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| task_name(prompt));
+        let repo = repository_of(&cwd_real);
+        // The title as it is now: the item leaves TODO.md once finished.
+        let item_title = params
+            .item
+            .as_ref()
+            .zip(repo.as_ref())
+            .and_then(|(item, repo)| todo_titles::read_titles(Path::new(repo)).remove(item));
         let started = json!({
             "type": "started",
             "worker_id": worker_id,
@@ -2420,7 +2454,8 @@ impl WorkerSupervisor {
                 "session_id": params.owner_session_id,
             })),
             "item": params.item,
-            "repo": repository_of(&cwd_real),
+            "item_title": item_title,
+            "repo": repo,
             "folder_slot": slot.as_ref().map(|slot| json!({
                 "name": params.folder_slot,
                 "branch": slot.branch,
@@ -2720,7 +2755,8 @@ impl WorkerSupervisor {
             .collect()
     }
 
-    fn item_counts(&self) -> ItemCounts {
+    /// [`ItemCounts`] of the items of repository `repo`.
+    fn item_counts(&self, repo: &str) -> ItemCounts {
         let registry = lock(&self.shared.registry);
         let mut in_progress = std::collections::BTreeSet::new();
         let mut attention = std::collections::BTreeSet::new();
@@ -2729,7 +2765,10 @@ impl WorkerSupervisor {
             let Some(item) = &status.item else {
                 continue;
             };
-            let key = (status.repo.as_deref(), item.as_str());
+            if status.repo.as_deref() != Some(repo) {
+                continue;
+            }
+            let key = item.as_str();
             if !status.is_gone() {
                 in_progress.insert(key);
             } else if status.end_unacked() {
@@ -2824,20 +2863,31 @@ impl WorkerSupervisor {
                 .iter_mut()
                 .find(|group| group.item == *item && group.repo == status.repo)
             {
-                Some(group) => group.runs.push(run),
+                Some(group) => {
+                    group.runs.push(run);
+                    // The latest run's title: the item may have been renamed.
+                    if status.item_title.is_some() {
+                        group.title = status.item_title.clone();
+                    }
+                }
                 None => items.push(WorkerItemRuns {
                     item: item.clone(),
                     repo: status.repo.clone(),
                     runs: vec![run],
-                    title: None,
+                    title: status.item_title.clone(),
                 }),
             }
         }
         drop(registry);
-        // Read after the registry is released: a slow disk must not hold
-        // the workers' events.
+        // Only items none of whose runs stored a title (workers started
+        // before titles were stored) are looked up in TODO.md, after the
+        // registry is released: a slow disk must not hold the workers'
+        // events.
         let mut titles: HashMap<String, HashMap<String, String>> = HashMap::new();
         for group in &mut items {
+            if group.title.is_some() {
+                continue;
+            }
             let Some(repo) = &group.repo else {
                 continue;
             };

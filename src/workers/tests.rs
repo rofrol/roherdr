@@ -3768,6 +3768,7 @@ fn done_commits_are_read_from_worker_done_lines() {
 fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     const ITEM: &str = "t-abcd2345";
     let fixture = Fixture::new("listed");
+    let repo = git_init(&fixture.repo);
     let start = |prompt: &str, owner: Option<&str>, item: Option<&str>| {
         fixture
             .supervisor
@@ -3791,13 +3792,32 @@ fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     let owned = start("finish", Some("p1"), Some(ITEM));
     let crashed = start("crash", Some("p1"), Some("t-qrst6723"));
     let loose = start("finish", None, None);
+    // Another repository's item counts only there.
+    let elsewhere_repo = git_init(&fixture.root.join("other"));
+    let elsewhere = fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            owner_pane_id: Some("p1".into()),
+            item: Some(ITEM.into()),
+            ..start_params(&fixture.root.join("other"), "finish", None)
+        })
+        .unwrap()
+        .worker_id;
+    fixture.wait(&elsewhere, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        fixture.supervisor.item_counts(&elsewhere_repo),
+        ItemCounts {
+            in_progress: 1,
+            attention: 0
+        }
+    );
     fixture.wait(&owned, WorkerWaitUntil::TurnEnd);
     fixture.wait(&crashed, WorkerWaitUntil::Exit);
     assert!(listed(&owned), "a running worker is listed");
     // The crash is not hidden while its owner has not handled it.
     assert!(listed(&crashed));
     assert_eq!(
-        fixture.supervisor.item_counts(),
+        fixture.supervisor.item_counts(&repo),
         ItemCounts {
             in_progress: 1,
             attention: 1
@@ -3812,7 +3832,7 @@ fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     fixture.wait(&owned, WorkerWaitUntil::Exit);
     assert!(listed(&owned));
     assert_eq!(
-        fixture.supervisor.item_counts(),
+        fixture.supervisor.item_counts(&repo),
         ItemCounts {
             in_progress: 0,
             attention: 1
@@ -3821,7 +3841,7 @@ fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     let gone = obligation_of(&fixture, "p1", &owned).unwrap();
     fixture.supervisor.ack(&owned, gone.seq).unwrap();
     assert!(!listed(&owned));
-    assert_eq!(fixture.supervisor.item_counts(), ItemCounts::default());
+    assert_eq!(fixture.supervisor.item_counts(&repo), ItemCounts::default());
 
     // Nobody acknowledges a worker without an owner: it leaves at its end.
     fixture.wait(&loose, WorkerWaitUntil::TurnEnd);
@@ -3829,4 +3849,58 @@ fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     fixture.supervisor.stop(&loose).unwrap();
     fixture.wait(&loose, WorkerWaitUntil::Exit);
     assert!(!listed(&loose));
+}
+
+#[test]
+fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
+    const ITEM: &str = "t-abcd2345";
+    let fixture = Fixture::new("item-title");
+    git_init(&fixture.repo);
+    let todo = fixture.repo.join("TODO.md");
+    let start = || {
+        let worker = fixture
+            .supervisor
+            .start(&WorkerStartParams {
+                item: Some(ITEM.into()),
+                ..start_params(&fixture.repo, "finish", None)
+            })
+            .unwrap()
+            .worker_id;
+        fixture.wait(&worker, WorkerWaitUntil::TurnEnd);
+        worker
+    };
+    let title = || {
+        let (items, _) = fixture
+            .supervisor
+            .runs(&WorkerRunsParams::default())
+            .unwrap();
+        items[0].title.clone()
+    };
+
+    // Started while TODO.md had no such item: nothing stored, so the title
+    // is read from TODO.md once it has one.
+    start();
+    std::fs::write(&todo, format!("- [ ] Read later [{ITEM}]\n")).unwrap();
+    assert_eq!(title().as_deref(), Some("Read later"));
+
+    // Started while TODO.md had it: stored with the run, kept after the
+    // finished item is deleted, and across a restart.
+    std::fs::write(&todo, format!("- [ ] Items popup [{ITEM}]\n")).unwrap();
+    let stored = start();
+    let stored_title = {
+        let registry = lock(&fixture.supervisor.shared.registry);
+        registry.workers[&worker_number(&stored).unwrap()]
+            .status
+            .item_title
+            .clone()
+    };
+    assert_eq!(stored_title.as_deref(), Some("Items popup"));
+    std::fs::write(&todo, "# TODO\n").unwrap();
+    assert_eq!(title().as_deref(), Some("Items popup"));
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    assert_eq!(items[0].title.as_deref(), Some("Items popup"));
 }

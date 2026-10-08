@@ -74,7 +74,7 @@ pub(super) fn items_button_text(badge: &str) -> String {
 }
 
 /// The badge of the counts: `3·1!`, `3`, `1!`, or empty when both are zero.
-pub(super) fn items_badge(counts: &crate::protocol::ClientShellWorkerItemCounts) -> String {
+pub(super) fn items_badge(counts: &crate::protocol::ClientShellWorkerItems) -> String {
     let mut parts = Vec::new();
     if counts.in_progress > 0 {
         parts.push(counts.in_progress.to_string());
@@ -86,7 +86,7 @@ pub(super) fn items_badge(counts: &crate::protocol::ClientShellWorkerItemCounts)
 }
 
 /// What the button says on hover.
-pub(super) fn items_tooltip(counts: &crate::protocol::ClientShellWorkerItemCounts) -> String {
+pub(super) fn items_tooltip(counts: &crate::protocol::ClientShellWorkerItems) -> String {
     format!(
         "TODO items with workers: {} in progress · {} ended, not acknowledged by the coordinator",
         counts.in_progress, counts.attention
@@ -307,7 +307,7 @@ impl WorkerItemsOverlay {
 impl ClientShellState {
     /// The Items button at `point`: the coordinator tab's id and the
     /// button's rect.
-    pub(super) fn worker_items_button_at(&self, point: (u16, u16)) -> Option<Rect> {
+    pub(super) fn worker_items_button_at(&self, point: (u16, u16)) -> Option<(Rect, String)> {
         if self.sidebar_collapsed {
             return None;
         }
@@ -315,31 +315,47 @@ impl ClientShellState {
             .space_tab_items
             .iter()
             .find(|(rect, _)| super::contains(*rect, point))
-            .map(|(rect, _)| *rect)
+            .cloned()
     }
 
-    /// Opens the dropdown under `button` and fetches the runs, or closes it.
-    pub(super) fn toggle_worker_items(&mut self, button: Rect, outcome: &mut ClientShellInput) {
+    /// Opens the dropdown under `button` and fetches the runs of the
+    /// repository of coordinator tab `tab_id`, or closes it.
+    pub(super) fn toggle_worker_items(
+        &mut self,
+        (button, tab_id): (Rect, String),
+        outcome: &mut ClientShellInput,
+    ) {
         outcome.repaint = true;
         if matches!(self.overlay, Some(ClientShellOverlay::WorkerItems(_))) {
             self.overlay = None;
             return;
         }
         let endpoint_id = self.active_endpoint_id.clone();
-        let method = crate::api::schema::Method::WorkerRuns(WorkerRunsParams::default());
-        let fetch =
-            if self.endpoint_is_online(&endpoint_id) && self.supports_endpoint_method(&method) {
-                self.push_endpoint_method_with_kind(
-                    method,
-                    PendingEndpointKind::WorkerRuns {
-                        endpoint_id: endpoint_id.clone(),
-                    },
-                    outcome,
-                );
-                ItemsFetch::Loading
-            } else {
-                ItemsFetch::Failed("this machine does not list worker runs".into())
-            };
+        let repo = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .worker_items
+                .iter()
+                .find(|items| items.tab_id == tab_id)
+                .map(|items| items.repo.clone())
+        });
+        let method = crate::api::schema::Method::WorkerRuns(WorkerRunsParams {
+            item: None,
+            repo: repo.clone(),
+        });
+        let fetch = if repo.is_none() {
+            ItemsFetch::Failed("this tab is not in a git repository".into())
+        } else if self.endpoint_is_online(&endpoint_id) && self.supports_endpoint_method(&method) {
+            self.push_endpoint_method_with_kind(
+                method,
+                PendingEndpointKind::WorkerRuns {
+                    endpoint_id: endpoint_id.clone(),
+                },
+                outcome,
+            );
+            ItemsFetch::Loading
+        } else {
+            ItemsFetch::Failed("this machine does not list worker runs".into())
+        };
         self.overlay = Some(ClientShellOverlay::WorkerItems(WorkerItemsOverlay {
             button,
             endpoint_id,
@@ -457,14 +473,15 @@ impl ClientShellState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ClientShellWorkerItemCounts;
+    use crate::protocol::ClientShellWorkerItems;
 
     #[test]
     fn the_badge_counts_items_in_progress_and_to_acknowledge() {
         let badge = |in_progress, attention| {
-            items_badge(&ClientShellWorkerItemCounts {
+            items_badge(&ClientShellWorkerItems {
                 in_progress,
                 attention,
+                ..Default::default()
             })
         };
         assert_eq!(badge(3, 1), "3·1!");

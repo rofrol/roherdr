@@ -63,10 +63,10 @@ pub(super) struct SpaceTabLine {
     /// Set on a headless worker's line (see [`worker_lines`]); its `tab_id`
     /// is [`worker_line_id`], never a real tab's.
     pub(super) worker: Option<WorkerLine>,
-    /// A coordinator's line: the counts its Items button shows (see
-    /// [`super::worker_items`]); none on other lines, and from a server
-    /// that cannot list worker runs.
-    pub(super) items: Option<crate::protocol::ClientShellWorkerItemCounts>,
+    /// A coordinator's line: its repository and the counts its Items button
+    /// shows (see [`super::worker_items`]); none on other lines, outside
+    /// git, and from a server that cannot list worker runs.
+    pub(super) items: Option<crate::protocol::ClientShellWorkerItems>,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -476,8 +476,11 @@ pub(super) fn space_tab_lines_filtered(
                 ask: tab_ask(snapshot, tab),
                 worker: None,
                 items: snapshot
-                    .worker_item_counts
-                    .filter(|_| tab.role == Some(crate::api::schema::TabRole::Coordinator)),
+                    .worker_items
+                    .iter()
+                    .find(|items| items.tab_id == tab.tab_id)
+                    .filter(|_| tab.role == Some(crate::api::schema::TabRole::Coordinator))
+                    .cloned(),
             }
         })
         .collect::<Vec<_>>();
