@@ -8,6 +8,9 @@ constrain it.
 
 ## Next, in order
 
+Agents may do these from the top without asking when the user tells them to
+work through the TODO (the user's global agent rules, "Working through TODO.md").
+
 - [ ] Program-decided worker outcomes instead of the model's word (user, [t-a4gw5vfo]
   2026-10-08: "I feel control is inverted: the worker works and we count on
   the model, through hooks or AGENTS.md, to return the right status; but
@@ -37,17 +40,10 @@ constrain it.
   for verification; a `herdr worker verify` (or the wait handler) checks
   commit, message, paths and runs the command; the coordinator
   cherry-picks only on `verified`.
-
-## Proposed
-
-Items agents add. Not approved until the user moves them up.
   Approved 2026-10-08: the user said "decide with the models what next";
   round `20261008-144310-fce1` (sol, MiMo; DeepSeek partly) put this first, then atomicity
   fix 8 with the takeover tab marker, then the live check that closes
   "Event-driven worker waits".
-
-Agents may do these from the top without asking when the user tells them to
-work through the TODO (the user's global agent rules, "Working through TODO.md").
 
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
@@ -1596,6 +1592,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   ended workers ▸", expanding on click); `herdr worker list --all`, the log
   and the item history keep them reachable; per-state glyphs instead of
   one green circle.
+
+## Proposed
+
+Items agents add. Not approved until the user moves them up.
 
 - [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
   turn) or "a new request is queued, everything else goes to a worker"?
