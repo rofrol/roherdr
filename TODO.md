@@ -422,6 +422,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      "acknowledged" and "answered" are distinct states, and acknowledging
      never clears an unanswered question (sol); an answer survives the
      coordinator dying mid-answer (MiMo).
+  4. (Done 2026-10-08 by headless worker `w12`: `feat: a coordinator
+     cannot stop while its workers need it`, installed, and the Claude
+     integration reinstalled with the user's yes: owner recorded at
+     `worker.start`, `worker.ack`, `worker.obligations`, the Stop hook
+     blocks a coordinator tab while obligations exist and fails open when
+     herdr cannot be reached; the old once-only block stays beside it.)
   4. The coordinator's turn cannot end while one of its workers has an
      event it has not handled: the existing coordinator Stop hook asks
      herdr and blocks the stop (MiMo, DeepSeek: enforce it mechanically,
