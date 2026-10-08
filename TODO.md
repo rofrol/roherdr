@@ -529,6 +529,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   6. Install the build that was checked: build and install under one
      clean-tree lock, and `herdr_live.sh install` refuses a binary whose
      build label is not the expected one (finding 11).
+     Done 2026-10-08 by headless worker `w7` (`fix: build and install the
+     checked tree under one lock`, no questions): `clean-tree --then`,
+     `just clean-install <paths>`, `herdr_live.sh install --expect-build`,
+     one snapshot of HEAD and the paths; first used for its own install.
   7. herdr-job's locks follow the command (`pass_fds`), no `lost` verdict
      after 60 s, `run --key` (findings 10, 13).
   8. The `/todo` claim under an exclusive lock; cherry-pick only after
