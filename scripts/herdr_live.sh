@@ -5,7 +5,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: herdr_live.sh install|rollback|list
+usage: herdr_live.sh install|rollback [--force] | list
 
   install   back up the installed binary, install this checkout's
             target/release/herdr over it and hand the running server off to it
@@ -16,11 +16,22 @@ usage: herdr_live.sh install|rollback|list
 The handoff keeps every pane running but disconnects attached clients: run
 `herdr` again to reattach. From a plain terminal the script reattaches itself.
 
+Headless workers do not survive a handoff. The server refuses it while a
+worker is in a turn and names the workers; the script then restores the
+previous binary and stops. `--force` hands off anyway (the server stops the
+workers first; it needs a running build that knows the flag). Workers
+between turns are stopped cleanly either way.
+
 The installed binary is $HERDR_INSTALLED (default ~/.cargo/bin/herdr).
 Backups live in ~/.cache/herdr/installed/ (the last 5 are kept), named
 <install time>_<commit>_<commit subject> after the build they hold.
 USAGE
 }
+
+force=()
+if [[ "${2:-}" == "--force" ]]; then
+  force=(--force)
+fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 candidate="$repo/target/release/herdr"
@@ -60,7 +71,7 @@ replace_installed() {
 # the previous one. The server keeps running its old binary if the new one
 # fails to take over.
 handoff() {
-  "$1" server live-handoff --import-exe "$installed"
+  "$1" server live-handoff ${force[@]+"${force[@]}"} --import-exe "$installed"
 }
 
 # "<short hash>_<subject slug>" from the commit a binary was built from; a
@@ -118,7 +129,7 @@ case "${1:-}" in
     if ! handoff "$backup"; then
       replace_installed "$backup"
       rm -f "$backup"
-      echo "handoff failed; restored the previous binary, the server still runs it" >&2
+      echo "handoff failed or refused (see above); restored the previous binary, the server still runs it" >&2
       exit 1
     fi
     find "$backups" -mindepth 1 -maxdepth 1 -type f | LC_ALL=C sort -r |
@@ -144,7 +155,7 @@ case "${1:-}" in
     replace_installed "$latest"
     if ! handoff "$latest"; then
       replace_installed "$current"
-      echo "handoff failed; kept $(describe "$current")" >&2
+      echo "handoff failed or refused (see above); kept $(describe "$current")" >&2
       exit 1
     fi
     # Popped: the next rollback goes one build further back.

@@ -2948,18 +2948,25 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
-            let handoff_result = self.perform_live_handoff(params.clone());
+            // Worker pipes are not handed over: refuse while a worker is in
+            // a turn, and stop the idle ones cleanly first.
+            let handoff_result = crate::workers::prepare_for_handoff(params.force)
+                .map_err(|message| ("handoff_refused", message))
+                .and_then(|()| {
+                    self.perform_live_handoff(params.clone())
+                        .map_err(|err| ("handoff_failed", err.to_string()))
+                });
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {
                 Ok(()) => serde_json::to_string(&api::schema::SuccessResponse {
                     id: msg.request.id,
                     result: api::schema::ResponseResult::Ok {},
                 }),
-                Err(err) => serde_json::to_string(&api::schema::ErrorResponse {
+                Err((code, message)) => serde_json::to_string(&api::schema::ErrorResponse {
                     id: msg.request.id,
                     error: api::schema::ErrorBody {
-                        code: "handoff_failed".into(),
-                        message: err.to_string(),
+                        code: code.into(),
+                        message,
                     },
                 }),
             }

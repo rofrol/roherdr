@@ -4430,6 +4430,10 @@
                 "null"
               ]
             },
+            "force": {
+              "description": "Hand off even while headless workers are in a turn. Worker pipes are\nnot handed over, so the handoff stops them first; without this a\nworker in a turn refuses the handoff.",
+              "type": "boolean"
+            },
             "import_exe": {
               "type": [
                 "string",
@@ -13578,6 +13582,13 @@
             "cwd": {
               "type": "string"
             },
+            "end_note": {
+              "description": "How a worker ended that keeps its last turn's state: one that had\nfinished its turn when its server ended shows that turn's state with\n\"ended by a server restart\", not `lost`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "exit_code": {
               "format": "int32",
               "type": [
@@ -13821,7 +13832,7 @@
             },
             {
               "const": "lost",
-              "description": "The server that ran it ended before it did; its process is not ours\nany more.",
+              "description": "The server that ran it ended before it did, during a turn; its\nprocess is not ours any more. One between turns keeps its last\nturn's state with `end_note` instead.",
               "type": "string"
             },
             {

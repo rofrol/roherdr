@@ -11,6 +11,11 @@ pub struct ServerLiveHandoffParams {
     pub expected_protocol: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<String>,
+    /// Hand off even while headless workers are in a turn. Worker pipes are
+    /// not handed over, so the handoff stops them first; without this a
+    /// worker in a turn refuses the handoff.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
