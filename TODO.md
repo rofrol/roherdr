@@ -1510,6 +1510,13 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   of about 5 items runs in a local tracker in herdr's SQLite (`herdr todo`
   commands, transactional writes), with versioned JSON export/import and a
   Markdown export, instead of GitHub Issues.
+  Reference source (user, 2026-10-08): a Forgejo checkout at
+  `~/personal_projects/vendor/forgejo` (adfdb1a532); the tracker's model
+  is read from `models/issues/` (issue.go, issue_index.go for the per-repo
+  number, comment.go, content_history.go for edit history, issue_label.go,
+  dependency.go for blocks/blocked-by, issue_xref.go for references),
+  copying concepts, not code (Forgejo is GPL-3.0-or-later; herdr is
+  AGPL/its own license: check before copying any code).
 
 ## Proposed
 
