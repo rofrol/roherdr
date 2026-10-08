@@ -406,6 +406,9 @@ struct Status {
     owner_session: Option<String>,
     /// The highest `seq` its owner acknowledged (`acked`); only grows.
     acked_seq: i64,
+    /// Why its owner is gone for good (`owner_gone`: its pane closed, its
+    /// agent exited): every question, pending or later, goes to the user.
+    owner_gone: Option<String>,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -425,6 +428,9 @@ struct Pending {
     /// What ended its turn or its worker while its answer was in flight: a
     /// failed write then settles it so instead of making it pending again.
     cleared: Option<String>,
+    /// Why it was handed to the user (`escalated`, `owner_gone`); once set it
+    /// stays, whatever its owner does later.
+    escalated: Option<String>,
 }
 
 /// What an event's `seq` marks, taken before the event is folded in
@@ -473,6 +479,7 @@ impl Status {
             owner_pane: None,
             owner_session: None,
             acked_seq: 0,
+            owner_gone: None,
         }
     }
 
@@ -644,6 +651,22 @@ impl Status {
         }
     }
 
+    /// Whether a pending question waits quietly for the worker's owner: it
+    /// has one, and nothing has handed the question to the user yet.
+    fn is_quiet(&self, pending: &Pending) -> bool {
+        self.owner_pane.is_some() && pending.escalated.is_none()
+    }
+
+    /// The ids of the questions that still wait quietly for the owner, whose
+    /// answer is not in flight.
+    fn quiet_questions(&self) -> Vec<String> {
+        self.questions
+            .iter()
+            .filter(|pending| !pending.answering && self.is_quiet(pending))
+            .map(|pending| pending.question.request_id.clone())
+            .collect()
+    }
+
     /// A takeover claimed by a server that is gone without recording its
     /// tab: whether it opened the tab is unknown.
     fn mark_unfinished_takeover(&mut self) {
@@ -771,6 +794,7 @@ impl Status {
                         asked_seq: 0,
                         answering: false,
                         cleared: None,
+                        escalated: self.owner_gone.clone(),
                     });
                 }
             }
@@ -788,6 +812,27 @@ impl Status {
                 {
                     pending.answering = true;
                 }
+            }
+            (Direction::Herdr, "escalated") => {
+                let cause = string_field(event, "cause").unwrap_or_else(|| "escalated".into());
+                let ids: Vec<&str> = event["request_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                for pending in &mut self.questions {
+                    if ids.contains(&pending.question.request_id.as_str()) {
+                        pending.escalated.get_or_insert_with(|| cause.clone());
+                    }
+                }
+            }
+            (Direction::Herdr, "owner_gone") => {
+                let cause = string_field(event, "cause").unwrap_or_else(|| "owner gone".into());
+                for pending in &mut self.questions {
+                    pending.escalated.get_or_insert_with(|| cause.clone());
+                }
+                self.owner_gone.get_or_insert(cause);
             }
             (Direction::Herdr, "signal") => {
                 if event["signal"].as_str() == Some("SIGTERM") {
@@ -963,6 +1008,7 @@ impl Pending {
     /// The question as the API shows it, with where its answer is.
     fn shown(&self) -> WorkerQuestion {
         let mut question = self.question.clone();
+        question.escalated = self.escalated.clone();
         question.state = if self.answering {
             WorkerQuestionState::Answering
         } else {
@@ -1343,6 +1389,16 @@ struct Registry {
     /// The client command ids this server runs now, each with its method
     /// and parameters; a repeat waits for the outcome ([`WorkerSupervisor::command`]).
     commands: BTreeMap<String, (&'static str, String)>,
+    /// Owner panes whose agent cannot handle a question now (it hit a limit,
+    /// or is blocked on its own question to the user), with why: a question
+    /// its workers ask meanwhile goes to the user at once. Only this
+    /// server's memory: herdr re-evaluates the owners when it starts
+    /// ([`owners_at_start`]).
+    stuck_owners: BTreeMap<String, String>,
+    /// When each owner pane last showed an event herdr saw (its agent's
+    /// state, a limit, an ack), Unix milliseconds. Shown next to a quiet
+    /// question; it decides nothing.
+    owner_seen_ms: BTreeMap<String, u64>,
 }
 
 /// A client command id while its command runs: reserved in the store with
@@ -1452,6 +1508,10 @@ pub(crate) struct PendingWorkerQuestion {
     pub(crate) worker_id: String,
     pub(crate) cwd: String,
     pub(crate) question: WorkerQuestion,
+    /// It waits for the worker's owner, not for the user.
+    pub(crate) quiet: bool,
+    /// When the owner last showed an event herdr saw; display only.
+    pub(crate) owner_seen_ms: Option<u64>,
 }
 
 /// Every pending question of the server's supervisor; empty when no
@@ -1461,6 +1521,92 @@ pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
         .get()
         .map(WorkerSupervisor::pending_questions)
         .unwrap_or_default()
+}
+
+/// What a worker owner's pane or agent did, as herdr's own events report
+/// it ([`WorkerSupervisor::owner_event`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerEvent {
+    /// The pane closed: the owner is gone for good.
+    PaneClosed,
+    /// The agent in it exited: the owner is gone for good.
+    AgentExited,
+    /// Its turn ended on a usage or credit limit (`pane.report_limit`).
+    Limited,
+    /// It waits on its own question to the user.
+    Blocked,
+    /// It went idle or done: a question still unanswered then was not
+    /// answered in its turn (acknowledging is not answering).
+    TurnEnded,
+    /// It works again: it can handle new questions.
+    Working,
+}
+
+impl OwnerEvent {
+    /// What an owner pane's agent status change means: its agent left the
+    /// pane (`released`), works again, is blocked, or went idle or done from
+    /// a state that was neither (a turn's end; idle and done only differ in
+    /// whether the user has seen it).
+    pub(crate) fn from_agent_status(
+        previous: crate::api::schema::AgentStatus,
+        now: crate::api::schema::AgentStatus,
+        released: bool,
+    ) -> Option<Self> {
+        use crate::api::schema::AgentStatus;
+        let resting = |status| matches!(status, AgentStatus::Idle | AgentStatus::Done);
+        if released {
+            Some(Self::AgentExited)
+        } else if previous == now {
+            None
+        } else if now == AgentStatus::Working {
+            Some(Self::Working)
+        } else if now == AgentStatus::Blocked {
+            Some(Self::Blocked)
+        } else if resting(now) && !resting(previous) {
+            Some(Self::TurnEnded)
+        } else {
+            None
+        }
+    }
+
+    /// Why it hands its workers' quiet questions to the user, if it does.
+    fn cause(self) -> Option<&'static str> {
+        Some(match self {
+            Self::PaneClosed => "the coordinator's pane closed",
+            Self::AgentExited => "the coordinator's agent exited",
+            Self::Limited => "the coordinator hit a usage or credit limit",
+            Self::Blocked => "the coordinator is blocked on its own question to the user",
+            Self::TurnEnded => "the coordinator ended its turn without answering",
+            Self::Working => return None,
+        })
+    }
+}
+
+/// Reports an owner's event to the server's supervisor; nothing when no
+/// supervisor was opened or no running worker is owned by `pane_id`.
+pub(crate) fn owner_event(pane_id: &str, event: OwnerEvent) {
+    if let Some(supervisor) = SUPERVISOR.get() {
+        supervisor.owner_event(pane_id, event, "");
+    }
+}
+
+/// The owner panes [`owner_event`] can still act on, to check after panes
+/// close; empty when no supervisor was opened.
+pub(crate) fn owner_panes() -> Vec<String> {
+    SUPERVISOR
+        .get()
+        .map(WorkerSupervisor::owner_panes)
+        .unwrap_or_default()
+}
+
+/// Re-evaluates every owner when herdr starts: the panes and agents of a
+/// previous server may be gone, idle or blocked without any event this one
+/// will see. `state` tells, for an owner pane, what it finds there now
+/// (`None`: it works, nothing to do).
+pub(crate) fn owners_at_start(state: impl Fn(&str) -> Option<OwnerEvent>) {
+    if let Some(supervisor) = SUPERVISOR.get() {
+        supervisor.owners_at_start(state);
+    }
 }
 
 /// Readies the server's workers for a live handoff without waiting
@@ -2219,18 +2365,63 @@ impl WorkerSupervisor {
             warn!(%error, worker_id = entry.status.worker_id, "worker journal write failed");
             entry.status.degraded = Some(format!("a worker journal write failed: {error}"));
         }
+        let mut shown_changed = Self::shown(&entry.status) != shown_before;
+        // A question asked while its owner cannot handle one goes to the
+        // user at once, as one asked before would have when the owner got
+        // stuck.
+        let asked = matches!(record, store::Recorded::Event(event)
+            if direction == Direction::Herdr && event["type"].as_str() == Some("question"));
+        let stuck = entry
+            .status
+            .owner_pane
+            .as_ref()
+            .and_then(|pane| registry.stuck_owners.get(pane))
+            .cloned();
+        if let (true, Some(cause)) = (asked, stuck) {
+            if let Some(escalated) = self.escalate_locked(registry, number, &cause) {
+                shown_changed |= escalated.shown_changed;
+            }
+        }
         Committed {
-            shown_changed: Self::shown(&entry.status) != shown_before,
+            shown_changed,
             seq: Some(in_memory),
         }
     }
 
+    /// Hands every question of worker `number` that waits quietly for its
+    /// owner to the user, as one `escalated` event naming them and `cause`.
+    /// Records nothing when none waits quietly.
+    fn escalate_locked(
+        &self,
+        registry: &mut Registry,
+        number: u64,
+        cause: &str,
+    ) -> Option<Committed> {
+        let quiet = registry.workers.get(&number)?.status.quiet_questions();
+        if quiet.is_empty() {
+            return None;
+        }
+        let escalated = json!({"type": "escalated", "request_ids": quiet, "cause": cause});
+        Some(self.commit_locked(
+            registry,
+            number,
+            Direction::Herdr,
+            store::Recorded::Event(&escalated),
+        ))
+    }
+
     /// The parts of a status the clients show. Questions are only added or
-    /// removed, never replaced in place, so their count tells a change.
-    fn shown(status: &Status) -> (WorkerState, usize, bool, bool, bool) {
+    /// removed, never replaced in place, and only ever go from quiet to
+    /// escalated, so the two counts tell a change.
+    fn shown(status: &Status) -> (WorkerState, usize, usize, bool, bool, bool) {
         (
             status.state,
             status.questions.len(),
+            status
+                .questions
+                .iter()
+                .filter(|pending| status.is_quiet(pending))
+                .count(),
             status.session_id.is_some(),
             status.takeover_ms.is_some(),
             status.degraded.is_some(),
@@ -2268,7 +2459,14 @@ impl WorkerSupervisor {
                     .map(|pending| PendingWorkerQuestion {
                         worker_id: entry.status.worker_id.clone(),
                         cwd: entry.status.cwd.clone(),
-                        question: pending.question.clone(),
+                        question: pending.shown(),
+                        quiet: entry.status.is_quiet(pending),
+                        owner_seen_ms: entry
+                            .status
+                            .owner_pane
+                            .as_ref()
+                            .and_then(|pane| registry.owner_seen_ms.get(pane))
+                            .copied(),
                     })
             })
             .collect()
@@ -2366,6 +2564,10 @@ impl WorkerSupervisor {
                     status.last_seq
                 )));
             }
+            if let Some(pane) = status.owner_pane.clone() {
+                registry.owner_seen_ms.insert(pane, now_ms());
+            }
+            let status = &registry.workers[&number].status;
             if seq <= status.acked_seq {
                 None
             } else {
@@ -2413,6 +2615,159 @@ impl WorkerSupervisor {
                 })
             })
             .collect()
+    }
+
+    /// The owner hands one pending question to the user (`worker.escalate`).
+    /// Idempotent: a question already escalated, or of a worker without an
+    /// owner (which asks the user anyway), records nothing.
+    pub(crate) fn escalate(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let committed = {
+            let mut registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, worker_id)?;
+            let status = &registry.workers[&number].status;
+            if !status
+                .questions
+                .iter()
+                .any(|pending| pending.question.request_id == request_id)
+            {
+                return Err(match status.resolution(request_id) {
+                    Some(how) => WorkerError::QuestionGone(format!(
+                        "question {request_id} of worker {worker_id} is no longer pending: {how}"
+                    )),
+                    None => WorkerError::NoQuestion(format!(
+                        "worker {worker_id} has no question {request_id}"
+                    )),
+                });
+            }
+            if let Some(pane) = status.owner_pane.clone() {
+                registry.owner_seen_ms.insert(pane, now_ms());
+            }
+            let status = &registry.workers[&number].status;
+            let pending = status
+                .questions
+                .iter()
+                .find(|pending| pending.question.request_id == request_id);
+            if pending.is_some_and(|pending| status.is_quiet(pending)) {
+                let escalated = json!({
+                    "type": "escalated",
+                    "request_ids": [request_id],
+                    "cause": "its coordinator escalated it",
+                });
+                Some(self.commit_locked(
+                    &mut registry,
+                    number,
+                    Direction::Herdr,
+                    store::Recorded::Event(&escalated),
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some(committed) = committed {
+            self.shared.changed.notify_all();
+            if committed.shown_changed {
+                notify_clients();
+            }
+        }
+        self.status(worker_id)
+    }
+
+    /// The owner panes of the workers that have not ended and whose owner is
+    /// not gone: those [`Self::owner_event`] can still act on.
+    fn owner_panes(&self) -> Vec<String> {
+        let registry = lock(&self.shared.registry);
+        let mut panes: Vec<String> = registry
+            .workers
+            .values()
+            .filter(|entry| !entry.status.is_gone() && entry.status.owner_gone.is_none())
+            .filter_map(|entry| entry.status.owner_pane.clone())
+            .collect();
+        panes.sort();
+        panes.dedup();
+        panes
+    }
+
+    /// [`owners_at_start`] for this supervisor.
+    fn owners_at_start(&self, state: impl Fn(&str) -> Option<OwnerEvent>) {
+        for pane in self.owner_panes() {
+            if let Some(event) = state(&pane) {
+                self.owner_event(&pane, event, " (found when herdr started)");
+            }
+        }
+    }
+
+    /// What the agent in owner pane `pane_id` just did, as herdr's events
+    /// report it, and what that means for its workers' questions that wait
+    /// quietly for it ([`OwnerEvent`]). `cause_suffix` is added to each
+    /// escalation's cause (" (found when herdr started)").
+    ///
+    /// Escalation follows events only, never a timer (the user's decision,
+    /// 2026-10-08). Known limitation: an owner that is alive but hung, its
+    /// agent reported `working` for ever with no event, keeps its questions
+    /// quiet; the `?` list shows them as awaiting the coordinator with the
+    /// age of the owner's last event, so the user can see it and act.
+    pub(crate) fn owner_event(&self, pane_id: &str, event: OwnerEvent, cause_suffix: &str) {
+        let mut any = false;
+        {
+            let mut registry = lock(&self.shared.registry);
+            let owned: Vec<u64> = registry
+                .workers
+                .iter()
+                .filter(|(_, entry)| {
+                    !entry.status.is_gone()
+                        && entry.status.owner_pane.as_deref() == Some(pane_id)
+                        && entry.status.owner_gone.is_none()
+                })
+                .map(|(number, _)| *number)
+                .collect();
+            if owned.is_empty() {
+                return;
+            }
+            registry.owner_seen_ms.insert(pane_id.to_owned(), now_ms());
+            let cause = event.cause().map(|cause| format!("{cause}{cause_suffix}"));
+            match event {
+                OwnerEvent::PaneClosed | OwnerEvent::AgentExited => {
+                    registry.stuck_owners.remove(pane_id);
+                }
+                OwnerEvent::Limited | OwnerEvent::Blocked => {
+                    if let Some(cause) = &cause {
+                        registry
+                            .stuck_owners
+                            .insert(pane_id.to_owned(), cause.clone());
+                    }
+                }
+                OwnerEvent::TurnEnded => {}
+                OwnerEvent::Working => {
+                    registry.stuck_owners.remove(pane_id);
+                }
+            }
+            for number in owned {
+                let committed = match (&event, &cause) {
+                    (OwnerEvent::PaneClosed | OwnerEvent::AgentExited, Some(cause)) => {
+                        let gone = json!({"type": "owner_gone", "cause": cause});
+                        Some(self.commit_locked(
+                            &mut registry,
+                            number,
+                            Direction::Herdr,
+                            store::Recorded::Event(&gone),
+                        ))
+                    }
+                    (_, Some(cause)) => self.escalate_locked(&mut registry, number, cause),
+                    (_, None) => None,
+                };
+                any |= committed.is_some();
+            }
+        }
+        if any {
+            self.shared.changed.notify_all();
+        }
+        // Also when nothing escalated: a quiet entry shows the owner's last
+        // event's age.
+        notify_clients();
     }
 
     /// Blocks until `reached` returns something for the worker, woken by
@@ -3570,6 +3925,7 @@ fn question_from_request(request_id: &str, request: &Value, reason: &str) -> Wor
         questions,
         since_ms: now_ms(),
         state: WorkerQuestionState::Pending,
+        escalated: None,
     }
 }
 

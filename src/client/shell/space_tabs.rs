@@ -277,7 +277,9 @@ pub(super) fn worker_lines(
                 ask: snapshot
                     .worker_questions
                     .iter()
-                    .find(|question| question.worker_id == worker.worker_id)
+                    // One that waits for the coordinator does not flag the
+                    // line as asking the user.
+                    .find(|question| question.worker_id == worker.worker_id && !question.quiet)
                     .map(|question| format!("{}: {}", question.tool_name, question.text)),
                 worker: Some(WorkerLine {
                     worker_id: worker.worker_id.clone(),

@@ -994,6 +994,15 @@ pub struct ClientShellWorkerQuestion {
     /// An `AskUserQuestion` (answered with options), else an approval.
     pub choice: bool,
     pub since_ms: u64,
+    /// It waits for the worker's coordinator, not for the user: listed dim
+    /// as awaiting the coordinator, not counted or flagged as asking. False
+    /// from a server that does not send it.
+    #[serde(default)]
+    pub quiet: bool,
+    /// When the coordinator last showed an event the server saw, Unix
+    /// milliseconds; shown as an age next to a quiet question.
+    #[serde(default)]
+    pub owner_seen_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

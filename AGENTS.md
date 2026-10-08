@@ -472,6 +472,17 @@ turn or the ended worker), acknowledge it with `herdr worker ack <id>
 <seq>`, that wait's `seq`; ack after handling, never before. Until then
 `herdr worker obligations` lists it, and in a `coordinator` tab the Stop
 hook blocks every stop of yours, naming each worker and what it needs.
+An owned worker's question stays quiet in the user's `?` list (dim,
+"awaiting the coordinator", not counted) while its coordinator is on it.
+Hand one you will not answer to the user with `herdr worker escalate <id>
+--request <request_id>`. Herdr also escalates, on its own events only (no
+timer, the user's decision 2026-10-08): when your pane closes or your
+agent exits, hits a limit, is blocked on its own question to the user, or
+ends its turn with the question unanswered (an ack is not an answer), and
+when herdr starts. So answer or escalate before your turn ends. Known
+limitation: a coordinator hung while reported `working` sends no event,
+and its questions stay quiet; the `?` list shows the age of its last
+event so the user can notice.
 Pass `--command-id <id>` to every `start`, `prompt`, `interrupt`, `stop`,
 `kill` and `answer`, derived from the task, not random: for a start the
 TODO item and the branch (`<item>:<branch>`), for an answer the worker and

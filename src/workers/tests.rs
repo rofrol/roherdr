@@ -2798,3 +2798,252 @@ fn an_ack_is_idempotent_and_monotonic() {
     );
     assert_eq!(reopened.status(&id).unwrap().acked_seq, Some(seq));
 }
+
+const ASKS: &str = "classifier Bash git push origin master";
+
+/// Each pending question of `id` in the `?` list, with whether it is quiet
+/// and why it was escalated.
+fn shown_questions(supervisor: &WorkerSupervisor, id: &str) -> Vec<(String, bool, Option<String>)> {
+    supervisor
+        .pending_questions()
+        .into_iter()
+        .filter(|pending| pending.worker_id == id)
+        .map(|pending| {
+            (
+                pending.question.request_id,
+                pending.quiet,
+                pending.question.escalated,
+            )
+        })
+        .collect()
+}
+
+/// Starts a worker owned by `pane` that waits on question `perm-1`.
+fn owned_question(fixture: &Fixture, pane: &str) -> String {
+    let id = start_owned(fixture, pane, ASKS);
+    fixture.wait_for_question(&id);
+    id
+}
+
+#[test]
+fn an_owned_question_is_quiet_and_an_unowned_one_is_loud() {
+    let fixture = Fixture::new("quiet");
+    let owned = owned_question(&fixture, "p1");
+    assert_eq!(
+        shown_questions(&fixture.supervisor, &owned),
+        [("perm-1".to_owned(), true, None)]
+    );
+    let unowned = fixture.start(ASKS);
+    fixture.wait_for_question(&unowned);
+    assert_eq!(
+        shown_questions(&fixture.supervisor, &unowned),
+        [("perm-1".to_owned(), false, None)]
+    );
+    // Quiet or not, the user may answer it.
+    fixture
+        .answer_request(&owned, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    fixture.wait(&owned, WorkerWaitUntil::TurnEnd);
+    assert!(fixture.herdr_events(&owned, "escalated").is_empty());
+}
+
+#[test]
+fn escalate_makes_the_question_loud_for_good() {
+    let fixture = Fixture::new("escalate");
+    let id = owned_question(&fixture, "p1");
+    let refused = fixture.supervisor.escalate(&id, "perm-9").unwrap_err();
+    assert_eq!(refused.code(), "worker_no_question");
+
+    let worker = fixture.supervisor.escalate(&id, "perm-1").unwrap();
+    let cause = "its coordinator escalated it";
+    assert_eq!(worker.questions[0].escalated.as_deref(), Some(cause));
+    assert_eq!(
+        shown_questions(&fixture.supervisor, &id),
+        [("perm-1".to_owned(), false, Some(cause.to_owned()))]
+    );
+    let journaled = fixture.herdr_events(&id, "escalated");
+    assert_eq!(journaled.len(), 1);
+    assert_eq!(journaled[0]["cause"], cause);
+    assert_eq!(journaled[0]["request_ids"], serde_json::json!(["perm-1"]));
+
+    // Again, or the owner working again later: it stays loud, once journaled.
+    fixture.supervisor.escalate(&id, "perm-1").unwrap();
+    fixture
+        .supervisor
+        .owner_event("p1", OwnerEvent::Working, "");
+    assert!(!shown_questions(&fixture.supervisor, &id)[0].1);
+    assert_eq!(fixture.herdr_events(&id, "escalated").len(), 1);
+
+    // It survives a restart: the store keeps why.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    assert_eq!(
+        shown_questions(&reopened, &id),
+        [("perm-1".to_owned(), false, Some(cause.to_owned()))]
+    );
+    drop(reopened);
+
+    // The coordinator answers it after all: the first answer wins.
+    fixture
+        .answer_request(&id, "perm-1", WorkerDecision::Allow)
+        .unwrap();
+    let late = fixture.supervisor.escalate(&id, "perm-1").unwrap_err();
+    assert_eq!(late.code(), "worker_question_gone");
+}
+
+#[test]
+fn a_closed_owner_pane_or_exited_agent_hands_every_question_to_the_user() {
+    for (event, cause) in [
+        (OwnerEvent::PaneClosed, "the coordinator's pane closed"),
+        (OwnerEvent::AgentExited, "the coordinator's agent exited"),
+    ] {
+        let fixture = Fixture::new("owner-gone");
+        let id = owned_question(&fixture, "p1");
+        let other = owned_question(&fixture, "p2");
+        fixture.supervisor.owner_event("p1", event, "");
+        assert_eq!(
+            shown_questions(&fixture.supervisor, &id),
+            [("perm-1".to_owned(), false, Some(cause.to_owned()))]
+        );
+        assert_eq!(fixture.herdr_events(&id, "owner_gone")[0]["cause"], cause);
+        // Another owner's worker keeps waiting for its owner.
+        assert!(shown_questions(&fixture.supervisor, &other)[0].1);
+        assert_eq!(fixture.supervisor.owner_panes(), ["p2"]);
+
+        // A later question of the same worker goes to the user at once.
+        fixture
+            .answer_request(&id, "perm-1", WorkerDecision::Allow)
+            .unwrap();
+        fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        fixture.supervisor.prompt(&id, ASKS).unwrap();
+        fixture.wait_for_question(&id);
+        assert!(!shown_questions(&fixture.supervisor, &id)[0].1);
+    }
+}
+
+#[test]
+fn a_limited_or_blocked_owner_hands_its_questions_over_until_it_works_again() {
+    for (event, cause) in [
+        (
+            OwnerEvent::Limited,
+            "the coordinator hit a usage or credit limit",
+        ),
+        (
+            OwnerEvent::Blocked,
+            "the coordinator is blocked on its own question to the user",
+        ),
+    ] {
+        let fixture = Fixture::new("owner-stuck");
+        let id = owned_question(&fixture, "p1");
+        fixture.supervisor.owner_event("p1", event, "");
+        assert_eq!(
+            shown_questions(&fixture.supervisor, &id),
+            [("perm-1".to_owned(), false, Some(cause.to_owned()))]
+        );
+        // One asked while it is stuck goes to the user at once.
+        let asked_meanwhile = owned_question(&fixture, "p1");
+        fixture.wait_for_status(&asked_meanwhile, |status| {
+            status
+                .questions
+                .iter()
+                .all(|pending| pending.escalated.is_some())
+        });
+        assert_eq!(
+            fixture.herdr_events(&asked_meanwhile, "escalated")[0]["cause"],
+            cause
+        );
+        // Working again, it handles new questions itself.
+        fixture
+            .supervisor
+            .owner_event("p1", OwnerEvent::Working, "");
+        let later = owned_question(&fixture, "p1");
+        assert!(shown_questions(&fixture.supervisor, &later)[0].1);
+    }
+}
+
+#[test]
+fn an_owner_ending_its_turn_hands_over_what_it_left_unanswered() {
+    let fixture = Fixture::new("owner-idle");
+    let id = owned_question(&fixture, "p1");
+    // Acknowledging is not answering.
+    let seq = fixture.supervisor.status(&id).unwrap().seq.unwrap();
+    fixture.supervisor.ack(&id, seq).unwrap();
+    assert!(shown_questions(&fixture.supervisor, &id)[0].1);
+    fixture
+        .supervisor
+        .owner_event("p1", OwnerEvent::TurnEnded, "");
+    assert_eq!(
+        shown_questions(&fixture.supervisor, &id),
+        [(
+            "perm-1".to_owned(),
+            false,
+            Some("the coordinator ended its turn without answering".to_owned())
+        )]
+    );
+    // One asked while it idles stays quiet: its wait wakes it.
+    let asked_while_idle = owned_question(&fixture, "p1");
+    assert!(shown_questions(&fixture.supervisor, &asked_while_idle)[0].1);
+}
+
+#[test]
+fn agent_status_changes_map_to_owner_events() {
+    use crate::api::schema::AgentStatus::{Blocked, Done, Idle, Unknown, Working};
+    let map = OwnerEvent::from_agent_status;
+    assert_eq!(map(Working, Idle, false), Some(OwnerEvent::TurnEnded));
+    assert_eq!(map(Working, Done, false), Some(OwnerEvent::TurnEnded));
+    assert_eq!(map(Blocked, Idle, false), Some(OwnerEvent::TurnEnded));
+    assert_eq!(map(Unknown, Idle, false), Some(OwnerEvent::TurnEnded));
+    // Seen or not is no turn's end.
+    assert_eq!(map(Done, Idle, false), None);
+    assert_eq!(map(Idle, Done, false), None);
+    assert_eq!(map(Idle, Idle, false), None);
+    assert_eq!(map(Idle, Working, false), Some(OwnerEvent::Working));
+    assert_eq!(map(Working, Blocked, false), Some(OwnerEvent::Blocked));
+    assert_eq!(map(Working, Unknown, false), None);
+    assert_eq!(map(Working, Working, true), Some(OwnerEvent::AgentExited));
+}
+
+#[test]
+fn herdr_re_evaluates_the_owners_when_it_starts() {
+    let fixture = Fixture::new("owner-restart");
+    let working = owned_question(&fixture, "p1");
+    let closed = owned_question(&fixture, "p2");
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    reopened.owners_at_start(|pane| {
+        Some(match pane {
+            "p1" => OwnerEvent::Working,
+            _ => OwnerEvent::PaneClosed,
+        })
+    });
+    assert!(shown_questions(&reopened, &working)[0].1);
+    assert_eq!(
+        shown_questions(&reopened, &closed),
+        [(
+            "perm-1".to_owned(),
+            false,
+            Some("the coordinator's pane closed (found when herdr started)".to_owned())
+        )]
+    );
+}
+
+#[test]
+fn a_worker_that_exits_resolves_its_questions_without_escalating() {
+    let fixture = Fixture::new("owner-exit");
+    let id = owned_question(&fixture, "p1");
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert!(shown_questions(&fixture.supervisor, &id).is_empty());
+    assert!(fixture.herdr_events(&id, "escalated").is_empty());
+    let settled = fixture.supervisor.status(&id).unwrap().settled_questions;
+    assert_eq!(settled[0].how, "the worker exited");
+    // Its owner leaving afterwards records nothing for it.
+    fixture
+        .supervisor
+        .owner_event("p1", OwnerEvent::PaneClosed, "");
+    assert!(fixture.herdr_events(&id, "owner_gone").is_empty());
+}

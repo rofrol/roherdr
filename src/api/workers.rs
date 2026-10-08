@@ -26,6 +26,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
+            | Method::WorkerEscalate(_)
     )
 }
 
@@ -104,6 +105,9 @@ fn handle_immediate(
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
         Method::WorkerAck(params) => supervisor.ack(&params.worker_id, params.seq)?,
+        Method::WorkerEscalate(params) => {
+            supervisor.escalate(&params.worker_id, &params.request_id)?
+        }
         Method::WorkerObligations(params) => {
             return Ok(ResponseResult::WorkerObligations {
                 obligations: supervisor.obligations(params.owner_pane_id.as_deref()),

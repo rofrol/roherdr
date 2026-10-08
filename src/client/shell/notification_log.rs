@@ -604,7 +604,11 @@ impl ClientShellState {
             .iter()
             .filter(|agent| Self::agent_is_asking(agent))
             .count()
-            + snapshot.worker_questions.len();
+            + snapshot
+                .worker_questions
+                .iter()
+                .filter(|question| !question.quiet)
+                .count();
         let working = snapshot
             .agents
             .iter()
@@ -693,14 +697,38 @@ impl ClientShellState {
     }
 
     /// A headless worker's question: it has no pane to open, so its second
-    /// line says how to answer it.
+    /// line says how to answer it. One that waits for the worker's
+    /// coordinator is a dim `quiet` row that says so, with how long ago the
+    /// coordinator last showed an event; the user may still answer it.
     fn worker_question_row(
         question: &crate::protocol::ClientShellWorkerQuestion,
+    ) -> NotificationRecord {
+        Self::worker_question_row_at(question, crate::usage::now_unix())
+    }
+
+    fn worker_question_row_at(
+        question: &crate::protocol::ClientShellWorkerQuestion,
+        now_unix: u64,
     ) -> NotificationRecord {
         let repo = std::path::Path::new(&question.cwd)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| question.cwd.clone());
+        let title = if question.quiet {
+            let seen = question
+                .owner_seen_ms
+                .map(|ms| match wait_duration(ms, now_unix).as_str() {
+                    "now" => " · its last event just now".to_owned(),
+                    age => format!(" · its last event {age} ago"),
+                })
+                .unwrap_or_default();
+            format!(
+                "{} · {repo} · awaiting the coordinator{seen}",
+                question.worker_id
+            )
+        } else {
+            format!("worker {} · {repo}", question.worker_id)
+        };
         let how = if question.choice {
             "<choice>"
         } else {
@@ -714,8 +742,8 @@ impl ClientShellState {
         NotificationRecord {
             id: 0,
             unix_ms: question.since_ms,
-            kind: "asking".into(),
-            title: format!("worker {} · {repo}", question.worker_id),
+            kind: if question.quiet { "quiet" } else { "asking" }.into(),
+            title,
             body: Some(format!(
                 "{}: {} — herdr worker answer {} --request {request} {how}",
                 question.tool_name, question.text, question.worker_id
@@ -765,6 +793,8 @@ impl ClientShellState {
             "working" => "◐",
             "bookmark" => "★",
             "bookmark-space" => return format!("▤ {}", entry.title),
+            // No `?`: it does not ask the user; the second line says what.
+            "quiet" => return entry.title.clone(),
             "finished" => "✓",
             _ => {
                 return match entry.body.as_deref() {
@@ -830,9 +860,10 @@ impl ClientShellState {
         text
     }
 
-    /// The second line of an asking row: what the agent asks.
+    /// The second line of an asking row: what the agent asks; of a quiet
+    /// worker question, what it asks its coordinator.
     pub(super) fn notification_row_detail(entry: &NotificationRecord) -> Option<String> {
-        (entry.kind == "asking")
+        matches!(entry.kind.as_str(), "asking" | "quiet")
             .then(|| entry.body.clone())
             .flatten()
     }
@@ -1113,10 +1144,52 @@ mod tests {
                 text: "git push".into(),
                 choice: false,
                 since_ms: 1,
+                quiet: false,
+                owner_seen_ms: None,
             });
         assert_eq!(
             row.body.as_deref(),
             Some("Bash: git push — herdr worker answer w2 --request req-7 allow|deny")
         );
+    }
+
+    fn worker_question(quiet: bool) -> crate::protocol::ClientShellWorkerQuestion {
+        crate::protocol::ClientShellWorkerQuestion {
+            worker_id: "w12".into(),
+            request_id: "req-1".into(),
+            cwd: "/tmp/herdr".into(),
+            tool_name: "Bash".into(),
+            text: "git push".into(),
+            choice: false,
+            since_ms: 1,
+            quiet,
+            owner_seen_ms: Some(1_000_000),
+        }
+    }
+
+    #[test]
+    fn a_quiet_worker_question_awaits_the_coordinator_dim_and_uncounted() {
+        // Five minutes after the coordinator's last event.
+        let row = ClientShellState::worker_question_row_at(&worker_question(true), 1_300);
+        assert_eq!(row.kind, "quiet");
+        assert_eq!(
+            row.title,
+            "w12 · herdr · awaiting the coordinator · its last event 5m ago"
+        );
+        let mut state = ClientShellState::new(super::super::tests::config_with_sidebar_width(26));
+        assert_eq!(state.notification_row_text(&row), row.title);
+        assert!(ClientShellState::notification_row_detail(&row).is_some());
+
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.worker_questions = vec![worker_question(true)];
+        state.set_snapshot(Box::new(snapshot.clone()));
+        assert_eq!(state.agent_indicator_counts().1, 0);
+        snapshot.worker_questions = vec![worker_question(false)];
+        state.set_snapshot(Box::new(snapshot));
+        assert_eq!(state.agent_indicator_counts().1, 1);
+
+        let loud = ClientShellState::worker_question_row_at(&worker_question(false), 1_300);
+        assert_eq!(loud.kind, "asking");
+        assert_eq!(loud.title, "worker w12 · herdr");
     }
 }

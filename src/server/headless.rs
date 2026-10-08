@@ -423,6 +423,8 @@ impl HeadlessServer {
             render_dirty.request_generic();
             render_notify.notify_one();
         }));
+        // What a previous server saw of the workers' owners is gone.
+        self.app.reevaluate_worker_owners_at_start();
 
         let mut needs_render = true;
         let mut needs_full_render = true;

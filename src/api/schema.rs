@@ -89,6 +89,10 @@ pub enum Method {
     /// The owned workers with an event their owner has not acknowledged.
     #[serde(rename = "worker.obligations")]
     WorkerObligations(WorkerObligationsParams),
+    /// Hands a question its owner will not answer to the user: it becomes a
+    /// loud `?` question.
+    #[serde(rename = "worker.escalate")]
+    WorkerEscalate(WorkerEscalateParams),
     /// Opens the worker's journal, read-only, in a popup that follows it.
     #[serde(rename = "worker.open_log")]
     WorkerOpenLog(WorkerTarget),

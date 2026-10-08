@@ -317,6 +317,8 @@ pub(super) fn snapshot_with_completions(
                 text: pending.question.text,
                 choice: pending.question.kind == crate::api::schema::WorkerQuestionKind::Choice,
                 since_ms: pending.question.since_ms,
+                quiet: pending.quiet,
+                owner_seen_ms: pending.owner_seen_ms,
             })
             .collect(),
         workers: client_shell_workers(crate::workers::summaries()),
