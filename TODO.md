@@ -188,6 +188,15 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   not qualify a delay; every wait names its positive event and producer; no
   negative conditions; retries need an acknowledgement and an idempotent
   action. Left: the hook that flags time constants.
+  Hook done 2026-10-08: prepared by headless worker `w22` as files (no
+  edits under ~), shown to the user with its risks, installed after his
+  yes (dotfiles `be4a352 claude: hook flags time constants without a delay
+  reason`): a PreToolUse hook on Bash/Write/Edit/MultiEdit denies waits and
+  give-up times (`sleep N`, `--timeout`, `Duration::from_secs(N)`,
+  `Instant::now() +`, `setTimeout(`, deadline/debounce wording in code and
+  agent instruction files) without a `delay: <reason>` marker; 28 tests.
+  Known gap: headless workers start with `disableAllHooks`, so it does not
+  reach them.
 
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
