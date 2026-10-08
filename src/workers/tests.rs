@@ -11,8 +11,10 @@
 //! <words...>` (two requests at once, `perm-1` and `perm-2`), `cancel <tool>
 //! <words...>` (`perm-1`, cancelled, then `perm-2`), `two <tool> <words...>`
 //! (classifier-escalated `perm-1`, its answer, then `perm-2`), `ignore-term` (SIGTERM is
-//! ignored from then on) and `orphan <fifo>` (a tool process in its own
-//! session that holds `<fifo>` open until it dies).
+//! ignored from then on), `orphan <fifo>` (a tool process in its own
+//! session that holds `<fifo>` open until it dies) and `gate <fifo>` (a tool
+//! use, then, once `<fifo>` is written, three text events, a stderr line and
+//! the result).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -172,6 +174,16 @@ while True:
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
         while True:
             read()
+    elif command == "gate":
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
+        with open(words[1]) as gate:
+            gate.read()
+        for n in range(3):
+            emit({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "line %d" % n}]}})
+        sys.stderr.write("gated stderr\n")
+        sys.stderr.flush()
+        result(text="gated")
 "#;
 
 /// Fails a broken test instead of hanging the suite; never decides an
@@ -4476,8 +4488,18 @@ fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches(
     }
     assert!(crate::platform::process_group_alive(pid));
     assert!(crate::platform::process_group_alive(broker.pid));
+    // The CLI's `system/init` is stored once, whichever server read it: the
+    // broker replays what the gone server did not store.
+    wait_on_status(&next, &id, |status| status.session_id.is_some());
     let worker = next.status(&id).unwrap();
     assert_eq!(worker.state, WorkerState::Working);
+    assert_eq!(worker.session_id.as_deref(), Some("stub-session"));
+    let inits = fixture
+        .journal(&id)
+        .into_iter()
+        .filter(|record| record["dir"] == "out" && record["event"]["subtype"] == "init")
+        .count();
+    assert_eq!(inits, 1);
 
     // The turn the gone server began ends through the new one.
     next.interrupt(&WorkerInterruptParams {
@@ -4493,6 +4515,7 @@ fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches(
     assert_eq!(worker.state, WorkerState::Finished);
     assert_eq!(worker.pid, Some(pid));
     assert_eq!(fixture.herdr_events(&id, "reattached").len(), 1);
+    assert!(fixture.herdr_events(&id, "continuity_gap").is_empty());
     assert!(fixture.herdr_events(&id, "lost").is_empty());
 
     next.stop(&id).unwrap();
@@ -4515,8 +4538,29 @@ fn folded(events: &[(Direction, Value)]) -> Status {
     status
 }
 
+/// Waits, woken by state changes, until the internal status of a worker
+/// of `supervisor` satisfies `done`.
+fn wait_on_status(supervisor: &WorkerSupervisor, worker_id: &str, done: impl Fn(&Status) -> bool) {
+    let started = Instant::now();
+    let number = worker_number(worker_id).unwrap();
+    let mut registry = lock(&supervisor.shared.registry);
+    while !registry
+        .workers
+        .get(&number)
+        .is_some_and(|entry| done(&entry.status))
+    {
+        assert!(started.elapsed() < HANG_GUARD, "worker {worker_id} hung");
+        registry = supervisor
+            .shared
+            .changed
+            .wait_timeout(registry, Duration::from_millis(100))
+            .unwrap()
+            .0;
+    }
+}
+
 #[test]
-fn a_reattach_after_a_lost_init_shows_the_turn_working() {
+fn a_reattach_after_a_lost_init_waits_for_the_replayed_init() {
     let started = (
         Direction::Herdr,
         json!({"type": "started", "cwd": "/repo", "pid": 4242,
@@ -4532,20 +4576,242 @@ fn a_reattach_after_a_lost_init_shows_the_turn_working() {
         json!({"type": "system", "subtype": "init", "session_id": "s"}),
     );
 
-    // The gone server took the CLI's `system/init` and stored nothing.
-    let status = folded(&[started.clone(), prompt.clone()]);
-    assert_eq!(status.state, WorkerState::Starting);
+    // The gone server took the CLI's `system/init` and stored nothing: the
+    // re-attach itself changes nothing.
     let status = folded(&[started.clone(), prompt.clone(), reattached.clone()]);
-    assert_eq!(status.state, WorkerState::Working);
-    // An init the broker still held comes after the re-attach and changes
-    // nothing.
-    let status = folded(&[started.clone(), prompt, reattached.clone(), init]);
+    assert_eq!(status.state, WorkerState::Starting);
+    assert_eq!(status.session_id, None);
+    // The broker replays the init after the re-attach: the turn works and
+    // the session is known, as a takeover needs.
+    let status = folded(&[started.clone(), prompt.clone(), reattached.clone(), init]);
     assert_eq!(status.state, WorkerState::Working);
     assert_eq!(status.session_id.as_deref(), Some("s"));
 
-    // Without a prompt sent, nothing tells the CLI is past its start.
-    let status = folded(&[started, reattached]);
+    // Without the init, because continuity is not proven, nothing is made
+    // up: the worker stays starting, with no session, degraded.
+    let gap = (
+        Direction::Herdr,
+        json!({"type": "continuity_gap", "reason": "lines 2..=4 are missing"}),
+    );
+    let status = folded(&[started, prompt, reattached, gap]);
     assert_eq!(status.state, WorkerState::Starting);
+    assert_eq!(status.session_id, None);
+    assert_eq!(
+        status.continuity_gap.as_deref(),
+        Some("lines 2..=4 are missing")
+    );
+    assert_eq!(
+        status.degraded.as_deref(),
+        Some("output continuity not proven: lines 2..=4 are missing")
+    );
+}
+
+#[test]
+fn a_worker_whose_spool_does_not_continue_the_store_takes_no_prompt_or_takeover() {
+    let fixture = Fixture::new("gap");
+    let id = fixture.start("finish");
+    let before = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let number = worker_number(&id).unwrap();
+    // The store holds up to seq 2; the spool goes on at 5.
+    let event = json!({"type": "rate_limit_event"});
+    assert_eq!(
+        fixture.supervisor.record_spooled(
+            number,
+            2,
+            Direction::Out,
+            store::Recorded::Event(&event)
+        ),
+        Spooled::Stored
+    );
+    let spool = fixture.root.join("w.spool");
+    std::fs::write(&spool, "o 5 {\"type\":\"rate_limit_event\"}\n").unwrap();
+    assert_eq!(fixture.supervisor.replay_spool(number, &spool), None);
+
+    let gaps = fixture.herdr_events(&id, "continuity_gap");
+    assert_eq!(
+        gaps[0]["reason"],
+        "the spool goes on at seq 5 after seq 2: lines 3..=4 are missing"
+    );
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert!(worker.degraded.unwrap().contains("lines 3..=4 are missing"));
+    // Nothing synthesized: the state is what the stored lines made it.
+    assert_eq!(worker.state, before.state);
+    assert_eq!(worker.session_id, before.session_id);
+
+    let refused = fixture.supervisor.prompt(&id, "finish").unwrap_err();
+    assert_eq!(refused.code(), "worker_continuity_gap");
+    assert!(
+        refused.to_string().contains("lines 3..=4 are missing"),
+        "{refused}"
+    );
+    let refused = fixture.supervisor.begin_takeover(&id, false).err().unwrap();
+    assert_eq!(refused.code(), "worker_continuity_gap");
+
+    // The gap is stored: a later server refuses too.
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let refused = next.begin_takeover(&id, false).err().unwrap();
+    assert_eq!(refused.code(), "worker_continuity_gap");
+}
+
+#[test]
+fn a_broker_gone_without_a_spool_or_with_a_cut_one_is_a_gap() {
+    let fixture = Fixture::new("nospool");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let number = worker_number(&id).unwrap();
+    assert_eq!(
+        fixture
+            .supervisor
+            .replay_spool(number, &fixture.root.join("missing.spool")),
+        None
+    );
+    assert_eq!(
+        fixture.herdr_events(&id, "continuity_gap")[0]["reason"],
+        "the worker's broker is gone and left no output spool"
+    );
+
+    let fixture = Fixture::new("cutspool");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let number = worker_number(&id).unwrap();
+    let spool = fixture.root.join("w.spool");
+    std::fs::write(&spool, "o 1 {\"type\":\"rate_limit_event\"}\no 2 {\"ty").unwrap();
+    assert_eq!(fixture.supervisor.replay_spool(number, &spool), None);
+    assert_eq!(
+        fixture.herdr_events(&id, "continuity_gap")[0]["reason"],
+        "the spool ends in a record cut short"
+    );
+    assert_eq!(
+        fixture.supervisor.prompt(&id, "finish").unwrap_err().code(),
+        "worker_continuity_gap"
+    );
+}
+
+#[test]
+fn lines_written_while_no_server_is_attached_are_replayed_once_after_a_reattach() {
+    let fixture = Fixture::with_broker();
+    let gate = fixture.root.join("gate.fifo");
+    let gate_c = std::ffi::CString::new(gate.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(gate_c.as_ptr(), 0o600) }, 0);
+    let id = fixture.start(&format!("gate {}", gate.display()));
+    // The init, the rate limit and the tool use are stored.
+    fixture.wait_for_status(&id, |status| status.broker_seq >= 3);
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    let broker = broker_of(&fixture.supervisor, &id);
+    let spool = broker::spool_path(&broker.socket);
+    live.sever();
+
+    // With no server attached, the worker ends its turn.
+    std::fs::write(&gate, b"go").unwrap();
+    // The broker tells this test nothing: watch its spool.
+    wait_until("the detached turn's end in the spool", || {
+        std::fs::read_to_string(&spool).is_ok_and(|spooled| spooled.contains("\"gated\""))
+    });
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.session_id.as_deref(), Some("stub-session"));
+    let journal = fixture.journal(&id);
+    let texts: Vec<&str> = journal
+        .iter()
+        .filter(|record| record["dir"] == "out")
+        .filter_map(|record| record["event"]["message"]["content"][0]["text"].as_str())
+        .collect();
+    assert_eq!(texts, ["line 0", "line 1", "line 2"]);
+    let results = journal
+        .iter()
+        .filter(|record| record["dir"] == "out" && record["event"]["type"] == "result")
+        .count();
+    assert_eq!(results, 1);
+    assert!(fixture.herdr_events(&id, "continuity_gap").is_empty());
+
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
+    let stderr: Vec<Value> = fixture
+        .journal(&id)
+        .into_iter()
+        .filter(|record| record["dir"] == "err")
+        .map(|record| record["raw"].clone())
+        .collect();
+    assert_eq!(stderr, [json!("gated stderr")]);
+    wait_until("the broker's end", || {
+        !crate::platform::process_group_alive(broker.pid)
+    });
+    // The exit is stored, so the server removes the spool, right after
+    // storing it.
+    wait_until("the spool's removal", || !spool.exists());
+}
+
+#[test]
+fn a_line_sent_again_after_a_crash_between_commit_and_ack_is_stored_once() {
+    let fixture = Fixture::new("spooled");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let number = worker_number(&id).unwrap();
+    let text = |n: u32| {
+        json!({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": format!("spooled {n}")}]}})
+    };
+    let spooled = |seq: u64, event: &Value| {
+        fixture.supervisor.record_spooled(
+            number,
+            seq,
+            Direction::Out,
+            store::Recorded::Event(event),
+        )
+    };
+    assert_eq!(spooled(7, &text(7)), Spooled::Stored);
+    // The server committed 7 and died before its ack: the broker sends 7
+    // again to the next one.
+    assert_eq!(spooled(7, &text(7)), Spooled::Duplicate);
+    assert!(Spooled::Duplicate.is_stored());
+    let store = store::Store::open(&fixture.root.join("workers").join(store::STORE_FILE)).unwrap();
+    assert_eq!(store.load(&id).unwrap().unwrap().broker_seq, 7);
+
+    // A broker gone with its spool: what the store holds is skipped, the
+    // rest recorded once, and the exit found.
+    let spool = fixture.root.join("w.spool");
+    std::fs::write(
+        &spool,
+        format!(
+            "o 7 {}\no 8 {}\ne 9 warning\nl 10 2\nx 11 {{\"type\":\"exited\",\"code\":0}}\n",
+            text(7),
+            text(8)
+        ),
+    )
+    .unwrap();
+    let exit = fixture.supervisor.replay_spool(number, &spool);
+    assert_eq!(exit, Some((11, json!({"type": "exited", "code": 0}))));
+    // Replayed twice (a second crash): nothing more.
+    fixture.supervisor.replay_spool(number, &spool);
+    assert_eq!(store.load(&id).unwrap().unwrap().broker_seq, 10);
+    let journal = fixture.journal(&id);
+    let texts: Vec<&str> = journal
+        .iter()
+        .filter_map(|record| record["event"]["message"]["content"][0]["text"].as_str())
+        .collect();
+    assert_eq!(texts, ["spooled 7", "spooled 8"]);
+    assert_eq!(fixture.herdr_events(&id, "output_lost")[0]["lines"], 2);
+    let warnings = journal
+        .iter()
+        .filter(|record| record["dir"] == "err" && record["raw"] == "warning")
+        .count();
+    assert_eq!(warnings, 1);
+    // The spool continued the store's seq: continuity is proven.
+    assert!(fixture.herdr_events(&id, "continuity_gap").is_empty());
+    assert_eq!(fixture.supervisor.status(&id).unwrap().degraded, None);
+
+    // A new server reads the seq from the store and skips what it holds.
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(
+        next.record_spooled(number, 10, Direction::Out, store::Recorded::Raw("again")),
+        Spooled::Duplicate
+    );
 }
 
 #[test]

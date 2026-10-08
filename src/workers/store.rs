@@ -249,6 +249,16 @@ ALTER TABLE workers ADD COLUMN owner_coordinator_id TEXT;
 -- before the broker, or on a platform without one, have none.
 ALTER TABLE workers ADD COLUMN broker TEXT;
 "#,
+    r#"
+-- The broker sequence number of the last line of the worker's output that
+-- is stored, written in the transaction of that line's event, so a server
+-- that re-attaches asks its broker for the lines after it and skips one it
+-- replays again. 0 for workers without a broker.
+ALTER TABLE workers ADD COLUMN broker_seq INTEGER NOT NULL DEFAULT 0;
+-- Why a re-attach could not prove the stored record whole
+-- (`continuity_gap`'s `reason`); the worker then takes no prompt or takeover.
+ALTER TABLE workers ADD COLUMN continuity_gap TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -739,7 +749,7 @@ impl Tx<'_> {
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
                     :ended_mid_turn, :item_title, :verification, :takeover_id,
-                    :owner_coordinator_id, :broker)
+                    :owner_coordinator_id, :broker, :broker_seq, :continuity_gap)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -748,6 +758,8 @@ impl Tx<'_> {
                         // Only grows, whichever server writes the row.
                         "acked_seq" =>
                             "acked_seq = max(workers.acked_seq, excluded.acked_seq)".to_owned(),
+                        "broker_seq" =>
+                            "broker_seq = max(workers.broker_seq, excluded.broker_seq)".to_owned(),
                         _ => format!("{column} = excluded.{column}"),
                     })
                     .collect::<Vec<_>>()
@@ -810,6 +822,8 @@ impl Tx<'_> {
                     .broker
                     .as_ref()
                     .and_then(|broker| serde_json::to_string(broker).ok()),
+                ":broker_seq": status.broker_seq as i64,
+                ":continuity_gap": status.continuity_gap,
             },
         )?;
         Ok(())
@@ -903,7 +917,8 @@ session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signa
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
-ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker";
+ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker, broker_seq, \
+continuity_gap";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -964,6 +979,8 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.takeover_id = row.get(42)?;
     status.owner_coordinator = row.get(43)?;
     status.broker = json(44)?.and_then(|value| serde_json::from_value(value).ok());
+    status.broker_seq = row.get::<_, i64>(45)? as u64;
+    status.continuity_gap = row.get(46)?;
     Ok(status)
 }
 
@@ -1214,6 +1231,8 @@ mod tests {
                  DROP TABLE coordinators;
                  ALTER TABLE workers DROP COLUMN owner_coordinator_id;
                  ALTER TABLE workers DROP COLUMN broker;
+                 ALTER TABLE workers DROP COLUMN broker_seq;
+                 ALTER TABLE workers DROP COLUMN continuity_gap;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1261,8 +1280,10 @@ mod tests {
                  DROP TABLE coordinators;
                  ALTER TABLE workers DROP COLUMN owner_coordinator_id;
                  ALTER TABLE workers DROP COLUMN broker;
+                 ALTER TABLE workers DROP COLUMN broker_seq;
+                 ALTER TABLE workers DROP COLUMN continuity_gap;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 5
+                MIGRATIONS.len() - 6
             ))
             .unwrap();
         drop(store);

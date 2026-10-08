@@ -245,6 +245,9 @@ pub(crate) enum WorkerError {
     /// New turns are not admitted while the server drains for an install
     /// ([`WorkerSupervisor::drain`]); the message names it.
     Draining(String),
+    /// The worker's output since a server restart is not proven complete
+    /// ([`Status::continuity_gap`]); the message names the gap.
+    ContinuityGap(String),
     Io(std::io::Error),
 }
 
@@ -265,6 +268,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "coordinator_active",
     "coordinator_not_found",
     "workers_draining",
+    "worker_continuity_gap",
 ];
 
 impl WorkerError {
@@ -286,6 +290,7 @@ impl WorkerError {
             Self::CoordinatorActive(_) => "coordinator_active",
             Self::CoordinatorNotFound(_) => "coordinator_not_found",
             Self::Draining(_) => "workers_draining",
+            Self::ContinuityGap(_) => "worker_continuity_gap",
         }
     }
 
@@ -317,7 +322,8 @@ impl std::fmt::Display for WorkerError {
             | Self::Replayed(_, message)
             | Self::CoordinatorActive(message)
             | Self::CoordinatorNotFound(message)
-            | Self::Draining(message) => f.write_str(message),
+            | Self::Draining(message)
+            | Self::ContinuityGap(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -476,6 +482,13 @@ struct Status {
     /// The broker that owns its pipes (`started`'s `broker`); none for a
     /// worker whose pipes the server owned.
     broker: Option<BrokerRecord>,
+    /// The broker seq of the last line of its output that is stored
+    /// ([`WorkerSupervisor::record_spooled`]); 0 before any.
+    broker_seq: u64,
+    /// Why a re-attach could not prove that the stored record holds every
+    /// line the worker wrote (`continuity_gap`'s `reason`). Its state and
+    /// session may then be stale, so it takes no prompt and no takeover.
+    continuity_gap: Option<String>,
 }
 
 /// Where a worker's broker serves it, and what a server that re-attaches
@@ -571,6 +584,8 @@ impl Status {
             ended_mid_turn: false,
             verification: None,
             broker: None,
+            broker_seq: 0,
+            continuity_gap: None,
         }
     }
 
@@ -906,14 +921,10 @@ impl Status {
                     .get("broker")
                     .and_then(|broker| serde_json::from_value(broker.clone()).ok());
             }
-            (Direction::Herdr, "reattached") => {
-                // The broker greeted with the worker's pid, so the CLI runs
-                // and reads the prompt sent. Its `system/init`, the only
-                // other way out of `starting`, may have gone to the gone
-                // server unstored (no replay before slice 3).
-                if self.state == WorkerState::Starting && self.turn_seq.is_some() {
-                    self.state = WorkerState::Working;
-                }
+            (Direction::Herdr, "continuity_gap") => {
+                let reason = string_field(event, "reason").unwrap_or_default();
+                self.degraded = Some(format!("output continuity not proven: {reason}"));
+                self.continuity_gap = Some(reason);
             }
             (Direction::Herdr, "tool_sessions") => {
                 for recorded in event["sessions"].as_array().into_iter().flatten() {
@@ -1029,6 +1040,13 @@ impl Status {
                     .get("signal")
                     .and_then(Value::as_i64)
                     .map(|v| v as i32);
+                // The broker ended the worker rather than lose its output.
+                if let Some(error) = event["spool_error"].as_str() {
+                    self.degraded = Some(format!(
+                        "the worker's broker could not write its output spool and ended the \
+                         worker: {error}"
+                    ));
+                }
             }
             (Direction::Herdr, "lost") => {
                 // A worker between turns lost nothing but its process: it
@@ -1545,7 +1563,7 @@ enum Input {
     Pipe(ChildStdin),
     /// The worker's broker, which owns the pipe ([`broker`]).
     #[cfg(unix)]
-    Broker(std::os::unix::net::UnixStream),
+    Broker(broker::Writer),
 }
 
 impl Input {
@@ -1554,7 +1572,7 @@ impl Input {
         match self {
             Self::Pipe(pipe) => pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush()),
             #[cfg(unix)]
-            Self::Broker(stream) => broker::write_input(stream, line),
+            Self::Broker(writer) => writer.write_input(line),
         }
     }
 
@@ -1563,7 +1581,7 @@ impl Input {
         match self {
             Self::Pipe(pipe) => drop(pipe),
             #[cfg(unix)]
-            Self::Broker(mut stream) => broker::close_input(&mut stream),
+            Self::Broker(writer) => writer.close_input(),
         }
     }
 }
@@ -1714,8 +1732,8 @@ impl Live {
     fn sever(&self) {
         self.severed
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(Input::Broker(stream)) = lock(&self.stdin).as_ref() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        if let Some(Input::Broker(writer)) = lock(&self.stdin).as_ref() {
+            writer.shutdown();
         }
     }
 }
@@ -1755,11 +1773,49 @@ pub(crate) struct Attention {
 }
 
 /// What [`WorkerSupervisor::commit_locked`] did.
+/// What became of one line of a worker's output from its broker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spooled {
+    /// Its event is committed with its broker seq.
+    Stored,
+    /// The store already held it: a line sent again after a re-attach.
+    Duplicate,
+    /// Kept in memory only: the store write failed.
+    NotStored,
+    /// A blank line, recorded nowhere.
+    Skipped,
+}
+
+impl Spooled {
+    /// The store holds the line: the broker may forget it.
+    fn is_stored(self) -> bool {
+        matches!(self, Self::Stored | Self::Duplicate)
+    }
+}
+
+/// The event that a re-attach could not prove the worker's output whole.
+#[cfg(unix)]
+fn continuity_gap_event(gap: &str) -> Value {
+    json!({"type": "continuity_gap", "reason": gap})
+}
+
+/// The event for `lines` the broker dropped while its spool was full.
+#[cfg(unix)]
+fn output_lost(lines: u64) -> Value {
+    json!({
+        "type": "output_lost",
+        "lines": lines,
+        "reason": "the broker's spool was full while no server stored its lines",
+    })
+}
+
 struct Committed {
     /// What the clients show of the worker changed.
     shown_changed: bool,
     /// The event's `seq` in memory; `None` for an unknown worker.
     seq: Option<i64>,
+    /// The store committed the event.
+    stored: bool,
 }
 
 #[derive(Default)]
@@ -2551,9 +2607,10 @@ impl WorkerSupervisor {
     /// their pipes. Without `force` it refuses while any worker's process is
     /// alive, in a turn or idle between turns, naming each and how to end
     /// it. With `force` it sends each SIGTERM and goes on. A worker with a
-    /// broker would survive the handoff, but until the output spool and the
-    /// stdin receipts (slices 3 and 4) the new server could lose its lines,
-    /// so it is refused too.
+    /// broker would survive the handoff, and the new server would replay its
+    /// output from the spool, but until the stdin receipts (slice 4) an
+    /// input line in flight could go twice or not at all, so it is refused
+    /// too.
     ///
     /// It never waits for an exit. It runs on the server's main loop, and
     /// waiting there would freeze every pane and client; a deadline would
@@ -2981,12 +3038,20 @@ impl WorkerSupervisor {
         self.shared.changed.notify_all();
         notify_clients();
 
+        #[cfg(unix)]
+        let spool = spawned
+            .broker
+            .as_ref()
+            .map(|(_, socket)| broker::spool_path(socket));
+        #[cfg(not(unix))]
+        let spool = None;
         let reader = Reader {
             supervisor: self.clone(),
             number,
             pid,
             policy,
             temp_dir: temp_dir.clone(),
+            spool,
             live: Arc::clone(&live),
             owner_lock,
         };
@@ -3131,9 +3196,11 @@ impl WorkerSupervisor {
     /// when there is nothing to re-attach to (no broker, or it is gone, and
     /// with it the worker).
     ///
-    /// No replay yet (slice 2): the output the broker kept while no server
-    /// read it comes now, but lines the gone server read and did not store
-    /// are lost. Slice 3 re-attaches from the last stored sequence number.
+    /// It attaches after the last broker seq the store holds, so the broker
+    /// sends again the lines the gone server read and did not store, then
+    /// those written since. A broker that is gone left its spool: the lines
+    /// in it are recorded, and the worker's exit when the spool holds it
+    /// (then the lock is let go and `None` returned, as after a re-attach).
     fn reattach(&self, number: u64, owner_lock: File) -> Option<File> {
         #[cfg(unix)]
         return self.reattach_broker(number, owner_lock);
@@ -3146,7 +3213,7 @@ impl WorkerSupervisor {
 
     #[cfg(unix)]
     fn reattach_broker(&self, number: u64, owner_lock: File) -> Option<File> {
-        let (worker_id, record, pid, cwd_real) = {
+        let (worker_id, record, pid, cwd_real, after) = {
             let registry = lock(&self.shared.registry);
             let Some(entry) = registry.workers.get(&number) else {
                 return Some(owner_lock);
@@ -3158,11 +3225,18 @@ impl WorkerSupervisor {
                     record.clone(),
                     pid,
                     PathBuf::from(&status.cwd),
+                    status.broker_seq,
                 ),
+                (Some(record), _) if status.is_gone() => {
+                    // Left by a server that stored the exit and ended
+                    // before it removed the spool.
+                    let _ = std::fs::remove_file(broker::spool_path(&record.socket));
+                    return Some(owner_lock);
+                }
                 _ => return Some(owner_lock),
             }
         };
-        let link = match broker::connect(&record.socket) {
+        let link = match broker::connect(&record.socket, after) {
             Ok(link) if link.pid == pid => link,
             Ok(link) => {
                 warn!(
@@ -3173,11 +3247,19 @@ impl WorkerSupervisor {
                 );
                 return Some(owner_lock);
             }
-            Err(error) => {
-                info!(worker_id, %error, "worker broker gone");
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                // A broker of another build: its worker runs on, but this
+                // server cannot read it, nor prove what it missed.
+                warn!(worker_id, %error, "cannot re-attach to the worker broker");
+                self.record_continuity_gap(number, &error.to_string());
                 return Some(owner_lock);
             }
+            Err(error) => {
+                info!(worker_id, %error, "worker broker gone");
+                return self.recover_spool(number, &worker_id, &record, owner_lock);
+            }
         };
+        let gap = broker::attach_gap(link.floor, after);
         let (input, messages) = match link.split() {
             Ok(split) => split,
             Err(error) => {
@@ -3193,6 +3275,7 @@ impl WorkerSupervisor {
             pid,
             policy: policy::Policy::new(&record.cwd, &cwd_real, &temp_dir),
             temp_dir,
+            spool: Some(broker::spool_path(&record.socket)),
             live: Arc::clone(&live),
             owner_lock,
         };
@@ -3224,6 +3307,15 @@ impl WorkerSupervisor {
                 Direction::Herdr,
                 store::Recorded::Event(&json!({"type": "reattached", "broker_pid": record.pid})),
             );
+            if let Some(gap) = &gap {
+                warn!(worker_id, gap, "worker output continuity not proven");
+                self.commit_locked(
+                    &mut registry,
+                    number,
+                    Direction::Herdr,
+                    store::Recorded::Event(&continuity_gap_event(gap)),
+                );
+            }
         }
         self.shared.changed.notify_all();
         notify_clients();
@@ -3239,6 +3331,151 @@ impl WorkerSupervisor {
             return Some(reader.owner_lock);
         }
         None
+    }
+
+    /// Records what the spool of a worker whose broker is gone holds past
+    /// the store's last broker seq; when that ends with the worker's exit,
+    /// records it as the reader would have and lets go of `owner_lock`
+    /// (`None`), else gives the lock back for the worker to be marked lost.
+    #[cfg(unix)]
+    fn recover_spool(
+        &self,
+        number: u64,
+        worker_id: &str,
+        record: &BrokerRecord,
+        owner_lock: File,
+    ) -> Option<File> {
+        let spool = broker::spool_path(&record.socket);
+        // This server holds the journal lock: its writes are the worker's
+        // record now.
+        if let Some(entry) = lock(&self.shared.registry).workers.get_mut(&number) {
+            entry.foreign = false;
+        }
+        let Some((seq, exited)) = self.replay_spool(number, &spool) else {
+            return Some(owner_lock);
+        };
+        remove_temp_dir(&temp_dir_path(&self.shared.dir, worker_id));
+        let spooled = self.record_spooled(
+            number,
+            seq,
+            Direction::Herdr,
+            store::Recorded::Event(&exited),
+        );
+        if spooled.is_stored() {
+            let _ = std::fs::remove_file(&spool);
+        }
+        drop(owner_lock);
+        None
+    }
+
+    /// Records the lines in a worker's spool after the store's last broker
+    /// seq, for a broker that is gone, and returns the worker's exit with its
+    /// seq when the spool holds it. The worker is gone too, so a permission
+    /// request among them is recorded, not answered.
+    #[cfg(unix)]
+    fn replay_spool(&self, number: u64, spool: &Path) -> Option<(u64, Value)> {
+        let after = lock(&self.shared.registry)
+            .workers
+            .get(&number)?
+            .status
+            .broker_seq;
+        let records = match broker::read_spool(spool, after) {
+            Ok(read) => {
+                if let Some(gap) = &read.gap {
+                    self.record_continuity_gap(number, gap);
+                }
+                read.records
+            }
+            Err(error) => {
+                let gap = if error.kind() == std::io::ErrorKind::NotFound {
+                    "the worker's broker is gone and left no output spool".to_owned()
+                } else {
+                    format!(
+                        "the worker's broker is gone and its output spool cannot be read: {error}"
+                    )
+                };
+                self.record_continuity_gap(number, &gap);
+                return None;
+            }
+        };
+        for (seq, message) in records {
+            match message {
+                broker::Message::Out(line) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(&line) {
+                        Ok(event) => self.record_spooled(
+                            number,
+                            seq,
+                            Direction::Out,
+                            store::Recorded::Event(&event),
+                        ),
+                        Err(_) => self.record_spooled(
+                            number,
+                            seq,
+                            Direction::Out,
+                            store::Recorded::Raw(&line),
+                        ),
+                    };
+                }
+                broker::Message::Err(line) => {
+                    self.record_spooled(number, seq, Direction::Err, store::Recorded::Raw(&line));
+                }
+                broker::Message::Lost(lines) => {
+                    self.record_spooled(
+                        number,
+                        seq,
+                        Direction::Herdr,
+                        store::Recorded::Event(&output_lost(lines)),
+                    );
+                }
+                broker::Message::Exit(exited) => return Some((seq, exited)),
+            }
+        }
+        None
+    }
+
+    /// Records that the worker's stored record is not proven to hold every
+    /// line it wrote, and why ([`Status::continuity_gap`]).
+    #[cfg(unix)]
+    fn record_continuity_gap(&self, number: u64, gap: &str) {
+        warn!(
+            worker_id = format!("w{number}"),
+            gap, "worker output continuity not proven"
+        );
+        self.record(number, Direction::Herdr, &continuity_gap_event(gap));
+    }
+
+    /// Records one line of a worker's output that its broker numbered
+    /// `broker_seq`, unless the store already holds it (a line the broker
+    /// sends again after a re-attach): the seq goes into the store in the
+    /// line's event's transaction, so the two never disagree.
+    fn record_spooled(
+        &self,
+        number: u64,
+        broker_seq: u64,
+        direction: Direction,
+        record: store::Recorded<'_>,
+    ) -> Spooled {
+        let committed = {
+            let mut registry = lock(&self.shared.registry);
+            match registry.workers.get_mut(&number) {
+                None => return Spooled::NotStored,
+                Some(entry) if entry.status.broker_seq >= broker_seq => return Spooled::Duplicate,
+                Some(entry) => entry.status.broker_seq = broker_seq,
+            }
+            self.commit_command_locked(&mut registry, number, direction, record, None)
+        };
+        self.shared.changed.notify_all();
+        if committed.shown_changed {
+            notify_clients();
+        }
+        if committed.stored {
+            Spooled::Stored
+        } else {
+            Spooled::NotStored
+        }
     }
 
     /// Records one event of a worker and wakes those waiting on it.
@@ -3317,6 +3554,7 @@ impl WorkerSupervisor {
             return Committed {
                 shown_changed: false,
                 seq: None,
+                stored: false,
             };
         };
         let shown_before = Self::shown(&entry.status);
@@ -3403,6 +3641,7 @@ impl WorkerSupervisor {
         Committed {
             shown_changed,
             seq: Some(in_memory),
+            stored: seq.is_some(),
         }
     }
 
@@ -4057,6 +4296,9 @@ impl WorkerSupervisor {
                 if status.takeover_ms.is_some() {
                     return Err(Self::taken_over(worker_id));
                 }
+                if let Some(gap) = &status.continuity_gap {
+                    return Err(Self::continuity_gap(worker_id, gap));
+                }
                 if status.is_gone() {
                     return Err(WorkerError::NotRunning(format!(
                         "worker {worker_id} is not running"
@@ -4585,6 +4827,16 @@ impl WorkerSupervisor {
     /// that server may have opened a tab nobody saw, and a second tab would
     /// be a second writer of the session. The new claim replaces it under
     /// the lock, so concurrent retries are serialized.
+    /// The refusal of a prompt or takeover of a worker whose output after a
+    /// server restart is not proven complete.
+    fn continuity_gap(worker_id: &str, gap: &str) -> WorkerError {
+        WorkerError::ContinuityGap(format!(
+            "worker {worker_id}'s output since a server restart is not proven complete ({gap}), \
+             so its state and session may be stale: it takes no new prompt and no takeover; \
+             stop it and start a new worker"
+        ))
+    }
+
     pub(crate) fn begin_takeover(
         &self,
         worker_id: &str,
@@ -4598,6 +4850,9 @@ impl WorkerSupervisor {
                 .get_mut(&number)
                 .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
             let status = &entry.status;
+            if let Some(gap) = &status.continuity_gap {
+                return Err(Self::continuity_gap(worker_id, gap));
+            }
             if status.lost && !status.process_gone() {
                 return Err(WorkerError::NotRunning(format!(
                     "worker {worker_id} was lost: its process is not this server's to end"
@@ -5257,6 +5512,8 @@ struct Reader {
     pid: u32,
     policy: policy::Policy,
     temp_dir: PathBuf,
+    /// The broker's spool, removed once the exit is stored.
+    spool: Option<PathBuf>,
     live: Arc<Live>,
     /// This server's lock on the journal, let go once the exit is stored.
     owner_lock: File,
@@ -5268,7 +5525,7 @@ impl Reader {
     fn run(self, stdout: std::process::ChildStdout, mut child: Child) {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
-            self.stdout_line(&line);
+            self.stdout_line(&line, None);
         }
         // EOF: the CLI closed stdout, so it exited or is about to.
         self.live.close_input();
@@ -5280,87 +5537,133 @@ impl Reader {
             }),
             Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
         };
-        self.finish(&exited);
+        self.finish(&exited, None);
     }
 
-    /// Reads a worker's output from its broker until the worker's exit.
+    /// Reads a worker's output from its broker until the worker's exit,
+    /// acknowledging each line once it is stored (or was already).
     /// `broker` is the broker process when this server started it, reaped
     /// once it ends.
     #[cfg(unix)]
     fn run_broker(self, mut messages: broker::Messages, broker: Option<Child>) {
-        let exited = loop {
-            match messages.next() {
-                Some(broker::Message::Out(line)) => self.stdout_line(&line),
-                Some(broker::Message::Err(line)) => {
-                    self.supervisor
-                        .record_raw(self.number, Direction::Err, &line);
-                }
-                Some(broker::Message::Lost(lines)) => self.supervisor.record(
-                    self.number,
-                    Direction::Herdr,
-                    &json!({
-                        "type": "output_lost",
-                        "lines": lines,
-                        "reason": "the broker's buffer was full while no server read it",
-                    }),
-                ),
-                Some(broker::Message::Exit(exited)) => break exited,
-                None => {
-                    // A server that died lets go of the journal and leaves
-                    // the broker to the system; this test process, still
-                    // the broker's parent, reaps it once another server
-                    // ended it.
-                    #[cfg(test)]
-                    if self.live.severed.load(std::sync::atomic::Ordering::SeqCst) {
-                        drop(self.owner_lock);
-                        if let Some(mut broker) = broker {
-                            let _ = broker.wait();
-                        }
-                        return;
+        let (exited, exit_seq) = loop {
+            let Some((seq, message)) = messages.next() else {
+                // A server that died lets go of the journal and leaves the
+                // broker to the system; this test process, still the
+                // broker's parent, reaps it once another server ended it.
+                #[cfg(test)]
+                if self.live.severed.load(std::sync::atomic::Ordering::SeqCst) {
+                    drop(self.owner_lock);
+                    if let Some(mut broker) = broker {
+                        let _ = broker.wait();
                     }
-                    // The broker never cuts a connection but for a newer
-                    // server, which takes the journal lock first, so it died;
-                    // its guard ends the worker.
-                    break json!({
+                    return;
+                }
+                // The broker never cuts a connection but for a newer
+                // server, which takes the journal lock first, so it died;
+                // its guard ends the worker. What it synced and did not send
+                // is in its spool.
+                if let Some((seq, exited)) = self
+                    .spool
+                    .as_deref()
+                    .and_then(|spool| self.supervisor.replay_spool(self.number, spool))
+                {
+                    break (exited, Some(seq));
+                }
+                break (
+                    json!({
                         "type": "exited",
                         "code": null,
                         "error": "the worker's broker ended before the worker's exit",
-                    });
-                }
+                    }),
+                    None,
+                );
+            };
+            let spooled = match message {
+                broker::Message::Out(line) => self.stdout_line(&line, Some(seq)),
+                broker::Message::Err(line) => self.supervisor.record_spooled(
+                    self.number,
+                    seq,
+                    Direction::Err,
+                    store::Recorded::Raw(&line),
+                ),
+                broker::Message::Lost(lines) => self.supervisor.record_spooled(
+                    self.number,
+                    seq,
+                    Direction::Herdr,
+                    store::Recorded::Event(&output_lost(lines)),
+                ),
+                broker::Message::Exit(exited) => break (exited, Some(seq)),
+            };
+            if spooled.is_stored() {
+                messages.ack(seq);
             }
         };
-        self.finish(&exited);
+        self.finish(&exited, exit_seq);
         if let Some(mut broker) = broker {
             let _ = broker.wait();
         }
     }
 
-    fn stdout_line(&self, line: &str) {
+    /// Records one event or line in this worker's record: with its broker
+    /// seq when it came from the broker ([`WorkerSupervisor::record_spooled`]).
+    fn record_line(
+        &self,
+        broker_seq: Option<u64>,
+        direction: Direction,
+        record: store::Recorded<'_>,
+    ) -> Spooled {
+        match broker_seq {
+            Some(seq) => self
+                .supervisor
+                .record_spooled(self.number, seq, direction, record),
+            None => {
+                self.supervisor
+                    .record_any(self.number, direction, record, None);
+                Spooled::Stored
+            }
+        }
+    }
+
+    /// Records one stdout line and acts on it; a line the store already
+    /// holds is skipped, its permission request already answered or asked.
+    fn stdout_line(&self, line: &str, broker_seq: Option<u64>) -> Spooled {
         if line.trim().is_empty() {
-            return;
+            return Spooled::Skipped;
         }
         let Ok(event) = serde_json::from_str::<Value>(line) else {
-            self.supervisor
-                .record_raw(self.number, Direction::Out, line);
-            return;
+            return self.record_line(broker_seq, Direction::Out, store::Recorded::Raw(line));
         };
-        self.supervisor.record(self.number, Direction::Out, &event);
+        let spooled = self.record_line(broker_seq, Direction::Out, store::Recorded::Event(&event));
+        if spooled == Spooled::Duplicate {
+            // Slice 4 (stdin receipts): a server that stored a `can_use_tool`
+            // request and died before it stored (or sent) its answer skips
+            // the request here when the broker sends it again, so the worker
+            // waits for an answer nobody gives. The receipts must find such
+            // a request and answer or ask it again.
+            return spooled;
+        }
         self.supervisor.record_tool_sessions(self.number, self.pid);
         if event["type"].as_str() == Some("control_request")
             && event["request"]["subtype"].as_str() == Some("can_use_tool")
         {
             self.answer_permission(&event);
         }
+        spooled
     }
 
-    /// Records the worker's exit.
-    fn finish(self, exited: &Value) {
+    /// Records the worker's exit, then removes the broker's spool, which
+    /// nobody needs once the exit is stored.
+    fn finish(self, exited: &Value, broker_seq: Option<u64>) {
         self.live.close_input();
         // The temp dir goes first, so a worker shown exited has none; the
         // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);
-        self.supervisor
-            .record(self.number, Direction::Herdr, exited);
+        let spooled =
+            self.record_line(broker_seq, Direction::Herdr, store::Recorded::Event(exited));
+        if let (true, Some(spool)) = (spooled.is_stored(), &self.spool) {
+            let _ = std::fs::remove_file(spool);
+        }
         drop(self.owner_lock);
     }
 
