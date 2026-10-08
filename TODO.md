@@ -478,6 +478,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   2. Takeover claims recorded in every state and released on failure; no
      prompt or answer during a takeover (findings 3, 8: two clicks on an
      exited worker open two tabs on one session).
+     Done 2026-10-08 by headless worker `w4` (`fix: worker takeovers are
+     claimed once and released on failure`, no questions). Open point
+     decided after round `20261008-023754-9eb8` (sol, MiMo, DeepSeek): after a
+     restart with `takeover_unfinished`, "no pane shows the session" does
+     not prove no tab was opened (the session id appears only after Claude
+     starts). Follow-up: the takeover tab is created carrying a unique
+     takeover id (env and title) recorded in the claim; recovery looks for
+     that id and for a process running `claude --resume <session>`; if
+     found, herdr adopts that pane (journals `takeover_tab_opened`);
+     otherwise a retry needs an explicit `--force` that states the
+     duplicate risk; retries serialized by the claim.
   3. A live handoff does not kill or mislabel workers: first refuse or
      postpone it while a worker runs and mark `lost` only when no server
      owns the journal (a lock per journal); a later `exited` replaces
