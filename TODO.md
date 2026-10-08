@@ -1626,6 +1626,26 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      separate integration review of cross-module paths (start, answer,
      takeover, handoff), where atomicity bugs live (sol).
 
+- [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08:
+  "maybe it's time for the TODO to be in an SQL database? ask the models";
+  "like jira or github issues"). Rounds `20261008-115256-4ae4` and `20261008-115345-2e9e` (sol, MiMo,
+  DeepSeek): a private database as the source of truth would strand the
+  ~10 repos using the global TODO rules, agents without herdr and git
+  review; GitHub Issues in the fork is the closest to Jira (search,
+  per-item history and threads, commit links, a board) but public, rate
+  limited, and `gh` in this checkout resolves to upstream
+  `herdrdev/herdr` by default (checked 2026-10-08), so every call must pin
+  `--repo rofrol/herdr`. Decided by the user 2026-10-08, in order:
+  1. stable ids `[t-...]` on every item in TODO.md (`todo_edit.py` mints
+     them for new items and adds them to the 71 open ones, keeping the
+     `?` + `Options:` question shape herdr parses);
+  2. a read-only SQLite index in herdr's state dir (`herdr todo sync`: repo,
+     id, section, order, title, content hash; no write-back), used by the
+     item history and worker links;
+  3. a pilot: about 5 items as GitHub Issues in the fork, `gh` pinned to
+     `rofrol/herdr` (and a guard that refuses upstream), to feel the
+     friction before any migration.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
