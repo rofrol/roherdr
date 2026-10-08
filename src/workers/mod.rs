@@ -1266,6 +1266,11 @@ struct Live {
     /// Fails the next write to the pipe, as a broken pipe would.
     #[cfg(test)]
     fail_next_write: std::sync::atomic::AtomicBool,
+    /// Holds the next write to the pipe: it signals the first channel when
+    /// reached and writes once the second gets a message, so a test can act
+    /// between a recorded line and its write (a caller dying mid-answer).
+    #[cfg(test)]
+    hold_next_write: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Live {
@@ -1275,6 +1280,8 @@ impl Live {
             stdin: Arc::new(Mutex::new(Some(stdin))),
             #[cfg(test)]
             fail_next_write: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            hold_next_write: Mutex::new(None),
         }
     }
 
@@ -1292,6 +1299,11 @@ impl Live {
                 std::io::ErrorKind::BrokenPipe,
                 "forced write failure",
             ));
+        }
+        #[cfg(test)]
+        if let Some((reached, release)) = lock(&self.hold_next_write).take() {
+            let _ = reached.send(());
+            let _ = release.recv();
         }
         pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush())
     }

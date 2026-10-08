@@ -375,6 +375,41 @@ class TodoEditTests(unittest.TestCase):
         self.assertIn("changed while editing", err)
         self.assertEqual(self.todo.read_text(), TODO)
 
+    OTHER = TODO + "- [ ] Added by another session\n"
+
+    def test_a_real_write_while_editing_refuses_and_keeps_the_other_change(self):
+        # Another session writes the file on disk after this edit read it.
+        real_verify = todo_edit.verify
+        written = []
+
+        def verify_then_another_write(*a, **k):
+            real_verify(*a, **k)
+            if not written:
+                self.todo.write_text(self.OTHER)
+                written.append(True)
+
+        with mock.patch.object(todo_edit, "verify", verify_then_another_write):
+            code, _, err = self.run_tool("remove", "Second item")
+        self.assertEqual(code, 1)
+        self.assertIn("changed while editing", err)
+        self.assertEqual(self.todo.read_text(), self.OTHER)
+        self.assertEqual([p.name for p in self.root.iterdir()], ["TODO.md"])
+
+    @unittest.expectedFailure
+    def test_a_write_between_the_check_and_the_rename_is_not_lost(self):
+        # Known gap (docs/headless-worker-fault-tests.md): atomic_write compares,
+        # then renames, without a lock, so a write landing in between is
+        # replaced. Drop expectedFailure once that window is closed.
+        real_replace = os.replace
+
+        def another_write_then_replace(src, dst):
+            Path(dst).write_text(self.OTHER)
+            real_replace(src, dst)
+
+        with mock.patch.object(todo_edit.os, "replace", side_effect=another_write_then_replace):
+            self.run_tool("remove", "Second item")
+        self.assertIn("Added by another session", self.todo.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
