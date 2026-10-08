@@ -475,6 +475,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      line structure (end the inserted text with a newline when the anchor
      ends with one) and its check should compare the lines around the
      insertion.
+     Fixed the same day (`fix: todo_edit keeps line structure on insert`).
   7. Fault-injection tests: the coordinator killed mid-answer and between
      answer and re-arm; two questions at once; a worker exiting during a
      wait; a server restart and live handoff mid-wait; a duplicate or lost
