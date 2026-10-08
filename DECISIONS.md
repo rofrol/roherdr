@@ -492,3 +492,20 @@ failure is `unavailable`, never `verified`), journaled and shown with the
 run. The todo skill (dotfiles `f7a238d`) cherry-picks only on `verified`;
 a failure starts a new attempt with the evidence. First real use caught a
 missing `ZIG` in the server's environment, fixed the same day.
+
+## Headless workers survive installs and server crashes (2026-10-08)
+
+The user asked why an install refused while a headless worker was in a turn
+("I thought the work was coordinated on the server"). The store held the
+state, but a worker's life was tied to the server's pipes. Built with sol,
+MiMo and DeepSeek, in four slices: an install queue that waits for turns by
+events; a per-worker broker (`herdr __worker-broker`, its own session) that
+owns the worker's pipes and outlives the server; a stdout spool with
+sequence numbers, acked after the store commit, replayed on re-attach, a
+re-attach without proven continuity marking the worker degraded (a fold
+that synthesized Working was removed after review); stdin through the
+broker once per id, and a live handoff that keeps brokered workers. Live
+test 2026-10-08: a worker reading 19 files survived a server handoff
+mid-turn and finished its turn through the new server, not degraded.
+Windows keeps direct pipes (a gap); workers started before the broker keep
+the install queue.
