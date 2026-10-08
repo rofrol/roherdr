@@ -16,8 +16,9 @@
 //! use, then, once `<fifo>` is written, three text events, a stderr line and
 //! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
 //! `<fifo>` is written), `commit <file> <subject...>` (appends to
-//! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`)
-//! and `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`).
+//! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`),
+//! `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`) and
+//! `stubborn-commit <file> <subject...>` (`ignore-term`, then `commit`).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -89,7 +90,8 @@ while True:
     message = read()
     if message.get("type") != "user":
         continue
-    words = message["message"]["content"].split()
+    # The first line chooses: a todo run appends its contract below it.
+    words = message["message"]["content"].split("\n")[0].split()
     emit({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}})
     command = words[0]
     if command == "finish":
@@ -100,6 +102,10 @@ while True:
         commit(words[1], " ".join(words[2:]))
     elif command == "perm-commit":
         ask_host("WebFetch", {"url": "https://example.com"})
+        commit(words[1], " ".join(words[2:]))
+    elif command == "stubborn-commit":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        ignore_term = True
         commit(words[1], " ".join(words[2:]))
     elif command == "fail":
         result("error_during_execution", True, "model_error", None)
@@ -5184,11 +5190,19 @@ mod todo_runs {
             task: task.into(),
             message: SUBJECT.into(),
             paths: vec!["*.txt".into()],
-            check: check.into(),
+            checks: check.split(' ').map(str::to_owned).collect(),
             owner_pane_id: Some("p-coordinator".into()),
             owner_session_id: None,
-            env: None,
+            env: Some(caller_env()),
         }
+    }
+
+    /// The environment a coordinator's CLI sends: this process's, without
+    /// `HERDR_*`.
+    fn caller_env() -> std::collections::HashMap<String, String> {
+        std::env::vars()
+            .filter(|(key, _)| !key.starts_with("HERDR_"))
+            .collect()
     }
 
     fn wait(fixture: &Fixture, run_id: &str, after: Option<i64>) -> (TodoRunEvent, TodoRunInfo) {
@@ -5226,6 +5240,7 @@ mod todo_runs {
             decision: None,
             answers: Vec::new(),
             message: None,
+            env: Some(caller_env()),
         })
     }
 
@@ -5291,6 +5306,31 @@ mod todo_runs {
             "{}",
             worker.cwd
         );
+        // Its task is the coordinator's text with the run's contract: the
+        // exact subject without body or trailers, the paths, the last line.
+        let task = fixture
+            .journal(&worker_id)
+            .into_iter()
+            .find(|record| record["dir"] == "in" && record["event"]["type"] == "user")
+            .and_then(|record| {
+                record["event"]["message"]["content"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .unwrap();
+        assert!(
+            task.starts_with(&format!("commit a.txt {SUBJECT}\n")),
+            "{task}"
+        );
+        for part in [
+            &format!("\n{SUBJECT}\n"),
+            "no body and no trailers",
+            "*.txt",
+            "`WORKER-DONE <sha> | <summary>`",
+            "`WORKER-BLOCKED <reason>`",
+        ] {
+            assert!(task.contains(part), "{part:?} missing from {task}");
+        }
         // The run handled the worker's events: its owner owes nothing.
         assert!(fixture
             .supervisor
@@ -5404,6 +5444,7 @@ mod todo_runs {
                 decision: Some(WorkerDecision::Allow),
                 answers: Vec::new(),
                 message: None,
+                env: Some(caller_env()),
             })
             .unwrap();
         let (review, _) = wait(&fixture, &run.run_id, Some(question.event_id));
@@ -5468,7 +5509,7 @@ mod todo_runs {
         .unwrap();
         let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
-        assert_eq!(failed.actions, [TodoAction::Retry]);
+        assert_eq!(failed.actions, [TodoAction::Retry, TodoAction::Verify]);
         let verification = failed.verification.as_ref().unwrap();
         assert_eq!(verification.verdict, WorkerVerdict::Failed);
         assert!(verification
@@ -5610,6 +5651,301 @@ mod todo_runs {
         assert_eq!(finished.picked.as_deref(), Some(master.trim()));
     }
 
+    fn event_types(fixture: &Fixture, run_id: &str) -> Vec<String> {
+        fixture
+            .supervisor
+            .shared
+            .store
+            .as_ref()
+            .unwrap()
+            .run_event_types(run_id)
+            .unwrap()
+            .into_iter()
+            .map(|(_, kind)| kind)
+            .collect()
+    }
+
+    fn command_checks(event: &TodoRunEvent) -> Vec<(Option<String>, WorkerCheckOutcome)> {
+        event
+            .verification
+            .as_ref()
+            .unwrap()
+            .checks
+            .iter()
+            .filter(|check| check.check == "command")
+            .map(|check| (check.name.clone(), check.outcome))
+            .collect()
+    }
+
+    #[test]
+    fn a_check_without_the_callers_environment_is_unavailable_until_a_resume_sends_it() {
+        let fixture = todo_repo("todo-env");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit b.txt {SUBJECT}"), "ok b"))
+            .unwrap();
+        assert_eq!(run.checks, ["ok", "b"]);
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The server ends after the approval, before the verify, and the
+        // next one never had the environment.
+        runs::crash_before(&run.repo, TodoStep::Verify);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+        runs::forget_env(&run.run_id);
+        fixture.supervisor.resume_runs();
+        let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
+        assert_eq!(failed.actions, [TodoAction::Retry, TodoAction::Verify]);
+        assert_eq!(
+            failed.verification.as_ref().unwrap().verdict,
+            WorkerVerdict::Unavailable
+        );
+        assert_eq!(
+            command_checks(&failed),
+            [
+                (Some("ok".into()), WorkerCheckOutcome::Unavailable),
+                (Some("b".into()), WorkerCheckOutcome::Unavailable),
+            ]
+        );
+        assert_eq!(waiting.attempt, 1);
+
+        // A resume that sends no environment leaves the server none.
+        let unsent = fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                env: None,
+                ..resume_params(&run.run_id, failed.event_id, TodoAction::Verify)
+            })
+            .unwrap();
+        assert_eq!(unsent.step, TodoStep::Verify);
+        let (again, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(again.kind, TodoEventKind::VerifyFailed, "{again:#?}");
+        assert_eq!(
+            again.verification.as_ref().unwrap().verdict,
+            WorkerVerdict::Unavailable
+        );
+
+        // One that sends it verifies with it: both checks pass.
+        resume(
+            &fixture,
+            &run.run_id,
+            again.event_id,
+            TodoAction::Verify,
+            None,
+        )
+        .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(again.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(finished.attempt, 1);
+        let worker_id = finished.worker_id.unwrap();
+        let verification = fixture.herdr_events(&worker_id, "verification");
+        let last = &verification.last().unwrap()["verification"];
+        assert_eq!(last["verdict"], "verified");
+        let names: Vec<&str> = last["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|check| check["name"].as_str())
+            .collect();
+        assert_eq!(names, ["ok", "b"]);
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+    }
+
+    fn resume_params(run_id: &str, event: i64, action: TodoAction) -> TodoResumeParams {
+        TodoResumeParams {
+            run_id: run_id.to_owned(),
+            action,
+            event,
+            task: None,
+            request_id: None,
+            decision: None,
+            answers: Vec::new(),
+            message: None,
+            env: Some(caller_env()),
+        }
+    }
+
+    #[test]
+    fn a_run_another_server_holds_is_driven_only_after_it_lets_go() {
+        let fixture = todo_repo("todo-lock");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        let worker_id = waiting.worker_id.clone().unwrap();
+        runs::crash_before(&run.repo, TodoStep::Stop);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+
+        // The old server of a handoff still holds the run.
+        let held = std::fs::File::open(fixture.supervisor.run_lock_path(&run.run_id)).unwrap();
+        held.lock().unwrap();
+        fixture.supervisor.resume_runs();
+        wait_until("the driver's wait for the run lock", || {
+            event_types(&fixture, &run.run_id).contains(&"run_lock_wait".to_owned())
+        });
+        // It did nothing while it waited.
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (cut.status, cut.step),
+            (TodoRunStatus::Running, TodoStep::Stop)
+        );
+        assert_ne!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+
+        // The old server lets go: the driver takes the run on.
+        drop(held);
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let types = event_types(&fixture, &run.run_id);
+        let at = |kind: &str| types.iter().position(|seen| seen == kind).unwrap();
+        assert!(at("run_lock_wait") < at("run_lock_taken"), "{types:?}");
+        assert!(at("run_lock_taken") < at("run_stop_intent"), "{types:?}");
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        // An ended run leaves no lock file.
+        assert!(!fixture.supervisor.run_lock_path(&run.run_id).exists());
+    }
+
+    #[test]
+    fn after_a_handoff_the_old_server_lets_go_of_its_runs_without_blocking_them() {
+        let fixture = todo_repo("todo-let-go");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, "block", "ok"))
+            .unwrap();
+        // The driver waits for the worker's turn, which does not end.
+        let status = || fixture.supervisor.todo_status(&run.run_id).unwrap();
+        wait_until("the run's attention step", || {
+            status().step == TodoStep::Attention
+        });
+        let worker_id = status().worker_id.unwrap();
+        fixture.wait_for(&worker_id, |worker| worker.state == WorkerState::Working);
+        fixture.supervisor.let_go_of_runs();
+        wait_until("the old driver letting go", || {
+            event_types(&fixture, &run.run_id).contains(&"run_let_go".to_owned())
+        });
+        let left = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (left.status, left.step, left.error),
+            (TodoRunStatus::Running, TodoStep::Attention, None)
+        );
+        // Its lock is free for the new server.
+        let lock = std::fs::File::open(fixture.supervisor.run_lock_path(&run.run_id)).unwrap();
+        lock.try_lock().unwrap();
+        fixture.supervisor.kill(&worker_id, false).unwrap();
+        fixture.wait(&worker_id, WorkerWaitUntil::Exit);
+    }
+
+    #[test]
+    fn a_worker_alive_after_its_stop_waits_for_a_force_stop() {
+        let fixture = todo_repo("todo-still-alive");
+        let run = fixture
+            .supervisor
+            .todo_run(params(
+                &fixture,
+                &format!("stubborn-commit a.txt {SUBJECT}"),
+                "ok",
+            ))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        let worker_id = waiting.worker_id.clone().unwrap();
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        // The stop is sent; the driver waits for the exit with no deadline,
+        // and nothing reports the worker stuck until the coordinator asks.
+        wait_until("the stop's SIGTERM", || {
+            !fixture.herdr_events(&worker_id, "signal").is_empty()
+        });
+        assert_eq!(
+            event_types(&fixture, &run.run_id)
+                .iter()
+                .filter(|kind| *kind == "run_event")
+                .count(),
+            1,
+            "only the review so far"
+        );
+        let asked = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(asked.status, TodoRunStatus::Waiting, "{asked:#?}");
+        let (alive, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(alive.kind, TodoEventKind::StillAlive, "{alive:#?}");
+        assert_eq!(asked.pending_event, Some(alive.event_id));
+        // Asking again raises nothing new.
+        assert_eq!(
+            fixture
+                .supervisor
+                .todo_status(&run.run_id)
+                .unwrap()
+                .pending_event,
+            Some(alive.event_id)
+        );
+        assert_eq!(alive.actions, [TodoAction::ForceStop]);
+        assert!(
+            alive
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains(&worker_id),
+            "{alive:#?}"
+        );
+        assert_eq!(
+            (waiting.status, waiting.step),
+            (TodoRunStatus::Waiting, TodoStep::Stop)
+        );
+        // Nothing killed it: it still runs.
+        assert_ne!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+        assert!(fixture
+            .herdr_events(&worker_id, "signal")
+            .iter()
+            .all(|signal| signal["signal"] == "SIGTERM"));
+
+        resume(
+            &fixture,
+            &run.run_id,
+            alive.event_id,
+            TodoAction::ForceStop,
+            None,
+        )
+        .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(alive.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(fixture
+            .herdr_events(&worker_id, "signal")
+            .iter()
+            .any(|signal| signal["signal"] == "SIGKILL"));
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        // The run's owner asked for that end: it owes nothing.
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+    }
+
     #[test]
     fn preflight_refuses_what_a_run_cannot_do() {
         let fixture = todo_repo("todo-preflight");
@@ -5637,6 +5973,12 @@ mod todo_runs {
             ..params(&fixture, &task, "ok")
         });
         assert_eq!(code, "todo_preflight_failed");
+        let (code, message) = refused(params(&fixture, &task, "ok ok"));
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(message.contains("twice"), "{message}");
+        let (code, message) = refused(params(&fixture, &task, "ok nosuch"));
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(message.contains("nosuch"), "{message}");
         assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
 
         // One run in progress per repository.

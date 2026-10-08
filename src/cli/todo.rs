@@ -10,28 +10,37 @@ use crate::api::schema::{
 use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
-  herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME
+  herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
-      paths relative git globs, NAME registered in .herdr/checks.toml), then
+      paths relative git globs, each NAME registered in .herdr/checks.toml;
+      the verify runs them in order and every one must pass), then
       start a headless worker in the folder slot ../herdr-worktrees/worker on
       the branch todo/<item-id>-<attempt> from master with FILE's text as its
-      task, owned by this pane. Prints the run (its id r-...). The run then
+      task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
+      keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
   herdr todo wait <run-id> [--after EVENT_ID]
       Blocks until the run waits on an event after EVENT_ID (a question the
       worker policy left, the worker's turn end, a failed verify), or ended
-      (done or blocked). Prints the event with its event_id, the actions it
-      takes and its evidence (questions, diff stat, commits, the verify).
-  herdr todo resume <run-id> --event EVENT_ID --action approve|retry|answer
+      (done or blocked), or a still_alive event todo status raised. Prints the
+      event with its event_id, the actions it takes and its evidence
+      (questions, diff stat, commits, the verify).
+  herdr todo resume <run-id> --event EVENT_ID
+                    --action approve|retry|answer|verify|force-stop
                     [--task FILE] [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
-      approve stops the worker, verifies its commit with the check and
+      approve stops the worker, verifies its commit with the checks and
       cherry-picks it onto master; retry starts the next attempt with FILE's
       text (at most 3 attempts, then the run is blocked); answer sends the
-      worker allow, deny or one choice per question.
+      worker allow, deny or one choice per question; verify runs the verify
+      again; force-stop SIGKILLs a worker still alive after its stop. Every
+      resume sends this shell's environment again, which the checks run
+      with (the server never stores it); without it a check is unavailable.
   herdr todo status <run-id>
+      Prints the run. Asked while its worker has not exited since the stop,
+      it raises a still_alive event first, which takes force-stop.
   herdr todo runs [--repo DIR]";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
@@ -61,26 +70,26 @@ fn read_task(path: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// Takes `--paths GLOB...` (every argument up to the next option) out of
-/// `args`.
-fn take_paths(args: &[String]) -> Result<(Option<Vec<String>>, Vec<String>), String> {
-    let Some(at) = args.iter().position(|arg| arg == "--paths") else {
+/// Takes `option VALUE...` (every argument up to the next option, such as
+/// `--paths GLOB...` or `--check NAME...`) out of `args`.
+fn take_list(args: &[String], option: &str) -> Result<(Option<Vec<String>>, Vec<String>), String> {
+    let Some(at) = args.iter().position(|arg| arg == option) else {
         return Ok((None, args.to_vec()));
     };
-    let globs: Vec<String> = args[at + 1..]
+    let values: Vec<String> = args[at + 1..]
         .iter()
         .take_while(|arg| !arg.starts_with("--"))
         .cloned()
         .collect();
-    if globs.is_empty() {
-        return Err("missing value for --paths".into());
+    if values.is_empty() {
+        return Err(format!("missing value for {option}"));
     }
     let mut rest = args[..at].to_vec();
-    rest.extend_from_slice(&args[at + 1 + globs.len()..]);
-    if rest.iter().any(|arg| arg == "--paths") {
-        return Err("--paths given twice".into());
+    rest.extend_from_slice(&args[at + 1 + values.len()..]);
+    if rest.iter().any(|arg| arg == option) {
+        return Err(format!("{option} given twice"));
     }
-    Ok((Some(globs), rest))
+    Ok((Some(values), rest))
 }
 
 fn one_run_id(subcommand: &str, rest: &[String]) -> Result<String, String> {
@@ -98,10 +107,10 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let rest = &args[1..];
     Ok(Some(match subcommand {
         "run" => {
-            let (paths, rest) = take_paths(rest)?;
+            let (paths, rest) = take_list(rest, "--paths")?;
+            let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
             let (message, rest) = take_string_option(&rest, "--message")?;
-            let (check, rest) = take_string_option(&rest, "--check")?;
             let item = match rest.as_slice() {
                 [item] if !item.starts_with("--") => item.clone(),
                 _ => {
@@ -110,8 +119,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                     )
                 }
             };
-            let (Some(task), Some(message), Some(paths), Some(check)) =
-                (task, message, paths, check)
+            let (Some(task), Some(message), Some(paths), Some(checks)) =
+                (task, message, paths, checks)
             else {
                 return Err("run takes one item id, --task, --message, --paths and --check".into());
             };
@@ -126,7 +135,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 task: read_task(&task)?,
                 message,
                 paths,
-                check,
+                checks,
                 owner_session_id: pane
                     .as_ref()
                     .and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
@@ -163,7 +172,13 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 Some("approve") => TodoAction::Approve,
                 Some("retry") => TodoAction::Retry,
                 Some("answer") => TodoAction::Answer,
-                _ => return Err("resume takes --action approve, retry or answer".into()),
+                Some("verify") => TodoAction::Verify,
+                Some("force-stop") => TodoAction::ForceStop,
+                _ => {
+                    return Err(
+                        "resume takes --action approve, retry, answer, verify or force-stop".into(),
+                    )
+                }
             };
             let Some((run_id, answer)) = rest.split_first() else {
                 return Err("resume takes a run id".into());
@@ -195,6 +210,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 decision,
                 answers,
                 message,
+                env: super::worker::caller_env(),
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {
@@ -246,13 +262,14 @@ mod tests {
             "feat: x",
             "--check",
             "workers",
+            "windows-lint",
         ])) else {
             panic!("run did not parse");
         };
         assert_eq!(params.item, "t-abcd2345");
         assert_eq!(params.paths, ["src/**", "AGENTS.md"]);
         assert_eq!(params.task, "Do the thing\n");
-        assert_eq!(params.check, "workers");
+        assert_eq!(params.checks, ["workers", "windows-lint"]);
         assert!(parse(&args(&["run", "t-abcd2345", "--task", &task])).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -276,6 +293,21 @@ mod tests {
         assert_eq!(params.action, TodoAction::Answer);
         assert_eq!(params.decision, Some(WorkerDecision::Allow));
         assert_eq!(params.request_id.as_deref(), Some("perm-1"));
+        // Every resume sends the caller's environment again.
+        assert!(params
+            .env
+            .is_some_and(|env| env.keys().all(|key| !key.starts_with("HERDR_"))));
+        let Ok(Some(Method::TodoResume(params))) = parse(&args(&[
+            "resume",
+            "r-abcd2345",
+            "--event",
+            "9",
+            "--action",
+            "force-stop",
+        ])) else {
+            panic!("force-stop did not parse");
+        };
+        assert_eq!(params.action, TodoAction::ForceStop);
         assert!(parse(&args(&["resume", "r-abcd2345", "--action", "approve"])).is_err());
         assert!(parse(&args(&[
             "resume",
