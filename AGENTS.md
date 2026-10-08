@@ -718,6 +718,19 @@ Every pane, including yours, keeps running, but attached clients disconnect:
 tell the user to run `herdr` to reattach. If the handoff fails, the script
 restores the previous binary and the server keeps running it.
 
+Headless workers do not survive the handoff yet, so `install` (and
+`rollback`) first drains them (`herdr worker drain start`): the server
+refuses new turns (`worker prompt` and `worker start` get
+`workers_draining`, naming the install), and when a worker is in a turn the
+script names it and waits for that turn's end event (`herdr worker
+wait-drained`, no timeout), then stops the idle workers and hands off; the
+new server does not drain. An install can thus wait as long as a turn runs,
+including one waiting for its coordinator's answer: answer it, or give the
+install up with `herdr worker drain cancel` (or Ctrl-C in the install),
+which admits turns again. A coordinator whose prompt or start gets
+`workers_draining` waits for the install to finish and sends it again (the
+same `--command-id` is fine: a drain refusal is not stored).
+
 Backups are named `<install time>_<commit>_<commit subject>` after the build
 they hold (read from the hidden `herdr --build-commit`);
 `scripts/herdr_live.sh list` shows them and the installed build.

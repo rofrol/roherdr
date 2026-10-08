@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use crate::api::schema::{
     EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
-    WorkerDecision, WorkerEscalateParams, WorkerGeneratedFile, WorkerInterruptParams,
-    WorkerKillParams, WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams,
-    WorkerStartParams, WorkerTarget, WorkerVerifyParams, WorkerWaitParams, WorkerWaitUntil,
+    WorkerDecision, WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams,
+    WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
+    WorkerPromptParams, WorkerRunsParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
+    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|runs|wait|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over> ...
+    "usage: herdr worker <start|status|list|runs|wait|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
@@ -81,14 +82,25 @@ const USAGE: &str =
     process resuming the session is found; otherwise only --force retries it,
     and a tab that earlier attempt opened unseen would be a second writer of
     the session.
+  herdr worker drain <start [--reason TEXT]|status|cancel>
+    start stops admitting new turns before an install: prompt and start are
+    refused (workers_draining, naming TEXT) while running turns go on; it
+    lists the workers still in a turn. cancel admits turns again; a handoff
+    ends the drain too (the new server does not drain).
+  herdr worker wait-drained
+    Blocks until no worker is in a turn, woken by their turn-end events,
+    printing each turn as it ends. Exits 1 when the drain it saw is
+    cancelled before that.
   start, prompt, interrupt, stop, kill and answer take --command-id ID: the
   command runs once per ID; repeating it returns the first outcome (the same
   reply or refusal) without doing it again, and reusing ID for another
   command is refused (worker_command_conflict).";
 
 pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
-    if args.first().map(String::as_str) == Some("log") {
-        return run_log(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("log") => return run_log(&args[1..]),
+        Some("wait-drained") => return run_wait_drained(&args[1..]),
+        _ => {}
     }
     let method = match parse_worker_args(args) {
         Ok(Some(method)) => method,
@@ -245,6 +257,19 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
                 }),
                 _ => return Err("escalate takes a worker id and --request REQUEST_ID".into()),
             }
+        }
+        "drain" => {
+            let (reason, rest) = take_string_option(rest, "--reason")?;
+            let action = match rest.as_slice() {
+                [action] if action == "start" => WorkerDrainAction::Start,
+                [action] if action == "status" => WorkerDrainAction::Status,
+                [action] if action == "cancel" => WorkerDrainAction::Cancel,
+                _ => return Err("drain takes start, status or cancel".into()),
+            };
+            if reason.is_some() && action != WorkerDrainAction::Start {
+                return Err("--reason goes with drain start".into());
+            }
+            Method::WorkerDrain(WorkerDrainParams { action, reason })
         }
         "verify" => Method::WorkerVerify(WorkerVerifyParams {
             env: caller_env(),
@@ -572,6 +597,74 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         item,
         command_id: None,
     })
+}
+
+/// `herdr worker wait-drained`: waits until no worker is in a turn, one
+/// `worker.wait_drained` per change, each passing the workers the last reply
+/// showed in a turn, so the server answers at the next turn's end. Prints
+/// what it waits for and each turn as it ends.
+fn run_wait_drained(args: &[String]) -> std::io::Result<i32> {
+    if !args.is_empty() {
+        eprintln!("wait-drained takes no arguments");
+        eprintln!("{USAGE}");
+        return Ok(2);
+    }
+    let mut in_turn: Vec<String> = Vec::new();
+    let mut draining = None;
+    loop {
+        let response = super::send_request(&Request {
+            id: "cli:worker:wait-drained".into(),
+            method: Method::WorkerWaitDrained(WorkerWaitDrainedParams {
+                in_turn: in_turn.clone(),
+                draining,
+            }),
+        })?;
+        if response.get("error").is_some() {
+            return super::print_response(&response);
+        }
+        let drain = &response["result"]["drain"];
+        let now_draining = drain["draining"].as_bool().unwrap_or(false);
+        if draining == Some(true) && !now_draining {
+            eprintln!("the drain was cancelled while turns still run");
+            return Ok(1);
+        }
+        draining = Some(now_draining);
+        let describe = |worker: &serde_json::Value| {
+            format!(
+                "{} ({}{})",
+                worker["worker_id"].as_str().unwrap_or("?"),
+                worker["state"].as_str().unwrap_or("?"),
+                worker["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!(", {name}"))
+                    .unwrap_or_default()
+            )
+        };
+        for worker in drain["ended"].as_array().into_iter().flatten() {
+            println!("turn ended: {}", describe(worker));
+        }
+        let now: Vec<&serde_json::Value> =
+            drain["in_turn"].as_array().into_iter().flatten().collect();
+        for worker in &now {
+            let id = worker["worker_id"].as_str().unwrap_or("");
+            if !in_turn.iter().any(|known| known == id) {
+                println!("waiting for the turn of {}", describe(worker));
+            }
+        }
+        let starting = drain["starting"].as_u64().unwrap_or(0);
+        if now.is_empty() && starting == 0 {
+            println!("no worker is in a turn");
+            return Ok(0);
+        }
+        if now.is_empty() {
+            println!("waiting for {starting} worker start(s) to register");
+        }
+        in_turn = now
+            .iter()
+            .filter_map(|worker| worker["worker_id"].as_str().map(str::to_owned))
+            .collect();
+    }
 }
 
 /// `herdr worker log [--follow] <worker_id>`: the worker's journal as text
@@ -1024,6 +1117,32 @@ mod tests {
                 "x",
                 "--other",
             ],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parses_drain() {
+        assert_eq!(
+            parse_worker_args(&args(&["drain", "start", "--reason", "an install"])),
+            Ok(Some(Method::WorkerDrain(WorkerDrainParams {
+                action: WorkerDrainAction::Start,
+                reason: Some("an install".into()),
+            })))
+        );
+        assert_eq!(
+            parse_worker_args(&args(&["drain", "cancel"])),
+            Ok(Some(Method::WorkerDrain(WorkerDrainParams {
+                action: WorkerDrainAction::Cancel,
+                reason: None,
+            })))
+        );
+        for bad in [
+            &["drain"][..],
+            &["drain", "stop"],
+            &["drain", "status", "--reason", "x"],
+            &["drain", "start", "cancel"],
         ] {
             assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
         }

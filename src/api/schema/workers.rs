@@ -254,6 +254,69 @@ pub struct WorkerObligationsParams {
     pub owner_pane_id: Option<String>,
 }
 
+/// What `worker.drain` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerDrainAction {
+    /// Stop admitting new turns: `worker.prompt` and `worker.start` are
+    /// refused with `workers_draining` until the drain is cancelled or the
+    /// server hands off. Starting an active drain keeps it as it is.
+    Start,
+    /// Only report the drain and the workers in a turn.
+    Status,
+    /// Admit new turns again.
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerDrainParams {
+    pub action: WorkerDrainAction,
+    /// With `start`: what drains, named in every refusal (for example an
+    /// install by `scripts/herdr_live.sh`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerWaitDrainedParams {
+    /// The workers the caller already knows are in a turn (the previous
+    /// reply's `in_turn`). The wait returns as soon as the workers in a turn
+    /// differ from these, or at once when none is in a turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub in_turn: Vec<String>,
+    /// The `draining` the previous reply showed: the wait also returns when
+    /// a drain starts or ends (`worker.drain` `cancel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draining: Option<bool>,
+}
+
+/// The server's drain and the workers it waits for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerDrain {
+    /// New turns are refused.
+    pub draining: bool,
+    /// What drains, as `worker.drain` `start` named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When the drain started, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ms: Option<u64>,
+    /// The running workers in a turn: their first turn or a prompted one
+    /// has not ended.
+    pub in_turn: Vec<WorkerInfo>,
+    /// Worker starts admitted before the drain and not registered yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub starting: u32,
+    /// `worker.wait_drained` only: the workers of its `in_turn` that are no
+    /// longer in a turn, as they are now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<WorkerInfo>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 /// The owner hands one of the worker's pending questions to the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerEscalateParams {

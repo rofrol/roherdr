@@ -1810,6 +1810,168 @@ fn a_handoff_is_refused_while_any_worker_process_is_alive() {
     }
 }
 
+/// `worker.wait_drained` with the liveness re-check as long as the hang
+/// guard, so a missed wake fails the test. `on_block` runs at the first
+/// point the wait would block, in the window between its check and its
+/// block. Returns the reply and how many times the wait got that far.
+fn wait_drained(
+    supervisor: &WorkerSupervisor,
+    seen: &[String],
+    draining: Option<bool>,
+    mut on_block: impl FnMut(),
+) -> (WorkerDrain, usize) {
+    let started = Instant::now();
+    let mut blocked = 0;
+    let params = WorkerWaitDrainedParams {
+        in_turn: seen.to_vec(),
+        draining,
+    };
+    let drain = supervisor
+        .wait_drained(&params, HANG_GUARD, || {
+            assert!(started.elapsed() < HANG_GUARD, "the drain hung");
+            blocked += 1;
+            if blocked == 1 {
+                on_block();
+            }
+            true
+        })
+        .unwrap();
+    (drain, blocked)
+}
+
+fn ids(workers: &[WorkerInfo]) -> Vec<String> {
+    workers
+        .iter()
+        .map(|worker| worker.worker_id.clone())
+        .collect()
+}
+
+#[test]
+fn a_drain_waits_for_the_running_turn_to_end() {
+    let fixture = Fixture::new("drain-busy");
+    let busy = fixture.start("block");
+    fixture.wait_for(&busy, |worker| worker.state == WorkerState::Working);
+    let idle = fixture.start("finish");
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+
+    let drain = fixture
+        .supervisor
+        .drain(WorkerDrainAction::Start, Some("an install (test)"));
+    assert!(drain.draining);
+    assert_eq!(drain.reason.as_deref(), Some("an install (test)"));
+    assert_eq!(ids(&drain.in_turn), vec![busy.clone()]);
+
+    // Knowing nothing yet, the wait answers at once with the turn it waits for.
+    let (first, blocked) = wait_drained(&fixture.supervisor, &[], None, || {});
+    assert_eq!((ids(&first.in_turn), blocked), (vec![busy.clone()], 0));
+
+    // Knowing it, the wait blocks until that turn's end event, which the
+    // interrupt brings only once the wait is about to block.
+    let (drained, blocked) = wait_drained(
+        &fixture.supervisor,
+        std::slice::from_ref(&busy),
+        Some(true),
+        || {
+            fixture
+                .supervisor
+                .interrupt(&WorkerInterruptParams {
+                    worker_id: busy.clone(),
+                    turn: None,
+                    command_id: None,
+                })
+                .unwrap();
+        },
+    );
+    assert!(blocked >= 1);
+    assert!(drained.in_turn.is_empty(), "{drained:?}");
+    assert_eq!(ids(&drained.ended), vec![busy.clone()]);
+    assert_eq!(drained.ended[0].state, WorkerState::Interrupted);
+    assert!(
+        drained.draining,
+        "the drain lasts until the handoff or a cancel"
+    );
+
+    // A cancel ends a wait that saw the drain, though a turn still runs.
+    fixture.supervisor.prompt(&idle, "block").unwrap_err();
+    fixture.supervisor.drain(WorkerDrainAction::Cancel, None);
+    fixture.supervisor.prompt(&idle, "block").unwrap();
+    fixture.supervisor.drain(WorkerDrainAction::Start, None);
+    let (cancelled, _) = wait_drained(
+        &fixture.supervisor,
+        std::slice::from_ref(&idle),
+        Some(true),
+        || {
+            fixture.supervisor.drain(WorkerDrainAction::Cancel, None);
+        },
+    );
+    assert!(!cancelled.draining);
+    assert_eq!(ids(&cancelled.in_turn), vec![idle.clone()]);
+}
+
+#[test]
+fn a_drain_without_turns_is_drained_at_once_and_a_new_server_does_not_drain() {
+    let fixture = Fixture::new("drain-idle");
+    let idle = fixture.start("finish");
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+
+    fixture.supervisor.drain(WorkerDrainAction::Start, None);
+    let (drain, blocked) = wait_drained(&fixture.supervisor, &[], None, || {});
+    assert_eq!(blocked, 0);
+    assert!(drain.in_turn.is_empty() && drain.ended.is_empty());
+    assert_eq!(drain.reason.as_deref(), Some("an install"));
+
+    // The handoff's new server starts without the drain.
+    fixture.supervisor.stop(&idle).unwrap();
+    fixture.wait(&idle, WorkerWaitUntil::Exit);
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert!(!next.drain(WorkerDrainAction::Status, None).draining);
+}
+
+#[test]
+fn prompts_and_starts_are_refused_during_a_drain_until_it_is_cancelled() {
+    let fixture = Fixture::new("drain-refuse");
+    let idle = fixture.start("finish");
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+    fixture
+        .supervisor
+        .drain(WorkerDrainAction::Start, Some("install pid 7"));
+    // A second start keeps the first drain.
+    let again = fixture
+        .supervisor
+        .drain(WorkerDrainAction::Start, Some("other"));
+    assert_eq!(again.reason.as_deref(), Some("install pid 7"));
+
+    let refused = fixture.supervisor.prompt(&idle, "finish").unwrap_err();
+    assert_eq!(refused.code(), "workers_draining");
+    assert!(refused.to_string().contains("install pid 7"), "{refused}");
+    assert!(
+        refused.to_string().contains("herdr worker drain cancel"),
+        "{refused}"
+    );
+    let with_id = WorkerStartParams {
+        command_id: Some("item:branch".into()),
+        ..start_params(&fixture.repo, "finish", Some("stub-model"))
+    };
+    let refused = fixture.supervisor.start(&with_id).unwrap_err();
+    assert_eq!(refused.code(), "workers_draining");
+    assert_eq!(fixture.supervisor.list().len(), 1, "no worker started");
+    assert_eq!(
+        fixture
+            .supervisor
+            .drain(WorkerDrainAction::Status, None)
+            .starting,
+        0
+    );
+
+    let cancelled = fixture.supervisor.drain(WorkerDrainAction::Cancel, None);
+    assert!(!cancelled.draining && cancelled.reason.is_none());
+    fixture.supervisor.prompt(&idle, "finish").unwrap();
+    fixture.wait(&idle, WorkerWaitUntil::TurnEnd);
+    // The refusal was not stored with the command id: the same start runs now.
+    let started = fixture.supervisor.start(&with_id).unwrap();
+    fixture.wait(&started.worker_id, WorkerWaitUntil::TurnEnd);
+}
+
 #[test]
 fn a_handoff_goes_ahead_once_stopped_workers_have_exited() {
     let fixture = Fixture::new("handoff-idle");

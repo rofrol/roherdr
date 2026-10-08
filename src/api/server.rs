@@ -674,6 +674,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerAnswer(_) => "worker.answer",
         Method::WorkerAck(_) => "worker.ack",
         Method::WorkerObligations(_) => "worker.obligations",
+        Method::WorkerDrain(_) => "worker.drain",
+        Method::WorkerWaitDrained(_) => "worker.wait_drained",
         Method::WorkerRuns(_) => "worker.runs",
         Method::WorkerEscalate(_) => "worker.escalate",
         Method::WorkerVerify(_) => "worker.verify",

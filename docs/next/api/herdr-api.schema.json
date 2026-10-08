@@ -5469,6 +5469,44 @@
           ],
           "type": "string"
         },
+        "WorkerDrainAction": {
+          "description": "What `worker.drain` does.",
+          "oneOf": [
+            {
+              "const": "start",
+              "description": "Stop admitting new turns: `worker.prompt` and `worker.start` are\nrefused with `workers_draining` until the drain is cancelled or the\nserver hands off. Starting an active drain keeps it as it is.",
+              "type": "string"
+            },
+            {
+              "const": "status",
+              "description": "Only report the drain and the workers in a turn.",
+              "type": "string"
+            },
+            {
+              "const": "cancel",
+              "description": "Admit new turns again.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerDrainParams": {
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/WorkerDrainAction"
+            },
+            "reason": {
+              "description": "With `start`: what drains, named in every refusal (for example an\ninstall by `scripts/herdr_live.sh`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
         "WorkerEscalateParams": {
           "description": "The owner hands one of the worker's pending questions to the user.",
           "properties": {
@@ -5768,6 +5806,25 @@
             "expected_message",
             "allowed_paths"
           ],
+          "type": "object"
+        },
+        "WorkerWaitDrainedParams": {
+          "properties": {
+            "draining": {
+              "description": "The `draining` the previous reply showed: the wait also returns when\na drain starts or ends (`worker.drain` `cancel`).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "in_turn": {
+              "description": "The workers the caller already knows are in a turn (the previous\nreply's `in_turn`). The wait returns as soon as the workers in a turn\ndiffer from these, or at once when none is in a turn.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
           "type": "object"
         },
         "WorkerWaitParams": {
@@ -6551,6 +6608,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerObligationsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Stops admitting new worker turns before an install, reports the\nworkers still in a turn, or admits them again.",
+          "properties": {
+            "method": {
+              "const": "worker.drain",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerDrainParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Blocks until the workers in a turn differ from the caller's list, or\nnone is in a turn.",
+          "properties": {
+            "method": {
+              "const": "worker.wait_drained",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerWaitDrainedParams"
             }
           },
           "required": [
@@ -12284,6 +12375,23 @@
               "type": "object"
             },
             {
+              "description": "`worker.drain`'s and `worker.wait_drained`'s reply.",
+              "properties": {
+                "drain": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerDrain"
+                },
+                "type": {
+                  "const": "worker_drain",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "drain"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.runs`' reply: each item's runs, the item whose first run\nstarted first first, then the runs started without an item.",
               "properties": {
                 "items": {
@@ -14373,6 +14481,56 @@
           "required": [
             "question",
             "options"
+          ],
+          "type": "object"
+        },
+        "WorkerDrain": {
+          "description": "The server's drain and the workers it waits for.",
+          "properties": {
+            "draining": {
+              "description": "New turns are refused.",
+              "type": "boolean"
+            },
+            "ended": {
+              "description": "`worker.wait_drained` only: the workers of its `in_turn` that are no\nlonger in a turn, as they are now.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+              },
+              "type": "array"
+            },
+            "in_turn": {
+              "description": "The running workers in a turn: their first turn or a prompted one\nhas not ended.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+              },
+              "type": "array"
+            },
+            "reason": {
+              "description": "What drains, as `worker.drain` `start` named it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_ms": {
+              "description": "When the drain started, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "starting": {
+              "description": "Worker starts admitted before the drain and not registered yet.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "draining",
+            "in_turn"
           ],
           "type": "object"
         },

@@ -20,8 +20,8 @@ use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workers::{
-    WorkerAttentionReason, WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerObligation,
-    WorkerQuestion, WorkerRun, WorkerVerification,
+    WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
+    WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -82,6 +82,10 @@ pub enum ResponseResult {
     /// owner has not acknowledged, oldest worker first.
     WorkerObligations {
         obligations: Vec<WorkerObligation>,
+    },
+    /// `worker.drain`'s and `worker.wait_drained`'s reply.
+    WorkerDrain {
+        drain: WorkerDrain,
     },
     /// `worker.runs`' reply: each item's runs, the item whose first run
     /// started first first, then the runs started without an item.

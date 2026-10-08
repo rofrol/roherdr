@@ -23,6 +23,8 @@
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
 pub(crate) mod coordinators;
+#[cfg(test)]
+mod install_script_tests;
 mod log;
 mod policy;
 mod slot;
@@ -38,7 +40,7 @@ pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use log::log_lines;
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -49,15 +51,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::api::schema::{
     WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
-    WorkerKillReport, WorkerObligation, WorkerPromptParams, WorkerQuestion, WorkerQuestionKind,
-    WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerSettledQuestion,
-    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerVerification, WorkerVerifyParams,
-    WorkerWaitUntil,
+    WorkerDecision, WorkerDrain, WorkerDrainAction, WorkerInfo, WorkerInterruptParams,
+    WorkerItemRuns, WorkerKillParams, WorkerKillReport, WorkerObligation, WorkerPromptParams,
+    WorkerQuestion, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunOutcome,
+    WorkerRunsParams, WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerTurnResult,
+    WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -238,6 +240,9 @@ pub(crate) enum WorkerError {
     /// another one; the message names it.
     CoordinatorActive(String),
     CoordinatorNotFound(String),
+    /// New turns are not admitted while the server drains for an install
+    /// ([`WorkerSupervisor::drain`]); the message names it.
+    Draining(String),
     Io(std::io::Error),
 }
 
@@ -257,6 +262,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "worker_io_error",
     "coordinator_active",
     "coordinator_not_found",
+    "workers_draining",
 ];
 
 impl WorkerError {
@@ -277,6 +283,7 @@ impl WorkerError {
             Self::Io(_) => "worker_io_error",
             Self::CoordinatorActive(_) => "coordinator_active",
             Self::CoordinatorNotFound(_) => "coordinator_not_found",
+            Self::Draining(_) => "workers_draining",
         }
     }
 
@@ -307,7 +314,8 @@ impl std::fmt::Display for WorkerError {
             | Self::CommandInterrupted(message)
             | Self::Replayed(_, message)
             | Self::CoordinatorActive(message)
-            | Self::CoordinatorNotFound(message) => f.write_str(message),
+            | Self::CoordinatorNotFound(message)
+            | Self::Draining(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -1529,7 +1537,7 @@ impl Live {
     }
 
     fn send(&self, supervisor: &WorkerSupervisor, event: &Value) -> Result<i64, WorkerError> {
-        self.send_checked(supervisor, event, None, |_| Ok(()))
+        self.send_checked(supervisor, event, None, |_, _| Ok(()))
     }
 
     fn write_line(&self, pipe: &mut ChildStdin, line: &str) -> std::io::Result<()> {
@@ -1565,7 +1573,7 @@ impl Live {
         supervisor: &WorkerSupervisor,
         event: &Value,
         receipt: Option<&Receipt>,
-        check: impl FnOnce(&Status) -> Result<(), WorkerError>,
+        check: impl FnOnce(&Status, &Registry) -> Result<(), WorkerError>,
     ) -> Result<i64, WorkerError> {
         let mut stdin = lock(&self.stdin);
         let Some(pipe) = stdin.as_mut() else {
@@ -1578,7 +1586,7 @@ impl Live {
             let Some(entry) = registry.workers.get(&self.number) else {
                 return Err(WorkerError::NotFound(format!("w{}", self.number)));
             };
-            check(&entry.status)?;
+            check(&entry.status, &registry)?;
             supervisor.commit_command_locked(
                 &mut registry,
                 self.number,
@@ -1669,6 +1677,34 @@ struct Registry {
     /// state, a limit, an ack), Unix milliseconds. Shown next to a quiet
     /// question; it decides nothing.
     owner_seen_ms: BTreeMap<String, u64>,
+    /// The drain before an install, while new turns are refused. Only this
+    /// server's memory: the server a handoff starts does not drain.
+    drain: Option<Drain>,
+    /// Worker starts that passed the drain check and have not registered
+    /// their worker (or failed) yet; a drain waits for them too.
+    starts_admitted: u32,
+}
+
+/// What drains, and since when ([`WorkerSupervisor::drain`]).
+#[derive(Debug, Clone)]
+struct Drain {
+    reason: String,
+    started_ms: u64,
+}
+
+/// A worker start admitted past the drain check, counted in
+/// [`Registry::starts_admitted`] until dropped.
+struct StartAdmission<'a> {
+    supervisor: &'a WorkerSupervisor,
+}
+
+impl Drop for StartAdmission<'_> {
+    fn drop(&mut self) {
+        let mut registry = lock(&self.supervisor.shared.registry);
+        registry.starts_admitted = registry.starts_admitted.saturating_sub(1);
+        drop(registry);
+        self.supervisor.shared.changed.notify_all();
+    }
 }
 
 /// A client command id while its command runs: reserved in the store with
@@ -2428,6 +2464,137 @@ impl WorkerSupervisor {
             .collect())
     }
 
+    /// The drain before an install: `start` stops admitting new turns
+    /// (`worker.prompt` and `worker.start` are refused with
+    /// `workers_draining`, naming `reason`), `cancel` admits them again,
+    /// `status` changes nothing. Turns already running go on, and answers
+    /// and interrupts still reach them. Starting an active drain keeps it.
+    /// The drain lives in this server's memory only, so it ends with a
+    /// handoff: the new server admits turns.
+    pub(crate) fn drain(&self, action: WorkerDrainAction, reason: Option<&str>) -> WorkerDrain {
+        let (drain, changed) = {
+            let mut registry = lock(&self.shared.registry);
+            let changed = match action {
+                WorkerDrainAction::Start if registry.drain.is_none() => {
+                    let reason = reason
+                        .map(str::trim)
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("an install");
+                    registry.drain = Some(Drain {
+                        reason: one_line(reason, 200),
+                        started_ms: now_ms(),
+                    });
+                    true
+                }
+                WorkerDrainAction::Cancel => registry.drain.take().is_some(),
+                _ => false,
+            };
+            (Self::drain_locked(&registry, &[]), changed)
+        };
+        if changed {
+            info!(?action, reason = drain.reason.as_deref(), "worker drain");
+            self.shared.changed.notify_all();
+        }
+        drain
+    }
+
+    /// Blocks until the workers in a turn differ from `params.in_turn` (one
+    /// of them ended its turn, or another began one), a drain starts or ends
+    /// when `params.draining` says what the caller saw, or at once when none
+    /// is in a turn and no admitted start is pending. Woken by the workers' events,
+    /// never decided by a timer: the state is checked under the registry
+    /// lock right before each wait, and every commit notifies after taking
+    /// that lock. `keep_waiting` runs at least every `liveness_check`, only
+    /// so that a caller whose client went away can give up (`None`).
+    pub(crate) fn wait_drained(
+        &self,
+        params: &WorkerWaitDrainedParams,
+        liveness_check: Duration,
+        mut keep_waiting: impl FnMut() -> bool,
+    ) -> Option<WorkerDrain> {
+        let seen = &params.in_turn;
+        let seen_ids: BTreeSet<&str> = seen.iter().map(String::as_str).collect();
+        let reached = |registry: &Registry| {
+            let drain = Self::drain_locked(registry, seen);
+            let drain_changed = params
+                .draining
+                .is_some_and(|draining| draining != drain.draining);
+            let in_turn: BTreeSet<&str> = drain
+                .in_turn
+                .iter()
+                .map(|worker| worker.worker_id.as_str())
+                .collect();
+            let settled = in_turn.is_empty() && drain.starting == 0;
+            (settled || drain_changed || in_turn != seen_ids).then_some(drain)
+        };
+        let mut registry = lock(&self.shared.registry);
+        loop {
+            if let Some(drain) = reached(&registry) {
+                return Some(drain);
+            }
+            drop(registry);
+            if !keep_waiting() {
+                return None;
+            }
+            registry = lock(&self.shared.registry);
+            if let Some(drain) = reached(&registry) {
+                return Some(drain);
+            }
+            registry = self
+                .shared
+                .changed
+                .wait_timeout(registry, liveness_check)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+    }
+
+    /// The drain and the workers in a turn; `ended` lists those of `seen`
+    /// that are not in one any more.
+    fn drain_locked(registry: &Registry, seen: &[String]) -> WorkerDrain {
+        let in_turn: Vec<WorkerInfo> = registry
+            .workers
+            .values()
+            .filter(|entry| entry.live.is_some() && !entry.status.turn_ended())
+            .map(|entry| entry.status.info(&entry.journal_path))
+            .collect();
+        let ended = seen
+            .iter()
+            .filter(|id| !in_turn.iter().any(|worker| &worker.worker_id == *id))
+            .filter_map(|id| registry.workers.get(&worker_number(id)?))
+            .map(|entry| entry.status.info(&entry.journal_path))
+            .collect();
+        WorkerDrain {
+            draining: registry.drain.is_some(),
+            reason: registry.drain.as_ref().map(|drain| drain.reason.clone()),
+            started_ms: registry.drain.as_ref().map(|drain| drain.started_ms),
+            in_turn,
+            starting: registry.starts_admitted,
+            ended,
+        }
+    }
+
+    /// Refuses a new turn while the server drains.
+    fn admits_turns(registry: &Registry) -> Result<(), WorkerError> {
+        match &registry.drain {
+            None => Ok(()),
+            Some(drain) => Err(WorkerError::Draining(format!(
+                "workers are draining for {}: no new turns until it hands off or \
+                 `herdr worker drain cancel` admits them again",
+                drain.reason
+            ))),
+        }
+    }
+
+    /// Admits a worker start unless the server drains, counting it until
+    /// the returned guard drops.
+    fn admit_start(&self) -> Result<StartAdmission<'_>, WorkerError> {
+        let mut registry = lock(&self.shared.registry);
+        Self::admits_turns(&registry)?;
+        registry.starts_admitted += 1;
+        Ok(StartAdmission { supervisor: self })
+    }
+
     /// Starts a worker. With a command id, a repeat returns the worker that
     /// id started, as the first reply showed it; one a server restart cut
     /// off returns that worker's status now.
@@ -2477,6 +2644,9 @@ impl WorkerSupervisor {
                     .into(),
             ));
         }
+        // Counted until the worker is registered, so a drain that starts
+        // meanwhile waits for its first turn.
+        let _admission = self.admit_start()?;
         // Held until the worker is registered, so the next start into the
         // same slot sees it running.
         let _slot_guard = params
@@ -3517,22 +3687,23 @@ impl WorkerSupervisor {
             return Err(WorkerError::Invalid("text must not be empty".into()));
         }
         let (_, live, _) = self.live(worker_id)?;
-        let turn_seq = live.send_checked(self, &user_message(text), receipt, |status| {
-            if status.takeover_ms.is_some() {
-                return Err(Self::taken_over(worker_id));
-            }
-            if status.is_gone() {
-                return Err(WorkerError::NotRunning(format!(
-                    "worker {worker_id} is not running"
-                )));
-            }
-            if !status.turn_ended() {
-                return Err(WorkerError::Busy(format!(
-                    "worker {worker_id} is in a turn; wait for it or interrupt it first"
-                )));
-            }
-            Ok(())
-        })?;
+        let turn_seq =
+            live.send_checked(self, &user_message(text), receipt, |status, registry| {
+                if status.takeover_ms.is_some() {
+                    return Err(Self::taken_over(worker_id));
+                }
+                if status.is_gone() {
+                    return Err(WorkerError::NotRunning(format!(
+                        "worker {worker_id} is not running"
+                    )));
+                }
+                if !status.turn_ended() {
+                    return Err(WorkerError::Busy(format!(
+                        "worker {worker_id} is in a turn; wait for it or interrupt it first"
+                    )));
+                }
+                Self::admits_turns(registry)
+            })?;
         let mut info = self.status(worker_id)?;
         info.turn_seq = Some(turn_seq);
         Ok(info)
@@ -3570,7 +3741,7 @@ impl WorkerSupervisor {
             "request_id": format!("herdr-interrupt-{number}-{}", now_ms()),
             "request": {"subtype": "interrupt"},
         });
-        live.send_checked(self, &request, receipt, |status| {
+        live.send_checked(self, &request, receipt, |status, _| {
             let running = (!status.turn_ended()).then_some(status.turn_seq).flatten();
             if let Some(turn) = params.turn {
                 match status.turn_seq {
@@ -3843,6 +4014,12 @@ impl WorkerSupervisor {
             Claim::Run(in_flight) => in_flight,
         };
         let outcome = run(Some(&receipt));
+        // A drain ends: refused before any event, the id stays unused, so
+        // the same command can be sent again once the drain is over.
+        if matches!(outcome, Err(WorkerError::Draining(_))) && !receipt.reserved.get() {
+            drop(in_flight);
+            return outcome;
+        }
         let (state, result) = match &outcome {
             Ok(reply) => (
                 store::ReceiptState::Accepted,

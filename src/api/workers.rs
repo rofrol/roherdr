@@ -26,6 +26,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
+            | Method::WorkerDrain(_)
+            | Method::WorkerWaitDrained(_)
             | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
@@ -81,6 +83,13 @@ pub(super) fn handle_worker_request(
                 Err(error) => Err(error),
             }
         }
+        Method::WorkerWaitDrained(params) => {
+            // As above: only to notice a client that went away; the
+            // workers' turn-end events end the wait.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            let drain = supervisor.wait_drained(&params, CONNECTION_POLL_INTERVAL, keep_waiting)?;
+            Ok::<_, WorkerError>(ResponseResult::WorkerDrain { drain })
+        }
         method => handle_immediate(supervisor, method),
     };
     Some(encode(request_id, result))
@@ -117,6 +126,11 @@ fn handle_immediate(
         Method::WorkerVerify(params) => {
             return Ok(ResponseResult::WorkerVerification {
                 verification: supervisor.verify(&params)?,
+            })
+        }
+        Method::WorkerDrain(params) => {
+            return Ok(ResponseResult::WorkerDrain {
+                drain: supervisor.drain(params.action, params.reason.as_deref()),
             })
         }
         Method::WorkerObligations(params) => {
