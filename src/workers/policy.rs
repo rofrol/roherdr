@@ -1,9 +1,14 @@
 //! Answers a headless worker's `can_use_tool` requests.
 //!
-//! Bash runs inside Claude Code's sandbox (`autoAllowBashIfSandboxed`), so it
-//! reaches herdr only when a user's or project's `ask` rule matches it; the
-//! sandbox, not herdr, bounds what it can write, read and reach (trial 3,
-//! T3-2). The file tools are not sandboxed, so herdr decides them here:
+//! Bash runs inside Claude Code's sandbox (`autoAllowBashIfSandboxed`,
+//! `allowUnsandboxedCommands: false`), so the sandbox, not herdr, bounds what
+//! it can write, read and reach (trial 3, T3-2). It still reaches herdr when a
+//! user's or project's `ask` rule matches it, or through the CLI's built-in
+//! check on compound commands ("This command requires approval",
+//! `decision_reason_type: "other"`, e.g. `cd <worktree> && awk ...`), which
+//! bypasses `autoAllowBashIfSandboxed`. Every Bash command runs inside the
+//! sandbox anyway, so herdr allows these requests itself and journals them.
+//! The file tools are not sandboxed, so herdr decides them here:
 //!
 //! - File tools are allowed when the real path of their target is inside the
 //!   worker's directory or its temp dir and denied otherwise (a symlink that
@@ -12,8 +17,9 @@
 //!   that is absolute outside those roots, starts with `~` or has a `..`
 //!   component is denied too.
 //! - A request the CLI's auto mode classifier escalated
-//!   (`decision_reason_type: "classifier"`), every Bash request, every
-//!   `AskUserQuestion` and every other tool is asked of the user.
+//!   (`decision_reason_type: "classifier"`), a Bash request whose
+//!   `blocked_path` is outside the roots, every `AskUserQuestion` and every
+//!   other tool is asked of the user.
 //!
 //! The CLI's own `decision_reason` and `blocked_path` are hints only; it asks
 //! even for paths it flags, so the real-path check here is the guard.
@@ -56,13 +62,14 @@ impl Policy {
             .collect()
     }
 
-    /// Decides one `can_use_tool` request. `reason_type` is the request's
-    /// `decision_reason_type`.
+    /// Decides one `can_use_tool` request. `reason_type` and `blocked_path`
+    /// are the request's `decision_reason_type` and `blocked_path`.
     pub(super) fn decide(
         &self,
         tool_name: &str,
         input: &Value,
         reason_type: Option<&str>,
+        blocked_path: Option<&str>,
     ) -> Decision {
         if reason_type == Some("classifier") {
             return Decision::Ask(
@@ -73,7 +80,7 @@ impl Policy {
             return Decision::Ask("a question for the user".into());
         }
         if tool_name == "Bash" {
-            return Decision::Ask("a Bash command that an ask rule sends to the user".into());
+            return self.decide_bash(blocked_path);
         }
         let Some((field, required)) = file_tool_path_field(tool_name) else {
             return Decision::Ask(format!("{tool_name} is not decided by herdr's policy"));
@@ -100,6 +107,26 @@ impl Policy {
             }
         };
         self.check_path(path)
+    }
+
+    /// Bash runs in the sandbox, which bounds it whatever herdr answers, so a
+    /// request is allowed unless it names a path outside the roots: that one
+    /// the user sees, because the command aims outside the worker's folders.
+    fn decide_bash(&self, blocked_path: Option<&str>) -> Decision {
+        let Some(path) = blocked_path.filter(|path| !path.is_empty()) else {
+            return Decision::Allow;
+        };
+        let candidate = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            self.cwd.join(path)
+        };
+        match real_path_allowing_missing_tail(&candidate) {
+            Some(real) if self.inside_roots(&real) => Decision::Allow,
+            _ => Decision::Ask(format!(
+                "a Bash command that names {path}, outside the worker's directory and its temp dir"
+            )),
+        }
     }
 
     /// The real-path rule. Known limit: the file tools run outside the
@@ -295,7 +322,7 @@ mod tests {
             ("Grep", json!({"pattern": "x", "path": dirs.temp})),
         ] {
             assert_eq!(
-                policy.decide(tool, &input, None),
+                policy.decide(tool, &input, None, None),
                 Decision::Allow,
                 "{tool} {input}"
             );
@@ -325,20 +352,20 @@ mod tests {
         }
         for input in cases {
             assert!(
-                matches!(policy.decide("Write", &input, None), Decision::Deny(_)),
+                matches!(
+                    policy.decide("Write", &input, None, None),
+                    Decision::Deny(_)
+                ),
                 "{input}"
             );
         }
     }
 
     #[test]
-    fn bash_classifier_escalations_and_other_tools_are_asked() {
+    fn classifier_escalations_questions_and_other_tools_are_asked() {
         let dirs = Dirs::new("asked");
         let policy = dirs.policy();
         for (tool, input, reason_type) in [
-            ("Bash", json!({"command": "git status"}), None),
-            ("Bash", json!({"command": "git push origin master"}), None),
-            ("Bash", json!({}), None),
             ("AskUserQuestion", json!({}), None),
             ("WebFetch", json!({"url": "https://example.com"}), None),
             ("mcp__x__y", json!({}), None),
@@ -356,7 +383,10 @@ mod tests {
             ),
         ] {
             assert!(
-                matches!(policy.decide(tool, &input, reason_type), Decision::Ask(_)),
+                matches!(
+                    policy.decide(tool, &input, reason_type, None),
+                    Decision::Ask(_)
+                ),
                 "{tool} {input} {reason_type:?}"
             );
         }
@@ -364,10 +394,48 @@ mod tests {
             policy.decide(
                 "Write",
                 &json!({"file_path": "inside.txt"}),
-                Some("workingDir")
+                Some("workingDir"),
+                None
             ),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn sandboxed_bash_requests_are_allowed_unless_they_name_a_path_outside() {
+        let dirs = Dirs::new("bash");
+        let policy = dirs.policy();
+        let cwd = dirs.cwd.display().to_string();
+        // The shape seen on worker `w2`: the CLI's built-in check on
+        // compound commands, which `autoAllowBashIfSandboxed` does not cover.
+        let compound = json!({
+            "command": format!("cd {cwd} && awk 'NR<5' TODO.md"),
+            "description": "Show the first lines",
+        });
+        for (input, reason_type, blocked_path) in [
+            (compound.clone(), Some("other"), None),
+            (json!({"command": "git status"}), None, None),
+            (json!({}), None, None),
+            (json!({"command": "ls"}), Some("other"), Some("")),
+            (json!({"command": "ls"}), Some("other"), Some("src/new.rs")),
+            (json!({"command": "ls"}), Some("other"), Some(cwd.as_str())),
+        ] {
+            assert_eq!(
+                policy.decide("Bash", &input, reason_type, blocked_path),
+                Decision::Allow,
+                "{input} {reason_type:?} {blocked_path:?}"
+            );
+        }
+        let outside = dirs.outside.join("x.txt").display().to_string();
+        for blocked_path in [outside.as_str(), "../outside/x.txt", "/etc/hosts"] {
+            assert!(
+                matches!(
+                    policy.decide("Bash", &compound, Some("other"), Some(blocked_path)),
+                    Decision::Ask(_)
+                ),
+                "{blocked_path}"
+            );
+        }
     }
 
     #[test]
@@ -385,13 +453,13 @@ mod tests {
             ("LS", "path"),
         ] {
             assert_eq!(
-                policy.decide(tool, &json!({ field: "inside.ipynb" }), None),
+                policy.decide(tool, &json!({ field: "inside.ipynb" }), None, None),
                 Decision::Allow,
                 "{tool}"
             );
             assert!(
                 matches!(
-                    policy.decide(tool, &json!({ field: outside }), None),
+                    policy.decide(tool, &json!({ field: outside }), None, None),
                     Decision::Deny(_)
                 ),
                 "{tool}"
@@ -400,7 +468,7 @@ mod tests {
                 // The wrong field is no path at all: a required one is missing.
                 assert!(
                     matches!(
-                        policy.decide(tool, &json!({"path": "inside.txt"}), None),
+                        policy.decide(tool, &json!({"path": "inside.txt"}), None, None),
                         Decision::Deny(_)
                     ),
                     "{tool}"
@@ -431,7 +499,7 @@ mod tests {
             for path in &paths {
                 assert!(
                     matches!(
-                        policy.decide(tool, &json!({"file_path": path}), None),
+                        policy.decide(tool, &json!({"file_path": path}), None, None),
                         Decision::Deny(_)
                     ),
                     "{tool} {path}"
@@ -439,12 +507,17 @@ mod tests {
             }
         }
         assert!(matches!(
-            policy.decide("NotebookEdit", &json!({"notebook_path": ".env"}), None),
+            policy.decide(
+                "NotebookEdit",
+                &json!({"notebook_path": ".env"}),
+                None,
+                None
+            ),
             Decision::Deny(_)
         ));
         for allowed in [".environment.md", "env", "sub/dotenv.txt"] {
             assert_eq!(
-                policy.decide("Write", &json!({"file_path": allowed}), None),
+                policy.decide("Write", &json!({"file_path": allowed}), None, None),
                 Decision::Allow,
                 "{allowed}"
             );
@@ -466,7 +539,7 @@ mod tests {
             json!({"pattern": format!("{}/*", dirs.temp.display())}),
         ] {
             assert_eq!(
-                policy.decide("Glob", &input, None),
+                policy.decide("Glob", &input, None, None),
                 Decision::Allow,
                 "{input}"
             );
@@ -484,27 +557,27 @@ mod tests {
         }
         for input in denied {
             assert!(
-                matches!(policy.decide("Glob", &input, None), Decision::Deny(_)),
+                matches!(policy.decide("Glob", &input, None, None), Decision::Deny(_)),
                 "{input}"
             );
         }
 
         // Grep's `pattern` is a regular expression; its `glob` is a path.
         assert_eq!(
-            policy.decide("Grep", &json!({"pattern": "a/../b|/etc/.*"}), None),
+            policy.decide("Grep", &json!({"pattern": "a/../b|/etc/.*"}), None, None),
             Decision::Allow
         );
         for glob in ["../**", "/etc/*", "~/*"] {
             assert!(
                 matches!(
-                    policy.decide("Grep", &json!({"pattern": "x", "glob": glob}), None),
+                    policy.decide("Grep", &json!({"pattern": "x", "glob": glob}), None, None),
                     Decision::Deny(_)
                 ),
                 "{glob}"
             );
         }
         assert_eq!(
-            policy.decide("Grep", &json!({"pattern": "x", "glob": "*.rs"}), None),
+            policy.decide("Grep", &json!({"pattern": "x", "glob": "*.rs"}), None, None),
             Decision::Allow
         );
     }

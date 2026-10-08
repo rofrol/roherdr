@@ -43,8 +43,10 @@ fn worker_contract(temp_dir: &Path) -> String {
 only inside your working directory. Bash runs in a sandbox without asking: it can write only \
 to your working directory and your temp dir {temp}, has no network and cannot read \
 credentials. A command the sandbox refuses fails; do not try to get around it, report it as \
-blocked. Put drafts and scratch files under {temp} by that absolute path; never use $TMPDIR, \
-it is shared with other sessions. File tools work only inside your working directory and \
+blocked: no shims, wrappers or PATH tricks. Run only the tests that work in the sandbox \
+and list in your final message the ones you could not run; the coordinator runs the full \
+check outside it. Put drafts and scratch files under {temp} by that absolute path; never use \
+$TMPDIR, it is shared with other sessions. File tools work only inside your working directory and \
 {temp}. Your questions wait until the user answers, which can take long: ask only when you \
 cannot go on without it, otherwise finish the task or stop and say what blocks you."
     )
@@ -1759,9 +1761,12 @@ impl Reader {
         let request_id = event["request_id"].as_str().unwrap_or("");
         let tool_name = request["tool_name"].as_str().unwrap_or("");
         let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
-        let decision =
-            self.policy
-                .decide(tool_name, &input, request["decision_reason_type"].as_str());
+        let decision = self.policy.decide(
+            tool_name,
+            &input,
+            request["decision_reason_type"].as_str(),
+            request["blocked_path"].as_str(),
+        );
         let (behavior, message) = match &decision {
             policy::Decision::Allow => ("allow", Value::Null),
             policy::Decision::Deny(message) => ("deny", Value::String(message.clone())),
