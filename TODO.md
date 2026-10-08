@@ -1413,6 +1413,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   - first slice: the table, the bindings, the two events, start/end calls
     wired to the tab role, the unique index, `owner_coordinator_id`;
     handoff epochs with the handoff item, item history later.
+  First slice done 2026-10-08 by `w31` (`feat: coordinator tenures, one per
+  repository`, verified, installed); the first tenure is `c-6xve3ubo`
+  (the herdr coordinator's tab). Left: obligations keyed on the tenure,
+  the current item, handoff epochs, resume keeping the tenure.
 
 - [ ] Headless workers survive an install and a server crash (user, [t-r4by4sru]
   2026-10-08: "I thought the work was coordinated on the server; why does
