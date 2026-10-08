@@ -28,6 +28,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   skill uses headless workers`, approved by the user in the worker's tab,
   not pushed: the standing push approval covers this repository). Left:
   the acknowledged prompt at a TUI worker's start.
+  Acknowledged prompt done 2026-10-08 by headless worker `w19` (`feat:
+  agent prompts confirm that the agent accepted them`): a new
+  `agent.prompt_confirmed` (the CLI's `agent prompt` uses it) succeeds only
+  after the prompt's turn report (Claude's UserPromptSubmit, pi) or the
+  agent turning working; a dialog is named in the error; nothing is typed
+  twice; no timer. Found: `agent.prompt` with `wait` still has a 5-second
+  `agent_prompt_stalled` timer that decides the outcome (against the
+  user's rule): replace it with the same acknowledgement.
 
 - [ ] A coordinator stops between items without being asked (user,
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
