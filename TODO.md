@@ -404,8 +404,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   2. (2026-10-08: slice 1 done, `feat: worker state in sqlite, the event
      store (slice 1)` and `build: cross-compile bundled sqlite for
      windows`, installed; `workers.sqlite3` imported all 8 journals. Slice
-     2 `worker.wait --attention --after <seq>` in progress; slice 3 command
-     receipts and the answer outbox.)
+     2 done: `feat: worker wait on attention after a sequence (slice 2)`,
+     installed; the coordinator's scratch wait script is retired. Slice 3
+     next: command receipts and the answer outbox.)
   2. One durable event log per worker in the server: monotonic sequence,
      question / turn end / exit events, level-triggered `worker.wait
      --attention --after <seq>`; the per-coordinator inbox is a filter on
