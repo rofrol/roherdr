@@ -1480,6 +1480,12 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   attempt 2 approved, verified, cherry-picked as `be9b9a7b`; installed).
   Next slice: clean-install, TODO update, push, cleanup in the driver, then
   the coordinator's allowlist hook.
+  Slice 3 open point (run `r-7yjpuc43`, decided by the coordinator): the
+  install's live handoff starts a server without the coordinator's
+  environment (never stored), so every herdr run would stop at
+  `push_failed` until `retry-push`. Next: the old server hands the runs'
+  in-memory environments to the new one inside the live handoff payload
+  (like the PTY fds), never on disk.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
