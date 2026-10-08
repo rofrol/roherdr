@@ -1517,6 +1517,43 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   dependency.go for blocks/blocked-by, issue_xref.go for references),
   copying concepts, not code: Forgejo is GPL-3.0, herdr is Apache-2.0,
   so copied code would force the GPL onto herdr.
+  Fossil (user, 2026-10-08: "fossil keeps issues in the repo"): its
+  tickets are append-only change artifacts stored and synced with the
+  repository, the current ticket table derived from them; the same
+  event-and-projection shape as herdr's worker store, and a model for
+  keeping tracker items with the repository rather than in a private
+  database (git-bug is the git analogue).
+
+- [ ] Headless worker lines in the sidebar after their work is done
+  (proposed by the coordinator 2026-10-08 from the user's screenshot of the
+  herdr space: "header arrows lost", "answers name their q… lost",
+  "vendored mktemp us… exited", "takeover claimed o… exited", each with
+  the same green circle):
+  - `lost` is wrong for a worker that had finished its turn and only
+    waited for a next prompt when an install restarted the server: show
+    it as finished (ended by a server restart), not lost (relates to the
+    atomicity review's finding 1);
+  - the state glyph should differ by state (working, waiting for you,
+    finished, failed, exited, lost), as tab lines do;
+  - ended workers stay listed for ever: drop a line once its worker has
+    exited and the coordinator took its commit (or after the user opens
+    its log once), with the log still reachable via `herdr worker log`;
+  - a worker that finished its turn keeps its process and its folder slot
+    until `herdr worker stop`: decide whether the coordinator stops it
+    when it brings the commit in.
+  User 2026-10-08, with a screenshot of 19 worker lines under the
+  coordinator: "fold idle agents does not work on the tabs the coordinator
+  opened; why are they not closed at all? ask the models". Round `20261008-120458-71a7`
+  (sol, MiMo, DeepSeek), agreeing, chosen by the coordinator: a worker line
+  goes away once the worker is exited or finished, acked by its owner, and
+  has no open question or unacked event (not tied to the commit reaching
+  master: a cherry-pick can fail); acking a finished turn stops the worker
+  and frees its folder slot (an ack means handled); the ⊟ fold button folds
+  quiet worker lines with the quiet tabs, never one with a question or an
+  unacked event; ended workers collapse into one line per owner tab ("18
+  ended workers ▸", expanding on click); , the log
+  and the item history keep them reachable; per-state glyphs instead of
+  one green circle.
 
 ## Proposed
 
@@ -1762,24 +1799,6 @@ Items agents add. Not approved until the user moves them up.
   a hint (bypassable by `git -C`, `-F`, scripts). Needed because
   auto-mode calls never reach `can_use_tool`. The coordinator's check of
   the commits before cherry-picking stays the gate.
-
-- [ ] Headless worker lines in the sidebar after their work is done
-  (proposed by the coordinator 2026-10-08 from the user's screenshot of the
-  herdr space: "header arrows lost", "answers name their q… lost",
-  "vendored mktemp us… exited", "takeover claimed o… exited", each with
-  the same green circle):
-  - `lost` is wrong for a worker that had finished its turn and only
-    waited for a next prompt when an install restarted the server: show
-    it as finished (ended by a server restart), not lost (relates to the
-    atomicity review's finding 1);
-  - the state glyph should differ by state (working, waiting for you,
-    finished, failed, exited, lost), as tab lines do;
-  - ended workers stay listed for ever: drop a line once its worker has
-    exited and the coordinator took its commit (or after the user opens
-    its log once), with the log still reachable via `herdr worker log`;
-  - a worker that finished its turn keeps its process and its folder slot
-    until `herdr worker stop`: decide whether the coordinator stops it
-    when it brings the commit in.
 
 ## Needs a decision
 
