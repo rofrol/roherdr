@@ -304,14 +304,19 @@ pub enum AgentTurnEndReason {
     Finished,
     /// The agent reported the turn ended on an error (Claude's `StopFailure`); see `error`.
     Failed,
-    /// Another turn started before this one reported its end: the user interrupted it
-    /// (Claude reports no `Stop` for a turn ended with Esc).
+    /// The turn was interrupted: herdr sent the agent an interrupt key (Esc, Ctrl-C) while it
+    /// worked and another turn started before its end report, or the agent reported its end
+    /// as interrupted.
     Interrupted,
     /// The agent's own process ended, or its pane closed, before the turn ended.
     Exited,
     /// Herdr does not follow this request: it never did, it was dropped as the oldest, or the
     /// server restarted and lost it. Its turn's outcome is not known.
     UnknownRequest,
+    /// Another turn started before this one reported its end, with no signal saying why: the
+    /// user may have interrupted it (Claude reports no `Stop` for a turn ended with Esc), or
+    /// the agent took a queued message into its work. Also any reason this client does not
+    /// know.
     #[serde(other)]
     Unknown,
 }
@@ -339,10 +344,13 @@ pub enum AgentPromptRequestState {
     Unsupported,
     /// That turn ended on an error the agent reported; see `error`.
     Failed,
-    /// Another turn started before this one reported its end.
+    /// The turn was interrupted: herdr sent an interrupt key while it worked, or the agent
+    /// reported its end as interrupted.
     Interrupted,
     /// The agent's process ended before the turn did.
     Exited,
+    /// Another turn started before this one reported its end, with no signal saying why; also
+    /// any state this client does not know.
     #[serde(other)]
     Unknown,
 }
@@ -352,7 +360,7 @@ impl AgentPromptRequestState {
     pub fn is_turn_end(self) -> bool {
         matches!(
             self,
-            Self::Finished | Self::Failed | Self::Interrupted | Self::Exited
+            Self::Finished | Self::Failed | Self::Interrupted | Self::Exited | Self::Unknown
         )
     }
 }

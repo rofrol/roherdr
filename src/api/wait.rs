@@ -966,6 +966,7 @@ pub(super) fn wait_agent_turn(
                 Some(AgentPromptRequestState::Failed) => Some(AgentTurnEndReason::Failed),
                 Some(AgentPromptRequestState::Interrupted) => Some(AgentTurnEndReason::Interrupted),
                 Some(AgentPromptRequestState::Exited) => Some(AgentTurnEndReason::Exited),
+                Some(AgentPromptRequestState::Unknown) => Some(AgentTurnEndReason::Unknown),
                 // The pane's shell ended, and the agent with it.
                 Some(_) if pane_gone => Some(AgentTurnEndReason::Exited),
                 Some(_) => None,

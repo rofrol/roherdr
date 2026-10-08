@@ -1694,12 +1694,12 @@ impl App {
         };
         terminal.prompt_turns.mark_reporting(&agent_label);
         let changed = match params.phase {
-            crate::api::schema::AgentTurnPhase::Started => {
-                terminal.prompt_turns.turn_started(params.prompt.as_deref())
-            }
-            crate::api::schema::AgentTurnPhase::Finished => {
-                terminal.prompt_turns.turn_finished(params.error.as_deref())
-            }
+            crate::api::schema::AgentTurnPhase::Started => terminal
+                .prompt_turns
+                .turn_started(params.prompt.as_deref(), params.continuation),
+            crate::api::schema::AgentTurnPhase::Finished => terminal
+                .prompt_turns
+                .turn_finished(params.error.as_deref(), params.interrupted),
         };
         if changed {
             terminal.revision = terminal.revision.saturating_add(1);
