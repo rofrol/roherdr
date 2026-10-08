@@ -1518,6 +1518,30 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     wired to the tab role, the unique index, `owner_coordinator_id`;
     handoff epochs with the handoff item, item history later.
 
+- [ ] Waiting for a worker without shell state (user, 2026-10-08, after the
+  coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
+  wait failed at once: "how is it armed? ask the models"). Round
+  `20261008-104136-8de5` (sol, MiMo, DeepSeek): a shell-care rule alone is a
+  wish; make it mechanical:
+  1. `herdr worker wait <id> --attention` without `--after` starts after
+     the caller's acknowledged seq when the caller owns the worker (the
+     server keeps `acked_seq` since step 4), so the coordinator's loop is:
+     wait, handle, `herdr worker ack <id> <seq>`, the same wait again; no
+     variable in the shell (chosen by the coordinator: it reuses what the
+     server already stores, instead of a second cursor file as DeepSeek
+     proposed).
+  2. `--after=<seq>` accepted as one token; a stray argument names itself
+     in the usage error (MiMo).
+  3. `herdr-job run` prints the job id as its first stdout line (everything
+     else to stderr), so nobody finds a job with `herdr-job list | grep`,
+     which can pick the wrong one when several run (MiMo, sol).
+  4. AGENTS.md: pass arguments literally; never build options with
+     `${X:+...}` or unquoted expansions (zsh does not split them); use
+     arrays for lists; treat a failed wait as a failure, not as the worker
+     needing attention.
+  The per-coordinator inbox (planned) replaces the two-layer wait later;
+  no `--then-wait` glue until then (MiMo, sol).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
