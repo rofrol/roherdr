@@ -5362,6 +5362,36 @@
               "const": "force_stop",
               "description": "SIGKILL the worker that is still alive after its stop.",
               "type": "string"
+            },
+            {
+              "const": "retry_install",
+              "description": "Run the registered install again (after `install_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "skip_install",
+              "description": "Go on without the install (after `install_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "retry_todo",
+              "description": "Edit and commit the TODO again (after `todo_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "skip_todo",
+              "description": "Go on without the TODO edit (after `todo_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "retry_push",
+              "description": "Push again (after `push_failed`), still only as a fast-forward.",
+              "type": "string"
+            },
+            {
+              "const": "abort",
+              "description": "End the run as blocked where it stands (after a failed install,\nTODO edit or push); the commit stays on `master`.",
+              "type": "string"
             }
           ]
         },
@@ -5377,6 +5407,13 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "close": {
+              "description": "With `approve`: the decision that closes the item. The run removes\nthe item from `TODO.md` and adds the decision to `DECISIONS.md` as a\nsection (its first line, when it starts with `#`, is the section's\ntitle; otherwise the item's title is), committed by path. Excludes\n`note`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "decision": {
               "anyOf": [
@@ -5411,6 +5448,13 @@
                 "null"
               ]
             },
+            "note": {
+              "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (`scripts/todo_edit.py append-to`), committed by path.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "request_id": {
               "description": "With `answer`: the question answered; the only pending one when\nabsent.",
               "type": [
@@ -5437,7 +5481,7 @@
           "type": "object"
         },
         "TodoRunParams": {
-          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master`: a persisted, resumable run that starts a headless\nworker in the repository's folder slot, turns what needs the coordinator\n(a question outside the worker policy, the turn's end, a failed verify)\ninto run events, and verifies the worker's commit with a registered\ncheck before picking it.",
+          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
             "checks": {
               "description": "The names of checks in the repository's `.herdr/checks.toml`, run\nin this order; every one must pass.",
@@ -14562,6 +14606,36 @@
               "const": "force_stop",
               "description": "SIGKILL the worker that is still alive after its stop.",
               "type": "string"
+            },
+            {
+              "const": "retry_install",
+              "description": "Run the registered install again (after `install_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "skip_install",
+              "description": "Go on without the install (after `install_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "retry_todo",
+              "description": "Edit and commit the TODO again (after `todo_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "skip_todo",
+              "description": "Go on without the TODO edit (after `todo_failed`).",
+              "type": "string"
+            },
+            {
+              "const": "retry_push",
+              "description": "Push again (after `push_failed`), still only as a fast-forward.",
+              "type": "string"
+            },
+            {
+              "const": "abort",
+              "description": "End the run as blocked where it stands (after a failed install,\nTODO edit or push); the commit stays on `master`.",
+              "type": "string"
             }
           ]
         },
@@ -14595,6 +14669,21 @@
               "const": "still_alive",
               "description": "Raised by `todo.status` while the worker has not exited since its\nstop (it ignores SIGTERM): force-stop it. The run goes on by itself\nwhen the worker exits first.",
               "type": "string"
+            },
+            {
+              "const": "install_failed",
+              "description": "The registered install failed or could not run: retry it, skip it\nor abort.",
+              "type": "string"
+            },
+            {
+              "const": "todo_failed",
+              "description": "The TODO edit or its commit failed: retry it, skip it or abort.",
+              "type": "string"
+            },
+            {
+              "const": "push_failed",
+              "description": "`master` could not be pushed as a fast-forward (or the push failed):\nretry it or abort. Never forced.",
+              "type": "string"
             }
           ]
         },
@@ -14622,7 +14711,7 @@
               ]
             },
             "error": {
-              "description": "With `blocked`: why; with `still_alive`: what is still running.",
+              "description": "With `blocked`: why; with `still_alive`: what is still running;\nwith `install_failed`, `todo_failed` and `push_failed`: what failed,\nwith the output's last lines.",
               "type": [
                 "string",
                 "null"
@@ -14714,8 +14803,22 @@
                 "null"
               ]
             },
+            "installed_build": {
+              "description": "The build the install reported (the registered `build_id` command's\nfirst line), or `installed` when none is registered.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "item": {
               "type": "string"
+            },
+            "kept_branches": {
+              "description": "Merged branches of the run the cleanup kept because a worktree has\nthem checked out (the folder slot); a later run's cleanup deletes\nthem once the slot moved on.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "last_acked_seq": {
               "description": "The highest worker event the run has handled (acknowledged).",
@@ -14749,6 +14852,13 @@
                 "null"
               ]
             },
+            "pushed": {
+              "description": "The `master` commit `origin` has after the push.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "repo": {
               "type": "string"
             },
@@ -14765,6 +14875,13 @@
             "task": {
               "description": "The current attempt's task text.",
               "type": "string"
+            },
+            "todo_commit": {
+              "description": "The commit of the TODO update on `master`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "updated_ms": {
               "format": "uint64",
@@ -14819,7 +14936,7 @@
             },
             {
               "const": "done",
-              "description": "The commit is on `master`.",
+              "description": "The commit is on `master`, installed, recorded and pushed (each as\nfar as registered and approved), and the merged branches are gone.",
               "type": "string"
             }
           ]
@@ -14844,6 +14961,26 @@
             {
               "const": "restart",
               "description": "Stops the attempt's worker before the next attempt starts.",
+              "type": "string"
+            },
+            {
+              "const": "install",
+              "description": "Runs the repository's registered install command.",
+              "type": "string"
+            },
+            {
+              "const": "todo",
+              "description": "Appends the coordinator's note to the item, or closes it into\n`DECISIONS.md`, and commits that by path.",
+              "type": "string"
+            },
+            {
+              "const": "push",
+              "description": "Pushes `master` to `origin`, only as a fast-forward.",
+              "type": "string"
+            },
+            {
+              "const": "cleanup",
+              "description": "Deletes the run's branches that are fully merged.",
               "type": "string"
             }
           ]

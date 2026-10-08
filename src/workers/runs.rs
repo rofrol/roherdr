@@ -3,21 +3,28 @@
 //! a registered check); the driver owns execution: preflight, starting a
 //! headless worker in the repository's folder slot, turning what needs the
 //! coordinator into run events, stopping the worker, verifying its commit
-//! with the registered check (typed argv, never a shell string) and
-//! cherry-picking it onto the repository's `master`.
+//! with the registered check (typed argv, never a shell string),
+//! cherry-picking it onto the repository's `master`, running the registered
+//! install, recording the coordinator's note or closing decision in
+//! `TODO.md` (with `scripts/todo_edit.py`, committed by path), pushing
+//! `master` to `origin` only as a fast-forward and deleting the run's merged
+//! branches.
 //!
 //! A run lives in the worker store: its row in `runs` and its `run_*`
 //! events, written in one transaction. Every side effect is recorded as an
 //! intent before it and its result after it, and each step can run again
 //! after a crash: the start and the stop carry command ids derived from the
 //! run, the attention wait is level-triggered from the run's acknowledged
-//! seq, the verify only reads, and the cherry-pick first asks git whether
-//! `master` already has the commit. A server that starts drives every run
-//! in progress again from its step ([`resume_runs_at_start`]).
+//! seq, the verify only reads, the cherry-pick first asks git whether
+//! `master` already has the commit, the install first asks the registered
+//! build id whether `master` is installed already, the TODO step looks for
+//! its commit on `master` and the push compares `origin`'s `master` with
+//! the local one. A server that starts drives every run in progress again
+//! from its step ([`resume_runs_at_start`]).
 //!
 //! The run waits for the coordinator on its `run_event`s (a question the
 //! worker policy left, the turn's end, a failed verify, a worker still alive
-//! after its stop): `todo.wait` returns the pending one with its evidence and
+//! after its stop, a failed install, TODO edit or push): `todo.wait` returns the pending one with its evidence and
 //! allowed actions, and `todo.resume` must name it; an answer to any other
 //! event is refused as stale. No timer moves a run: only worker events and
 //! the coordinator's answers do. A worker that ignores its stop is never
@@ -29,10 +36,12 @@
 //! and the new server's driver takes the lock once the old one released it
 //! (or ended, which releases it too).
 //!
-//! The checks run with the caller's environment, which `todo.run` and every
-//! `todo.resume` send and the server keeps in memory only: it may hold
-//! credentials. A check without it (a restart, a resume that sent none) is
-//! `unavailable`, never run in the server's environment.
+//! The checks, the install and the push run with the caller's environment,
+//! which `todo.run` and every `todo.resume` send and the server keeps in
+//! memory only: it may hold credentials. A check without it (a restart, a
+//! resume that sent none) is `unavailable`, and an install or push without
+//! it fails with a resume as the remedy; none of them runs in the server's
+//! environment.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions, TryLockError};
@@ -47,7 +56,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use super::verify::CheckCommand;
+use super::verify::{tail, CheckCommand};
 use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
     TodoAction, TodoEventKind, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams,
@@ -55,6 +64,8 @@ use crate::api::schema::{
     WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState,
     WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerifyParams, WorkerWaitUntil,
 };
+
+mod finish;
 
 /// A run's attempts: the first worker and two retries; a retry asked after
 /// the third blocks the run.
@@ -69,6 +80,10 @@ const DEFAULT_MIN_FREE_GIB: f64 = 15.0;
 /// A driver's wait on its worker has no deadline: the worker's events end
 /// it, and a handoff wakes it ([`WorkerSupervisor::let_go_of_runs`]).
 const NO_DEADLINE: Duration = Duration::MAX;
+/// The TODO editor the todo step runs, relative to the repository.
+const TODO_EDIT: &str = "scripts/todo_edit.py";
+const TODO_FILE: &str = "TODO.md";
+const DECISIONS_FILE: &str = "DECISIONS.md";
 
 /// A run as the store holds it: what `todo.status` shows, and what it does
 /// not (the checks' argv, the owner).
@@ -79,6 +94,54 @@ pub(super) struct Run {
     pub(super) checks: Vec<RunCheck>,
     pub(super) owner_pane: Option<String>,
     pub(super) owner_session: Option<String>,
+    pub(super) finish: RunFinish,
+}
+
+/// What a run does after its cherry-pick, stored with it (`runs.finish`):
+/// the registered install as preflight read it, the coordinator's TODO note
+/// or closing decision, and the results [`TodoRunInfo`] shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct RunFinish {
+    /// None skips the install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) install: Option<InstallCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) close: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) installed_build: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) todo_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pushed: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) kept_branches: Vec<String>,
+}
+
+/// `[install]` of `.herdr/checks.toml`: the program and arguments that
+/// install `master` (no shell), and optionally one whose first output line
+/// names the build that is installed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InstallCommand {
+    pub(super) command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) build_id: Vec<String>,
+}
+
+impl Run {
+    /// The finish column as the store writes it: the stored part with the
+    /// results the run's info holds now.
+    pub(super) fn finish_with_results(&self) -> RunFinish {
+        RunFinish {
+            installed_build: self.info.installed_build.clone(),
+            todo_commit: self.info.todo_commit.clone(),
+            pushed: self.info.pushed.clone(),
+            kept_branches: self.info.kept_branches.clone(),
+            ..self.finish.clone()
+        }
+    }
 }
 
 /// A registered check of a run: its name and its argv.
@@ -97,6 +160,10 @@ struct ChecksFile {
     checks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     preflight: PreflightConfig,
+    /// The command the run installs `master` with after the cherry-pick;
+    /// none skips the install.
+    #[serde(default)]
+    install: Option<InstallCommand>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -224,6 +291,35 @@ pub(super) fn wait_crashed(repo: &str, hang_guard: Duration) {
             .wait_timeout(generation, Duration::from_millis(100))
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .0;
+    }
+}
+
+/// Test only: the driver of a run of this repository returns right after
+/// that step's side effect, before it records the result.
+#[cfg(test)]
+static CRASH_AFTER: Mutex<Vec<(String, TodoStep)>> = Mutex::new(Vec::new());
+
+#[cfg(all(test, unix))]
+pub(super) fn crash_after(repo: &str, step: TodoStep) {
+    lock(&CRASH_AFTER).push((repo.to_owned(), step));
+}
+
+/// What a step returns when it returned at a planned crash.
+#[cfg(test)]
+const CRASHED_HERE: &str = "\0crashed";
+
+#[cfg(test)]
+fn crashes_after(repo: &str, step: TodoStep) -> Result<(), String> {
+    let mut crashes = lock(&CRASH_AFTER);
+    match crashes
+        .iter()
+        .position(|(at, after)| at == repo && *after == step)
+    {
+        Some(index) => {
+            crashes.remove(index);
+            Err(CRASHED_HERE.to_owned())
+        }
+        None => Ok(()),
     }
 }
 
@@ -376,7 +472,29 @@ fn free_gib(dir: &Path) -> Result<f64, String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    git_with(dir, args, None)
+}
+
+/// A command with `env` (without `HERDR_*`) in place of the server's
+/// environment when given.
+fn command_with(program: &str, env: Option<&HashMap<String, String>>) -> Command {
+    let mut command = Command::new(program);
+    if let Some(env) = env {
+        command
+            .env_clear()
+            .envs(env.iter().filter(|(name, _)| !name.starts_with("HERDR_")));
+    }
+    command
+}
+
+/// `git` in `dir`, with `env` in place of the server's environment when
+/// given (a push or a fetch needs the caller's credentials).
+fn git_with(
+    dir: &Path,
+    args: &[&str],
+    env: Option<&HashMap<String, String>>,
+) -> Result<String, String> {
+    let output = command_with("git", env)
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -425,6 +543,14 @@ fn pending_questions(questions: &[WorkerQuestion]) -> Vec<WorkerQuestion> {
         .collect()
 }
 
+/// A step's wire name (`cherry_pick`).
+fn step_name(step: TodoStep) -> String {
+    serde_json::to_value(step)
+        .ok()
+        .and_then(|step| step.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
 /// What `todo.resume` takes for an event of `kind` while it is pending.
 fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
     match kind {
@@ -432,6 +558,19 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
         TodoEventKind::Review => vec![TodoAction::Approve, TodoAction::Retry],
         TodoEventKind::VerifyFailed => vec![TodoAction::Retry, TodoAction::Verify],
         TodoEventKind::StillAlive => vec![TodoAction::ForceStop],
+        TodoEventKind::InstallFailed => vec![
+            TodoAction::RetryInstall,
+            TodoAction::SkipInstall,
+            TodoAction::Abort,
+        ],
+        TodoEventKind::TodoFailed => {
+            vec![
+                TodoAction::RetryTodo,
+                TodoAction::SkipTodo,
+                TodoAction::Abort,
+            ]
+        }
+        TodoEventKind::PushFailed => vec![TodoAction::RetryPush, TodoAction::Abort],
         _ => Vec::new(),
     }
 }
@@ -483,6 +622,7 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
 struct Preflighted {
     base: String,
     checks: Vec<RunCheck>,
+    install: Option<InstallCommand>,
 }
 
 impl WorkerSupervisor {
@@ -541,16 +681,25 @@ impl WorkerSupervisor {
                 picked: None,
                 created_ms: at,
                 updated_ms: at,
+                installed_build: None,
+                todo_commit: None,
+                pushed: None,
+                kept_branches: Vec::new(),
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
             owner_session: params.owner_session_id.clone(),
+            finish: RunFinish {
+                install: preflighted.install.clone(),
+                ..RunFinish::default()
+            },
         };
         let event = json!({
             "type": "run_created",
             "item": params.item,
             "base": preflighted.base,
             "checks": preflighted.checks,
+            "install": preflighted.install,
             "message": params.message,
             "paths": params.paths,
             "task": params.task,
@@ -583,10 +732,7 @@ impl WorkerSupervisor {
             active.info.repo,
             active.info.run_id,
             active.info.item,
-            serde_json::to_value(active.info.step)
-                .ok()
-                .and_then(|step| step.as_str().map(str::to_owned))
-                .unwrap_or_default(),
+            step_name(active.info.step),
             active.info.run_id
         ))
     }
@@ -639,6 +785,24 @@ impl WorkerSupervisor {
                 argv,
             });
         }
+        if let Some(install) = &checks.install {
+            if install
+                .command
+                .first()
+                .is_none_or(|program| program.is_empty())
+            {
+                return Err(refuse(format!("[install] in {CHECKS_FILE} has no program")));
+            }
+            if install
+                .build_id
+                .first()
+                .is_some_and(|program| program.is_empty())
+            {
+                return Err(refuse(format!(
+                    "[install] build_id in {CHECKS_FILE} has no program"
+                )));
+            }
+        }
         let min_free = checks
             .preflight
             .min_free_gib
@@ -658,6 +822,7 @@ impl WorkerSupervisor {
         Ok(Preflighted {
             base,
             checks: registered,
+            install: checks.install,
         })
     }
 
@@ -869,6 +1034,24 @@ impl WorkerSupervisor {
                     .join(" or ")
             )));
         }
+        if params.note.is_some() || params.close.is_some() {
+            if params.action != TodoAction::Approve {
+                return Err(WorkerError::Invalid(
+                    "only approve takes a TODO note or a closing decision".into(),
+                ));
+            }
+            if params.note.is_some() && params.close.is_some() {
+                return Err(WorkerError::Invalid(
+                    "a TODO note and a closing decision exclude each other".into(),
+                ));
+            }
+            let text = params.note.as_deref().or(params.close.as_deref());
+            if text.is_some_and(|text| text.trim().is_empty()) {
+                return Err(WorkerError::Invalid(
+                    "the TODO note or closing decision is empty".into(),
+                ));
+            }
+        }
         let mut note = None;
         let mut exhausted = false;
         match params.action {
@@ -926,7 +1109,15 @@ impl WorkerSupervisor {
                     Err(error) => return Err(error),
                 }
             }
-            TodoAction::Approve | TodoAction::Verify | TodoAction::Unknown => {}
+            TodoAction::Approve
+            | TodoAction::Verify
+            | TodoAction::RetryInstall
+            | TodoAction::SkipInstall
+            | TodoAction::RetryTodo
+            | TodoAction::SkipTodo
+            | TodoAction::RetryPush
+            | TodoAction::Abort
+            | TodoAction::Unknown => {}
         }
         // Before the run moves on: a driver still waiting on the worker's
         // stop may reach the verify as soon as the resume is recorded.
@@ -942,6 +1133,8 @@ impl WorkerSupervisor {
             "request_id": params.request_id,
             "env_sent": params.env.is_some(),
             "note": note,
+            "todo_note": params.note,
+            "close": params.close,
         });
         let outcome = store
             .transaction(|tx| {
@@ -957,7 +1150,18 @@ impl WorkerSupervisor {
                 current.info.status = TodoRunStatus::Running;
                 match params.action {
                     TodoAction::Answer => current.info.step = TodoStep::Attention,
-                    TodoAction::Approve => current.info.step = TodoStep::Stop,
+                    TodoAction::Approve => {
+                        current.info.step = TodoStep::Stop;
+                        current.finish.note = params.note.clone();
+                        current.finish.close = params.close.clone();
+                    }
+                    TodoAction::RetryInstall => current.info.step = TodoStep::Install,
+                    TodoAction::SkipInstall | TodoAction::RetryTodo => {
+                        current.info.step = TodoStep::Todo
+                    }
+                    TodoAction::SkipTodo | TodoAction::RetryPush => {
+                        current.info.step = TodoStep::Push
+                    }
                     TodoAction::Verify => current.info.step = TodoStep::Verify,
                     // A retry after the last attempt only stops the worker
                     // (a retry asked at a review: it still runs in the
@@ -968,10 +1172,30 @@ impl WorkerSupervisor {
                             current.info.task = params.task.clone().unwrap_or_default();
                         }
                     }
-                    // The stop's wait goes on, at the run's step.
-                    TodoAction::ForceStop | TodoAction::Unknown => {}
+                    // The stop's wait goes on, at the run's step; an abort
+                    // ends the run below.
+                    TodoAction::ForceStop | TodoAction::Abort | TodoAction::Unknown => {}
                 }
                 tx.run_event(&mut current, &event, false, now_ms())?;
+                if params.action == TodoAction::Abort {
+                    let why = format!(
+                        "the coordinator aborted the run at its {} step",
+                        step_name(current.info.step)
+                    );
+                    current.info.status = TodoRunStatus::Blocked;
+                    current.info.error = Some(why.clone());
+                    let mut blocked = new_event(TodoEventKind::Blocked);
+                    blocked.error = Some(why);
+                    let body = json!({
+                        "type": "run_event",
+                        "kind": blocked.kind,
+                        "step": current.info.step,
+                        "status": current.info.status,
+                        "attempt": current.info.attempt,
+                        "event": blocked,
+                    });
+                    tx.run_event(&mut current, &body, false, now_ms())?;
+                }
                 Ok(Ok(current))
             })
             .map_err(store_error)?;
@@ -1153,11 +1377,22 @@ impl WorkerSupervisor {
                 TodoStep::Restart => self.step_restart(&mut run),
                 TodoStep::Verify => self.step_verify(&mut run),
                 TodoStep::CherryPick => self.step_cherry_pick(&mut run),
+                TodoStep::Install => self.step_install(&mut run),
+                TodoStep::Todo => self.step_todo(&mut run),
+                TodoStep::Push => self.step_push(&mut run),
+                TodoStep::Cleanup => self.step_cleanup(&mut run),
                 step @ (TodoStep::Review | TodoStep::Done | TodoStep::Unknown) => {
                     Err(format!("a running run cannot be at step {step:?}"))
                 }
             };
             if let Err(why) = stepped {
+                #[cfg(test)]
+                if why == CRASHED_HERE {
+                    drop(driving);
+                    lock(&CRASHED).push(run.info.repo.clone());
+                    announce();
+                    return;
+                }
                 // A step a handoff cut off is the new server's to run.
                 if !self.handed_off() {
                     self.block_run(&mut run, why);
@@ -1610,12 +1845,11 @@ impl WorkerSupervisor {
             })
             .ok_or_else(|| format!("master has no commit {:?} after the pick", run.info.message))?;
         run.info.picked = Some(picked.clone());
-        run.info.step = TodoStep::Done;
-        run.info.status = TodoRunStatus::Done;
-        let mut event = new_event(TodoEventKind::Done);
-        event.commits = vec![picked];
-        self.record_run_event(run, &event)?;
-        lock(&RUN_ENV).remove(&run.info.run_id);
+        run.info.step = TodoStep::Install;
+        self.run_step(
+            run,
+            json!({"type": "run_picked", "commit": picked, "step": run.info.step}),
+        )?;
         Ok(())
     }
 }
@@ -1719,5 +1953,7 @@ mod tests {
         let checks = read_checks(repo).unwrap();
         assert!(checks.checks.contains_key("workers"), "{checks:?}");
         assert!(checks.checks.values().all(|argv| !argv.is_empty()));
+        let install = checks.install.unwrap();
+        assert!(!install.command.is_empty() && !install.build_id.is_empty());
     }
 }

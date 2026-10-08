@@ -5241,6 +5241,8 @@ mod todo_runs {
             answers: Vec::new(),
             message: None,
             env: Some(caller_env()),
+            note: None,
+            close: None,
         })
     }
 
@@ -5394,9 +5396,17 @@ mod todo_runs {
                 "run_verify_intent",
                 "run_verified",
                 "run_cherry_pick_intent",
+                "run_picked",
+                "run_install_skipped",
+                "run_todo_skipped",
+                "run_push_skipped",
+                "run_cleaned",
                 "run_event",
             ]
         );
+        // The slot still has the run's branch checked out: it is kept for
+        // a later run's cleanup.
+        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
         // A done run returns its last event to every wait.
         let (again, _) = wait(&fixture, &run.run_id, Some(done.event_id));
         assert_eq!(again.event_id, done.event_id);
@@ -5445,6 +5455,8 @@ mod todo_runs {
                 answers: Vec::new(),
                 message: None,
                 env: Some(caller_env()),
+                note: None,
+                close: None,
             })
             .unwrap();
         let (review, _) = wait(&fixture, &run.run_id, Some(question.event_id));
@@ -5769,6 +5781,8 @@ mod todo_runs {
             answers: Vec::new(),
             message: None,
             env: Some(caller_env()),
+            note: None,
+            close: None,
         }
     }
 
@@ -5991,5 +6005,411 @@ mod todo_runs {
         assert!(message.contains(&run.run_id), "{message}");
         let (review, _) = wait(&fixture, &run.run_id, None);
         assert_eq!(review.kind, TodoEventKind::Review);
+    }
+
+    const ITEM2: &str = "t-bcde3456";
+
+    /// Gives the repository what the steps after the cherry-pick use: an
+    /// `origin` (a bare repository with its `master`), the stub install
+    /// `install.sh` (failing while `INSTALL_FAIL` is set, else writing
+    /// `HEAD` as the build `build_id` prints), `scripts/todo_edit.py`,
+    /// `DECISIONS.md` and a second item. Returns the bare repository.
+    fn with_finish(fixture: &Fixture) -> PathBuf {
+        let repo = &fixture.repo;
+        std::fs::write(
+            repo.join("install.sh"),
+            "if [ -n \"$INSTALL_FAIL\" ]; then echo \"install broke\"; exit 1; fi\n\
+             mkdir -p target\n\
+             git rev-parse HEAD > target/installed\n\
+             echo installed\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(repo.join("scripts")).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/todo_edit.py"),
+            repo.join("scripts/todo_edit.py"),
+        )
+        .unwrap();
+        std::fs::write(repo.join("DECISIONS.md"), "# Decisions\n\nIntro.\n").unwrap();
+        std::fs::write(
+            repo.join("TODO.md"),
+            format!("# TODO\n\n- [ ] The driven item [{ITEM}]\n  Its text.\n\n- [ ] The second item [{ITEM2}]\n"),
+        )
+        .unwrap();
+        let checks = repo.join(".herdr/checks.toml");
+        let mut text = std::fs::read_to_string(&checks).unwrap();
+        text.push_str(
+            "[install]\ncommand = [\"sh\", \"install.sh\"]\nbuild_id = [\"cat\", \"target/installed\"]\n",
+        );
+        std::fs::write(&checks, text).unwrap();
+        git_in(repo, &["add", "."]);
+        git_in(repo, &["commit", "-q", "-m", "finish setup"]);
+        let remote = fixture.root.join("origin.git");
+        git_in(
+            &fixture.root,
+            &["init", "-q", "--bare", "-b", "master", "origin.git"],
+        );
+        git_in(
+            repo,
+            &["remote", "add", "origin", &remote.display().to_string()],
+        );
+        git_in(repo, &["push", "-q", "origin", "master"]);
+        remote
+    }
+
+    fn rev(dir: &Path, rev: &str) -> String {
+        git_in(dir, &["rev-parse", rev]).trim().to_owned()
+    }
+
+    fn approve_with(
+        fixture: &Fixture,
+        run_id: &str,
+        event: i64,
+        note: Option<&str>,
+        close: Option<&str>,
+    ) {
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: note.map(str::to_owned),
+                close: close.map(str::to_owned),
+                ..resume_params(run_id, event, TodoAction::Approve)
+            })
+            .unwrap();
+    }
+
+    fn run_events(fixture: &Fixture, run_id: &str, kind: &str) -> Vec<serde_json::Value> {
+        fixture
+            .supervisor
+            .shared
+            .store
+            .as_ref()
+            .unwrap()
+            .run_events_of(run_id, kind)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_run_installs_notes_the_item_pushes_and_cleans_up() {
+        let fixture = todo_repo("todo-finish");
+        let remote = with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // Only an approval takes a note, and not with a closing decision.
+        let refused = fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("x".into()),
+                close: Some("y".into()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        approve_with(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            Some("Done by the driver.\n"),
+            None,
+        );
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let master = rev(&fixture.repo, "master");
+        let picked = finished.picked.clone().unwrap();
+        assert_eq!(
+            master_subjects(&fixture),
+            [
+                "docs(todo): note on t-abcd2345",
+                SUBJECT,
+                "finish setup",
+                "init"
+            ]
+        );
+        // The install ran on the picked commit, and the build is recorded.
+        assert_eq!(finished.installed_build.as_deref(), Some(picked.as_str()));
+        // The note went under the item, committed by path.
+        assert_eq!(finished.todo_commit.as_deref(), Some(master.as_str()));
+        let todo = std::fs::read_to_string(fixture.repo.join("TODO.md")).unwrap();
+        assert!(
+            todo.contains(&format!(
+                "- [ ] The driven item [{ITEM}]\n  Its text.\n  Done by the driver.\n"
+            )),
+            "{todo}"
+        );
+        assert_eq!(
+            git_in(
+                &fixture.repo,
+                &["status", "--porcelain", "--untracked-files=no"]
+            ),
+            ""
+        );
+        // Pushed as a fast-forward.
+        assert_eq!(rev(&remote, "master"), master);
+        assert_eq!(finished.pushed.as_deref(), Some(master.as_str()));
+        assert_eq!(done.commits, [picked, master]);
+        // The slot has the branch checked out: kept, and recorded.
+        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
+        let types = event_types(&fixture, &run.run_id);
+        let after_pick: Vec<&str> = types
+            .iter()
+            .skip_while(|kind| *kind != "run_picked")
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            after_pick,
+            [
+                "run_picked",
+                "run_install_intent",
+                "run_installed",
+                "run_todo_intent",
+                "run_todo_committed",
+                "run_push_intent",
+                "run_pushed",
+                "run_cleaned",
+                "run_event",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_install_waits_for_the_coordinator_and_its_retry_installs() {
+        let fixture = todo_repo("todo-install-fail");
+        let remote = with_finish(&fixture);
+        let before = rev(&remote, "master");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The approval's environment breaks the install.
+        let mut failing = caller_env();
+        failing.insert("INSTALL_FAIL".into(), "1".into());
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                env: Some(failing),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::InstallFailed, "{failed:#?}");
+        assert_eq!(
+            failed.actions,
+            [
+                TodoAction::RetryInstall,
+                TodoAction::SkipInstall,
+                TodoAction::Abort
+            ]
+        );
+        let error = failed.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("install broke") && error.contains("exited 1"),
+            "{error}"
+        );
+        assert_eq!(
+            (waiting.status, waiting.step, waiting.installed_build),
+            (TodoRunStatus::Waiting, TodoStep::Install, None)
+        );
+        // Nothing after the install happened.
+        assert_eq!(rev(&remote, "master"), before);
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "finish setup", "init"]);
+
+        resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::RetryInstall,
+            None,
+        )
+        .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.installed_build, finished.picked);
+        assert_eq!(
+            event_types(&fixture, &run.run_id)
+                .iter()
+                .filter(|kind| *kind == "run_install_intent")
+                .count(),
+            2
+        );
+        // No note: the TODO is left alone, master is pushed.
+        assert_eq!(finished.todo_commit, None);
+        assert_eq!(rev(&remote, "master"), rev(&fixture.repo, "master"));
+    }
+
+    #[test]
+    fn a_push_that_is_not_a_fast_forward_is_refused() {
+        let fixture = todo_repo("todo-push-refused");
+        let remote = with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        // Another clone pushes to origin meanwhile.
+        git_in(
+            &fixture.root,
+            &["clone", "-q", &remote.display().to_string(), "other"],
+        );
+        let other = fixture.root.join("other");
+        std::fs::write(other.join("elsewhere.md"), "x\n").unwrap();
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["commit", "-q", "-m", "docs: elsewhere"]);
+        git_in(&other, &["push", "-q", "origin", "master"]);
+        let theirs = rev(&remote, "master");
+
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::PushFailed, "{failed:#?}");
+        assert_eq!(failed.actions, [TodoAction::RetryPush, TodoAction::Abort]);
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not be a fast-forward"),
+            "{failed:#?}"
+        );
+        assert_eq!(waiting.step, TodoStep::Push);
+        assert_eq!(rev(&remote, "master"), theirs);
+        assert!(event_types(&fixture, &run.run_id)
+            .iter()
+            .all(|kind| kind != "run_push_intent"));
+
+        // A retry refuses again; an abort ends the run, the commit on master.
+        resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::RetryPush,
+            None,
+        )
+        .unwrap();
+        let (again, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(again.kind, TodoEventKind::PushFailed, "{again:#?}");
+        resume(
+            &fixture,
+            &run.run_id,
+            again.event_id,
+            TodoAction::Abort,
+            None,
+        )
+        .unwrap();
+        let (blocked, ended) = wait(&fixture, &run.run_id, Some(again.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        assert!(
+            ended
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("aborted"),
+            "{ended:#?}"
+        );
+        assert_eq!(ended.status, TodoRunStatus::Blocked);
+        assert_eq!(rev(&remote, "master"), theirs);
+        assert_eq!(master_subjects(&fixture)[0], SUBJECT);
+    }
+
+    #[test]
+    fn a_run_cut_off_after_its_push_does_not_push_again() {
+        let fixture = todo_repo("todo-push-crash");
+        let remote = with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The server ends right after the push, before recording it.
+        runs::crash_after(&run.repo, TodoStep::Push);
+        approve_with(&fixture, &run.run_id, review.event_id, None, None);
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (cut.status, cut.step, cut.pushed),
+            (TodoRunStatus::Running, TodoStep::Push, None)
+        );
+        assert_eq!(rev(&remote, "master"), rev(&fixture.repo, "master"));
+
+        fixture.supervisor.resume_runs();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(
+            finished.pushed.as_deref(),
+            Some(rev(&fixture.repo, "master").as_str())
+        );
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_push_intent").len(),
+            1
+        );
+        let pushed = run_events(&fixture, &run.run_id, "run_pushed");
+        assert_eq!(pushed.len(), 1, "{pushed:?}");
+        assert_eq!(pushed[0]["already"], true);
+    }
+
+    #[test]
+    fn a_closed_item_moves_to_decisions_and_a_later_run_deletes_the_kept_branch() {
+        let fixture = todo_repo("todo-close");
+        let remote = with_finish(&fixture);
+        let first = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &first.run_id, None);
+        approve_with(
+            &fixture,
+            &first.run_id,
+            review.event_id,
+            None,
+            Some("## Driven items close (2026-10-08)\n\n- Chosen: the driver.\n"),
+        );
+        let (done, finished) = wait(&fixture, &first.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(master_subjects(&fixture)[0], "docs(todo): close t-abcd2345");
+        let todo = std::fs::read_to_string(fixture.repo.join("TODO.md")).unwrap();
+        assert!(!todo.contains(ITEM), "{todo}");
+        assert!(todo.contains(ITEM2), "{todo}");
+        let decisions = std::fs::read_to_string(fixture.repo.join("DECISIONS.md")).unwrap();
+        assert!(
+            decisions.ends_with(
+                "Intro.\n\n## Driven items close (2026-10-08)\n\n- Chosen: the driver.\n"
+            ),
+            "{decisions}"
+        );
+        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
+
+        // The next run moves the slot on: its cleanup deletes the branch the
+        // first one kept.
+        let second = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                item: ITEM2.into(),
+                message: "feat: add b".into(),
+                ..params(&fixture, "commit b.txt feat: add b", "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &second.run_id, None);
+        approve_with(&fixture, &second.run_id, review.event_id, None, None);
+        let (done, finished) = wait(&fixture, &second.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let branches = git_in(&fixture.repo, &["branch", "--format=%(refname:short)"]);
+        assert!(!branches.contains("todo/t-abcd2345-1"), "{branches}");
+        assert!(branches.contains("todo/t-bcde3456-1"), "{branches}");
+        assert_eq!(finished.kept_branches, ["todo/t-bcde3456-1"]);
+        assert!(fixture
+            .supervisor
+            .todo_status(&first.run_id)
+            .unwrap()
+            .kept_branches
+            .is_empty());
+        let cleaned = run_events(&fixture, &second.run_id, "run_cleaned");
+        assert_eq!(
+            cleaned[0]["deleted"],
+            serde_json::json!(["todo/t-abcd2345-1"])
+        );
+        assert_eq!(rev(&remote, "master"), rev(&fixture.repo, "master"));
     }
 }

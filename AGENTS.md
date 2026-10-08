@@ -548,15 +548,28 @@ stopped worker has not exited: no clock raises it and herdr never kills on
 its own, so a `todo wait` that hangs after `approve` is the cue to ask
 `todo status`); herdr appends to the task the exact `--message`, "no body,
 no trailers", the `--paths` and the `WORKER-DONE` line; the run stops
-the worker, verifies with the checks and cherry-picks onto `master` itself, and ends `done` or `blocked`. Every
-resume sends the coordinator's environment again for the checks (never
-stored), so run it from the coordinator's shell. Checks are registered as
+the worker, verifies with the checks and cherry-picks onto `master` itself,
+then installs with the `[install]` argv of `.herdr/checks.toml` (`just
+clean-install TODO.md` here), appends `approve --note <file>` to the item
+or, with `--close <decision-file>`, moves the item into `DECISIONS.md`
+(through `scripts/todo_edit.py`, committed by path as `docs(todo): ...`),
+pushes `master` to `origin` only as a fast-forward and deletes the run's
+merged branches (the slot's checked-out one is deleted by the next run),
+and ends `done` or `blocked`. A failed install, TODO edit or push waits
+as `install_failed`, `todo_failed` or `push_failed` for `retry-install`,
+`skip-install`, `retry-todo`, `skip-todo`, `retry-push` or `abort`; a push
+that is not a fast-forward is refused, never forced. Every resume sends
+the coordinator's environment again for the checks, the install and the
+push (never stored), so run it from the coordinator's shell. Checks are registered as
 argv in `.herdr/checks.toml` (`--check` names one or more, all must pass;
 never a shell string); pass `windows-lint` too for changes under `src/`.
 One server drives a run at a time (a run lock file next to the worker
 store), so after a live handoff the new server goes on only once the old
-one let go. The run stops at the cherry-pick: `just check`, the install,
-the TODO update and the push stay with the coordinator.
+one let go. The install (`just clean-install`) runs `just check` in the
+clean tree before it builds and installs. Its live handoff moves the run
+to the new server, which never had the coordinator's environment: the
+push then waits as `push_failed`, and `retry-push` from the coordinator's
+shell sends it.
 
 ### Client requests in the background
 
