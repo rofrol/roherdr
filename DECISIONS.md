@@ -437,3 +437,13 @@ limitation), a verified TODO/DECISIONS editing tool, and fault-injection tests
 `docs/atomicity-review-2026-10-07.md` and the comparison with T3 Code
 (adopted its receipts, pending-only answers and catch-up after a cursor; not
 its unbounded approvals or cancelling agents at restart).
+
+## Headless workers became the default for coordinators (2026-10-08)
+
+The `todo` skill and the global TODO rule (dotfiles `359a178`) start
+headless workers in the persistent `worker` folder, wait with `--attention`,
+ack after handling, and stop workers after bringing their commits in. TUI
+agents confirm prompt delivery (`agent.prompt_confirmed`, and `agent.prompt
+--wait` waits for the same acknowledgement instead of a 5-second timer that
+decided the outcome). Twenty headless workers (w1-w20) did the reliability
+work on 2026-10-07..08; after the sandbox change, none asked the user.
