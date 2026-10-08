@@ -588,6 +588,15 @@ item is finished, delete it instead of ticking `[x]`, and first add its
 durable decisions (what was chosen or rejected and why, what the user asked
 for) to `DECISIONS.md` in a few lines. Parked ideas go to `TODO-deferred.md`.
 
+Edit `TODO.md` and `DECISIONS.md` with `scripts/todo_edit.py`, not with
+ad-hoc string replaces: those lost text twice (an anchor that did not match
+changed nothing silently, and a cut "up to the next `- [ ] `" deleted a
+section heading). Its commands (`find`, `add`, `append-to`, `insert-after`,
+`remove`, `move`, and `add-section` with `--file DECISIONS.md`) take an
+item's title prefix and a `--text-file`, refuse a missing or ambiguous
+match, check that every other item and heading is unchanged, and write
+atomically. Run `python3 scripts/todo_edit.py --help` for the details.
+
 When the file you edited also holds another session's uncommitted hunks,
 `git commit -- <path>` would take theirs too. Commit only your hunk through a
 temporary index: save it as a patch, then `GIT_INDEX_FILE=<tmp> git read-tree
