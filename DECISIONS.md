@@ -477,3 +477,18 @@ with their runs (worker, times, outcome, turns, commits, questions) and an
 `herdr worker start --item <id>` and stable `[t-xxxxxxxx]` ids that
 `scripts/todo_edit.py` mints; the item's title is stored at start because
 finished items leave TODO.md; never grouped by worker name.
+
+## herdr decides a worker's verdict (2026-10-08)
+
+The user felt control was inverted: herdr ran the worker process but the
+model's own `WORKER-DONE` line decided readiness. sol, MiMo and DeepSeek
+agreed; exit codes alone describe the CLI's turn, not the task. Now herdr
+decides: `herdr worker verify <id> --base --message --paths [--cmd]
+[--generated]` checks one commit descending from the base, the exact
+message with no body or trailers, allowed paths, a clean tree, no worker
+process left, regenerated files, and runs the command in the caller's
+environment; verdict `verified | failed | unavailable` (an infrastructure
+failure is `unavailable`, never `verified`), journaled and shown with the
+run. The todo skill (dotfiles `f7a238d`) cherry-picks only on `verified`;
+a failure starts a new attempt with the evidence. First real use caught a
+missing `ZIG` in the server's environment, fixed the same day.
