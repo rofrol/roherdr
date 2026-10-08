@@ -293,7 +293,16 @@ struct Status {
     /// each, so an answer to one of them says what happened to it.
     resolved: VecDeque<(String, &'static str)>,
     stop_requested_ms: Option<u64>,
+    /// The takeover claim: set by `takeover`, cleared by `takeover_failed`.
+    /// Kept in every state, an exited worker's too.
     takeover_ms: Option<u64>,
+    /// The tab a takeover opened (`takeover_tab_opened`).
+    takeover_tab: Option<String>,
+    /// Why the last takeover failed (`takeover_failed`).
+    takeover_error: Option<String>,
+    /// A claim replayed from the journal without its tab: the server that
+    /// made it ended before recording the tab.
+    takeover_unfinished: bool,
     /// The category of a model refusal in the running turn
     /// (`system/model_refusal_no_fallback`); it fails the turn.
     refusal: Option<String>,
@@ -333,6 +342,9 @@ impl Status {
             resolved: VecDeque::new(),
             stop_requested_ms: None,
             takeover_ms: None,
+            takeover_tab: None,
+            takeover_error: None,
+            takeover_unfinished: false,
             refusal: None,
             exited: false,
         }
@@ -400,10 +412,37 @@ impl Status {
     }
 
     fn apply(&mut self, direction: Direction, event: &Value) {
+        let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+        // A takeover goes on after the worker has exited (its tab opens
+        // then), so its events count in every state.
+        if direction == Direction::Herdr {
+            match kind {
+                "takeover" => {
+                    self.takeover_ms = Some(event["at_ms"].as_u64().unwrap_or(0));
+                    self.takeover_tab = None;
+                    self.takeover_error = None;
+                    self.takeover_unfinished = false;
+                    return;
+                }
+                "takeover_failed" => {
+                    self.takeover_ms = None;
+                    self.takeover_error = Some(
+                        string_field(event, "error").unwrap_or_else(|| "unknown error".into()),
+                    );
+                    self.takeover_unfinished = false;
+                    return;
+                }
+                "takeover_tab_opened" => {
+                    self.takeover_tab = Some(string_field(event, "tab_id").unwrap_or_default());
+                    self.takeover_unfinished = false;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.is_gone() {
             return;
         }
-        let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
         match (direction, kind) {
             (Direction::Herdr, "started") => {
                 self.cwd = string_field(event, "cwd").unwrap_or_default();
@@ -436,9 +475,6 @@ impl Status {
                         input: event.get("input").cloned().unwrap_or_else(|| json!({})),
                     });
                 }
-            }
-            (Direction::Herdr, "takeover") => {
-                self.takeover_ms = event["at_ms"].as_u64();
             }
             (Direction::Herdr, "answer") => {
                 self.settle_question(event["request_id"].as_str(), "answered");
@@ -577,6 +613,9 @@ impl Status {
                 .collect(),
             stop_requested_ms: self.stop_requested_ms,
             takeover_ms: self.takeover_ms,
+            takeover_tab_id: self.takeover_tab.clone(),
+            takeover_error: self.takeover_error.clone(),
+            takeover_unfinished: self.takeover_unfinished,
             journal_path: journal_path.display().to_string(),
         }
     }
@@ -659,6 +698,9 @@ fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
             status.apply(direction, event);
         }
     }
+    // The server that claimed it is gone; whether it opened the tab is
+    // unknown.
+    status.takeover_unfinished = status.takeover_ms.is_some() && status.takeover_tab.is_none();
     Ok(status)
 }
 
@@ -1162,7 +1204,7 @@ impl WorkerSupervisor {
                 cwd: entry.status.cwd.clone(),
                 state: entry.status.state,
                 session_id: entry.status.session_id.clone(),
-                takeover: entry.status.takeover_ms.is_some(),
+                takeover: entry.status.takeover_ms.is_some() && !entry.status.takeover_unfinished,
             })
             .collect()
     }
@@ -1268,6 +1310,9 @@ impl WorkerSupervisor {
             return Err(WorkerError::Invalid("text must not be empty".into()));
         }
         let (number, live, status) = self.live(worker_id)?;
+        if status.takeover_ms.is_some() {
+            return Err(Self::taken_over(worker_id));
+        }
         if !status.turn_ended() {
             return Err(WorkerError::Busy(format!(
                 "worker {worker_id} is in a turn; wait for it or interrupt it first"
@@ -1346,6 +1391,9 @@ impl WorkerSupervisor {
                     )))
                 }
             };
+            if entry.status.takeover_ms.is_some() {
+                return Err(Self::taken_over(worker_id));
+            }
             let questions = &entry.status.questions;
             let pending = match params.request_id.as_deref() {
                 Some(request_id) => questions
@@ -1428,10 +1476,22 @@ impl WorkerSupervisor {
         self.status(worker_id)
     }
 
+    /// Why a running worker refuses a prompt or an answer: a takeover is
+    /// ending it.
+    fn taken_over(worker_id: &str) -> WorkerError {
+        WorkerError::Busy(format!(
+            "worker {worker_id} is being taken over; its session resumes in a tab"
+        ))
+    }
+
     /// Claims a worker for a takeover and journals it. Refused while a
     /// question waits on the user (answer it first, or the interrupt would
     /// throw the answer away), for a worker without a session yet, for one
-    /// that was lost (its process is not ours to end) and a second time.
+    /// that was lost (its process is not ours to end), and while another
+    /// takeover holds the claim or has opened its tab. The claim is kept in
+    /// every state, so an exited worker is taken over once too; a failed
+    /// takeover releases it ([`Self::fail_takeover`]), and one an earlier
+    /// server left unfinished can be tried again.
     pub(crate) fn begin_takeover(&self, worker_id: &str) -> Result<Takeover, WorkerError> {
         let (takeover, journal, event) = {
             let mut registry = lock(&self.shared.registry);
@@ -1451,10 +1511,13 @@ impl WorkerSupervisor {
                     "worker {worker_id} waits on your answer; answer it before taking over"
                 )));
             }
-            if status.takeover_ms.is_some() {
-                return Err(WorkerError::Busy(format!(
-                    "worker {worker_id} is already being taken over"
-                )));
+            if status.takeover_ms.is_some() && !status.takeover_unfinished {
+                return Err(WorkerError::Busy(match &status.takeover_tab {
+                    Some(tab_id) => format!(
+                        "worker {worker_id} was already taken over: its session resumes in tab {tab_id}"
+                    ),
+                    None => format!("worker {worker_id} is already being taken over"),
+                }));
             }
             let session_id = status.session_id.clone().ok_or_else(|| {
                 WorkerError::NotRunning(format!("worker {worker_id} has no session yet"))
@@ -1466,10 +1529,7 @@ impl WorkerSupervisor {
                 cwd: status.cwd.clone(),
                 session_id,
             };
-            let journal = match &entry.live {
-                Some(live) => Arc::clone(&live.journal),
-                None => Arc::new(Journal::open(&entry.journal_path)?),
-            };
+            let journal = Self::journal_of(entry)?;
             let event = json!({"type": "takeover", "at_ms": now_ms()});
             // Claimed under the lock, so a second takeover is refused.
             entry.status.apply(Direction::Herdr, &event);
@@ -1479,6 +1539,61 @@ impl WorkerSupervisor {
         self.shared.changed.notify_all();
         notify_clients();
         Ok(takeover)
+    }
+
+    /// Releases a takeover's claim with a journaled `takeover_failed`, so the
+    /// user can try again: its thread did not start, ending the worker
+    /// failed, or its tab could not be opened.
+    pub(crate) fn fail_takeover(&self, worker_id: &str, error: &str) -> Result<(), WorkerError> {
+        self.record_takeover_step(
+            worker_id,
+            json!({"type": "takeover_failed", "error": error, "at_ms": now_ms()}),
+        )
+    }
+
+    /// Journals the tab that resumes a taken-over worker's session; until
+    /// then a restart reports the takeover as unfinished.
+    pub(crate) fn takeover_tab_opened(
+        &self,
+        worker_id: &str,
+        tab_id: &str,
+    ) -> Result<(), WorkerError> {
+        self.record_takeover_step(
+            worker_id,
+            json!({"type": "takeover_tab_opened", "tab_id": tab_id, "at_ms": now_ms()}),
+        )
+    }
+
+    /// Applies a step of a claimed takeover under the lock and journals it.
+    fn record_takeover_step(&self, worker_id: &str, event: Value) -> Result<(), WorkerError> {
+        let journal = {
+            let mut registry = lock(&self.shared.registry);
+            let number = Self::entry_number(&registry, worker_id)?;
+            let entry = registry
+                .workers
+                .get_mut(&number)
+                .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
+            if entry.status.takeover_ms.is_none() {
+                return Err(WorkerError::Invalid(format!(
+                    "worker {worker_id} has no takeover claimed"
+                )));
+            }
+            let journal = Self::journal_of(entry)?;
+            entry.status.apply(Direction::Herdr, &event);
+            journal
+        };
+        journal.record(Direction::Herdr, &event);
+        self.shared.changed.notify_all();
+        notify_clients();
+        Ok(())
+    }
+
+    /// The worker's journal: the live one, else opened for appending.
+    fn journal_of(entry: &Entry) -> Result<Arc<Journal>, WorkerError> {
+        Ok(match &entry.live {
+            Some(live) => Arc::clone(&live.journal),
+            None => Arc::new(Journal::open(&entry.journal_path)?),
+        })
     }
 
     /// Ends a worker being taken over, so its session has one writer: the

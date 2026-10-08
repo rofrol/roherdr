@@ -13654,6 +13654,13 @@
                 "null"
               ]
             },
+            "takeover_error": {
+              "description": "Why the last takeover failed; its claim was released, so it can be\ntried again.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "takeover_ms": {
               "description": "Unix milliseconds when a takeover began (`worker.take_over`): the\nworker is being ended so its session can resume in a tab.",
               "format": "uint64",
@@ -13662,6 +13669,17 @@
                 "integer",
                 "null"
               ]
+            },
+            "takeover_tab_id": {
+              "description": "The tab the takeover opened to resume the worker's session.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "takeover_unfinished": {
+              "description": "A takeover claimed by an earlier server that did not record opening\nits tab: a tab may or may not resume the session. A new takeover is\naccepted.",
+              "type": "boolean"
             },
             "tool_sessions": {
               "description": "Sessions of the worker's tool processes seen so far (Claude Code runs\neach Bash tool with `setsid`); `worker.kill` ends them.",

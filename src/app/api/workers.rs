@@ -50,20 +50,34 @@ impl App {
         };
         let worker = match supervisor.status(&target.worker_id) {
             Ok(worker) => worker,
-            Err(error) => return encode_error(id, error.code(), error.to_string()),
+            Err(error) => {
+                release_takeover(&target.worker_id, &error.to_string());
+                return encode_error(id, error.code(), error.to_string());
+            }
         };
         let event_tx = self.event_tx.clone();
         let ending = supervisor.clone();
+        let worker_id = takeover.worker_id.clone();
         let spawned = crate::thread_spawn::spawn_named("herdr-worker-takeover", move || {
             let error = ending
                 .end_for_takeover(&takeover.worker_id)
                 .err()
                 .map(|error| error.to_string());
-            let _ = event_tx.blocking_send(AppEvent::WorkerTakenOver(Box::new((takeover, error))));
+            let worker_id = takeover.worker_id.clone();
+            if event_tx
+                .blocking_send(AppEvent::WorkerTakenOver(Box::new((takeover, error))))
+                .is_err()
+            {
+                release_takeover(&worker_id, "the app stopped before opening the tab");
+            }
         });
         match spawned {
             Ok(_) => encode_success(id, ResponseResult::WorkerInfo { worker }),
-            Err(error) => encode_error(id, "worker_io_error", error.to_string()),
+            Err(error) => {
+                let message = format!("could not start the takeover: {error}");
+                release_takeover(&worker_id, &message);
+                encode_error(id, "worker_io_error", message)
+            }
         }
     }
 
@@ -85,10 +99,15 @@ impl App {
                     || worker.exit_signal.is_some()
             });
         if !exited {
+            let error = error.as_deref().unwrap_or("the worker did not exit");
             tracing::warn!(
                 worker = takeover.worker_id,
-                error = error.as_deref().unwrap_or("the worker did not exit"),
+                error,
                 "worker takeover stopped before the worker exited; no tab opened"
+            );
+            release_takeover(
+                &takeover.worker_id,
+                &format!("the worker was not ended: {error}"),
             );
             return;
         }
@@ -102,6 +121,7 @@ impl App {
                 worker = takeover.worker_id,
                 "no space to take the worker over in"
             );
+            release_takeover(&takeover.worker_id, "no space to open the tab in");
             return;
         };
         let response = self.create_tab_in_workspace(
@@ -114,7 +134,7 @@ impl App {
             Default::default(),
         );
         let Ok(crate::api::schema::SuccessResponse {
-            result: ResponseResult::TabCreated { root_pane, .. },
+            result: ResponseResult::TabCreated { tab, root_pane },
             ..
         }) = serde_json::from_str(&response)
         else {
@@ -123,8 +143,19 @@ impl App {
                 response,
                 "takeover tab not created"
             );
+            release_takeover(
+                &takeover.worker_id,
+                &format!("the tab was not created: {response}"),
+            );
             return;
         };
+        // Recorded before typing: the tab exists now, so a second takeover
+        // would open another writer of the session.
+        if let Err(err) =
+            crate::workers::supervisor().takeover_tab_opened(&takeover.worker_id, &tab.tab_id)
+        {
+            tracing::warn!(%err, worker = takeover.worker_id, "takeover tab not journaled");
+        }
         let args = ["--resume".to_owned(), takeover.session_id.clone()];
         if let Err(err) =
             self.type_agent_launch(&root_pane.pane_id, crate::detect::Agent::Claude, &args)
@@ -135,5 +166,12 @@ impl App {
                 "could not resume the worker"
             );
         }
+    }
+}
+
+/// Releases a takeover claim that failed, so the user can try again.
+fn release_takeover(worker_id: &str, error: &str) {
+    if let Err(err) = crate::workers::supervisor().fail_takeover(worker_id, error) {
+        tracing::warn!(%err, worker = worker_id, "takeover claim not released");
     }
 }
