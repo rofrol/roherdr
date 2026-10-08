@@ -438,7 +438,7 @@ fn parse_verify(args: &[String]) -> Result<WorkerVerifyParams, String> {
 /// lack. Without the `HERDR_*` variables, which name the caller's pane and
 /// session, and without variables that are not UTF-8. None when the server
 /// is on another machine, where this one's environment means nothing.
-fn caller_env() -> Option<HashMap<String, String>> {
+pub(super) fn caller_env() -> Option<HashMap<String, String>> {
     if super::target::is_remote() {
         return None;
     }

@@ -39,6 +39,7 @@ mod spec;
 mod status;
 mod tab;
 mod target;
+mod todo;
 mod worker;
 mod workspace;
 mod worktree;
@@ -129,6 +130,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "agent" => agent::run_agent_command(&args[2..])?,
         "worker" => worker::run_worker_command(&args[2..])?,
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
+        "todo" => todo::run_todo_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,

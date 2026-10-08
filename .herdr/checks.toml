@@ -1,0 +1,14 @@
+# Checks `herdr todo run --check NAME` may run to verify a worker's commit:
+# each name maps to a program and its arguments, run as they are in the
+# worker's folder (no shell, so nothing is expanded or split). The driver
+# reads this file from the shared checkout at preflight and keeps the argv
+# with the run, so a worker's commit cannot change its own check.
+
+[checks]
+workers = ["cargo", "nextest", "run", "-E", "test(/workers::/)"]
+api-schema = ["cargo", "nextest", "run", "-E", "test(generated_protocol_schema_artifact_is_current)"]
+tests = ["cargo", "nextest", "run"]
+
+[preflight]
+# The free disk below which preflight refuses a run (`just guard`'s limit).
+min_free_gib = 15

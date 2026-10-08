@@ -1338,7 +1338,12 @@ impl App {
             | Method::WorkerDrain(_)
             | Method::WorkerWaitDrained(_)
             | Method::WorkerEscalate(_)
-            | Method::WorkerVerify(_) => {
+            | Method::WorkerVerify(_)
+            | Method::TodoRun(_)
+            | Method::TodoResume(_)
+            | Method::TodoWait(_)
+            | Method::TodoStatus(_)
+            | Method::TodoRuns(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

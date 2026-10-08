@@ -19,6 +19,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
+use super::todo::{TodoRunEvent, TodoRunInfo};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
     WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
@@ -97,6 +98,19 @@ pub enum ResponseResult {
     /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
     WorkerVerification {
         verification: WorkerVerification,
+    },
+    /// `todo.run`'s, `todo.resume`'s and `todo.status`' reply.
+    TodoRun {
+        run: TodoRunInfo,
+    },
+    /// `todo.runs`' reply, oldest first.
+    TodoRuns {
+        runs: Vec<TodoRunInfo>,
+    },
+    /// `todo.wait`'s reply: the event and the run as it is now.
+    TodoRunEvent {
+        event: TodoRunEvent,
+        run: TodoRunInfo,
     },
     /// `coordinator.start`'s and `coordinator.end`'s reply.
     Coordinator {

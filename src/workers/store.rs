@@ -16,8 +16,9 @@ use std::time::Duration;
 use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
+use super::runs::Run;
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
-use crate::api::schema::{WorkerState, WorkerTurnResult};
+use crate::api::schema::{TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult};
 
 /// The database file, inside the session's worker directory.
 pub(super) const STORE_FILE: &str = "workers.sqlite3";
@@ -258,6 +259,42 @@ ALTER TABLE workers ADD COLUMN broker_seq INTEGER NOT NULL DEFAULT 0;
 -- Why a re-attach could not prove the stored record whole
 -- (`continuity_gap`'s `reason`); the worker then takes no prompt or takeover.
 ALTER TABLE workers ADD COLUMN continuity_gap TEXT;
+"#,
+    r#"
+-- `herdr todo run`'s runs: one TODO item driven from preflight to a
+-- cherry-pick, projected from its `run_*` events (whose `worker_id` is the
+-- run's id) in the same transaction. `paths` and `check_argv` are JSON
+-- arrays; `check_argv` is the registered check as preflight read it, so a
+-- commit cannot change its own check. Times are Unix milliseconds.
+CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    step TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'waiting', 'blocked', 'done')),
+    attempt INTEGER NOT NULL,
+    base TEXT,
+    worker_id TEXT,
+    branch TEXT,
+    task TEXT NOT NULL,
+    message TEXT NOT NULL,
+    paths TEXT NOT NULL,
+    check_name TEXT NOT NULL,
+    check_argv TEXT NOT NULL,
+    owner_pane TEXT,
+    owner_session TEXT,
+    last_acked_seq INTEGER,
+    -- The `run_event` waiting for `todo.resume`, while `waiting`.
+    pending_event INTEGER,
+    error TEXT,
+    picked TEXT,
+    created_ms INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+-- One run in progress per repository (it has one folder slot): this index
+-- is the claim.
+CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
+    WHERE status IN ('running', 'waiting');
 "#,
 ];
 
@@ -1008,6 +1045,181 @@ impl Store {
     }
 }
 
+const RUN_COLUMNS: &str = "id, repo, item, step, status, attempt, base, worker_id, branch, task, \
+message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq, pending_event, \
+error, picked, created_ms, updated_ms";
+
+fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
+    let list = |index: usize| -> StoreResult<Vec<String>> {
+        Ok(serde_json::from_str(&row.get::<_, String>(index)?).unwrap_or_default())
+    };
+    let parsed = |index: usize| -> StoreResult<Value> { Ok(Value::String(row.get(index)?)) };
+    Ok(Run {
+        info: TodoRunInfo {
+            run_id: row.get(0)?,
+            repo: row.get(1)?,
+            item: row.get(2)?,
+            step: serde_json::from_value(parsed(3)?).unwrap_or(TodoStep::Unknown),
+            status: serde_json::from_value(parsed(4)?).unwrap_or(TodoRunStatus::Unknown),
+            attempt: row.get(5)?,
+            base: row.get(6)?,
+            worker_id: row.get(7)?,
+            branch: row.get(8)?,
+            task: row.get(9)?,
+            message: row.get(10)?,
+            paths: list(11)?,
+            check: row.get(12)?,
+            last_acked_seq: row.get(16)?,
+            pending_event: row.get(17)?,
+            error: row.get(18)?,
+            picked: row.get(19)?,
+            created_ms: row.get::<_, i64>(20)? as u64,
+            updated_ms: row.get::<_, i64>(21)? as u64,
+        },
+        check_argv: list(13)?,
+        owner_pane: row.get(14)?,
+        owner_session: row.get(15)?,
+    })
+}
+
+impl Tx<'_> {
+    /// Appends a run's event and writes its row as it is after it: a new
+    /// row, or the existing one replaced. With `pending`, the event is the
+    /// one the run waits on (`pending_event`). Returns the event's `seq`.
+    /// The unique index refuses a second run in progress of a repository.
+    pub(super) fn run_event(
+        &self,
+        run: &mut Run,
+        event: &Value,
+        pending: bool,
+        at_ms: u64,
+    ) -> StoreResult<i64> {
+        let seq = self.event(&EventRow {
+            worker_id: &run.info.run_id,
+            direction: super::Direction::Herdr,
+            record: &Recorded::Event(event),
+            ts_ms: at_ms,
+        })?;
+        run.info.pending_event = pending.then_some(seq);
+        run.info.updated_ms = at_ms;
+        let info = &run.info;
+        self.tx.execute(
+            // Not `OR REPLACE`: that would delete another run in progress
+            // of the repository instead of letting the index refuse this one.
+            &format!(
+                "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+                 ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22) \
+                 ON CONFLICT (id) DO UPDATE SET {}",
+                RUN_COLUMNS
+                    .split(", ")
+                    .filter(|column| *column != "id")
+                    .map(|column| format!("{column} = excluded.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            params![
+                info.run_id,
+                info.repo,
+                info.item,
+                enum_text(&info.step),
+                enum_text(&info.status),
+                info.attempt,
+                info.base,
+                info.worker_id,
+                info.branch,
+                info.task,
+                info.message,
+                serde_json::to_string(&info.paths).unwrap_or_else(|_| "[]".into()),
+                info.check,
+                serde_json::to_string(&run.check_argv).unwrap_or_else(|_| "[]".into()),
+                run.owner_pane,
+                run.owner_session,
+                info.last_acked_seq,
+                info.pending_event,
+                info.error,
+                info.picked,
+                info.created_ms as i64,
+                info.updated_ms as i64,
+            ],
+        )?;
+        Ok(seq)
+    }
+
+    /// The run as this transaction sees it.
+    pub(super) fn run(&self, run_id: &str) -> StoreResult<Option<Run>> {
+        self.tx
+            .query_row(
+                &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
+                [run_id],
+                run_from_row,
+            )
+            .optional()
+    }
+}
+
+impl Store {
+    pub(super) fn run(&self, run_id: &str) -> StoreResult<Option<Run>> {
+        lock(&self.conn)
+            .query_row(
+                &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
+                [run_id],
+                run_from_row,
+            )
+            .optional()
+    }
+
+    /// The runs, of one repository when given, oldest first.
+    pub(super) fn runs(&self, repo: Option<&str>) -> StoreResult<Vec<Run>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE ?1 IS NULL OR repo = ?1 \
+             ORDER BY created_ms, rowid"
+        ))?;
+        let runs = statement.query_map([repo], run_from_row)?;
+        runs.collect()
+    }
+
+    /// The run in progress of `repo`, if any.
+    pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
+        lock(&self.conn)
+            .query_row(
+                &format!(
+                    "SELECT {RUN_COLUMNS} FROM runs \
+                     WHERE repo = ?1 AND status IN ('running', 'waiting')"
+                ),
+                [repo],
+                run_from_row,
+            )
+            .optional()
+    }
+
+    /// The run's latest coordinator-facing event (`run_event`): its `seq`
+    /// and body.
+    pub(super) fn latest_run_event(&self, run_id: &str) -> StoreResult<Option<(i64, Value)>> {
+        let row: Option<(i64, String)> = lock(&self.conn)
+            .query_row(
+                "SELECT seq, body FROM events
+                 WHERE worker_id = ?1 AND direction = 'herdr' AND type = 'run_event'
+                 ORDER BY seq DESC LIMIT 1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(seq, body)| (seq, serde_json::from_str(&body).unwrap_or(Value::Null))))
+    }
+
+    /// Every event of a run, oldest first, as `(seq, type)`.
+    #[cfg(test)]
+    pub(super) fn run_event_types(&self, run_id: &str) -> StoreResult<Vec<(i64, String)>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT seq, coalesce(type, '') FROM events WHERE worker_id = ?1 ORDER BY seq",
+        )?;
+        let rows = statement.query_map([run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+}
+
 const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, pid, \
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
@@ -1329,6 +1541,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN broker;
                  ALTER TABLE workers DROP COLUMN broker_seq;
                  ALTER TABLE workers DROP COLUMN continuity_gap;
+                 DROP TABLE runs;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1378,8 +1591,9 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN broker;
                  ALTER TABLE workers DROP COLUMN broker_seq;
                  ALTER TABLE workers DROP COLUMN continuity_gap;
+                 DROP TABLE runs;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 6
+                MIGRATIONS.len() - 7
             ))
             .unwrap();
         drop(store);

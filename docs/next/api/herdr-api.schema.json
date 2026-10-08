@@ -5329,6 +5329,199 @@
           ],
           "type": "string"
         },
+        "TodoAction": {
+          "description": "What the coordinator may answer an event with.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "approve",
+              "description": "The worker's turn is accepted: stop it, verify, cherry-pick.",
+              "type": "string"
+            },
+            {
+              "const": "retry",
+              "description": "Start the next attempt with new task text (at most 3 attempts).",
+              "type": "string"
+            },
+            {
+              "const": "answer",
+              "description": "Answer the worker's pending question.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoResumeParams": {
+          "description": "The coordinator's answer to a run's event.",
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/TodoAction"
+            },
+            "answers": {
+              "description": "With `answer`: one choice per `AskUserQuestion` question.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerDecision"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `answer`: allow or deny for an approval."
+            },
+            "event": {
+              "description": "The event answered: the `event_id` `todo.wait` returned. Any other\nis refused as stale (`todo_event_stale`).",
+              "format": "int64",
+              "type": "integer"
+            },
+            "message": {
+              "description": "With `answer`: the message the model gets with a denial.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "With `answer`: the question answered; the only pending one when\nabsent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "task": {
+              "description": "With `retry`: the next attempt's task text.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run_id",
+            "action",
+            "event"
+          ],
+          "type": "object"
+        },
+        "TodoRunParams": {
+          "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master`: a persisted, resumable run that starts a headless\nworker in the repository's folder slot, turns what needs the coordinator\n(a question outside the worker policy, the turn's end, a failed verify)\ninto run events, and verifies the worker's commit with a registered\ncheck before picking it.",
+          "properties": {
+            "check": {
+              "description": "The name of a check in the repository's `.herdr/checks.toml`.",
+              "type": "string"
+            },
+            "cwd": {
+              "description": "A directory in the repository (the CLI sends its working directory).",
+              "type": "string"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment, which the check runs with (`HERDR_*`\ndropped); kept in the server's memory only, never stored.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "item": {
+              "description": "The TODO item's id (`t-abcd2345`); it must be in the repository's\n`TODO.md`.",
+              "type": "string"
+            },
+            "message": {
+              "description": "The exact commit subject the worker must use: a lowercase\nconventional subject (`feat: ...`), one line.",
+              "type": "string"
+            },
+            "owner_pane_id": {
+              "description": "The coordinator's pane, which owns the run's workers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paths": {
+              "description": "Git glob pathspecs (`src/**`, `AGENTS.md`) the commit may touch.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "task": {
+              "description": "The worker's task text, stored with the run as it is.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd",
+            "item",
+            "task",
+            "message",
+            "paths",
+            "check"
+          ],
+          "type": "object"
+        },
+        "TodoRunTarget": {
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "TodoRunsParams": {
+          "properties": {
+            "repo": {
+              "description": "Only the runs of this repository: a directory in it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TodoWaitParams": {
+          "properties": {
+            "after": {
+              "description": "The `event_id` the previous wait returned: only a later event\ncounts. A run that ended (`done`, `blocked`) returns its last event\nhowever old.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
         "UsageReadParams": {
           "properties": {
             "refresh": {
@@ -6744,6 +6937,89 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Drives a TODO item from preflight to a cherry-pick onto `master`.",
+          "properties": {
+            "method": {
+              "const": "todo.run",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Answers a run's pending event: approve, retry or answer.",
+          "properties": {
+            "method": {
+              "const": "todo.resume",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoResumeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Blocks until the run has an event after `after` that needs the\ncoordinator, or it ended.",
+          "properties": {
+            "method": {
+              "const": "todo.wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "todo.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "todo.runs",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRunsParams"
             }
           },
           "required": [
@@ -12435,6 +12711,64 @@
               "type": "object"
             },
             {
+              "description": "`todo.run`'s, `todo.resume`'s and `todo.status`' reply.",
+              "properties": {
+                "run": {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunInfo"
+                },
+                "type": {
+                  "const": "todo_run",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "run"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`todo.runs`' reply, oldest first.",
+              "properties": {
+                "runs": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/TodoRunInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "todo_runs",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "runs"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`todo.wait`'s reply: the event and the run as it is now.",
+              "properties": {
+                "event": {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunEvent"
+                },
+                "run": {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunInfo"
+                },
+                "type": {
+                  "const": "todo_run_event",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "event",
+                "run"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`coordinator.start`'s and `coordinator.end`'s reply.",
               "properties": {
                 "coordinator": {
@@ -14168,6 +14502,306 @@
             {
               "const": "unknown",
               "description": "A value from a newer server that this build does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoAction": {
+          "description": "What the coordinator may answer an event with.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "approve",
+              "description": "The worker's turn is accepted: stop it, verify, cherry-pick.",
+              "type": "string"
+            },
+            {
+              "const": "retry",
+              "description": "Start the next attempt with new task text (at most 3 attempts).",
+              "type": "string"
+            },
+            {
+              "const": "answer",
+              "description": "Answer the worker's pending question.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoEventKind": {
+          "description": "A run's event that needs the coordinator or ends the run.",
+          "oneOf": [
+            {
+              "enum": [
+                "blocked",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "question",
+              "description": "The worker asked a question the worker policy does not decide.",
+              "type": "string"
+            },
+            {
+              "const": "review",
+              "description": "The worker's turn ended (or the worker did): review its work.",
+              "type": "string"
+            },
+            {
+              "const": "verify_failed",
+              "description": "The verify failed or could not run: give the next attempt's task.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoRunEvent": {
+          "properties": {
+            "actions": {
+              "description": "What `todo.resume` takes for it; empty once the run ended.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoAction"
+              },
+              "type": "array"
+            },
+            "commits": {
+              "description": "The commits since the base, oldest first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "diff_stat": {
+              "description": "The branch's changes since the base (`git diff --stat`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "With `blocked`: why.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event_id": {
+              "description": "Named by `todo.resume --event` and `todo.wait --after`.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/TodoEventKind"
+            },
+            "questions": {
+              "description": "With `question`: the worker's pending questions.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+              },
+              "type": "array"
+            },
+            "result_text": {
+              "description": "With `review`: the worker's last reply.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ts_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "verification": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerification"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `verify_failed`: the verdict and each check's evidence."
+            }
+          },
+          "required": [
+            "event_id",
+            "kind",
+            "ts_ms"
+          ],
+          "type": "object"
+        },
+        "TodoRunInfo": {
+          "properties": {
+            "attempt": {
+              "description": "1 for the first worker; each retry adds one, at most 3.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "base": {
+              "description": "`master`'s commit when the run started, which each attempt's branch\nstarts from.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "check": {
+              "type": "string"
+            },
+            "created_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "error": {
+              "description": "Why it is blocked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "item": {
+              "type": "string"
+            },
+            "last_acked_seq": {
+              "description": "The highest worker event the run has handled (acknowledged).",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pending_event": {
+              "description": "The event waiting for `todo.resume`, while `waiting`.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "picked": {
+              "description": "The commit the cherry-pick made on `master`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "type": "string"
+            },
+            "run_id": {
+              "description": "`r-` and 8 lowercase base32 characters.",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/TodoRunStatus"
+            },
+            "step": {
+              "$ref": "#/schemas/success_response/$defs/TodoStep"
+            },
+            "task": {
+              "description": "The current attempt's task text.",
+              "type": "string"
+            },
+            "updated_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run_id",
+            "repo",
+            "item",
+            "step",
+            "status",
+            "attempt",
+            "task",
+            "message",
+            "paths",
+            "check",
+            "created_ms",
+            "updated_ms"
+          ],
+          "type": "object"
+        },
+        "TodoRunStatus": {
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "The driver works on its step.",
+              "type": "string"
+            },
+            {
+              "const": "waiting",
+              "description": "It waits for the coordinator's `todo.resume` to its pending event.",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "description": "It stopped and needs a person: a refused preflight, a conflict, the\nattempts used up. Nothing more happens.",
+              "type": "string"
+            },
+            {
+              "const": "done",
+              "description": "The commit is on `master`.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoStep": {
+          "description": "Where a run is.",
+          "oneOf": [
+            {
+              "enum": [
+                "preflight",
+                "start",
+                "attention",
+                "review",
+                "stop",
+                "verify",
+                "cherry_pick",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "restart",
+              "description": "Stops the attempt's worker before the next attempt starts.",
               "type": "string"
             }
           ]
