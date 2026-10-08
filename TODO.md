@@ -1551,7 +1551,7 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and frees its folder slot (an ack means handled); the ⊟ fold button folds
   quiet worker lines with the quiet tabs, never one with a question or an
   unacked event; ended workers collapse into one line per owner tab ("18
-  ended workers ▸", expanding on click); , the log
+  ended workers ▸", expanding on click); `herdr worker list --all`, the log
   and the item history keep them reachable; per-state glyphs instead of
   one green circle.
 
