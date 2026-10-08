@@ -46,6 +46,13 @@ pub struct AgentWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// Makes `agent.prompt` wait after typing. From a non-working state it first waits for the
+/// agent's acknowledgement, the same as `agent.prompt_confirmed` (the prompt's turn report, else
+/// the agent turning `working`), with no time limit of its own; then it waits for one of `until`
+/// (default `idle`, `done` or `blocked`). A dialog before the acknowledgement answers with the
+/// `blocked` agent when `until` includes `blocked`, else `agent_prompt_blocked` naming the
+/// dialog. `timeout_ms` is the caller's: when it passes before the acknowledgement the answer is
+/// `agent_prompt_stalled`, after it `timeout`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptWaitOptions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

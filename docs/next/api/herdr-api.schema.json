@@ -1541,6 +1541,7 @@
           "type": "object"
         },
         "AgentPromptWaitOptions": {
+          "description": "Makes `agent.prompt` wait after typing. From a non-working state it first waits for the\nagent's acknowledgement, the same as `agent.prompt_confirmed` (the prompt's turn report, else\nthe agent turning `working`), with no time limit of its own; then it waits for one of `until`\n(default `idle`, `done` or `blocked`). A dialog before the acknowledgement answers with the\n`blocked` agent when `until` includes `blocked`, else `agent_prompt_blocked` naming the\ndialog. `timeout_ms` is the caller's: when it passes before the acknowledgement the answer is\n`agent_prompt_stalled`, after it `timeout`.",
           "properties": {
             "timeout_ms": {
               "format": "uint64",

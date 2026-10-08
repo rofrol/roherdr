@@ -698,3 +698,117 @@ fn prompt_confirmed_without_an_acknowledgement_waits_until_the_agent_exits() {
     assert_eq!(response["id"], "prompt");
     assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
 }
+
+// `agent.prompt` with `wait`: it first waits for the same acknowledgement as
+// `agent.prompt_confirmed`, with no time limit of its own.
+
+fn prompt_wait(client: &mut Client, wait: Value) {
+    client.send(json!({
+        "id": "prompt",
+        "method": "agent.prompt",
+        "params": {"target": "pane_1", "text": "fix the test", "wait": wait}
+    }));
+}
+
+#[test]
+fn prompt_wait_succeeds_whenever_the_agent_acknowledges_the_prompt() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_wait(&mut client, json!({"until": ["idle"]}));
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    // Changes that are not the acknowledgement only make it read the agent again; no timer
+    // ends the wait, so however long the agent takes (formerly 5 seconds answered
+    // `agent_prompt_stalled`), only its acknowledgement decides.
+    test.hub.push(status_changed(AgentStatus::Done));
+    reply_agent(&mut test, "done", 2);
+    test.hub.push(status_changed(AgentStatus::Idle));
+    reply_agent(&mut test, "idle", 3);
+    test.hub.push(status_changed(AgentStatus::Working));
+    reply_agent(&mut test, "working", 4);
+    // Acknowledged; then the requested settled state.
+    reply_agent(&mut test, "working", 4);
+    test.hub.push(status_changed(AgentStatus::Idle));
+    reply_agent(&mut test, "idle", 5);
+    let response = client.response();
+    assert_eq!(response["id"], "prompt");
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["agent"]["agent_status"], "idle");
+}
+
+#[test]
+fn prompt_wait_follows_the_turn_report_of_the_prompt() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_wait(&mut client, json!({"until": ["idle"]}));
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "accepted");
+    reply_prompt_state(&mut test, "accepted", None);
+    reply_agent(&mut test, "idle", 1);
+    // The `UserPromptSubmit` hook reports the turn.
+    test.hub.push(pane_updated());
+    reply_prompt_state(&mut test, "working", None);
+    reply_agent(&mut test, "working", 2);
+    test.hub.push(status_changed(AgentStatus::Idle));
+    reply_agent(&mut test, "idle", 3);
+    let response = client.response();
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["prompt_request"]["state"], "working");
+}
+
+#[test]
+fn prompt_wait_names_a_dialog_that_appears_before_the_acknowledgement() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_wait(&mut client, json!({"until": ["idle"]}));
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    test.hub.push(status_changed(AgentStatus::Blocked));
+    reply_agent(&mut test, "blocked", 2);
+    reply_explain(&mut test, "bash_permission_prompt");
+    let response = client.response();
+    assert_eq!(
+        response["error"]["code"], "agent_prompt_blocked",
+        "{response}"
+    );
+    let message = response["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("\"bash_permission_prompt\" dialog"),
+        "{message}"
+    );
+}
+
+#[test]
+fn prompt_wait_answers_a_dialog_it_waits_for_with_the_blocked_agent() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    // The default states include `blocked`.
+    prompt_wait(&mut client, json!({}));
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    test.hub.push(status_changed(AgentStatus::Blocked));
+    reply_agent(&mut test, "blocked", 2);
+    let response = client.response();
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["agent"]["agent_status"], "blocked");
+}
+
+#[test]
+fn prompt_wait_reports_stalled_when_the_caller_timeout_passes_first() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_wait(&mut client, json!({"until": ["idle"], "timeout_ms": 1000}));
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    // The caller's own deadline: one last read of the agent, still unacknowledged.
+    reply_agent(&mut test, "idle", 1);
+    let response = client.response();
+    assert_eq!(
+        response["error"]["code"], "agent_prompt_stalled",
+        "{response}"
+    );
+}
