@@ -429,6 +429,13 @@ To save the coordinator's quota, a session can hand a well-specified task to
   the first line. State the files it may edit, that it must not install, push,
   rebase or touch the shared checkout, the approved commit message, and a
   required last line `PI-DONE <sha> | ...` or `PI-BLOCKED <reason>`.
+  `herdr agent prompt` confirms delivery: it returns only after the agent
+  accepted the prompt (its turn report, Claude's `UserPromptSubmit`, or its
+  state turning `working`) and fails with `agent_blocked` or
+  `agent_prompt_blocked` naming a dialog such as the folder-trust prompt.
+  Do not "send, then check for working", and never send the prompt again
+  after `agent_prompt_blocked` without reading the pane: it may still arrive
+  once the dialog is answered.
 - Wait with `herdr-job run -- herdr agent wait <pane>` without `--until`
   (it matches idle, done and blocked). A finished pi reports `done`; waiting
   only for `idle` hung for two hours (2026-10-06).

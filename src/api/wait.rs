@@ -488,6 +488,258 @@ pub(super) fn prompt_agent_tracked(
     )
 }
 
+/// `agent.prompt_confirmed`: types the prompt like `agent.prompt`, then answers only once the
+/// agent shows it accepted it. The acknowledgement is an event, never a duration:
+/// - an agent that reports turns: the followed request leaves `accepted`, which happens when
+///   the agent reports the turn this prompt started (Claude's `UserPromptSubmit` hook);
+/// - any other agent: its state turns `working` after the prompt was typed;
+/// - an agent already `working` when the prompt is typed: its input is open and queues the
+///   prompt, so the written submission is the acknowledgement (a prompt typed into a working
+///   Pi joins its running turn and is never reported as a turn of its own).
+///
+/// A dialog that is on screen before typing is refused by `agent.prompt` itself; one that
+/// appears afterwards without an acknowledgement answers `agent_prompt_blocked`, and both name
+/// the dialog when screen detection recognizes it. Nothing is ever typed a second time. Without
+/// any of these events the call waits until the agent exits or the caller disconnects.
+pub(super) fn prompt_agent_confirmed(
+    request_id: String,
+    params: crate::api::schema::AgentPromptConfirmedParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    use crate::api::schema::{AgentPromptRequestState, AgentStatus};
+
+    let target = crate::api::schema::AgentTarget {
+        target: params.target.clone(),
+        prefer_workspace_id: params.prefer_workspace_id.clone(),
+    };
+    let before = match agent_get(&request_id, &target, api_tx) {
+        Ok(agent) => agent,
+        Err(response) => {
+            return serde_json::to_string(&response)
+                .map(Some)
+                .map_err(std::io::Error::other);
+        }
+    };
+    // Taken before typing, so an acknowledgement that arrives while the prompt call is
+    // answered is still seen below.
+    let mut last_event_sequence = event_hub.current_sequence();
+    let prompt_response = dispatch_to_app_with_timeout(
+        Request {
+            id: request_id.clone(),
+            method: Method::AgentPrompt(crate::api::schema::AgentPromptParams {
+                target: params.target,
+                prefer_workspace_id: params.prefer_workspace_id,
+                text: params.text,
+                wait: None,
+                follow_turn: false,
+            }),
+        },
+        api_tx,
+        None,
+    );
+    let prompted = match agent_from_response(&request_id, &prompt_response) {
+        Ok(agent) => agent,
+        Err(mut response) => {
+            if matches!(
+                response.error.code.as_str(),
+                "agent_blocked" | "agent_not_ready"
+            ) {
+                if let Some(dialog) = blocking_dialog(&request_id, &target, api_tx) {
+                    response.error.message = format!(
+                        "{}; it shows {dialog}; nothing was typed",
+                        response.error.message
+                    );
+                }
+            }
+            return serde_json::to_string(&response)
+                .map(Some)
+                .map_err(std::io::Error::other);
+        }
+    };
+    let Some(mut prompt_request) = prompt_request_from_response(&prompt_response) else {
+        return internal_error(request_id, "agent prompt returned no request").map(Some);
+    };
+    if !agent_wait_identity_matches(
+        &prompted,
+        &before.terminal_id,
+        before.name.as_deref().filter(|name| *name == target.target),
+        before.agent.as_deref(),
+    ) {
+        return agent_wait_not_running(request_id).map(Some);
+    }
+    if before.agent_status == AgentStatus::Working {
+        return agent_prompt_success(request_id, prompted, Some(prompt_request)).map(Some);
+    }
+    let followed = prompt_request.state == AgentPromptRequestState::Accepted;
+    let baseline_seq = before.state_change_seq;
+    let pane_id = prompted.pane_id.clone();
+    let expected_name = prompted.name.clone().filter(|name| *name == target.target);
+    let expected_agent = prompted.agent.clone();
+    let mut agent = prompted;
+    let mut saw_working = false;
+    let mut should_probe = true;
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+        let mut pane_gone = false;
+        match event_hub.events_after_checked(last_event_sequence) {
+            Ok(events) => {
+                for (sequence, event) in events {
+                    last_event_sequence = sequence;
+                    match event.data {
+                        EventData::PaneAgentStatusChanged {
+                            pane_id: event_pane,
+                            agent_status,
+                            ..
+                        } if event_pane == pane_id => {
+                            saw_working |= agent_status == AgentStatus::Working;
+                            should_probe = true;
+                        }
+                        EventData::PaneUpdated { pane } if pane.pane_id == pane_id => {
+                            should_probe = true;
+                        }
+                        EventData::PaneAgentDetected {
+                            pane_id: event_pane,
+                            released,
+                            ..
+                        } if event_pane == pane_id => {
+                            pane_gone |= released;
+                            should_probe = true;
+                        }
+                        EventData::PaneMoved {
+                            previous_pane_id, ..
+                        } if previous_pane_id == pane_id => pane_gone = true,
+                        EventData::PaneClosed {
+                            pane_id: event_pane,
+                            ..
+                        }
+                        | EventData::PaneExited {
+                            pane_id: event_pane,
+                            ..
+                        } if event_pane == pane_id => pane_gone = true,
+                        _ => {}
+                    }
+                }
+            }
+            // Events were dropped before this wait read them: read the state again.
+            Err(_) => {
+                last_event_sequence = event_hub.current_sequence();
+                should_probe = true;
+            }
+        }
+        if should_probe || pane_gone {
+            should_probe = false;
+            if followed {
+                let status = dispatch_to_app_with_timeout(
+                    Request {
+                        id: format!("{request_id}:prompt_status"),
+                        method: Method::AgentPromptStatus(
+                            crate::api::schema::AgentPromptStatusParams {
+                                request_id: prompt_request.request_id.clone(),
+                            },
+                        ),
+                    },
+                    api_tx,
+                    Some(APP_RESPONSE_TIMEOUT),
+                );
+                let value: serde_json::Value =
+                    serde_json::from_str(&status).unwrap_or(serde_json::Value::Null);
+                match serde_json::from_value::<crate::api::schema::AgentPromptRequest>(
+                    value["result"]["prompt_request"].clone(),
+                ) {
+                    Ok(current) => prompt_request = current,
+                    // The request went with its pane or its agent.
+                    Err(_) => return agent_wait_not_running(request_id).map(Some),
+                }
+                match prompt_request.state {
+                    AgentPromptRequestState::Accepted => {}
+                    AgentPromptRequestState::Exited => {
+                        return agent_wait_not_running(request_id).map(Some);
+                    }
+                    _ => {
+                        return agent_prompt_success(request_id, agent, Some(prompt_request))
+                            .map(Some);
+                    }
+                }
+            }
+            if pane_gone {
+                return agent_wait_not_running(request_id).map(Some);
+            }
+            agent = match agent_get(&request_id, &target, api_tx) {
+                Ok(current) => current,
+                Err(response) => return agent_wait_probe_error(response).map(Some),
+            };
+            if !agent_wait_identity_matches(
+                &agent,
+                &before.terminal_id,
+                expected_name.as_deref(),
+                expected_agent.as_deref(),
+            ) {
+                return agent_wait_not_running(request_id).map(Some);
+            }
+            let changed = agent.state_change_seq > baseline_seq;
+            if !followed && (saw_working || changed && agent.agent_status == AgentStatus::Working) {
+                return agent_prompt_success(request_id, agent, Some(prompt_request)).map(Some);
+            }
+            if changed && agent.agent_status == AgentStatus::Blocked {
+                let dialog = blocking_dialog(&request_id, &target, api_tx)
+                    .unwrap_or_else(|| "a dialog".to_string());
+                return serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "agent_prompt_blocked".into(),
+                        message: format!(
+                            "the prompt was typed, but before agent {} accepted it, it showed {dialog}; it may still arrive after the dialog, so check the agent before sending it again (prompt request {})",
+                            target.target, prompt_request.request_id
+                        ),
+                    },
+                })
+                .map(Some)
+                .map_err(std::io::Error::other);
+            }
+        }
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// The dialog the agent shows: `the "<rule>" dialog` when a blocking screen-detection rule
+/// matches its screen, else the question its integration reported while blocked; `None` when
+/// neither names it (a dialog herdr does not recognize).
+fn blocking_dialog(
+    request_id: &str,
+    target: &crate::api::schema::AgentTarget,
+    api_tx: &ApiRequestSender,
+) -> Option<String> {
+    let response = dispatch_to_app_with_timeout(
+        Request {
+            id: format!("{request_id}:explain"),
+            method: Method::AgentExplain(target.clone()),
+        },
+        api_tx,
+        Some(APP_RESPONSE_TIMEOUT),
+    );
+    let explained = serde_json::from_str::<serde_json::Value>(&response)
+        .ok()
+        .and_then(|value| blocking_dialog_from_explain(&value["result"]["explain"]));
+    if explained.is_some() {
+        return explained;
+    }
+    let question = agent_get(request_id, target, api_tx).ok()?.question?;
+    Some(format!("the question \"{}\"", question.trim()))
+}
+
+fn blocking_dialog_from_explain(explain: &serde_json::Value) -> Option<String> {
+    let rule = &explain["matched_rule"];
+    (rule["state"] == "blocked")
+        .then(|| rule["id"].as_str())
+        .flatten()
+        .map(|id| format!("the \"{id}\" dialog"))
+}
+
 /// `agent.wait_turn`: waits until the followed prompt's turn ends and answers how. It takes the
 /// event cursor before it first reads the request, so a change between that read and the
 /// first look at the events is never missed: a turn that ended before the wait started
@@ -1108,6 +1360,22 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_blocking_rule_names_a_dialog() {
+        let blocking = serde_json::json!({
+            "matched_rule": {"id": "trust_directory", "state": "blocked"}
+        });
+        assert_eq!(
+            blocking_dialog_from_explain(&blocking).as_deref(),
+            Some("the \"trust_directory\" dialog")
+        );
+        let idle = serde_json::json!({"matched_rule": {"id": "live_prompt_box", "state": "idle"}});
+        assert_eq!(blocking_dialog_from_explain(&idle), None);
+        // Under hook authority screen detection is skipped and matches nothing.
+        let skipped = serde_json::json!({"matched_rule": null, "screen_detection_skipped": true});
+        assert_eq!(blocking_dialog_from_explain(&skipped), None);
+    }
 
     #[test]
     fn agent_wait_probe_only_translates_agent_disappearance() {

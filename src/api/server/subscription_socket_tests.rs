@@ -501,3 +501,200 @@ fn wait_turn_reports_a_request_the_server_does_not_know() {
     let response = assert_turn_ended(&mut client, "unknown_request");
     assert!(response["result"].get("pane_id").is_none());
 }
+
+// `agent.prompt_confirmed`: the app answers the agent reads, the prompt and its status; the call
+// answers only on the event that shows the agent accepted the prompt.
+
+fn prompt_confirmed(client: &mut Client) {
+    client.send(json!({
+        "id": "prompt",
+        "method": "agent.prompt_confirmed",
+        "params": {"target": "pane_1", "text": "fix the test"}
+    }));
+}
+
+fn agent_info(status: &str, state_change_seq: u64) -> crate::api::schema::AgentInfo {
+    serde_json::from_value(json!({
+        "terminal_id": "term_1",
+        "agent": "claude",
+        "agent_status": status,
+        "workspace_id": "workspace_1",
+        "tab_id": "tab_1",
+        "pane_id": "pane_1",
+        "focused": true,
+        "state_change_seq": state_change_seq,
+        "revision": 0,
+    }))
+    .unwrap()
+}
+
+fn reply_agent(test: &mut SocketTest, status: &str, state_change_seq: u64) {
+    let request = test.app_request();
+    assert!(
+        matches!(request.request.method, Method::AgentGet(_)),
+        "expected an agent read: {:?}",
+        request.request.method
+    );
+    reply(
+        request,
+        ResponseResult::AgentInfo {
+            agent: agent_info(status, state_change_seq),
+        },
+    );
+}
+
+fn reply_prompted(test: &mut SocketTest, state: &str) {
+    let request = test.app_request();
+    assert!(
+        matches!(request.request.method, Method::AgentPrompt(_)),
+        "expected the prompt: {:?}",
+        request.request.method
+    );
+    reply(
+        request,
+        ResponseResult::AgentPrompted {
+            agent: agent_info("idle", 1),
+            prompt_request: Some(
+                serde_json::from_value(json!({"request_id": "prompt_1", "state": state})).unwrap(),
+            ),
+        },
+    );
+}
+
+fn reply_explain(test: &mut SocketTest, rule: &str) {
+    let request = test.app_request();
+    assert!(
+        matches!(request.request.method, Method::AgentExplain(_)),
+        "expected an explain: {:?}",
+        request.request.method
+    );
+    reply(
+        request,
+        ResponseResult::AgentExplain {
+            explain: json!({"matched_rule": {"id": rule, "state": "blocked"}}),
+        },
+    );
+}
+
+fn status_changed(agent_status: AgentStatus) -> EventEnvelope {
+    EventEnvelope {
+        event: EventKind::PaneAgentStatusChanged,
+        data: EventData::PaneAgentStatusChanged {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+            agent_status,
+            agent: Some("claude".into()),
+            title: None,
+            display_agent: None,
+            state_labels: Default::default(),
+        },
+    }
+}
+
+#[test]
+fn prompt_confirmed_answers_after_the_turn_report_of_the_prompt() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "accepted");
+    // Typed, but the agent has not reported the prompt's turn: no answer yet.
+    reply_prompt_state(&mut test, "accepted", None);
+    reply_agent(&mut test, "idle", 1);
+    // The `UserPromptSubmit` hook reports the turn, which updates the pane.
+    test.hub.push(pane_updated());
+    reply_prompt_state(&mut test, "working", None);
+    let response = client.response();
+    assert_eq!(response["id"], "prompt");
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["prompt_request"]["state"], "working");
+}
+
+#[test]
+fn prompt_confirmed_names_the_dialog_that_refused_it_before_typing() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "blocked", 1);
+    let request = test.app_request();
+    assert!(matches!(request.request.method, Method::AgentPrompt(_)));
+    request
+        .respond_to
+        .send(
+            json!({
+                "id": request.request.id,
+                "error": {"code": "agent_blocked", "message": "agent pane_1 is blocked"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    reply_explain(&mut test, "trust_directory");
+    let response = client.response();
+    assert_eq!(response["error"]["code"], "agent_blocked", "{response}");
+    let message = response["error"]["message"].as_str().unwrap();
+    assert!(message.contains("\"trust_directory\" dialog"), "{message}");
+    assert!(message.contains("nothing was typed"), "{message}");
+}
+
+#[test]
+fn prompt_confirmed_fails_naming_a_dialog_that_appears_before_the_acknowledgement() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "idle", 1);
+    // An agent without turn reports: its state turning working is the acknowledgement.
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    test.hub.push(status_changed(AgentStatus::Blocked));
+    reply_agent(&mut test, "blocked", 2);
+    reply_explain(&mut test, "bash_permission_prompt");
+    let response = client.response();
+    assert_eq!(
+        response["error"]["code"], "agent_prompt_blocked",
+        "{response}"
+    );
+    let message = response["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("\"bash_permission_prompt\" dialog"),
+        "{message}"
+    );
+    assert!(message.contains("prompt_1"), "{message}");
+}
+
+#[test]
+fn prompt_confirmed_without_turn_reports_answers_when_the_agent_turns_working() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 1);
+    test.hub.push(status_changed(AgentStatus::Working));
+    reply_agent(&mut test, "working", 2);
+    let response = client.response();
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["agent"]["agent_status"], "working");
+}
+
+#[test]
+fn prompt_confirmed_without_an_acknowledgement_waits_until_the_agent_exits() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "idle", 1);
+    reply_prompted(&mut test, "accepted");
+    reply_prompt_state(&mut test, "accepted", None);
+    reply_agent(&mut test, "idle", 1);
+    // Nothing acknowledges the prompt, and no timer ends the call: only the agent's exit does.
+    test.hub.push(EventEnvelope {
+        event: EventKind::PaneExited,
+        data: EventData::PaneExited {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    reply_prompt_state(&mut test, "accepted", None);
+    let response = client.response();
+    assert_eq!(response["id"], "prompt");
+    assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
+}

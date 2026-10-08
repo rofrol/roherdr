@@ -260,6 +260,25 @@ pub struct AgentPromptTrackedParams {
     pub text: String,
 }
 
+/// Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the
+/// turn report of the prompt (Claude's `UserPromptSubmit`, Pi's turn start) for an agent that
+/// reports turns, else the agent's state turning `working`. An agent already `working` when the
+/// prompt is typed has its input open and queues it, so the written submission is the
+/// acknowledgement. A dialog (`blocked`) or an agent not ready is refused before typing, naming
+/// the dialog when screen detection recognizes it; a dialog that appears after typing, before
+/// the acknowledgement, answers `agent_prompt_blocked` without typing again. It has no timeout:
+/// it waits for one of these events, the agent's exit, or the caller closing the connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPromptConfirmedParams {
+    pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
+    pub text: String,
+}
+
 /// Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started
 /// ends, and says how it ended. It checks the request and subscribes to its changes in one
 /// step, so a turn that ended before the wait began still answers `finished`. It has no

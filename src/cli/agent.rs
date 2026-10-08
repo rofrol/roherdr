@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions,
-    AgentReadParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody, ErrorResponse, Method,
-    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentPromptConfirmedParams, AgentPromptParams, AgentPromptTrackedParams, AgentPromptTurnParams,
+    AgentPromptWaitOptions, AgentReadParams, AgentRenameParams, AgentSendKeysParams,
+    AgentStartParams, AgentTarget, AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody,
+    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -1052,6 +1052,23 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
                 "herdr: agent {target} does not report its turns; waiting for its state instead, which may match a turn that was already running"
             ),
         }
+    }
+    if !wait {
+        let response = super::send_request(&Request {
+            id: "cli:agent:prompt_confirmed".into(),
+            method: Method::AgentPromptConfirmed(AgentPromptConfirmedParams {
+                target: target.clone(),
+                prefer_workspace_id: scope.prefer_workspace_id.clone(),
+                text: text.clone(),
+            }),
+        })?;
+        if !method_unknown(&response, "agent.prompt_confirmed") {
+            return super::print_response(&response);
+        }
+        // An older server refused the method before typing anything.
+        eprintln!(
+            "herdr: the server does not confirm prompts; sending without waiting for the agent to accept it"
+        );
     }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),

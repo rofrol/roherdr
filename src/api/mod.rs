@@ -70,6 +70,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::AgentPrompt(_)
             | Method::AgentPromptTurn(_)
             | Method::AgentPromptTracked(_)
+            | Method::AgentPromptConfirmed(_)
             | Method::AgentSendKeys(_)
             | Method::PaneSplit(_)
             | Method::PaneSwap(_)
