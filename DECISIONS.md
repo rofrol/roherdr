@@ -464,3 +464,16 @@ safeguards) goes through one approval of the whole patch: a worker prepares
 it in a trusted repository (no edits under `~`, so no folder-trust
 dialog), the coordinator shows the diff and risks in one menu and applies it
 after a yes. Agents never answer trust dialogs or write trust config.
+
+## Worker runs reached through their TODO item (2026-10-08)
+
+The user objected to 18 "exited" worker lines that never went away and asked
+to reach a TODO item's worker logs from the item, several runs per item.
+Agreed with sol, MiMo and DeepSeek: the sidebar lists only live workers (an
+ended one leaves once its owner acked it; unowned ones leave when they end);
+the coordinator's line has an "Items" button with a badge, a popup of items
+with their runs (worker, times, outcome, turns, commits, questions) and an
+"Unassigned" bucket, a run opening its log; runs link to TODO items through
+`herdr worker start --item <id>` and stable `[t-xxxxxxxx]` ids that
+`scripts/todo_edit.py` mints; the item's title is stored at start because
+finished items leave TODO.md; never grouped by worker name.
