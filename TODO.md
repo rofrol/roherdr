@@ -1572,6 +1572,27 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   briefs sol, MiMo and DeepSeek with code excerpts, verifies their claims
   and writes a report (`docs/headless-workers-vs-t3code-<date>.md`): what
   T3 does better, what we do better, gaps, and follow-up items in order.
+  User 2026-10-08: "fragments? maybe modularise so a model can get a whole
+  module? ask the models"; "so check modules one by one, without context
+  rot?". Round `20261008-105941-b7f4` (sol, MiMo, DeepSeek), agreeing, so this
+  item becomes two steps:
+  1. Split `src/workers/mod.rs` (4038 lines; the god object is
+     `WorkerSupervisor`, ~50 methods) into cohesive modules of 400-900
+     lines, behaviour unchanged, tests green, re-exports keeping callers:
+     `status.rs` first (Status, questions, `apply` returning effects
+     instead of touching live processes or the registry: pure, the
+     highest review value), then `journal.rs`, `live.rs`/`process.rs`,
+     `registry.rs`, `types.rs`/`error.rs`, then `supervisor/` by verb
+     (lifecycle, commands/questions, takeover, views) and the tests next to
+     their modules. Mechanical moves only, one module per commit.
+  2. Review module by module, each in a fresh request (no accumulated
+     context): the whole module, its tests, and its neighbours'
+     signatures with their contracts (invariants, lock order, transaction
+     boundaries, failure semantics) plus a generated outline; T3 Code's
+     matching part as its interface and the relevant whole file where it
+     fits; per-model budget about 50-60k tokens of input (MiMo). Then one
+     separate integration review of cross-module paths (start, answer,
+     takeover, handoff), where atomicity bugs live (sol).
 
 ## Proposed
 
