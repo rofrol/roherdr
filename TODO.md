@@ -119,6 +119,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   to fire when a background task's notification starts a turn inside the
   same prompt's work; check the hook order for task notifications and
   derive `interrupted` only from an explicit signal.
+  Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
+  prompts confirm that the agent accepted them`, installed). Left: the
+  false `interrupted` above.
 
 - [ ] Why the "added delay is a bug signal" rule did not hold (user,
   2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
