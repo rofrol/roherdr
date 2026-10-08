@@ -495,6 +495,21 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      `lost` on replay. Then a design choice for the user (hand worker pipes
      over like PTY fds, or a small per-worker broker that outlives the
      server).
+     First step done 2026-10-08 by headless worker `w5` (`fix: a live
+     handoff no longer kills or mislabels headless workers`, `fix: stop
+     idle workers before a handoff by their exit events, without a
+     deadline`): the server refuses a handoff while any worker process
+     lives (`--force` sends SIGTERM and goes on); `herdr_live.sh install`
+     stops idle workers itself (`worker stop`, `worker wait --exit`) and
+     refuses when one is in a turn; a lock per journal so a new server
+     marks `lost` only unowned journals; a later `exited` replaces `lost`;
+     a worker that finished its turn shows that state with "ended by a
+     server restart". The coordinator sent back a 10 s server-side
+     deadline (a timer deciding the outcome, freezing the main loop).
+     Decided by the coordinator: `herdr update --handoff` keeps the
+     refusal with its instruction (no own stopping); the script's
+     `python3` use is fine. The first install of this change is not yet
+     protected (the old binary asks for the handoff).
   4. The coordinator's stopgap wait script: wake on `question`, `lost`,
      `exited`; open and seek the journal before reading the status; take
      the path from `worker status` (finding 4: it can miss a question and
