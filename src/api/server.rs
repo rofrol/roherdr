@@ -15,8 +15,8 @@ use crate::api::schema::{
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::wait::{
-    prompt_agent, prompt_agent_tracked, prompt_agent_turn, wait_agent_turn, wait_for_agent,
-    wait_for_event, wait_for_output,
+    prompt_agent, prompt_agent_confirmed, prompt_agent_tracked, prompt_agent_turn, wait_agent_turn,
+    wait_for_agent, wait_for_event, wait_for_output,
 };
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
@@ -490,6 +490,17 @@ fn handle_connection_with_stop(
             let response = prompt_agent_tracked(request_id.clone(), params, api_tx);
             finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
         }
+        Method::AgentPromptConfirmed(params) => {
+            let response = prompt_agent_confirmed(
+                request_id.clone(),
+                params,
+                &mut stream,
+                api_tx,
+                event_hub,
+                running,
+            )?;
+            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+        }
         Method::AgentWaitTurn(params) => {
             let response = wait_agent_turn(
                 request_id.clone(),
@@ -724,6 +735,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentPromptTurn(_) => "agent.prompt_turn",
         Method::AgentPromptStatus(_) => "agent.prompt_status",
         Method::AgentPromptTracked(_) => "agent.prompt_tracked",
+        Method::AgentPromptConfirmed(_) => "agent.prompt_confirmed",
         Method::AgentWaitTurn(_) => "agent.wait_turn",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",

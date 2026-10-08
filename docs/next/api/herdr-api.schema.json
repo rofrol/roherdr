@@ -1420,6 +1420,29 @@
             }
           ]
         },
+        "AgentPromptConfirmedParams": {
+          "description": "Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the\nturn report of the prompt (Claude's `UserPromptSubmit`, Pi's turn start) for an agent that\nreports turns, else the agent's state turning `working`. An agent already `working` when the\nprompt is typed has its input open and queues it, so the written submission is the\nacknowledgement. A dialog (`blocked`) or an agent not ready is refused before typing, naming\nthe dialog when screen detection recognizes it; a dialog that appears after typing, before\nthe acknowledgement, answers `agent_prompt_blocked` without typing again. It has no timeout:\nit waits for one of these events, the agent's exit, or the caller closing the connection.",
+          "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
         "AgentPromptParams": {
           "properties": {
             "prefer_workspace_id": {
@@ -7341,6 +7364,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentPromptTrackedParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.prompt_confirmed",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentPromptConfirmedParams"
             }
           },
           "required": [
