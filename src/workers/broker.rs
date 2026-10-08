@@ -21,22 +21,43 @@
 //! The socket opens nothing new to the worker: a sandbox that let it
 //! connect to a Unix socket would let it reach herdr's API socket too.
 //!
-//! Slice 2 of worker survival: output the broker could not hand to a server
-//! waits in its memory, bounded ([`OUTBOX_LIMIT`]; a line beyond it is
-//! dropped and counted). Lines already written to a server that died before
-//! storing them are lost: re-attaching does not replay them. Slice 3 adds a
-//! spool with sequence numbers that a server re-attaches from.
+//! The spool (slice 3 of worker survival): the broker gives every whole line
+//! of the worker's stdout and stderr the next broker sequence number and
+//! appends it to an append-only file next to the socket
+//! (`<worker dir>/<id>.spool`, [`spool_path`]); a line without its newline
+//! yet stays in the broker until the newline comes. A line goes to a server
+//! only once it is written and synced. The batches are group commits, not
+//! timed: one thread writes everything queued since its last sync in one
+//! write and one `fsync`, while the lines that arrive meanwhile queue for
+//! the next one. A server acknowledges each line's seq once the line's event
+//! is committed in its store (which records that seq in the same
+//! transaction), and a server that attaches names the last seq it stored:
+//! the broker sends every line after it again, then the live ones, and the
+//! server skips one its store already holds. Acknowledged lines leave the
+//! broker's memory, and the file is rewritten without them once they
+//! outweigh the rest ([`COMPACT_BYTES`]). The worker's exit is the spool's
+//! last record, so a server that finds the broker gone reads the file
+//! itself ([`read_spool`]). A spool the broker cannot write ends the worker,
+//! whose exit then names the error (`spool_error`), rather than dropping
+//! output silently; the lines go on from memory.
 //!
 //! The wire, one line per message:
 //! - broker to server: `p <pid> <protocol>` (the worker's pid and
-//!   [`PROTOCOL`], first on every connection), `o <line>` (stdout),
-//!   `e <line>` (stderr), `l <count>` (lines dropped), `x <json>` (the
-//!   worker's `exited` event, last);
-//! - server to broker: `i <line>` (one stdin line), `c` (close stdin).
+//!   [`PROTOCOL`], first on every connection), then the spool's records,
+//!   each `<tag> <seq> <payload>`: `o` (a stdout line), `e` (a stderr line),
+//!   `l <seq> <count>` (lines dropped while the spool was full), `x <seq>
+//!   <json>` (the worker's `exited` event, last);
+//! - broker to server, right after an attach: `s <seq>`, the last seq it
+//!   had dropped as acknowledged; past the attach's seq it proves a gap;
+//! - server to broker: `a <seq>` (attach, first: send the records after
+//!   `seq`), `k <seq>` (every record up to `seq` is stored), `i <line>` (one
+//!   stdin line), `c` (close stdin).
 //!
-//! A line without its newline (a peer that died mid-write) is dropped.
+//! The spool file holds the same records. A line without its newline (a
+//! peer that died mid-write, a write cut short) is dropped.
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -56,11 +77,19 @@ const SPEC_ENV: &str = "HERDR_WORKER_BROKER_SPEC";
 /// worker runs, with the worker's pid; or why it could not start.
 const READY: &str = "herdr-worker-broker ready ";
 const FAILED: &str = "herdr-worker-broker failed ";
-/// The output the broker keeps while no server reads it, in bytes.
-const OUTBOX_LIMIT: usize = 64 << 20;
+/// The unacknowledged output the broker keeps, in bytes, in its memory and
+/// its spool. Beyond it, while no server stores the lines, a line is dropped
+/// and counted (an `l` record), so a worker nobody reads cannot fill the
+/// disk; 64 MiB holds hours of a worker's stream-json.
+const SPOOL_LIMIT: usize = 64 << 20;
+/// The acknowledged bytes still in the spool file that make the broker
+/// rewrite it with only the unacknowledged records, once they also outweigh
+/// those: the file stays under twice [`SPOOL_LIMIT`] plus this, and is not
+/// rewritten for every acknowledgement.
+const COMPACT_BYTES: u64 = 1 << 20;
 /// The wire's version, in the greeting: a broker of another herdr build
 /// that speaks another one is not re-attached to.
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Spec {
@@ -70,6 +99,11 @@ struct Spec {
     cwd: PathBuf,
     /// The broker's stderr, removed at its end when nothing went wrong.
     log: PathBuf,
+}
+
+/// The spool of the broker serving `socket`.
+pub(super) fn spool_path(socket: &Path) -> PathBuf {
+    socket.with_extension("spool")
 }
 
 /// How a server starts a broker: herdr itself, or in tests the test binary
@@ -139,7 +173,7 @@ pub(super) fn start(
         Some(Err(error)) => return Err(abandon(process, error)),
         None => return Err(abandon(process, std::io::Error::other("no broker stdout"))),
     };
-    let link = match connect(socket) {
+    let link = match connect(socket, 0) {
         Ok(link) => link,
         Err(error) => return Err(abandon(process, error)),
     };
@@ -183,45 +217,106 @@ fn abandon(mut process: Child, error: std::io::Error) -> std::io::Error {
     error
 }
 
-/// A connection to a broker, after its greeting.
+/// A connection to a broker, attached.
 pub(super) struct Link {
     /// The worker's pid, as the broker greeted.
     pub(super) pid: u32,
+    /// The last seq the broker had dropped as acknowledged when this
+    /// server attached: it replays only the records after it.
+    pub(super) floor: u64,
     reader: BufReader<UnixStream>,
 }
 
-/// Connects to the broker serving `socket`. Fails when no broker serves it
-/// (it ended, and with it its worker).
-pub(super) fn connect(socket: &Path) -> std::io::Result<Link> {
-    let stream = UnixStream::connect(socket)?;
+/// Connects to the broker serving `socket` and attaches after `after`, the
+/// last broker seq this server's store holds: the broker answers with the
+/// last seq it dropped ([`Link::floor`], see [`attach_gap`]) and sends the
+/// records after `after`. Fails when no broker serves it (it ended, and with
+/// it its worker); a broker of another [`PROTOCOL`] fails with
+/// [`std::io::ErrorKind::Unsupported`].
+pub(super) fn connect(socket: &Path, after: u64) -> std::io::Result<Link> {
+    attach(UnixStream::connect(socket)?, after)
+}
+
+/// [`connect`] on a connected stream.
+fn attach(stream: UnixStream, after: u64) -> std::io::Result<Link> {
     let mut reader = BufReader::new(stream);
     let greeting = read_message(&mut reader)?
         .ok_or_else(|| std::io::Error::other("the worker broker closed the connection"))?;
-    let pid = greeted_pid(&greeting).ok_or_else(|| {
-        std::io::Error::other(format!(
-            "unexpected broker greeting: {}",
-            String::from_utf8_lossy(&greeting)
-        ))
-    })?;
-    Ok(Link { pid, reader })
+    let pid = greeted_pid(&greeting)?;
+    reader
+        .get_mut()
+        .write_all(format!("a {after}\n").as_bytes())?;
+    let attached = read_message(&mut reader)?
+        .ok_or_else(|| std::io::Error::other("the worker broker closed the connection"))?;
+    let floor = attached
+        .strip_prefix(b"s ")
+        .and_then(parse_seq)
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "unexpected broker answer to an attach: {}",
+                String::from_utf8_lossy(&attached)
+            ))
+        })?;
+    Ok(Link { pid, floor, reader })
 }
 
-/// The worker's pid in a greeting of this [`PROTOCOL`].
-fn greeted_pid(greeting: &[u8]) -> Option<u32> {
-    let (pid, protocol) = std::str::from_utf8(greeting.strip_prefix(b"p ")?)
-        .ok()?
-        .split_once(' ')?;
-    (protocol.parse() == Ok(PROTOCOL)).then(|| pid.parse().ok())?
+/// The worker's pid in a greeting of this [`PROTOCOL`]; a greeting of
+/// another one is `Unsupported`, naming it.
+fn greeted_pid(greeting: &[u8]) -> std::io::Result<u32> {
+    let unexpected = || {
+        std::io::Error::other(format!(
+            "unexpected broker greeting: {}",
+            String::from_utf8_lossy(greeting)
+        ))
+    };
+    let (pid, protocol) = std::str::from_utf8(greeting.strip_prefix(b"p ").ok_or_else(unexpected)?)
+        .map_err(|_| unexpected())?
+        .split_once(' ')
+        .ok_or_else(unexpected)?;
+    let pid = pid.parse().map_err(|_| unexpected())?;
+    match protocol.parse::<u32>() {
+        Ok(PROTOCOL) => Ok(pid),
+        Ok(protocol) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "the worker's broker (worker pid {pid}) speaks wire protocol {protocol}, this \
+                 server {PROTOCOL}{}",
+                if protocol < 2 {
+                    "; it keeps no output spool, so what it read while no server was attached \
+                     cannot be replayed"
+                } else {
+                    ""
+                }
+            ),
+        )),
+        Err(_) => Err(unexpected()),
+    }
+}
+
+/// Why a re-attach does not prove the worker's output whole: the broker had
+/// dropped records up to `floor` as acknowledged, past `after`, the last one
+/// this server's store holds. `None` when it replays every record after
+/// `after`.
+pub(super) fn attach_gap(floor: u64, after: u64) -> Option<String> {
+    (floor > after).then(|| {
+        format!(
+            "the broker replays from seq {}, but the store holds only up to seq {after}: \
+             lines {}..={floor} are missing",
+            floor + 1,
+            after + 1
+        )
+    })
 }
 
 impl Link {
-    /// The worker's stdin, and its output.
-    pub(super) fn split(self) -> std::io::Result<(UnixStream, Messages)> {
-        let input = self.reader.get_ref().try_clone()?;
+    /// What writes to the broker, and the worker's output.
+    pub(super) fn split(self) -> std::io::Result<(Writer, Messages)> {
+        let writer = Writer(Arc::new(Mutex::new(self.reader.get_ref().try_clone()?)));
         Ok((
-            input,
+            writer.clone(),
             Messages {
                 reader: self.reader,
+                writer,
             },
         ))
     }
@@ -238,12 +333,96 @@ fn read_message(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(line))
 }
 
+fn parse_seq(text: &[u8]) -> Option<u64> {
+    std::str::from_utf8(text).ok()?.trim().parse().ok()
+}
+
+/// One spool record: `<tag> <seq> <payload>` and its newline.
+fn record(tag: u8, seq: u64, payload: &[u8]) -> Vec<u8> {
+    let mut record = Vec::with_capacity(payload.len() + 24);
+    record.extend_from_slice(&[tag, b' ']);
+    record.extend_from_slice(seq.to_string().as_bytes());
+    record.push(b' ');
+    record.extend_from_slice(payload);
+    record.push(b'\n');
+    record
+}
+
+/// A record without its newline, with its seq; `None` for what is not one.
+fn parse_record(line: &[u8]) -> Option<(u64, Message)> {
+    let (&tag, rest) = line.split_first()?;
+    let rest = rest.strip_prefix(b" ")?;
+    let (seq, payload) = match rest.iter().position(|byte| *byte == b' ') {
+        Some(space) => (&rest[..space], &rest[space + 1..]),
+        None => (rest, &b""[..]),
+    };
+    let seq = parse_seq(seq)?;
+    let text = || String::from_utf8_lossy(payload).into_owned();
+    let message = match tag {
+        b'o' => Message::Out(text()),
+        b'e' => Message::Err(text()),
+        b'l' => Message::Lost(parse_seq(payload)?),
+        b'x' => Message::Exit(
+            serde_json::from_slice(payload)
+                .unwrap_or_else(|_| json!({"type": "exited", "code": null})),
+        ),
+        _ => return None,
+    };
+    Some((seq, message))
+}
+
+/// What a spool holds after a seq ([`read_spool`]).
+#[derive(Debug, PartialEq)]
+pub(super) struct SpoolRead {
+    /// The whole records after the seq, oldest first.
+    pub(super) records: Vec<(u64, Message)>,
+    /// Why they are not every line after the seq: a seq missing, a damaged
+    /// record or a last one cut short. `None` when continuity is proven.
+    pub(super) gap: Option<String>,
+}
+
+/// The records of the spool at `path` after `after`, the last seq the
+/// store holds, with whether they continue it without a gap. For a server
+/// that finds the broker gone.
+pub(super) fn read_spool(path: &Path, after: u64) -> std::io::Result<SpoolRead> {
+    let bytes = std::fs::read(path)?;
+    let mut records = Vec::new();
+    let mut gap = None;
+    let mut expected = after + 1;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let Some(line) = line.strip_suffix(b"\n") else {
+            gap.get_or_insert_with(|| "the spool ends in a record cut short".to_owned());
+            break;
+        };
+        let Some((seq, message)) = parse_record(line) else {
+            gap.get_or_insert_with(|| "the spool holds a damaged record".to_owned());
+            continue;
+        };
+        if seq < expected {
+            continue;
+        }
+        if seq > expected {
+            gap.get_or_insert_with(|| {
+                format!(
+                    "the spool goes on at seq {seq} after seq {}: lines {expected}..={} are \
+                     missing",
+                    expected - 1,
+                    seq - 1
+                )
+            });
+        }
+        expected = seq + 1;
+        records.push((seq, message));
+    }
+    Ok(SpoolRead { records, gap })
+}
+
 /// What a broker sends a server.
 #[derive(Debug, PartialEq)]
 pub(super) enum Message {
     Out(String),
     Err(String),
-    /// Lines dropped while no server read them.
+    /// Lines dropped while the spool was full.
     Lost(u64),
     /// The worker's `exited` event; the last message.
     Exit(Value),
@@ -252,99 +431,301 @@ pub(super) enum Message {
 /// The output of a worker, from its broker.
 pub(super) struct Messages {
     reader: BufReader<UnixStream>,
+    writer: Writer,
 }
 
 impl Messages {
-    /// The next message; `None` once the connection ended (the broker died,
-    /// or this connection was cut).
-    pub(super) fn next(&mut self) -> Option<Message> {
+    /// The next message with its broker seq; `None` once the connection
+    /// ended (the broker died, or this connection was cut).
+    pub(super) fn next(&mut self) -> Option<(u64, Message)> {
         loop {
             let line = read_message(&mut self.reader).ok()??;
-            let text = |payload: &[u8]| String::from_utf8_lossy(payload).into_owned();
-            let message = match line.split_first() {
-                Some((b'o', rest)) => Message::Out(text(rest.get(1..).unwrap_or_default())),
-                Some((b'e', rest)) => Message::Err(text(rest.get(1..).unwrap_or_default())),
-                Some((b'l', rest)) => match text(rest).trim().parse() {
-                    Ok(count) => Message::Lost(count),
-                    Err(_) => continue,
-                },
-                Some((b'x', rest)) => match serde_json::from_slice(rest) {
-                    Ok(exited) => Message::Exit(exited),
-                    Err(_) => Message::Exit(json!({"type": "exited", "code": null})),
-                },
-                _ => continue,
-            };
-            return Some(message);
-        }
-    }
-}
-
-/// Writes one stdin line (`line` ends with its newline) in one write, so a
-/// failed write leaves at most a cut line, which the broker drops.
-pub(super) fn write_input(stream: &mut UnixStream, line: &str) -> std::io::Result<()> {
-    let mut message = Vec::with_capacity(line.len() + 2);
-    message.extend_from_slice(b"i ");
-    message.extend_from_slice(line.as_bytes());
-    if !message.ends_with(b"\n") {
-        message.push(b'\n');
-    }
-    stream.write_all(&message).and_then(|()| stream.flush())
-}
-
-/// Closes the worker's stdin; it then ends once it read what it was sent.
-pub(super) fn close_input(stream: &mut UnixStream) {
-    let _ = stream.write_all(b"c\n");
-}
-
-/// The broker's output waiting for a server.
-#[derive(Default)]
-struct Outbox {
-    queue: VecDeque<Vec<u8>>,
-    bytes: usize,
-    /// Lines dropped since the last `l` message.
-    lost: u64,
-    /// The attached server, and how many have attached.
-    conn: Option<Arc<UnixStream>>,
-    generation: u64,
-}
-
-impl Outbox {
-    /// Queues one message unless the outbox is full; the count of dropped
-    /// lines goes first once there is room again.
-    fn push(&mut self, message: Vec<u8>, limit: usize) {
-        if self.lost > 0 {
-            let note = format!("l {}\n", self.lost).into_bytes();
-            if self.bytes + note.len() + message.len() > limit {
-                self.lost += 1;
-                return;
+            if let Some(record) = parse_record(&line) {
+                return Some(record);
             }
-            self.lost = 0;
-            self.bytes += note.len();
-            self.queue.push_back(note);
         }
-        if self.bytes + message.len() > limit {
+    }
+
+    /// Tells the broker every record up to `seq` is stored. A failed write
+    /// is a cut connection, which [`Self::next`] reports.
+    pub(super) fn ack(&self, seq: u64) {
+        let _ = self.writer.send(format!("k {seq}\n").as_bytes());
+    }
+}
+
+/// Writes to a worker's broker: stdin lines and acknowledgements, from
+/// several threads, each message in one write under one lock.
+#[derive(Clone)]
+pub(super) struct Writer(Arc<Mutex<UnixStream>>);
+
+impl Writer {
+    fn send(&self, message: &[u8]) -> std::io::Result<()> {
+        let mut stream = lock(&self.0);
+        stream.write_all(message).and_then(|()| stream.flush())
+    }
+
+    /// Writes one stdin line (`line` ends with its newline) in one write,
+    /// so a failed write leaves at most a cut line, which the broker drops.
+    pub(super) fn write_input(&self, line: &str) -> std::io::Result<()> {
+        let mut message = Vec::with_capacity(line.len() + 2);
+        message.extend_from_slice(b"i ");
+        message.extend_from_slice(line.as_bytes());
+        if !message.ends_with(b"\n") {
+            message.push(b'\n');
+        }
+        self.send(&message)
+    }
+
+    /// Closes the worker's stdin; it then ends once it read what it was sent.
+    pub(super) fn close_input(&self) {
+        let _ = self.send(b"c\n");
+    }
+
+    /// Cuts the connection, as a server that died would.
+    #[cfg(test)]
+    pub(super) fn shutdown(&self) {
+        let _ = lock(&self.0).shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// The records a broker keeps: those not written to the spool file yet
+/// (`pending`), and those written and synced that no server acknowledged
+/// (`durable`), each in seq order, the seqs contiguous.
+#[derive(Default)]
+struct Spool {
+    /// The seq of the last record queued.
+    seq: u64,
+    pending: Vec<(u64, Vec<u8>)>,
+    pending_bytes: usize,
+    durable: VecDeque<(u64, Vec<u8>)>,
+    durable_bytes: usize,
+    /// The bytes in the spool file, acknowledged records included.
+    file_bytes: u64,
+    /// The last seq a server acknowledged.
+    acked: u64,
+    /// Lines dropped since the last `l` record.
+    lost: u64,
+    /// Why the file could not be written; from then on records are only
+    /// kept in memory.
+    failed: Option<String>,
+    /// The exit is queued: nothing comes after it.
+    closed: bool,
+}
+
+/// Records taken for one write of the spool file.
+struct Batch {
+    records: Vec<(u64, Vec<u8>)>,
+    /// The unacknowledged records already written, when the file is
+    /// rewritten with only them before `records`.
+    kept: Option<Vec<u8>>,
+    /// False once the file failed: the records are only published.
+    write: bool,
+}
+
+impl Batch {
+    fn is_last(&self) -> bool {
+        self.records
+            .last()
+            .is_some_and(|(_, record)| record.starts_with(b"x "))
+    }
+}
+
+impl Spool {
+    fn bytes(&self) -> usize {
+        self.pending_bytes + self.durable_bytes
+    }
+
+    fn push(&mut self, tag: u8, payload: &[u8]) {
+        self.seq += 1;
+        let record = record(tag, self.seq, payload);
+        self.pending_bytes += record.len();
+        self.pending.push((self.seq, record));
+    }
+
+    /// Queues one line unless the spool is full; the count of dropped lines
+    /// goes first once there is room again.
+    fn queue(&mut self, tag: u8, payload: &[u8], limit: usize) {
+        if self.closed {
+            return;
+        }
+        let mut seq = self.seq;
+        let note = (self.lost > 0).then(|| {
+            seq += 1;
+            record(b'l', seq, self.lost.to_string().as_bytes())
+        });
+        let size = note.as_ref().map_or(0, Vec::len) + record(tag, seq + 1, payload).len();
+        if self.bytes() + size > limit {
             self.lost += 1;
             return;
         }
-        self.bytes += message.len();
-        self.queue.push_back(message);
+        if note.is_some() {
+            self.push(b'l', self.lost.to_string().as_bytes());
+            self.lost = 0;
+        }
+        self.push(tag, payload);
     }
 
-    /// Queues the last message whatever the limit, after the dropped count.
-    fn push_last(&mut self, message: Vec<u8>) {
-        if self.lost > 0 {
-            let note = format!("l {}\n", self.lost).into_bytes();
-            self.lost = 0;
-            self.bytes += note.len();
-            self.queue.push_back(note);
+    /// Queues the last record whatever the limit, after the dropped count.
+    fn queue_last(&mut self, tag: u8, payload: &[u8]) {
+        if self.closed {
+            return;
         }
-        self.bytes += message.len();
-        self.queue.push_back(message);
+        if self.lost > 0 {
+            self.push(b'l', self.lost.to_string().as_bytes());
+            self.lost = 0;
+        }
+        self.push(tag, payload);
+        self.closed = true;
+    }
+
+    /// Whether the acknowledged records in the file are due to go.
+    fn should_compact(&self) -> bool {
+        let durable = self.durable_bytes as u64;
+        let stale = self.file_bytes.saturating_sub(durable);
+        stale >= COMPACT_BYTES && stale >= durable
+    }
+
+    /// The next write: every pending record, and the file's rewrite when it
+    /// is due; `None` when there is nothing to do.
+    fn next_batch(&mut self) -> Option<Batch> {
+        let write = self.failed.is_none();
+        let rewrite = write && self.should_compact();
+        if self.pending.is_empty() && !rewrite {
+            return None;
+        }
+        let kept = rewrite.then(|| {
+            self.durable
+                .iter()
+                .flat_map(|(_, record)| record.iter().copied())
+                .collect()
+        });
+        Some(Batch {
+            records: std::mem::take(&mut self.pending),
+            kept,
+            write,
+        })
+    }
+
+    /// Publishes a batch once its write ended with `result`. Returns the
+    /// error when this write is the one that failed the file.
+    fn written(&mut self, batch: Batch, result: std::io::Result<()>) -> Option<String> {
+        let mut failed = None;
+        if batch.write {
+            match result {
+                Ok(()) => {
+                    if let Some(kept) = &batch.kept {
+                        self.file_bytes = kept.len() as u64;
+                    }
+                    self.file_bytes += batch
+                        .records
+                        .iter()
+                        .map(|(_, record)| record.len() as u64)
+                        .sum::<u64>();
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    self.failed = Some(error.clone());
+                    failed = Some(error);
+                }
+            }
+        }
+        for (seq, record) in batch.records {
+            self.pending_bytes -= record.len();
+            if seq > self.acked {
+                self.durable_bytes += record.len();
+                self.durable.push_back((seq, record));
+            }
+        }
+        failed
+    }
+
+    /// Drops every record up to `seq`, which a server stored.
+    fn ack(&mut self, seq: u64) {
+        if seq <= self.acked {
+            return;
+        }
+        self.acked = seq;
+        while let Some((front, record)) = self.durable.front() {
+            if *front > seq {
+                break;
+            }
+            self.durable_bytes -= record.len();
+            self.durable.pop_front();
+        }
+    }
+
+    /// The first published record after `seq`.
+    fn after(&self, seq: u64) -> Option<&(u64, Vec<u8>)> {
+        let first = self.durable.front()?.0;
+        let index = (seq + 1).saturating_sub(first);
+        self.durable.get(usize::try_from(index).ok()?)
     }
 }
 
+/// The spool file, written by one thread.
+struct SpoolFile {
+    path: PathBuf,
+    file: File,
+}
+
+impl SpoolFile {
+    /// Creates the spool at `path`, empty.
+    fn create(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+        })
+    }
+
+    /// Appends a batch and syncs it; a rewrite goes to a new file that
+    /// replaces the old one once it is synced, so a crash leaves one or the
+    /// other whole.
+    fn write(&mut self, batch: &Batch) -> std::io::Result<()> {
+        let mut bytes = Vec::new();
+        for (_, record) in &batch.records {
+            bytes.extend_from_slice(record);
+        }
+        match &batch.kept {
+            Some(kept) => {
+                let temp = self.path.with_extension("spool-new");
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&temp)?;
+                file.write_all(kept)?;
+                file.write_all(&bytes)?;
+                file.sync_data()?;
+                std::fs::rename(&temp, &self.path)?;
+                self.file = file;
+            }
+            None => {
+                self.file.write_all(&bytes)?;
+                self.file.sync_data()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The broker's state, under one lock.
+#[derive(Default)]
+struct State {
+    spool: Spool,
+    /// The attached server, and how many have attached.
+    conn: Option<Arc<UnixStream>>,
+    generation: u64,
+    /// The last seq sent to the attached server.
+    cursor: u64,
+}
+
 struct Shared {
-    outbox: Mutex<Outbox>,
+    state: Mutex<State>,
     changed: Condvar,
     stdin: Mutex<Option<ChildStdin>>,
     pid: u32,
@@ -392,6 +773,7 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
         _ => {}
     }
     let listener = UnixListener::bind(&spec.socket).map_err(context("socket"))?;
+    let spool = SpoolFile::create(&spool_path(&spec.socket)).map_err(context("spool"))?;
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -418,7 +800,7 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
         return Err(std::io::Error::other("worker pipes missing"));
     };
     let shared = Arc::new(Shared {
-        outbox: Mutex::new(Outbox::default()),
+        state: Mutex::new(State::default()),
         changed: Condvar::new(),
         stdin: Mutex::new(Some(stdin)),
         pid,
@@ -427,6 +809,9 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
     crate::thread_spawn::spawn_named("broker-accept", move || accept(&accepting, &listener))?;
     let errors = Arc::clone(&shared);
     crate::thread_spawn::spawn_named("broker-stderr", move || pump(&errors, stderr, b'e'))?;
+    let flushing = Arc::clone(&shared);
+    let flusher =
+        crate::thread_spawn::spawn_named("broker-spool", move || flush(&flushing, spool))?;
     let sending = Arc::clone(&shared);
     let sender = crate::thread_spawn::spawn_named("broker-send", move || send(&sending))?;
     report(&format!("{READY}{pid}"));
@@ -435,7 +820,7 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
     // EOF: the worker closed stdout, so it exited or is about to; closing
     // its stdin lets one that waits for it end.
     lock(&shared.stdin).take();
-    let exited = match child.wait() {
+    let mut exited = match child.wait() {
         Ok(status) => json!({
             "type": "exited",
             "code": status.code(),
@@ -444,13 +829,19 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
         Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
     };
     guard.disarm();
-    let mut last = b"x ".to_vec();
-    last.extend_from_slice(exited.to_string().as_bytes());
-    last.push(b'\n');
-    lock(&shared.outbox).push_last(last);
+    {
+        let mut state = lock(&shared.state);
+        if let Some(error) = &state.spool.failed {
+            exited["spool_error"] = Value::String(error.clone());
+        }
+        state.spool.queue_last(b'x', exited.to_string().as_bytes());
+    }
     shared.changed.notify_all();
     // Until a server took the exit: one that attaches later still gets it.
+    let _ = flusher.join();
     let _ = sender.join();
+    // The spool stays: the server that stores the exit removes it, and one
+    // that died before that reads it.
     let _ = std::fs::remove_file(&spec.socket);
     if std::fs::metadata(&spec.log).is_ok_and(|log| log.len() == 0) {
         let _ = std::fs::remove_file(&spec.log);
@@ -458,7 +849,8 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Queues each line of a worker's stream, tagged.
+/// Queues each whole line of a worker's stream, tagged; a last line
+/// without its newline is queued at the stream's end.
 fn pump(shared: &Shared, stream: impl Read, tag: u8) {
     let mut reader = BufReader::new(stream);
     loop {
@@ -473,45 +865,94 @@ fn pump(shared: &Shared, stream: impl Read, tag: u8) {
                 line.pop();
             }
         }
-        let mut message = Vec::with_capacity(line.len() + 3);
-        message.extend_from_slice(&[tag, b' ']);
-        message.extend_from_slice(&line);
-        message.push(b'\n');
-        lock(&shared.outbox).push(message, OUTBOX_LIMIT);
+        lock(&shared.state).spool.queue(tag, &line, SPOOL_LIMIT);
         shared.changed.notify_all();
     }
 }
 
-/// Attaches each connecting server in turn, greeting it with the worker's
-/// pid; the previous connection is cut.
+/// Writes the queued records to the spool file in batches, then publishes
+/// them. A write that fails ends the worker; its records, and those after,
+/// are published unwritten. Returns once the exit is published.
+fn flush(shared: &Shared, mut file: SpoolFile) {
+    loop {
+        let batch = {
+            let mut state = lock(&shared.state);
+            loop {
+                if let Some(batch) = state.spool.next_batch() {
+                    break batch;
+                }
+                state = shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        };
+        let result = if batch.write {
+            file.write(&batch)
+        } else {
+            Ok(())
+        };
+        let last = batch.is_last();
+        let failed = lock(&shared.state).spool.written(batch, result);
+        shared.changed.notify_all();
+        if let Some(error) = failed {
+            eprintln!(
+                "herdr worker broker: cannot write the output spool, ending the worker: {error}"
+            );
+            let _ =
+                crate::platform::signal_process_group(shared.pid, crate::platform::Signal::Kill);
+        }
+        if last {
+            return;
+        }
+    }
+}
+
+/// Greets each connecting server with the worker's pid; it attaches with
+/// its first message ([`receive`]).
 fn accept(shared: &Arc<Shared>, listener: &UnixListener) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         if writeln!(stream, "p {} {PROTOCOL}", shared.pid).is_err() {
             continue;
         }
-        let stream = Arc::new(stream);
-        let previous = {
-            let mut outbox = lock(&shared.outbox);
-            outbox.generation += 1;
-            outbox.conn.replace(Arc::clone(&stream))
-        };
-        shared.changed.notify_all();
-        if let Some(previous) = previous {
-            let _ = previous.shutdown(std::net::Shutdown::Both);
-        }
         let receiving = Arc::clone(shared);
+        let stream = Arc::new(stream);
         if let Err(error) = crate::thread_spawn::spawn_named("broker-input", move || {
-            receive(&receiving, &stream);
+            receive(&receiving, stream);
         }) {
             eprintln!("herdr worker broker: no input thread: {error}");
         }
     }
 }
 
-/// Writes each stdin line a server sends to the worker.
-fn receive(shared: &Shared, stream: &UnixStream) {
-    let mut reader = BufReader::new(stream);
+/// Attaches a server once it named the last seq it stored, cutting the
+/// previous one, then takes its messages: stdin lines for the worker and
+/// acknowledgements.
+fn receive(shared: &Shared, stream: Arc<UnixStream>) {
+    let mut reader = BufReader::new(&*stream);
+    let after = match read_message(&mut reader) {
+        Ok(Some(message)) => message.strip_prefix(b"a ").and_then(parse_seq),
+        _ => None,
+    };
+    let Some(after) = after else { return };
+    let previous = {
+        let mut state = lock(&shared.state);
+        // Under the lock, so no record is dropped between the answer and
+        // the attach: the server checks it replays everything after `after`.
+        let floor = state.spool.acked;
+        if writeln!(&*stream, "s {floor}").is_err() {
+            return;
+        }
+        state.spool.ack(after);
+        state.generation += 1;
+        state.cursor = after;
+        state.conn.replace(Arc::clone(&stream))
+    };
+    shared.changed.notify_all();
+    if let Some(previous) = previous {
+        let _ = previous.shutdown(std::net::Shutdown::Both);
+    }
     while let Ok(Some(message)) = read_message(&mut reader) {
         if let Some(line) = message.strip_prefix(b"i ") {
             let mut stdin = lock(&shared.stdin);
@@ -524,48 +965,50 @@ fn receive(shared: &Shared, stream: &UnixStream) {
                 // The worker is gone; its exit follows.
                 stdin.take();
             }
+        } else if let Some(seq) = message.strip_prefix(b"k ").and_then(parse_seq) {
+            lock(&shared.state).spool.ack(seq);
+            // The flusher may rewrite the file now.
+            shared.changed.notify_all();
         } else if message == b"c" {
             lock(&shared.stdin).take();
         }
     }
 }
 
-/// Sends the outbox to the attached server, oldest first; a message whose
-/// write failed stays first for the next server. Returns once the exit
-/// went out.
+/// Sends the published records after the attached server's cursor, oldest
+/// first; a record whose write failed is sent again to the next server.
+/// Returns once the exit went out.
 fn send(shared: &Shared) {
     loop {
-        let (conn, generation, message) = {
-            let mut outbox = lock(&shared.outbox);
+        let (conn, generation, seq, message) = {
+            let mut state = lock(&shared.state);
             loop {
-                if let Some(conn) = outbox.conn.clone() {
-                    if let Some(message) = outbox.queue.pop_front() {
-                        break (conn, outbox.generation, message);
+                if let Some(conn) = state.conn.clone() {
+                    if let Some((seq, message)) = state.spool.after(state.cursor) {
+                        break (conn, state.generation, *seq, message.clone());
                     }
                 }
-                outbox = shared
+                state = shared
                     .changed
-                    .wait(outbox)
+                    .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
         };
         let last = message.starts_with(b"x ");
         let written = (&*conn).write_all(&message).and_then(|()| (&*conn).flush());
-        let mut outbox = lock(&shared.outbox);
+        let mut state = lock(&shared.state);
+        if state.generation != generation {
+            continue;
+        }
         match written {
             Ok(()) => {
-                outbox.bytes = outbox.bytes.saturating_sub(message.len());
+                state.cursor = seq;
                 if last {
                     let _ = conn.shutdown(std::net::Shutdown::Write);
                     return;
                 }
             }
-            Err(_) => {
-                outbox.queue.push_front(message);
-                if outbox.generation == generation {
-                    outbox.conn = None;
-                }
-            }
+            Err(_) => state.conn = None,
         }
     }
 }
@@ -681,32 +1124,289 @@ pub(super) mod tests {
         assert!(crate::platform::signal_process_group(pid, crate::platform::Signal::Kill).unwrap());
     }
 
+    /// Writes every batch the spool has to `file`, as the flusher does.
+    fn flush_all(spool: &mut Spool, file: &mut SpoolFile) -> Option<String> {
+        let mut failed = None;
+        while let Some(batch) = spool.next_batch() {
+            let result = if batch.write {
+                file.write(&batch)
+            } else {
+                Ok(())
+            };
+            failed = failed.or(spool.written(batch, result));
+        }
+        failed
+    }
+
+    fn sent(spool: &Spool, mut cursor: u64) -> Vec<String> {
+        let mut sent = Vec::new();
+        while let Some((seq, record)) = spool.after(cursor) {
+            cursor = *seq;
+            sent.push(String::from_utf8_lossy(record).trim_end().to_owned());
+        }
+        sent
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-spool-{name}-{}-{}",
+            std::process::id(),
+            crate::workers::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("w1.spool")
+    }
+
     #[test]
-    fn a_full_outbox_drops_lines_and_counts_them_before_the_next() {
-        let mut outbox = Outbox::default();
-        outbox.push(b"o one\n".to_vec(), 12);
-        outbox.push(b"o two\n".to_vec(), 12);
-        outbox.push(b"o three\n".to_vec(), 12);
-        assert_eq!(outbox.lost, 1);
-        let sent = outbox.queue.pop_front().unwrap();
-        outbox.bytes -= sent.len();
-        outbox.push(b"o 4\n".to_vec(), 12);
+    fn a_full_spool_drops_lines_and_counts_them_before_the_next() {
+        let mut spool = Spool::default();
+        spool.queue(b'o', b"one", 16);
+        spool.queue(b'o', b"two", 16);
+        spool.queue(b'o', b"three", 16);
+        assert_eq!(spool.lost, 1);
+        let batch = spool.next_batch().unwrap();
+        spool.written(batch, Ok(()));
+        spool.ack(1);
+        spool.queue(b'o', b"4", 16);
         // No room for the count and the line together: both wait.
-        assert_eq!(outbox.lost, 2);
-        outbox.push_last(b"x {}\n".to_vec());
-        let queued: Vec<&[u8]> = outbox.queue.iter().map(Vec::as_slice).collect();
-        assert_eq!(queued, [&b"o two\n"[..], b"l 2\n", b"x {}\n"]);
+        assert_eq!(spool.lost, 2);
+        spool.queue_last(b'x', b"{}");
+        spool.queue(b'e', b"after the exit", 1 << 20);
+        let batch = spool.next_batch().unwrap();
+        assert!(batch.is_last());
+        spool.written(batch, Ok(()));
+        assert_eq!(sent(&spool, 0), ["o 2 two", "l 3 2", "x 4 {}"]);
+    }
+
+    #[test]
+    fn records_go_out_after_the_attached_seq_once_written_and_the_file_replays_them() {
+        let path = scratch("replay");
+        let mut file = SpoolFile::create(&path).unwrap();
+        let mut spool = Spool::default();
+        spool.queue(b'o', b"{\"type\":\"system\"}", SPOOL_LIMIT);
+        spool.queue(b'e', b"warning", SPOOL_LIMIT);
+        // Queued, not written: nothing goes out yet.
+        assert!(sent(&spool, 0).is_empty());
+        assert!(flush_all(&mut spool, &mut file).is_none());
+        spool.queue(b'o', b"partial", SPOOL_LIMIT);
+        assert_eq!(sent(&spool, 0).len(), 2);
+        assert!(flush_all(&mut spool, &mut file).is_none());
+        // A server that stored seq 1 attaches: 2 and 3 come again, no gap.
+        spool.ack(1);
+        assert_eq!(sent(&spool, 1), ["e 2 warning", "o 3 partial"]);
+        // One whose store holds 2 (a crash between its commit and its
+        // ack) gets only 3.
+        assert_eq!(sent(&spool, 2), ["o 3 partial"]);
+        // The file holds them all, and a server that finds the broker gone
+        // reads them, continuity proven.
+        assert_eq!(
+            read_spool(&path, 1).unwrap(),
+            SpoolRead {
+                records: vec![
+                    (2, Message::Err("warning".into())),
+                    (3, Message::Out("partial".into()))
+                ],
+                gap: None,
+            }
+        );
+        assert_eq!(read_spool(&path, 0).unwrap().records.len(), 3);
+        assert_eq!(read_spool(&path, 3).unwrap().records, []);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn spool_with(name: &str, content: &[u8]) -> PathBuf {
+        let path = scratch(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_spool_proves_continuity_only_without_a_missing_damaged_or_cut_record() {
+        // Compacted: it starts after acknowledged records, at most one past
+        // the store's seq.
+        let path = spool_with("whole", b"o 5 five\no 6 six\n");
+        let read = read_spool(&path, 4).unwrap();
+        assert_eq!(read.gap, None);
+        assert_eq!(read.records.len(), 2);
+        assert_eq!(read_spool(&path, 7).unwrap().gap, None);
+
+        // It starts after the store's seq: lines 3 and 4 are gone.
+        let gap = read_spool(&path, 2).unwrap();
+        assert_eq!(
+            gap.gap.as_deref(),
+            Some("the spool goes on at seq 5 after seq 2: lines 3..=4 are missing")
+        );
+        // What is there is still recorded.
+        assert_eq!(gap.records.len(), 2);
+
+        let path = spool_with("jump", b"o 1 one\no 3 three\n");
+        assert!(read_spool(&path, 0)
+            .unwrap()
+            .gap
+            .unwrap()
+            .contains("lines 2..=2"));
+
+        let path = spool_with("damaged", b"o 1 one\n\x00garbage\no 2 two\n");
+        assert_eq!(
+            read_spool(&path, 0).unwrap().gap.as_deref(),
+            Some("the spool holds a damaged record")
+        );
+
+        let path = spool_with("cut", b"o 1 one\no 2 tw");
+        let read = read_spool(&path, 0).unwrap();
+        assert_eq!(
+            read.gap.as_deref(),
+            Some("the spool ends in a record cut short")
+        );
+        assert_eq!(read.records, [(1, Message::Out("one".into()))]);
+
+        assert_eq!(
+            read_spool(&scratch("missing"), 0).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    /// A broker's state with records 1..=`published` published and those up
+    /// to `acked` acknowledged.
+    fn shared_with(published: u64, acked: u64) -> Arc<Shared> {
+        let mut spool = Spool::default();
+        for n in 1..=published {
+            spool.queue(b'o', n.to_string().as_bytes(), SPOOL_LIMIT);
+        }
+        let batch = spool.next_batch().unwrap();
+        spool.written(batch, Ok(()));
+        spool.ack(acked);
+        Arc::new(Shared {
+            state: Mutex::new(State {
+                spool,
+                ..State::default()
+            }),
+            changed: Condvar::new(),
+            stdin: Mutex::new(None),
+            pid: 42,
+        })
+    }
+
+    /// Attaches a server after `after` to a broker in `shared`, over a
+    /// socket pair, as [`accept`] would.
+    fn attach_to(shared: &Arc<Shared>, after: u64) -> std::io::Result<Link> {
+        let (mut broker, server) = UnixStream::pair().unwrap();
+        writeln!(broker, "p {} {PROTOCOL}", shared.pid).unwrap();
+        let receiving = Arc::clone(shared);
+        std::thread::spawn(move || receive(&receiving, Arc::new(broker)));
+        attach(server, after)
+    }
+
+    #[test]
+    fn an_attach_proves_continuity_when_the_broker_kept_every_record_after_it() {
+        let shared = shared_with(5, 2);
+        let link = attach_to(&shared, 3).unwrap();
+        assert_eq!((link.pid, link.floor), (42, 2));
+        assert_eq!(attach_gap(link.floor, 3), None);
+        // The attach acknowledged what the server stored.
+        assert_eq!(lock(&shared.state).spool.acked, 3);
+        // Exactly one past the store's seq is continuous too.
+        assert_eq!(attach_to(&shared, 3).unwrap().floor, 3);
+    }
+
+    #[test]
+    fn an_attach_behind_the_brokers_acknowledged_records_names_the_gap() {
+        // A store that lost its last commits (an OS crash), or the store of
+        // another server: the broker dropped 3..=4 already.
+        let shared = shared_with(5, 4);
+        let link = attach_to(&shared, 2).unwrap();
+        assert_eq!(link.floor, 4);
+        assert_eq!(
+            attach_gap(link.floor, 2).as_deref(),
+            Some("the broker replays from seq 5, but the store holds only up to seq 2: lines 3..=4 are missing")
+        );
+    }
+
+    #[test]
+    fn a_broker_of_the_slice_2_protocol_is_refused_as_unsupported() {
+        let (mut broker, server) = UnixStream::pair().unwrap();
+        writeln!(broker, "p 42 1").unwrap();
+        let error = attach(server, 0).err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(
+            error.to_string().contains("keeps no output spool"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_spool_file_is_truncated_up_to_the_acked_seq_and_keeps_the_rest() {
+        let path = scratch("truncate");
+        let mut file = SpoolFile::create(&path).unwrap();
+        let mut spool = Spool::default();
+        let line = vec![b'a'; 4096];
+        let lines = 2 * COMPACT_BYTES as usize / line.len();
+        for _ in 0..lines {
+            spool.queue(b'o', &line, SPOOL_LIMIT);
+        }
+        assert!(flush_all(&mut spool, &mut file).is_none());
+        let full = std::fs::metadata(&path).unwrap().len();
+        // Acknowledged but not yet outweighing the rest: kept.
+        spool.ack(lines as u64 / 4);
+        assert!(spool.next_batch().is_none());
+        // Most of it acknowledged: the file is rewritten with the rest.
+        let acked = lines as u64 - 3;
+        spool.ack(acked);
+        spool.queue(b'o', b"new", SPOOL_LIMIT);
+        assert!(flush_all(&mut spool, &mut file).is_none());
+        let kept = read_spool(&path, acked).unwrap();
+        assert_eq!(kept.gap, None);
+        let seqs: Vec<u64> = kept.records.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!(seqs, (acked + 1..=lines as u64 + 1).collect::<Vec<_>>());
+        assert!(std::fs::metadata(&path).unwrap().len() < full / 100);
+        assert_eq!(spool.file_bytes, std::fs::metadata(&path).unwrap().len());
+        assert!(!spool.should_compact());
+        // Appending goes on in the rewritten file.
+        spool.queue(b'o', b"more", SPOOL_LIMIT);
+        assert!(flush_all(&mut spool, &mut file).is_none());
+        assert_eq!(
+            read_spool(&path, lines as u64 + 1).unwrap().records,
+            [(lines as u64 + 2, Message::Out("more".into()))]
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_spool_that_cannot_be_written_fails_once_and_its_records_still_go_out() {
+        let path = scratch("failed");
+        SpoolFile::create(&path).unwrap();
+        // Read-only: every write fails.
+        let mut file = SpoolFile {
+            path: path.clone(),
+            file: File::open(&path).unwrap(),
+        };
+        let mut spool = Spool::default();
+        spool.queue(b'o', b"one", SPOOL_LIMIT);
+        let failed = flush_all(&mut spool, &mut file);
+        assert!(failed.is_some());
+        assert_eq!(spool.failed, failed);
+        spool.queue(b'o', b"two", SPOOL_LIMIT);
+        let batch = spool.next_batch().unwrap();
+        assert!(!batch.write);
+        // Reported once: the caller ends the worker once.
+        assert!(spool.written(batch, Ok(())).is_none());
+        assert_eq!(sent(&spool, 0), ["o 1 one", "o 2 two"]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     fn a_greeting_of_another_protocol_is_refused() {
-        assert_eq!(greeted_pid(format!("p 42 {PROTOCOL}").as_bytes()), Some(42));
         assert_eq!(
-            greeted_pid(format!("p 42 {}", PROTOCOL + 1).as_bytes()),
-            None
+            greeted_pid(format!("p 42 {PROTOCOL}").as_bytes()).unwrap(),
+            42
         );
-        assert_eq!(greeted_pid(b"p 42"), None);
-        assert_eq!(greeted_pid(b"o 42 1"), None);
+        let kind = |greeting: &[u8]| greeted_pid(greeting).unwrap_err().kind();
+        assert_eq!(
+            kind(format!("p 42 {}", PROTOCOL + 1).as_bytes()),
+            std::io::ErrorKind::Unsupported
+        );
+        assert_eq!(kind(b"p 42"), std::io::ErrorKind::Other);
+        assert_eq!(kind(b"o 42 1"), std::io::ErrorKind::Other);
     }
 
     #[test]
@@ -714,19 +1414,22 @@ pub(super) mod tests {
         let (mut broker, server) = UnixStream::pair().unwrap();
         broker
             .write_all(
-                b"o {\"a\":1}\ne oops\nl 3\nq ignored\nx {\"type\":\"exited\",\"code\":0}\no cut",
+                b"o 1 {\"a\":1}\ne 2 oops\no 3 \nl 4 3\nq 5 ignored\no x bad\nx 6 {\"type\":\"exited\",\"code\":0}\no 7 cut",
             )
             .unwrap();
         drop(broker);
+        let writer = Writer(Arc::new(Mutex::new(server.try_clone().unwrap())));
         let mut messages = Messages {
             reader: BufReader::new(server),
+            writer,
         };
-        assert_eq!(messages.next(), Some(Message::Out("{\"a\":1}".into())));
-        assert_eq!(messages.next(), Some(Message::Err("oops".into())));
-        assert_eq!(messages.next(), Some(Message::Lost(3)));
+        assert_eq!(messages.next(), Some((1, Message::Out("{\"a\":1}".into()))));
+        assert_eq!(messages.next(), Some((2, Message::Err("oops".into()))));
+        assert_eq!(messages.next(), Some((3, Message::Out(String::new()))));
+        assert_eq!(messages.next(), Some((4, Message::Lost(3))));
         assert_eq!(
             messages.next(),
-            Some(Message::Exit(json!({"type": "exited", "code": 0})))
+            Some((6, Message::Exit(json!({"type": "exited", "code": 0}))))
         );
         assert_eq!(messages.next(), None);
     }
