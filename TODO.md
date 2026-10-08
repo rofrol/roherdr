@@ -11,6 +11,20 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Left from the reliability plan (closed 2026-10-08, see DECISIONS.md
+  "Reliable coordination of headless workers"): the `/todo` skill and the
+  global TODO rule switch coordinators to headless workers with
+  `herdr worker start --folder-slot worker --command-id <item>:<branch>`,
+  `herdr worker wait <id> --attention`, `herdr worker ack`, and the
+  obligations the Stop hook enforces (the user decided 2026-10-07 to
+  switch after a trial run: the trial runs passed, w1-w18); the worker
+  contract text says to edit with Edit/Write, keep drafts in the temp dir,
+  not work around the sandbox, end any process it starts, and commit with
+  the exact message; and an acknowledged prompt at a TUI worker's start
+  (`herdr agent prompt` waits for the prompt's echo or `working` before
+  returning). The skill and rule live in the user's dotfiles: a worker in
+  a tab with the user approving edits under `~/.claude`.
+
 - [ ] A coordinator stops between items without being asked (user,
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
@@ -387,143 +401,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      steps 1-2 (fewer questions, the wake on questions) and the commit
      rule item.
 
-- [ ] Make coordinating headless workers reliable, not another patch (user,
-  2026-10-07, after worker `w1`'s permission questions sat 1.5-15 minutes
-  each because nothing woke the coordinator: "another bug; what crap; how
-  do we make this work reliably? work out a plan to TODO with the models").
-  Stopgap in use since 21:08: a level-triggered wait script in the
-  coordinator's scratchpad (follows the worker's journal, reads `herdr
-  worker status` after arming, ends on a question, turn end or exit), run
-  under herdr-job and re-armed after every answer; drop it once step 2
-  lands. Round `20261007-210846-3775` (sol, MiMo, DeepSeek), agreeing: herdr
-  enforces the invariants, the coordinator supplies decisions; one event
-  log, no second delivery mechanism. Plan, in order, one worker each:
-  1. Fewer questions first (MiMo: nothing else matters while trivia
-     arrives): the item "Headless workers ask the user almost never"
-     (sandbox + auto mode).
-  2. (2026-10-08: slice 1 done, `feat: worker state in sqlite, the event
-     store (slice 1)` and `build: cross-compile bundled sqlite for
-     windows`, installed; `workers.sqlite3` imported all 8 journals. Slice
-     2 done: `feat: worker wait on attention after a sequence (slice 2)`,
-     installed; the coordinator's scratch wait script is retired. Slice 3
-     done: `feat: worker command receipts and an answer outbox (slice 3)`
-     with `fix: gate worker prompt and kill for windows`, installed;
-     `worker.take_over` keeps no `command_id` (its shape is frozen by the
-     v1 client contract; the takeover claim already refuses a second one),
-     decided by the coordinator. Step 2 and the receipts of step 3 are
-     done.)
-  2. One durable event log per worker in the server: monotonic sequence,
-     question / turn end / exit events, level-triggered `worker.wait
-     --attention --after <seq>`; the per-coordinator inbox is a filter on
-     this log, not a second queue (MiMo, sol). Merges the items "A
-     coordinator is woken by its worker's question" and "One wait over all
-     of a coordinator's workers".
-  3. Durable, idempotent answers keyed by question id; "delivered",
-     "acknowledged" and "answered" are distinct states, and acknowledging
-     never clears an unanswered question (sol); an answer survives the
-     coordinator dying mid-answer (MiMo).
-  4. (Fixed 2026-10-08, `fix: an owner's own stop creates no obligation,
-     and the worker folder stays bounded`: the owner's own stop/kill acks
-     the exit it causes.)
-  4. (Found 2026-10-08 at first use: the Stop hook blocked the coordinator
-     for `w13: exited, review it` after the coordinator itself had stopped
-     `w13` following its review; an exit the owner requested with
-     `worker.stop`/`kill` should not create an obligation, or should be
-     acked by that call.)
-  4. (Done 2026-10-08 by headless worker `w12`: `feat: a coordinator
-     cannot stop while its workers need it`, installed, and the Claude
-     integration reinstalled with the user's yes: owner recorded at
-     `worker.start`, `worker.ack`, `worker.obligations`, the Stop hook
-     blocks a coordinator tab while obligations exist and fails open when
-     herdr cannot be reached; the old once-only block stays beside it.)
-  4. The coordinator's turn cannot end while one of its workers has an
-     event it has not handled: the existing coordinator Stop hook asks
-     herdr and blocks the stop (MiMo, DeepSeek: enforce it mechanically,
-     never as diligence).
-  5. (Done 2026-10-08 by headless worker `w13`: `feat: worker questions
-     stay quiet until their coordinator escalates or goes silent`,
-     installed; escalation on events only, no lease or timer.)
-  5. A question with no live owner reaches the user: on the events herdr
-     has (the coordinator's pane closed, its agent exited). A live but
-     silent coordinator emits nothing; all three say only a lease (a
-     timer) detects that. Decided by the user 2026-10-07: yes, a lease the
-     coordinator renews by its own activity, its expiry hands its questions
-     to the user, the value stated next to it as a designed bound.
-     Reversed by the user 2026-10-08 ("the coordinator is silent for 15
-     minutes? does t3code do that? again async workarounds? ask the
-     models"), round `20261008-103538-de75` (sol, MiMo, DeepSeek): events only.
-     A question escalates when the owner escalates it, its pane closes or
-     agent exits, its agent reports `limited`, its agent goes idle/done
-     while the question is unanswered (acknowledging is not answering),
-     its agent is blocked on its own question to the user, or herdr
-     restarts (re-evaluated at start); a worker exiting resolves its
-     questions. A coordinator alive but hung ("working" for ever, no
-     event) is a known limitation, not hidden: the quiet entry reads
-     "awaiting the coordinator", with the owner's last event age shown
-     (display only, deciding nothing). T3 Code has no coordinator agent;
-     its approvals go to the human without a timeout.
-  6. Verified TODO.md/DECISIONS.md writes (read back, refuse on a missing
-     anchor) and an acknowledged prompt at worker start.
-     Tool done 2026-10-08 by headless worker `w15` (`feat: a verified
-     editing tool for todo.md and decisions.md`): `scripts/todo_edit.py`
-     (find, add, append-to, insert-after, remove, move, add-section), each
-     refusing a missing or ambiguous anchor, never crossing a heading,
-     verifying and writing atomically; the coordinator uses it from now on.
-     Found at its first use (2026-10-08): `insert-after` drops the text
-     file's final newline, so text inserted after an anchor ending in a
-     newline glued its last line to the next item's first; it should keep
-     line structure (end the inserted text with a newline when the anchor
-     ends with one) and its check should compare the lines around the
-     insertion.
-     Fixed the same day (`fix: todo_edit keeps line structure on insert`).
-  7. Fault-injection tests: the coordinator killed mid-answer and between
-     answer and re-arm; two questions at once; a worker exiting during a
-     wait; a server restart and live handoff mid-wait; a duplicate or lost
-     acknowledgement; a TODO write conflict. Pass: no event lost, every
-     question resolved or explicitly escalated.
-     Done 2026-10-08 by headless worker `w17` (`test: fault injection for
-     headless workers`): `docs/headless-worker-fault-tests.md` maps every
-     case to a test; 10 new worker tests and 2 todo_edit tests; the worker
-     tests passed 20 runs in a row and the new ones 40 under load. Gaps it
-     found, decided by the coordinator as follow-ups: `todo_edit.py`
-     compares then renames without a lock, so another writer's change in
-     between is lost (an `expectedFailure` test shows it): take a lock file
-     and compare again right before the rename; `degraded` lives only in
-     memory: persist it so a restart still shows the worker's gap. Also:
-     the worker left 12 `yes` load processes running (the coordinator
-     killed them); its contract should say to end what it starts.
-  Decided by the user 2026-10-07: these steps go before the
-  fresh-coordinator-per-item, item-history and handoff items (all three
-  models: those build on the event log and verified writes).
-  Compared with T3 Code (user 2026-10-07: "what safeguards does t3code have
-  for all this? ask the models"; read at `vendor/t3code` 0678e4e23d, the
-  key parts checked by the coordinator): SQLite event sourcing (WAL,
-  AUTOINCREMENT sequence, one transaction per command: a command receipt
-  `insertIfAbsent` on `commandId`, events, projections, an outbox; a
-  repeated command id returns the stored result); clients subscribe, then
-  replay after their sequence and dedupe, or get a snapshot; approvals
-  keyed by request id, answered only while pending, re-checked against the
-  same session, with a guard against cleanup erasing a racing answer; at
-  restart pending requests expire and runs are cancelled (no continuity of
-  running agents; resume is opt-in); interrupt + close, 10 s, then
-  finalized as interrupted. It has no stuck-agent watchdog, no commit
-  checks, and passes no Claude sandbox. Round `20261007-215243-99f4` (sol,
-  MiMo, DeepSeek), adopt: request-id approvals with the pending-only rule,
-  session fencing and the cleanup guard (fix 1 of the atomicity item, then
-  step 3); command ids with receipts for every state-changing call (step
-  3); subscribe-before-replay with sequence dedupe (step 2); restart
-  reconcile that requeues only replay-safe effects (with fix 3). Do not
-  adopt: questions without expiry (we decided a lease), cancelling running
-  workers at restart (our live handoff keeps them, MiMo), a plain lock for
-  takeovers (needs a compare-and-set on ownership with an epoch, all
-  three). Ours that T3 lacks: live worker continuity, the lease, commit
-  checks, fault injection. sol: a Stop hook is not a durable obligation
-  queue: obligations live in the server. Decided by the user 2026-10-07:
-  step 2 moves worker state to SQLite (WAL): command receipts, events,
-  projections and an outbox in one transaction per command, as T3 Code;
-  the JSONL journals stay only as a debug export (adds the `rusqlite`
-  dependency, the reason recorded here).
-
 - [ ] Atomicity fixes from the review (`docs/atomicity-review-2026-10-07.md`,
   user 2026-10-07: "it must be like a database transaction"). 15 findings
   verified by the worker, the critical one also by the coordinator. Until
@@ -634,38 +511,6 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Fixed 2026-10-08 in the same commit: `target_sweep.py slot` keeps the
   slot's `target/` under 10 GiB before each start, removes it when the
   disk stays under the guard threshold, else refuses the start.
-
-- [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
-  next: "the wait that wakes the coordinator on a worker's question is
-  missing: a fix plan to TODO as next; ask the models"). Today
-  `worker.wait` ends only at the turn's end or exit, so the coordinator
-  sleeps while its worker blocks on a question and the user gets asked.
-  Round `20261007-205219-4d6b` (sol, MiMo, DeepSeek); plan chosen by the
-  coordinator from the agreement:
-  1. `worker.wait --until attention` (CLI `herdr worker wait <id>
-     --attention`): returns at the first of a pending question, the turn's
-     end, exit, level-triggered (state already there returns at once), with
-     a typed reason, the question and its request id, and the worker's
-     event sequence number; `--after <seq>` skips what the caller already
-     saw (DeepSeek, MiMo: a sequence covers turn ends and new questions; a
-     seen request id alone can hide a later completion, sol). Answers stay
-     atomic: the first valid answer wins, a stale request id is refused.
-  2. The question stays visible to the user at once but quiet: listed as
-     "the coordinator is on it", not counted in the `?` badge and not
-     flagged, so the user is not asked; it becomes a normal `?` question
-     when the coordinator escalates it (`worker.escalate`) or when the
-     worker's coordinator is gone (its pane closed or its agent exited:
-     events herdr has). sol, DeepSeek: hiding it entirely makes a crashed
-     coordinator a lost question; MiMo: showing it loudly breaks "asked
-     almost never". A live but stuck or rate-limited coordinator emits no
-     event: the quiet entry lets the user act; no timer.
-  3. Ownership: `worker.start` records the starting pane and agent session
-     as the worker's coordinator (sol: bind to the session, not only the
-     pane id).
-  4. The coordinator's loop and the `/todo` skill: wait with `--attention
-     --after <seq>`; answer per the policy or escalate; wait again.
-  Later, when a coordinator runs several workers at once: one wait over all
-  of them (`--any`), deferred by all three.
 
 - [ ] Headless workers ask the user almost never (user, 2026-10-07, after
   two approval questions from worker `w1` for a heredoc draft in `/tmp`:

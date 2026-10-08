@@ -421,3 +421,19 @@ copied cache is cold: measured 134 s cold, 27 s warm. The vendored
 `$TMPDIR` inside the sandbox, rather than widening the sandbox to the system
 temp dir. The first item done this way (that patch) asked no questions.
 
+## Reliable coordination of headless workers (2026-10-07..08)
+
+The user asked for coordination that works "like a database transaction, not
+hop siup", after worker questions sat unanswered and TODO edits were lost. All
+seven steps of the plan are in: Claude Code's Bash sandbox (workers ask almost
+never), worker state in SQLite (events with a sequence, projections, command
+receipts, an answer outbox), `worker.wait --attention --after <seq>`
+(level-triggered, subscribe before check), obligations that keep a
+coordinator from stopping while its workers need it, questions quiet until
+the coordinator escalates them or an event shows it is gone (the user rejected
+a 15-minute lease: events only; a hung coordinator is a visible known
+limitation), a verified TODO/DECISIONS editing tool, and fault-injection tests
+(`docs/headless-worker-fault-tests.md`). Reviews that shaped it:
+`docs/atomicity-review-2026-10-07.md` and the comparison with T3 Code
+(adopted its receipts, pending-only answers and catch-up after a cursor; not
+its unbounded approvals or cancelling agents at restart).
