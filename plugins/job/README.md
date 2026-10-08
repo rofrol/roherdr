@@ -11,7 +11,7 @@ the same for Claude Code, pi, or any other agent, and for you.
 id=$(herdr-job run --name "Build b17" --why "test the new app set" -- make image)
 herdr-job wait "$id"      # a start line, then the final line; exits with the command's exit code
 herdr-job wait --stream "$id"  # follows the whole log as it grows (the old behaviour)
-herdr-job list            # all jobs: running / ok / failed (code) / lost
+herdr-job list            # all jobs: pending / running / ok / failed (code) / lost
 herdr-job log "$id"       # log path
 herdr-job clean           # close this pane's finished job tabs (--all: everyone's)
 ```
@@ -74,14 +74,24 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
 - Closing a job tab stops the job; `wait` then reports `lost` (exit 125) or
   the hangup's exit code (129). A job never runs twice, even if relaunch
   replays its tab after a server restart.
+- `lost` is an observed fact, never a timeout: a started job is lost once
+  nothing holds its lock and it left no exit code; a job whose executor has
+  not started yet is `pending` while its tab is open (with that job's
+  label), however long that takes, and lost only once the tab is gone.
+- `run --key KEY` makes the launch idempotent: when a job with that key
+  exists (in any state), `run` prints its id and starts nothing, so a caller
+  that lost `run`'s reply can retry with the same key without running the
+  work twice. Use a key that names the work, e.g. the TODO item and the
+  worktree. The key is checked under the launch lock; `clean` deletes the
+  job and frees its key.
 - The command must represent the work: if it only starts something elsewhere
   (a VM, `nohup`, a remote host) and returns, wait for that work inside the
   command (e.g. poll its status file).
 
 State: `~/.local/state/herdr-job/<id>/` (`meta.json`, `log`, `exit`, `lock`).
 macOS and Linux only. The state directory must be on a local filesystem:
-a job's liveness is an `flock` held by its executor, which network
-filesystems may not honour.
+a job's liveness is an `flock` held by its executor and its command, which
+network filesystems may not honour.
 
 ## One wait, one job
 
@@ -155,9 +165,15 @@ concurrent launches cannot pass a limit together.
   runs a command, so a remote server cannot choose what your machine runs.
   Click actions work on macOS with `terminal-notifier` and on Linux with
   `notify-send` from libnotify >= 0.7.10 (see below).
-- A job is alive while its executor holds an `flock`, not while its PID
-  exists: after a crash or reboot the PID can belong to another process and
-  `wait` would hang forever.
+- A job is alive while anything holds its `flock`, not while a PID exists:
+  after a crash or reboot the PID can belong to another process and `wait`
+  would hang forever. The executor takes the lock and its slots, and the
+  command inherits both descriptors, so if the executor dies (SIGKILL, an
+  error writing to a closed PTY) while the command still runs, `wait` keeps
+  reporting `running` and the slot stays taken until the command and its
+  children end. A daemon the command leaves behind with those descriptors
+  open keeps the slot too (the job itself has ended then): `herdr-job
+  slots` names the job, and stopping the daemon frees the slot.
 - The final tab status and the closing of a succeeded job's tab are retried
   with backoff (about a minute each): during a live handoff the server may
   not answer. Whatever still slips through is repaired by `run`, `wait`,
@@ -338,7 +354,10 @@ herdr-job slots                           # who holds them: job, name, pid, sinc
 
 - One slot by default; `HERDR_JOB_SLOTS=N` sets the number, `0` turns slots
   off (a CI runner). A slot is an `flock` on a file in
-  `~/.local/state/herdr-job/slots/`, so a holder that dies frees it.
+  `~/.local/state/herdr-job/slots/`, so a holder that dies frees it. The
+  command inherits the descriptor (in a job and in `herdr-job slot`), so
+  the slot stays taken until the command itself ends, even when the
+  process that took it died first.
 - Opt-in, never the default for a job: network-bound jobs such as the
   consult scripts must not wait behind a build. In this repository the
   `just` recipes that build or test take a slot themselves (the benchmarks an
@@ -387,7 +406,9 @@ herdr-job clean-tree --path                                  # where the tree is
   a tree object written from a throwaway index), and the tree is built from
   that: a commit another session makes meanwhile does not mix in.
 - One run at a time per repository (an `flock` under `.git/`); another run
-  waits and says for whom. The command gets `HERDR_CLEAN_TREE_BASE`, the
+  waits and says for whom. The command and `--then` inherit the lock, so a
+  run whose `clean-tree` process died keeps the tree until its command
+  ends. The command gets `HERDR_CLEAN_TREE_BASE`, the
   commit it was built on, and `HERDR_CLEAN_TREE_BUILD`, the identity a herdr
   build of that tree prints first in `--build-commit` (`<hash>` or
   `<hash>~<tree>`, as build.rs computes it).

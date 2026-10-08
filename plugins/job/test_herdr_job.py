@@ -1,5 +1,6 @@
 """Regression checks for the job footer's terminal control sequences."""
 import contextlib
+import fcntl
 import io
 import os
 from pathlib import Path
@@ -424,6 +425,77 @@ class IdleJobTests(unittest.TestCase):
         self.assertFalse(idle([], last_output=0, now=now))
 
 
+def read_until_line(stream, wanted):
+    """Reads a child's output until it prints `wanted` on a line of its own."""
+    for line in stream:
+        if line.rstrip("\n") == wanted:
+            return
+    raise AssertionError(f"the child ended without printing {wanted!r}")
+
+
+def wait_until_free(lock_path):
+    """Blocks until nobody holds the flock on `lock_path` (the positive event:
+    its last holder ended); the join only bounds a test that would hang."""
+    def take():
+        with open(lock_path, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+
+    thread = threading.Thread(target=take, daemon=True)
+    thread.start()
+    thread.join(30)
+    if thread.is_alive():
+        raise AssertionError(f"{lock_path} is still held")
+
+
+def lock_is_held(lock_path):
+    with open(lock_path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class StatusTests(unittest.TestCase):
+    """`lost` is an observed fact (the tab is gone, no lock holder), never a duration."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "j1"
+        self.path.mkdir()
+        # Created long ago: no amount of elapsed time decides the state.
+        self.meta = {"id": "j1", "name": "build", "tab_id": "w:t1", "tab_status": True, "created": 0}
+        (self.path / "meta.json").write_text(json.dumps(self.meta))
+        self.status = JOB["status"]
+
+    def test_a_job_not_started_yet_stays_pending_while_its_tab_is_open(self):
+        tabs = {"w:t1": {"tab_id": "w:t1", "label": "build"}}
+        self.assertEqual(self.status(self.path, self.meta, tabs), ("pending", None))
+
+    def test_a_job_not_started_is_lost_only_once_its_tab_is_gone_or_another_one(self):
+        self.assertEqual(self.status(self.path, self.meta, {}), ("lost", JOB["EXIT_LOST"]))
+        renamed = {"w:t1": {"tab_id": "w:t1", "label": "my shell"}}
+        self.assertEqual(self.status(self.path, self.meta, renamed), ("lost", JOB["EXIT_LOST"]))
+
+    def test_without_an_answer_from_herdr_a_job_not_started_stays_pending(self):
+        def unreachable():
+            raise SystemExit("herdr tab list failed")
+
+        with patch.dict(self.status.__globals__, {"list_tabs": unreachable}):
+            self.assertEqual(self.status(self.path, self.meta), ("pending", None))
+
+    def test_a_job_is_running_while_anything_holds_its_lock_and_lost_after(self):
+        meta = {**self.meta, "started": 1}
+        with open(self.path / "lock", "a") as holder:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            self.assertEqual(self.status(self.path, meta, {}), ("running", None))
+        self.assertEqual(self.status(self.path, meta, {}), ("lost", JOB["EXIT_LOST"]))
+        (self.path / "exit").write_text("0\n")
+        self.assertEqual(self.status(self.path, meta, {}), ("ok", 0))
+
+
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class ReconcileTests(unittest.TestCase):
     def reconcile(self, tab_status):
@@ -436,7 +508,7 @@ class ReconcileTests(unittest.TestCase):
         with patch.dict(reconcile.__globals__, {
             "list_tabs": lambda: [tab],
             "job_tabs": lambda tabs: {"w:t1": (Path("/nonexistent"), meta)},
-            "status": lambda path, meta: ("lost", JOB["EXIT_LOST"]),
+            "status": lambda path, meta, tabs=None: ("lost", JOB["EXIT_LOST"]),
             "herdr_ok": calls,
         }):
             reconcile()
@@ -552,6 +624,38 @@ class SlotTests(unittest.TestCase):
         out = subprocess.run([str(job), "_exec", "j1"], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("slot 0: job j1 slot job", out.stdout)
+
+    def test_the_slot_and_the_job_stay_held_after_the_executor_dies_while_the_command_runs(self):
+        job = Path(__file__).with_name("herdr-job")
+        state = Path(self.tmp.name) / "herdr-job"
+        path = state / "j2"
+        path.mkdir(parents=True)
+        fifo = Path(self.tmp.name) / "go"
+        os.mkfifo(fifo)
+        meta = {"id": "j2", "name": "long build", "command": f"echo ready; read line < {fifo}",
+                "cwd": self.tmp.name, "keep": True, "notify": "never", "owner_pane": None, "tab_id": "t1",
+                "tab_status": False, "pane_id": "p1", "client_footer": True, "slot": "shared",
+                "created": time.time()}
+        (path / "meta.json").write_text(json.dumps(meta))
+        env = dict(os.environ, XDG_STATE_HOME=self.tmp.name, HERDR_BIN_PATH="/usr/bin/true",
+                   HERDR_JOB_KEEP_AWAKE="0")
+        env.pop("HERDR_JOB_SLOT", None)
+        executor = subprocess.Popen([str(job), "_exec", "j2"], env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(executor.stdout.close)
+        read_until_line(executor.stdout, "ready")
+        executor.kill()
+        executor.wait()
+        slot = state / "slots" / "slot-0"
+        self.assertIsNotNone(JOB["slot_holder"](slot))
+        self.assertEqual(JOB["status"](path), ("running", None))
+        # The command ends: the slot is free and the job, without an `exit`, is lost.
+        with open(fifo, "w") as go:
+            go.write("done\n")
+        wait_until_free(path / "lock")
+        wait_until_free(slot)
+        self.assertIsNone(JOB["slot_holder"](slot))
+        self.assertEqual(JOB["status"](path), ("lost", JOB["EXIT_LOST"]))
 
     def test_a_job_started_inside_a_slot_shares_it_instead_of_waiting_for_its_parent(self):
         job_slot = JOB["job_slot"]
@@ -707,6 +811,20 @@ class GuardTests(unittest.TestCase):
         self.assertIn("failed 3 times in the last 10 minutes", out.stderr)
         self.assertFalse((self.stub_dir / "calls").exists() and self.tab_creates())
         self.assertEqual(self.run_job("wait w-docs", "--force").returncode, 0)
+
+    def test_a_repeated_key_returns_the_existing_job_in_any_state(self):
+        first = self.run_job("wait w-docs", "--key", "todo-7")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        again = self.run_job("wait w-docs", "--key", "todo-7")
+        self.assertEqual((again.returncode, again.stdout), (0, first.stdout))
+        self.fail_all_jobs()
+        ended = self.run_job("another name", "--key", "todo-7")
+        self.assertEqual((ended.returncode, ended.stdout), (0, first.stdout))
+        self.assertEqual(self.tab_creates(), 1)
+        other = self.run_job("wait w-docs", "--key", "todo-8")
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertNotEqual(other.stdout, first.stdout)
+        self.assertEqual(self.tab_creates(), 2)
 
     def test_a_failed_job_is_counted_by_its_executor(self):
         self.assertEqual(self.run_job("probe").returncode, 0)
@@ -989,6 +1107,22 @@ class CleanTreeTests(unittest.TestCase):
         sources = subprocess.run(["git", "-C", str(self.repo), "write-tree"], env=env, check=True,
                                  capture_output=True, text=True).stdout.strip()
         self.assertIn(f"build {commit}~{sources[:7]}\n", out.stdout)
+
+    def test_the_command_keeps_the_lock_after_clean_tree_dies(self):
+        fifo = Path(self.tmp.name) / "go"
+        os.mkfifo(fifo)
+        lock = self.repo / ".git" / "clean-tree.lock"
+        run = subprocess.Popen([str(Path(__file__).with_name("herdr-job")), "clean-tree", "--", "sh", "-c",
+                                f"echo ready; read line < {fifo}"], cwd=self.repo, env=self.env,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(run.stdout.close)
+        read_until_line(run.stdout, "ready")
+        run.kill()
+        run.wait()
+        self.assertTrue(lock_is_held(lock))
+        with open(fifo, "w") as go:
+            go.write("done\n")
+        wait_until_free(lock)
 
     def test_the_inputs_are_read_once_so_a_commit_in_between_does_not_leak_in(self):
         (self.repo / "mine.txt").write_text("mine edited\n")

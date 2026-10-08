@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """herdr-job: run long commands in their own herdr tab and wait for them.
 
-  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] [--force] -- COMMAND...
+  herdr-job run --name "Build b17" [--why TEXT] [--keep] [--notify WHEN] [--cwd DIR] [--slot|--exclusive] [--force] [--key KEY] -- COMMAND...
                                  print job id, return at once
   herdr-job watch --pid PID [--name NAME] [--why TEXT]
                                  a job that waits for a process you did not start; print job id
@@ -108,10 +108,12 @@ def pid_alive(pid):
     return True
 
 
-def executor_alive(path, meta):
-    """Whether `_exec` still runs: it holds an exclusive flock on `lock` for its
-    whole life, and the kernel drops the lock however the process dies, so a
-    reused PID after a crash or reboot cannot fake a running job."""
+def lock_held(path, meta):
+    """Whether the job still runs: `_exec` takes an exclusive flock on `lock`
+    and its command inherits the descriptor, so the lock is held while the
+    executor, the command or any child that kept the descriptor lives. The
+    kernel drops it when the last of them ends however they die, so a reused
+    PID after a crash or reboot cannot fake a running job."""
     try:
         fd = os.open(path / "lock", os.O_RDWR)
     except FileNotFoundError:
@@ -135,19 +137,47 @@ def finished(path):
     return ("ok" if code == 0 else "failed"), code
 
 
-def status(path, meta=None):
-    """running | ok | failed | lost, plus the exit code when finished."""
+def tab_shows_job(tabs, meta):
+    """Whether the job's tab is open and still carries its label (a reused tab
+    id or a tab the user renamed is not the job's)."""
+    tab = tabs.get(meta.get("tab_id"))
+    return tab is not None and tab.get("label") in job_labels(meta)
+
+
+def status(path, meta=None, tabs=None):
+    """pending | running | ok | failed | lost, plus the exit code when finished.
+
+    `lost` is a fact, never a duration: a started job is lost once nothing
+    holds its lock and it wrote no `exit`; a job whose executor has not
+    started yet stays pending while its tab is open, and is lost only once
+    the tab is gone. `tabs` (tab id → tab) saves the lookup when the caller
+    has them; when herdr does not answer, the job stays pending."""
     meta = meta or read_meta(path)
     if result := finished(path):
         return result
+    if lock_held(path, meta):
+        return "running", None
+    # `_exec` may have written `exit` and let go of the lock between the checks.
+    if result := finished(path):
+        return result
     if "started" in meta:
-        if executor_alive(path, meta):
-            return "running", None
-        # `_exec` may have written `exit` and died between the two checks.
-        return finished(path) or ("lost", EXIT_LOST)
-    if time.time() - meta["created"] > 60:
         return "lost", EXIT_LOST
-    return "running", None
+    if tabs is None:
+        try:
+            tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+        except (SystemExit, ValueError, KeyError, TypeError):
+            return "pending", None
+    if tab_shows_job(tabs, meta):
+        return "pending", None
+    # The executor may have started and taken the lock after the probe above.
+    if lock_held(path, meta):
+        return "running", None
+    return finished(path) or ("lost", EXIT_LOST)
+
+
+def active(st):
+    """A job that has not ended: it holds its place in counts and waits."""
+    return st in ("pending", "running")
 
 
 def all_jobs():
@@ -167,10 +197,6 @@ def short(text, width=40):
 
 def list_tabs():
     return json.loads(herdr("tab", "list"))["result"]["tabs"]
-
-
-def open_tabs():
-    return {tab["tab_id"] for tab in list_tabs()}
 
 
 def final_tab_status(code):
@@ -252,8 +278,8 @@ def reconcile_tabs():
     except (SystemExit, ValueError, KeyError):
         return
     for tab_id, (path, meta) in job_tabs(tabs).items():
-        st, code = status(path, meta)
-        if st == "running":
+        st, code = status(path, meta, tabs)
+        if active(st):
             continue
         if meta.get("tab_status") and tabs[tab_id].get("status") in ("running", None):
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
@@ -270,15 +296,15 @@ def update_owner_token(owner_pane):
     if not owner_pane:
         return
     try:
-        tabs = open_tabs()
+        tabs = {tab["tab_id"]: tab for tab in list_tabs()}
     except (SystemExit, ValueError, KeyError):
         return
     counts = {"running": 0, "failed": 0, "ok": 0}
     for path, meta in all_jobs():
         if meta.get("owner_pane") != owner_pane or meta.get("tab_id") not in tabs:
             continue
-        st, _ = status(path, meta)
-        counts["failed" if st == "lost" else st] += 1
+        st, _ = status(path, meta, tabs)
+        counts["running" if active(st) else "failed" if st == "lost" else st] += 1
     # The icons and order of herdr's own job counts (tab bar, space row):
     # `!`, not `✗`, and `⧖` spaced from its digit, which it runs into.
     marks = (("running", "⧖ "), ("failed", "!"), ("ok", "✓"))
@@ -475,7 +501,8 @@ def cmd_slot(args):
     name = args.name or shlex.join(args.command)
     held = take_slot(name, args.exclusive, on_wait=lambda text: print(f"herdr-job: {text}", file=sys.stderr, flush=True))
     try:
-        proc = subprocess.Popen(args.command)
+        # The command inherits the slot, so it stays taken until the command ends.
+        proc = subprocess.Popen(args.command, pass_fds=[handle.fileno() for handle in held])
     except OSError as err:
         raise SystemExit(f"herdr-job slot: {err}") from err
 
@@ -632,11 +659,14 @@ def cmd_clean_tree(args):
         base, changed = prepare_clean_tree(root, tree, paths)
         print(f"herdr-job: clean tree {tree}: {base[:12]} + {changed} changed paths", file=sys.stderr, flush=True)
         env = dict(os.environ, HERDR_CLEAN_TREE_BASE=base, HERDR_CLEAN_TREE_BUILD=build_identity(tree))
-        code = subprocess.run(command, cwd=tree, env=env).returncode
+        # The commands inherit the lock: if this process dies, nobody resets
+        # the tree under a build that still runs in it.
+        keep = (lock.fileno(),)
+        code = subprocess.run(command, cwd=tree, env=env, pass_fds=keep).returncode
         # Still under the lock: nobody can reset the tree or rebuild its
         # output between the command and this one (an install of that build).
         if code == 0 and args.then:
-            code = subprocess.run(["sh", "-c", args.then], cwd=tree, env=env).returncode
+            code = subprocess.run(["sh", "-c", args.then], cwd=tree, env=env, pass_fds=keep).returncode
     finally:
         lock.close()
     sys.exit(128 - code if code < 0 else code)
@@ -766,8 +796,8 @@ def job_tab_counts(tabs):
     owned = job_tabs(tabs)
     running, failed = collections.Counter(), collections.defaultdict(list)
     for path, meta in all_jobs():
-        st, _ = status(path, meta)
-        if st == "running":
+        st, _ = status(path, meta, tabs)
+        if active(st):
             running[job_owner(meta)] += 1
         elif st in ("failed", "lost") and owned.get(meta.get("tab_id"), (None,))[0] == path:
             failed[job_owner(meta)].append(meta)
@@ -821,15 +851,27 @@ def cmd_run(args):
     owner = os.environ.get("HERDR_PANE_ID")
     if not os.environ.get("HERDR_SOCKET_PATH"):
         raise SystemExit("herdr-job needs to run inside a herdr pane")
+    key = getattr(args, "key", None)
     with flocked(LAUNCH_LOCK):
+        # A retry whose first reply was lost gets the job it already started,
+        # whatever its state; the key is recorded under this lock with the job.
+        if key is not None and (existing := job_with_key(key)):
+            print(existing["id"])
+            return
         root = root_owner(owner)
         check_launch(root, args.name, getattr(args, "force", False))
         # The lock is held until meta.json exists: from then on the job counts.
-        meta = start_job(args, owner, root)
+        meta = start_job(args, owner, root, key)
     launch_started_job(meta)
 
 
-def start_job(args, owner, root):
+def job_with_key(key):
+    """The newest job started with this `--key`, or None."""
+    found = [meta for _, meta in all_jobs() if meta.get("key") == key]
+    return max(found, key=lambda meta: meta["created"]) if found else None
+
+
+def start_job(args, owner, root, key=None):
     cwd = str(Path(args.cwd or os.getcwd()).resolve())
     command = args.command[0] if len(args.command) == 1 else shlex.join(args.command)
     job_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
@@ -872,6 +914,8 @@ def start_job(args, owner, root):
         "pane_id": created["root_pane"]["pane_id"],
         "created": time.time(),
     }
+    if key is not None:
+        meta["key"] = key
     meta["client_footer"] = register_job_metadata(meta)
     write_meta(path, meta)
     return meta
@@ -1165,8 +1209,9 @@ def cmd_exec(args):
     if "started" in meta:
         print(f"herdr-job {meta['id']} already ran; not running it again", file=sys.stderr)
         sys.exit(1)
-    # The lock stays held until this process exits; Python fds are not
-    # inherited by the command (PEP 446), so only `_exec` holds it.
+    # The lock stays held until this process exits, and the command inherits
+    # it (`pass_fds` below): `status` probes it, so the job is running while
+    # anything of it lives, even after this executor died.
     meta["pid"] = os.getpid()
     meta["started"] = time.time()
     write_meta(path, meta)
@@ -1204,6 +1249,9 @@ def cmd_exec(args):
     except OSError:
         pass
     with open(path / "log", "ab", buffering=0) as log:
+        # The command and its children keep the job and slot locks: if this
+        # executor dies first, the slot is not handed to another build while
+        # the command still writes to the same target/.
         proc = subprocess.Popen(
             ["/bin/sh", "-c", command],
             cwd=meta["cwd"],
@@ -1211,6 +1259,7 @@ def cmd_exec(args):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            pass_fds=(lock, *(handle.fileno() for handle in slot)),
         )
 
         def forward(signum, _frame):
@@ -1398,7 +1447,7 @@ def cmd_wait(args):
     while True:
         drain()
         st, code = status(path)
-        if st != "running":
+        if not active(st):
             drain()
             meta = read_meta(path)
             if st == "lost":
@@ -1627,8 +1676,12 @@ def cmd_list(_args):
     if not jobs:
         print("no jobs")
         return
+    try:
+        tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    except (SystemExit, ValueError, KeyError):
+        tabs = None
     for path, meta in jobs:
-        st, code = status(path, meta)
+        st, code = status(path, meta, tabs)
         end = meta.get("ended") or time.time()
         minutes = int((end - meta.get("started", meta["created"])) // 60)
         state = st if code is None else f"{st} ({code})"
@@ -1675,8 +1728,8 @@ def cmd_clean(args):
     for path, meta in all_jobs():
         if not args.all and meta.get("owner_pane") != here:
             continue
-        st, _ = status(path, meta)
-        if st == "running":
+        st, _ = status(path, meta, tabs)
+        if active(st):
             continue
         # A reused tab id or a renamed tab is not this job's to close.
         tab_id = meta.get("tab_id")
@@ -1708,6 +1761,8 @@ def main():
     run.add_argument("--cwd")
     run.add_argument("--slot", action="store_true", help="wait for a machine-wide slot before running (builds, tests)")
     run.add_argument("--exclusive", action="store_true", help="take every slot, for benchmarks")
+    run.add_argument("--key", help="an idempotency key: a run with a key that a job already has prints "
+                                    "that job's id instead of starting another")
     run.add_argument("--force", action="store_true",
                      help=f"start even though this name failed {NAME_FAILURES_MAX} times in the last "
                           f"{NAME_FAILURES_WINDOW_S // 60} minutes")
