@@ -514,6 +514,10 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      `exited`; open and seek the journal before reading the status; take
      the path from `worker status` (finding 4: it can miss a question and
      hangs after a handoff).
+     Done 2026-10-07 by the coordinator itself in its scratchpad (not a
+     repository file; the rule says a worker should have done it): the
+     script now opens the journal, waits on kqueue for writes, rereads the
+     status on each, and takes the path from `worker status`.
   5. `worker kill` checks process identity (start time) before killing a
      recorded tool session (finding 5: a reused session id can be a herdr
      pane's shell).
