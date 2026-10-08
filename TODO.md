@@ -521,6 +521,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   5. `worker kill` checks process identity (start time) before killing a
      recorded tool session (finding 5: a reused session id can be a herdr
      pane's shell).
+     Done 2026-10-08 by headless worker `w6` (`fix: worker kill checks
+     process identity before signalling`, no questions): sessions recorded
+     with the leader's start token; only matching leaders and members not
+     older than them are signalled; old entries without a token are
+     skipped and reported; a lost or exited worker needs `--force`.
   6. Install the build that was checked: build and install under one
      clean-tree lock, and `herdr_live.sh install` refuses a binary whose
      build label is not the expected one (finding 11).
