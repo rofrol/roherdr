@@ -47,9 +47,10 @@ use tracing::warn;
 
 use crate::api::schema::{
     WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerKillParams, WorkerKillReport,
-    WorkerObligation, WorkerPromptParams, WorkerQuestion, WorkerQuestionKind, WorkerQuestionState,
-    WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
+    WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
+    WorkerKillReport, WorkerObligation, WorkerPromptParams, WorkerQuestion, WorkerQuestionKind,
+    WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerSettledQuestion,
+    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -417,6 +418,21 @@ struct Status {
     /// Why its owner is gone for good (`owner_gone`: its pane closed, its
     /// agent exited): every question, pending or later, goes to the user.
     owner_gone: Option<String>,
+    /// The TODO item it works on (`started`'s `item`).
+    item: Option<String>,
+    /// The repository of its directory (`started`'s `repo`): the parent of
+    /// its git common directory.
+    repo: Option<String>,
+    /// When its `started` and the event that made it gone were recorded,
+    /// in Unix milliseconds ([`Self::mark_seq`]).
+    started_ms: Option<u64>,
+    ended_ms: Option<u64>,
+    /// The shas its turns' results named on `WORKER-DONE <sha>` lines.
+    done_commits: Vec<String>,
+    /// How many questions it asked.
+    questions_asked: u32,
+    /// It exited or was lost while a turn ran.
+    ended_mid_turn: bool,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -489,6 +505,13 @@ impl Status {
             owner_session: None,
             acked_seq: 0,
             owner_gone: None,
+            item: None,
+            repo: None,
+            started_ms: None,
+            ended_ms: None,
+            done_commits: Vec::new(),
+            questions_asked: 0,
+            ended_mid_turn: false,
         }
     }
 
@@ -579,11 +602,13 @@ impl Status {
         }
     }
 
-    /// Marks what the event just folded in, which got `seq`, changed: the
-    /// questions it asked, the turn it began, ended or the end it brought.
+    /// Marks what the event just folded in, which got `seq` and was
+    /// recorded at `ts_ms`, changed: the questions it asked, the start, the
+    /// turn it began, ended or the end it brought.
     fn mark_seq(
         &mut self,
         seq: i64,
+        ts_ms: u64,
         before: &Before,
         direction: Direction,
         record: &store::Recorded<'_>,
@@ -602,6 +627,9 @@ impl Status {
             store::Recorded::Event(event) => event.get("type").and_then(Value::as_str),
             store::Recorded::Raw(_) => None,
         };
+        if (direction, kind) == (Direction::Herdr, Some("started")) {
+            self.started_ms.get_or_insert(ts_ms);
+        }
         if (direction, kind) == (Direction::In, Some("user")) && !self.is_gone() {
             self.turn_seq = Some(seq);
         }
@@ -611,6 +639,7 @@ impl Status {
         }
         if self.is_gone() && (self.exited, self.lost) != before.gone {
             self.gone_seq = seq;
+            self.ended_ms = Some(ts_ms);
             // The exit its owner asked for is handled already, with all
             // that came before it.
             if self.exited && self.stop_by_owner {
@@ -701,6 +730,15 @@ impl Status {
                     .is_none_or(|pid| !crate::platform::process_group_alive(pid)))
     }
 
+    /// Whether a turn runs: the first has not ended yet, or a prompt began
+    /// another after the last one ended.
+    fn mid_turn(&self) -> bool {
+        !matches!(
+            self.state,
+            WorkerState::Finished | WorkerState::Failed | WorkerState::Interrupted
+        )
+    }
+
     fn turn_ended(&self) -> bool {
         self.is_gone()
             || matches!(
@@ -775,6 +813,8 @@ impl Status {
                 self.slot = event["folder_slot"]["name"].as_str().map(str::to_owned);
                 self.owner_pane = event["owner"]["pane_id"].as_str().map(str::to_owned);
                 self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
+                self.item = string_field(event, "item");
+                self.repo = string_field(event, "repo");
                 self.pid = event
                     .get("pid")
                     .and_then(Value::as_u64)
@@ -802,6 +842,7 @@ impl Status {
                     .cloned()
                     .and_then(|question| serde_json::from_value(question).ok());
                 if let Some(question) = question {
+                    self.questions_asked += 1;
                     self.questions.push(Pending {
                         question,
                         input: event.get("input").cloned().unwrap_or_else(|| json!({})),
@@ -857,6 +898,7 @@ impl Status {
                 }
             }
             (Direction::Herdr, "exited") => {
+                self.ended_mid_turn = self.mid_turn();
                 let code = event.get("code").and_then(Value::as_i64);
                 // A refused turn can end with `result/success` and then
                 // exit code 1 (T3-1): that turn is `failed`, not `exited`.
@@ -897,6 +939,7 @@ impl Status {
                 // A worker between turns lost nothing but its process: it
                 // keeps its last turn's state. A stop request stays, so a
                 // later `exited` is judged as the stop's.
+                self.ended_mid_turn = self.mid_turn();
                 self.clear_questions("the worker was lost");
                 self.lost = true;
                 if matches!(
@@ -970,6 +1013,17 @@ impl Status {
                         .unwrap_or_default(),
                 };
                 self.state = turn_end_state(&result);
+                for sha in result
+                    .text
+                    .as_deref()
+                    .map(done_commits)
+                    .into_iter()
+                    .flatten()
+                {
+                    if !self.done_commits.contains(&sha) {
+                        self.done_commits.push(sha);
+                    }
+                }
                 self.clear_questions("its turn ended");
                 self.turns += 1;
                 self.last_result = Some(result);
@@ -1017,6 +1071,44 @@ impl Status {
             owner_pane_id: self.owner_pane.clone(),
             owner_session_id: self.owner_session.clone(),
             acked_seq: (self.acked_seq > 0).then_some(self.acked_seq),
+            item: self.item.clone(),
+            repo: self.repo.clone(),
+        }
+    }
+
+    fn run(&self, journal_path: &Path) -> WorkerRun {
+        // Judged by how its last turn ended, unless it ended in a turn.
+        let last_turn = self.last_result.as_ref().map(turn_end_state);
+        let outcome = if self.degraded.is_some() {
+            WorkerRunOutcome::Degraded
+        } else if !self.is_gone() {
+            WorkerRunOutcome::Running
+        } else if self.ended_mid_turn {
+            if self.lost {
+                WorkerRunOutcome::Lost
+            } else {
+                WorkerRunOutcome::Exited
+            }
+        } else if self.state == WorkerState::Failed || last_turn == Some(WorkerState::Failed) {
+            WorkerRunOutcome::Failed
+        } else if last_turn == Some(WorkerState::Finished) {
+            WorkerRunOutcome::Finished
+        } else if self.lost {
+            WorkerRunOutcome::Lost
+        } else {
+            WorkerRunOutcome::Exited
+        };
+        WorkerRun {
+            worker_id: self.worker_id.clone(),
+            name: self.name.clone(),
+            repo: self.repo.clone(),
+            started_ms: self.started_ms,
+            ended_ms: self.ended_ms,
+            outcome,
+            turns: self.turns,
+            commits: self.done_commits.clone(),
+            questions: self.questions_asked,
+            journal_path: journal_path.display().to_string(),
         }
     }
 }
@@ -1062,6 +1154,47 @@ fn turn_end_state(result: &WorkerTurnResult) -> WorkerState {
     } else {
         WorkerState::Failed
     }
+}
+
+/// The commit shas a turn's reply names on its `WORKER-DONE <sha> | ...`
+/// lines (the worker's last line, by the coordinators' convention).
+fn done_commits(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("WORKER-DONE "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter(|sha| (7..=64).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Whether `item` is a TODO item's stable id: `t-` and 8 lowercase
+/// base32 characters (`scripts/todo_edit.py`).
+fn is_item_id(item: &str) -> bool {
+    item.strip_prefix("t-").is_some_and(|body| {
+        body.len() == 8
+            && body
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c))
+    })
+}
+
+fn check_item_id(item: &str) -> Result<(), WorkerError> {
+    if is_item_id(item) {
+        Ok(())
+    } else {
+        Err(WorkerError::Invalid(format!(
+            "item {item:?} is not a TODO item id (t- and 8 characters a-z, 2-7)"
+        )))
+    }
+}
+
+/// The repository `dir` is in: the parent of its git common directory, the
+/// same for every worktree of it.
+fn repository_of(dir: &Path) -> Option<String> {
+    let space = crate::workspace::git_space_metadata(dir)?;
+    Path::new(&space.key)
+        .parent()
+        .map(|repo| repo.display().to_string())
 }
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
@@ -1214,7 +1347,7 @@ fn replay_journal(worker_id: &str, path: &Path) -> std::io::Result<Status> {
             .seq
             .filter(|seq| *seq > status.last_seq)
             .unwrap_or(status.last_seq + 1);
-        status.mark_seq(seq, &before, line.direction, &record);
+        status.mark_seq(seq, line.ts_ms, &before, line.direction, &record);
     }
     status.mark_unfinished_takeover();
     Ok(status)
@@ -1246,7 +1379,7 @@ fn import_journal(store: &store::Store, worker_id: &str, path: &Path) -> Result<
                     ts_ms: line.ts_ms,
                 })?;
                 tx.questions(seq, &before.pending, &status)?;
-                status.mark_seq(seq, &before, line.direction, &record);
+                status.mark_seq(seq, line.ts_ms, &before, line.direction, &record);
             }
             tx.worker(&status, seq)
         })
@@ -2094,6 +2227,9 @@ impl WorkerSupervisor {
         if prompt.trim().is_empty() {
             return Err(WorkerError::Invalid("prompt must not be empty".into()));
         }
+        if let Some(item) = &params.item {
+            check_item_id(item)?;
+        }
         if !crate::platform::WORKER_SANDBOX_SUPPORTED {
             return Err(WorkerError::Unsupported(
                 "headless workers run Bash in Claude Code's sandbox, which this platform does not \
@@ -2246,6 +2382,8 @@ impl WorkerSupervisor {
                 "pane_id": pane_id,
                 "session_id": params.owner_session_id,
             })),
+            "item": params.item,
+            "repo": repository_of(&cwd_real),
             "folder_slot": slot.as_ref().map(|slot| json!({
                 "name": params.folder_slot,
                 "branch": slot.branch,
@@ -2414,7 +2552,13 @@ impl WorkerSupervisor {
                         record: &record,
                         ts_ms,
                     })?;
-                    status.mark_seq(seq.max(status.last_seq + 1), &before, direction, &record);
+                    status.mark_seq(
+                        seq.max(status.last_seq + 1),
+                        ts_ms,
+                        &before,
+                        direction,
+                        &record,
+                    );
                     if !foreign {
                         tx.questions(seq, &before.pending, status)?;
                         tx.worker(status, seq)?;
@@ -2438,7 +2582,7 @@ impl WorkerSupervisor {
                 warn!(%error, worker_id = status.worker_id, "worker event not stored");
                 status.degraded = Some(error);
                 // Marked again past whatever a failed commit marked.
-                status.mark_seq(status.last_seq + 1, &before, direction, &record);
+                status.mark_seq(status.last_seq + 1, ts_ms, &before, direction, &record);
                 None
             }
         };
@@ -2580,6 +2724,52 @@ impl WorkerSupervisor {
 
     pub(crate) fn status(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
         self.with_entry(worker_id, |entry| entry.status.info(&entry.journal_path))
+    }
+
+    /// Every worker's run grouped by its item and repository, the group
+    /// whose first run started first first, and the runs without an item.
+    pub(crate) fn runs(
+        &self,
+        params: &WorkerRunsParams,
+    ) -> Result<(Vec<WorkerItemRuns>, Vec<WorkerRun>), WorkerError> {
+        if let Some(item) = &params.item {
+            check_item_id(item)?;
+        }
+        // Any directory in the repository names it.
+        let repo = params
+            .repo
+            .as_ref()
+            .map(|dir| repository_of(Path::new(dir)).unwrap_or_else(|| dir.clone()));
+        let registry = lock(&self.shared.registry);
+        let mut items: Vec<WorkerItemRuns> = Vec::new();
+        let mut unassigned = Vec::new();
+        // The registry is ordered by worker number, which is the start order.
+        for entry in registry.workers.values() {
+            let status = &entry.status;
+            if repo.is_some() && status.repo != repo {
+                continue;
+            }
+            if params.item.is_some() && status.item != params.item {
+                continue;
+            }
+            let run = status.run(&entry.journal_path);
+            let Some(item) = &status.item else {
+                unassigned.push(run);
+                continue;
+            };
+            match items
+                .iter_mut()
+                .find(|group| group.item == *item && group.repo == status.repo)
+            {
+                Some(group) => group.runs.push(run),
+                None => items.push(WorkerItemRuns {
+                    item: item.clone(),
+                    repo: status.repo.clone(),
+                    runs: vec![run],
+                }),
+            }
+        }
+        Ok((items, unassigned))
     }
 
     pub(crate) fn list(&self) -> Vec<WorkerInfo> {
