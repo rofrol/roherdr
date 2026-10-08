@@ -31,6 +31,7 @@ mod tests;
 
 pub(crate) use log::log_lines;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Write};
@@ -39,13 +40,16 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::api::schema::{
-    WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
-    WorkerInterruptParams, WorkerKillReport, WorkerQuestion, WorkerQuestionKind, WorkerStartParams,
-    WorkerState, WorkerTurnResult, WorkerWaitUntil,
+    WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
+    WorkerDecision, WorkerInfo, WorkerInterruptParams, WorkerKillParams, WorkerKillReport,
+    WorkerPromptParams, WorkerQuestion, WorkerQuestionKind, WorkerQuestionState,
+    WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerTurnResult, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -215,8 +219,31 @@ pub(crate) enum WorkerError {
     /// An interrupt named a turn that has already ended.
     TurnEnded(String),
     Unsupported(String),
+    /// A command id was reused with another method or other parameters.
+    CommandConflict(String),
+    /// A command id whose command a server restart cut off before its
+    /// outcome was stored.
+    CommandInterrupted(String),
+    /// The refusal a command id got the first time, returned again.
+    Replayed(&'static str, String),
     Io(std::io::Error),
 }
+
+/// Every code a [`WorkerError`] has, so a stored refusal keeps its code.
+const WORKER_ERROR_CODES: &[&str] = &[
+    "worker_not_found",
+    "invalid_request",
+    "worker_not_running",
+    "worker_busy",
+    "worker_no_question",
+    "worker_question_gone",
+    "worker_needs_force",
+    "worker_turn_ended",
+    "worker_unsupported",
+    "worker_command_conflict",
+    "worker_command_interrupted",
+    "worker_io_error",
+];
 
 impl WorkerError {
     pub(crate) fn code(&self) -> &'static str {
@@ -230,8 +257,21 @@ impl WorkerError {
             Self::NeedsForce(_) => "worker_needs_force",
             Self::TurnEnded(_) => "worker_turn_ended",
             Self::Unsupported(_) => "worker_unsupported",
+            Self::CommandConflict(_) => "worker_command_conflict",
+            Self::CommandInterrupted(_) => "worker_command_interrupted",
+            Self::Replayed(code, _) => code,
             Self::Io(_) => "worker_io_error",
         }
+    }
+
+    /// A refusal stored with a command id, as it is returned again.
+    fn replayed(code: &str, message: String) -> Self {
+        let code = WORKER_ERROR_CODES
+            .iter()
+            .find(|known| **known == code)
+            .copied()
+            .unwrap_or("worker_io_error");
+        Self::Replayed(code, message)
     }
 }
 
@@ -246,7 +286,10 @@ impl std::fmt::Display for WorkerError {
             | Self::QuestionGone(message)
             | Self::NeedsForce(message)
             | Self::TurnEnded(message)
-            | Self::Unsupported(message) => f.write_str(message),
+            | Self::Unsupported(message)
+            | Self::CommandConflict(message)
+            | Self::CommandInterrupted(message)
+            | Self::Replayed(_, message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -363,19 +406,27 @@ struct Status {
 /// How many settled questions a worker remembers for `worker_question_gone`.
 const RESOLVED_QUESTIONS_KEPT: usize = 32;
 
-/// A question with the tool input its answer is built from.
+/// An open question with the tool input its answer is built from.
 #[derive(Debug, Clone)]
 struct Pending {
     question: WorkerQuestion,
     input: Value,
     /// The `seq` of the event that asked it.
     asked_seq: i64,
+    /// Its answer is stored and being written (`answer_intent`): it is no
+    /// longer answerable, and only the answer's outcome (`answer_sent`,
+    /// `answer_failed`, `answer_expired`) settles it, never a cleanup.
+    answering: bool,
+    /// What ended its turn or its worker while its answer was in flight: a
+    /// failed write then settles it so instead of making it pending again.
+    cleared: Option<String>,
 }
 
 /// What an event's `seq` marks, taken before the event is folded in
 /// ([`Status::before`], [`Status::mark_seq`]).
 struct Before {
-    pending: Vec<String>,
+    /// The open questions, each with whether its answer was in flight.
+    pending: Vec<(String, bool)>,
     turn_ended: bool,
     gone: (bool, bool),
 }
@@ -419,7 +470,7 @@ impl Status {
 
     /// Drops an answered or cancelled question, recording `how` it ended;
     /// the turn goes on once none is left.
-    fn settle_question(&mut self, request_id: Option<&str>, how: &'static str) {
+    fn settle_question(&mut self, request_id: Option<&str>, how: &str) {
         if let Some(request_id) = request_id {
             let before = self.questions.len();
             self.questions
@@ -433,11 +484,42 @@ impl Status {
         }
     }
 
-    /// Drops every pending question, recording `how` they ended.
-    fn clear_questions(&mut self, how: &'static str) {
-        for pending in std::mem::take(&mut self.questions) {
-            self.remember_resolved(pending.question.request_id, how);
+    /// Drops every pending question, recording `how` they ended. One whose
+    /// answer is in flight stays until the answer's outcome settles it
+    /// (the cleanup guard): the answer may already be on its way.
+    fn clear_questions(&mut self, how: &str) {
+        let mut in_flight = Vec::new();
+        for mut pending in std::mem::take(&mut self.questions) {
+            if pending.answering {
+                pending.cleared.get_or_insert_with(|| how.to_owned());
+                in_flight.push(pending);
+            } else {
+                self.remember_resolved(pending.question.request_id, how);
+            }
         }
+        self.questions = in_flight;
+    }
+
+    /// Writing an answer failed: the question is pending again, or, when
+    /// its turn or worker ended meanwhile, settled as that cleanup said.
+    fn answer_failed(&mut self, request_id: Option<&str>) {
+        let Some(pending) = self
+            .questions
+            .iter_mut()
+            .find(|pending| Some(pending.question.request_id.as_str()) == request_id)
+        else {
+            return;
+        };
+        match pending.cleared.clone() {
+            Some(how) => self.settle_question(request_id, &how),
+            None => pending.answering = false,
+        }
+    }
+
+    fn is_answering(&self, request_id: Option<&str>) -> bool {
+        self.questions.iter().any(|pending| {
+            pending.answering && Some(pending.question.request_id.as_str()) == request_id
+        })
     }
 
     fn remember_resolved(&mut self, request_id: String, how: &str) {
@@ -456,17 +538,18 @@ impl Status {
             .map(|(_, how)| how.as_str())
     }
 
-    /// The ids of the pending questions, to tell which an event settled.
-    fn pending_ids(&self) -> Vec<String> {
+    /// The ids of the open questions, each with whether its answer is in
+    /// flight, to tell what an event changed.
+    fn open_questions(&self) -> Vec<(String, bool)> {
         self.questions
             .iter()
-            .map(|pending| pending.question.request_id.clone())
+            .map(|pending| (pending.question.request_id.clone(), pending.answering))
             .collect()
     }
 
     fn before(&self) -> Before {
         Before {
-            pending: self.pending_ids(),
+            pending: self.open_questions(),
             turn_ended: self.turn_ended(),
             gone: (self.exited, self.lost),
         }
@@ -483,7 +566,11 @@ impl Status {
     ) {
         self.last_seq = seq;
         for pending in &mut self.questions {
-            if !before.pending.contains(&pending.question.request_id) {
+            if !before
+                .pending
+                .iter()
+                .any(|(id, _)| *id == pending.question.request_id)
+            {
                 pending.asked_seq = seq;
             }
         }
@@ -578,6 +665,21 @@ impl Status {
                     self.takeover_unfinished = false;
                     return;
                 }
+                // An answer's outcome also comes after the turn or the
+                // worker ended while it was in flight.
+                "answer_sent" => {
+                    self.settle_question(event["request_id"].as_str(), "answered");
+                    return;
+                }
+                "answer_failed" => {
+                    self.answer_failed(event["request_id"].as_str());
+                    return;
+                }
+                "answer_expired" => {
+                    let how = string_field(event, "how").unwrap_or_else(|| "expired".into());
+                    self.settle_question(event["request_id"].as_str(), &how);
+                    return;
+                }
                 _ => {}
             }
         }
@@ -626,11 +728,25 @@ impl Status {
                         question,
                         input: event.get("input").cloned().unwrap_or_else(|| json!({})),
                         asked_seq: 0,
+                        answering: false,
+                        cleared: None,
                     });
                 }
             }
+            // A journal from before the answer outbox settled the question
+            // with its answer.
             (Direction::Herdr, "answer") => {
                 self.settle_question(event["request_id"].as_str(), "answered");
+            }
+            (Direction::Herdr, "answer_intent") => {
+                let request_id = event["request_id"].as_str();
+                if let Some(pending) = self
+                    .questions
+                    .iter_mut()
+                    .find(|pending| Some(pending.question.request_id.as_str()) == request_id)
+                {
+                    pending.answering = true;
+                }
             }
             (Direction::Herdr, "signal") => {
                 if event["signal"].as_str() == Some("SIGTERM") {
@@ -712,7 +828,11 @@ impl Status {
                 }
             }
             (Direction::In, "control_response") => {
-                self.settle_question(event["response"]["request_id"].as_str(), "answered");
+                // An answer's own line: `answer_sent` settles it once written.
+                let request_id = event["response"]["request_id"].as_str();
+                if !self.is_answering(request_id) {
+                    self.settle_question(request_id, "answered");
+                }
             }
             (Direction::Out, "control_cancel_request") => {
                 self.settle_question(event["request_id"].as_str(), "cancelled");
@@ -771,10 +891,15 @@ impl Status {
             tool_sessions: self.tool_sessions.keys().copied().collect(),
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
-            questions: self
-                .questions
+            questions: self.questions.iter().map(Pending::shown).collect(),
+            settled_questions: self
+                .resolved
                 .iter()
-                .map(|pending| pending.question.clone())
+                .map(|(request_id, how)| WorkerSettledQuestion {
+                    request_id: request_id.clone(),
+                    state: settled_state(how),
+                    how: how.clone(),
+                })
                 .collect(),
             stop_requested_ms: self.stop_requested_ms,
             takeover_ms: self.takeover_ms,
@@ -787,6 +912,28 @@ impl Status {
             seq: Some(self.last_seq),
             turn_seq: self.turn_seq,
         }
+    }
+}
+
+impl Pending {
+    /// The question as the API shows it, with where its answer is.
+    fn shown(&self) -> WorkerQuestion {
+        let mut question = self.question.clone();
+        question.state = if self.answering {
+            WorkerQuestionState::Answering
+        } else {
+            WorkerQuestionState::Pending
+        };
+        question
+    }
+}
+
+/// The state of a question that ended `how`.
+fn settled_state(how: &str) -> WorkerQuestionState {
+    match store::question_state(how) {
+        "answered" => WorkerQuestionState::Answered,
+        "cancelled" => WorkerQuestionState::Cancelled,
+        _ => WorkerQuestionState::Expired,
     }
 }
 
@@ -1011,11 +1158,37 @@ fn journal_ownership(journal_path: &Path) -> std::io::Result<Ownership> {
 struct Live {
     number: u64,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// Fails the next write to the pipe, as a broken pipe would.
+    #[cfg(test)]
+    fail_next_write: std::sync::atomic::AtomicBool,
 }
 
 impl Live {
+    fn new(number: u64, stdin: ChildStdin) -> Self {
+        Self {
+            number,
+            stdin: Arc::new(Mutex::new(Some(stdin))),
+            #[cfg(test)]
+            fail_next_write: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
     fn send(&self, supervisor: &WorkerSupervisor, event: &Value) -> Result<i64, WorkerError> {
-        self.send_checked(supervisor, event, |_| Ok(()))
+        self.send_checked(supervisor, event, None, |_| Ok(()))
+    }
+
+    fn write_line(&self, pipe: &mut ChildStdin, line: &str) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_write
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "forced write failure",
+            ));
+        }
+        pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush())
     }
 
     /// Records one line for the CLI, then writes it, both under the input
@@ -1025,11 +1198,13 @@ impl Live {
     /// `check` runs on the worker's status under the registry lock, in the
     /// same hold as the record, so two senders cannot both pass it; when it
     /// refuses, nothing is recorded or sent. A failed write is recorded as
-    /// `input_failed` naming the line's `seq`. Returns that `seq`.
+    /// `input_failed` naming the line's `seq`. Returns that `seq`. A
+    /// command's `receipt` is reserved with the line's record.
     fn send_checked(
         &self,
         supervisor: &WorkerSupervisor,
         event: &Value,
+        receipt: Option<&Receipt>,
         check: impl FnOnce(&Status) -> Result<(), WorkerError>,
     ) -> Result<i64, WorkerError> {
         let mut stdin = lock(&self.stdin);
@@ -1044,11 +1219,12 @@ impl Live {
                 return Err(WorkerError::NotFound(format!("w{}", self.number)));
             };
             check(&entry.status)?;
-            supervisor.commit_locked(
+            supervisor.commit_command_locked(
                 &mut registry,
                 self.number,
                 Direction::In,
                 store::Recorded::Event(event),
+                receipt,
             )
         };
         supervisor.shared.changed.notify_all();
@@ -1058,7 +1234,7 @@ impl Live {
         let seq = committed.seq.unwrap_or_default();
         let mut line = event.to_string();
         line.push('\n');
-        if let Err(error) = pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush()) {
+        if let Err(error) = self.write_line(pipe, &line) {
             supervisor.record(
                 self.number,
                 Direction::Herdr,
@@ -1120,6 +1296,61 @@ struct Committed {
 struct Registry {
     next_number: u64,
     workers: BTreeMap<u64, Entry>,
+    /// The client command ids this server runs now, each with its method
+    /// and parameters; a repeat waits for the outcome ([`WorkerSupervisor::command`]).
+    commands: BTreeMap<String, (&'static str, String)>,
+}
+
+/// A client command id while its command runs: reserved in the store with
+/// the command's first event, settled with its outcome.
+pub(crate) struct Receipt {
+    command_id: String,
+    method: &'static str,
+    params: String,
+    /// An event of the command has reserved it in the store.
+    reserved: Cell<bool>,
+}
+
+impl Receipt {
+    fn row(&self) -> store::NewReceipt<'_> {
+        store::NewReceipt {
+            command_id: &self.command_id,
+            method: self.method,
+            params: &self.params,
+        }
+    }
+}
+
+/// What [`WorkerSupervisor::claim_command`] found for a command id.
+enum Claim<'a> {
+    /// New: this call runs it; the guard lets the id go when dropped.
+    Run(InFlight<'a>),
+    /// Seen before: its stored outcome.
+    Stored(store::StoredReceipt),
+}
+
+/// Holds a command id in [`Registry::commands`] while its command runs.
+struct InFlight<'a> {
+    supervisor: &'a WorkerSupervisor,
+    command_id: String,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        lock(&self.supervisor.shared.registry)
+            .commands
+            .remove(&self.command_id);
+        self.supervisor.shared.changed.notify_all();
+    }
+}
+
+/// A command's parameters without its id, as a receipt compares them.
+fn command_params(params: &impl Serialize) -> Value {
+    let mut value = serde_json::to_value(params).unwrap_or(Value::Null);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("command_id");
+    }
+    value
 }
 
 struct Shared {
@@ -1383,7 +1614,47 @@ impl WorkerSupervisor {
                     store::Recorded::Event(&lost),
                 );
             }
-            registry.workers[&number].status.process_gone()
+            let status = &registry.workers[&number].status;
+            let process_gone = status.process_gone();
+            let answering: Vec<String> = status
+                .questions
+                .iter()
+                .filter(|pending| pending.answering)
+                .map(|pending| pending.question.request_id.clone())
+                .collect();
+            // An answer whose write a previous server did not confirm: its
+            // worker can no longer take it, unless its process outlived
+            // that server, which is reported, not guessed at.
+            for request_id in &answering {
+                if process_gone {
+                    let expired = json!({
+                        "type": "answer_expired",
+                        "request_id": request_id,
+                        "how": "expired: a server restart found its answer not confirmed sent",
+                    });
+                    self.commit_locked(
+                        &mut registry,
+                        number,
+                        Direction::Herdr,
+                        store::Recorded::Event(&expired),
+                    );
+                } else {
+                    let worker_id = format!("w{number}");
+                    warn!(
+                        worker_id,
+                        request_id,
+                        "an answer in flight at a server restart; its worker still runs"
+                    );
+                    if let Some(entry) = registry.workers.get_mut(&number) {
+                        entry.status.degraded = Some(format!(
+                            "the answer to question {request_id} was not confirmed sent before \
+                             a server restart, and the worker's process still runs outside this \
+                             server: it may or may not have received it"
+                        ));
+                    }
+                }
+            }
+            process_gone
         };
         if process_gone {
             remove_temp_dir(&temp_dir_path(&self.shared.dir, &format!("w{number}")));
@@ -1504,7 +1775,27 @@ impl WorkerSupervisor {
             .collect())
     }
 
+    /// Starts a worker. With a command id, a repeat returns the worker that
+    /// id started, as the first reply showed it; one a server restart cut
+    /// off returns that worker's status now.
     pub(crate) fn start(&self, params: &WorkerStartParams) -> Result<WorkerInfo, WorkerError> {
+        self.command(
+            params.command_id.as_deref(),
+            "worker.start",
+            params,
+            |stored| match &stored.worker_id {
+                Some(worker_id) => self.status(worker_id),
+                None => Err(Self::cut_off(stored)),
+            },
+            |receipt| self.start_once(params, receipt),
+        )
+    }
+
+    fn start_once(
+        &self,
+        params: &WorkerStartParams,
+        receipt: Option<&Receipt>,
+    ) -> Result<WorkerInfo, WorkerError> {
         let cwd = params.cwd.as_str();
         let prompt = params.prompt.as_str();
         let model = params.model.as_deref();
@@ -1680,20 +1971,18 @@ impl WorkerSupervisor {
                 "killed_leftover_pids": slot_killed,
             })),
         });
-        let live = Arc::new(Live {
-            number,
-            stdin: Arc::new(Mutex::new(Some(stdin))),
-        });
+        let live = Arc::new(Live::new(number, stdin));
         {
             let mut registry = lock(&self.shared.registry);
             let mut entry = Entry::new(Status::new(worker_id.clone()), journal_path);
             entry.live = Some(Arc::clone(&live));
             registry.workers.insert(number, entry);
-            self.commit_locked(
+            self.commit_command_locked(
                 &mut registry,
                 number,
                 Direction::Herdr,
                 store::Recorded::Event(&started),
+                receipt,
             );
             self.commit_locked(
                 &mut registry,
@@ -1748,18 +2037,35 @@ impl WorkerSupervisor {
 
     /// Records one event of a worker and wakes those waiting on it.
     fn record(&self, number: u64, direction: Direction, event: &Value) {
-        self.record_any(number, direction, store::Recorded::Event(event));
+        self.record_any(number, direction, store::Recorded::Event(event), None);
+    }
+
+    /// Records one event of a client command ([`Self::commit_command_locked`]).
+    fn record_command(
+        &self,
+        number: u64,
+        direction: Direction,
+        event: &Value,
+        receipt: Option<&Receipt>,
+    ) {
+        self.record_any(number, direction, store::Recorded::Event(event), receipt);
     }
 
     /// Records a line the CLI wrote that is not a JSON event.
     fn record_raw(&self, number: u64, direction: Direction, line: &str) {
-        self.record_any(number, direction, store::Recorded::Raw(line));
+        self.record_any(number, direction, store::Recorded::Raw(line), None);
     }
 
-    fn record_any(&self, number: u64, direction: Direction, record: store::Recorded<'_>) {
+    fn record_any(
+        &self,
+        number: u64,
+        direction: Direction,
+        record: store::Recorded<'_>,
+        receipt: Option<&Receipt>,
+    ) {
         let committed = {
             let mut registry = lock(&self.shared.registry);
-            self.commit_locked(&mut registry, number, direction, record)
+            self.commit_command_locked(&mut registry, number, direction, record, receipt)
         };
         self.shared.changed.notify_all();
         if committed.shown_changed {
@@ -1786,6 +2092,21 @@ impl WorkerSupervisor {
         direction: Direction,
         record: store::Recorded<'_>,
     ) -> Committed {
+        self.commit_command_locked(registry, number, direction, record, None)
+    }
+
+    /// [`Self::commit_locked`] for an event of a client command: its
+    /// `receipt`, if not reserved yet, is reserved in the same transaction
+    /// as the event.
+    fn commit_command_locked(
+        &self,
+        registry: &mut Registry,
+        number: u64,
+        direction: Direction,
+        record: store::Recorded<'_>,
+        receipt: Option<&Receipt>,
+    ) -> Committed {
+        let receipt = receipt.filter(|receipt| !receipt.reserved.get());
         let Some(entry) = registry.workers.get_mut(&number) else {
             return Committed {
                 shown_changed: false,
@@ -1814,13 +2135,21 @@ impl WorkerSupervisor {
                         tx.questions(seq, &before.pending, status)?;
                         tx.worker(status, seq)?;
                     }
+                    if let Some(receipt) = receipt {
+                        tx.reserve_receipt(&receipt.row(), &status.worker_id, ts_ms)?;
+                    }
                     Ok(seq)
                 })
                 .map_err(|error| format!("a worker store write failed: {error}")),
             Err(error) => Err(error.clone()),
         };
         let seq = match written {
-            Ok(seq) => Some(seq),
+            Ok(seq) => {
+                if let Some(receipt) = receipt {
+                    receipt.reserved.set(true);
+                }
+                Some(seq)
+            }
             Err(error) => {
                 warn!(%error, worker_id = status.worker_id, "worker event not stored");
                 status.degraded = Some(error);
@@ -1887,6 +2216,7 @@ impl WorkerSupervisor {
                     .status
                     .questions
                     .iter()
+                    .filter(|pending| !pending.answering)
                     .map(|pending| PendingWorkerQuestion {
                         worker_id: entry.status.worker_id.clone(),
                         cwd: entry.status.cwd.clone(),
@@ -1966,11 +2296,7 @@ impl WorkerSupervisor {
             let status = &entry.status;
             status.attention(after).map(|reason| Attention {
                 reason,
-                questions: status
-                    .questions
-                    .iter()
-                    .map(|pending| pending.question.clone())
-                    .collect(),
+                questions: status.questions.iter().map(Pending::shown).collect(),
                 seq: status.last_seq,
                 worker: status.info(&entry.journal_path),
             })
@@ -2032,16 +2358,44 @@ impl WorkerSupervisor {
         }
     }
 
+    /// [`Self::prompt_command`] without a command id.
+    #[cfg(test)]
+    pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
+        self.prompt_command(&WorkerPromptParams {
+            worker_id: worker_id.to_owned(),
+            text: text.to_owned(),
+            command_id: None,
+        })
+    }
+
     /// Sends the next user message. Accepted only between turns, checked in
     /// the same hold as its record, so a `worker.wait` after it waits for
     /// this turn's end and two prompts never both start one. The reply's
     /// `turn_seq` is the `seq` of the message it appended.
-    pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
+    pub(crate) fn prompt_command(
+        &self,
+        params: &WorkerPromptParams,
+    ) -> Result<WorkerInfo, WorkerError> {
+        self.command(
+            params.command_id.as_deref(),
+            "worker.prompt",
+            params,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.prompt_once(&params.worker_id, &params.text, receipt),
+        )
+    }
+
+    fn prompt_once(
+        &self,
+        worker_id: &str,
+        text: &str,
+        receipt: Option<&Receipt>,
+    ) -> Result<WorkerInfo, WorkerError> {
         if text.trim().is_empty() {
             return Err(WorkerError::Invalid("text must not be empty".into()));
         }
         let (_, live, _) = self.live(worker_id)?;
-        let turn_seq = live.send_checked(self, &user_message(text), |status| {
+        let turn_seq = live.send_checked(self, &user_message(text), receipt, |status| {
             if status.takeover_ms.is_some() {
                 return Err(Self::taken_over(worker_id));
             }
@@ -2072,6 +2426,20 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerInterruptParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        self.command(
+            params.command_id.as_deref(),
+            "worker.interrupt",
+            params,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.interrupt_once(params, receipt),
+        )
+    }
+
+    fn interrupt_once(
+        &self,
+        params: &WorkerInterruptParams,
+        receipt: Option<&Receipt>,
+    ) -> Result<WorkerInfo, WorkerError> {
         let worker_id = params.worker_id.as_str();
         let (number, live, _) = self.live(worker_id)?;
         let mut interrupted = None;
@@ -2080,7 +2448,7 @@ impl WorkerSupervisor {
             "request_id": format!("herdr-interrupt-{number}-{}", now_ms()),
             "request": {"subtype": "interrupt"},
         });
-        live.send_checked(self, &request, |status| {
+        live.send_checked(self, &request, receipt, |status| {
             let running = (!status.turn_ended()).then_some(status.turn_seq).flatten();
             if let Some(turn) = params.turn {
                 match status.turn_seq {
@@ -2112,6 +2480,28 @@ impl WorkerSupervisor {
     /// alive. A repeated stop sends nothing. It never escalates; `worker.kill`
     /// does.
     pub(crate) fn stop(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
+        self.stop_once(worker_id, None)
+    }
+
+    /// [`Self::stop`] with the client's command id.
+    pub(crate) fn stop_command(
+        &self,
+        target: &WorkerCommandTarget,
+    ) -> Result<WorkerInfo, WorkerError> {
+        self.command(
+            target.command_id.as_deref(),
+            "worker.stop",
+            target,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.stop_once(&target.worker_id, receipt),
+        )
+    }
+
+    fn stop_once(
+        &self,
+        worker_id: &str,
+        receipt: Option<&Receipt>,
+    ) -> Result<WorkerInfo, WorkerError> {
         let (number, live, status) = self.live(worker_id)?;
         if status.stop_requested_ms.is_some() {
             return self.status(worker_id);
@@ -2121,7 +2511,7 @@ impl WorkerSupervisor {
             .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} has no process")))?;
         self.record_tool_sessions(number, pid);
         let signal = json!({"type": "signal", "signal": "SIGTERM", "at_ms": now_ms()});
-        self.record(number, Direction::Herdr, &signal);
+        self.record_command(number, Direction::Herdr, &signal, receipt);
         live.close_input();
         crate::platform::signal_process_group(pid, Signal::Terminate)?;
         self.status(worker_id)
@@ -2129,10 +2519,31 @@ impl WorkerSupervisor {
 
     /// Answers the worker's pending question that `request_id` names, with
     /// the user's decision. Without `request_id` it answers the only pending
-    /// question and refuses when several are pending.
+    /// question and refuses when several are pending. Only a `pending`
+    /// question is answered.
+    ///
+    /// The answer goes out through an outbox: its decision is stored as
+    /// `answer_intent` (the question is then `answering`), then the
+    /// control_response is written to the worker, then `answer_sent` settles
+    /// the question as answered. A failed write records `answer_failed` and
+    /// makes the question pending again, so it can be answered again.
     pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
+        self.command(
+            params.command_id.as_deref(),
+            "worker.answer",
+            params,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.answer_once(params, receipt),
+        )
+    }
+
+    fn answer_once(
+        &self,
+        params: &WorkerAnswerParams,
+        receipt: Option<&Receipt>,
+    ) -> Result<WorkerInfo, WorkerError> {
         let worker_id = params.worker_id.as_str();
-        let (live, request_id, response) = {
+        let (number, live, request_id, response) = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
             let entry = registry
@@ -2140,15 +2551,24 @@ impl WorkerSupervisor {
                 .get_mut(&number)
                 .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
             if let Some(request_id) = params.request_id.as_deref() {
-                let is_pending = entry
+                let open = entry
                     .status
                     .questions
                     .iter()
-                    .any(|pending| pending.question.request_id == request_id);
-                if let (false, Some(how)) = (is_pending, entry.status.resolution(request_id)) {
-                    return Err(WorkerError::QuestionGone(format!(
+                    .find(|pending| pending.question.request_id == request_id);
+                match (open, entry.status.resolution(request_id)) {
+                    (Some(pending), _) if pending.answering => {
+                        return Err(WorkerError::QuestionGone(format!(
+                            "question {request_id} of worker {worker_id} is no longer pending: \
+                             its answer is being sent"
+                        )))
+                    }
+                    (None, Some(how)) => {
+                        return Err(WorkerError::QuestionGone(format!(
                         "question {request_id} of worker {worker_id} is no longer pending: {how}"
-                    )));
+                    )))
+                    }
+                    _ => {}
                 }
             }
             let live = match (&entry.live, entry.status.is_gone()) {
@@ -2162,7 +2582,12 @@ impl WorkerSupervisor {
             if entry.status.takeover_ms.is_some() {
                 return Err(Self::taken_over(worker_id));
             }
-            let questions = &entry.status.questions;
+            let questions: Vec<&Pending> = entry
+                .status
+                .questions
+                .iter()
+                .filter(|pending| !pending.answering)
+                .collect();
             let pending = match params.request_id.as_deref() {
                 Some(request_id) => questions
                     .iter()
@@ -2185,27 +2610,214 @@ impl WorkerSupervisor {
             })?;
             let (response, answers) = answer_response(pending, params)?;
             let request_id = pending.question.request_id.clone();
-            let answer = json!({
-                "type": "answer",
+            let intent = json!({
+                "type": "answer_intent",
                 "request_id": request_id,
                 "tool_name": pending.question.tool_name,
                 "decision": response["behavior"],
                 "answers": answers,
                 "by": "user",
             });
-            // Settled under the lock, so a second answer finds no question.
-            self.commit_locked(
+            // Stored under the lock, so a second answer finds the question
+            // answering and is refused.
+            self.commit_command_locked(
                 &mut registry,
                 number,
                 Direction::Herdr,
-                store::Recorded::Event(&answer),
+                store::Recorded::Event(&intent),
+                receipt,
             );
-            (live, request_id, response)
+            (number, live, request_id, response)
         };
         self.shared.changed.notify_all();
         notify_clients();
-        live.send(self, &control_response(&request_id, response))?;
+        match live.send(self, &control_response(&request_id, response)) {
+            Ok(_) => self.record(
+                number,
+                Direction::Herdr,
+                &json!({"type": "answer_sent", "request_id": request_id}),
+            ),
+            Err(error) => {
+                self.record(
+                    number,
+                    Direction::Herdr,
+                    &json!({
+                        "type": "answer_failed",
+                        "request_id": request_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return Err(error);
+            }
+        }
         self.status(worker_id)
+    }
+
+    /// Runs a client command once per `command_id` (T3 Code's command
+    /// receipts). Without an id, `run` just runs. With one, the id is
+    /// claimed under the registry lock: new, `run` gets its receipt, which
+    /// the command's first event reserves in the store in the same
+    /// transaction, and the outcome (the reply or the refusal) is stored
+    /// with it. Seen before, the stored outcome is returned and nothing
+    /// runs; one that a server restart cut off goes to `cut_off`. A repeat
+    /// while it runs in this server waits for its outcome. The same id with
+    /// another method or other parameters is refused.
+    fn command<T: Serialize + DeserializeOwned>(
+        &self,
+        command_id: Option<&str>,
+        method: &'static str,
+        params: &impl Serialize,
+        cut_off: impl FnOnce(&store::StoredReceipt) -> Result<T, WorkerError>,
+        run: impl FnOnce(Option<&Receipt>) -> Result<T, WorkerError>,
+    ) -> Result<T, WorkerError> {
+        let Some(command_id) = command_id else {
+            return run(None);
+        };
+        if command_id.trim().is_empty() {
+            return Err(WorkerError::Invalid("command_id must not be empty".into()));
+        }
+        let store = self.shared.store.as_ref().map_err(|error| {
+            WorkerError::Io(std::io::Error::other(format!(
+                "{error}; a command_id needs it (send the command without one)"
+            )))
+        })?;
+        let params = command_params(params);
+        let worker_id = params["worker_id"].as_str().map(str::to_owned);
+        let receipt = Receipt {
+            command_id: command_id.to_owned(),
+            method,
+            params: params.to_string(),
+            reserved: Cell::new(false),
+        };
+        let in_flight = match self.claim_command(store, &receipt)? {
+            Claim::Stored(stored) => {
+                return match stored.state {
+                    store::ReceiptState::Accepted => stored
+                        .result
+                        .as_deref()
+                        .and_then(|result| serde_json::from_str(result).ok())
+                        .ok_or_else(|| {
+                            WorkerError::Io(std::io::Error::other(format!(
+                                "the stored reply of command {command_id} is unreadable"
+                            )))
+                        }),
+                    store::ReceiptState::Rejected => {
+                        let refusal: Value = stored
+                            .result
+                            .as_deref()
+                            .and_then(|result| serde_json::from_str(result).ok())
+                            .unwrap_or(Value::Null);
+                        Err(WorkerError::replayed(
+                            refusal["code"].as_str().unwrap_or(""),
+                            refusal["message"].as_str().unwrap_or("refused").to_owned(),
+                        ))
+                    }
+                    store::ReceiptState::Pending => cut_off(&stored),
+                };
+            }
+            Claim::Run(in_flight) => in_flight,
+        };
+        let outcome = run(Some(&receipt));
+        let (state, result) = match &outcome {
+            Ok(reply) => (
+                store::ReceiptState::Accepted,
+                serde_json::to_string(reply).unwrap_or_else(|_| "null".into()),
+            ),
+            Err(error) => (
+                store::ReceiptState::Rejected,
+                json!({"code": error.code(), "message": error.to_string()}).to_string(),
+            ),
+        };
+        let settled = store.transaction(|tx| {
+            tx.settle_receipt(
+                &receipt.row(),
+                worker_id.as_deref(),
+                state,
+                &result,
+                now_ms(),
+            )
+        });
+        if let Err(error) = settled {
+            warn!(%error, command_id, "worker command outcome not stored");
+        }
+        drop(in_flight);
+        outcome
+    }
+
+    /// Claims a command id for this call, or finds its stored outcome; see
+    /// [`Self::command`]. Waits, woken by the outcome, while this server
+    /// runs the same command.
+    fn claim_command<'a>(
+        &'a self,
+        store: &store::Store,
+        receipt: &Receipt,
+    ) -> Result<Claim<'a>, WorkerError> {
+        let conflict = |method: &str| {
+            WorkerError::CommandConflict(format!(
+                "command id {} was used for {method} with other parameters; use a new id",
+                receipt.command_id
+            ))
+        };
+        let mut registry = lock(&self.shared.registry);
+        loop {
+            if let Some((method, params)) = registry.commands.get(&receipt.command_id) {
+                if (*method, params) != (receipt.method, &receipt.params) {
+                    return Err(conflict(method));
+                }
+                registry = self
+                    .shared
+                    .changed
+                    .wait(registry)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                continue;
+            }
+            let stored = store
+                .receipt(&receipt.command_id)
+                .map_err(|error| WorkerError::Io(std::io::Error::other(error.to_string())))?;
+            return match stored {
+                Some(stored)
+                    if (stored.method.as_str(), &stored.params)
+                        != (receipt.method, &receipt.params) =>
+                {
+                    Err(conflict(&stored.method))
+                }
+                Some(stored) => Ok(Claim::Stored(stored)),
+                None => {
+                    registry.commands.insert(
+                        receipt.command_id.clone(),
+                        (receipt.method, receipt.params.clone()),
+                    );
+                    Ok(Claim::Run(InFlight {
+                        supervisor: self,
+                        command_id: receipt.command_id.clone(),
+                    }))
+                }
+            };
+        }
+    }
+
+    /// Why a repeated command id has no outcome: a server restart cut its
+    /// command off.
+    fn cut_off(stored: &store::StoredReceipt) -> WorkerError {
+        WorkerError::CommandInterrupted(format!(
+            "this command id's {} was cut off by a server restart before its outcome was \
+             stored; {} shows what it did",
+            stored.method,
+            match &stored.worker_id {
+                Some(worker_id) => format!("`herdr worker status {worker_id}`"),
+                None => "the worker's status".to_owned(),
+            }
+        ))
+    }
+
+    /// [`Self::kill_command`] without a command id.
+    #[cfg(test)]
+    pub(crate) fn kill(
+        &self,
+        worker_id: &str,
+        force: bool,
+    ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
+        self.kill_once(worker_id, force, None)
     }
 
     /// Force-stops a worker: SIGKILL to its process group, then to the
@@ -2213,10 +2825,24 @@ impl WorkerSupervisor {
     /// recorded ([`plan_session_kill`]). A worker that exited or was lost is
     /// signalled only with `force`; without it the kill is refused with what
     /// it would signal, since its sessions may have ended long ago.
-    pub(crate) fn kill(
+    pub(crate) fn kill_command(
+        &self,
+        params: &WorkerKillParams,
+    ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
+        self.command(
+            params.command_id.as_deref(),
+            "worker.kill",
+            params,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.kill_once(&params.worker_id, params.force, receipt),
+        )
+    }
+
+    fn kill_once(
         &self,
         worker_id: &str,
         force: bool,
+        receipt: Option<&Receipt>,
     ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
         let (number, status) = {
             let registry = lock(&self.shared.registry);
@@ -2237,10 +2863,11 @@ impl WorkerSupervisor {
         }
         if let (Some(pid), false) = (status.pid, status.is_gone()) {
             self.record_tool_sessions(number, pid);
-            self.record(
+            self.record_command(
                 number,
                 Direction::Herdr,
                 &json!({"type": "signal", "signal": "SIGKILL"}),
+                receipt,
             );
             crate::platform::signal_process_group(pid, Signal::Kill)?;
         }
@@ -2251,7 +2878,7 @@ impl WorkerSupervisor {
             crate::platform::session_members,
         );
         crate::platform::signal_processes(&plan.pids, Signal::Kill);
-        self.record(
+        self.record_command(
             number,
             Direction::Herdr,
             &json!({
@@ -2260,6 +2887,7 @@ impl WorkerSupervisor {
                 "unverified_sessions": plan.unverified_sessions,
                 "stale_sessions": plan.stale_sessions,
             }),
+            receipt,
         );
         Ok((self.status(worker_id)?, plan))
     }
@@ -2408,6 +3036,7 @@ impl WorkerSupervisor {
             let interrupt = WorkerInterruptParams {
                 worker_id: worker_id.to_owned(),
                 turn: status.turn_seq,
+                command_id: None,
             };
             match self.interrupt(&interrupt) {
                 // The turn ended on its own meanwhile.
@@ -2828,6 +3457,7 @@ fn question_from_request(request_id: &str, request: &Value, reason: &str) -> Wor
         reason: Some(reason.to_owned()),
         questions,
         since_ms: now_ms(),
+        state: WorkerQuestionState::Pending,
     }
 }
 

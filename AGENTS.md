@@ -466,6 +466,12 @@ questions with
 the `?` list), and read what it did with `herdr worker log <id>`; the
 worker's last line (`WORKER-DONE ...`) is in `herdr worker status <id>`'s
 `last_result.text`.
+Pass `--command-id <id>` to every `start`, `prompt`, `interrupt`, `stop`,
+`kill` and `answer`, derived from the task, not random: for a start the
+TODO item and the branch (`<item>:<branch>`), for an answer the worker and
+the question's request id. A retry after a lost reply then returns the
+first outcome instead of starting a second worker or sending a second
+answer; a new attempt after a refusal needs a new id.
 To let a headless worker build and test herdr in its sandbox, start it
 with `--folder-slot worker --branch <unique branch>` instead of `--cwd
 <worktree>`: it runs in the persistent worktree `../herdr-worktrees/worker`

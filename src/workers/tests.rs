@@ -22,7 +22,10 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::*;
-use crate::api::schema::{WorkerAnswerParams, WorkerDecision, WorkerQuestionKind};
+use crate::api::schema::{
+    WorkerAnswerParams, WorkerCommandTarget, WorkerDecision, WorkerPromptParams,
+    WorkerQuestionKind, WorkerQuestionState,
+};
 
 const STUB: &str = r#"#!/usr/bin/env python3
 import json, os, signal, subprocess, sys, time
@@ -299,6 +302,7 @@ impl Fixture {
             decision,
             answers: answers.iter().map(|answer| (*answer).to_owned()).collect(),
             message: None,
+            command_id: None,
         })
     }
 
@@ -314,6 +318,7 @@ impl Fixture {
             decision: Some(decision),
             answers: Vec::new(),
             message: None,
+            command_id: None,
         })
     }
 
@@ -345,6 +350,7 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
         branch: None,
         base: None,
         fresh_build: false,
+        command_id: None,
     }
 }
 
@@ -748,6 +754,7 @@ fn an_interrupt_ends_the_turn_as_interrupted() {
         .interrupt(&WorkerInterruptParams {
             worker_id: id.clone(),
             turn: None,
+            command_id: None,
         })
         .unwrap();
 
@@ -829,7 +836,7 @@ fn a_request_left_to_the_user_waits_for_the_answer() {
     assert_eq!(worker.state, WorkerState::Finished);
     assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
     assert!(fixture.supervisor.pending_questions().is_empty());
-    let answers = fixture.herdr_events(&id, "answer");
+    let answers = fixture.herdr_events(&id, "answer_intent");
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0]["decision"], "allow");
     assert_eq!(answers[0]["by"], "user");
@@ -926,6 +933,7 @@ fn a_denial_carries_the_users_message() {
             decision: Some(WorkerDecision::Deny),
             answers: Vec::new(),
             message: Some("not today".into()),
+            command_id: None,
         })
         .unwrap();
     let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
@@ -963,7 +971,7 @@ fn ask_user_question_answers_flow_back_as_updated_input() {
         serde_json::json!({"Which colors?": "red, green", "Which file?": "blue.txt"})
     );
     assert_eq!(
-        fixture.herdr_events(&id, "answer")[0]["answers"]["Which file?"],
+        fixture.herdr_events(&id, "answer_intent")[0]["answers"]["Which file?"],
         "blue.txt"
     );
 
@@ -1877,6 +1885,7 @@ impl WorkerSupervisor {
             decision: Some(WorkerDecision::Allow),
             answers: Vec::new(),
             message: None,
+            command_id: None,
         })
     }
 }
@@ -2178,6 +2187,7 @@ fn a_prompt_returns_its_seq_and_an_interrupt_of_an_ended_turn_is_refused() {
         fixture.supervisor.interrupt(&WorkerInterruptParams {
             worker_id: id.clone(),
             turn,
+            command_id: None,
         })
     };
     assert_eq!(interrupt(Some(first)).unwrap().turn_seq, Some(first));
@@ -2233,4 +2243,428 @@ fn a_prompt_returns_its_seq_and_an_interrupt_of_an_ended_turn_is_refused() {
         WorkerState::Interrupted
     );
     assert_eq!(interrupts(&fixture), 2);
+}
+
+fn answer_params(
+    worker_id: &str,
+    decision: WorkerDecision,
+    command_id: Option<&str>,
+) -> WorkerAnswerParams {
+    WorkerAnswerParams {
+        worker_id: worker_id.to_owned(),
+        request_id: Some("perm-1".into()),
+        decision: Some(decision),
+        answers: Vec::new(),
+        message: None,
+        command_id: command_id.map(str::to_owned),
+    }
+}
+
+/// The control_responses herdr wrote for `request_id`.
+fn responses_to(fixture: &Fixture, worker_id: &str, request_id: &str) -> usize {
+    fixture
+        .journal(worker_id)
+        .iter()
+        .filter(|record| {
+            record["dir"] == "in"
+                && record["event"]["type"] == "control_response"
+                && record["event"]["response"]["request_id"] == request_id
+        })
+        .count()
+}
+
+fn question_row_state(fixture: &Fixture, worker_id: &str, request_id: &str) -> String {
+    store_of(&fixture.supervisor)
+        .connection()
+        .query_row(
+            "SELECT state FROM questions WHERE worker_id = ?1 AND request_id = ?2",
+            [worker_id, request_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_repeated_start_command_id_returns_the_worker_it_started() {
+    let fixture = Fixture::new("receipt-start");
+    let params = WorkerStartParams {
+        command_id: Some("item-1:todo/receipts".into()),
+        ..start_params(&fixture.repo, "finish", None)
+    };
+    let first = fixture.supervisor.start(&params).unwrap();
+    let again = fixture.supervisor.start(&params).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(fixture.supervisor.list().len(), 1);
+
+    // The same id with another prompt is refused, and starts nothing.
+    let other = WorkerStartParams {
+        prompt: "fail".into(),
+        ..params.clone()
+    };
+    let conflict = fixture.supervisor.start(&other).unwrap_err();
+    assert_eq!(conflict.code(), "worker_command_conflict");
+    assert_eq!(fixture.supervisor.list().len(), 1);
+
+    // A refused start is refused again, with the same code.
+    let bad = WorkerStartParams {
+        cwd: "relative".into(),
+        command_id: Some("item-2".into()),
+        ..start_params(&fixture.repo, "finish", None)
+    };
+    let refused = fixture.supervisor.start(&bad).unwrap_err();
+    assert_eq!(refused.code(), "invalid_request");
+    let replayed = fixture.supervisor.start(&bad).unwrap_err();
+    assert_eq!(
+        (replayed.code(), replayed.to_string()),
+        (refused.code(), refused.to_string())
+    );
+    let receipts: Vec<(String, String, Option<String>)> = store_of(&fixture.supervisor)
+        .connection()
+        .prepare("SELECT command_id, state, worker_id FROM receipts ORDER BY command_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        receipts,
+        [
+            (
+                "item-1:todo/receipts".to_owned(),
+                "accepted".to_owned(),
+                Some(first.worker_id.clone())
+            ),
+            ("item-2".to_owned(), "rejected".to_owned(), None),
+        ]
+    );
+}
+
+#[test]
+fn a_command_id_is_reserved_with_its_first_event() {
+    let fixture = Fixture::new("receipt-reserve");
+    let store = store_of(&fixture.supervisor);
+    // Every event that reserves a receipt fails, so the start's first
+    // event and its receipt are not stored, together.
+    store
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER forced BEFORE INSERT ON receipts WHEN NEW.state = 'pending'
+             BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+        )
+        .unwrap();
+    let started = fixture
+        .supervisor
+        .start(&WorkerStartParams {
+            command_id: Some("c1".into()),
+            ..start_params(&fixture.repo, "finish", None)
+        })
+        .unwrap();
+    let started_events: i64 = store
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM events WHERE worker_id = ?1 AND type = 'started'",
+            [&started.worker_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(started_events, 0);
+    // The outcome is still stored, so the id stays answered.
+    assert_eq!(
+        store.receipt("c1").unwrap().unwrap().state,
+        store::ReceiptState::Accepted
+    );
+}
+
+#[test]
+fn a_repeated_prompt_or_refusal_does_nothing_twice() {
+    let fixture = Fixture::new("receipt-prompt");
+    let id = fixture.start("block");
+    let prompt = |text: &str, command_id: &str| {
+        fixture.supervisor.prompt_command(&WorkerPromptParams {
+            worker_id: id.clone(),
+            text: text.into(),
+            command_id: Some(command_id.into()),
+        })
+    };
+    // Refused while the turn runs; the same id stays refused after it.
+    assert_eq!(prompt("finish", "p1").unwrap_err().code(), "worker_busy");
+    fixture
+        .supervisor
+        .interrupt(&WorkerInterruptParams {
+            worker_id: id.clone(),
+            turn: None,
+            command_id: Some("i1".into()),
+        })
+        .unwrap();
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(prompt("finish", "p1").unwrap_err().code(), "worker_busy");
+
+    let first = prompt("finish", "p2").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.turns, 2);
+    // The repeat returns the first reply; no second message goes out.
+    assert_eq!(prompt("finish", "p2").unwrap(), first);
+    let users = fixture
+        .journal(&id)
+        .iter()
+        .filter(|record| record["dir"] == "in" && record["event"]["type"] == "user")
+        .count();
+    assert_eq!(users, 2);
+    assert_eq!(
+        prompt("fail", "p2").unwrap_err().code(),
+        "worker_command_conflict"
+    );
+    // Nor is an id reused across methods.
+    let stop = fixture.supervisor.stop_command(&WorkerCommandTarget {
+        worker_id: id.clone(),
+        command_id: Some("p2".into()),
+    });
+    assert_eq!(stop.unwrap_err().code(), "worker_command_conflict");
+}
+
+#[test]
+fn a_repeated_answer_command_id_sends_one_control_response() {
+    let fixture = Fixture::new("receipt-answer");
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let params = answer_params(&id, WorkerDecision::Allow, Some("a1"));
+    // Two at once: one runs, the other waits for its outcome.
+    let (first, second) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| fixture.supervisor.answer(&params));
+        let two = scope.spawn(|| fixture.supervisor.answer(&params));
+        (one.join().unwrap(), two.join().unwrap())
+    });
+    assert_eq!(first.unwrap(), second.unwrap());
+    let third = fixture.supervisor.answer(&params).unwrap();
+    assert!(third.questions.is_empty());
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(responses_to(&fixture, &id, "perm-1"), 1);
+    assert_eq!(fixture.herdr_events(&id, "answer_intent").len(), 1);
+    assert_eq!(fixture.herdr_events(&id, "answer_sent").len(), 1);
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answered");
+    let settled = &fixture.supervisor.status(&id).unwrap().settled_questions;
+    assert_eq!(settled.len(), 1);
+    assert_eq!(
+        (settled[0].request_id.as_str(), settled[0].state),
+        ("perm-1", WorkerQuestionState::Answered)
+    );
+    // Without an id, a second answer finds no pending question.
+    let again = fixture
+        .supervisor
+        .answer(&answer_params(&id, WorkerDecision::Deny, None))
+        .unwrap_err();
+    assert_eq!(again.code(), "worker_question_gone");
+}
+
+#[test]
+fn a_failed_answer_write_leaves_the_question_pending_and_retryable() {
+    let fixture = Fixture::new("answer-failed");
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    {
+        let registry = lock(&fixture.supervisor.shared.registry);
+        let live = registry.workers[&worker_number(&id).unwrap()]
+            .live
+            .clone()
+            .unwrap();
+        live.fail_next_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let failed = fixture
+        .supervisor
+        .answer(&answer_params(&id, WorkerDecision::Allow, Some("a1")))
+        .unwrap_err();
+    assert_eq!(failed.code(), "worker_io_error");
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(request_ids(&worker.questions), ["perm-1"]);
+    assert_eq!(worker.questions[0].state, WorkerQuestionState::Pending);
+    assert_eq!(worker.state, WorkerState::WaitingApproval);
+    assert_eq!(fixture.supervisor.pending_questions().len(), 1);
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "pending");
+    assert_eq!(fixture.herdr_events(&id, "answer_failed").len(), 1);
+    // The refused id stays refused; a new answer goes through.
+    let replayed = fixture
+        .supervisor
+        .answer(&answer_params(&id, WorkerDecision::Allow, Some("a1")))
+        .unwrap_err();
+    assert_eq!(replayed.code(), "worker_io_error");
+    fixture
+        .supervisor
+        .answer(&answer_params(&id, WorkerDecision::Allow, Some("a2")))
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answered");
+}
+
+#[test]
+fn a_turn_end_cleanup_does_not_erase_an_answer_in_flight() {
+    let fixture = Fixture::new("answer-in-flight");
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let number = worker_number(&id).unwrap();
+    // The answer's intent is stored and its write has not been confirmed
+    // when the turn ends.
+    fixture.supervisor.record(
+        number,
+        Direction::Herdr,
+        &serde_json::json!({"type": "answer_intent", "request_id": "perm-1",
+            "tool_name": "WebFetch", "decision": "allow", "by": "user"}),
+    );
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answering");
+    let answering = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(answering.questions[0].state, WorkerQuestionState::Answering);
+    assert!(fixture.supervisor.pending_questions().is_empty());
+    let refused = fixture
+        .supervisor
+        .answer(&answer_params(&id, WorkerDecision::Deny, None))
+        .unwrap_err();
+    assert_eq!(refused.code(), "worker_question_gone");
+    assert!(refused.to_string().contains("being sent"), "{refused}");
+
+    fixture.supervisor.record(
+        number,
+        Direction::Out,
+        &serde_json::json!({"type": "result", "subtype": "success", "is_error": false,
+            "terminal_reason": "completed", "result": "ended"}),
+    );
+    let ended = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(ended.state, WorkerState::Finished);
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answering");
+    assert_eq!(ended.questions[0].state, WorkerQuestionState::Answering);
+
+    fixture.supervisor.record(
+        number,
+        Direction::Herdr,
+        &serde_json::json!({"type": "answer_sent", "request_id": "perm-1"}),
+    );
+    let sent = fixture.supervisor.status(&id).unwrap();
+    assert!(sent.questions.is_empty());
+    assert_eq!(
+        sent.settled_questions[0].state,
+        WorkerQuestionState::Answered
+    );
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "answered");
+}
+
+#[test]
+fn a_failed_write_after_the_turn_ended_settles_as_the_cleanup_said() {
+    let fixture = Fixture::new("answer-failed-late");
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let number = worker_number(&id).unwrap();
+    for (direction, event) in [
+        (
+            Direction::Herdr,
+            serde_json::json!({"type": "answer_intent", "request_id": "perm-1"}),
+        ),
+        (
+            Direction::Out,
+            serde_json::json!({"type": "result", "subtype": "success", "is_error": false}),
+        ),
+        (
+            Direction::Herdr,
+            serde_json::json!({"type": "answer_failed", "request_id": "perm-1"}),
+        ),
+    ] {
+        fixture.supervisor.record(number, direction, &event);
+    }
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert!(worker.questions.is_empty());
+    assert_eq!(
+        worker.settled_questions[0].state,
+        WorkerQuestionState::Expired
+    );
+    assert_eq!(question_row_state(&fixture, &id, "perm-1"), "expired");
+}
+
+#[test]
+fn a_restart_expires_an_answer_in_flight_of_a_gone_worker() {
+    let fixture = Fixture::new("answer-restart");
+    let dir = fixture.root.join("workers");
+    let question = question_from_request(
+        "perm-1",
+        &serde_json::json!({"tool_name": "Bash", "input": {"command": "ls"}}),
+        "asked",
+    );
+    write_journal(
+        &dir,
+        "w3",
+        &[
+            serde_json::json!({"ts_ms": 1, "dir": "herdr", "event": {
+                "type": "started", "cwd": "/repo", "name": "old", "pid": 99999}}),
+            serde_json::json!({"ts_ms": 2, "dir": "herdr", "event": {
+                "type": "question", "question": question, "input": {"command": "ls"}}}),
+            serde_json::json!({"ts_ms": 3, "dir": "herdr", "event": {
+                "type": "answer_intent", "request_id": "perm-1", "decision": "allow"}}),
+        ],
+    );
+    let supervisor = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    let worker = supervisor.status("w3").unwrap();
+    assert_eq!(worker.state, WorkerState::Lost);
+    assert!(worker.questions.is_empty());
+    assert_eq!(worker.settled_questions.len(), 1);
+    assert_eq!(
+        worker.settled_questions[0].state,
+        WorkerQuestionState::Expired
+    );
+    assert!(
+        worker.settled_questions[0]
+            .how
+            .contains("not confirmed sent"),
+        "{:?}",
+        worker.settled_questions
+    );
+    let state: String = store_of(&supervisor)
+        .connection()
+        .query_row(
+            "SELECT state FROM questions WHERE worker_id = 'w3' AND request_id = 'perm-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "expired");
+}
+
+#[test]
+fn a_command_a_restart_cut_off_says_so_and_a_start_returns_its_worker() {
+    let fixture = Fixture::new("receipt-cut-off");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let params = WorkerStartParams {
+        command_id: Some("s1".into()),
+        ..start_params(&fixture.repo, "finish", None)
+    };
+    let prompt = WorkerPromptParams {
+        worker_id: id.clone(),
+        text: "finish".into(),
+        command_id: Some("p1".into()),
+    };
+    // Reserved by a server that ended before storing the outcome.
+    for (command_id, method, params) in [
+        ("s1", "worker.start", command_params(&params)),
+        ("p1", "worker.prompt", command_params(&prompt)),
+    ] {
+        store_of(&fixture.supervisor)
+            .transaction(|tx| {
+                tx.reserve_receipt(
+                    &store::NewReceipt {
+                        command_id,
+                        method,
+                        params: &params.to_string(),
+                    },
+                    &id,
+                    1,
+                )
+            })
+            .unwrap();
+    }
+    let started = fixture.supervisor.start(&params).unwrap();
+    assert_eq!(started.worker_id, id);
+    assert_eq!(fixture.supervisor.list().len(), 1);
+    let cut_off = fixture.supervisor.prompt_command(&prompt).unwrap_err();
+    assert_eq!(cut_off.code(), "worker_command_interrupted");
+    assert!(cut_off.to_string().contains(&id), "{cut_off}");
+    assert_eq!(fixture.supervisor.status(&id).unwrap().turns, 1);
 }

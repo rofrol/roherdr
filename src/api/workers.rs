@@ -93,11 +93,11 @@ fn handle_immediate(
                 workers: supervisor.list(),
             })
         }
-        Method::WorkerPrompt(params) => supervisor.prompt(&params.worker_id, &params.text)?,
+        Method::WorkerPrompt(params) => supervisor.prompt_command(&params)?,
         Method::WorkerInterrupt(params) => supervisor.interrupt(&params)?,
-        Method::WorkerStop(target) => supervisor.stop(&target.worker_id)?,
+        Method::WorkerStop(target) => supervisor.stop_command(&target)?,
         Method::WorkerKill(params) => {
-            let (worker, killed) = supervisor.kill(&params.worker_id, params.force)?;
+            let (worker, killed) = supervisor.kill_command(&params)?;
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,

@@ -5286,6 +5286,13 @@
               },
               "type": "array"
             },
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "decision": {
               "anyOf": [
                 {
@@ -5320,6 +5327,25 @@
           ],
           "type": "object"
         },
+        "WorkerCommandTarget": {
+          "description": "A worker and the client's id for a command on it (`worker.stop`).",
+          "properties": {
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
         "WorkerDecision": {
           "enum": [
             "allow",
@@ -5329,6 +5355,13 @@
         },
         "WorkerInterruptParams": {
           "properties": {
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "turn": {
               "description": "The turn to interrupt: its `turn_seq` (the `seq` of the user message\nthat began it, as `worker.prompt` returns it). Refused with\n`worker_turn_ended` once that turn has ended, so a repeated interrupt\nnever reaches the next turn. When absent, whatever runs.",
               "format": "int64",
@@ -5348,6 +5381,13 @@
         },
         "WorkerKillParams": {
           "properties": {
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "force": {
               "description": "Needed to signal anything for a worker that is `exited` or `lost`:\nwithout it such a kill is refused with `worker_needs_force`, and the\nmessage lists what it would signal.",
               "type": "boolean"
@@ -5363,6 +5403,13 @@
         },
         "WorkerPromptParams": {
           "properties": {
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "text": {
               "description": "The next user message; accepted only between turns.",
               "type": "string"
@@ -5389,6 +5436,13 @@
             },
             "branch": {
               "description": "With `folder_slot`: the new branch checked out in the slot; it must\nnot exist yet.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
               "type": [
                 "string",
                 "null"
@@ -6166,7 +6220,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/schemas/request/$defs/WorkerTarget"
+              "$ref": "#/schemas/request/$defs/WorkerCommandTarget"
             }
           },
           "required": [
@@ -13769,7 +13823,7 @@
               ]
             },
             "questions": {
-              "description": "Questions the worker waits on, oldest first; its state is\n`waiting_approval` while there are any.",
+              "description": "Questions the worker waits on, oldest first: `pending` ones and\nthose whose answer is being sent (`answering`); its state is\n`waiting_approval` while there are any.",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
               },
@@ -13792,6 +13846,13 @@
                 "string",
                 "null"
               ]
+            },
+            "settled_questions": {
+              "description": "The most recently settled questions, oldest first, with how each\nended.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerSettledQuestion"
+              },
+              "type": "array"
             },
             "state": {
               "$ref": "#/schemas/success_response/$defs/WorkerState"
@@ -13941,6 +14002,11 @@
               "minimum": 0,
               "type": "integer"
             },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/WorkerQuestionState",
+              "default": "pending",
+              "description": "Where its answer is: `pending` (only such a question is answered),\nor `answering`."
+            },
             "text": {
               "description": "One line for the user: the Bash command, the question, or the tool's\ninput.",
               "type": "string"
@@ -13976,6 +14042,62 @@
               "type": "string"
             }
           ]
+        },
+        "WorkerQuestionState": {
+          "description": "Where a question's answer is. `answered` means the answer was written to\nthe worker's input; the CLI sends no acknowledgement of it, and herdr\ndoes not track which client was shown the question, so neither\n\"acknowledged\" nor \"delivered\" is a state of its own.",
+          "oneOf": [
+            {
+              "const": "pending",
+              "description": "Waits for an answer.",
+              "type": "string"
+            },
+            {
+              "const": "answering",
+              "description": "An answer is stored and being written to the worker; a failed write\nmakes it `pending` again.",
+              "type": "string"
+            },
+            {
+              "const": "answered",
+              "description": "The answer was written to the worker's input.",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "description": "The CLI withdrew the question.",
+              "type": "string"
+            },
+            {
+              "const": "expired",
+              "description": "Ended unanswered: its turn ended, the worker exited or was lost, or\na server restart found its answer not confirmed written.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerSettledQuestion": {
+          "description": "A question that is no longer open.",
+          "properties": {
+            "how": {
+              "description": "What ended it, as `worker_question_gone` says it.",
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/WorkerQuestionState"
+            }
+          },
+          "required": [
+            "request_id",
+            "state",
+            "how"
+          ],
+          "type": "object"
         },
         "WorkerState": {
           "oneOf": [
