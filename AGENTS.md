@@ -458,9 +458,15 @@ To save the coordinator's quota, a session can hand a well-specified task to
   `caller_pane_id()` already had.
 
 A coordinator can also start a headless Claude worker, which needs no tab
-or PTY: `herdr worker start --name <task> --cwd <worktree> --prompt <text>`
-(run it from the coordinator's pane, so the worker is listed under its
-space; `--workspace <id>` names another). The sidebar shows it as one line
+or PTY: `herdr worker start --name <task> --item <t-xxxxxxxx> --cwd
+<worktree> --prompt <text>` (run it from the coordinator's pane, so the
+worker is listed under its space; `--workspace <id>` names another).
+`--item` is the TODO item's id (`[t-xxxxxxxx]` at the end of its first
+line; `scripts/todo_edit.py find <title>` prints it): `herdr worker runs
+--item <id>` then lists every run of that item (each worker process, with
+its start and end, outcome, turns, the commits its `WORKER-DONE` lines
+named, questions and journal), and a run started without it is only
+"unassigned"; never group runs by name. The sidebar shows it as one line
 named `<task>` with its state; a click opens its log, and its right-click
 menu takes it over (ends it, then resumes its session in a tab; not while
 it asks). Wait for it with `herdr-job run -- herdr worker wait <id>
@@ -492,7 +498,8 @@ and its questions stay quiet; the `?` list shows the age of its last
 event so the user can notice.
 Pass `--command-id <id>` to every `start`, `prompt`, `interrupt`, `stop`,
 `kill` and `answer`, derived from the task, not random: for a start the
-TODO item and the branch (`<item>:<branch>`), for an answer the worker and
+TODO item's id and the branch (`<item>:<branch>`, with the same id passed
+as `--item`), for an answer the worker and
 the question's request id. A retry after a lost reply then returns the
 first outcome instead of starting a second worker or sending a second
 answer; a new attempt after a refusal needs a new id.

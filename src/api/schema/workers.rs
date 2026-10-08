@@ -44,12 +44,89 @@ pub struct WorkerStartParams {
     /// pane that holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    /// The TODO item the worker works on: its stable id `t-` and 8
+    /// lowercase base32 characters (`t-abcd2345`). `worker.runs` lists the
+    /// worker's run under it, within the repository of the worker's
+    /// directory; a worker without one is listed as unassigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
     /// A client's id for this command, unique per command it means
     /// (`worker_command_conflict` when reused with other parameters). A
     /// repeated id returns the stored outcome without doing it again: the
     /// same reply, or the same refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+}
+
+/// Lists the workers' runs grouped by the TODO item they worked on.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerRunsParams {
+    /// Only the runs of this item (`t-abcd2345`); then no unassigned runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Only the runs in this repository: a directory in it, or the path
+    /// `repo` shows (the parent of its git common directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// One item's runs, oldest first. Ids of different repositories are never
+/// grouped together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerItemRuns {
+    pub item: String,
+    /// The repository the item's id belongs to; absent when the workers'
+    /// directory was not in a git repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    pub runs: Vec<WorkerRun>,
+}
+
+/// One run: one worker process from its start to its end. A worker sent
+/// back with `worker.prompt` adds turns to the same run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerRun {
+    pub worker_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Unix milliseconds of the worker's start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ms: Option<u64>,
+    /// Unix milliseconds of its exit or loss; absent while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
+    pub outcome: WorkerRunOutcome,
+    /// Turns that ended with a `result`.
+    pub turns: u32,
+    /// The commit shas its turns' results named on `WORKER-DONE <sha>`
+    /// lines, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<String>,
+    /// How many questions it asked.
+    pub questions: u32,
+    pub journal_path: String,
+}
+
+/// How a run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerRunOutcome {
+    /// Its process still runs.
+    Running,
+    /// It ended after a turn that finished.
+    Finished,
+    /// Its last turn failed.
+    Failed,
+    /// It exited otherwise: stopped, interrupted, or before a turn ended.
+    Exited,
+    /// Its server ended while it ran.
+    Lost,
+    /// Its record is incomplete (a store or journal write failed).
+    Degraded,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -377,6 +454,13 @@ pub struct WorkerInfo {
     /// The highest `seq` its owner acknowledged (`worker.ack`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acked_seq: Option<i64>,
+    /// The TODO item given at start (`worker.start`'s `item`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// The repository of the worker's directory: the parent of its git
+    /// common directory, so every worktree of one repository has the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// Answers a worker's pending question: a tool approval or an

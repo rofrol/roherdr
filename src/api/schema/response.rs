@@ -19,7 +19,8 @@ use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workers::{
-    WorkerAttentionReason, WorkerInfo, WorkerKillReport, WorkerObligation, WorkerQuestion,
+    WorkerAttentionReason, WorkerInfo, WorkerItemRuns, WorkerKillReport, WorkerObligation,
+    WorkerQuestion, WorkerRun,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -80,6 +81,13 @@ pub enum ResponseResult {
     /// owner has not acknowledged, oldest worker first.
     WorkerObligations {
         obligations: Vec<WorkerObligation>,
+    },
+    /// `worker.runs`' reply: each item's runs, the item whose first run
+    /// started first first, then the runs started without an item.
+    WorkerRuns {
+        items: Vec<WorkerItemRuns>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unassigned: Vec<WorkerRun>,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

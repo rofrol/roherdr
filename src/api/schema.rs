@@ -89,6 +89,9 @@ pub enum Method {
     /// The owned workers with an event their owner has not acknowledged.
     #[serde(rename = "worker.obligations")]
     WorkerObligations(WorkerObligationsParams),
+    /// The workers' runs, grouped by the TODO item given at start.
+    #[serde(rename = "worker.runs")]
+    WorkerRuns(WorkerRunsParams),
     /// Hands a question its owner will not answer to the user: it becomes a
     /// loud `?` question.
     #[serde(rename = "worker.escalate")]

@@ -164,6 +164,28 @@ ALTER TABLE workers ADD COLUMN owner_gone TEXT;
 -- stored with the first write that succeeds after the failure.
 ALTER TABLE workers ADD COLUMN degraded TEXT;
 "#,
+    r#"
+-- The TODO item a worker works on and its repository, so `worker.runs`
+-- groups its run under that item; workers recorded before have none and are
+-- listed unassigned. The run's start and end times and the questions it
+-- asked and whether it ended in a turn are filled from the events of older
+-- rows; the commits its turns named stay empty for them.
+ALTER TABLE workers ADD COLUMN item TEXT;
+ALTER TABLE workers ADD COLUMN repo TEXT;
+ALTER TABLE workers ADD COLUMN started_ms INTEGER;
+ALTER TABLE workers ADD COLUMN ended_ms INTEGER;
+ALTER TABLE workers ADD COLUMN done_commits TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE workers ADD COLUMN questions_asked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN ended_mid_turn INTEGER NOT NULL DEFAULT 0;
+UPDATE workers SET
+    started_ms = (SELECT ts_ms FROM events
+        WHERE worker_id = workers.id AND direction = 'herdr' AND type = 'started'
+        ORDER BY seq LIMIT 1),
+    ended_ms = (SELECT ts_ms FROM events WHERE seq = workers.gone_seq),
+    questions_asked = (SELECT count(*) FROM questions WHERE worker_id = workers.id),
+    ended_mid_turn = gone_seq > 0 AND coalesce(turn_seq, 0) > coalesce((SELECT max(seq)
+        FROM events WHERE worker_id = workers.id AND direction = 'out' AND type = 'result'), 0);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -559,7 +581,9 @@ impl Tx<'_> {
                     :exit_code, :exit_signal, :stop_requested_ms, :takeover_ms,
                     :takeover_tab, :takeover_error, :takeover_unfinished, :refusal,
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
-                    :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded)
+                    :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
+                    :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
+                    :ended_mid_turn)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -611,6 +635,14 @@ impl Tx<'_> {
                 ":acked_seq": status.acked_seq,
                 ":owner_gone": status.owner_gone,
                 ":degraded": status.degraded,
+                ":item": status.item,
+                ":repo": status.repo,
+                ":started_ms": status.started_ms.map(|ms| ms as i64),
+                ":ended_ms": status.ended_ms.map(|ms| ms as i64),
+                ":done_commits": serde_json::to_string(&status.done_commits)
+                    .unwrap_or_else(|_| "[]".into()),
+                ":questions_asked": status.questions_asked,
+                ":ended_mid_turn": status.ended_mid_turn,
             },
         )?;
         Ok(())
@@ -621,7 +653,8 @@ const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, p
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
-acked_seq, owner_gone, degraded";
+acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
+ended_mid_turn";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -668,6 +701,15 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.acked_seq = row.get(30)?;
     status.owner_gone = row.get(31)?;
     status.degraded = row.get(32)?;
+    status.item = row.get(33)?;
+    status.repo = row.get(34)?;
+    status.started_ms = row.get::<_, Option<i64>>(35)?.map(|ms| ms as u64);
+    status.ended_ms = row.get::<_, Option<i64>>(36)?.map(|ms| ms as u64);
+    status.done_commits = json(37)?
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    status.questions_asked = row.get(38)?;
+    status.ended_mid_turn = row.get(39)?;
     Ok(status)
 }
 
@@ -872,7 +914,7 @@ mod tests {
         ];
         let mut status = Status::new("w1".to_owned());
         let mut seqs = Vec::new();
-        for (direction, event) in &events {
+        for (index, (direction, event)) in events.iter().enumerate() {
             status.apply(*direction, event);
             seqs.push(
                 store
@@ -881,7 +923,7 @@ mod tests {
                             worker_id: "w1",
                             direction: *direction,
                             record: &Recorded::Event(event),
-                            ts_ms: 1,
+                            ts_ms: 10 + index as u64,
                         })?;
                         tx.worker(&status, seq)?;
                         Ok(seq)
@@ -904,6 +946,13 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN owner_gone;
                  ALTER TABLE workers DROP COLUMN degraded;
                  ALTER TABLE questions DROP COLUMN escalated;
+                 ALTER TABLE workers DROP COLUMN item;
+                 ALTER TABLE workers DROP COLUMN repo;
+                 ALTER TABLE workers DROP COLUMN started_ms;
+                 ALTER TABLE workers DROP COLUMN ended_ms;
+                 ALTER TABLE workers DROP COLUMN done_commits;
+                 ALTER TABLE workers DROP COLUMN questions_asked;
+                 ALTER TABLE workers DROP COLUMN ended_mid_turn;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -913,6 +962,14 @@ mod tests {
             (loaded.turn_seq, loaded.turn_end_seq, loaded.gone_seq),
             (Some(seqs[1]), seqs[3], seqs[3])
         );
+        // The run's times come from its events; an older worker has no
+        // item, so `worker.runs` lists it unassigned.
+        assert_eq!(
+            (loaded.started_ms, loaded.ended_ms, loaded.ended_mid_turn),
+            (Some(10), Some(13), false)
+        );
+        assert_eq!((loaded.item, loaded.repo), (None, None));
+        assert!(loaded.done_commits.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

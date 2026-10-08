@@ -5517,6 +5517,26 @@
           ],
           "type": "object"
         },
+        "WorkerRunsParams": {
+          "description": "Lists the workers' runs grouped by the TODO item they worked on.",
+          "properties": {
+            "item": {
+              "description": "Only the runs of this item (`t-abcd2345`); then no unassigned runs.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "Only the runs in this repository: a directory in it, or the path\n`repo` shows (the parent of its git common directory).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "WorkerStartParams": {
           "description": "Starts a headless Claude worker: `claude -p` over stream-json pipes, no\nterminal. The server owns the process; clients only ask about it.",
           "properties": {
@@ -5555,6 +5575,13 @@
             "fresh_build": {
               "description": "With `folder_slot`: removes the slot's `target/` and Zig cache first.",
               "type": "boolean"
+            },
+            "item": {
+              "description": "The TODO item the worker works on: its stable id `t-` and 8\nlowercase base32 characters (`t-abcd2345`). `worker.runs` lists the\nworker's run under it, within the repository of the worker's\ndirectory; a worker without one is listed as unassigned.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "model": {
               "description": "Passed to `claude --model`; the CLI's default when absent.",
@@ -6394,6 +6421,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerObligationsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The workers' runs, grouped by the TODO item given at start.",
+          "properties": {
+            "method": {
+              "const": "worker.runs",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerRunsParams"
             }
           },
           "required": [
@@ -11958,6 +12002,32 @@
               "type": "object"
             },
             {
+              "description": "`worker.runs`' reply: each item's runs, the item whose first run\nstarted first first, then the runs started without an item.",
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerItemRuns"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "worker_runs",
+                  "type": "string"
+                },
+                "unassigned": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerRun"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.kill`'s reply: the worker and what was signalled.",
               "properties": {
                 "killed": {
@@ -13989,6 +14059,13 @@
                 "null"
               ]
             },
+            "item": {
+              "description": "The TODO item given at start (`worker.start`'s `item`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "journal_path": {
               "description": "The JSONL journal of every event in and out, exported after each\nevent is stored; `herdr worker log` reads it.",
               "type": "string"
@@ -14044,6 +14121,13 @@
             },
             "rate_limit": {
               "description": "`rate_limit_info` of the last `rate_limit_event`, as the CLI sent it."
+            },
+            "repo": {
+              "description": "The repository of the worker's directory: the parent of its git\ncommon directory, so every worktree of one repository has the same.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "seq": {
               "description": "The `seq` of the worker's latest event.",
@@ -14146,6 +14230,32 @@
             "cwd",
             "turns",
             "journal_path"
+          ],
+          "type": "object"
+        },
+        "WorkerItemRuns": {
+          "description": "One item's runs, oldest first. Ids of different repositories are never\ngrouped together.",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "repo": {
+              "description": "The repository the item's id belongs to; absent when the workers'\ndirectory was not in a git repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runs": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerRun"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "item",
+            "runs"
           ],
           "type": "object"
         },
@@ -14337,6 +14447,115 @@
             {
               "const": "unknown",
               "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerRun": {
+          "description": "One run: one worker process from its start to its end. A worker sent\nback with `worker.prompt` adds turns to the same run.",
+          "properties": {
+            "commits": {
+              "description": "The commit shas its turns' results named on `WORKER-DONE <sha>`\nlines, in order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "ended_ms": {
+              "description": "Unix milliseconds of its exit or loss; absent while it runs.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "journal_path": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/WorkerRunOutcome"
+            },
+            "questions": {
+              "description": "How many questions it asked.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_ms": {
+              "description": "Unix milliseconds of the worker's start.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "turns": {
+              "description": "Turns that ended with a `result`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "outcome",
+            "turns",
+            "questions",
+            "journal_path"
+          ],
+          "type": "object"
+        },
+        "WorkerRunOutcome": {
+          "description": "How a run ended.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Its process still runs.",
+              "type": "string"
+            },
+            {
+              "const": "finished",
+              "description": "It ended after a turn that finished.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Its last turn failed.",
+              "type": "string"
+            },
+            {
+              "const": "exited",
+              "description": "It exited otherwise: stopped, interrupted, or before a turn ended.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "Its server ended while it ran.",
+              "type": "string"
+            },
+            {
+              "const": "degraded",
+              "description": "Its record is incomplete (a store or journal write failed).",
               "type": "string"
             }
           ]

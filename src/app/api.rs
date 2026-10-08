@@ -1321,6 +1321,7 @@ impl App {
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
+            | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_) => {
                 return responses::encode_error(
                     request.id,

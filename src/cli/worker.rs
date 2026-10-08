@@ -1,17 +1,18 @@
 use crate::api::schema::{
     EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
     WorkerDecision, WorkerEscalateParams, WorkerInterruptParams, WorkerKillParams,
-    WorkerObligationsParams, WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams,
-    WorkerWaitUntil,
+    WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams, WorkerStartParams, WorkerTarget,
+    WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|wait|ack|obligations|escalate|prompt|interrupt|stop|kill|answer|log|take-over> ...
-  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID]
+    "usage: herdr worker <start|status|list|runs|wait|ack|obligations|escalate|prompt|interrupt|stop|kill|answer|log|take-over> ...
+  herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
     --name names the worker's line in the sidebar (default: the prompt's first line);
-    --workspace is the space it is listed under (default: the caller's space).
+    --workspace is the space it is listed under (default: the caller's space);
+    --item is the TODO item it works on (its id, t-abcd2345), which `runs` lists it under.
     --folder-slot runs it in the persistent worktree ../herdr-worktrees/NAME of
     --cwd's repository, on the new branch BRANCH from REF (default: master),
     one worker at a time, keeping target/ warm; --fresh-build removes the
@@ -20,6 +21,12 @@ const USAGE: &str =
     become the worker's owner.
   herdr worker status <worker_id>
   herdr worker list
+  herdr worker runs [--item ID] [--repo DIR]
+    Every worker's run (one worker process; prompts add turns to it) grouped
+    by its TODO item and repository: start and end, outcome, turns, the
+    commits its WORKER-DONE lines named, questions and journal. Runs started
+    without --item are listed as unassigned. --repo DIR keeps the runs of
+    DIR's repository.
   herdr worker wait <worker_id> [--exit | --attention [--after SEQ]]
     Returns at the end of the turn, or with --exit when the process ended.
     --attention returns at once or at the first of a pending question, a
@@ -128,6 +135,21 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             Method::WorkerObligations(WorkerObligationsParams {
                 owner_pane_id: pane.or_else(super::target::caller_pane_id),
             })
+        }
+        "runs" => {
+            let (item, rest) = take_string_option(rest, "--item")?;
+            let (repo, rest) = take_string_option(&rest, "--repo")?;
+            if !rest.is_empty() {
+                return Err("runs takes only --item and --repo".into());
+            }
+            let repo = repo
+                .map(|dir| {
+                    std::path::absolute(&dir)
+                        .map(|dir| dir.display().to_string())
+                        .map_err(|error| error.to_string())
+                })
+                .transpose()?;
+            Method::WorkerRuns(WorkerRunsParams { item, repo })
         }
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
@@ -315,6 +337,7 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
     let mut branch = None;
     let mut base = None;
     let mut fresh_build = false;
+    let mut item = None;
     let mut prompt = None;
     let mut index = 0;
     while index < args.len() {
@@ -356,6 +379,10 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
                 fresh_build = true;
                 index += 1;
             }
+            "--item" => {
+                item = Some(value()?);
+                index += 2;
+            }
             "--prompt" if prompt.is_none() => {
                 prompt = Some(value()?);
                 index += 2;
@@ -393,6 +420,7 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         branch,
         base,
         fresh_build,
+        item,
         command_id: None,
     })
 }
@@ -728,6 +756,34 @@ mod tests {
             &["ack", "--command-id", "c", "w12", "4"],
             &["obligations", "w12"],
             &["obligations", "--pane"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parses_start_with_an_item_and_runs() {
+        let Ok(Some(Method::WorkerStart(params))) =
+            parse_worker_args(&args(&["start", "--item", "t-abcd2345", "do it"]))
+        else {
+            panic!("start with --item must parse");
+        };
+        assert_eq!(params.item.as_deref(), Some("t-abcd2345"));
+        assert_eq!(
+            parse_worker_args(&args(&["runs", "--item", "t-abcd2345", "--repo", "/repo"])),
+            Ok(Some(Method::WorkerRuns(WorkerRunsParams {
+                item: Some("t-abcd2345".into()),
+                repo: Some("/repo".into()),
+            })))
+        );
+        assert_eq!(
+            parse_worker_args(&args(&["runs"])),
+            Ok(Some(Method::WorkerRuns(WorkerRunsParams::default())))
+        );
+        for bad in [
+            &["runs", "t-abcd2345"][..],
+            &["runs", "--item"],
+            &["start", "--item"],
         ] {
             assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
         }

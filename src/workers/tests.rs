@@ -5,7 +5,8 @@
 //! words), `classifier <tool> <words...>` (the same, escalated by the auto
 //! mode classifier), `refuse` (a model refusal, then `result/success`),
 //! `refuse-wait` (a refusal, then the next input line, then the result),
-//! `exit1` (`result/success`, then exit code 1), `denials` (a result with
+//! `exit1` (`result/success`, then exit code 1), `done <sha>` (a reply
+//! ending with `WORKER-DONE <sha> | summary`), `denials` (a result with
 //! `permission_denials`), `ask` (an `AskUserQuestion` request), `pair <tool>
 //! <words...>` (two requests at once, `perm-1` and `perm-2`), `cancel <tool>
 //! <words...>` (`perm-1`, cancelled, then `perm-2`), `two <tool> <words...>`
@@ -77,6 +78,8 @@ while True:
     command = words[0]
     if command == "finish":
         result()
+    elif command == "done":
+        result(text="work done\nWORKER-DONE " + words[1] + " | summary")
     elif command == "fail":
         result("error_during_execution", True, "model_error", None)
     elif command == "crash":
@@ -361,6 +364,7 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
         fresh_build: false,
         owner_pane_id: None,
         owner_session_id: None,
+        item: None,
         command_id: None,
     }
 }
@@ -3581,4 +3585,169 @@ fn a_question_asked_while_the_store_fails_is_not_lost() {
         .find(|record| record["event"]["type"] == "question")
         .unwrap();
     assert!(question.get("seq").is_none(), "{question}");
+}
+
+/// Makes `dir` a git repository; returns the path `repo` shows for it.
+fn git_init(dir: &Path) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let done = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    assert!(done.success());
+    dir.canonicalize().unwrap().display().to_string()
+}
+
+#[test]
+fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
+    const ITEM: &str = "t-abcd2345";
+    let fixture = Fixture::new("runs");
+    let repo = git_init(&fixture.repo);
+    let other_repo = git_init(&fixture.root.join("other"));
+    let start = |cwd: &Path, prompt: &str, item: Option<&str>| {
+        fixture
+            .supervisor
+            .start(&WorkerStartParams {
+                item: item.map(str::to_owned),
+                ..start_params(cwd, prompt, None)
+            })
+            .unwrap()
+    };
+    let stop = |worker_id: &str| {
+        fixture.supervisor.stop(worker_id).unwrap();
+        fixture.wait(worker_id, WorkerWaitUntil::Exit);
+    };
+
+    // The first run of the item is sent back once: one run, two turns.
+    let first = start(&fixture.repo, "done abc1234", Some(ITEM));
+    assert_eq!(first.item.as_deref(), Some(ITEM));
+    assert_eq!(first.repo.as_deref(), Some(repo.as_str()));
+    fixture.wait(&first.worker_id, WorkerWaitUntil::TurnEnd);
+    fixture
+        .supervisor
+        .prompt(&first.worker_id, "done DEF5678")
+        .unwrap();
+    fixture.wait(&first.worker_id, WorkerWaitUntil::TurnEnd);
+    stop(&first.worker_id);
+    // A second run of the same item fails.
+    let second = start(&fixture.repo, "fail", Some(ITEM));
+    fixture.wait(&second.worker_id, WorkerWaitUntil::TurnEnd);
+    stop(&second.worker_id);
+    // The same id in another repository is another item.
+    let elsewhere = start(&fixture.root.join("other"), "finish", Some(ITEM));
+    // Without an item, whatever its name: unassigned.
+    let loose = start(&fixture.repo, "finish", None);
+    fixture.wait(&loose.worker_id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        fixture.supervisor.status(&loose.worker_id).unwrap().item,
+        None
+    );
+    assert!(fixture
+        .supervisor
+        .list()
+        .iter()
+        .any(|worker| worker.item.as_deref() == Some(ITEM)));
+
+    let (items, unassigned) = fixture
+        .supervisor
+        .runs(&WorkerRunsParams::default())
+        .unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|group| (group.item.as_str(), group.repo.as_deref(), group.runs.len()))
+            .collect::<Vec<_>>(),
+        [
+            (ITEM, Some(repo.as_str()), 2),
+            (ITEM, Some(other_repo.as_str()), 1)
+        ]
+    );
+    let runs = &items[0].runs;
+    assert_eq!(runs[0].worker_id, first.worker_id);
+    assert_eq!(runs[0].outcome, WorkerRunOutcome::Finished);
+    assert_eq!(runs[0].turns, 2);
+    assert_eq!(runs[0].commits, ["abc1234", "def5678"]);
+    assert_eq!(runs[0].questions, 0);
+    let (started, ended) = (runs[0].started_ms.unwrap(), runs[0].ended_ms.unwrap());
+    assert!(started <= ended, "{started} > {ended}");
+    assert!(runs[0]
+        .journal_path
+        .ends_with(&format!("{}.jsonl", first.worker_id)));
+    assert_eq!(runs[1].worker_id, second.worker_id);
+    assert_eq!(runs[1].outcome, WorkerRunOutcome::Failed);
+    assert!(runs[1].commits.is_empty());
+    assert_eq!(items[1].runs[0].worker_id, elsewhere.worker_id);
+    assert_eq!(
+        unassigned
+            .iter()
+            .map(|run| (run.worker_id.as_str(), run.outcome, run.ended_ms))
+            .collect::<Vec<_>>(),
+        [(loose.worker_id.as_str(), WorkerRunOutcome::Running, None)]
+    );
+
+    // Filtered by item and repository (any directory in it names it).
+    let (items, unassigned) = fixture
+        .supervisor
+        .runs(&WorkerRunsParams {
+            item: Some(ITEM.into()),
+            repo: Some(fixture.root.join("other").display().to_string()),
+        })
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].runs[0].worker_id, elsewhere.worker_id);
+    assert!(unassigned.is_empty());
+    let (items, unassigned) = fixture
+        .supervisor
+        .runs(&WorkerRunsParams {
+            item: Some("t-zzzz2222".into()),
+            repo: None,
+        })
+        .unwrap();
+    assert!(items.is_empty() && unassigned.is_empty());
+
+    // The runs survive a restart: a new supervisor reads them from the store.
+    let reopened = WorkerSupervisor::open(
+        fixture.root.join("workers"),
+        fixture.root.join("claude-stub"),
+    );
+    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    assert_eq!(items[0].runs[0].commits, ["abc1234", "def5678"]);
+    assert_eq!(items[0].runs[0].outcome, WorkerRunOutcome::Finished);
+}
+
+#[test]
+fn an_item_that_is_not_a_todo_id_is_refused() {
+    let fixture = Fixture::new("bad-item");
+    for bad in [
+        "",
+        "t-abc",
+        "t-ABCD2345",
+        "t-abcd2389",
+        "x-abcd2345",
+        "t-abcd23456",
+    ] {
+        let refused = fixture.supervisor.start(&WorkerStartParams {
+            item: Some(bad.into()),
+            ..start_params(&fixture.repo, "finish", None)
+        });
+        assert!(matches!(refused, Err(WorkerError::Invalid(_))), "{bad:?}");
+        let refused = fixture.supervisor.runs(&WorkerRunsParams {
+            item: Some(bad.into()),
+            repo: None,
+        });
+        assert!(matches!(refused, Err(WorkerError::Invalid(_))), "{bad:?}");
+    }
+    assert!(fixture.supervisor.list().is_empty());
+}
+
+#[test]
+fn done_commits_are_read_from_worker_done_lines() {
+    assert_eq!(
+        done_commits("x\nWORKER-DONE 3ecc4be6 | summary\n  WORKER-DONE abcdef0123 | more"),
+        ["3ecc4be6", "abcdef0123"]
+    );
+    assert!(
+        done_commits("WORKER-DONE <sha> | x\nWORKER-BLOCKED no\nWORKER-DONE abc | x").is_empty()
+    );
 }
