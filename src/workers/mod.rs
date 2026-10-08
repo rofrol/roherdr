@@ -22,6 +22,8 @@
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
+#[cfg(unix)]
+pub(crate) mod broker;
 pub(crate) mod coordinators;
 #[cfg(test)]
 mod install_script_tests;
@@ -471,6 +473,20 @@ struct Status {
     ended_mid_turn: bool,
     /// The latest `worker.verify` of its work (`verification`).
     verification: Option<WorkerVerification>,
+    /// The broker that owns its pipes (`started`'s `broker`); none for a
+    /// worker whose pipes the server owned.
+    broker: Option<BrokerRecord>,
+}
+
+/// Where a worker's broker serves it, and what a server that re-attaches
+/// needs to answer its permission requests again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct BrokerRecord {
+    pid: u32,
+    socket: PathBuf,
+    /// The worker's directory as asked for, before resolving links (its
+    /// resolved one is [`Status::cwd`]).
+    cwd: PathBuf,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -554,6 +570,7 @@ impl Status {
             questions_asked: 0,
             ended_mid_turn: false,
             verification: None,
+            broker: None,
         }
     }
 
@@ -885,6 +902,18 @@ impl Status {
                     .get("pid")
                     .and_then(Value::as_u64)
                     .map(|pid| pid as u32);
+                self.broker = event
+                    .get("broker")
+                    .and_then(|broker| serde_json::from_value(broker.clone()).ok());
+            }
+            (Direction::Herdr, "reattached") => {
+                // The broker greeted with the worker's pid, so the CLI runs
+                // and reads the prompt sent. Its `system/init`, the only
+                // other way out of `starting`, may have gone to the gone
+                // server unstored (no replay before slice 3).
+                if self.state == WorkerState::Starting && self.turn_seq.is_some() {
+                    self.state = WorkerState::Working;
+                }
             }
             (Direction::Herdr, "tool_sessions") => {
                 for recorded in event["sessions"].as_array().into_iter().flatten() {
@@ -1510,10 +1539,67 @@ fn journal_ownership(journal_path: &Path) -> std::io::Result<Ownership> {
     }
 }
 
-/// A running worker's input pipe; absent for one loaded from the store.
+/// Where a running worker's stdin lines go.
+enum Input {
+    /// The pipe this server owns (a worker started without a broker).
+    Pipe(ChildStdin),
+    /// The worker's broker, which owns the pipe ([`broker`]).
+    #[cfg(unix)]
+    Broker(std::os::unix::net::UnixStream),
+}
+
+impl Input {
+    /// Writes one line, which ends with its newline.
+    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        match self {
+            Self::Pipe(pipe) => pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush()),
+            #[cfg(unix)]
+            Self::Broker(stream) => broker::write_input(stream, line),
+        }
+    }
+
+    /// Closes the worker's stdin.
+    fn close(self) {
+        match self {
+            Self::Pipe(pipe) => drop(pipe),
+            #[cfg(unix)]
+            Self::Broker(mut stream) => broker::close_input(&mut stream),
+        }
+    }
+}
+
+/// A worker's process as [`WorkerSupervisor::spawn_worker`] started it.
+struct Spawned {
+    pid: u32,
+    input: Input,
+    source: Source,
+    /// Its broker's pid and socket, when it has one.
+    broker: Option<(u32, PathBuf)>,
+}
+
+/// Where a worker's output comes from.
+enum Source {
+    Pipes {
+        stdout: std::process::ChildStdout,
+        stderr: std::process::ChildStderr,
+        child: Child,
+    },
+    #[cfg(unix)]
+    Broker {
+        messages: broker::Messages,
+        /// The broker, this server's child.
+        process: Child,
+    },
+}
+
+/// A running worker's input; absent for one loaded from the store.
 struct Live {
     number: u64,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    stdin: Arc<Mutex<Option<Input>>>,
+    /// The test cut this server off from the worker's broker, as a server
+    /// that died would be: its reader ends without recording an exit.
+    #[cfg(all(test, unix))]
+    severed: std::sync::atomic::AtomicBool,
     /// Fails the next write to the pipe, as a broken pipe would.
     #[cfg(test)]
     fail_next_write: std::sync::atomic::AtomicBool,
@@ -1525,10 +1611,12 @@ struct Live {
 }
 
 impl Live {
-    fn new(number: u64, stdin: ChildStdin) -> Self {
+    fn new(number: u64, stdin: Input) -> Self {
         Self {
             number,
             stdin: Arc::new(Mutex::new(Some(stdin))),
+            #[cfg(all(test, unix))]
+            severed: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_write: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1540,7 +1628,7 @@ impl Live {
         self.send_checked(supervisor, event, None, |_, _| Ok(()))
     }
 
-    fn write_line(&self, pipe: &mut ChildStdin, line: &str) -> std::io::Result<()> {
+    fn write_line(&self, pipe: &mut Input, line: &str) -> std::io::Result<()> {
         #[cfg(test)]
         if self
             .fail_next_write
@@ -1556,7 +1644,7 @@ impl Live {
             let _ = reached.send(());
             let _ = release.recv();
         }
-        pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush())
+        pipe.write_line(line)
     }
 
     /// Records one line for the CLI, then writes it, both under the input
@@ -1614,7 +1702,21 @@ impl Live {
     }
 
     fn close_input(&self) {
-        lock(&self.stdin).take();
+        if let Some(input) = lock(&self.stdin).take() {
+            input.close();
+        }
+    }
+
+    /// Cuts this server off from the worker's broker, as if the server
+    /// died: the reader ends without recording an exit, and the worker and
+    /// its broker go on.
+    #[cfg(all(test, unix))]
+    fn sever(&self) {
+        self.severed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(Input::Broker(stream)) = lock(&self.stdin).as_ref() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 
@@ -1770,6 +1872,11 @@ struct Shared {
     /// Held while a folder slot is prepared and its worker registered, so
     /// two starts never prepare one slot at once.
     slot_lock: Mutex<()>,
+    /// Starts each new worker's broker; without one this server owns the
+    /// worker's pipes, and the worker ends with the server. Windows has no
+    /// broker yet: a documented gap.
+    #[cfg(unix)]
+    broker: Option<broker::Launcher>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -2166,6 +2273,17 @@ pub(crate) fn supervisor() -> &'static WorkerSupervisor {
             Some(name) => state_dir.join("sessions").join(name).join("workers"),
             None => state_dir.join("workers"),
         };
+        #[cfg(unix)]
+        let broker = match broker::Launcher::herdr() {
+            Ok(launcher) => Some(launcher),
+            Err(error) => {
+                warn!(%error, "no worker broker: new workers end with this server");
+                None
+            }
+        };
+        #[cfg(unix)]
+        return WorkerSupervisor::open_with(dir, PathBuf::from("claude"), broker);
+        #[cfg(not(unix))]
         WorkerSupervisor::open(dir, PathBuf::from("claude"))
     })
 }
@@ -2179,7 +2297,23 @@ impl WorkerSupervisor {
     /// (the old server of a live handoff) is loaded as it is, and marked
     /// `lost` only if its exit is not recorded once that server lets go of
     /// it ([`Self::adopt_when_released`]).
+    #[cfg(any(test, not(unix)))]
     pub(crate) fn open(dir: PathBuf, program: PathBuf) -> Self {
+        Self::open_with(
+            dir,
+            program,
+            #[cfg(unix)]
+            None,
+        )
+    }
+
+    /// [`Self::open`], starting new workers through `broker` when given.
+    /// A worker whose broker still serves it is re-attached either way.
+    fn open_with(
+        dir: PathBuf,
+        program: PathBuf,
+        #[cfg(unix)] broker: Option<broker::Launcher>,
+    ) -> Self {
         if let Err(error) = std::fs::create_dir_all(&dir) {
             warn!(%error, dir = %dir.display(), "worker journal directory unavailable");
         }
@@ -2269,9 +2403,19 @@ impl WorkerSupervisor {
                 registry: Mutex::new(registry),
                 changed: Condvar::new(),
                 slot_lock: Mutex::new(()),
+                #[cfg(unix)]
+                broker,
             }),
         };
-        for (number, _held) in unowned {
+        for (number, held) in unowned {
+            // Held until the worker is re-attached or marked lost.
+            let _held = match held {
+                Some(owner_lock) => match supervisor.reattach(number, owner_lock) {
+                    None => continue,
+                    Some(owner_lock) => Some(owner_lock),
+                },
+                None => None,
+            };
             supervisor.settle_unowned(number);
         }
         for (number, owner_lock) in owned_elsewhere {
@@ -2388,6 +2532,11 @@ impl WorkerSupervisor {
                     }
                 }
             }
+            let Some(owner_lock) = supervisor.reattach(number, owner_lock) else {
+                supervisor.shared.changed.notify_all();
+                notify_clients();
+                return;
+            };
             supervisor.settle_unowned(number);
             drop(owner_lock);
             supervisor.shared.changed.notify_all();
@@ -2401,7 +2550,10 @@ impl WorkerSupervisor {
     /// Readies this server's workers for a live handoff, which cannot carry
     /// their pipes. Without `force` it refuses while any worker's process is
     /// alive, in a turn or idle between turns, naming each and how to end
-    /// it. With `force` it sends each SIGTERM and goes on.
+    /// it. With `force` it sends each SIGTERM and goes on. A worker with a
+    /// broker would survive the handoff, but until the output spool and the
+    /// stdin receipts (slices 3 and 4) the new server could lose its lines,
+    /// so it is refused too.
     ///
     /// It never waits for an exit. It runs on the server's main loop, and
     /// waiting there would freeze every pane and client; a deadline would
@@ -2713,13 +2865,6 @@ impl WorkerSupervisor {
             args.push(model.to_owned());
         }
 
-        let mut command = Command::new(&self.shared.program);
-        command
-            .args(&args)
-            .current_dir(&cwd_real)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
         // The worker's hooks and herdr CLI calls must not act on the
         // server's own pane or session (trial 1).
         // Nor may it use the user's credentials for other services (the
@@ -2730,44 +2875,38 @@ impl WorkerSupervisor {
         let bedrock = enabled("CLAUDE_CODE_USE_BEDROCK");
         let vertex = enabled("CLAUDE_CODE_USE_VERTEX");
         let mut removed_env = Vec::new();
+        let mut env_removed = Vec::new();
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
             if name.starts_with("HERDR_") {
-                command.env_remove(&key);
+                env_removed.push(key);
             } else if is_credential_env(&name, bedrock, vertex) {
                 removed_env.push(name.into_owned());
-                command.env_remove(&key);
+                env_removed.push(key);
             }
         }
         removed_env.sort();
         // The slot's caches, inside the slot, so a sandboxed build writes
         // only there instead of the user's `~/.cache/zig` or another target.
+        let mut env_set = Vec::new();
         if let Some(slot) = &slot {
             let zig_cache = slot.zig_cache_dir();
-            command
-                .env("CARGO_TARGET_DIR", slot.target_dir())
-                .env("ZIG_GLOBAL_CACHE_DIR", &zig_cache)
-                .env("ZIG_LOCAL_CACHE_DIR", &zig_cache);
+            env_set.push(("CARGO_TARGET_DIR", slot.target_dir()));
+            env_set.push(("ZIG_GLOBAL_CACHE_DIR", zig_cache.clone()));
+            env_set.push(("ZIG_LOCAL_CACHE_DIR", zig_cache));
         }
-        crate::platform::configure_worker_process(&mut command);
-        let mut child = command.spawn().map_err(|error| {
-            remove_temp_dir(&temp_dir);
-            WorkerError::Io(std::io::Error::new(
-                error.kind(),
-                format!("cannot start {}: {error}", self.shared.program.display()),
-            ))
-        })?;
-        let pid = child.id();
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let _ = child.kill();
-            let _ = child.wait();
-            remove_temp_dir(&temp_dir);
-            return Err(WorkerError::Io(std::io::Error::other(
-                "worker pipes missing",
-            )));
+        let configure = |command: &mut Command| {
+            for key in &env_removed {
+                command.env_remove(key);
+            }
+            for (key, value) in &env_set {
+                command.env(key, value);
+            }
         };
+        let spawned = self
+            .spawn_worker(&worker_id, &args, &cwd_real, configure)
+            .inspect_err(|_| remove_temp_dir(&temp_dir))?;
+        let pid = spawned.pid;
 
         let policy = policy::Policy::new(&cwd_path, &cwd_real, &temp_dir);
         let name = params
@@ -2793,6 +2932,11 @@ impl WorkerSupervisor {
             "temp_dir": temp_dir.display().to_string(),
             "removed_env": removed_env,
             "pid": pid,
+            "broker": spawned.broker.as_ref().map(|(broker_pid, socket)| json!({
+                "pid": broker_pid,
+                "socket": socket,
+                "cwd": cwd_path,
+            })),
             "program": self.shared.program.display().to_string(),
             "args": args,
             "owner": params.owner_pane_id.as_ref().map(|pane_id| json!({
@@ -2812,7 +2956,7 @@ impl WorkerSupervisor {
                 "killed_leftover_pids": slot_killed,
             })),
         });
-        let live = Arc::new(Live::new(number, stdin));
+        let live = Arc::new(Live::new(number, spawned.input));
         {
             let mut registry = lock(&self.shared.registry);
             let mut entry = Entry::new(Status::new(worker_id.clone()), journal_path);
@@ -2837,15 +2981,6 @@ impl WorkerSupervisor {
         self.shared.changed.notify_all();
         notify_clients();
 
-        let stderr_supervisor = self.clone();
-        if let Err(error) = crate::thread_spawn::spawn_named("herdr-worker-err", move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                stderr_supervisor.record_raw(number, Direction::Err, &line);
-            }
-        }) {
-            warn!(%error, "worker stderr reader unavailable");
-        }
         let reader = Reader {
             supervisor: self.clone(),
             number,
@@ -2855,11 +2990,40 @@ impl WorkerSupervisor {
             live: Arc::clone(&live),
             owner_lock,
         };
-        if let Err(error) =
-            crate::thread_spawn::spawn_named("herdr-worker", move || reader.run(stdout, child))
-        {
+        let reading = match spawned.source {
+            Source::Pipes {
+                stdout,
+                stderr,
+                child,
+            } => {
+                let stderr_supervisor = self.clone();
+                if let Err(error) =
+                    crate::thread_spawn::spawn_named("herdr-worker-err", move || {
+                        for line in BufReader::new(stderr).lines() {
+                            let Ok(line) = line else { break };
+                            stderr_supervisor.record_raw(number, Direction::Err, &line);
+                        }
+                    })
+                {
+                    warn!(%error, "worker stderr reader unavailable");
+                }
+                crate::thread_spawn::spawn_named("herdr-worker", move || reader.run(stdout, child))
+                    .map(drop)
+            }
+            #[cfg(unix)]
+            Source::Broker { messages, process } => {
+                crate::thread_spawn::spawn_named("herdr-worker", move || {
+                    reader.run_broker(messages, Some(process));
+                })
+                .map(drop)
+            }
+        };
+        if let Err(error) = reading {
             // Without a reader nobody would reap or journal the process.
             let _ = crate::platform::signal_process_group(pid, Signal::Kill);
+            if let Some((broker_pid, _)) = &spawned.broker {
+                let _ = crate::platform::signal_process_group(*broker_pid, Signal::Kill);
+            }
             remove_temp_dir(&temp_dir);
             self.record(
                 number,
@@ -2874,6 +3038,207 @@ impl WorkerSupervisor {
         let mut info = self.status(&worker_id)?;
         info.turn_seq = Some(turn_seq);
         Ok(info)
+    }
+
+    /// Starts a worker's process: through a broker when this server has a
+    /// launcher, so the worker outlives the server; else with pipes this
+    /// server owns. `configure` sets its environment.
+    fn spawn_worker(
+        &self,
+        worker_id: &str,
+        args: &[String],
+        cwd: &Path,
+        configure: impl Fn(&mut Command),
+    ) -> Result<Spawned, WorkerError> {
+        let program = &self.shared.program;
+        #[cfg(not(unix))]
+        let _ = worker_id;
+        #[cfg(unix)]
+        if let Some(launcher) = &self.shared.broker {
+            let socket = self.shared.dir.join(format!("{worker_id}.sock"));
+            let log = self.shared.dir.join(format!("{worker_id}.broker.log"));
+            let started = broker::start(launcher, &socket, &log, program, args, cwd, configure)
+                .map_err(|error| {
+                    WorkerError::Io(std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot start {} through its broker: {error}",
+                            program.display()
+                        ),
+                    ))
+                })?;
+            let broker_pid = started.process.id();
+            let pid = started.link.pid;
+            let (input, messages) = match started.link.split() {
+                Ok(split) => split,
+                Err(error) => {
+                    // Its guard ends the worker.
+                    let mut process = started.process;
+                    let _ = process.kill();
+                    let _ = process.wait();
+                    return Err(error.into());
+                }
+            };
+            return Ok(Spawned {
+                pid,
+                input: Input::Broker(input),
+                source: Source::Broker {
+                    messages,
+                    process: started.process,
+                },
+                broker: Some((broker_pid, socket)),
+            });
+        }
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure(&mut command);
+        crate::platform::configure_worker_process(&mut command);
+        let mut child = command.spawn().map_err(|error| {
+            WorkerError::Io(std::io::Error::new(
+                error.kind(),
+                format!("cannot start {}: {error}", program.display()),
+            ))
+        })?;
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(WorkerError::Io(std::io::Error::other(
+                "worker pipes missing",
+            )));
+        };
+        Ok(Spawned {
+            pid: child.id(),
+            input: Input::Pipe(stdin),
+            source: Source::Pipes {
+                stdout,
+                stderr,
+                child,
+            },
+            broker: None,
+        })
+    }
+
+    /// Re-attaches to the broker of a worker a gone server ran, when that
+    /// broker still serves it: this server reads its output and writes its
+    /// input from now on. Takes the worker's journal lock, and gives it back
+    /// when there is nothing to re-attach to (no broker, or it is gone, and
+    /// with it the worker).
+    ///
+    /// No replay yet (slice 2): the output the broker kept while no server
+    /// read it comes now, but lines the gone server read and did not store
+    /// are lost. Slice 3 re-attaches from the last stored sequence number.
+    fn reattach(&self, number: u64, owner_lock: File) -> Option<File> {
+        #[cfg(unix)]
+        return self.reattach_broker(number, owner_lock);
+        #[cfg(not(unix))]
+        {
+            let _ = number;
+            Some(owner_lock)
+        }
+    }
+
+    #[cfg(unix)]
+    fn reattach_broker(&self, number: u64, owner_lock: File) -> Option<File> {
+        let (worker_id, record, pid, cwd_real) = {
+            let registry = lock(&self.shared.registry);
+            let Some(entry) = registry.workers.get(&number) else {
+                return Some(owner_lock);
+            };
+            let status = &entry.status;
+            match (&status.broker, status.pid) {
+                (Some(record), Some(pid)) if !status.is_gone() && entry.live.is_none() => (
+                    status.worker_id.clone(),
+                    record.clone(),
+                    pid,
+                    PathBuf::from(&status.cwd),
+                ),
+                _ => return Some(owner_lock),
+            }
+        };
+        let link = match broker::connect(&record.socket) {
+            Ok(link) if link.pid == pid => link,
+            Ok(link) => {
+                warn!(
+                    worker_id,
+                    pid,
+                    broker_pid = link.pid,
+                    "worker broker serves another process"
+                );
+                return Some(owner_lock);
+            }
+            Err(error) => {
+                info!(worker_id, %error, "worker broker gone");
+                return Some(owner_lock);
+            }
+        };
+        let (input, messages) = match link.split() {
+            Ok(split) => split,
+            Err(error) => {
+                warn!(worker_id, %error, "cannot re-attach to the worker broker");
+                return Some(owner_lock);
+            }
+        };
+        let temp_dir = temp_dir_path(&self.shared.dir, &worker_id);
+        let live = Arc::new(Live::new(number, Input::Broker(input)));
+        let reader = Reader {
+            supervisor: self.clone(),
+            number,
+            pid,
+            policy: policy::Policy::new(&record.cwd, &cwd_real, &temp_dir),
+            temp_dir,
+            live: Arc::clone(&live),
+            owner_lock,
+        };
+        {
+            let mut registry = lock(&self.shared.registry);
+            if let Some(entry) = registry.workers.get_mut(&number) {
+                entry.live = Some(Arc::clone(&live));
+                entry.foreign = false;
+                // Whether the worker read an answer in flight at the gone
+                // server's end is not known until slice 4's receipts.
+                let answering: Vec<String> = entry
+                    .status
+                    .questions
+                    .iter()
+                    .filter(|pending| pending.answering)
+                    .map(|pending| pending.question.request_id.clone())
+                    .collect();
+                if !answering.is_empty() {
+                    entry.status.degraded = Some(format!(
+                        "the answer to {} was not confirmed sent before a server restart; the \
+                         worker may or may not have received it",
+                        answering.join(", ")
+                    ));
+                }
+            }
+            self.commit_locked(
+                &mut registry,
+                number,
+                Direction::Herdr,
+                store::Recorded::Event(&json!({"type": "reattached", "broker_pid": record.pid})),
+            );
+        }
+        self.shared.changed.notify_all();
+        notify_clients();
+        if let Err(((reader, _), error)) = crate::thread_spawn::spawn_named_with(
+            "herdr-worker",
+            (reader, messages),
+            |(reader, messages)| reader.run_broker(messages, None),
+        ) {
+            warn!(worker_id, %error, "worker reader unavailable");
+            if let Some(entry) = lock(&self.shared.registry).workers.get_mut(&number) {
+                entry.live = None;
+            }
+            return Some(reader.owner_lock);
+        }
+        None
     }
 
     /// Records one event of a worker and wakes those waiting on it.
@@ -4898,24 +5263,12 @@ struct Reader {
 }
 
 impl Reader {
+    /// Reads the stdout of a worker whose pipes this server owns, then
+    /// reaps it.
     fn run(self, stdout: std::process::ChildStdout, mut child: Child) {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                self.supervisor
-                    .record_raw(self.number, Direction::Out, &line);
-                continue;
-            };
-            self.supervisor.record(self.number, Direction::Out, &event);
-            self.supervisor.record_tool_sessions(self.number, self.pid);
-            if event["type"].as_str() == Some("control_request")
-                && event["request"]["subtype"].as_str() == Some("can_use_tool")
-            {
-                self.answer_permission(&event);
-            }
+            self.stdout_line(&line);
         }
         // EOF: the CLI closed stdout, so it exited or is about to.
         self.live.close_input();
@@ -4927,11 +5280,87 @@ impl Reader {
             }),
             Err(error) => json!({"type": "exited", "code": null, "error": error.to_string()}),
         };
+        self.finish(&exited);
+    }
+
+    /// Reads a worker's output from its broker until the worker's exit.
+    /// `broker` is the broker process when this server started it, reaped
+    /// once it ends.
+    #[cfg(unix)]
+    fn run_broker(self, mut messages: broker::Messages, broker: Option<Child>) {
+        let exited = loop {
+            match messages.next() {
+                Some(broker::Message::Out(line)) => self.stdout_line(&line),
+                Some(broker::Message::Err(line)) => {
+                    self.supervisor
+                        .record_raw(self.number, Direction::Err, &line);
+                }
+                Some(broker::Message::Lost(lines)) => self.supervisor.record(
+                    self.number,
+                    Direction::Herdr,
+                    &json!({
+                        "type": "output_lost",
+                        "lines": lines,
+                        "reason": "the broker's buffer was full while no server read it",
+                    }),
+                ),
+                Some(broker::Message::Exit(exited)) => break exited,
+                None => {
+                    // A server that died lets go of the journal and leaves
+                    // the broker to the system; this test process, still
+                    // the broker's parent, reaps it once another server
+                    // ended it.
+                    #[cfg(test)]
+                    if self.live.severed.load(std::sync::atomic::Ordering::SeqCst) {
+                        drop(self.owner_lock);
+                        if let Some(mut broker) = broker {
+                            let _ = broker.wait();
+                        }
+                        return;
+                    }
+                    // The broker never cuts a connection but for a newer
+                    // server, which takes the journal lock first, so it died;
+                    // its guard ends the worker.
+                    break json!({
+                        "type": "exited",
+                        "code": null,
+                        "error": "the worker's broker ended before the worker's exit",
+                    });
+                }
+            }
+        };
+        self.finish(&exited);
+        if let Some(mut broker) = broker {
+            let _ = broker.wait();
+        }
+    }
+
+    fn stdout_line(&self, line: &str) {
+        if line.trim().is_empty() {
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            self.supervisor
+                .record_raw(self.number, Direction::Out, line);
+            return;
+        };
+        self.supervisor.record(self.number, Direction::Out, &event);
+        self.supervisor.record_tool_sessions(self.number, self.pid);
+        if event["type"].as_str() == Some("control_request")
+            && event["request"]["subtype"].as_str() == Some("can_use_tool")
+        {
+            self.answer_permission(&event);
+        }
+    }
+
+    /// Records the worker's exit.
+    fn finish(self, exited: &Value) {
+        self.live.close_input();
         // The temp dir goes first, so a worker shown exited has none; the
         // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);
         self.supervisor
-            .record(self.number, Direction::Herdr, &exited);
+            .record(self.number, Direction::Herdr, exited);
         drop(self.owner_lock);
     }
 

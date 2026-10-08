@@ -534,6 +534,11 @@ pub(crate) use unix_common::{
     begin_cli_output, end_cli_output, forward_remote_bridge_stdio, ignore_server_hangup,
     local_stream_peer_description, spawn_server_signal_monitor, RemoteBridgeWake,
 };
+/// A headless worker's broker: its own session, so it outlives the server
+/// (`start_new_session`), and a guard that kills the worker when the broker
+/// dies (`fork_death_guard`).
+#[cfg(unix)]
+pub(crate) use unix_common::{fork_death_guard, start_new_session};
 
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
