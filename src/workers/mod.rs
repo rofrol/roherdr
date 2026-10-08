@@ -405,7 +405,9 @@ struct Status {
     /// [`Status::is_gone`].
     gone_seq: i64,
     /// Why the worker's record is incomplete: a store or journal write
-    /// failed. Not an event: it lives only in this server's memory.
+    /// failed. Not an event: it is stored with the worker's row the next
+    /// time the store takes a write, and a reopen finds a gap the store
+    /// never learned of in the journal export ([`note_journal_gap`]).
     degraded: Option<String>,
     /// The pane and agent session that started it (`started`'s `owner`).
     owner_pane: Option<String>,
@@ -1125,27 +1127,74 @@ struct JournalLine {
 /// loses only its line.
 fn read_journal(path: &Path) -> std::io::Result<Vec<JournalLine>> {
     let bytes = std::fs::read(path)?;
-    let mut lines = Vec::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(record) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
+    Ok(bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(parse_journal_line)
+        .collect())
+}
+
+fn parse_journal_line(line: &[u8]) -> Option<JournalLine> {
+    let record = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)).ok()?;
+    let direction = record["dir"].as_str().and_then(Direction::parse)?;
+    let record_value = match (record.get("event"), record["raw"].as_str()) {
+        (Some(event), _) => Ok(event.clone()),
+        (None, Some(raw)) => Err(raw.to_owned()),
+        (None, None) => return None,
+    };
+    Some(JournalLine {
+        seq: record["seq"].as_i64(),
+        ts_ms: record["ts_ms"].as_u64().unwrap_or(0),
+        direction,
+        record: record_value,
+    })
+}
+
+/// How many records at the end of a worker's journal export the store does
+/// not hold: those after the last one exported with a `seq`, since only a
+/// failed store write exports a record without one once the store exists.
+/// Only that tail is parsed. A journal with no `seq` at all (written before
+/// the store, then imported) is compared by count with the stored events.
+fn journal_gap(store: &store::Store, worker_id: &str, path: &Path) -> Result<usize, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let mut trailing = 0;
+    for line in bytes.rsplit(|byte| *byte == b'\n') {
+        let Some(record) = parse_journal_line(line) else {
             continue;
         };
-        let Some(direction) = record["dir"].as_str().and_then(Direction::parse) else {
-            continue;
-        };
-        let record_value = match (record.get("event"), record["raw"].as_str()) {
-            (Some(event), _) => Ok(event.clone()),
-            (None, Some(raw)) => Err(raw.to_owned()),
-            (None, None) => continue,
-        };
-        lines.push(JournalLine {
-            seq: record["seq"].as_i64(),
-            ts_ms: record["ts_ms"].as_u64().unwrap_or(0),
-            direction,
-            record: record_value,
-        });
+        if record.seq.is_some() {
+            return Ok(trailing);
+        }
+        trailing += 1;
     }
-    Ok(lines)
+    let stored = store
+        .event_count(worker_id)
+        .map_err(|error| error.to_string())?;
+    Ok(trailing.saturating_sub(usize::try_from(stored).unwrap_or(0)))
+}
+
+/// Marks a worker loaded from the store degraded when its journal export
+/// holds events the store missed: a store write failed and no later write
+/// stored the mark before that server ended. A mark the store holds wins.
+fn note_journal_gap(store: &store::Store, status: &mut Status, path: &Path) {
+    if status.degraded.is_some() || !path.exists() {
+        return;
+    }
+    match journal_gap(store, &status.worker_id, path) {
+        Ok(0) => {}
+        Ok(missing) => {
+            warn!(
+                worker_id = status.worker_id,
+                missing, "worker journal holds events the store does not"
+            );
+            status.degraded = Some(format!(
+                "the worker store is missing the last {missing} event(s) of this worker that \
+                 its journal export holds: a store write failed"
+            ));
+        }
+        Err(error) => {
+            warn!(%error, path = %path.display(), "worker journal unreadable");
+        }
+    }
 }
 
 /// Folds a journal into a state in memory, without the store. A record
@@ -1772,6 +1821,9 @@ impl WorkerSupervisor {
             let loaded = match (stored.remove(&number), &ownership, &store) {
                 (Some(mut status), ..) => {
                     status.mark_unfinished_takeover();
+                    if let Ok(store) = &store {
+                        note_journal_gap(store, &mut status, &path);
+                    }
                     Ok(status)
                 }
                 // A server from before the store runs it and writes only
@@ -1902,7 +1954,10 @@ impl WorkerSupervisor {
             }
             let loaded = match &supervisor.shared.store {
                 Ok(store) => match store.load(&worker_id) {
-                    Ok(Some(status)) => Ok(status),
+                    Ok(Some(mut status)) => {
+                        note_journal_gap(store, &mut status, &path);
+                        Ok(status)
+                    }
                     Ok(None) => import_journal(store, &worker_id, &path),
                     Err(error) => Err(error.to_string()),
                 },

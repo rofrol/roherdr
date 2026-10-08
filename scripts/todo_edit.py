@@ -21,11 +21,21 @@ checked line by line: the file grows by exactly the inserted line count and
 every line before and after the insertion is byte-identical, so no line was
 joined to its neighbour or split. After writing, the file is read back and
 checked again.
+
+Concurrent edits: every edit holds an exclusive lock (`flock`) on
+`<file>.lock` beside the file from its read to its rename, so two todo_edit
+runs take turns. Right before the rename the file on disk is compared byte
+for byte with what was read; a writer that does not take the lock (an
+editor, another tool) and changed it meanwhile makes the edit refuse,
+writing nothing. Only such a writer landing between that comparison and the
+rename itself can still be overwritten.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import os
 import re
 import sys
@@ -410,9 +420,36 @@ def verify(new_text: str, expected_items: list, expected_frame: list, old: Doc, 
         raise Refusal("the change would alter text outside the items (headings or intros)")
 
 
-def atomic_write(path: Path, text: str, original: str) -> None:
-    if path.read_text(encoding="utf-8") != original:
+def lock_path(path: Path) -> Path:
+    return path.with_name(path.name + ".lock")
+
+
+@contextlib.contextmanager
+def edit_lock(path: Path):
+    """Holds the exclusive lock every todo_edit run takes on `<file>.lock`.
+
+    The lock file is created if missing and never removed: removing it would
+    let a run that already opened it lock a file the next run no longer sees.
+    """
+    try:
+        fd = os.open(lock_path(path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as err:
+        raise Refusal(f"cannot open the lock file {lock_path(path)}: {err}") from err
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def unchanged_on_disk(path: Path, original: bytes) -> None:
+    if path.read_bytes() != original:
         raise Refusal(f"{path} changed while editing; nothing written, run the command again")
+
+
+def atomic_write(path: Path, text: str, original: bytes) -> None:
+    """Writes `text` over `path` by a rename; the caller holds the edit lock."""
+    unchanged_on_disk(path, original)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -420,6 +457,10 @@ def atomic_write(path: Path, text: str, original: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp, path.stat().st_mode & 0o7777)
+        # Compared again right before the rename, after the temp file's
+        # write and fsync, so a change by a writer that does not take the
+        # lock is caught as late as possible.
+        unchanged_on_disk(path, original)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -491,29 +532,44 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def run(argv) -> int:
-    args = parse_args(argv)
-    path = Path(args.file)
+def read_file(path: Path) -> tuple[bytes, str]:
     try:
-        original = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except OSError as err:
-        print(f"todo_edit: cannot read {path}: {err}", file=sys.stderr)
-        return 1
-    doc = Doc(original)
+        raise Refusal(f"cannot read {path}: {err}") from err
     try:
-        if args.command == "find":
-            item = doc.items[doc.find_item(args.title)]
-            print(f"{doc.heading_path(item.heading)}: lines {item.start + 1}-{item.end}")
-            return 0
+        return raw, raw.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise Refusal(f"{path} is not UTF-8: {err}") from err
+
+
+def edit(args, path: Path) -> str:
+    """Applies one command under the edit lock; returns its summary."""
+    with edit_lock(path):
+        raw, original = read_file(path)
+        doc = Doc(original)
         new_text, expected, frame, summary, insertion = COMMANDS[args.command](doc, args)
         if new_text == original:
             raise Refusal("the change would leave the file unchanged")
         verify(new_text, expected, frame, doc, insertion)
-        atomic_write(path, new_text, original)
+        atomic_write(path, new_text, raw)
         written = path.read_text(encoding="utf-8")
         if written != new_text:
             raise Refusal(f"{path} does not hold the written text after the rename")
         verify(written, expected, frame, doc, insertion)
+    return summary
+
+
+def run(argv) -> int:
+    args = parse_args(argv)
+    path = Path(args.file)
+    try:
+        if args.command == "find":
+            doc = Doc(read_file(path)[1])
+            item = doc.items[doc.find_item(args.title)]
+            print(f"{doc.heading_path(item.heading)}: lines {item.start + 1}-{item.end}")
+            return 0
+        summary = edit(args, path)
     except Refusal as err:
         print(f"todo_edit: {err}", file=sys.stderr)
         return 1

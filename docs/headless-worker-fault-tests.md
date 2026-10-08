@@ -33,20 +33,27 @@ Python tests are in `scripts/test_todo_edit.py`.
 | Event committed between the status read and the wait's registration | `an_event_committed_between_the_check_and_the_block_is_not_missed` | |
 | Two takeovers of an exited worker | `an_exited_worker_is_taken_over_once` (one after the other); new `two_takeovers_of_an_exited_worker_at_once_claim_it_once` | Concurrent: one wins, one `takeover` event, the other `worker_busy`. |
 | Store write failing (disk full) | `a_failed_store_write_marks_the_worker_degraded`, `a_command_id_is_reserved_with_its_first_event`; new `a_question_asked_while_the_store_fails_is_not_lost` | The question still wakes the wait, is owed and listed, is answered once; the worker is `degraded`; the journal export keeps the event without a `seq`. |
+| Server restart after a failed store write | `a_degraded_mark_is_stored_with_the_next_write_and_survives_a_restart`, `a_restart_after_a_failed_store_write_still_says_the_record_has_a_gap`, `an_imported_journal_without_seqs_has_no_gap` | The mark is stored with the next write the store takes; when none came before the server ended, the next one finds the journal export's records after its last `seq` and marks the worker degraded with that count. |
 | Journal write failing | New `a_failed_journal_write_marks_the_worker_degraded_and_loses_no_event` | The worker is `degraded`; the store has every event. |
-| TODO write conflict (todo_edit while the file changes) | `test_concurrent_change_refuses` (mocked read); new `test_a_real_write_while_editing_refuses_and_keeps_the_other_change`; new `test_a_write_between_the_check_and_the_rename_is_not_lost` (expected failure, see below) | |
+| TODO write conflict (todo_edit while the file changes) | `test_concurrent_change_refuses` (mocked reads, both checks); new `test_a_real_write_while_editing_refuses_and_keeps_the_other_change`; `test_a_write_while_the_temp_file_is_written_refuses_and_is_not_lost`; `test_two_concurrent_runs_serialize` | Two todo_edit runs take turns on `<file>.lock`; a writer without the lock is caught by the byte comparison right before the rename. |
 
-## Gaps found
+## Gaps found, then closed
 
-- **todo_edit's check-then-rename window.** `atomic_write` compares the file
-  with what it read, then renames its temporary file over it, without a
-  lock. Another writer's change that lands between the comparison and the
-  rename is replaced silently. `test_a_write_between_the_check_and_the_rename_is_not_lost`
-  shows it and is marked `expectedFailure` until the window is closed (a
-  lock every writer takes, or detecting the overwrite). Only writers that
-  edit the file without todo_edit can hit it; two todo_edit runs can too.
-- **`degraded` is kept in memory only.** A store write failure marks the
-  worker degraded, but the mark is not stored, so after a server restart the
-  status no longer says that the store's record of that worker has gaps
-  (the JSONL export still has the events, without a `seq`, and the store
-  does not import a journal it already holds).
+- **todo_edit's check-then-rename window.** `atomic_write` compared the file
+  with what it read, then renamed its temporary file over it, without a
+  lock, so another writer's change in between was replaced silently. Closed:
+  every edit holds an exclusive `flock` on `<file>.lock` from its read to its
+  rename, so two todo_edit runs serialize, and the file is compared byte for
+  byte again right before the rename, after the temporary file is written,
+  so a writer that does not take the lock makes the edit refuse. Left open:
+  such a writer landing between that last comparison and the rename itself;
+  only a lock it takes too could close that.
+- **`degraded` was kept in memory only.** A store write failure marked the
+  worker degraded, but after a server restart the status no longer said
+  that the store's record of that worker has gaps. Closed: the mark is a
+  column of the worker's row (`degraded`), written with the next event the
+  store takes; and when the server ended before that, the next one counts
+  the journal export's records after its last one with a `seq` (only a
+  failed store write exports one without) and marks the worker degraded
+  with that count; the next event it stores (such as `lost`) stores the
+  mark, and until then every open finds the gap again.
