@@ -44,6 +44,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   round `20261008-144310-fce1` (sol, MiMo; DeepSeek partly) put this first, then atomicity
   fix 8 with the takeover tab marker, then the live check that closes
   "Event-driven worker waits".
+  First real use 2026-10-08 (worker `w28`): `verify` ran its command in the
+  herdr server's environment, which lacks the user's `ZIG` from
+  `~/.zshenv`, so the build picked Homebrew's Zig 0.17 and failed: verdict
+  `failed` for an infrastructure problem that should read `unavailable`.
+  With `env ZIG=... cargo nextest ...` it said `verified`. Follow-ups: run
+  the command in the user's login environment (or the worker's env), and
+  classify a failure before the command's own work starts (build tool
+  missing or wrong version) as `unavailable`.
 
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
