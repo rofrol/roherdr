@@ -44,6 +44,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   check right after: `test_assign_on_a_copy_of_the_real_todo` depends on
   the live TODO.md having no ids, so it fails now; it must strip ids from
   its copy first (next, before pushing).
+  Done 2026-10-08 by headless workers `w23`-`w26` (`feat: stable todo item
+  ids in todo_edit`, ids on all 72 items, `feat: worker runs linked to their
+  todo item`, `feat: an items popup for the coordinator, the sidebar lists
+  live workers only`, `fix: items are per repository and keep their
+  title`), installed. Left as decided by the coordinator: a worker without
+  an owner leaves the sidebar as soon as it ends, failed or not.
 
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
