@@ -422,6 +422,11 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      "acknowledged" and "answered" are distinct states, and acknowledging
      never clears an unanswered question (sol); an answer survives the
      coordinator dying mid-answer (MiMo).
+  4. (Found 2026-10-08 at first use: the Stop hook blocked the coordinator
+     for `w13: exited, review it` after the coordinator itself had stopped
+     `w13` following its review; an exit the owner requested with
+     `worker.stop`/`kill` should not create an obligation, or should be
+     acked by that call.)
   4. (Done 2026-10-08 by headless worker `w12`: `feat: a coordinator
      cannot stop while its workers need it`, installed, and the Claude
      integration reinstalled with the user's yes: owner recorded at
