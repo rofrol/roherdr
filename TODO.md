@@ -39,6 +39,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     TODO.md and the worker store, and the sidebar showing live workers
     only; the item history table and tenures later. MiMo's "stale after
     24 h" was dismissed: no timers (the user's events-only decision).
+  Ids assigned to all 72 items 2026-10-08 (`docs(todo): stable ids on every
+  item`, verified: stripping the ids gives the old file). Found by the
+  check right after: `test_assign_on_a_copy_of_the_real_todo` depends on
+  the live TODO.md having no ids, so it fails now; it must strip ids from
+  its copy first (next, before pushing).
 
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
