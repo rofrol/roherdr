@@ -361,6 +361,12 @@ struct Status {
     /// each, so an answer to one of them says what happened to it.
     resolved: VecDeque<(String, String)>,
     stop_requested_ms: Option<u64>,
+    /// Its owner sent a stop or kill (a `signal` with `by_owner`): the exit
+    /// that follows is acknowledged as it is recorded ([`Self::mark_seq`]),
+    /// so the owner owes nothing for an end it asked for. Not stored: after
+    /// a restart in between, the exit is an obligation, as one nobody asked
+    /// for.
+    stop_by_owner: bool,
     /// The takeover claim: set by `takeover`, cleared by `takeover_failed`.
     /// Kept in every state, an exited worker's too.
     takeover_ms: Option<u64>,
@@ -462,6 +468,7 @@ impl Status {
             questions: Vec::new(),
             resolved: VecDeque::new(),
             stop_requested_ms: None,
+            stop_by_owner: false,
             takeover_ms: None,
             takeover_tab: None,
             takeover_error: None,
@@ -602,6 +609,11 @@ impl Status {
         }
         if self.is_gone() && (self.exited, self.lost) != before.gone {
             self.gone_seq = seq;
+            // The exit its owner asked for is handled already, with all
+            // that came before it.
+            if self.exited && self.stop_by_owner {
+                self.acked_seq = self.acked_seq.max(seq);
+            }
         }
     }
 
@@ -837,6 +849,9 @@ impl Status {
             (Direction::Herdr, "signal") => {
                 if event["signal"].as_str() == Some("SIGTERM") {
                     self.stop_requested_ms = event["at_ms"].as_u64();
+                }
+                if event["by_owner"].as_bool() == Some(true) {
+                    self.stop_by_owner = true;
                 }
             }
             (Direction::Herdr, "exited") => {
@@ -1480,6 +1495,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn worker_number(worker_id: &str) -> Option<u64> {
     worker_id.strip_prefix('w')?.parse().ok()
+}
+
+/// Marks a stop or kill `signal` event as sent by the worker's owner when
+/// `caller_pane` is that owner, so its exit creates no obligation.
+fn mark_by_owner(signal: &mut Value, status: &Status, caller_pane: Option<&str>) {
+    if caller_pane.is_some() && caller_pane == status.owner_pane.as_deref() {
+        signal["by_owner"] = json!(true);
+    }
 }
 
 static SUPERVISOR: OnceLock<WorkerSupervisor> = OnceLock::new();
@@ -2947,7 +2970,7 @@ impl WorkerSupervisor {
     /// alive. A repeated stop sends nothing. It never escalates; `worker.kill`
     /// does.
     pub(crate) fn stop(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
-        self.stop_once(worker_id, None)
+        self.stop_once(worker_id, None, None)
     }
 
     /// [`Self::stop`] with the client's command id.
@@ -2960,13 +2983,15 @@ impl WorkerSupervisor {
             "worker.stop",
             target,
             |stored| Err(Self::cut_off(stored)),
-            |receipt| self.stop_once(&target.worker_id, receipt),
+            |receipt| self.stop_once(&target.worker_id, target.caller_pane_id.as_deref(), receipt),
         )
     }
 
+    /// `caller_pane`: the pane that asks for the stop or kill, if known.
     fn stop_once(
         &self,
         worker_id: &str,
+        caller_pane: Option<&str>,
         receipt: Option<&Receipt>,
     ) -> Result<WorkerInfo, WorkerError> {
         let (number, live, status) = self.live(worker_id)?;
@@ -2977,7 +3002,8 @@ impl WorkerSupervisor {
             .pid
             .ok_or_else(|| WorkerError::NotRunning(format!("worker {worker_id} has no process")))?;
         self.record_tool_sessions(number, pid);
-        let signal = json!({"type": "signal", "signal": "SIGTERM", "at_ms": now_ms()});
+        let mut signal = json!({"type": "signal", "signal": "SIGTERM", "at_ms": now_ms()});
+        mark_by_owner(&mut signal, &status, caller_pane);
         self.record_command(number, Direction::Herdr, &signal, receipt);
         live.close_input();
         crate::platform::signal_process_group(pid, Signal::Terminate)?;
@@ -3284,7 +3310,7 @@ impl WorkerSupervisor {
         worker_id: &str,
         force: bool,
     ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
-        self.kill_once(worker_id, force, None)
+        self.kill_once(worker_id, force, None, None)
     }
 
     /// Force-stops a worker: SIGKILL to its process group, then to the
@@ -3301,7 +3327,14 @@ impl WorkerSupervisor {
             "worker.kill",
             params,
             |stored| Err(Self::cut_off(stored)),
-            |receipt| self.kill_once(&params.worker_id, params.force, receipt),
+            |receipt| {
+                self.kill_once(
+                    &params.worker_id,
+                    params.force,
+                    params.caller_pane_id.as_deref(),
+                    receipt,
+                )
+            },
         )
     }
 
@@ -3309,6 +3342,7 @@ impl WorkerSupervisor {
         &self,
         worker_id: &str,
         force: bool,
+        caller_pane: Option<&str>,
         receipt: Option<&Receipt>,
     ) -> Result<(WorkerInfo, WorkerKillReport), WorkerError> {
         let (number, status) = {
@@ -3330,12 +3364,9 @@ impl WorkerSupervisor {
         }
         if let (Some(pid), false) = (status.pid, status.is_gone()) {
             self.record_tool_sessions(number, pid);
-            self.record_command(
-                number,
-                Direction::Herdr,
-                &json!({"type": "signal", "signal": "SIGKILL"}),
-                receipt,
-            );
+            let mut signal = json!({"type": "signal", "signal": "SIGKILL"});
+            mark_by_owner(&mut signal, &status, caller_pane);
+            self.record_command(number, Direction::Herdr, &signal, receipt);
             crate::platform::signal_process_group(pid, Signal::Kill)?;
         }
         let sessions = self.with_entry(worker_id, |entry| entry.status.tool_sessions.clone())?;
@@ -3538,6 +3569,8 @@ impl WorkerSupervisor {
         let base = params.base.as_deref().unwrap_or("master");
         let (path, created) = slot::locate_or_create(caller_cwd, name, base)?;
         let killed = self.end_slot_leftovers(&path)?;
+        // Before the switch, so a refused start leaves no branch behind.
+        slot::bound_target(&path)?;
         let slot = slot::prepare(&path, branch, base, params.fresh_build, created)?;
         Ok((slot, killed))
     }

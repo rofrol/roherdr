@@ -5348,6 +5348,13 @@
         "WorkerCommandTarget": {
           "description": "A worker and the client's id for a command on it (`worker.stop`).",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the stop (the CLI sends its `HERDR_PANE_ID`).\nWhen it is the worker's owner, the exit it causes is acknowledged\nwith it, so the owner owes nothing for an end it asked for.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "command_id": {
               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
               "type": [
@@ -5416,6 +5423,13 @@
         },
         "WorkerKillParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the kill (the CLI sends its `HERDR_PANE_ID`).\nWhen it is the worker's owner, the exit it causes is acknowledged\nwith it, so the owner owes nothing for an end it asked for.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "command_id": {
               "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
               "type": [

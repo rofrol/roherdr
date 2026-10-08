@@ -199,6 +199,47 @@ pub(super) fn prepare(
     Ok(slot)
 }
 
+/// The repository's own target sweep, relative to the slot (`just sweep`,
+/// `just guard`). Its `slot` command keeps `target/` under a slot limit and
+/// refuses when the disk stays short ([`bound_target`]).
+const TARGET_SWEEP: &str = "scripts/target_sweep.py";
+
+/// Keeps the slot's `target/` from filling the disk before a worker builds
+/// there: each `cargo test` leaves a hashed binary, and the folder of one
+/// branch after another grew to 14 GB in a day (2026-10-08). Runs the
+/// repository's sweep (cargo's build lock respected) with the slot limit;
+/// a repository without that script is left alone. Its refusal (the disk
+/// short even after the sweep, a build holding the lock) refuses the start.
+pub(super) fn bound_target(path: &Path) -> Result<(), WorkerError> {
+    let script = path.join(TARGET_SWEEP);
+    if !script.is_file() {
+        return Ok(());
+    }
+    let output = match Command::new("python3")
+        .arg(&script)
+        .arg("slot")
+        .arg("--target")
+        .arg(path.join("target"))
+        .current_dir(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(%error, script = %script.display(), "cannot run the folder slot's target sweep");
+            return Ok(());
+        }
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    let why = String::from_utf8_lossy(&output.stderr);
+    Err(WorkerError::Busy(format!(
+        "folder slot {}: {}",
+        path.display(),
+        why.trim()
+    )))
+}
+
 /// Zig copies a dependency into the project's `zig-pkg/` from the global
 /// cache's `p/<hash>`, or downloads it, which the sandbox's network block
 /// stops (the first cold build in a slot failed on `deps.files.ghostty.org`,
@@ -316,5 +357,48 @@ mod tests {
         for name in ["", ".", "..", ".hidden", "a/b", "../x", "a b", "~"] {
             assert!(validate_name(name).is_err(), "{name}");
         }
+    }
+
+    /// A stand-in for the repository's sweep: it records its arguments and
+    /// refuses when told to, so no real sweep runs.
+    #[test]
+    fn the_slot_sweeps_target_first_and_its_refusal_refuses_the_start() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-slot-sweep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        // Without the script (another repository): nothing runs.
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(bound_target(&root).is_ok());
+
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(
+            root.join(TARGET_SWEEP),
+            "import pathlib, sys\n\
+             pathlib.Path('args').write_text(' '.join(sys.argv[1:]))\n\
+             if pathlib.Path('refuse').exists():\n\
+             \x20   print('less than 15 GiB free', file=sys.stderr)\n\
+             \x20   sys.exit(1)\n",
+        )
+        .unwrap();
+        assert!(bound_target(&root).is_ok());
+        let args = std::fs::read_to_string(root.join("args")).unwrap();
+        assert_eq!(
+            args,
+            format!("slot --target {}", root.join("target").display())
+        );
+
+        std::fs::write(root.join("refuse"), "").unwrap();
+        let refusal = bound_target(&root).unwrap_err();
+        assert_eq!(refusal.code(), "worker_busy");
+        assert!(
+            refusal.to_string().contains("less than 15 GiB free"),
+            "{refusal}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

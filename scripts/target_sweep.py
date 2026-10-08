@@ -11,6 +11,11 @@ Safety: cargo holds an exclusive lock on `target/<profile>/.cargo-lock` while it
 builds. The sweep takes that lock without waiting and gives up if a build is
 running, instead of guessing from the process list. Run it through the justfile,
 not by hand, and do not delete `target/` artifacts yourself.
+
+`slot` is what herdr runs before it gives a persistent worker folder ("folder
+slot", `herdr worker start --folder-slot`) to a new worker: the same sweep with
+the smaller DEFAULT_SLOT_MAX_TARGET_GIB, then the `guard` check, refusing the
+start when the disk stays short.
 """
 import argparse
 import os
@@ -27,6 +32,11 @@ except ImportError:  # Windows: nothing here applies
 GIB = 1024**3
 DEFAULT_MAX_TARGET_GIB = 25
 DEFAULT_MIN_FREE_GIB = 15
+# A folder slot builds one branch at a time, so the test binaries of the
+# branches before it are dead weight: its target/ grew to 14 GB in a day
+# (2026-10-08) while the shared limit above freed nothing. 10 GiB holds one
+# warm debug build of herdr with its tests.
+DEFAULT_SLOT_MAX_TARGET_GIB = 10
 
 
 def dir_size(path):
@@ -92,9 +102,12 @@ class Locks:
         self.files = []
 
 
-def sweep(target, max_bytes, dry_run=False):
-    """Removes what `plan` picks; returns the bytes freed. Raises BuildRunning."""
-    sizes = {child: dir_size(child) for child in target.iterdir() if child.is_dir()}
+def sweep(target, max_bytes, dry_run=False, size=dir_size):
+    """Removes what `plan` picks; returns the bytes freed. Raises BuildRunning.
+
+    `size` measures a directory (tests pass fake sizes).
+    """
+    sizes = {child: size(child) for child in target.iterdir() if child.is_dir()}
     doomed = plan(target, sizes, max_bytes)
     freed = 0
     with Locks(target):
@@ -110,19 +123,50 @@ def free_bytes(path):
     return shutil.disk_usage(path).free
 
 
+def bound_slot(target, max_bytes, min_free_bytes, dry_run=False, size=dir_size, free=free_bytes):
+    """Keeps a folder slot's `target/` within `max_bytes` before a worker uses it.
+
+    Returns None when the slot may be used, else why not. With the disk still
+    short of `min_free_bytes` after that sweep, the whole `target/` goes (a
+    slot's caches only save build time); short even then, the start is refused.
+    `size` and `free` measure (tests pass fake values).
+    """
+    try:
+        sweep(target, max_bytes, dry_run, size)
+        if free(target) >= min_free_bytes:
+            return None
+        sweep(target, 0, dry_run, size)
+    except BuildRunning as busy:
+        return f"{busy} in the folder slot; stop that build, then start the worker again"
+    if free(target) >= min_free_bytes:
+        return None
+    return (
+        f"less than {min_free_bytes / GIB:g} GiB free even after removing the folder slot's target/: "
+        "not starting a worker that would build there. Free disk space elsewhere, then start it again."
+    )
+
+
 def main():
     if fcntl is None:
         print("target sweep: not needed on Windows")
         return 0
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["sweep", "guard"])
+    parser.add_argument("command", choices=["sweep", "guard", "slot"])
     parser.add_argument("--target", type=Path, default=Path(__file__).resolve().parent.parent / "target")
-    parser.add_argument("--max-gib", type=float, default=DEFAULT_MAX_TARGET_GIB)
+    parser.add_argument("--max-gib", type=float, help=f"default {DEFAULT_MAX_TARGET_GIB}, {DEFAULT_SLOT_MAX_TARGET_GIB} for slot")
     parser.add_argument("--min-free-gib", type=float, default=DEFAULT_MIN_FREE_GIB)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.max_gib is None:
+        args.max_gib = DEFAULT_SLOT_MAX_TARGET_GIB if args.command == "slot" else DEFAULT_MAX_TARGET_GIB
     target = args.target
     if not target.is_dir():
+        return 0
+    if args.command == "slot":
+        refusal = bound_slot(target, int(args.max_gib * GIB), int(args.min_free_gib * GIB), args.dry_run)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
         return 0
     try:
         if args.command == "sweep":

@@ -109,6 +109,11 @@ pub struct WorkerObligation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerCommandTarget {
     pub worker_id: String,
+    /// The pane that sends the stop (the CLI sends its `HERDR_PANE_ID`).
+    /// When it is the worker's owner, the exit it causes is acknowledged
+    /// with it, so the owner owes nothing for an end it asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
     /// A client's id for this command, unique per command it means
     /// (`worker_command_conflict` when reused with other parameters). A
     /// repeated id returns the stored outcome without doing it again: the
@@ -168,6 +173,11 @@ pub struct WorkerKillParams {
     /// message lists what it would signal.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
+    /// The pane that sends the kill (the CLI sends its `HERDR_PANE_ID`).
+    /// When it is the worker's owner, the exit it causes is acknowledged
+    /// with it, so the owner owes nothing for an end it asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
     /// A client's id for this command, unique per command it means
     /// (`worker_command_conflict` when reused with other parameters). A
     /// repeated id returns the stored outcome without doing it again: the

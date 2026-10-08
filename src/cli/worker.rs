@@ -150,6 +150,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         }
         "stop" => Method::WorkerStop(WorkerCommandTarget {
             worker_id: target(rest)?.worker_id,
+            caller_pane_id: super::target::caller_pane_id(),
             command_id,
         }),
         "kill" => {
@@ -161,6 +162,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             Method::WorkerKill(WorkerKillParams {
                 worker_id: (*worker_id).clone(),
                 force: !force.is_empty(),
+                caller_pane_id: super::target::caller_pane_id(),
                 command_id,
             })
         }
