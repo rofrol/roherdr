@@ -164,6 +164,12 @@ libghostty-vt builds (Zig issue #22559; `ZIG_LIBC` behaves the same as
 `--libc`) and then looks for libSystem under the SDK directory. As a temporary
 workaround `just windows-lint` links `~/.local/share/herdr/windows-cross/usr/lib`
 to the macOS SDK's `usr/lib`; `scripts/windows_cross.py` says when to remove it.
+The bundled SQLite (`rusqlite`) is C code that cc-rs compiles for Windows with
+the host's clang, which has no MSVC headers or `lib.exe` on a Unix host, so
+`just windows-lint` also sets `CFLAGS_x86_64_pc_windows_msvc` to the SDK's
+include directories and `AR_x86_64_pc_windows_msvc` to `zig lib` (an AR you
+set for that target is kept). Only those target-specific variables change;
+native builds are untouched.
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 

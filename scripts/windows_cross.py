@@ -119,10 +119,54 @@ def setup(accept_license: bool) -> None:
     print(f"Windows SDK configured at {config}. Run `just windows-lint` or `just check`.")
 
 
+# cc-rs reads these for the Windows target only, so host and native builds
+# keep their own compiler settings.
+TARGET_CFLAGS_ENV = "CFLAGS_" + TARGET.replace("-", "_")
+TARGET_AR_ENV = "AR_" + TARGET.replace("-", "_")
+
+
+def c_cross_env(libc: Path, environ: dict) -> dict:
+    """The cc-rs settings that build C code for Windows (bundled SQLite).
+
+    Clang finds no MSVC headers on a Unix host, so the include directories of
+    the libc file (and the SDK's `um` and `shared` beside `ucrt`, which
+    `windows.h` needs) are passed as `-isystem`, ahead of any CFLAGS already
+    set for the target. There is no `lib.exe` either, so the archiver is Zig's
+    llvm-lib (`zig lib`), unless the target's AR is already set. cc-rs splits
+    the AR value on spaces, so a Zig path with spaces is refused.
+    """
+    settings = {}
+    for line in libc.read_text().splitlines():
+        key, _, value = line.partition("=")
+        settings[key.strip()] = value.strip()
+    include_dirs = [Path(settings[key]) for key in ("include_dir", "sys_include_dir") if settings.get(key)]
+    if include_dirs:
+        ucrt = include_dirs[0]
+        include_dirs += [ucrt.parent / name for name in ("um", "shared") if (ucrt.parent / name).is_dir()]
+    flags = " ".join(f"-isystem {directory}" for directory in include_dirs)
+    if " " in "".join(str(directory) for directory in include_dirs):
+        raise ValueError(f"Windows SDK include paths must not contain spaces: {include_dirs}")
+    existing = environ.get(TARGET_CFLAGS_ENV, "").strip()
+    env = {TARGET_CFLAGS_ENV: f"{flags} {existing}".strip()}
+    if not environ.get(TARGET_AR_ENV):
+        zig = shutil.which(environ.get("ZIG", "zig"))
+        if not zig:
+            raise ValueError("Install Zig 0.16.0 first, or set ZIG to its executable.")
+        if " " in zig:
+            raise ValueError(f"Zig's path must not contain spaces for {TARGET_AR_ENV}: {zig}")
+        env[TARGET_AR_ENV] = f"{zig} lib"
+    return env
+
+
 def lint() -> None:
     libc = libc_path()
     link_macos_system_libraries(libc)
-    env = {**os.environ, LIBC_ENV: str(libc), "LIBGHOSTTY_VT_SIMD": "false"}
+    env = {
+        **os.environ,
+        **c_cross_env(libc, dict(os.environ)),
+        LIBC_ENV: str(libc),
+        "LIBGHOSTTY_VT_SIMD": "false",
+    }
     subprocess.run(["rustup", "target", "add", TARGET], check=True)
     subprocess.run(
         # --all-targets also checks Windows-only test code, which Unix builds never compile.

@@ -52,18 +52,63 @@ class WindowsCrossTests(unittest.TestCase):
                     windows_cross.lint()
                 run.assert_not_called()
 
+    def write_libc(self, root):
+        for relative in ("sdk/include/ucrt", "sdk/include/um", "sdk/include/shared", "crt/include"):
+            (root / relative).mkdir(parents=True, exist_ok=True)
+        libc = root / "libc.txt"
+        libc.write_text(
+            f"include_dir={root / 'sdk/include/ucrt'}\n"
+            f"sys_include_dir={root / 'crt/include'}\n"
+            "crt_dir=\ngcc_dir=\n"
+        )
+        return libc
+
     def test_lint_passes_sdk_to_cargo_without_changing_parent_environment(self):
-        with patch.object(windows_cross, "libc_path", return_value=Path("/sdk/libc.txt")), \
-                patch.object(windows_cross, "link_macos_system_libraries"), \
-                patch.dict(os.environ, {"KEEP_ME": "yes"}, clear=True), \
-                patch.object(windows_cross.subprocess, "run") as run:
-            windows_cross.lint()
-            self.assertEqual(run.call_count, 2)
-            cargo = run.call_args
-            self.assertEqual(cargo.args[0][:2], ["cargo", "clippy"])
-            self.assertEqual(cargo.kwargs["env"][windows_cross.LIBC_ENV], str(Path("/sdk/libc.txt")))
-            self.assertEqual(cargo.kwargs["env"]["KEEP_ME"], "yes")
-            self.assertNotIn(windows_cross.LIBC_ENV, os.environ)
+        with tempfile.TemporaryDirectory() as directory:
+            libc = self.write_libc(Path(directory))
+            with patch.object(windows_cross, "libc_path", return_value=libc), \
+                    patch.object(windows_cross, "link_macos_system_libraries"), \
+                    patch.object(windows_cross.shutil, "which", return_value="/zig/zig"), \
+                    patch.dict(os.environ, {"KEEP_ME": "yes"}, clear=True), \
+                    patch.object(windows_cross.subprocess, "run") as run:
+                windows_cross.lint()
+                self.assertEqual(run.call_count, 2)
+                cargo = run.call_args
+                self.assertEqual(cargo.args[0][:2], ["cargo", "clippy"])
+                env = cargo.kwargs["env"]
+                self.assertEqual(env[windows_cross.LIBC_ENV], str(libc))
+                self.assertEqual(env["KEEP_ME"], "yes")
+                self.assertEqual(env["AR_x86_64_pc_windows_msvc"], "/zig/zig lib")
+                self.assertIn("-isystem", env["CFLAGS_x86_64_pc_windows_msvc"])
+                # Host and native builds keep their own settings.
+                for name in ("CFLAGS", "AR", "CC", "TARGET_CFLAGS"):
+                    self.assertNotIn(name, env)
+                for name in (windows_cross.LIBC_ENV, "CFLAGS_x86_64_pc_windows_msvc"):
+                    self.assertNotIn(name, os.environ)
+
+    def test_c_cross_env_adds_sdk_headers_and_zig_lib(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            libc = self.write_libc(root)
+            with patch.object(windows_cross.shutil, "which", return_value="/zig/zig"):
+                env = windows_cross.c_cross_env(libc, {"CFLAGS_x86_64_pc_windows_msvc": "-O1"})
+                self.assertEqual(
+                    env["CFLAGS_x86_64_pc_windows_msvc"],
+                    " ".join(
+                        f"-isystem {root / relative}"
+                        for relative in ("sdk/include/ucrt", "crt/include", "sdk/include/um", "sdk/include/shared")
+                    ) + " -O1",
+                )
+                self.assertEqual(env["AR_x86_64_pc_windows_msvc"], "/zig/zig lib")
+                # An archiver the user set is kept.
+                kept = windows_cross.c_cross_env(libc, {"AR_x86_64_pc_windows_msvc": "llvm-lib"})
+                self.assertNotIn("AR_x86_64_pc_windows_msvc", kept)
+            with patch.object(windows_cross.shutil, "which", return_value="/my zig/zig"):
+                with self.assertRaisesRegex(ValueError, "must not contain spaces"):
+                    windows_cross.c_cross_env(libc, {})
+            with patch.object(windows_cross.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(ValueError, "Install Zig"):
+                    windows_cross.c_cross_env(libc, {})
 
     @unittest.skipIf(os.name == "nt", "the macOS system-library link is a Unix symlink workaround")
     def test_macos_links_its_system_libraries_into_the_managed_sdk_only(self):
