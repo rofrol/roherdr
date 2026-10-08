@@ -591,9 +591,17 @@ checkout's `HEAD` and applies only the paths you name:
 
 ```bash
 just clean-check <your paths>      # just check there
-just clean-release <your paths>    # cargo build --release --locked there
-"$(plugins/job/herdr-job clean-tree --path)"/scripts/herdr_live.sh install   # installs that build
+just clean-install <your paths>    # just check, release build and install there, under one lock
 ```
+
+Never install with a separate command after `just clean-release`: the
+clean-tree lock is released between them, and another session's run can
+reset the tree and rebuild `target/release/herdr` with its own paths, so
+the install would ship their build. `clean-install` runs the install as
+`clean-tree --then`, under the same lock, and passes
+`--expect-build "$HERDR_CLEAN_TREE_BUILD"`, so `herdr_live.sh install`
+refuses (installing nothing) a binary whose `--build-commit` is not the
+identity of the tree that was checked.
 
 Run them through `herdr-job run --slot --name "<what>" -- ...`; the slot keeps
 the run from overlapping another session's build or test suite (see
@@ -618,9 +626,9 @@ where multiple-choice prompts may not work, ask in plain text. Run
 that they can install it later with `scripts/herdr_live.sh install` or by
 asking you.
 
-Before `install`, check that `HEAD` has no new commits touching the build
-inputs since the clean-tree build and that your paths' diff is unchanged;
-otherwise rebuild. Such a build is labelled `<HEAD>~<tree> <job name>` in the
+`clean-tree` reads `HEAD` and your paths once, into a snapshot, so a commit
+another session makes during the run does not mix in; a commit made after it
+is not in the installed build. Such a build is labelled `<HEAD>~<tree> <job name>` in the
 sidebar footer and `--build-commit` (the tree hash tells two dirty builds
 apart), and its backup `<HEAD>-dirty-<tree>_<job name>`. Commit your files by explicit path (`git commit -- <paths>`),
 never with `-a`.

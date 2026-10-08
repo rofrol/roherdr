@@ -948,6 +948,111 @@ class CleanTreeTests(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("outside", out.stderr)
 
+    def test_then_runs_after_success_under_the_same_lock_and_not_after_a_failure(self):
+        # The lock is held when a non-blocking flock on it fails.
+        probe = ("import fcntl, sys; f = open(sys.argv[1], 'a+')\n"
+                 "try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                 "except BlockingIOError: print('locked')\n"
+                 "else: print('free')")
+        lock = self.repo / ".git" / "clean-tree.lock"
+        then = f"python3 -c \"{probe}\" {lock}; echo \"then in $(pwd)\""
+        out = self.run_tree("--then", then, "--", "true")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("locked\n", out.stdout)
+        self.assertIn(f"then in {self.tree.resolve()}", out.stdout)
+        out = self.run_tree("--then", "echo then ran", "--", "sh", "-c", "exit 3")
+        self.assertEqual(out.returncode, 3)
+        self.assertNotIn("then ran", out.stdout)
+        out = self.run_tree("--then", "exit 5", "--", "true")
+        self.assertEqual(out.returncode, 5)
+
+    def test_the_command_gets_the_identity_build_rs_gives_the_tree(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "main.rs").write_text("fn main() {}\n")
+        for name in ("build.rs", "Cargo.toml", "Cargo.lock"):
+            (self.repo / name).write_text(f"{name}\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "sources")
+        commit = subprocess.run(["git", "-C", str(self.repo), "log", "-1", "--format=%h"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        show = ["--", "sh", "-c", "echo \"build $HERDR_CLEAN_TREE_BUILD\""]
+        (self.repo / "mine.txt").write_text("not a build source\n")
+        out = self.run_tree("mine.txt", *show)
+        self.assertIn(f"build {commit}\n", out.stdout)
+        (self.repo / "src" / "main.rs").write_text("fn main() { println!(); }\n")
+        out = self.run_tree("src", *show)
+        # build.rs: HEAD's tree with the working copy of its sources.
+        index = Path(self.tmp.name) / "index"
+        env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        for args in (["read-tree", "HEAD"], ["add", "-A", "--", "src", "build.rs", "Cargo.toml", "Cargo.lock"]):
+            subprocess.run(["git", "-C", str(self.repo), *args], env=env, check=True, capture_output=True)
+        sources = subprocess.run(["git", "-C", str(self.repo), "write-tree"], env=env, check=True,
+                                 capture_output=True, text=True).stdout.strip()
+        self.assertIn(f"build {commit}~{sources[:7]}\n", out.stdout)
+
+    def test_the_inputs_are_read_once_so_a_commit_in_between_does_not_leak_in(self):
+        (self.repo / "mine.txt").write_text("mine edited\n")
+        snapshot = JOB["snapshot_inputs"](self.repo.resolve(), ["mine.txt"])
+        # Another session commits and edits while the run prepares the tree.
+        (self.repo / "theirs.txt").write_text("theirs committed later\n")
+        self.git("commit", "-q", "-am", "theirs")
+        (self.repo / "mine.txt").write_text("mine edited again\n")
+        JOB["apply_snapshot"](self.repo.resolve(), self.tree, snapshot)
+        self.assertEqual((self.tree / "mine.txt").read_text(), "mine edited\n")
+        self.assertEqual((self.tree / "theirs.txt").read_text(), "theirs.txt committed\n")
+        head = subprocess.run(["git", "-C", str(self.tree), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(head, snapshot[0])
+
+
+@unittest.skipUnless(os.name == "posix", "herdr_live.sh supports Unix only")
+class LiveInstallTests(unittest.TestCase):
+    """scripts/herdr_live.sh install with --expect-build, on a fake build."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        (root / "scripts").mkdir()
+        script = Path(__file__).resolve().parents[2] / "scripts" / "herdr_live.sh"
+        self.script = root / "scripts" / "herdr_live.sh"
+        self.script.write_text(script.read_text())
+        (root / "target" / "release").mkdir(parents=True)
+        self.candidate = root / "target" / "release" / "herdr"
+        self.candidate.write_text("#!/bin/sh\n"
+                                  "[ \"$1\" = --build-commit ] && echo 'abc1234~def5678 my job · base: x'\n"
+                                  "exit 0\n")
+        self.candidate.chmod(0o755)
+        self.installed = root / "installed-herdr"
+        self.installed.write_text("#!/bin/sh\necho old\n")
+        self.installed.chmod(0o755)
+        self.home = root / "home"
+        self.home.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), HERDR_INSTALLED=str(self.installed))
+
+    def install(self, *args):
+        return subprocess.run(["bash", str(self.script), "install", *args], env=self.env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_a_build_that_is_not_the_expected_one_is_refused_and_nothing_installed(self):
+        out = self.install("--expect-build", "abc1234~0000000")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("not the expected abc1234~0000000", out.stderr)
+        self.assertIn("nothing installed", out.stderr)
+        self.assertEqual(self.installed.read_text(), "#!/bin/sh\necho old\n")
+        self.assertFalse((self.home / ".cache" / "herdr" / "installed").exists())
+
+    def test_the_expected_build_passes_the_check(self):
+        # The same binary as the installed one stops right after the check,
+        # without a handoff.
+        self.installed.write_text(self.candidate.read_text())
+        out = self.install("--expect-build", "abc1234~def5678")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("already this build", out.stdout)
+
+    def test_expect_build_needs_a_value(self):
+        self.assertEqual(self.install("--expect-build").returncode, 2)
+
 
 
 @unittest.skipUnless(os.name == "posix", "the job plugin supports Unix only")

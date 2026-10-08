@@ -5,7 +5,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: herdr_live.sh install|rollback [--force] | list
+usage: herdr_live.sh install [--force] [--expect-build ID] | rollback [--force] | list
 
   install   back up the installed binary, install this checkout's
             target/release/herdr over it and hand the running server off to it
@@ -23,6 +23,12 @@ worker in a turn makes it stop without installing. `--force` skips that and
 hands off anyway: the server sends the workers SIGTERM (it needs a running
 build that knows the flag).
 
+`--expect-build ID` makes install refuse, installing nothing, unless the
+first word of the build's `--build-commit` is that identity (`<hash>`
+or `<hash>~<tree>`, see build.rs). `herdr-job clean-tree` exports the identity
+of the tree it built as HERDR_CLEAN_TREE_BUILD; `just clean-install` passes
+it, so the install ships the build that was checked and nothing else.
+
 The installed binary is $HERDR_INSTALLED (default ~/.cargo/bin/herdr).
 Backups live in ~/.cache/herdr/installed/ (the last 5 are kept), named
 <install time>_<commit>_<commit subject> after the build they hold.
@@ -30,9 +36,19 @@ USAGE
 }
 
 force=()
-if [[ "${2:-}" == "--force" ]]; then
-  force=(--force)
-fi
+expect_build=""
+args=("${@:2}")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    --force) force=(--force) ;;
+    --expect-build)
+      expect_build="${args[i + 1]:-}"
+      [[ -n "$expect_build" && "${1:-}" == install ]] || { usage >&2; exit 2; }
+      i=$((i + 1))
+      ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 candidate="$repo/target/release/herdr"
@@ -159,6 +175,14 @@ case "${1:-}" in
     cp "$candidate" "$staged"
     chmod 755 "$staged"
     "$staged" --version >/dev/null || { echo "the build does not run; nothing installed" >&2; exit 1; }
+    if [[ -n "$expect_build" ]]; then
+      built="$("$staged" --build-commit 2>/dev/null || true)"
+      if [[ "${built%% *}" != "$expect_build" ]]; then
+        echo "$candidate is build ${built:-unknown}, not the expected $expect_build" >&2
+        echo "another run may have rebuilt it; nothing installed" >&2
+        exit 1
+      fi
+    fi
     if cmp -s "$staged" "$installed"; then
       echo "$installed is already this build ($(describe "$installed"))"
       exit 0
