@@ -1,6 +1,9 @@
 import contextlib
+import fcntl
 import io
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +71,9 @@ class TodoEditTests(unittest.TestCase):
         path = self.root / f"text{len(list(self.root.iterdir()))}.txt"
         path.write_text(content)
         return str(path)
+
+    def files(self):
+        return sorted(p.name for p in self.root.iterdir())
 
     def run_tool(self, *argv, file=None):
         out, err = io.StringIO(), io.StringIO()
@@ -342,7 +348,7 @@ class TodoEditTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.run_tool("remove", "Second item")
         self.assertEqual(self.todo.read_text(), TODO)
-        self.assertEqual([p.name for p in self.root.iterdir()], ["TODO.md"])
+        self.assertEqual(self.files(), ["TODO.md", "TODO.md.lock"])
 
     def test_write_goes_through_a_rename_and_keeps_the_mode(self):
         os.chmod(self.todo, 0o640)
@@ -361,19 +367,24 @@ class TodoEditTests(unittest.TestCase):
         self.assertEqual(self.todo.stat().st_mode & 0o777, 0o640)
 
     def test_concurrent_change_refuses(self):
-        real_read = todo_edit.Path.read_text
-        state = {"n": 0}
+        # Reads: the edit's own, the check before the temp file, the check
+        # right before the rename. A change seen by either check refuses.
+        real_read = todo_edit.Path.read_bytes
+        for changed_read in (2, 3):
+            state = {"n": 0}
 
-        def read(path, *a, **k):
-            state["n"] += 1
-            text = real_read(path, *a, **k)
-            return text + "changed\n" if state["n"] == 2 else text
+            def read(path, *a, **k):
+                state["n"] += 1
+                data = real_read(path, *a, **k)
+                return data + b"changed\n" if state["n"] == changed_read else data
 
-        with mock.patch.object(todo_edit.Path, "read_text", read):
-            code, _, err = self.run_tool("remove", "Second item")
-        self.assertEqual(code, 1)
-        self.assertIn("changed while editing", err)
-        self.assertEqual(self.todo.read_text(), TODO)
+            with mock.patch.object(todo_edit.Path, "read_bytes", read):
+                code, _, err = self.run_tool("remove", "Second item")
+            self.assertEqual(code, 1)
+            self.assertIn("changed while editing", err)
+            self.assertIn(str(self.todo), err)
+            self.assertEqual(self.todo.read_text(), TODO)
+            self.assertEqual(self.files(), ["TODO.md", "TODO.md.lock"])
 
     OTHER = TODO + "- [ ] Added by another session\n"
 
@@ -393,22 +404,50 @@ class TodoEditTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("changed while editing", err)
         self.assertEqual(self.todo.read_text(), self.OTHER)
-        self.assertEqual([p.name for p in self.root.iterdir()], ["TODO.md"])
+        self.assertEqual(self.files(), ["TODO.md", "TODO.md.lock"])
 
-    @unittest.expectedFailure
-    def test_a_write_between_the_check_and_the_rename_is_not_lost(self):
-        # Known gap (docs/headless-worker-fault-tests.md): atomic_write compares,
-        # then renames, without a lock, so a write landing in between is
-        # replaced. Drop expectedFailure once that window is closed.
-        real_replace = os.replace
+    def test_a_write_while_the_temp_file_is_written_refuses_and_is_not_lost(self):
+        # Another writer (one that does not take the lock) changes the file
+        # after the first check, while the temp file is being written: the
+        # check right before the rename refuses, and its change stays.
+        real_fsync = os.fsync
 
-        def another_write_then_replace(src, dst):
-            Path(dst).write_text(self.OTHER)
-            real_replace(src, dst)
+        def another_write_then_fsync(fd):
+            self.todo.write_text(self.OTHER)
+            real_fsync(fd)
 
-        with mock.patch.object(todo_edit.os, "replace", side_effect=another_write_then_replace):
-            self.run_tool("remove", "Second item")
-        self.assertIn("Added by another session", self.todo.read_text())
+        with mock.patch.object(todo_edit.os, "fsync", side_effect=another_write_then_fsync):
+            code, _, err = self.run_tool("remove", "Second item")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.todo} changed while editing; nothing written", err)
+        self.assertEqual(self.todo.read_text(), self.OTHER)
+        self.assertEqual(self.files(), ["TODO.md", "TODO.md.lock"])
+
+    def test_two_concurrent_runs_serialize(self):
+        # While the lock is held, two runs start and another holder of the
+        # lock changes the file; both runs then edit the current file, one
+        # after the other, and every change is kept.
+        script = Path(__file__).with_name("todo_edit.py")
+        runs = []
+        with open(self.todo.with_name("TODO.md.lock"), "a+") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+            for title in ("Third", "Fourth"):
+                text = self.text_file(f"- [ ] {title}\n")
+                runs.append(
+                    subprocess.Popen(
+                        [sys.executable, str(script), "--file", str(self.todo),
+                         "add", "Proposed", "--text-file", text],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                )
+            self.todo.write_text(TODO + "\n- [ ] Under the lock\n")
+            # Released when the file closes.
+        results = [run.communicate() + (run.returncode,) for run in runs]
+        for out, err, code in results:
+            self.assertEqual(code, 0, err)
+        text = self.todo.read_text()
+        for title in ("Third", "Fourth", "Under the lock"):
+            self.assertIn(f"- [ ] {title}\n", text)
 
 
 if __name__ == "__main__":

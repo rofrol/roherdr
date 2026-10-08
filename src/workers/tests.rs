@@ -2009,6 +2009,104 @@ fn a_failed_store_write_marks_the_worker_degraded() {
     fixture.supervisor.kill(&id, false).unwrap();
 }
 
+fn force_store_failure(supervisor: &WorkerSupervisor, failing: bool) {
+    let sql = if failing {
+        "CREATE TRIGGER forced BEFORE INSERT ON events
+         BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+    } else {
+        "DROP TRIGGER forced;"
+    };
+    store_of(supervisor)
+        .connection()
+        .execute_batch(sql)
+        .unwrap();
+}
+
+#[test]
+fn a_degraded_mark_is_stored_with_the_next_write_and_survives_a_restart() {
+    let fixture = Fixture::new("store-degraded-stored");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    force_store_failure(&fixture.supervisor, true);
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    fixture.wait_for(&id, |worker| worker.turns == 2);
+    // The store takes writes again: the exit is stored with the mark.
+    force_store_failure(&fixture.supervisor, false);
+    fixture.supervisor.kill(&id, false).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    let last = fixture.journal(&id).pop().unwrap();
+    assert!(last.get("seq").is_some(), "{last}");
+
+    let reopened = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let degraded = reopened.status(&id).unwrap().degraded.unwrap();
+    assert!(degraded.contains("worker store write failed"), "{degraded}");
+    assert!(degraded.contains("disk full"), "{degraded}");
+}
+
+#[test]
+fn a_restart_after_a_failed_store_write_still_says_the_record_has_a_gap() {
+    let fixture = Fixture::new("store-degraded-gap");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    force_store_failure(&fixture.supervisor, true);
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    fixture.wait_for(&id, |worker| worker.turns == 2);
+    fixture.supervisor.kill(&id, false).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    // The server ends with the mark only in memory; the next one finds the
+    // store writable and the journal export holding what it missed.
+    force_store_failure(&fixture.supervisor, false);
+    let missing = fixture
+        .journal(&id)
+        .iter()
+        .rev()
+        .take_while(|record| record.get("seq").is_none())
+        .count();
+    assert!(missing > 0);
+
+    let reopened = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let degraded = reopened.status(&id).unwrap().degraded.unwrap();
+    assert!(
+        degraded.contains(&format!("missing the last {missing} event(s)")),
+        "{degraded}"
+    );
+    // And the next restart still says so: the mark went in with `lost`.
+    drop(reopened);
+    let again = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let degraded = again.status(&id).unwrap().degraded.unwrap();
+    assert!(degraded.contains("missing the last"), "{degraded}");
+}
+
+#[test]
+fn an_imported_journal_without_seqs_has_no_gap() {
+    let fixture = Fixture::new("store-imported-no-gap");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.kill(&id, false).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    // A journal from before the store: the same records, without seqs,
+    // imported by the next server.
+    let path = fixture.root.join("workers").join(format!("{id}.jsonl"));
+    let stripped: String = fixture
+        .journal(&id)
+        .into_iter()
+        .map(|mut record| {
+            record.as_object_mut().unwrap().remove("seq");
+            format!("{record}\n")
+        })
+        .collect();
+    std::fs::write(&path, stripped).unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        let file = format!("{}{suffix}", store::STORE_FILE);
+        let _ = std::fs::remove_file(fixture.root.join("workers").join(file));
+    }
+    let imported = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(imported.status(&id).unwrap().degraded, None);
+    drop(imported);
+    let reopened = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(reopened.status(&id).unwrap().degraded, None);
+}
+
 #[test]
 fn seq_increases_across_workers_in_the_store_and_the_journals() {
     let fixture = Fixture::new("store-seq");

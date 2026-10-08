@@ -159,6 +159,11 @@ ALTER TABLE workers ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE questions ADD COLUMN escalated TEXT;
 ALTER TABLE workers ADD COLUMN owner_gone TEXT;
 "#,
+    r#"
+-- Why the worker's record is incomplete (a store or journal write failed),
+-- stored with the first write that succeeds after the failure.
+ALTER TABLE workers ADD COLUMN degraded TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -308,6 +313,16 @@ impl Store {
             },
         )
         .optional()
+    }
+
+    /// How many events the store holds of one worker.
+    pub(super) fn event_count(&self, worker_id: &str) -> StoreResult<i64> {
+        let conn = lock(&self.conn);
+        conn.query_row(
+            "SELECT count(*) FROM events WHERE worker_id = ?1",
+            [worker_id],
+            |row| row.get(0),
+        )
     }
 
     #[cfg(test)]
@@ -544,7 +559,7 @@ impl Tx<'_> {
                     :exit_code, :exit_signal, :stop_requested_ms, :takeover_ms,
                     :takeover_tab, :takeover_error, :takeover_unfinished, :refusal,
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
-                    :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone)
+                    :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -595,6 +610,7 @@ impl Tx<'_> {
                 ":owner_session": status.owner_session,
                 ":acked_seq": status.acked_seq,
                 ":owner_gone": status.owner_gone,
+                ":degraded": status.degraded,
             },
         )?;
         Ok(())
@@ -605,7 +621,7 @@ const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, p
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
-acked_seq, owner_gone";
+acked_seq, owner_gone, degraded";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -651,6 +667,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.owner_session = row.get(29)?;
     status.acked_seq = row.get(30)?;
     status.owner_gone = row.get(31)?;
+    status.degraded = row.get(32)?;
     Ok(status)
 }
 
@@ -885,6 +902,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN owner_session;
                  ALTER TABLE workers DROP COLUMN acked_seq;
                  ALTER TABLE workers DROP COLUMN owner_gone;
+                 ALTER TABLE workers DROP COLUMN degraded;
                  ALTER TABLE questions DROP COLUMN escalated;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )

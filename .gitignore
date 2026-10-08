@@ -5,6 +5,8 @@ __pycache__/
 *.pyc
 *.swp
 *.swo
+# todo_edit.py's lock files beside TODO.md and DECISIONS.md
+*.md.lock
 *~
 .DS_Store
 
