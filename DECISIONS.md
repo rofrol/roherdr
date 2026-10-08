@@ -447,3 +447,20 @@ agents confirm prompt delivery (`agent.prompt_confirmed`, and `agent.prompt
 --wait` waits for the same acknowledgement instead of a 5-second timer that
 decided the outcome). Twenty headless workers (w1-w20) did the reliability
 work on 2026-10-07..08; after the sandbox change, none asked the user.
+
+## Changes to the user's agent configuration (2026-10-08)
+
+The user asked why a worker editing his agent configuration ran without auto
+mode ("handling was supposed to be without me"). Round `20261008-132031-ac90` (sol, MiMo,
+DeepSeek): `~/.claude` is the agents' own control plane (rules, skills,
+hooks that run on every tool call); a coordinator's review is not an
+independent check. Decided by the user 2026-10-08: a standing approval for a
+narrow class: text of skills and of the global rules that does not broaden
+permissions, disable or weaken a safeguard, grant trust, or widen this
+approval; a worker may make such edits without asking, the coordinator
+reviews the diff and commits it in the dotfiles by path. Everything else
+under `~/.claude` (hooks, `settings.json`, permissions, integrations,
+safeguards) goes through one approval of the whole patch: a worker prepares
+it in a trusted repository (no edits under `~`, so no folder-trust
+dialog), the coordinator shows the diff and risks in one menu and applies it
+after a yes. Agents never answer trust dialogs or write trust config.
