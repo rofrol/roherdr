@@ -2359,7 +2359,7 @@ impl WorkerSupervisor {
     }
 
     /// [`Self::prompt_command`] without a command id.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn prompt(&self, worker_id: &str, text: &str) -> Result<WorkerInfo, WorkerError> {
         self.prompt_command(&WorkerPromptParams {
             worker_id: worker_id.to_owned(),
@@ -2811,7 +2811,7 @@ impl WorkerSupervisor {
     }
 
     /// [`Self::kill_command`] without a command id.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn kill(
         &self,
         worker_id: &str,
