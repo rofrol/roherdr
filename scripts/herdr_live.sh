@@ -16,11 +16,12 @@ usage: herdr_live.sh install|rollback [--force] | list
 The handoff keeps every pane running but disconnects attached clients: run
 `herdr` again to reattach. From a plain terminal the script reattaches itself.
 
-Headless workers do not survive a handoff. The server refuses it while a
-worker is in a turn and names the workers; the script then restores the
-previous binary and stops. `--force` hands off anyway (the server stops the
-workers first; it needs a running build that knows the flag). Workers
-between turns are stopped cleanly either way.
+Headless workers do not survive a handoff, and the server refuses one
+while a worker's process is alive. The script first stops each worker idle
+between turns (`herdr worker stop`, then `herdr worker wait --exit`); a
+worker in a turn makes it stop without installing. `--force` skips that and
+hands off anyway: the server sends the workers SIGTERM (it needs a running
+build that knows the flag).
 
 The installed binary is $HERDR_INSTALLED (default ~/.cargo/bin/herdr).
 Backups live in ~/.cache/herdr/installed/ (the last 5 are kept), named
@@ -74,6 +75,46 @@ handoff() {
   "$1" server live-handoff ${force[@]+"${force[@]}"} --import-exe "$installed"
 }
 
+# Stops the workers idle between turns and waits for each one's exit event,
+# with the running build $1. The server never waits inside the handoff (its
+# main loop would freeze every pane, and a deadline would let a timer decide
+# the outcome), so the waiting happens here, on `worker wait --exit`, which
+# ends on the worker's exit event. A worker in a turn refuses the install.
+end_idle_workers() {
+  local listing workers kind id state busy=()
+  ((${#force[@]} == 0)) || return 0
+  # A build without headless workers: there is nothing to stop.
+  listing="$("$1" worker list 2>/dev/null)" || return 0
+  workers="$(printf '%s' "$listing" | python3 -c '
+import json, sys
+for worker in json.load(sys.stdin).get("result", {}).get("workers", []):
+    state = worker.get("state")
+    ended = state in ("exited", "lost") or worker.get("end_note") \
+        or worker.get("exit_code") is not None or worker.get("exit_signal") is not None
+    if not ended:
+        idle = state in ("finished", "failed", "interrupted")
+        print("idle" if idle else "busy", worker["worker_id"], state)
+')"
+  while read -r kind id state; do
+    if [[ "$kind" == busy ]]; then
+      busy+=("$id ($state)")
+    fi
+  done <<<"$workers"
+  if ((${#busy[@]} > 0)); then
+    echo "headless workers are in a turn: ${busy[*]}; a handoff would end them." >&2
+    echo "wait for their turns to end or stop them (herdr worker stop <id>), or install with --force; nothing installed" >&2
+    exit 1
+  fi
+  while read -r kind id state; do
+    if [[ "$kind" != idle ]]; then
+      continue
+    fi
+    echo "stopping worker $id ($state, idle between turns) before the handoff"
+    "$1" worker stop "$id" >/dev/null
+    "$1" worker wait "$id" --exit >/dev/null
+  done <<<"$workers"
+}
+
 # "<short hash>_<subject slug>" from the commit a binary was built from; a
 # build with uncommitted changes is "<short hash>-dirty-<tree>_<label slug>"
 # (build.rs). The binary itself says it, since other sessions may move the
@@ -122,6 +163,7 @@ case "${1:-}" in
       echo "$installed is already this build ($(describe "$installed"))"
       exit 0
     fi
+    end_idle_workers "$installed"
     mkdir -p "$backups"
     backup="$backups/$(date +%Y%m%d-%H%M%S)_$(describe "$installed")"
     cp -p "$installed" "$backup"
@@ -147,6 +189,7 @@ case "${1:-}" in
     take_lock
     trap 'rm -rf "$lock"' EXIT
     latest="$(newest_backup)"
+    end_idle_workers "$installed"
     # Keep the replaced build until the handoff succeeds, to restore it
     # otherwise: the server still runs it then.
     current="$(mktemp "$HOME/.cache/herdr/replaced.XXXXXX")"

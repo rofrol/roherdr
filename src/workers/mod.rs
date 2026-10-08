@@ -13,8 +13,7 @@
 //! beside its journal (`<id>.lock`) until the worker's exit is journaled, so
 //! a server started by a live handoff marks `lost` only workers whose server
 //! is gone. Worker pipes are not handed over: a handoff is refused while a
-//! worker is in a turn, and stops the idle ones first
-//! ([`prepare_for_handoff`]).
+//! worker's process is alive ([`prepare_for_handoff`]).
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
 
@@ -32,7 +31,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tracing::warn;
@@ -910,18 +909,13 @@ pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
         .unwrap_or_default()
 }
 
-/// How long a live handoff waits for the workers it stopped to exit. The
-/// server's main loop waits here, so a worker that ignores SIGTERM must not
-/// hold it for ever; the CLI exits within a second of SIGTERM.
-const HANDOFF_STOP_DEADLINE: Duration = Duration::from_secs(10);
-
-/// Readies the server's workers for a live handoff
-/// ([`WorkerSupervisor::prepare_for_handoff`]); the refusal says why.
+/// Readies the server's workers for a live handoff without waiting
+/// ([`WorkerSupervisor::prepare_for_handoff`]); the refusal says why. No
+/// timer decides it: the caller ends the workers and waits for their exit
+/// events before asking.
 pub(crate) fn prepare_for_handoff(force: bool) -> Result<(), String> {
     match SUPERVISOR.get() {
-        Some(supervisor) => supervisor
-            .prepare_for_handoff(force, HANDOFF_STOP_DEADLINE)
-            .map(|_| ()),
+        Some(supervisor) => supervisor.prepare_for_handoff(force).map(|_| ()),
         None => Ok(()),
     }
 }
@@ -1100,106 +1094,68 @@ impl WorkerSupervisor {
     }
 
     /// Readies this server's workers for a live handoff, which cannot carry
-    /// their pipes. Refuses while a worker is in a turn (starting, working
-    /// or waiting for an answer), naming them, unless `force`. Then stops
-    /// every running worker with SIGTERM and waits up to `deadline` for
-    /// their exits to be journaled, so none is left to die with this server.
-    /// Returns the workers it stopped.
-    pub(crate) fn prepare_for_handoff(
-        &self,
-        force: bool,
-        deadline: Duration,
-    ) -> Result<Vec<String>, String> {
-        let running: Vec<(u64, String, WorkerState, bool)> = {
+    /// their pipes. Without `force` it refuses while any worker's process is
+    /// alive, in a turn or idle between turns, naming each and how to end
+    /// it. With `force` it sends each SIGTERM and goes on.
+    ///
+    /// It never waits for an exit. It runs on the server's main loop, and
+    /// waiting there would freeze every pane and client; a deadline would
+    /// let a timer decide whether the handoff happens. The caller stops the
+    /// idle workers first and waits for each one's exit event
+    /// (`herdr worker stop`, then `herdr worker wait --exit`, as
+    /// `scripts/herdr_live.sh` does), then asks again. Returns the workers
+    /// it signalled.
+    pub(crate) fn prepare_for_handoff(&self, force: bool) -> Result<Vec<String>, String> {
+        let running: Vec<(String, WorkerState, bool, bool)> = {
             let registry = lock(&self.shared.registry);
             registry
                 .workers
-                .iter()
-                .filter(|(_, entry)| entry.live.is_some() && !entry.status.is_gone())
-                .map(|(number, entry)| {
+                .values()
+                .filter(|entry| entry.live.is_some() && !entry.status.is_gone())
+                .map(|entry| {
                     (
-                        *number,
                         entry.status.worker_id.clone(),
                         entry.status.state,
                         entry.status.turn_ended(),
+                        entry.status.stop_requested_ms.is_some(),
                     )
                 })
                 .collect()
         };
-        let in_turn: Vec<String> = running
-            .iter()
-            .filter(|(_, _, _, turn_ended)| !turn_ended)
-            .map(|(_, worker_id, state, _)| {
-                let doing = match state {
-                    WorkerState::Starting => "starting",
-                    WorkerState::WaitingApproval => "waiting for an answer",
-                    _ => "working",
-                };
-                format!("{worker_id} ({doing})")
-            })
-            .collect();
-        if !in_turn.is_empty() && !force {
+        if running.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !force {
+            let named: Vec<String> = running
+                .iter()
+                .map(|(worker_id, state, turn_ended, stopping)| {
+                    let doing = match (stopping, turn_ended, state) {
+                        (true, ..) => "stopping",
+                        (false, true, _) => "idle between turns",
+                        (false, false, WorkerState::Starting) => "starting",
+                        (false, false, WorkerState::WaitingApproval) => "waiting for an answer",
+                        (false, false, _) => "working",
+                    };
+                    format!("{worker_id} ({doing})")
+                })
+                .collect();
             return Err(format!(
-                "refusing the live handoff: headless workers are in a turn: {}. Their pipes \
-                 are not handed over, so the handoff would end them. Wait for their turns to \
-                 end, stop them with `herdr worker stop <id>`, or hand off anyway with \
-                 `herdr server live-handoff --force`.",
-                in_turn.join(", ")
+                "refusing the live handoff: headless workers are running: {}. Their pipes \
+                 are not handed over, so the handoff would end them. End them first: \
+                 `herdr worker stop <id>` (safe for one idle between turns; one in a turn \
+                 loses that turn), then `herdr worker wait <id> --exit`. Or hand off anyway \
+                 with `herdr server live-handoff --force`.",
+                named.join(", ")
             ));
         }
-        for (_, worker_id, _, _) in &running {
-            match self.stop(worker_id) {
-                Ok(_) | Err(WorkerError::NotRunning(_)) => {}
-                Err(error) if force => {
-                    warn!(%error, worker_id, "cannot stop worker before a forced handoff");
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "refusing the live handoff: cannot stop worker {worker_id}: {error}"
-                    ))
-                }
+        for (worker_id, ..) in &running {
+            if let Err(error) = self.stop(worker_id) {
+                warn!(%error, worker_id, "cannot stop worker before a forced handoff");
             }
-        }
-        let until = Instant::now() + deadline;
-        let mut registry = lock(&self.shared.registry);
-        loop {
-            let left: Vec<&str> = running
-                .iter()
-                .filter(|(number, ..)| {
-                    registry
-                        .workers
-                        .get(number)
-                        .is_some_and(|entry| !entry.status.is_gone())
-                })
-                .map(|(_, worker_id, ..)| worker_id.as_str())
-                .collect();
-            if left.is_empty() {
-                break;
-            }
-            let now = Instant::now();
-            if now >= until {
-                if force {
-                    warn!(workers = ?left, "workers still run after SIGTERM; handing off anyway");
-                    break;
-                }
-                return Err(format!(
-                    "refusing the live handoff: workers still run {} s after SIGTERM: {}. End \
-                     them with `herdr worker kill <id>`, or hand off anyway with \
-                     `herdr server live-handoff --force`.",
-                    deadline.as_secs(),
-                    left.join(", ")
-                ));
-            }
-            registry = self
-                .shared
-                .changed
-                .wait_timeout(registry, until - now)
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .0;
         }
         Ok(running
             .into_iter()
-            .map(|(_, worker_id, ..)| worker_id)
+            .map(|(worker_id, ..)| worker_id)
             .collect())
     }
 

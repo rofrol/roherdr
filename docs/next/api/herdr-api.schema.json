@@ -4431,7 +4431,7 @@
               ]
             },
             "force": {
-              "description": "Hand off even while headless workers are in a turn. Worker pipes are\nnot handed over, so the handoff stops them first; without this a\nworker in a turn refuses the handoff.",
+              "description": "Hand off even while headless worker processes are alive; they get\nSIGTERM and end with this server. Worker pipes are not handed over,\nso without this any live worker refuses the handoff.",
               "type": "boolean"
             },
             "import_exe": {
