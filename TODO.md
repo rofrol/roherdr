@@ -168,6 +168,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   agent instruction files) without a `delay: <reason>` marker; 28 tests.
   Known gap: headless workers start with `disableAllHooks`, so it does not
   reach them.
+  First block in use (2026-10-08): it denied the coordinator's `sleep 0`
+  (a no-op, a habit, not a wait); harmless but a false positive: `sleep 0`
+  and `timeout 0` could pass, or the denial could say to drop the no-op.
 
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about [t-ul4yd4ll]
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
