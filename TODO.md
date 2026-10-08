@@ -24,6 +24,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (`herdr agent prompt` waits for the prompt's echo or `working` before
   returning). The skill and rule live in the user's dotfiles: a worker in
   a tab with the user approving edits under `~/.claude`.
+  Skill and rule part done 2026-10-08 (dotfiles `359a178 claude: todo
+  skill uses headless workers`, approved by the user in the worker's tab,
+  not pushed: the standing push approval covers this repository). Left:
+  the acknowledged prompt at a TUI worker's start.
 
 - [ ] A coordinator stops between items without being asked (user,
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
