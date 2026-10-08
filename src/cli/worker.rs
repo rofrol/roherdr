@@ -1,11 +1,12 @@
 use crate::api::schema::{
     EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
-    WorkerDecision, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
-    WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams, WorkerWaitUntil,
+    WorkerDecision, WorkerEscalateParams, WorkerInterruptParams, WorkerKillParams,
+    WorkerObligationsParams, WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams,
+    WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|wait|ack|obligations|prompt|interrupt|stop|kill|answer|log|take-over> ...
+    "usage: herdr worker <start|status|list|wait|ack|obligations|escalate|prompt|interrupt|stop|kill|answer|log|take-over> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
@@ -31,6 +32,11 @@ const USAGE: &str =
     The workers owned by PANE_ID (default: the caller's pane; all owned
     workers outside a pane) with a question, a turn end or an end not
     acknowledged yet, each with its reason and seq.
+  herdr worker escalate <worker_id> --request REQUEST_ID
+    The owner hands a question it will not answer to the user. An owned
+    worker's question waits quietly in the ? list (awaiting the coordinator)
+    until then, or until its owner's pane closes, its agent exits, hits a
+    limit, ends its turn or is blocked on its own question.
   herdr worker prompt <worker_id> <text>
     Its reply's turn_seq is the seq of the message it sent.
   herdr worker interrupt <worker_id> [--turn SEQ]
@@ -163,6 +169,16 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             ..parse_answer(rest)?
         }),
         "take-over" => Method::WorkerTakeOver(target(rest)?),
+        "escalate" => {
+            let (request, rest) = take_string_option(rest, "--request")?;
+            match (rest.as_slice(), request) {
+                ([worker_id], Some(request_id)) => Method::WorkerEscalate(WorkerEscalateParams {
+                    worker_id: worker_id.clone(),
+                    request_id,
+                }),
+                _ => return Err("escalate takes a worker id and --request REQUEST_ID".into()),
+            }
+        }
         "help" | "--help" | "-h" => return Ok(None),
         _ => return Err(format!("unknown worker command: {subcommand}")),
     }))
@@ -710,6 +726,32 @@ mod tests {
             &["ack", "--command-id", "c", "w12", "4"],
             &["obligations", "w12"],
             &["obligations", "--pane"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parses_escalate() {
+        assert_eq!(
+            parse_worker_args(&args(&["escalate", "w12", "--request", "perm-1"])),
+            Ok(Some(Method::WorkerEscalate(WorkerEscalateParams {
+                worker_id: "w12".into(),
+                request_id: "perm-1".into(),
+            })))
+        );
+        for bad in [
+            &["escalate", "w12"][..],
+            &["escalate", "--request", "perm-1"],
+            &["escalate", "w12", "w13", "--request", "perm-1"],
+            &[
+                "escalate",
+                "--command-id",
+                "c",
+                "w12",
+                "--request",
+                "perm-1",
+            ],
         ] {
             assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
         }

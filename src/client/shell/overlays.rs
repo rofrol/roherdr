@@ -487,8 +487,9 @@ pub(crate) fn render_global_menu(
 }
 
 /// One row of the dropdown: its day group (`Today`, `Oct 2`), the time, the
-/// text, whether it is unread, the tab's state icon with its colour, and a
-/// dim second line under the text (what a waiting agent asks).
+/// text, whether it is unread, the tab's state icon with its colour, a dim
+/// second line under the text (what a waiting agent asks), and whether the
+/// whole row is dim (a worker question that waits for its coordinator).
 pub(crate) type LogRow = (
     Option<String>,
     String,
@@ -496,6 +497,7 @@ pub(crate) type LogRow = (
     bool,
     Option<(&'static str, ratatui::style::Color)>,
     Option<String>,
+    bool,
 );
 
 /// The notification history dropdown under its button, over the panes:
@@ -538,12 +540,12 @@ pub(crate) fn render_notification_log(
         .unwrap_or(0);
     let has_icons = rows
         .iter()
-        .any(|(_day, _time, _text, _unread, icon, _detail)| icon.is_some());
+        .any(|(_day, _time, _text, _unread, icon, _detail, _dim)| icon.is_some());
     let text_offset =
         2 + if time_width > 0 { time_width + 1 } else { 0 } + if has_icons { 2 } else { 1 };
     let widest = rows
         .iter()
-        .map(|(_, _, text, .., detail)| {
+        .map(|(_, _, text, _, _, detail, _)| {
             let detail = detail.as_deref().map_or(0, |detail| {
                 display_width(&format!("↳ {detail}").replace(|c: char| c.is_control(), " "))
             });
@@ -556,7 +558,10 @@ pub(crate) fn render_notification_log(
     let width = widest.saturating_add(2).clamp(min_width, max_width);
     let lines = rows.len()
         + separators.iter().flatten().count()
-        + rows.iter().filter(|(.., detail)| detail.is_some()).count();
+        + rows
+            .iter()
+            .filter(|(_, _, _, _, _, detail, _)| detail.is_some())
+            .count();
     let height = (lines.max(1) as u16)
         .saturating_add(2)
         .min(screen.height.saturating_sub(button.bottom()).max(3));
@@ -575,7 +580,7 @@ pub(crate) fn render_notification_log(
         );
     }
     let mut row_y = inner.y;
-    for (index, (_, time, text, unread, icon, detail)) in rows.iter().enumerate() {
+    for (index, (_, time, text, unread, icon, detail, dim)) in rows.iter().enumerate() {
         if let Some(day) = separators[index] {
             if row_y >= inner.bottom() {
                 break;
@@ -681,7 +686,7 @@ pub(crate) fn render_notification_log(
             row.y,
             row.right().saturating_sub(text_x),
             &text,
-            base,
+            if *dim { time_style } else { base },
         );
         if let Some(detail) = detail.as_deref().filter(|_| height == 2) {
             let detail = crate::ui::truncate_end(
@@ -2066,6 +2071,7 @@ mod tests {
             false,
             icon.map(|glyph| (glyph, palette.yellow)),
             detail.map(str::to_owned),
+            false,
         )];
         let mut buffer = Buffer::empty(Rect::new(0, 0, 70, 12));
         let rendered =
@@ -2124,6 +2130,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
             )
         };
         let rows = vec![

@@ -152,6 +152,13 @@ ALTER TABLE workers ADD COLUMN owner_pane TEXT;
 ALTER TABLE workers ADD COLUMN owner_session TEXT;
 ALTER TABLE workers ADD COLUMN acked_seq INTEGER NOT NULL DEFAULT 0;
 "#,
+    r#"
+-- Why a question of an owned worker went to the user (`escalated`,
+-- `owner_gone`); NULL while it waits quietly for its owner. And why the
+-- owner is gone for good, which makes its later questions go to the user.
+ALTER TABLE questions ADD COLUMN escalated TEXT;
+ALTER TABLE workers ADD COLUMN owner_gone TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -392,7 +399,15 @@ impl Tx<'_> {
         let state_of = |answering: bool| if answering { "answering" } else { "pending" };
         for pending in &status.questions {
             let question = &pending.question;
-            match before.iter().find(|(id, _)| *id == question.request_id) {
+            let known = before.iter().find(|(id, _)| *id == question.request_id);
+            if let (Some(_), Some(escalated)) = (known, &pending.escalated) {
+                self.tx.execute(
+                    "UPDATE questions SET escalated = ?3
+                     WHERE worker_id = ?1 AND request_id = ?2 AND escalated IS NULL",
+                    params![status.worker_id, question.request_id, escalated],
+                )?;
+            }
+            match known {
                 Some((_, was)) if *was == pending.answering => {}
                 Some((_, was)) => {
                     self.tx.execute(
@@ -409,13 +424,14 @@ impl Tx<'_> {
                 None => {
                     self.tx.execute(
                         "INSERT INTO questions (worker_id, request_id, kind, tool_name, text,
-                             state, how, question, input, asked_seq, settled_seq)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?9, NULL, ?6, ?7, ?8, NULL)
+                             state, how, question, input, asked_seq, settled_seq, escalated)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?9, NULL, ?6, ?7, ?8, NULL, ?10)
                          ON CONFLICT (worker_id, request_id) DO UPDATE SET
                              kind = excluded.kind, tool_name = excluded.tool_name,
                              text = excluded.text, state = excluded.state, how = NULL,
                              question = excluded.question, input = excluded.input,
-                             asked_seq = excluded.asked_seq, settled_seq = NULL",
+                             asked_seq = excluded.asked_seq, settled_seq = NULL,
+                             escalated = excluded.escalated",
                         params![
                             status.worker_id,
                             question.request_id,
@@ -426,6 +442,7 @@ impl Tx<'_> {
                             pending.input.to_string(),
                             seq,
                             state_of(pending.answering),
+                            pending.escalated,
                         ],
                     )?;
                 }
@@ -527,7 +544,7 @@ impl Tx<'_> {
                     :exit_code, :exit_signal, :stop_requested_ms, :takeover_ms,
                     :takeover_tab, :takeover_error, :takeover_unfinished, :refusal,
                     :exited, :lost, :end_note, :last_seq, :turn_seq, :turn_end_seq,
-                    :gone_seq, :owner_pane, :owner_session, :acked_seq)
+                    :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -577,6 +594,7 @@ impl Tx<'_> {
                 ":owner_pane": status.owner_pane,
                 ":owner_session": status.owner_session,
                 ":acked_seq": status.acked_seq,
+                ":owner_gone": status.owner_gone,
             },
         )?;
         Ok(())
@@ -587,7 +605,7 @@ const WORKER_COLUMNS: &str = "id, name, cwd, workspace_id, model, slot, state, p
 session_id, turns, last_result, rate_limit, tool_sessions, exit_code, exit_signal, \
 stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinished, refusal, \
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
-acked_seq";
+acked_seq, owner_gone";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -632,6 +650,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.owner_pane = row.get(28)?;
     status.owner_session = row.get(29)?;
     status.acked_seq = row.get(30)?;
+    status.owner_gone = row.get(31)?;
     Ok(status)
 }
 
@@ -639,7 +658,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
 /// and the most recently settled ones.
 fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
     let mut pending = conn.prepare(
-        "SELECT question, input, asked_seq, state FROM questions
+        "SELECT question, input, asked_seq, state, escalated FROM questions
          WHERE worker_id = ?1 AND state IN ('pending', 'answering')
          ORDER BY asked_seq, rowid",
     )?;
@@ -649,10 +668,11 @@ fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
         ))
     })?;
     for row in rows {
-        let (question, input, asked_seq, state) = row?;
+        let (question, input, asked_seq, state, escalated) = row?;
         let Ok(question) = serde_json::from_str(&question) else {
             continue;
         };
@@ -663,6 +683,7 @@ fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
             asked_seq,
             answering: state == "answering",
             cleared: None,
+            escalated,
         });
     }
     let mut settled = conn.prepare(
@@ -863,6 +884,8 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN owner_pane;
                  ALTER TABLE workers DROP COLUMN owner_session;
                  ALTER TABLE workers DROP COLUMN acked_seq;
+                 ALTER TABLE workers DROP COLUMN owner_gone;
+                 ALTER TABLE questions DROP COLUMN escalated;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();

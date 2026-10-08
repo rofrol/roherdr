@@ -729,6 +729,16 @@ impl App {
             .map(|pane| pane_agent_status(update.state, pane.seen))
             .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
 
+        // A coordinator's agent state decides whether its headless workers'
+        // questions keep waiting for it or go to the user.
+        if let Some(event) = crate::workers::OwnerEvent::from_agent_status(
+            previous_agent_status,
+            agent_status,
+            update.agent_released,
+        ) {
+            crate::workers::owner_event(&pane_id, event);
+        }
+
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation
         {
@@ -804,8 +814,56 @@ impl App {
     }
 
     pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
+        use crate::api::schema::EventData;
+        if matches!(
+            event.data,
+            EventData::PaneClosed { .. }
+                | EventData::TabClosed { .. }
+                | EventData::WorkspaceClosed { .. }
+        ) {
+            self.sync_worker_owner_panes();
+        }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
+    }
+
+    /// Reports each headless worker owner whose pane no longer exists as
+    /// gone. Called when panes close, so it never polls.
+    pub(crate) fn sync_worker_owner_panes(&self) {
+        for pane in crate::workers::owner_panes() {
+            if self.parse_pane_id(&pane).is_none() {
+                crate::workers::owner_event(&pane, crate::workers::OwnerEvent::PaneClosed);
+            }
+        }
+    }
+
+    /// Re-evaluates the headless workers' owners when the server starts: a
+    /// previous server's events about them are lost, so each owner pane is
+    /// judged by what it shows now.
+    pub(crate) fn reevaluate_worker_owners_at_start(&self) {
+        use crate::workers::OwnerEvent;
+        crate::workers::owners_at_start(|pane| {
+            let Some((ws_idx, pane_id)) = self.parse_pane_id(pane) else {
+                return Some(OwnerEvent::PaneClosed);
+            };
+            let terminal = self
+                .state
+                .terminal_id_for_pane(ws_idx, pane_id)
+                .and_then(|terminal_id| self.state.terminals.get(&terminal_id));
+            let Some(terminal) = terminal.filter(|t| t.effective_agent_label().is_some()) else {
+                return Some(OwnerEvent::AgentExited);
+            };
+            Some(if terminal.limit().is_some() {
+                OwnerEvent::Limited
+            } else {
+                match terminal.state {
+                    crate::detect::AgentState::Working => OwnerEvent::Working,
+                    crate::detect::AgentState::Blocked => OwnerEvent::Blocked,
+                    // Idle, or not known to work on it.
+                    _ => OwnerEvent::TurnEnded,
+                }
+            })
+        });
     }
 
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
@@ -1255,7 +1313,8 @@ impl App {
             | Method::WorkerKill(_)
             | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
-            | Method::WorkerObligations(_) => {
+            | Method::WorkerObligations(_)
+            | Method::WorkerEscalate(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

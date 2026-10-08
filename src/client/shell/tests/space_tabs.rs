@@ -4837,6 +4837,8 @@ fn a_worker_is_not_offered_for_takeover_while_it_asks() {
             text: "git push".into(),
             choice: false,
             since_ms: 1,
+            quiet: false,
+            owner_seen_ms: None,
         });
     state.set_snapshot(Box::new(projected));
     right_click(&mut state);

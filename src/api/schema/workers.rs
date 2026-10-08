@@ -74,6 +74,15 @@ pub struct WorkerObligationsParams {
     pub owner_pane_id: Option<String>,
 }
 
+/// The owner hands one of the worker's pending questions to the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerEscalateParams {
+    pub worker_id: String,
+    /// The question to escalate; one that is no longer pending is refused
+    /// with `worker_question_gone`.
+    pub request_id: String,
+}
+
 /// A worker whose owner has an event of it to handle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerObligation {
@@ -432,6 +441,14 @@ pub struct WorkerQuestion {
     /// or `answering`.
     #[serde(default)]
     pub state: WorkerQuestionState,
+    /// Why the question was handed to the user, for a worker with an owner:
+    /// the owner escalated it, its pane closed, its agent exited, hit a
+    /// limit, ended its turn or is blocked on its own question, or herdr
+    /// restarted without it. Until then the user's `?` list shows it quietly
+    /// as awaiting the coordinator. A worker without an owner asks the user
+    /// at once and never sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalated: Option<String>,
 }
 
 /// Where a question's answer is. `answered` means the answer was written to

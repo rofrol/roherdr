@@ -5371,6 +5371,23 @@
           ],
           "type": "string"
         },
+        "WorkerEscalateParams": {
+          "description": "The owner hands one of the worker's pending questions to the user.",
+          "properties": {
+            "request_id": {
+              "description": "The question to escalate; one that is no longer pending is refused\nwith `worker_question_gone`.",
+              "type": "string"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
         "WorkerInterruptParams": {
           "properties": {
             "command_id": {
@@ -6331,6 +6348,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerObligationsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Hands a question its owner will not answer to the user: it becomes a\nloud `?` question.",
+          "properties": {
+            "method": {
+              "const": "worker.escalate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerEscalateParams"
             }
           },
           "required": [
@@ -14137,6 +14171,13 @@
         "WorkerQuestion": {
           "description": "A question a worker waits on: a `can_use_tool` request the policy left to\nthe user.",
           "properties": {
+            "escalated": {
+              "description": "Why the question was handed to the user, for a worker with an owner:\nthe owner escalated it, its pane closed, its agent exited, hit a\nlimit, ended its turn or is blocked on its own question, or herdr\nrestarted without it. Until then the user's `?` list shows it quietly\nas awaiting the coordinator. A worker without an owner asks the user\nat once and never sets it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "$ref": "#/schemas/success_response/$defs/WorkerQuestionKind"
             },

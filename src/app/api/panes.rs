@@ -1994,6 +1994,9 @@ impl App {
         }
         if changed {
             self.emit_pane_updated(ws_idx, pane_id);
+            if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
+                crate::workers::owner_event(&public_pane_id, crate::workers::OwnerEvent::Limited);
+            }
         }
         encode_success(id, ResponseResult::Ok {})
     }
