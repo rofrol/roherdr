@@ -481,6 +481,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      wait; a server restart and live handoff mid-wait; a duplicate or lost
      acknowledgement; a TODO write conflict. Pass: no event lost, every
      question resolved or explicitly escalated.
+     Done 2026-10-08 by headless worker `w17` (`test: fault injection for
+     headless workers`): `docs/headless-worker-fault-tests.md` maps every
+     case to a test; 10 new worker tests and 2 todo_edit tests; the worker
+     tests passed 20 runs in a row and the new ones 40 under load. Gaps it
+     found, decided by the coordinator as follow-ups: `todo_edit.py`
+     compares then renames without a lock, so another writer's change in
+     between is lost (an `expectedFailure` test shows it): take a lock file
+     and compare again right before the rename; `degraded` lives only in
+     memory: persist it so a restart still shows the worker's gap. Also:
+     the worker left 12 `yes` load processes running (the coordinator
+     killed them); its contract should say to end what it starts.
   Decided by the user 2026-10-07: these steps go before the
   fresh-coordinator-per-item, item-history and handoff items (all three
   models: those build on the event log and verified writes).
