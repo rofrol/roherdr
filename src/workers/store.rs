@@ -410,6 +410,102 @@ impl Store {
         .optional()
     }
 
+    /// The response of the latest stored answer to one of a worker's
+    /// questions (its `answer_intent`), to send it again after a restart;
+    /// `None` when no intent of it holds one (none, or one from before
+    /// intents stored their response).
+    #[cfg(unix)]
+    pub(super) fn answer_response(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+    ) -> StoreResult<Option<Value>> {
+        let conn = lock(&self.conn);
+        let mut intents = conn.prepare(
+            "SELECT body FROM events
+             WHERE worker_id = ?1 AND direction = 'herdr' AND type = 'answer_intent'
+             ORDER BY seq DESC",
+        )?;
+        let bodies = intents.query_map([worker_id], |row| row.get::<_, String>(0))?;
+        for body in bodies {
+            let Ok(intent) = serde_json::from_str::<Value>(&body?) else {
+                continue;
+            };
+            if intent["request_id"].as_str() == Some(request_id) {
+                return Ok(intent
+                    .get("response")
+                    .filter(|response| response.is_object())
+                    .cloned());
+            }
+        }
+        Ok(None)
+    }
+
+    /// The `can_use_tool` requests a worker made after `since` (the turn's
+    /// first event) that were neither cancelled nor asked as a question,
+    /// oldest first, each with the `control_response` recorded for it, if
+    /// one was: for a server that re-attaches to settle what a gone server
+    /// stored and may not have answered.
+    #[cfg(unix)]
+    pub(super) fn unasked_requests(
+        &self,
+        worker_id: &str,
+        since: i64,
+    ) -> StoreResult<Vec<(Value, Option<Value>)>> {
+        let conn = lock(&self.conn);
+        let mut events = conn.prepare(
+            "SELECT direction, type, body FROM events
+             WHERE worker_id = ?1 AND seq > ?2
+               AND type IN ('control_request', 'control_response', 'control_cancel_request')
+             ORDER BY seq",
+        )?;
+        let rows = events.query_map(params![worker_id, since], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut requests: Vec<(Value, Option<Value>)> = Vec::new();
+        for row in rows {
+            let (direction, kind, body) = row?;
+            let Ok(event) = serde_json::from_str::<Value>(&body) else {
+                continue;
+            };
+            match (direction.as_str(), kind.as_str()) {
+                ("out", "control_request")
+                    if event["request"]["subtype"].as_str() == Some("can_use_tool") =>
+                {
+                    requests.push((event, None));
+                }
+                ("in", "control_response") => {
+                    let id = event["response"]["request_id"].as_str();
+                    if let Some(request) = requests
+                        .iter_mut()
+                        .find(|(request, _)| request["request_id"].as_str() == id)
+                    {
+                        request.1 = Some(event);
+                    }
+                }
+                ("out", "control_cancel_request") => {
+                    let id = event["request_id"].as_str();
+                    requests.retain(|(request, _)| request["request_id"].as_str() != id);
+                }
+                _ => {}
+            }
+        }
+        let mut asked =
+            conn.prepare("SELECT 1 FROM questions WHERE worker_id = ?1 AND request_id = ?2")?;
+        let mut unasked = Vec::new();
+        for (request, response) in requests {
+            let id = request["request_id"].as_str().unwrap_or_default();
+            if !asked.exists(params![worker_id, id])? {
+                unasked.push((request, response));
+            }
+        }
+        Ok(unasked)
+    }
+
     /// How many events the store holds of one worker.
     pub(super) fn event_count(&self, worker_id: &str) -> StoreResult<i64> {
         let conn = lock(&self.conn);

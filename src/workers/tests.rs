@@ -14,7 +14,8 @@
 //! ignored from then on), `orphan <fifo>` (a tool process in its own
 //! session that holds `<fifo>` open until it dies) and `gate <fifo>` (a tool
 //! use, then, once `<fifo>` is written, three text events, a stderr line and
-//! the result).
+//! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
+//! `<fifo>` is written).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -174,6 +175,12 @@ while True:
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
         while True:
             read()
+    elif command == "gate-perm":
+        with open(words[1]) as gate:
+            gate.read()
+        rest = " ".join(words[3:])
+        response = ask_host(words[2], {"file_path": rest, "command": rest})
+        result(text=response["behavior"])
     elif command == "gate":
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
         with open(words[1]) as gate:
@@ -4855,4 +4862,253 @@ fn a_server_finds_a_broker_gone_and_marks_its_worker_lost() {
     let worker = wait_on(&next, &id, WorkerWaitUntil::Exit);
     assert_eq!(worker.state, WorkerState::Finished);
     assert_eq!(fixture.herdr_events(&id, "lost").len(), 1);
+}
+
+/// A FIFO at `path`, which a stub's `gate` command waits on.
+fn fifo(path: &Path) {
+    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+}
+
+/// Waits until a server re-attached to the worker.
+fn wait_reattached(supervisor: &WorkerSupervisor, worker_id: &str) {
+    let number = worker_number(worker_id).unwrap();
+    let started = Instant::now();
+    let mut registry = lock(&supervisor.shared.registry);
+    while registry.workers[&number].live.is_none() {
+        assert!(started.elapsed() < HANG_GUARD, "the re-attach hung");
+        registry = supervisor
+            .shared
+            .changed
+            .wait_timeout(registry, Duration::from_millis(100))
+            .unwrap()
+            .0;
+    }
+}
+
+/// The answer the stub's `perm WebFetch https://example.com` gets when the
+/// user allows it.
+fn allowed_fetch() -> Value {
+    json!({"behavior": "allow", "updatedInput": {
+        "file_path": "https://example.com", "command": "https://example.com"}})
+}
+
+/// The `answer_intent` a server stores before it writes the answer.
+fn intent(response: &Value) -> Value {
+    json!({"type": "answer_intent", "request_id": "perm-1", "tool_name": "WebFetch",
+           "decision": "allow", "answers": [], "by": "user", "response": response})
+}
+
+/// The `input_written` events of the line with `id`, as `again` flags.
+fn written(fixture: &Fixture, worker_id: &str, id: &str) -> Vec<bool> {
+    fixture
+        .herdr_events(worker_id, "input_written")
+        .into_iter()
+        .filter(|event| event["id"] == id)
+        .map(|event| event["again"].as_bool().unwrap())
+        .collect()
+}
+
+#[test]
+fn every_stdin_line_goes_through_the_broker_once_with_its_id() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("finish");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let first = worker.turn_seq.unwrap();
+    fixture
+        .supervisor
+        .prompt_command(&WorkerPromptParams {
+            worker_id: id.clone(),
+            text: "finish".into(),
+            command_id: Some("cmd 1".into()),
+        })
+        .unwrap();
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    // The start's prompt goes by its seq, a command by its receipt.
+    wait_until("both writes recorded", || {
+        written(&fixture, &id, "c:cmd 1") == [false]
+            && written(&fixture, &id, &format!("s:{first}")) == [false]
+    });
+    assert!(fixture.supervisor.status(&id).unwrap().survives_handoff);
+}
+
+#[test]
+fn an_answer_written_before_a_crash_is_not_written_again() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let number = worker_number(&id).unwrap();
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    // The gone server stored the answer and wrote it, and died before it
+    // recorded it sent: the worker took it and ended its turn.
+    let response = allowed_fetch();
+    fixture
+        .supervisor
+        .record(number, Direction::Herdr, &intent(&response));
+    live.resend(&control_response("perm-1", response), "r:perm-1")
+        .unwrap();
+    fixture.wait_for_status(&id, |status| status.state == WorkerState::Finished);
+    live.sever();
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    wait_reattached(&next, &id);
+    // Sent again by the new server, the broker only acknowledges it.
+    wait_on_status(&next, &id, |status| status.questions.is_empty());
+    wait_until("the second acknowledgement", || {
+        written(&fixture, &id, "r:perm-1").len() == 2
+    });
+    assert_eq!(written(&fixture, &id, "r:perm-1"), [false, true]);
+    let worker = next.status(&id).unwrap();
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(worker.settled_questions[0].how, "answered");
+    assert_eq!(worker.degraded, None);
+    assert_eq!(fixture.herdr_events(&id, "answer_sent")[0]["resent"], true);
+
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
+}
+
+#[test]
+fn an_answer_not_written_before_a_crash_is_written_once_after_the_reattach() {
+    let fixture = Fixture::with_broker();
+    let id = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&id);
+    let number = worker_number(&id).unwrap();
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    // The gone server stored the answer and died before it wrote it.
+    fixture
+        .supervisor
+        .record(number, Direction::Herdr, &intent(&allowed_fetch()));
+    live.sever();
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    // The turn's end and the answer's `answer_sent` come in either order.
+    wait_on_status(&next, &id, |status| {
+        status.turn_ended() && status.questions.is_empty()
+    });
+    let worker = next.status(&id).unwrap();
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(worker.settled_questions[0].how, "answered");
+    assert_eq!(worker.degraded, None);
+    wait_until("the write recorded", || {
+        !written(&fixture, &id, "r:perm-1").is_empty()
+    });
+    assert_eq!(written(&fixture, &id, "r:perm-1"), [false]);
+
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
+}
+
+#[test]
+fn a_permission_request_stored_before_a_crash_is_asked_by_the_next_server() {
+    let fixture = Fixture::with_broker();
+    let gate = fixture.root.join("gate.fifo");
+    fifo(&gate);
+    let id = fixture.start(&format!(
+        "gate-perm {} WebFetch https://example.com",
+        gate.display()
+    ));
+    // The init, the prompt's write and the rate limit are stored.
+    fixture.wait_for_status(&id, |status| status.broker_seq >= 3);
+    let number = worker_number(&id).unwrap();
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    let spool = broker::spool_path(&broker_of(&fixture.supervisor, &id).socket);
+    live.sever();
+    std::fs::write(&gate, b"go").unwrap();
+    wait_until("the request in the spool", || {
+        std::fs::read_to_string(&spool).is_ok_and(|spooled| spooled.contains("can_use_tool"))
+    });
+    // The gone server stored the request and died before it asked it.
+    let (seq, request) = std::fs::read_to_string(&spool)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.splitn(3, ' ');
+            let (tag, seq, payload) = (parts.next()?, parts.next()?, parts.next()?);
+            (tag == "o" && payload.contains("can_use_tool")).then(|| {
+                (
+                    seq.parse::<u64>().unwrap(),
+                    serde_json::from_str::<Value>(payload).unwrap(),
+                )
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        fixture.supervisor.record_spooled(
+            number,
+            seq,
+            Direction::Out,
+            store::Recorded::Event(&request)
+        ),
+        Spooled::Stored
+    );
+
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    wait_on_status(&next, &id, |status| !status.questions.is_empty());
+    next.answer(&WorkerAnswerParams {
+        worker_id: id.clone(),
+        request_id: Some("perm-1".into()),
+        decision: Some(WorkerDecision::Allow),
+        answers: Vec::new(),
+        message: None,
+        command_id: None,
+    })
+    .unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("allow"));
+    assert_eq!(fixture.herdr_events(&id, "question").len(), 1);
+    wait_until("the write recorded", || {
+        !written(&fixture, &id, "r:perm-1").is_empty()
+    });
+    assert_eq!(written(&fixture, &id, "r:perm-1"), [false]);
+    assert!(fixture.herdr_events(&id, "continuity_gap").is_empty());
+
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
+}
+
+#[test]
+fn a_handoff_keeps_a_brokered_worker_mid_turn_and_the_new_server_ends_its_turn() {
+    let fixture = Fixture::with_broker();
+    let gate = fixture.root.join("gate.fifo");
+    fifo(&gate);
+    let id = fixture.start(&format!("gate {}", gate.display()));
+    fixture.wait_for_status(&id, |status| status.broker_seq >= 3);
+    let pid = fixture.supervisor.status(&id).unwrap().pid.unwrap();
+    // A worker without a broker still blocks a handoff, a brokered one
+    // does not, and the drain does not wait for its turn.
+    let plain = Fixture::new("handoff-plain");
+    let blocked = plain.start("block");
+    plain.wait_for(&blocked, |worker| worker.state == WorkerState::Working);
+    assert!(plain.supervisor.prepare_for_handoff(false).is_err());
+    assert!(!plain.supervisor.status(&blocked).unwrap().survives_handoff);
+    plain.supervisor.stop(&blocked).unwrap();
+    assert_eq!(
+        fixture.supervisor.prepare_for_handoff(false),
+        Ok(Vec::new())
+    );
+    let drain = fixture.supervisor.drain(WorkerDrainAction::Status, None);
+    assert!(drain.in_turn.is_empty());
+
+    // The new server starts while the old one still runs the worker.
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    assert_eq!(fixture.supervisor.detach_for_handoff(), [id.as_str()]);
+    wait_reattached(&next, &id);
+    // The turn goes on, its output read by the new server.
+    std::fs::write(&gate, b"go").unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.state, WorkerState::Finished);
+    assert_eq!(worker.pid, Some(pid));
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("gated"));
+    assert!(fixture.herdr_events(&id, "continuity_gap").is_empty());
+    assert!(fixture.herdr_events(&id, "lost").is_empty());
+    assert!(fixture.herdr_events(&id, "exited").is_empty());
+    next.prompt(&id, "finish").unwrap();
+    assert_eq!(wait_on(&next, &id, WorkerWaitUntil::TurnEnd).turns, 2);
+
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
+    plain.wait(&blocked, WorkerWaitUntil::Exit);
 }

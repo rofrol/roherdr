@@ -17,7 +17,9 @@
 //! The server that runs a worker holds an exclusive lock on the lock file
 //! beside its journal (`<id>.lock`) until the worker's exit is stored, so
 //! a server started by a live handoff marks `lost` only workers whose server
-//! is gone. Worker pipes are not handed over: a handoff is refused while a
+//! is gone. A worker whose broker owns its pipes ([`broker`]) survives a
+//! handoff: the old server detaches, the new one re-attaches. Pipes a
+//! server owns itself are not handed over: a handoff is refused while such a
 //! worker's process is alive ([`prepare_for_handoff`]).
 //!
 //! Evidence for the message shapes and flags: `docs/headless-worker-trial-2026-10-07.md`.
@@ -1188,6 +1190,7 @@ impl Status {
             acked_seq: (self.acked_seq > 0).then_some(self.acked_seq),
             item: self.item.clone(),
             repo: self.repo.clone(),
+            survives_handoff: self.broker.is_some() && !self.is_gone(),
         }
     }
 
@@ -1567,12 +1570,16 @@ enum Input {
 }
 
 impl Input {
-    /// Writes one line, which ends with its newline.
-    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+    /// Writes one line, which ends with its newline. A broker writes it to
+    /// the worker only if no line with `id` went before ([`input_id`]).
+    fn write_line(&mut self, id: &str, line: &str) -> std::io::Result<()> {
         match self {
-            Self::Pipe(pipe) => pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush()),
+            Self::Pipe(pipe) => {
+                let _ = id;
+                pipe.write_all(line.as_bytes()).and_then(|()| pipe.flush())
+            }
             #[cfg(unix)]
-            Self::Broker(writer) => writer.write_input(line),
+            Self::Broker(writer) => writer.write_input(id, line),
         }
     }
 
@@ -1610,14 +1617,31 @@ enum Source {
     },
 }
 
+/// The id a worker's broker knows a stdin line by, so it writes the line at
+/// most once ([`broker`]): a `control_response` goes by its request's id
+/// (an answer sent again after a re-attach is the same line), a client
+/// command by its receipt's id, anything else by its event's `seq`.
+fn input_id(event: &Value, receipt: Option<&Receipt>, seq: i64) -> String {
+    if event["type"].as_str() == Some("control_response") {
+        if let Some(request_id) = event["response"]["request_id"].as_str() {
+            return format!("r:{request_id}");
+        }
+    }
+    match receipt {
+        Some(receipt) => format!("c:{}", receipt.command_id),
+        None => format!("s:{seq}"),
+    }
+}
+
 /// A running worker's input; absent for one loaded from the store.
 struct Live {
     number: u64,
     stdin: Arc<Mutex<Option<Input>>>,
-    /// The test cut this server off from the worker's broker, as a server
-    /// that died would be: its reader ends without recording an exit.
-    #[cfg(all(test, unix))]
-    severed: std::sync::atomic::AtomicBool,
+    /// This server let go of the worker's broker, handing the worker to the
+    /// next server (a live handoff), or a test cut it off as a server that
+    /// died would be: its reader ends without recording an exit.
+    #[cfg(unix)]
+    detached: std::sync::atomic::AtomicBool,
     /// Fails the next write to the pipe, as a broken pipe would.
     #[cfg(test)]
     fail_next_write: std::sync::atomic::AtomicBool,
@@ -1633,8 +1657,8 @@ impl Live {
         Self {
             number,
             stdin: Arc::new(Mutex::new(Some(stdin))),
-            #[cfg(all(test, unix))]
-            severed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(unix)]
+            detached: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_write: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1646,7 +1670,7 @@ impl Live {
         self.send_checked(supervisor, event, None, |_, _| Ok(()))
     }
 
-    fn write_line(&self, pipe: &mut Input, line: &str) -> std::io::Result<()> {
+    fn write_line(&self, pipe: &mut Input, id: &str, line: &str) -> std::io::Result<()> {
         #[cfg(test)]
         if self
             .fail_next_write
@@ -1662,7 +1686,7 @@ impl Live {
             let _ = reached.send(());
             let _ = release.recv();
         }
-        pipe.write_line(line)
+        pipe.write_line(id, line)
     }
 
     /// Records one line for the CLI, then writes it, both under the input
@@ -1708,7 +1732,7 @@ impl Live {
         let seq = committed.seq.unwrap_or_default();
         let mut line = event.to_string();
         line.push('\n');
-        if let Err(error) = self.write_line(pipe, &line) {
+        if let Err(error) = self.write_line(pipe, &input_id(event, receipt, seq), &line) {
             supervisor.record(
                 self.number,
                 Direction::Herdr,
@@ -1719,22 +1743,51 @@ impl Live {
         Ok(seq)
     }
 
+    /// Writes `event` again, unrecorded, for a worker whose broker writes
+    /// a line with `id` at most once: a line a gone server recorded (or
+    /// meant to) and may or may not have sent. What the broker did comes
+    /// back as an `input_written` event.
+    #[cfg(unix)]
+    fn resend(&self, event: &Value, id: &str) -> std::io::Result<()> {
+        let mut stdin = lock(&self.stdin);
+        let Some(pipe) = stdin.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the worker's input is closed",
+            ));
+        };
+        let mut line = event.to_string();
+        line.push('\n');
+        self.write_line(pipe, id, &line)
+    }
+
     fn close_input(&self) {
         if let Some(input) = lock(&self.stdin).take() {
             input.close();
         }
     }
 
-    /// Cuts this server off from the worker's broker, as if the server
-    /// died: the reader ends without recording an exit, and the worker and
-    /// its broker go on.
+    /// Lets go of the worker's broker without closing the worker's input:
+    /// the reader ends without recording an exit and gives the journal's
+    /// lock back, and the worker and its broker go on for the next server.
+    /// Whether this server hands the worker over (a live handoff) or a test
+    /// cuts it off as a server that died would be. False for a worker
+    /// without a broker, which ends with this server.
+    #[cfg(unix)]
+    fn detach(&self) -> bool {
+        let stdin = lock(&self.stdin);
+        let Some(Input::Broker(writer)) = stdin.as_ref() else {
+            return false;
+        };
+        self.detached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        writer.detach();
+        true
+    }
+
     #[cfg(all(test, unix))]
     fn sever(&self) {
-        self.severed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(Input::Broker(writer)) = lock(&self.stdin).as_ref() {
-            writer.shutdown();
-        }
+        self.detach();
     }
 }
 
@@ -1751,6 +1804,12 @@ struct Entry {
 }
 
 impl Entry {
+    /// Whether a live handoff keeps the worker running: its broker owns
+    /// its pipes.
+    fn survives_handoff(&self) -> bool {
+        self.status.broker.is_some()
+    }
+
     fn new(status: Status, journal_path: PathBuf) -> Self {
         Self {
             status,
@@ -1807,6 +1866,13 @@ fn output_lost(lines: u64) -> Value {
         "lines": lines,
         "reason": "the broker's spool was full while no server stored its lines",
     })
+}
+
+/// The event that records a stdin line the broker wrote to the worker, by
+/// its [`input_id`]; `again`: it had written it before and did not now.
+#[cfg(unix)]
+fn input_written(id: &str, again: bool) -> Value {
+    json!({"type": "input_written", "id": id, "again": again})
 }
 
 struct Committed {
@@ -2096,6 +2162,18 @@ pub(crate) fn prepare_for_handoff(force: bool) -> Result<(), String> {
     }
 }
 
+/// After a live handoff succeeded, hands the workers with a broker to the
+/// new server ([`WorkerSupervisor::detach_for_handoff`]).
+pub(crate) fn detach_for_handoff() {
+    #[cfg(unix)]
+    if let Some(supervisor) = SUPERVISOR.get() {
+        let detached = supervisor.detach_for_handoff();
+        if !detached.is_empty() {
+            info!(workers = ?detached, "headless workers handed to the new server");
+        }
+    }
+}
+
 /// What the sidebar shows of a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkerSummary {
@@ -2320,15 +2398,46 @@ fn new_takeover_id(worker_id: &str, at_ms: u64) -> String {
     )
 }
 
-/// The server's supervisor, opened on first use. Its journals live in
-/// herdr's state directory, apart per named session.
+/// The directory of the workers' journals: in herdr's state directory,
+/// apart per named session.
+fn workers_dir() -> PathBuf {
+    let state_dir = crate::config::state_dir();
+    match crate::session::active_name() {
+        Some(name) => state_dir.join("sessions").join(name).join("workers"),
+        None => state_dir.join("workers"),
+    }
+}
+
+/// At a server's start: opens the supervisor, in a thread, when a worker's
+/// broker may still serve it (a `<id>.sock` in the workers' directory, left
+/// by the server a live handoff replaced or by one that died), so the
+/// worker is read and its questions asked without waiting for a client's
+/// first worker request. Otherwise the supervisor still opens on first use.
+pub(crate) fn resume_brokered_at_start() {
+    #[cfg(unix)]
+    {
+        let brokered = std::fs::read_dir(workers_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "sock"));
+        if !brokered {
+            return;
+        }
+        let spawned = crate::thread_spawn::spawn_named("herdr-worker-resume", || {
+            supervisor();
+            notify_clients();
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "cannot resume the headless workers at start");
+        }
+    }
+}
+
+/// The server's supervisor, opened on first use ([`workers_dir`]).
 pub(crate) fn supervisor() -> &'static WorkerSupervisor {
     SUPERVISOR.get_or_init(|| {
-        let state_dir = crate::config::state_dir();
-        let dir = match crate::session::active_name() {
-            Some(name) => state_dir.join("sessions").join(name).join("workers"),
-            None => state_dir.join("workers"),
-        };
+        let dir = workers_dir();
         #[cfg(unix)]
         let broker = match broker::Launcher::herdr() {
             Ok(launcher) => Some(launcher),
@@ -2604,13 +2713,16 @@ impl WorkerSupervisor {
     }
 
     /// Readies this server's workers for a live handoff, which cannot carry
-    /// their pipes. Without `force` it refuses while any worker's process is
-    /// alive, in a turn or idle between turns, naming each and how to end
-    /// it. With `force` it sends each SIGTERM and goes on. A worker with a
-    /// broker would survive the handoff, and the new server would replay its
-    /// output from the spool, but until the stdin receipts (slice 4) an
-    /// input line in flight could go twice or not at all, so it is refused
-    /// too.
+    /// their pipes. A worker with a broker survives it, whatever it does:
+    /// once the handoff succeeded this server detaches from its broker
+    /// ([`Self::detach_for_handoff`]), and the new server re-attaches from
+    /// the last broker seq the store holds, replaying what it missed, and
+    /// sends again the answers not confirmed sent, which the broker writes
+    /// at most once. The others (started without a broker: by a build
+    /// before it, or on Windows) end with this server's pipes: without
+    /// `force` it refuses while any of their processes is alive, in a turn
+    /// or idle between turns, naming each and how to end it. With `force`
+    /// it sends each SIGTERM and goes on.
     ///
     /// It never waits for an exit. It runs on the server's main loop, and
     /// waiting there would freeze every pane and client; a deadline would
@@ -2626,6 +2738,7 @@ impl WorkerSupervisor {
                 .workers
                 .values()
                 .filter(|entry| entry.live.is_some() && !entry.status.is_gone())
+                .filter(|entry| !entry.survives_handoff())
                 .map(|entry| {
                     (
                         entry.status.worker_id.clone(),
@@ -2671,6 +2784,38 @@ impl WorkerSupervisor {
             .into_iter()
             .map(|(worker_id, ..)| worker_id)
             .collect())
+    }
+
+    /// After a live handoff succeeded: lets go of every worker this server
+    /// reads through a broker, without closing its input or recording an
+    /// exit, so the journal's lock goes to the new server, which waits for
+    /// it ([`Self::adopt_when_released`]) and re-attaches. Returns the
+    /// workers it detached.
+    #[cfg(unix)]
+    pub(crate) fn detach_for_handoff(&self) -> Vec<String> {
+        let lives: Vec<(u64, Arc<Live>)> = lock(&self.shared.registry)
+            .workers
+            .iter()
+            .filter(|(_, entry)| !entry.status.is_gone())
+            .filter_map(|(number, entry)| Some((*number, Arc::clone(entry.live.as_ref()?))))
+            .collect();
+        // Outside the registry lock: a sender holds the input's lock while
+        // it takes the registry's.
+        let numbers: Vec<u64> = lives
+            .into_iter()
+            .filter(|(_, live)| live.detach())
+            .map(|(number, _)| number)
+            .collect();
+        let mut registry = lock(&self.shared.registry);
+        numbers
+            .into_iter()
+            .filter_map(|number| {
+                let entry = registry.workers.get_mut(&number)?;
+                entry.live = None;
+                entry.foreign = true;
+                Some(entry.status.worker_id.clone())
+            })
+            .collect()
     }
 
     /// The drain before an install: `start` stops admitting new turns
@@ -2765,6 +2910,9 @@ impl WorkerSupervisor {
             .workers
             .values()
             .filter(|entry| entry.live.is_some() && !entry.status.turn_ended())
+            // A handoff keeps those: their turns go on through the new
+            // server.
+            .filter(|entry| !entry.survives_handoff())
             .map(|entry| entry.status.info(&entry.journal_path))
             .collect();
         let ended = seen
@@ -3284,22 +3432,6 @@ impl WorkerSupervisor {
             if let Some(entry) = registry.workers.get_mut(&number) {
                 entry.live = Some(Arc::clone(&live));
                 entry.foreign = false;
-                // Whether the worker read an answer in flight at the gone
-                // server's end is not known until slice 4's receipts.
-                let answering: Vec<String> = entry
-                    .status
-                    .questions
-                    .iter()
-                    .filter(|pending| pending.answering)
-                    .map(|pending| pending.question.request_id.clone())
-                    .collect();
-                if !answering.is_empty() {
-                    entry.status.degraded = Some(format!(
-                        "the answer to {} was not confirmed sent before a server restart; the \
-                         worker may or may not have received it",
-                        answering.join(", ")
-                    ));
-                }
             }
             self.commit_locked(
                 &mut registry,
@@ -3319,6 +3451,7 @@ impl WorkerSupervisor {
         }
         self.shared.changed.notify_all();
         notify_clients();
+        reader.settle_stored_requests();
         if let Err(((reader, _), error)) = crate::thread_spawn::spawn_named_with(
             "herdr-worker",
             (reader, messages),
@@ -3330,7 +3463,71 @@ impl WorkerSupervisor {
             }
             return Some(reader.owner_lock);
         }
+        self.resend_answers(number, &live);
         None
+    }
+
+    /// Sends again the answers a gone server stored (`answer_intent`) and
+    /// did not confirm sent: the broker writes each to the worker unless it
+    /// already did ([`input_id`]), so the worker reads it once either way,
+    /// and `answer_sent` settles the question; the `input_written` event
+    /// says which happened. An answer whose response is not stored (an
+    /// intent from before slice 4) cannot be sent again: the worker is
+    /// marked degraded, as it may or may not have received it.
+    #[cfg(unix)]
+    fn resend_answers(&self, number: u64, live: &Live) {
+        let worker_id = format!("w{number}");
+        let answering: Vec<String> = lock(&self.shared.registry)
+            .workers
+            .get(&number)
+            .map(|entry| {
+                entry
+                    .status
+                    .questions
+                    .iter()
+                    .filter(|pending| pending.answering)
+                    .map(|pending| pending.question.request_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut unknown = Vec::new();
+        for request_id in answering {
+            let response = match &self.shared.store {
+                Ok(store) => store.answer_response(&worker_id, &request_id),
+                Err(_) => Ok(None),
+            };
+            let response = match response {
+                Ok(Some(response)) => response,
+                Ok(None) => {
+                    unknown.push(request_id);
+                    continue;
+                }
+                Err(error) => {
+                    warn!(worker_id, request_id, %error, "stored answer unreadable");
+                    unknown.push(request_id);
+                    continue;
+                }
+            };
+            let answer = control_response(&request_id, response);
+            let outcome = match live.resend(&answer, &input_id(&answer, None, 0)) {
+                Ok(()) => json!({"type": "answer_sent", "request_id": request_id, "resent": true}),
+                Err(error) => json!({
+                    "type": "answer_failed",
+                    "request_id": request_id,
+                    "error": error.to_string(),
+                }),
+            };
+            self.record(number, Direction::Herdr, &outcome);
+        }
+        if !unknown.is_empty() {
+            if let Some(entry) = lock(&self.shared.registry).workers.get_mut(&number) {
+                entry.status.degraded = Some(format!(
+                    "the answer to {} was not confirmed sent before a server restart; the \
+                     worker may or may not have received it",
+                    unknown.join(", ")
+                ));
+            }
+        }
     }
 
     /// Records what the spool of a worker whose broker is gone holds past
@@ -3428,6 +3625,14 @@ impl WorkerSupervisor {
                         seq,
                         Direction::Herdr,
                         store::Recorded::Event(&output_lost(lines)),
+                    );
+                }
+                broker::Message::Written { id, again } => {
+                    self.record_spooled(
+                        number,
+                        seq,
+                        Direction::Herdr,
+                        store::Recorded::Event(&input_written(&id, again)),
                     );
                 }
                 broker::Message::Exit(exited) => return Some((seq, exited)),
@@ -4520,6 +4725,8 @@ impl WorkerSupervisor {
                 "decision": response["behavior"],
                 "answers": answers,
                 "by": "user",
+                // What a server re-attaching after a crash sends again.
+                "response": response,
             });
             // Stored under the lock, so a second answer finds the question
             // answering and is refused.
@@ -5548,11 +5755,11 @@ impl Reader {
     fn run_broker(self, mut messages: broker::Messages, broker: Option<Child>) {
         let (exited, exit_seq) = loop {
             let Some((seq, message)) = messages.next() else {
-                // A server that died lets go of the journal and leaves the
-                // broker to the system; this test process, still the
-                // broker's parent, reaps it once another server ended it.
-                #[cfg(test)]
-                if self.live.severed.load(std::sync::atomic::Ordering::SeqCst) {
+                // Detached for the next server (a live handoff, or a test
+                // playing a server that died): the journal goes to it, the
+                // broker to the system; this process, while it runs, reaps
+                // the broker it started once another server ended it.
+                if self.live.detached.load(std::sync::atomic::Ordering::SeqCst) {
                     drop(self.owner_lock);
                     if let Some(mut broker) = broker {
                         let _ = broker.wait();
@@ -5593,6 +5800,12 @@ impl Reader {
                     Direction::Herdr,
                     store::Recorded::Event(&output_lost(lines)),
                 ),
+                broker::Message::Written { id, again } => self.supervisor.record_spooled(
+                    self.number,
+                    seq,
+                    Direction::Herdr,
+                    store::Recorded::Event(&input_written(&id, again)),
+                ),
                 broker::Message::Exit(exited) => break (exited, Some(seq)),
             };
             if spooled.is_stored() {
@@ -5625,8 +5838,11 @@ impl Reader {
         }
     }
 
-    /// Records one stdout line and acts on it; a line the store already
-    /// holds is skipped, its permission request already answered or asked.
+    /// Records one stdout line and acts on it. A line the store already
+    /// holds (the broker sends it again after a re-attach) is not recorded
+    /// again; a permission request among those is acted on only when the
+    /// gone server stored it but neither asked nor settled it
+    /// ([`Self::unhandled_request`]).
     fn stdout_line(&self, line: &str, broker_seq: Option<u64>) -> Spooled {
         if line.trim().is_empty() {
             return Spooled::Skipped;
@@ -5635,21 +5851,87 @@ impl Reader {
             return self.record_line(broker_seq, Direction::Out, store::Recorded::Raw(line));
         };
         let spooled = self.record_line(broker_seq, Direction::Out, store::Recorded::Event(&event));
+        let permission = event["type"].as_str() == Some("control_request")
+            && event["request"]["subtype"].as_str() == Some("can_use_tool");
         if spooled == Spooled::Duplicate {
-            // Slice 4 (stdin receipts): a server that stored a `can_use_tool`
-            // request and died before it stored (or sent) its answer skips
-            // the request here when the broker sends it again, so the worker
-            // waits for an answer nobody gives. The receipts must find such
-            // a request and answer or ask it again.
+            if permission && self.unhandled_request(&event) {
+                self.answer_permission(&event);
+            }
             return spooled;
         }
         self.supervisor.record_tool_sessions(self.number, self.pid);
-        if event["type"].as_str() == Some("control_request")
-            && event["request"]["subtype"].as_str() == Some("can_use_tool")
-        {
+        if permission {
             self.answer_permission(&event);
         }
         spooled
+    }
+
+    /// Whether a permission request the store holds still needs its
+    /// answer or question: a server stored it and died before it recorded
+    /// the question or settled the request, and the worker still waits.
+    /// Not when it is asked (pending: the user answers it; answering: the
+    /// re-attach sends that answer) or settled. The policy then decides it
+    /// again; an answer the gone server did write goes by the request's id,
+    /// which the broker writes at most once ([`input_id`]).
+    fn unhandled_request(&self, event: &Value) -> bool {
+        let Some(request_id) = event["request_id"].as_str() else {
+            return false;
+        };
+        let registry = lock(&self.supervisor.shared.registry);
+        let Some(entry) = registry.workers.get(&self.number) else {
+            return false;
+        };
+        let status = &entry.status;
+        !status.is_gone()
+            && status.resolution(request_id).is_none()
+            && !status
+                .questions
+                .iter()
+                .any(|pending| pending.question.request_id == request_id)
+    }
+
+    /// After a re-attach, settles the permission requests of the current
+    /// turn that a gone server stored and neither asked as a question nor
+    /// saw cancelled: the worker still waits for each. One with a recorded
+    /// answer (the policy's) goes again, by the request's id, so the broker
+    /// writes it only if the gone server did not; one without is decided by
+    /// the policy again, as if it just came. The broker does not send them
+    /// again: it replays only what the store does not hold.
+    #[cfg(unix)]
+    fn settle_stored_requests(&self) {
+        let (worker_id, since) = {
+            let registry = lock(&self.supervisor.shared.registry);
+            let Some(entry) = registry.workers.get(&self.number) else {
+                return;
+            };
+            if entry.status.turn_ended() {
+                return;
+            }
+            (
+                entry.status.worker_id.clone(),
+                entry.status.turn_seq.unwrap_or(0),
+            )
+        };
+        let Ok(store) = &self.supervisor.shared.store else {
+            return;
+        };
+        let requests = match store.unasked_requests(&worker_id, since) {
+            Ok(requests) => requests,
+            Err(error) => {
+                warn!(worker_id, %error, "stored permission requests unreadable");
+                return;
+            }
+        };
+        for (request, answer) in requests {
+            match answer {
+                Some(answer) => {
+                    if let Err(error) = self.live.resend(&answer, &input_id(&answer, None, 0)) {
+                        warn!(worker_id, %error, "worker permission answer not delivered");
+                    }
+                }
+                None => self.answer_permission(&request),
+            }
+        }
     }
 
     /// Records the worker's exit, then removes the broker's spool, which

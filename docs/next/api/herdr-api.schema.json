@@ -14686,6 +14686,10 @@
                 "null"
               ]
             },
+            "survives_handoff": {
+              "description": "The worker runs and a live handoff keeps it running: a broker owns\nits pipes, so the new server takes it over mid-turn. Absent for one\nwhose pipes the server owns (started by an older build, or on\nWindows), which a handoff would end.",
+              "type": "boolean"
+            },
             "takeover_error": {
               "description": "Why the last takeover failed; its claim was released, so it can be\ntried again.",
               "type": [

@@ -16,19 +16,22 @@ usage: herdr_live.sh install [--force] [--expect-build ID] | rollback [--force] 
 The handoff keeps every pane running but disconnects attached clients: run
 `herdr` again to reattach. From a plain terminal the script reattaches itself.
 
-Headless workers do not survive a handoff, and the server refuses one
-while a worker's process is alive. The script first drains the workers
-(`herdr worker drain start`): the server admits no new turns (prompts and
-starts are refused, naming this install), and when a worker is in a turn
-the script says which and waits for those turns to end
+A headless worker whose broker owns its pipes (`survives_handoff` in
+`herdr worker list`) survives the handoff, even mid-turn: the old server
+lets go of it and the new one takes it over. The others (started by a
+build before the broker, or on Windows) do not, and the server refuses a
+handoff while one's process is alive. For them the script first drains
+the workers (`herdr worker drain start`): the server admits no new turns
+(prompts and starts are refused, naming this install), and when one of
+them is in a turn the script says which and waits for those turns to end
 (`herdr worker wait-drained`, woken by their turn-end events, without a
 timeout). Cancel the wait with `herdr worker drain cancel` from another
 shell or Ctrl-C here; either admits turns again and installs nothing. Then
-it stops each worker idle between turns (`herdr worker stop`, then
+it stops each of them idle between turns (`herdr worker stop`, then
 `herdr worker wait --exit`) and hands off; the new server does not drain.
 A running build without the drain refuses the install while a worker is in
 a turn. `--force` skips all of that and hands off anyway: the server sends
-the workers SIGTERM (it needs a running build that knows the flag).
+those workers SIGTERM (it needs a running build that knows the flag).
 
 `--expect-build ID` makes install refuse, installing nothing, unless the
 first word of the build's `--build-commit` is that identity (`<hash>`
@@ -142,7 +145,8 @@ print(", ".join(names))
 }
 
 # Stops the workers idle between turns and waits for each one's exit event,
-# with the running build $1. The server never waits inside the handoff (its
+# with the running build $1; a worker the handoff keeps (`survives_handoff`,
+# its broker owns its pipes) is left running, in a turn or not. The server never waits inside the handoff (its
 # main loop would freeze every pane, and a deadline would let a timer decide
 # the outcome), so the waiting happens here, on `worker wait --exit`, which
 # ends on the worker's exit event. After drain_workers no worker is in a
@@ -158,13 +162,19 @@ for worker in json.load(sys.stdin).get("result", {}).get("workers", []):
     state = worker.get("state")
     ended = state in ("exited", "lost") or worker.get("end_note") \
         or worker.get("exit_code") is not None or worker.get("exit_signal") is not None
-    if not ended:
+    if ended:
+        continue
+    if worker.get("survives_handoff"):
+        print("kept", worker["worker_id"], state)
+    else:
         idle = state in ("finished", "failed", "interrupted")
         print("idle" if idle else "busy", worker["worker_id"], state)
 ')"
   while read -r kind id state; do
     if [[ "$kind" == busy ]]; then
       busy+=("$id ($state)")
+    elif [[ "$kind" == kept ]]; then
+      echo "keeping worker $id ($state): its broker keeps it running, and the new server takes it over"
     fi
   done <<<"$workers"
   if ((${#busy[@]} > 0)); then
