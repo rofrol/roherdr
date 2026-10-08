@@ -1490,6 +1490,22 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   3. a pilot: about 5 items as GitHub Issues in the fork, `gh` pinned to
      `rofrol/herdr` (and a guard that refuses upstream), to feel the
      friction before any migration.
+  User 2026-10-08: "there is Codeberg, based on Forgejo, so we could use
+  Forgejo or copy something from its architecture; but for now a local SQL
+  database is probably enough for us? ask the models". Round `20261008-115719-8c5f` (sol,
+  DeepSeek; MiMo gave an empty answer): yes, local SQLite is enough; do not
+  self-host Forgejo now (a service, auth, UI to maintain for one user);
+  copy its concepts, not its schema: a stable global id apart from a
+  per-repo number, title and Markdown body, state, timestamps and a
+  version for stale-update detection, append-only comments with author,
+  labels, external references (later Forgejo/GitHub ids as mappings),
+  explicit order, and the decision questions stored as raw text plus
+  parsed fields; defer milestones, boards, timeline, permissions,
+  notifications, attachments. One authority per item: an item moved into
+  the tracker is no longer edited in Markdown. Step 3 changes: the pilot
+  of about 5 items runs in a local tracker in herdr's SQLite (`herdr todo`
+  commands, transactional writes), with versioned JSON export/import and a
+  Markdown export, instead of GitHub Issues.
 
 ## Proposed
 
