@@ -437,6 +437,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      event it has not handled: the existing coordinator Stop hook asks
      herdr and blocks the stop (MiMo, DeepSeek: enforce it mechanically,
      never as diligence).
+  5. (Done 2026-10-08 by headless worker `w13`: `feat: worker questions
+     stay quiet until their coordinator escalates or goes silent`,
+     installed; escalation on events only, no lease or timer.)
   5. A question with no live owner reaches the user: on the events herdr
      has (the coordinator's pane closed, its agent exited). A live but
      silent coordinator emits nothing; all three say only a lease (a
