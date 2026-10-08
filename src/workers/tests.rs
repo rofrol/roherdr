@@ -5269,7 +5269,10 @@ mod todo_runs {
             .unwrap();
         assert!(run.run_id.starts_with("r-"), "{run:?}");
         assert_eq!((run.attempt, run.step), (1, TodoStep::Start));
-        assert_eq!(run.branch.as_deref(), Some("todo/t-abcd2345-1"));
+        assert_eq!(
+            run.branch.as_deref(),
+            Some(format!("todo/t-abcd2345-{}-1", run.run_id).as_str())
+        );
 
         let (review, waiting) = wait(&fixture, &run.run_id, None);
         assert_eq!(review.kind, TodoEventKind::Review);
@@ -5406,7 +5409,10 @@ mod todo_runs {
         );
         // The slot still has the run's branch checked out: it is kept for
         // a later run's cleanup.
-        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
+        assert_eq!(
+            finished.kept_branches,
+            [format!("todo/t-abcd2345-{}-1", run.run_id)]
+        );
         // A done run returns its last event to every wait.
         let (again, _) = wait(&fixture, &run.run_id, Some(done.event_id));
         assert_eq!(again.event_id, done.event_id);
@@ -5552,7 +5558,10 @@ mod todo_runs {
         let (done, finished) = approve_to_done(&fixture, &run.run_id);
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
         assert_eq!(finished.attempt, 2);
-        assert_eq!(finished.branch.as_deref(), Some("todo/t-abcd2345-2"));
+        assert_eq!(
+            finished.branch.as_deref(),
+            Some(format!("todo/t-abcd2345-{}-2", run.run_id).as_str())
+        );
         assert_eq!(finished.task, format!("commit b.txt {SUBJECT}"));
         assert!(fixture.repo.join("b.txt").is_file());
         assert!(!fixture.repo.join("a.txt").exists());
@@ -6152,7 +6161,10 @@ mod todo_runs {
         assert_eq!(finished.pushed.as_deref(), Some(master.as_str()));
         assert_eq!(done.commits, [picked, master]);
         // The slot has the branch checked out: kept, and recorded.
-        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
+        assert_eq!(
+            finished.kept_branches,
+            [format!("todo/t-abcd2345-{}-1", run.run_id)]
+        );
         let types = event_types(&fixture, &run.run_id);
         let after_pick: Vec<&str> = types
             .iter()
@@ -6379,10 +6391,11 @@ mod todo_runs {
             ),
             "{decisions}"
         );
-        assert_eq!(finished.kept_branches, ["todo/t-abcd2345-1"]);
+        let first_branch = format!("todo/t-abcd2345-{}-1", first.run_id);
+        assert_eq!(finished.kept_branches, std::slice::from_ref(&first_branch));
 
-        // The next run moves the slot on: its cleanup deletes the branch the
-        // first one kept.
+        // The next run detaches the slot from the branch the first one kept
+        // and deletes it before its worker starts.
         let second = fixture
             .supervisor
             .todo_run(TodoRunParams {
@@ -6395,21 +6408,157 @@ mod todo_runs {
         approve_with(&fixture, &second.run_id, review.event_id, None, None);
         let (done, finished) = wait(&fixture, &second.run_id, Some(review.event_id));
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        let second_branch = format!("todo/t-bcde3456-{}-1", second.run_id);
         let branches = git_in(&fixture.repo, &["branch", "--format=%(refname:short)"]);
-        assert!(!branches.contains("todo/t-abcd2345-1"), "{branches}");
-        assert!(branches.contains("todo/t-bcde3456-1"), "{branches}");
-        assert_eq!(finished.kept_branches, ["todo/t-bcde3456-1"]);
+        assert!(!branches.contains(&first_branch), "{branches}");
+        assert!(branches.contains(&second_branch), "{branches}");
+        assert_eq!(finished.kept_branches, [second_branch]);
         assert!(fixture
             .supervisor
             .todo_status(&first.run_id)
             .unwrap()
             .kept_branches
             .is_empty());
+        let released = run_events(&fixture, &second.run_id, "run_slot_released");
+        assert_eq!(released.len(), 1, "{released:?}");
+        assert_eq!(released[0]["detached"], serde_json::json!(first_branch));
+        assert_eq!(released[0]["deleted"], serde_json::json!([first_branch]));
         let cleaned = run_events(&fixture, &second.run_id, "run_cleaned");
-        assert_eq!(
-            cleaned[0]["deleted"],
-            serde_json::json!(["todo/t-abcd2345-1"])
-        );
+        assert_eq!(cleaned[0]["deleted"], serde_json::json!([]));
         assert_eq!(rev(&remote, "master"), rev(&fixture.repo, "master"));
+    }
+
+    #[test]
+    fn two_runs_of_the_same_item_in_a_row_both_start() {
+        let fixture = todo_repo("todo-same-item");
+        let first = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (done, finished) = approve_to_done(&fixture, &first.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let first_branch = format!("todo/{ITEM}-{}-1", first.run_id);
+        assert_eq!(finished.kept_branches, std::slice::from_ref(&first_branch));
+
+        // The slot is still on the first run's branch; the second run of
+        // the same item starts on its own.
+        let second = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                message: "feat: add b".into(),
+                ..params(&fixture, "commit b.txt feat: add b", "ok")
+            })
+            .unwrap();
+        let second_branch = format!("todo/{ITEM}-{}-1", second.run_id);
+        assert_eq!(second.branch.as_deref(), Some(second_branch.as_str()));
+        let (done, finished) = approve_to_done(&fixture, &second.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(master_subjects(&fixture), ["feat: add b", SUBJECT, "init"]);
+        let branches = git_in(&fixture.repo, &["branch", "--format=%(refname:short)"]);
+        assert!(!branches.contains(&first_branch), "{branches}");
+        assert_eq!(finished.kept_branches, [second_branch]);
+    }
+
+    /// A run with `origin` whose server ends right before the push, after
+    /// an approval whose environment holds a secret. Returns the run, the
+    /// secret, the bare repository and the approved event.
+    fn run_cut_off_before_its_push(fixture: &Fixture) -> (TodoRunInfo, String, PathBuf, i64) {
+        let remote = with_finish(fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(fixture, &run.run_id, None);
+        let secret = format!("run-env-secret-{}", run.run_id);
+        let mut env = caller_env();
+        env.insert("RUN_ENV_SECRET".into(), secret.clone());
+        runs::crash_before(&run.repo, TodoStep::Push);
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                env: Some(env),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (cut.status, cut.step, cut.pushed.clone()),
+            (TodoRunStatus::Running, TodoStep::Push, None)
+        );
+        (cut, secret, remote, review.event_id)
+    }
+
+    /// Every file under `dir`, recursively, that holds `needle`.
+    fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut dirs = vec![dir.to_owned()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if std::fs::read(&path)
+                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+                {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_handoff_carries_a_runs_environment_to_its_push() {
+        let fixture = todo_repo("todo-handoff-env");
+        let (run, secret, remote, approved) = run_cut_off_before_its_push(&fixture);
+        // The old server puts the environments in the handoff's message;
+        // the new process starts without them and takes them from it.
+        let handed = runs::envs_for_handoff();
+        assert_eq!(
+            handed
+                .get(&run.run_id)
+                .and_then(|env| env.get("RUN_ENV_SECRET")),
+            Some(&secret)
+        );
+        let message = serde_json::to_string(&handed).unwrap();
+        runs::forget_env(&run.run_id);
+        runs::restore_handed_off_envs(serde_json::from_str(&message).unwrap());
+        fixture.supervisor.resume_runs();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(approved));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert_eq!(
+            finished.pushed.as_deref(),
+            Some(rev(&remote, "master").as_str())
+        );
+        // Neither the store nor any file beside it holds the environment.
+        let leaked = files_holding(&fixture.supervisor.shared.dir, &secret);
+        assert!(leaked.is_empty(), "{leaked:?}");
+    }
+
+    #[test]
+    fn after_a_restart_a_run_has_no_environment_for_its_push() {
+        let fixture = todo_repo("todo-restart-env");
+        let (run, secret, remote, approved) = run_cut_off_before_its_push(&fixture);
+        let before = rev(&remote, "master");
+        // A cold restart: nothing hands the environment over.
+        runs::forget_env(&run.run_id);
+        fixture.supervisor.resume_runs();
+        let (failed, waiting) = wait(&fixture, &run.run_id, Some(approved));
+        assert_eq!(failed.kind, TodoEventKind::PushFailed, "{failed:#?}");
+        assert_eq!(waiting.step, TodoStep::Push);
+        assert_eq!(rev(&remote, "master"), before);
+        let leaked = files_holding(&fixture.supervisor.shared.dir, &secret);
+        assert!(leaked.is_empty(), "{leaked:?}");
+        resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::Abort,
+            None,
+        )
+        .unwrap();
+        let (blocked, _) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
     }
 }

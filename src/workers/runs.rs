@@ -192,8 +192,28 @@ fn announce() {
 
 /// The callers' environments of the runs this server drives, which their
 /// checks run with: the last one `todo.run` or `todo.resume` sent. Never
-/// stored: it may hold credentials. Without one a check is `unavailable`.
+/// stored: it may hold credentials. A live handoff carries them to the new
+/// server in memory ([`envs_for_handoff`], [`restore_handed_off_envs`]);
+/// after a restart there are none, and a check is `unavailable`.
 static RUN_ENV: Mutex<BTreeMap<String, HashMap<String, String>>> = Mutex::new(BTreeMap::new());
+
+/// The runs' caller environments, for the live handoff's payload: sent to
+/// the new server over the handoff's socket, never written anywhere.
+#[cfg(unix)]
+pub(crate) fn envs_for_handoff() -> BTreeMap<String, HashMap<String, String>> {
+    lock(&RUN_ENV).clone()
+}
+
+/// Takes the runs' caller environments the old server of a live handoff
+/// sent, before this server resumes its runs. An environment a run already
+/// has here is newer and stays.
+#[cfg(unix)]
+pub(crate) fn restore_handed_off_envs(envs: BTreeMap<String, HashMap<String, String>>) {
+    let mut run_env = lock(&RUN_ENV);
+    for (run_id, env) in envs {
+        run_env.entry(run_id).or_insert(env);
+    }
+}
 
 /// The runs a driver of this process works on, so one runs at a time,
 /// each with whether another driver was asked for meanwhile.
@@ -361,8 +381,16 @@ fn new_run_id(repo: &str, item: &str) -> String {
     format!("r-{id}")
 }
 
-fn branch_of(item: &str, attempt: u32) -> String {
-    format!("todo/{item}-{attempt}")
+/// The repository's folder slot, beside it as [`super::slot`] places it.
+fn slot_dir(repo: &Path) -> Option<PathBuf> {
+    repo.parent()
+        .map(|parent| parent.join("herdr-worktrees").join(SLOT))
+}
+
+/// The attempt's branch: with the run's id, so a later run of the same
+/// item never meets a branch an earlier one left.
+fn branch_of(item: &str, run_id: &str, attempt: u32) -> String {
+    format!("todo/{item}-{run_id}-{attempt}")
 }
 
 /// The commit types a subject may start with.
@@ -670,7 +698,7 @@ impl WorkerSupervisor {
                 attempt: 1,
                 base: Some(preflighted.base.clone()),
                 worker_id: None,
-                branch: Some(branch_of(&params.item, 1)),
+                branch: Some(branch_of(&params.item, &run_id, 1)),
                 task: params.task.clone(),
                 message: params.message.clone(),
                 paths: params.paths.clone(),
@@ -829,10 +857,7 @@ impl WorkerSupervisor {
     /// The folder slot is free: no worker of this server runs in it, and
     /// it has nothing uncommitted. A slot not created yet is free.
     fn check_slot_free(&self, repo: &Path) -> Result<(), String> {
-        let Some(slot) = repo
-            .parent()
-            .map(|parent| parent.join("herdr-worktrees").join(SLOT))
-        else {
+        let Some(slot) = slot_dir(repo) else {
             return Err(format!("{} has no parent directory", repo.display()));
         };
         let Ok(real) = slot.canonicalize() else {
@@ -1473,12 +1498,13 @@ impl WorkerSupervisor {
     /// branch from the base, with a command id derived from the run: a
     /// driver after a crash gets the same worker back instead of a second.
     fn step_start(&self, run: &mut Run) -> Result<(), String> {
+        self.release_slot(run)?;
         let command_id = format!("{}:{}:start", run.info.run_id, run.info.attempt);
         let branch = run
             .info
             .branch
             .clone()
-            .unwrap_or_else(|| branch_of(&run.info.item, run.info.attempt));
+            .unwrap_or_else(|| branch_of(&run.info.item, &run.info.run_id, run.info.attempt));
         run.info.step = TodoStep::Start;
         run.info.branch = Some(branch.clone());
         self.run_step(
@@ -1667,7 +1693,11 @@ impl WorkerSupervisor {
         }
         let previous = run.info.worker_id.take();
         run.info.attempt += 1;
-        run.info.branch = Some(branch_of(&run.info.item, run.info.attempt));
+        run.info.branch = Some(branch_of(
+            &run.info.item,
+            &run.info.run_id,
+            run.info.attempt,
+        ));
         run.info.last_acked_seq = None;
         run.info.step = TodoStep::Start;
         self.run_step(

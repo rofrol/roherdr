@@ -135,6 +135,9 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
     let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
     crate::server::handoff::log_import_result(received.manifest.panes.len());
+    // Before the server resumes its `todo run`s: their install and push
+    // need the caller's environment, which only memory held.
+    crate::workers::restore_handed_off_envs(std::mem::take(&mut received.manifest.run_envs));
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
