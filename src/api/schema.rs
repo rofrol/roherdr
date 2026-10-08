@@ -78,7 +78,7 @@ pub enum Method {
     #[serde(rename = "worker.interrupt")]
     WorkerInterrupt(WorkerInterruptParams),
     #[serde(rename = "worker.stop")]
-    WorkerStop(WorkerTarget),
+    WorkerStop(WorkerCommandTarget),
     #[serde(rename = "worker.kill")]
     WorkerKill(WorkerKillParams),
     #[serde(rename = "worker.answer")]

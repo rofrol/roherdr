@@ -105,6 +105,45 @@ UPDATE workers SET
         WHERE worker_id = workers.id
           AND direction = 'herdr' AND type IN ('exited', 'lost')), 0);
 "#,
+    r#"
+-- `answering`: an answer's intent is stored and its control_response not
+-- yet confirmed written (`answer_intent` .. `answer_sent`). SQLite cannot
+-- change a CHECK in place, so the table is rebuilt.
+CREATE TABLE questions_v3 (
+    worker_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    state TEXT NOT NULL
+        CHECK (state IN ('pending', 'answering', 'answered', 'cancelled', 'expired')),
+    how TEXT,
+    question TEXT NOT NULL,
+    input TEXT NOT NULL,
+    asked_seq INTEGER NOT NULL,
+    settled_seq INTEGER,
+    PRIMARY KEY (worker_id, request_id)
+);
+INSERT INTO questions_v3 SELECT worker_id, request_id, kind, tool_name, text, state, how,
+    question, input, asked_seq, settled_seq FROM questions ORDER BY rowid;
+DROP TABLE questions;
+ALTER TABLE questions_v3 RENAME TO questions;
+-- One row per client command id: reserved with the command's first event,
+-- settled with its outcome, which a repeated id gets back.
+CREATE TABLE receipts (
+    command_id TEXT PRIMARY KEY,
+    method TEXT NOT NULL,
+    -- The command's parameters without the id, as JSON: a reused id with
+    -- other parameters is refused.
+    params TEXT NOT NULL,
+    worker_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
+    -- The reply (accepted) or the error's code and message (rejected).
+    result TEXT,
+    created_ms INTEGER NOT NULL,
+    settled_ms INTEGER
+);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -119,6 +158,51 @@ pub(super) struct EventRow<'a> {
     pub(super) direction: Direction,
     pub(super) record: &'a Recorded<'a>,
     pub(super) ts_ms: u64,
+}
+
+/// A client command's receipt as the store holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StoredReceipt {
+    pub(super) method: String,
+    pub(super) params: String,
+    pub(super) worker_id: Option<String>,
+    pub(super) state: ReceiptState,
+    pub(super) result: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReceiptState {
+    /// Reserved, outcome not stored: the command runs, or its server ended
+    /// before it finished.
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+impl ReceiptState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "accepted" => Self::Accepted,
+            "rejected" => Self::Rejected,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// A client command id with what it asked, as reserved and settled.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NewReceipt<'a> {
+    pub(super) command_id: &'a str,
+    pub(super) method: &'a str,
+    pub(super) params: &'a str,
 }
 
 /// What a journal line carries: a JSON event, or a line that was not JSON.
@@ -192,6 +276,25 @@ impl Store {
         }
     }
 
+    /// The receipt of a client command id, if one was stored.
+    pub(super) fn receipt(&self, command_id: &str) -> StoreResult<Option<StoredReceipt>> {
+        let conn = lock(&self.conn);
+        conn.query_row(
+            "SELECT method, params, worker_id, state, result FROM receipts WHERE command_id = ?1",
+            [command_id],
+            |row| {
+                Ok(StoredReceipt {
+                    method: row.get(0)?,
+                    params: row.get(1)?,
+                    worker_id: row.get(2)?,
+                    state: ReceiptState::parse(&row.get::<_, String>(3)?),
+                    result: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+    }
+
     #[cfg(test)]
     pub(super) fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
         lock(&self.conn)
@@ -263,41 +366,64 @@ impl Tx<'_> {
         Ok(self.tx.last_insert_rowid())
     }
 
-    /// Writes the questions an event asked or settled: `before` are the ids
-    /// pending before it, `status` the state after it.
+    /// Writes the questions an event asked, began answering or settled:
+    /// `before` are the ids open before it, each with whether its answer was
+    /// in flight, `status` the state after it.
+    ///
+    /// Every change is guarded by the state the row had (T3 Code's guard):
+    /// a cleanup that cancels open questions (a turn's end, the exit)
+    /// settles only rows still `pending`, so it never overwrites an answer
+    /// that is `answering` or `answered`, whatever this server's memory
+    /// holds; only the answer's own outcome settles an `answering` row.
     pub(super) fn questions(
         &self,
         seq: i64,
-        before: &[String],
+        before: &[(String, bool)],
         status: &Status,
     ) -> StoreResult<()> {
+        let state_of = |answering: bool| if answering { "answering" } else { "pending" };
         for pending in &status.questions {
-            if before.contains(&pending.question.request_id) {
-                continue;
-            }
             let question = &pending.question;
-            self.tx.execute(
-                "INSERT INTO questions (worker_id, request_id, kind, tool_name, text, state,
-                     how, question, input, asked_seq, settled_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', NULL, ?6, ?7, ?8, NULL)
-                 ON CONFLICT (worker_id, request_id) DO UPDATE SET
-                     kind = excluded.kind, tool_name = excluded.tool_name,
-                     text = excluded.text, state = 'pending', how = NULL,
-                     question = excluded.question, input = excluded.input,
-                     asked_seq = excluded.asked_seq, settled_seq = NULL",
-                params![
-                    status.worker_id,
-                    question.request_id,
-                    enum_text(&question.kind),
-                    question.tool_name,
-                    question.text,
-                    serde_json::to_string(question).unwrap_or_else(|_| "{}".into()),
-                    pending.input.to_string(),
-                    seq,
-                ],
-            )?;
+            match before.iter().find(|(id, _)| *id == question.request_id) {
+                Some((_, was)) if *was == pending.answering => {}
+                Some((_, was)) => {
+                    self.tx.execute(
+                        "UPDATE questions SET state = ?3
+                         WHERE worker_id = ?1 AND request_id = ?2 AND state = ?4",
+                        params![
+                            status.worker_id,
+                            question.request_id,
+                            state_of(pending.answering),
+                            state_of(*was),
+                        ],
+                    )?;
+                }
+                None => {
+                    self.tx.execute(
+                        "INSERT INTO questions (worker_id, request_id, kind, tool_name, text,
+                             state, how, question, input, asked_seq, settled_seq)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?9, NULL, ?6, ?7, ?8, NULL)
+                         ON CONFLICT (worker_id, request_id) DO UPDATE SET
+                             kind = excluded.kind, tool_name = excluded.tool_name,
+                             text = excluded.text, state = excluded.state, how = NULL,
+                             question = excluded.question, input = excluded.input,
+                             asked_seq = excluded.asked_seq, settled_seq = NULL",
+                        params![
+                            status.worker_id,
+                            question.request_id,
+                            enum_text(&question.kind),
+                            question.tool_name,
+                            question.text,
+                            serde_json::to_string(question).unwrap_or_else(|_| "{}".into()),
+                            pending.input.to_string(),
+                            seq,
+                            state_of(pending.answering),
+                        ],
+                    )?;
+                }
+            }
         }
-        for request_id in before {
+        for (request_id, was_answering) in before {
             if status
                 .questions
                 .iter()
@@ -308,10 +434,73 @@ impl Tx<'_> {
             let how = status.resolution(request_id).unwrap_or("cancelled");
             self.tx.execute(
                 "UPDATE questions SET state = ?3, how = ?4, settled_seq = ?5
-                 WHERE worker_id = ?1 AND request_id = ?2",
-                params![status.worker_id, request_id, question_state(how), how, seq],
+                 WHERE worker_id = ?1 AND request_id = ?2 AND state = ?6",
+                params![
+                    status.worker_id,
+                    request_id,
+                    question_state(how),
+                    how,
+                    seq,
+                    state_of(*was_answering),
+                ],
             )?;
         }
+        Ok(())
+    }
+
+    /// Reserves a client command's id with its first event: inserted only
+    /// if absent. The caller has checked under the registry lock that the
+    /// id is new; a row another server wrote meanwhile stays as it is.
+    pub(super) fn reserve_receipt(
+        &self,
+        receipt: &NewReceipt<'_>,
+        worker_id: &str,
+        ts_ms: u64,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO receipts (command_id, method, params, worker_id, state, created_ms)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5)
+             ON CONFLICT (command_id) DO NOTHING",
+            params![
+                receipt.command_id,
+                receipt.method,
+                receipt.params,
+                worker_id,
+                ts_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Stores a command's outcome, reserving its id first when no event of
+    /// the command did.
+    pub(super) fn settle_receipt(
+        &self,
+        receipt: &NewReceipt<'_>,
+        worker_id: Option<&str>,
+        state: ReceiptState,
+        result: &str,
+        ts_ms: u64,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO receipts (command_id, method, params, worker_id, state, result,
+                 created_ms, settled_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+             ON CONFLICT (command_id) DO UPDATE SET
+                 worker_id = coalesce(receipts.worker_id, excluded.worker_id),
+                 state = excluded.state, result = excluded.result,
+                 settled_ms = excluded.settled_ms
+             WHERE receipts.state = 'pending'",
+            params![
+                receipt.command_id,
+                receipt.method,
+                receipt.params,
+                worker_id,
+                state.as_str(),
+                result,
+                ts_ms as i64
+            ],
+        )?;
         Ok(())
     }
 
@@ -426,22 +615,24 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     Ok(status)
 }
 
-/// Fills a status's pending questions, oldest first, and the most recently
-/// settled ones.
+/// Fills a status's open questions (pending or answering), oldest first,
+/// and the most recently settled ones.
 fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
     let mut pending = conn.prepare(
-        "SELECT question, input, asked_seq FROM questions
-         WHERE worker_id = ?1 AND state = 'pending' ORDER BY asked_seq, rowid",
+        "SELECT question, input, asked_seq, state FROM questions
+         WHERE worker_id = ?1 AND state IN ('pending', 'answering')
+         ORDER BY asked_seq, rowid",
     )?;
     let rows = pending.query_map([&status.worker_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     for row in rows {
-        let (question, input, asked_seq) = row?;
+        let (question, input, asked_seq, state) = row?;
         let Ok(question) = serde_json::from_str(&question) else {
             continue;
         };
@@ -450,11 +641,13 @@ fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
             input: serde_json::from_str(&input)
                 .unwrap_or_else(|_| Value::Object(Default::default())),
             asked_seq,
+            answering: state == "answering",
+            cleared: None,
         });
     }
     let mut settled = conn.prepare(
         "SELECT request_id, how FROM questions
-         WHERE worker_id = ?1 AND state != 'pending'
+         WHERE worker_id = ?1 AND state NOT IN ('pending', 'answering')
          ORDER BY settled_seq DESC, rowid DESC LIMIT ?2",
     )?;
     let rows = settled.query_map(
@@ -479,7 +672,7 @@ fn enum_text<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// The `questions.state` of a question that ended `how`.
-fn question_state(how: &str) -> &'static str {
+pub(super) fn question_state(how: &str) -> &'static str {
     match how {
         "answered" => "answered",
         "cancelled" => "cancelled",
@@ -646,6 +839,7 @@ mod tests {
                 "ALTER TABLE workers DROP COLUMN turn_seq;
                  ALTER TABLE workers DROP COLUMN turn_end_seq;
                  ALTER TABLE workers DROP COLUMN gone_seq;
+                 DROP TABLE receipts;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -655,6 +849,44 @@ mod tests {
             (loaded.turn_seq, loaded.turn_end_seq, loaded.gone_seq),
             (Some(seqs[1]), seqs[3], seqs[3])
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_cleanup_settles_only_rows_still_pending() {
+        let dir = scratch("cleanup-guard");
+        let store = Store::open(&dir.join(STORE_FILE)).unwrap();
+        let question = json!({"type": "question", "input": {},
+            "question": question_from_request(
+                "q1", &json!({"tool_name": "Bash", "input": {"command": "ls"}}), "asked")});
+        append(&store, "w1", &question).unwrap();
+        // Another writer began answering it; this status has not seen that.
+        store
+            .connection()
+            .execute("UPDATE questions SET state = 'answering'", [])
+            .unwrap();
+        let mut status = Status::new("w1".to_owned());
+        status.apply(Direction::Herdr, &question);
+        let before = status.open_questions();
+        let ended = json!({"type": "result", "subtype": "success", "is_error": false});
+        status.apply(Direction::Out, &ended);
+        assert!(status.questions.is_empty());
+        store
+            .transaction(|tx| {
+                let seq = tx.event(&EventRow {
+                    worker_id: "w1",
+                    direction: Direction::Out,
+                    record: &Recorded::Event(&ended),
+                    ts_ms: 1,
+                })?;
+                tx.questions(seq, &before, &status)
+            })
+            .unwrap();
+        let state: String = store
+            .connection()
+            .query_row("SELECT state FROM questions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(state, "answering");
         let _ = std::fs::remove_dir_all(dir);
     }
 

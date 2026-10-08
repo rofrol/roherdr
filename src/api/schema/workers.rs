@@ -34,6 +34,12 @@ pub struct WorkerStartParams {
     /// With `folder_slot`: removes the slot's `target/` and Zig cache first.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh_build: bool,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -41,11 +47,29 @@ pub struct WorkerTarget {
     pub worker_id: String,
 }
 
+/// A worker and the client's id for a command on it (`worker.stop`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerCommandTarget {
+    pub worker_id: String,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerPromptParams {
     pub worker_id: String,
     /// The next user message; accepted only between turns.
     pub text: String,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -70,6 +94,12 @@ pub struct WorkerInterruptParams {
     /// never reaches the next turn. When absent, whatever runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<i64>,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -80,6 +110,12 @@ pub struct WorkerKillParams {
     /// message lists what it would signal.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
 }
 
 /// What `worker.kill` did with the worker's recorded tool sessions.
@@ -213,10 +249,15 @@ pub struct WorkerInfo {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_signal: Option<i32>,
-    /// Questions the worker waits on, oldest first; its state is
+    /// Questions the worker waits on, oldest first: `pending` ones and
+    /// those whose answer is being sent (`answering`); its state is
     /// `waiting_approval` while there are any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<WorkerQuestion>,
+    /// The most recently settled questions, oldest first, with how each
+    /// ended.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settled_questions: Vec<WorkerSettledQuestion>,
     /// Unix milliseconds when `worker.stop` sent SIGTERM, while the process
     /// has not exited yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,6 +324,12 @@ pub struct WorkerAnswerParams {
     /// The message the model gets with a denial.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// A client's id for this command, unique per command it means
+    /// (`worker_command_conflict` when reused with other parameters). A
+    /// repeated id returns the stored outcome without doing it again: the
+    /// same reply, or the same refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -323,6 +370,46 @@ pub struct WorkerQuestion {
     pub questions: Vec<WorkerChoiceQuestion>,
     /// Unix milliseconds since when the worker waits.
     pub since_ms: u64,
+    /// Where its answer is: `pending` (only such a question is answered),
+    /// or `answering`.
+    #[serde(default)]
+    pub state: WorkerQuestionState,
+}
+
+/// Where a question's answer is. `answered` means the answer was written to
+/// the worker's input; the CLI sends no acknowledgement of it, and herdr
+/// does not track which client was shown the question, so neither
+/// "acknowledged" nor "delivered" is a state of its own.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerQuestionState {
+    /// Waits for an answer.
+    #[default]
+    Pending,
+    /// An answer is stored and being written to the worker; a failed write
+    /// makes it `pending` again.
+    Answering,
+    /// The answer was written to the worker's input.
+    Answered,
+    /// The CLI withdrew the question.
+    Cancelled,
+    /// Ended unanswered: its turn ended, the worker exited or was lost, or
+    /// a server restart found its answer not confirmed written.
+    Expired,
+    /// A state this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A question that is no longer open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerSettledQuestion {
+    pub request_id: String,
+    pub state: WorkerQuestionState,
+    /// What ended it, as `worker_question_gone` says it.
+    pub how: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

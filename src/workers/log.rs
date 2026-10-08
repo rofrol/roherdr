@@ -63,7 +63,17 @@ pub(crate) fn log_lines(record: &str) -> Vec<String> {
                 question["text"].as_str().unwrap_or("")
             )]
         }
-        ("herdr", "answer") => {
+        ("herdr", "answer_failed") => vec![format!(
+            "! your answer was not delivered, the question waits again: {}",
+            event["error"].as_str().unwrap_or("unknown error")
+        )],
+        ("herdr", "answer_expired") => vec![format!(
+            "! your answer to {} {}",
+            event["request_id"].as_str().unwrap_or("?"),
+            event["how"].as_str().unwrap_or("expired")
+        )],
+        // `answer` is the record of journals from before the answer outbox.
+        ("herdr", "answer" | "answer_intent") => {
             let answers = event["answers"]
                 .as_object()
                 .map(|answers| {

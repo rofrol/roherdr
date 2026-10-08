@@ -1,7 +1,7 @@
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAnswerParams, WorkerDecision, WorkerInterruptParams,
-    WorkerKillParams, WorkerPromptParams, WorkerStartParams, WorkerTarget, WorkerWaitParams,
-    WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAnswerParams, WorkerCommandTarget, WorkerDecision,
+    WorkerInterruptParams, WorkerKillParams, WorkerPromptParams, WorkerStartParams, WorkerTarget,
+    WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
@@ -37,7 +37,11 @@ const USAGE: &str =
   herdr worker log [--follow] <worker_id>
     The worker's journal as text; --follow keeps printing new events until q.
   herdr worker take-over <worker_id>
-    Interrupts and stops the worker, then resumes its session in a new tab.";
+    Interrupts and stops the worker, then resumes its session in a new tab.
+  start, prompt, interrupt, stop, kill and answer take --command-id ID: the
+  command runs once per ID; repeating it returns the first outcome (the same
+  reply or refusal) without doing it again, and reusing ID for another
+  command is refused (worker_command_conflict).";
 
 pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
     if args.first().map(String::as_str) == Some("log") {
@@ -66,7 +70,16 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return Err(String::new());
     };
-    let rest = &args[1..];
+    let (command_id, rest) = take_string_option(&args[1..], "--command-id")?;
+    let rest = rest.as_slice();
+    if command_id.is_some()
+        && !matches!(
+            subcommand,
+            "start" | "prompt" | "interrupt" | "stop" | "kill" | "answer"
+        )
+    {
+        return Err(format!("{subcommand} takes no --command-id"));
+    }
     let target = |rest: &[String]| -> Result<WorkerTarget, String> {
         match rest {
             [worker_id] => Ok(WorkerTarget {
@@ -76,7 +89,10 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         }
     };
     Ok(Some(match subcommand {
-        "start" => Method::WorkerStart(parse_start(rest)?),
+        "start" => Method::WorkerStart(WorkerStartParams {
+            command_id,
+            ..parse_start(rest)?
+        }),
         "status" => Method::WorkerStatus(target(rest)?),
         "list" if rest.is_empty() => Method::WorkerList(EmptyParams::default()),
         "wait" => Method::WorkerWait(parse_wait(rest)?),
@@ -84,6 +100,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
                 worker_id: worker_id.clone(),
                 text: text.clone(),
+                command_id,
             }),
             _ => return Err("prompt takes a worker id and one text argument".into()),
         },
@@ -95,9 +112,13 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             Method::WorkerInterrupt(WorkerInterruptParams {
                 worker_id: worker_id.clone(),
                 turn,
+                command_id,
             })
         }
-        "stop" => Method::WorkerStop(target(rest)?),
+        "stop" => Method::WorkerStop(WorkerCommandTarget {
+            worker_id: target(rest)?.worker_id,
+            command_id,
+        }),
         "kill" => {
             let (force, ids): (Vec<&String>, Vec<&String>) =
                 rest.iter().partition(|arg| arg.as_str() == "--force");
@@ -107,9 +128,13 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
             Method::WorkerKill(WorkerKillParams {
                 worker_id: (*worker_id).clone(),
                 force: !force.is_empty(),
+                command_id,
             })
         }
-        "answer" => Method::WorkerAnswer(parse_answer(rest)?),
+        "answer" => Method::WorkerAnswer(WorkerAnswerParams {
+            command_id,
+            ..parse_answer(rest)?
+        }),
         "take-over" => Method::WorkerTakeOver(target(rest)?),
         "help" | "--help" | "-h" => return Ok(None),
         _ => return Err(format!("unknown worker command: {subcommand}")),
@@ -149,7 +174,24 @@ fn parse_wait(args: &[String]) -> Result<WorkerWaitParams, String> {
 
 /// Takes `flag SEQ` out of `args`; returns the seq and the other arguments.
 fn take_seq_option(args: &[String], flag: &str) -> Result<(Option<i64>, Vec<String>), String> {
-    let mut seq = None;
+    let (value, rest) = take_string_option(args, flag)?;
+    let seq = value
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| format!("{flag} takes a seq number, not {value}"))
+        })
+        .transpose()?;
+    Ok((seq, rest))
+}
+
+/// Takes `flag VALUE` out of `args`; returns the value and the other
+/// arguments.
+fn take_string_option(
+    args: &[String],
+    flag: &str,
+) -> Result<(Option<String>, Vec<String>), String> {
+    let mut found = None;
     let mut rest = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -160,14 +202,11 @@ fn take_seq_option(args: &[String], flag: &str) -> Result<(Option<i64>, Vec<Stri
         let value = args
             .next()
             .ok_or_else(|| format!("missing value for {flag}"))?;
-        let parsed = value
-            .parse()
-            .map_err(|_| format!("{flag} takes a seq number, not {value}"))?;
-        if seq.replace(parsed).is_some() {
+        if found.replace(value.clone()).is_some() {
             return Err(format!("{flag} given twice"));
         }
     }
-    Ok((seq, rest))
+    Ok((found, rest))
 }
 
 /// `allow` or `deny` alone is a decision; anything else are the answers to
@@ -218,6 +257,7 @@ fn parse_answer(args: &[String]) -> Result<WorkerAnswerParams, String> {
         decision,
         answers,
         message,
+        command_id: None,
     })
 }
 
@@ -304,6 +344,7 @@ fn parse_start(args: &[String]) -> Result<WorkerStartParams, String> {
         branch,
         base,
         fresh_build,
+        command_id: None,
     })
 }
 
@@ -589,6 +630,27 @@ mod tests {
         assert_eq!(params.request_id.as_deref(), Some("r1"));
         assert_eq!(params.decision, None);
         assert_eq!(params.answers, vec!["blue.txt", "1,3"]);
+
+        let Ok(Some(Method::WorkerAnswer(params))) = parse_worker_args(&args(&[
+            "answer",
+            "w1",
+            "--command-id",
+            "item-3:answer:r1",
+            "--request",
+            "r1",
+            "allow",
+        ])) else {
+            panic!("answer with a command id must parse");
+        };
+        assert_eq!(params.command_id.as_deref(), Some("item-3:answer:r1"));
+        assert_eq!(params.decision, Some(WorkerDecision::Allow));
+        assert!(matches!(
+            parse_worker_args(&args(&["stop", "--command-id", "c1", "w1"])),
+            Ok(Some(Method::WorkerStop(WorkerCommandTarget { command_id: Some(id), .. })))
+                if id == "c1"
+        ));
+        assert!(parse_worker_args(&args(&["status", "w1", "--command-id", "c1"])).is_err());
+        assert!(parse_worker_args(&args(&["stop", "w1", "--command-id"])).is_err());
 
         assert!(parse_worker_args(&args(&["answer", "w1"])).is_err());
         assert!(parse_worker_args(&args(&["answer", "w1", "allow"])).is_err());
