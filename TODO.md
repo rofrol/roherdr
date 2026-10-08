@@ -1477,6 +1477,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Working or session id is synthesized; the fold goes. Sent to `w35`
   (slice 3) as part of its commit, after its current turn (a prompt
   mid-turn is refused).
+  Slice 3 done 2026-10-08 by `w35` (`feat: the worker broker spools output
+  and a server re-attaches without loss`, verified with the socket tests,
+  intent checked by the coordinator: the slice-2 fold is gone, a
+  `continuity_gap` marks the worker degraded and refuses prompts and
+  takeover). Left for slice 4: a `can_use_tool` line replayed as a
+  duplicate after a crash between its commit and its answer would leave
+  the question unanswered; live handoff still refuses while a brokered
+  worker runs (until slice 4).
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
