@@ -1529,7 +1529,17 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      wait, handle, `herdr worker ack <id> <seq>`, the same wait again; no
      variable in the shell (chosen by the coordinator: it reuses what the
      server already stores, instead of a second cursor file as DeepSeek
-     proposed).
+     proposed). User 2026-10-08: "what is --after for? ask the models";
+     round `20261008-104542-e5d4`: the wait is level-triggered (nothing that
+     happened before it began is missed), so a finished turn would wake it
+     again for ever without a cursor; the cursor is needed, the flag is not
+     for an owner (sol, DeepSeek): the default is the owner's acked seq,
+     and an ack means handled, not seen, so a crash before handling wakes
+     it again; non-owners do not inherit the owner's cursor; `--after`
+     stays for recovery, tests and observers. MiMo's "clear the state when
+     the coordinator acts" was dismissed: it can hide a question or exit
+     that arrives at the same time (DeepSeek). The seq is durable (SQLite
+     AUTOINCREMENT), so an old cursor stays valid.
   2. `--after=<seq>` accepted as one token; a stray argument names itself
      in the usage error (MiMo).
   3. `herdr-job run` prints the job id as its first stdout line (everything
