@@ -1414,6 +1414,29 @@ and `20261006-030215-b8ca`); both put the first two at the top.
     wired to the tab role, the unique index, `owner_coordinator_id`;
     handoff epochs with the handoff item, item history later.
 
+- [ ] Headless workers survive an install and a server crash (user, [t-r4by4sru]
+  2026-10-08: "I thought the work was coordinated on the server; why does
+  the install refuse while a worker is in a turn? ask the models"; then,
+  asked to choose: "I don't know, ask the models"). Round `20261008-153927-cc99` (sol,
+  MiMo, DeepSeek): the store keeps the state, but a worker's life is tied
+  to the old server's pipes, which a handoff does not pass on; refusing is
+  right until ownership moves. Decided with the models: (1) now, an
+  install queue: `herdr_live.sh install` waits for the turns in progress
+  to end (blocking new turns, by events, no timer), shows what it waits
+  for and can be cancelled, keeping the refusal as the safety check
+  (sol; DeepSeek keeps it for workers started before the broker); (2) then
+  a per-worker broker (all three): a small process spawned per worker,
+  outliving the server (`setsid`; on Windows outside the server's job
+  object, named pipes), owns the worker's stdin/stdout/stderr, publishes
+  whole stdout lines with sequence numbers to an append-only spool, lets
+  any server attach from its last acknowledged seq, and relays stdin
+  writes keyed by the existing command receipts (a dumb relay: the SQLite
+  outbox stays the truth; a write that went through is not proof Claude
+  processed it); spool size bounded; broker death = worker death in v1;
+  new workers only at first. Rejected: passing pipe fds in the handoff
+  (does not survive a crash, split reader/writer at the cut) and running
+  workers under a PTY (corrupts stream-json).
+
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
