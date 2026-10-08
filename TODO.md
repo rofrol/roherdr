@@ -422,6 +422,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
      "acknowledged" and "answered" are distinct states, and acknowledging
      never clears an unanswered question (sol); an answer survives the
      coordinator dying mid-answer (MiMo).
+  4. (Fixed 2026-10-08, `fix: an owner's own stop creates no obligation,
+     and the worker folder stays bounded`: the owner's own stop/kill acks
+     the exit it causes.)
   4. (Found 2026-10-08 at first use: the Stop hook blocked the coordinator
      for `w13: exited, review it` after the coordinator itself had stopped
      `w13` following its review; an exit the owner requested with
@@ -605,6 +608,9 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   nothing; the user approved `cargo clean` there. The folder slot should
   run the sweep with a smaller limit before each worker (or `just guard`
   should count the slot), so it cannot fill the disk.
+  Fixed 2026-10-08 in the same commit: `target_sweep.py slot` keeps the
+  slot's `target/` under 10 GiB before each start, removes it when the
+  disk stays under the guard threshold, else refuses the start.
 
 - [ ] A coordinator is woken by its worker's question (user, 2026-10-07,
   next: "the wait that wakes the coordinator on a worker's question is
