@@ -89,6 +89,14 @@ pub(crate) fn log_lines(record: &str) -> Vec<String> {
         ("herdr", "takeover") => {
             vec!["■ taken over: ending it to resume its session in a tab".into()]
         }
+        ("herdr", "takeover_tab_opened") => vec![format!(
+            "■ its session resumes in tab {}",
+            event["tab_id"].as_str().unwrap_or("?")
+        )],
+        ("herdr", "takeover_failed") => vec![format!(
+            "■ takeover failed: {}",
+            event["error"].as_str().unwrap_or("unknown error")
+        )],
         ("herdr", "exited") => vec![match (event["code"].as_i64(), event["signal"].as_i64()) {
             (_, Some(signal)) => format!("■ exited by signal {signal}"),
             (Some(code), None) => format!("■ exited with code {code}"),

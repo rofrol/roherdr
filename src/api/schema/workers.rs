@@ -162,6 +162,18 @@ pub struct WorkerInfo {
     /// worker is being ended so its session can resume in a tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takeover_ms: Option<u64>,
+    /// The tab the takeover opened to resume the worker's session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_tab_id: Option<String>,
+    /// Why the last takeover failed; its claim was released, so it can be
+    /// tried again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_error: Option<String>,
+    /// A takeover claimed by an earlier server that did not record opening
+    /// its tab: a tab may or may not resume the session. A new takeover is
+    /// accepted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takeover_unfinished: bool,
     /// The JSONL journal of every event in and out.
     pub journal_path: String,
 }

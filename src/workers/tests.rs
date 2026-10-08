@@ -1173,6 +1173,153 @@ fn a_worker_that_asks_is_not_taken_over() {
     assert_eq!(fixture.supervisor.status(&id).unwrap().takeover_ms, None);
 }
 
+#[test]
+fn an_exited_worker_is_taken_over_once() {
+    let fixture = Fixture::new("takeover-exited");
+    let id = fixture.start("crash");
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    fixture.supervisor.begin_takeover(&id).unwrap();
+    let worker = fixture.supervisor.end_for_takeover(&id).unwrap();
+    assert!(worker.takeover_ms.is_some());
+    let running = fixture.supervisor.begin_takeover(&id).unwrap_err();
+    assert_eq!(running.code(), "worker_busy");
+    assert!(running.to_string().contains("being taken over"));
+
+    fixture
+        .supervisor
+        .takeover_tab_opened(&id, "tab_9")
+        .unwrap();
+    let done = fixture.supervisor.begin_takeover(&id).unwrap_err();
+    assert_eq!(done.code(), "worker_busy");
+    assert!(done.to_string().contains("tab_9"), "{done}");
+    assert_eq!(fixture.herdr_events(&id, "takeover").len(), 1);
+    assert_eq!(
+        fixture
+            .supervisor
+            .status(&id)
+            .unwrap()
+            .takeover_tab_id
+            .as_deref(),
+        Some("tab_9")
+    );
+}
+
+#[test]
+fn a_failed_takeover_releases_its_claim() {
+    let fixture = Fixture::new("takeover-failed");
+    let id = fixture.start("crash");
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+    fixture.supervisor.begin_takeover(&id).unwrap();
+    fixture
+        .supervisor
+        .fail_takeover(&id, "the tab was not created")
+        .unwrap();
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(worker.takeover_ms, None);
+    assert_eq!(
+        worker.takeover_error.as_deref(),
+        Some("the tab was not created")
+    );
+    assert!(!fixture.supervisor.summaries()[0].takeover);
+    assert_eq!(
+        fixture.herdr_events(&id, "takeover_failed")[0]["error"],
+        "the tab was not created"
+    );
+
+    // The retry is claimed again and clears the old error.
+    fixture.supervisor.begin_takeover(&id).unwrap();
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert!(worker.takeover_ms.is_some());
+    assert_eq!(worker.takeover_error, None);
+    // Without a claim there is nothing to release.
+    fixture.supervisor.fail_takeover(&id, "again").unwrap();
+    let unclaimed = fixture.supervisor.fail_takeover(&id, "again").unwrap_err();
+    assert_eq!(unclaimed.code(), "invalid_request");
+}
+
+#[test]
+fn prompts_and_answers_are_refused_during_a_takeover() {
+    let fixture = Fixture::new("takeover-refuses");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    fixture.supervisor.begin_takeover(&id).unwrap();
+    let prompt = fixture.supervisor.prompt(&id, "finish").unwrap_err();
+    assert_eq!(prompt.code(), "worker_busy");
+    fixture.supervisor.kill(&id).unwrap();
+
+    // A question that arrived after the claim (the claim itself is refused
+    // while one waits): claimed here directly.
+    let asking = fixture.start("perm WebFetch https://example.com");
+    fixture.wait_for_question(&asking);
+    {
+        let mut registry = lock(&fixture.supervisor.shared.registry);
+        let number = worker_number(&asking).unwrap();
+        registry.workers.get_mut(&number).unwrap().status.apply(
+            Direction::Herdr,
+            &serde_json::json!({"type": "takeover", "at_ms": 1}),
+        );
+    }
+    let answer = fixture
+        .answer(&asking, Some(WorkerDecision::Allow), &[])
+        .unwrap_err();
+    assert_eq!(answer.code(), "worker_busy");
+    assert_eq!(
+        fixture.supervisor.status(&asking).unwrap().questions.len(),
+        1
+    );
+    fixture.supervisor.kill(&asking).unwrap();
+}
+
+#[test]
+fn a_restart_replays_takeover_steps() {
+    let fixture = Fixture::new("takeover-replay");
+    let dir = fixture.root.join("workers");
+    let ended = [
+        serde_json::json!({"dir": "herdr", "event": {"type": "started", "cwd": "/repo"}}),
+        serde_json::json!({"dir": "out", "event": {
+            "type": "system", "subtype": "init", "session_id": "s-1"}}),
+        serde_json::json!({"dir": "herdr", "event": {"type": "exited", "code": 0}}),
+        serde_json::json!({"dir": "herdr", "event": {"type": "takeover", "at_ms": 5}}),
+    ];
+    let failed = serde_json::json!({"dir": "herdr", "event": {
+        "type": "takeover_failed", "error": "boom", "at_ms": 6}});
+    let opened = serde_json::json!({"dir": "herdr", "event": {
+        "type": "takeover_tab_opened", "tab_id": "tab_4", "at_ms": 6}});
+    write_journal(&dir, "w1", &[&ended[..], &[failed]].concat());
+    write_journal(&dir, "w2", &[&ended[..], &[opened]].concat());
+    write_journal(&dir, "w3", &ended);
+
+    let supervisor = WorkerSupervisor::open(dir, fixture.root.join("claude-stub"));
+    let released = supervisor.status("w1").unwrap();
+    assert_eq!(released.takeover_ms, None);
+    assert_eq!(released.takeover_error.as_deref(), Some("boom"));
+    assert!(!released.takeover_unfinished);
+
+    let done = supervisor.status("w2").unwrap();
+    assert_eq!(done.takeover_ms, Some(5));
+    assert_eq!(done.takeover_tab_id.as_deref(), Some("tab_4"));
+    assert!(!done.takeover_unfinished);
+    assert_eq!(
+        supervisor.begin_takeover("w2").unwrap_err().code(),
+        "worker_busy"
+    );
+
+    // Claimed, but the tab was never recorded: reported, and open to retry.
+    let unfinished = supervisor.status("w3").unwrap();
+    assert_eq!(unfinished.takeover_ms, Some(5));
+    assert!(unfinished.takeover_unfinished);
+    let summary = supervisor
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.worker_id == "w3")
+        .unwrap();
+    assert!(!summary.takeover);
+    supervisor.begin_takeover("w3").unwrap();
+    assert!(!supervisor.status("w3").unwrap().takeover_unfinished);
+
+    supervisor.begin_takeover("w1").unwrap();
+}
+
 fn git_in(dir: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")
