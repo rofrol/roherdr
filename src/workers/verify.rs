@@ -40,7 +40,7 @@ pub(super) struct Request<'a> {
     pub(super) base: &'a str,
     pub(super) expected_message: &'a str,
     pub(super) allowed_paths: &'a [String],
-    pub(super) command: Option<&'a str>,
+    pub(super) command: Option<CheckCommand<'a>>,
     pub(super) generated: &'a [WorkerGeneratedFile],
     /// The caller's environment, which the command and the generators run
     /// with instead of the server's; `None` keeps the server's.
@@ -48,6 +48,15 @@ pub(super) struct Request<'a> {
     /// The worker's processes still running, found by the supervisor: its
     /// own, or a tool process working in `dir`. Empty when none remains.
     pub(super) processes: Vec<String>,
+}
+
+/// The command check: a shell command (`worker.verify --cmd`), or a
+/// program and its arguments run without a shell (a registered check of
+/// `todo.run`), so nothing in them is expanded or split.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CheckCommand<'a> {
+    Shell(&'a str),
+    Argv(&'a [String]),
 }
 
 /// Runs every check and decides the verdict. When it ran anything that
@@ -150,7 +159,11 @@ pub(super) fn verify(request: &Request<'_>, now_ms: u64) -> WorkerVerification {
     if let Some(command) = request.command {
         checks.push(if tree_clean {
             wrote = true;
-            match run_shell(dir, command, request.env) {
+            let ran = match command {
+                CheckCommand::Shell(command) => run_shell(dir, command, request.env),
+                CheckCommand::Argv(argv) => run_argv(dir, argv, request.env),
+            };
+            match ran {
                 Ran::Exited(0, _) => passed("command", String::new()),
                 Ran::Exited(code, tail) => {
                     failed("command", format!("exited with code {code}:\n{tail}"))
@@ -477,6 +490,49 @@ fn run_shell(dir: &Path, command: &str, env: Option<&HashMap<String, String>>) -
     }
 }
 
+/// Runs `argv[0]` with the other arguments as they are (no shell) in
+/// `dir`, with `env` (without `HERDR_*`) in place of the server's
+/// environment when given. Its output is its stdout followed by its
+/// stderr. A program that cannot start is unavailable, and so is a failure
+/// whose output shows a broken build environment ([`environment_failure`]).
+fn run_argv(dir: &Path, argv: &[String], env: Option<&HashMap<String, String>>) -> Ran {
+    let Some((program, args)) = argv.split_first() else {
+        return Ran::Unavailable("the check has no program".into());
+    };
+    let mut command = Command::new(program);
+    if let Some(env) = env {
+        command
+            .env_clear()
+            .envs(env.iter().filter(|(name, _)| !name.starts_with("HERDR_")));
+    }
+    let output = match command
+        .args(args)
+        .current_dir(dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => return Ran::Unavailable(format!("cannot run {argv:?}: {error}")),
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let tail = tail(&text);
+    match output.status.code() {
+        Some(0) => Ran::Exited(0, tail),
+        Some(code) => match environment_failure(&text) {
+            Some(line) => Ran::Unavailable(format!(
+                "{argv:?} failed on its build environment, not the project \
+                 (exit {code}; {line:?}):\n{tail}"
+            )),
+            None => Ran::Exited(code, tail),
+        },
+        None => Ran::Unavailable(format!("{argv:?} was ended by a signal:\n{tail}")),
+    }
+}
+
 /// The line of a failed command's output that shows it failed on its
 /// build environment before the project's own work: a tool missing or of
 /// the wrong version. Conservative: any sign of the project's own failure
@@ -606,7 +662,7 @@ mod tests {
                 base,
                 expected_message: SUBJECT,
                 allowed_paths: &["src/**".into(), "gen.txt".into()],
-                command,
+                command: command.map(CheckCommand::Shell),
                 generated: &generated,
                 env: None,
                 processes: Vec::new(),
@@ -644,9 +700,9 @@ mod tests {
                 base: &base,
                 expected_message: SUBJECT,
                 allowed_paths: &["src/**".into()],
-                command: Some(
+                command: Some(CheckCommand::Shell(
                     "echo \"probe=$VERIFY_PROBE home=${HOME-unset} pane=${HERDR_PANE_ID-unset}\"; exit 1",
-                ),
+                )),
                 generated: &[],
                 env: Some(&env),
                 processes: Vec::new(),

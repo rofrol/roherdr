@@ -15,7 +15,9 @@
 //! session that holds `<fifo>` open until it dies) and `gate <fifo>` (a tool
 //! use, then, once `<fifo>` is written, three text events, a stderr line and
 //! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
-//! `<fifo>` is written).
+//! `<fifo>` is written), `commit <file> <subject...>` (appends to
+//! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`)
+//! and `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -51,6 +53,17 @@ emit({"type": "system", "subtype": "init", "session_id": "stub-session",
 
 ignore_term = False
 
+def commit(path, subject):
+    with open(path, "a") as f:
+        f.write("change\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+           "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+    subprocess.run(git + ["add", path], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", subject], check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    result(text="committed\nWORKER-DONE " + sha + " | summary")
+
 def read():
     line = sys.stdin.readline()
     if not line:
@@ -83,6 +96,11 @@ while True:
         result()
     elif command == "done":
         result(text="work done\nWORKER-DONE " + words[1] + " | summary")
+    elif command == "commit":
+        commit(words[1], " ".join(words[2:]))
+    elif command == "perm-commit":
+        ask_host("WebFetch", {"url": "https://example.com"})
+        commit(words[1], " ".join(words[2:]))
     elif command == "fail":
         result("error_during_execution", True, "model_error", None)
     elif command == "crash":
@@ -5111,4 +5129,525 @@ fn a_handoff_keeps_a_brokered_worker_mid_turn_and_the_new_server_ends_its_turn()
     next.stop(&id).unwrap();
     wait_on(&next, &id, WorkerWaitUntil::Exit);
     plain.wait(&blocked, WorkerWaitUntil::Exit);
+}
+
+mod todo_runs {
+    use super::*;
+    use crate::api::schema::{
+        TodoAction, TodoEventKind, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams,
+        TodoRunStatus, TodoStep, TodoWaitParams, WorkerCheckOutcome, WorkerVerdict,
+    };
+
+    const ITEM: &str = "t-abcd2345";
+    const SUBJECT: &str = "feat: add a";
+
+    /// A repository on `master` with the item in `TODO.md` and the checks
+    /// `ok` (an argv a shell would break: `$X;false` expanded and split),
+    /// `b` (b.txt exists) and `never`.
+    fn todo_repo(name: &str) -> Fixture {
+        let fixture = Fixture::new(name);
+        let repo = &fixture.repo;
+        git_in(repo, &["init", "-q", "-b", "master"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@example.com"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            git_in(repo, &["config", key, value]);
+        }
+        std::fs::write(
+            repo.join("TODO.md"),
+            format!("# TODO\n\n- [ ] The driven item [{ITEM}]\n"),
+        )
+        .unwrap();
+        std::fs::write(repo.join(".gitignore"), "/target\n").unwrap();
+        std::fs::create_dir_all(repo.join(".herdr")).unwrap();
+        std::fs::write(
+            repo.join(".herdr/checks.toml"),
+            "[checks]\n\
+             ok = [\"test\", \"$X;false\", \"=\", \"$X;false\"]\n\
+             b = [\"test\", \"-f\", \"b.txt\"]\n\
+             never = [\"false\"]\n\
+             [preflight]\nmin_free_gib = 0\n",
+        )
+        .unwrap();
+        git_in(repo, &["add", "."]);
+        git_in(repo, &["commit", "-q", "-m", "init"]);
+        fixture
+    }
+
+    fn params(fixture: &Fixture, task: &str, check: &str) -> TodoRunParams {
+        TodoRunParams {
+            cwd: fixture.repo.display().to_string(),
+            item: ITEM.into(),
+            task: task.into(),
+            message: SUBJECT.into(),
+            paths: vec!["*.txt".into()],
+            check: check.into(),
+            owner_pane_id: Some("p-coordinator".into()),
+            owner_session_id: None,
+            env: None,
+        }
+    }
+
+    fn wait(fixture: &Fixture, run_id: &str, after: Option<i64>) -> (TodoRunEvent, TodoRunInfo) {
+        let started = Instant::now();
+        fixture
+            .supervisor
+            .todo_wait(
+                &TodoWaitParams {
+                    run_id: run_id.to_owned(),
+                    after,
+                },
+                Duration::from_millis(100),
+                || {
+                    assert!(started.elapsed() < HANG_GUARD, "run {run_id} hung");
+                    true
+                },
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    fn resume(
+        fixture: &Fixture,
+        run_id: &str,
+        event: i64,
+        action: TodoAction,
+        task: Option<&str>,
+    ) -> Result<TodoRunInfo, WorkerError> {
+        fixture.supervisor.todo_resume(TodoResumeParams {
+            run_id: run_id.to_owned(),
+            action,
+            event,
+            task: task.map(str::to_owned),
+            request_id: None,
+            decision: None,
+            answers: Vec::new(),
+            message: None,
+        })
+    }
+
+    fn master_subjects(fixture: &Fixture) -> Vec<String> {
+        git_in(&fixture.repo, &["log", "--format=%s", "master"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn approve_to_done(fixture: &Fixture, run_id: &str) -> (TodoRunEvent, TodoRunInfo) {
+        let (review, _) = wait(fixture, run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        resume(fixture, run_id, review.event_id, TodoAction::Approve, None).unwrap();
+        wait(fixture, run_id, Some(review.event_id))
+    }
+
+    #[test]
+    fn a_run_goes_from_preflight_to_the_cherry_pick() {
+        let fixture = todo_repo("todo-full");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        assert!(run.run_id.starts_with("r-"), "{run:?}");
+        assert_eq!((run.attempt, run.step), (1, TodoStep::Start));
+        assert_eq!(run.branch.as_deref(), Some("todo/t-abcd2345-1"));
+
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review);
+        assert_eq!(review.actions, [TodoAction::Approve, TodoAction::Retry]);
+        assert_eq!(review.commits.len(), 1, "{review:#?}");
+        assert!(
+            review
+                .diff_stat
+                .as_deref()
+                .unwrap_or_default()
+                .contains("a.txt"),
+            "{review:#?}"
+        );
+        assert!(
+            review
+                .result_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("WORKER-DONE"),
+            "{review:#?}"
+        );
+        assert_eq!(
+            (waiting.status, waiting.step, waiting.pending_event),
+            (
+                TodoRunStatus::Waiting,
+                TodoStep::Review,
+                Some(review.event_id)
+            )
+        );
+        // The worker runs with the run's item, in the slot, on its branch.
+        let worker_id = waiting.worker_id.clone().unwrap();
+        let worker = fixture.supervisor.status(&worker_id).unwrap();
+        assert_eq!(worker.item.as_deref(), Some(ITEM));
+        assert!(
+            worker.cwd.ends_with("herdr-worktrees/worker"),
+            "{}",
+            worker.cwd
+        );
+        // The run handled the worker's events: its owner owes nothing.
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        assert!(done.actions.is_empty());
+        assert_eq!(
+            (finished.status, finished.step),
+            (TodoRunStatus::Done, TodoStep::Done)
+        );
+        let master = git_in(&fixture.repo, &["rev-parse", "master"]);
+        assert_eq!(finished.picked.as_deref(), Some(master.trim()));
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        assert!(fixture.repo.join("a.txt").is_file());
+        // The worker was stopped, by its owner: no obligation is left.
+        assert_eq!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+        // The verify ran the check as its argv: a shell would have failed it.
+        let verification = &fixture.herdr_events(&worker_id, "verification")[0];
+        assert_eq!(verification["verification"]["verdict"], "verified");
+
+        // Every step is an event of the run, intent before result.
+        let types: Vec<String> = fixture
+            .supervisor
+            .shared
+            .store
+            .as_ref()
+            .unwrap()
+            .run_event_types(&run.run_id)
+            .unwrap()
+            .into_iter()
+            .map(|(_, kind)| kind)
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "run_created",
+                "run_start_intent",
+                "run_started",
+                "run_event",
+                "run_resumed",
+                "run_stop_intent",
+                "run_stopped",
+                "run_verify_intent",
+                "run_verified",
+                "run_cherry_pick_intent",
+                "run_event",
+            ]
+        );
+        // A done run returns its last event to every wait.
+        let (again, _) = wait(&fixture, &run.run_id, Some(done.event_id));
+        assert_eq!(again.event_id, done.event_id);
+        assert_eq!(
+            fixture.supervisor.todo_runs(None).unwrap()[0].run_id,
+            run.run_id
+        );
+    }
+
+    #[test]
+    fn a_question_becomes_an_event_that_resume_answers_and_a_stale_event_is_refused() {
+        let fixture = todo_repo("todo-question");
+        let run = fixture
+            .supervisor
+            .todo_run(params(
+                &fixture,
+                &format!("perm-commit a.txt {SUBJECT}"),
+                "ok",
+            ))
+            .unwrap();
+        let (question, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(question.kind, TodoEventKind::Question, "{question:#?}");
+        assert_eq!(question.actions, [TodoAction::Answer]);
+        assert_eq!(question.questions.len(), 1);
+        assert_eq!(question.questions[0].tool_name, "WebFetch");
+        // Not an action of a question.
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            question.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                run_id: run.run_id.clone(),
+                action: TodoAction::Answer,
+                event: question.event_id,
+                task: None,
+                request_id: Some(question.questions[0].request_id.clone()),
+                decision: Some(WorkerDecision::Allow),
+                answers: Vec::new(),
+                message: None,
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, Some(question.event_id));
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // The answered question's event is stale now.
+        let stale = resume(
+            &fixture,
+            &run.run_id,
+            question.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code(), "todo_event_stale", "{stale}");
+        assert!(
+            stale.to_string().contains(&review.event_id.to_string()),
+            "{stale}"
+        );
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        // A resume of an ended run is stale too.
+        let ended = resume(
+            &fixture,
+            &run.run_id,
+            done.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(ended.code(), "todo_event_stale");
+        assert_eq!(
+            resume(&fixture, "r-nosuchid", 1, TodoAction::Approve, None)
+                .unwrap_err()
+                .code(),
+            "todo_run_not_found"
+        );
+    }
+
+    #[test]
+    fn a_failed_verify_asks_for_a_retry_and_the_retry_passes() {
+        let fixture = todo_repo("todo-retry");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "b"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
+        assert_eq!(failed.actions, [TodoAction::Retry]);
+        let verification = failed.verification.as_ref().unwrap();
+        assert_eq!(verification.verdict, WorkerVerdict::Failed);
+        assert!(verification
+            .checks
+            .iter()
+            .any(|check| check.check == "command" && check.outcome == WorkerCheckOutcome::Failed));
+        assert_eq!(waiting.step, TodoStep::Verify);
+        // A retry needs its task text.
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::Retry,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request");
+
+        let retried = resume(
+            &fixture,
+            &run.run_id,
+            failed.event_id,
+            TodoAction::Retry,
+            Some(&format!("commit b.txt {SUBJECT}")),
+        )
+        .unwrap();
+        assert_eq!(retried.step, TodoStep::Restart);
+        let (done, finished) = approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.attempt, 2);
+        assert_eq!(finished.branch.as_deref(), Some("todo/t-abcd2345-2"));
+        assert_eq!(finished.task, format!("commit b.txt {SUBJECT}"));
+        assert!(fixture.repo.join("b.txt").is_file());
+        assert!(!fixture.repo.join("a.txt").exists());
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+    }
+
+    #[test]
+    fn attempts_are_capped_then_the_run_is_blocked() {
+        let fixture = todo_repo("todo-capped");
+        let task = format!("commit a.txt {SUBJECT}");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "never"))
+            .unwrap();
+        let mut after = None;
+        for attempt in 1..=3 {
+            let (review, _) = wait(&fixture, &run.run_id, after);
+            assert_eq!(review.kind, TodoEventKind::Review, "{attempt}: {review:#?}");
+            resume(
+                &fixture,
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+                None,
+            )
+            .unwrap();
+            let (failed, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+            assert_eq!(failed.kind, TodoEventKind::VerifyFailed, "{failed:#?}");
+            assert_eq!(waiting.attempt, attempt);
+            resume(
+                &fixture,
+                &run.run_id,
+                failed.event_id,
+                TodoAction::Retry,
+                Some(&task),
+            )
+            .unwrap();
+            after = Some(failed.event_id);
+        }
+        let (blocked, run) = wait(&fixture, &run.run_id, after);
+        assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+        assert!(
+            blocked
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("3 attempts"),
+            "{blocked:#?}"
+        );
+        assert_eq!((run.status, run.attempt), (TodoRunStatus::Blocked, 3));
+        assert_eq!(master_subjects(&fixture), ["init"]);
+        // The repository is free for the next run.
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        assert!(store.active_run(&run.repo).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_run_cut_off_between_steps_resumes_at_its_step() {
+        let fixture = todo_repo("todo-crash");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        let worker_id = waiting.worker_id.clone().unwrap();
+        // The server ends after the approval is recorded, before the stop.
+        runs::crash_before(&run.repo, TodoStep::Stop);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (cut.status, cut.step),
+            (TodoRunStatus::Running, TodoStep::Stop)
+        );
+        assert_ne!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+
+        // The next start: the worker still runs, so it is stopped; then
+        // the server ends again before the pick, which a person (or the
+        // ended server) already made.
+        runs::crash_before(&run.repo, TodoStep::CherryPick);
+        fixture.supervisor.resume_runs();
+        runs::wait_crashed(&run.repo, HANG_GUARD);
+        assert_eq!(
+            fixture.supervisor.status(&worker_id).unwrap().state,
+            WorkerState::Exited
+        );
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(cut.step, TodoStep::CherryPick);
+        let branch = cut.branch.clone().unwrap();
+        git_in(&fixture.repo, &["cherry-pick", &branch]);
+
+        fixture.supervisor.resume_runs();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        // Not picked twice.
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        let master = git_in(&fixture.repo, &["rev-parse", "master"]);
+        assert_eq!(finished.picked.as_deref(), Some(master.trim()));
+    }
+
+    #[test]
+    fn preflight_refuses_what_a_run_cannot_do() {
+        let fixture = todo_repo("todo-preflight");
+        let task = format!("commit a.txt {SUBJECT}");
+        let refused = |params: TodoRunParams| {
+            let error = fixture.supervisor.todo_run(params).unwrap_err();
+            (error.code(), error.to_string())
+        };
+        let (code, message) = refused(TodoRunParams {
+            message: "Feat: Add a".into(),
+            ..params(&fixture, &task, "ok")
+        });
+        assert_eq!(code, "todo_preflight_failed", "{message}");
+        let (code, message) = refused(TodoRunParams {
+            item: "t-zzzzzzzz".into(),
+            ..params(&fixture, &task, "ok")
+        });
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(message.contains("TODO.md"), "{message}");
+        let (code, message) = refused(params(&fixture, &task, "nosuch"));
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(message.contains("b, never, ok"), "{message}");
+        let (code, _) = refused(TodoRunParams {
+            paths: vec!["/abs".into()],
+            ..params(&fixture, &task, "ok")
+        });
+        assert_eq!(code, "todo_preflight_failed");
+        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+
+        // One run in progress per repository.
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap();
+        let (code, message) = refused(params(&fixture, &task, "ok"));
+        assert_eq!(code, "todo_run_active");
+        assert!(message.contains(&run.run_id), "{message}");
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review);
+    }
 }

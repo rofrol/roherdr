@@ -31,6 +31,11 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
+            | Method::TodoRun(_)
+            | Method::TodoResume(_)
+            | Method::TodoWait(_)
+            | Method::TodoStatus(_)
+            | Method::TodoRuns(_)
     )
 }
 
@@ -90,6 +95,15 @@ pub(super) fn handle_worker_request(
             let drain = supervisor.wait_drained(&params, CONNECTION_POLL_INTERVAL, keep_waiting)?;
             Ok::<_, WorkerError>(ResponseResult::WorkerDrain { drain })
         }
+        Method::TodoWait(params) => {
+            // As above: the run's events end the wait.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            match supervisor.todo_wait(&params, CONNECTION_POLL_INTERVAL, keep_waiting) {
+                Ok(None) => return None,
+                Ok(Some((event, run))) => Ok(ResponseResult::TodoRunEvent { event, run }),
+                Err(error) => Err(error),
+            }
+        }
         method => handle_immediate(supervisor, method),
     };
     Some(encode(request_id, result))
@@ -126,6 +140,26 @@ fn handle_immediate(
         Method::WorkerVerify(params) => {
             return Ok(ResponseResult::WorkerVerification {
                 verification: supervisor.verify(&params)?,
+            })
+        }
+        Method::TodoRun(params) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_run(params)?,
+            })
+        }
+        Method::TodoResume(params) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_resume(params)?,
+            })
+        }
+        Method::TodoStatus(target) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_status(&target.run_id)?,
+            })
+        }
+        Method::TodoRuns(params) => {
+            return Ok(ResponseResult::TodoRuns {
+                runs: supervisor.todo_runs(params.repo.as_deref())?,
             })
         }
         Method::WorkerDrain(params) => {

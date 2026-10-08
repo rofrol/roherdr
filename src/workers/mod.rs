@@ -31,6 +31,7 @@ pub(crate) mod coordinators;
 mod install_script_tests;
 mod log;
 mod policy;
+mod runs;
 mod slot;
 mod store;
 #[cfg(test)]
@@ -42,6 +43,7 @@ pub(crate) use coordinators::coordinators;
 #[cfg(test)]
 pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use log::log_lines;
+pub(crate) use runs::resume_runs_at_start;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -250,6 +252,14 @@ pub(crate) enum WorkerError {
     /// The worker's output since a server restart is not proven complete
     /// ([`Status::continuity_gap`]); the message names the gap.
     ContinuityGap(String),
+    /// No `todo.run` run has that id.
+    RunNotFound(String),
+    /// A `todo.resume` named an event that is not the run's pending one.
+    EventStale(String),
+    /// The repository already has a run in progress; the message names it.
+    RunActive(String),
+    /// A `todo.run`'s preflight refused it; the message says which check.
+    Preflight(String),
     Io(std::io::Error),
 }
 
@@ -271,6 +281,10 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "coordinator_not_found",
     "workers_draining",
     "worker_continuity_gap",
+    "todo_run_not_found",
+    "todo_event_stale",
+    "todo_run_active",
+    "todo_preflight_failed",
 ];
 
 impl WorkerError {
@@ -293,6 +307,10 @@ impl WorkerError {
             Self::CoordinatorNotFound(_) => "coordinator_not_found",
             Self::Draining(_) => "workers_draining",
             Self::ContinuityGap(_) => "worker_continuity_gap",
+            Self::RunNotFound(_) => "todo_run_not_found",
+            Self::EventStale(_) => "todo_event_stale",
+            Self::RunActive(_) => "todo_run_active",
+            Self::Preflight(_) => "todo_preflight_failed",
         }
     }
 
@@ -325,7 +343,11 @@ impl std::fmt::Display for WorkerError {
             | Self::CoordinatorActive(message)
             | Self::CoordinatorNotFound(message)
             | Self::Draining(message)
-            | Self::ContinuityGap(message) => f.write_str(message),
+            | Self::ContinuityGap(message)
+            | Self::RunNotFound(message)
+            | Self::EventStale(message)
+            | Self::RunActive(message)
+            | Self::Preflight(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -4064,6 +4086,19 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerVerifyParams,
     ) -> Result<WorkerVerification, WorkerError> {
+        self.verify_with(
+            params,
+            params.command.as_deref().map(verify::CheckCommand::Shell),
+        )
+    }
+
+    /// [`Self::verify`] with the command check given apart: `params.command`
+    /// is not read.
+    fn verify_with(
+        &self,
+        params: &WorkerVerifyParams,
+        command: Option<verify::CheckCommand<'_>>,
+    ) -> Result<WorkerVerification, WorkerError> {
         let (number, status) = {
             let registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, &params.worker_id)?;
@@ -4099,7 +4134,7 @@ impl WorkerSupervisor {
                 base: &params.base,
                 expected_message: &params.expected_message,
                 allowed_paths: &params.allowed_paths,
-                command: params.command.as_deref(),
+                command,
                 generated: &params.generated,
                 env: params.env.as_ref(),
                 processes,

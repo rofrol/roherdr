@@ -12,6 +12,7 @@ pub mod response;
 pub mod server;
 pub mod session;
 pub mod tabs;
+pub mod todo;
 pub mod usage;
 pub mod workers;
 pub mod workspaces;
@@ -29,6 +30,7 @@ pub use response::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
+pub use todo::*;
 pub use usage::*;
 pub use workers::*;
 pub use workspaces::*;
@@ -124,6 +126,20 @@ pub enum Method {
     /// frozen for clients.
     #[serde(rename = "worker.force_take_over")]
     WorkerForceTakeOver(WorkerTarget),
+    /// Drives a TODO item from preflight to a cherry-pick onto `master`.
+    #[serde(rename = "todo.run")]
+    TodoRun(TodoRunParams),
+    /// Answers a run's pending event: approve, retry or answer.
+    #[serde(rename = "todo.resume")]
+    TodoResume(TodoResumeParams),
+    /// Blocks until the run has an event after `after` that needs the
+    /// coordinator, or it ended.
+    #[serde(rename = "todo.wait")]
+    TodoWait(TodoWaitParams),
+    #[serde(rename = "todo.status")]
+    TodoStatus(TodoRunTarget),
+    #[serde(rename = "todo.runs")]
+    TodoRuns(TodoRunsParams),
     /// Claims a repository's coordination for a pane: a tenure, refused
     /// while another one of the repository is active.
     #[serde(rename = "coordinator.start")]

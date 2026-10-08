@@ -533,6 +533,21 @@ fails there until that script takes a `$TMPDIR` template (2026-10-08: with
 that one line changed, a cold build plus the policy tests took 134 s and a
 warm one 27 s, no questions).
 
+A coordinator drives a TODO item with `herdr todo run <item-id> --task
+<file> --message "<the exact approved subject>" --paths <globs> --check
+<name>` instead of chaining these commands by hand: herdr preflights it,
+starts the worker in the folder slot (branch `todo/<item>-<attempt>`),
+answers nothing outside the worker policy itself, and records each step,
+so a restart resumes the run. The coordinator then loops on `herdr todo
+wait <run> --after <event_id>` and answers each event with `herdr todo
+resume <run> --event <event_id> --action answer|approve|retry` (`retry`
+with `--task <file>`, at most 3 attempts); the run stops the worker,
+verifies with the check and cherry-picks onto `master` itself, and ends
+`done` or `blocked`. Checks are registered as argv in `.herdr/checks.toml`
+(`--check` names one; never a shell string). This first slice stops at
+the cherry-pick: `just check`, the install, the TODO update and the push
+stay with the coordinator.
+
 ### Client requests in the background
 
 A client shell sends endpoint methods through one command lane per

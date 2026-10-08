@@ -44,6 +44,7 @@ pub(super) fn command() -> Command {
         .subcommand(agent_command())
         .subcommand(worker_command())
         .subcommand(coordinator_command())
+        .subcommand(todo_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -413,6 +414,45 @@ fn coordinator_command() -> Command {
         .subcommand(
             Command::new("status")
                 .about("List the active coordination tenures")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
+}
+
+fn todo_command() -> Command {
+    Command::new("todo")
+        .about("Drive a TODO item from preflight to a cherry-pick onto master")
+        .subcommand(
+            id_command(
+                "run",
+                "item_id",
+                "Preflight, then start a worker in the folder slot on the item",
+            )
+            .arg(option("task", "FILE").value_hint(ValueHint::FilePath))
+            .arg(option("message", "SUBJECT"))
+            .arg(option("paths", "GLOB").num_args(1..))
+            .arg(option("check", "NAME")),
+        )
+        .subcommand(
+            id_command(
+                "wait",
+                "run_id",
+                "Block until the run waits on a new event or has ended",
+            )
+            .arg(option("after", "EVENT_ID")),
+        )
+        .subcommand(
+            id_command("resume", "run_id", "Answer the run's pending event")
+                .arg(option("event", "EVENT_ID"))
+                .arg(option("action", "ACTION").value_parser(["approve", "retry", "answer"]))
+                .arg(option("task", "FILE").value_hint(ValueHint::FilePath))
+                .arg(option("request", "REQUEST_ID"))
+                .arg(option("message", "TEXT"))
+                .arg(Arg::new("answer").value_name("ANSWER").num_args(0..)),
+        )
+        .subcommand(id_command("status", "run_id", "Show a run"))
+        .subcommand(
+            Command::new("runs")
+                .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
         )
 }

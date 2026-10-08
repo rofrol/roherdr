@@ -425,6 +425,9 @@ impl HeadlessServer {
         }));
         // Workers a previous server ran through brokers are re-attached.
         crate::workers::resume_brokered_at_start();
+        // `herdr todo run` runs a previous server left in progress go on
+        // from their step.
+        crate::workers::resume_runs_at_start();
         // What a previous server saw of the workers' owners is gone.
         self.app.reevaluate_worker_owners_at_start();
         // The coordinator role follows the tenures still active.
