@@ -2,8 +2,13 @@
 //! (`pane.report_turn`), so a caller can wait for the turn its prompt started instead of
 //! whichever turn ends next. Only an agent whose integration reports turns is followed; the
 //! screen never decides that a turn started or ended. A turn ends with the agent's report
-//! (finished or failed), with the next turn starting before that report (interrupted: Claude
-//! reports no `Stop` for a turn the user ends with Esc), or with the agent's process (exited).
+//! (finished or failed), with the agent's process (exited), or with the next turn starting before
+//! that report. That last case is `interrupted` only on an explicit signal: herdr sent the agent
+//! an interrupt key (Esc, Ctrl-C) while the turn worked, or the agent reported the end as
+//! interrupted. Claude reports no `Stop` for a turn the user ends with Esc, but it also starts a
+//! turn of its own for a queued message, so without a signal the outcome is `unknown`. A turn
+//! the integration marks as a continuation (a background task's notification inside the
+//! prompt's work) ends nothing: the prompt's turn ends at the end report that follows.
 
 use std::collections::VecDeque;
 
@@ -20,8 +25,12 @@ pub enum PromptTurnState {
     Finished,
     /// That turn ended on an error the agent reported (Claude's `StopFailure`).
     Failed,
-    /// Another turn started before this one reported its end: the user interrupted it.
+    /// The turn was interrupted: herdr sent an interrupt key while it worked and another turn
+    /// started, or the agent reported its end as interrupted.
     Interrupted,
+    /// Another turn started before this one reported its end, with no signal saying why: the
+    /// user may have interrupted it, or the agent took a queued message into its work.
+    Unknown,
     /// The agent's process ended, or another agent took over its reports, before the turn ended.
     Exited,
 }
@@ -40,6 +49,8 @@ struct PromptRequest {
     state: PromptTurnState,
     /// The error a failed turn ended on.
     error: Option<String>,
+    /// Herdr sent the agent an interrupt key while this request's turn worked.
+    interrupt_sent: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,15 +90,30 @@ impl PromptTurns {
             text: normalize(text),
             state: PromptTurnState::Accepted,
             error: None,
+            interrupt_sent: false,
         });
     }
 
-    /// A turn started with `prompt`: a request still working ended without its report, so it
-    /// was interrupted, and the oldest accepted request whose text `prompt` carries is now
-    /// working. A turn started by anything else (the user typing) starts no request. Returns
-    /// whether a request changed.
-    pub fn turn_started(&mut self, prompt: Option<&str>) -> bool {
-        let interrupted = self.end_open(&[PromptTurnState::Working], PromptTurnState::Interrupted);
+    /// A turn started with `prompt`. A `continuation` (a background task's notification) goes on
+    /// with the working request's work and changes nothing. Otherwise a request still working
+    /// ended without its report: interrupted when herdr sent it an interrupt key, else unknown.
+    /// The oldest accepted request whose text `prompt` carries is now working; a turn started
+    /// by anything else (the user typing) starts no request. Returns whether a request changed.
+    pub fn turn_started(&mut self, prompt: Option<&str>, continuation: bool) -> bool {
+        if continuation {
+            return false;
+        }
+        let mut interrupted = false;
+        for request in &mut self.requests {
+            if request.state == PromptTurnState::Working {
+                request.state = if request.interrupt_sent {
+                    PromptTurnState::Interrupted
+                } else {
+                    PromptTurnState::Unknown
+                };
+                interrupted = true;
+            }
+        }
         let Some(prompt) = prompt.map(normalize).filter(|prompt| !prompt.is_empty()) else {
             return interrupted;
         };
@@ -103,14 +129,17 @@ impl PromptTurns {
     }
 
     /// The turn ended, on `error` when the agent reported one: every working request is
-    /// finished or failed. A turn that was already running when a prompt was typed has no
-    /// working request of that prompt, so it finishes nothing new.
-    pub fn turn_finished(&mut self, error: Option<&str>) -> bool {
+    /// finished, failed, or interrupted when the agent `interrupted` says so. A turn that was
+    /// already running when a prompt was typed has no working request of that prompt, so it
+    /// finishes nothing new.
+    pub fn turn_finished(&mut self, error: Option<&str>, interrupted: bool) -> bool {
         let error = error.map(str::trim).filter(|error| !error.is_empty());
         let mut changed = false;
         for request in &mut self.requests {
             if request.state == PromptTurnState::Working {
-                request.state = if error.is_some() {
+                request.state = if interrupted {
+                    PromptTurnState::Interrupted
+                } else if error.is_some() {
                     PromptTurnState::Failed
                 } else {
                     PromptTurnState::Finished
@@ -120,6 +149,16 @@ impl PromptTurns {
             }
         }
         changed
+    }
+
+    /// Herdr sent the agent an interrupt key: a working request whose turn the next turn's
+    /// start cuts off was interrupted. Its state stays `working` until then.
+    pub fn interrupt_sent(&mut self) {
+        for request in &mut self.requests {
+            if request.state == PromptTurnState::Working {
+                request.interrupt_sent = true;
+            }
+        }
     }
 
     /// The agent's process ended: its accepted and working requests will never finish.
@@ -187,9 +226,9 @@ mod tests {
         let mut turns = following("claude");
         turns.accept("p1".into(), "fix the test\r\n");
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Accepted));
-        assert!(turns.turn_started(Some("  fix the\ntest")));
+        assert!(turns.turn_started(Some("  fix the\ntest"), false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Working));
-        assert!(turns.turn_finished(None));
+        assert!(turns.turn_finished(None, false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
     }
 
@@ -197,13 +236,13 @@ mod tests {
     fn a_turn_running_before_the_prompt_does_not_finish_it() {
         let mut turns = following("claude");
         // The user's own turn is running when herdr types the prompt.
-        assert!(!turns.turn_started(Some("something the user typed")));
+        assert!(!turns.turn_started(Some("something the user typed"), false));
         turns.accept("p1".into(), "review the diff");
-        assert!(!turns.turn_finished(None));
+        assert!(!turns.turn_finished(None, false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Accepted));
         // The queued prompt runs next.
-        assert!(turns.turn_started(Some("review the diff")));
-        assert!(turns.turn_finished(None));
+        assert!(turns.turn_started(Some("review the diff"), false));
+        assert!(turns.turn_finished(None, false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
     }
 
@@ -211,8 +250,8 @@ mod tests {
     fn a_turn_started_by_other_text_leaves_the_request_accepted() {
         let mut turns = following("pi");
         turns.accept("p1".into(), "run the tests");
-        assert!(!turns.turn_started(Some("hello")));
-        assert!(!turns.turn_started(None));
+        assert!(!turns.turn_started(Some("hello"), false));
+        assert!(!turns.turn_started(None, false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Accepted));
     }
 
@@ -221,7 +260,7 @@ mod tests {
         let mut turns = following("claude");
         turns.accept("p1".into(), "same");
         turns.accept("p2".into(), "same");
-        assert!(turns.turn_started(Some("same")));
+        assert!(turns.turn_started(Some("same"), false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Working));
         assert_eq!(turns.state_of("p2"), Some(PromptTurnState::Accepted));
     }
@@ -240,33 +279,101 @@ mod tests {
     fn a_turn_ending_on_an_error_fails_the_request_with_it() {
         let mut turns = following("claude");
         turns.accept("p1".into(), "x");
-        turns.turn_started(Some("x"));
-        assert!(turns.turn_finished(Some(" server_error: overloaded ")));
+        turns.turn_started(Some("x"), false);
+        assert!(turns.turn_finished(Some(" server_error: overloaded "), false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Failed));
         assert_eq!(turns.error_of("p1"), Some("server_error: overloaded"));
     }
 
     #[test]
-    fn a_turn_starting_before_the_last_one_ended_interrupts_it() {
+    fn a_turn_starting_before_the_last_one_ended_without_a_signal_is_unknown() {
         let mut turns = following("claude");
         turns.accept("p1".into(), "x");
-        turns.turn_started(Some("x"));
-        // The user pressed Esc (no `Stop`) and typed something else.
-        assert!(turns.turn_started(Some("never mind")));
-        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Interrupted));
+        turns.turn_started(Some("x"), false);
+        // Either the user pressed Esc (no `Stop`) and typed something else, or Claude took a
+        // queued message into its work: nothing tells which.
+        assert!(turns.turn_started(Some("never mind"), false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Unknown));
         // The late end of another turn does not change it.
-        assert!(!turns.turn_finished(None));
+        assert!(!turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Unknown));
+    }
+
+    #[test]
+    fn a_turn_starting_after_an_interrupt_key_interrupts_the_last_one() {
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "x");
+        turns.turn_started(Some("x"), false);
+        // Herdr sent Esc: the turn ends without its `Stop`, and the next prompt starts a turn.
+        turns.interrupt_sent();
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Working));
+        assert!(turns.turn_started(Some("never mind"), false));
         assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Interrupted));
+    }
+
+    #[test]
+    fn an_interrupt_key_the_agent_ignored_still_finishes_at_its_end_report() {
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "x");
+        turns.turn_started(Some("x"), false);
+        turns.interrupt_sent();
+        assert!(turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
+    }
+
+    #[test]
+    fn an_interrupt_key_before_the_turn_started_does_not_mark_it() {
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "x");
+        turns.interrupt_sent();
+        turns.turn_started(Some("x"), false);
+        assert!(turns.turn_started(Some("next"), false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Unknown));
+    }
+
+    #[test]
+    fn the_agent_reporting_an_interrupted_end_interrupts_the_request() {
+        let mut turns = following("pi");
+        turns.accept("p1".into(), "x");
+        turns.turn_started(Some("x"), false);
+        assert!(turns.turn_finished(None, true));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Interrupted));
+    }
+
+    #[test]
+    fn a_background_task_notification_turn_continues_the_prompts_work() {
+        // The reported bug: Claude starts a turn for a background task's notification while
+        // the prompt's turn works, and the prompt's work ends at the `Stop` that follows.
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "run the build in the background and report");
+        assert!(turns.turn_started(Some("run the build in the background and report"), false));
+        let notification = "<task-notification><tool-use-id>toolu_1</tool-use-id>\
+                            <status>completed</status></task-notification>";
+        assert!(!turns.turn_started(Some(notification), true));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Working));
+        assert!(turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
+    }
+
+    #[test]
+    fn a_notification_turn_after_the_end_changes_nothing() {
+        let mut turns = following("claude");
+        turns.accept("p1".into(), "x");
+        turns.turn_started(Some("x"), false);
+        turns.turn_finished(None, false);
+        assert!(!turns.turn_started(Some("<task-notification>"), true));
+        assert!(!turns.turn_finished(None, false));
+        assert_eq!(turns.state_of("p1"), Some(PromptTurnState::Finished));
     }
 
     #[test]
     fn the_agent_exiting_ends_accepted_and_working_requests() {
         let mut turns = following("claude");
         turns.accept("done".into(), "a");
-        turns.turn_started(Some("a"));
-        turns.turn_finished(None);
+        turns.turn_started(Some("a"), false);
+        turns.turn_finished(None, false);
         turns.accept("working".into(), "b");
-        turns.turn_started(Some("b"));
+        turns.turn_started(Some("b"), false);
         turns.accept("accepted".into(), "c");
         assert!(turns.agent_exited());
         assert_eq!(turns.state_of("done"), Some(PromptTurnState::Finished));
@@ -279,8 +386,8 @@ mod tests {
     fn the_oldest_finished_request_goes_first_when_full() {
         let mut turns = following("claude");
         turns.accept("first".into(), "a");
-        turns.turn_started(Some("a"));
-        turns.turn_finished(None);
+        turns.turn_started(Some("a"), false);
+        turns.turn_finished(None, false);
         for index in 0..MAX_REQUESTS {
             turns.accept(format!("p{index}"), "b");
         }

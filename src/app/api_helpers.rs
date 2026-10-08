@@ -14,6 +14,18 @@ fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     Some(crossterm::event::KeyEvent::new(code, modifiers))
 }
 
+/// Esc or Ctrl-C: a key that interrupts an agent's running turn.
+pub(super) fn is_interrupt_api_key(key: &str) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    parse_api_key(key).is_some_and(|event| match event.code {
+        KeyCode::Esc => event.modifiers.is_empty(),
+        KeyCode::Char(c) => {
+            c.eq_ignore_ascii_case(&'c') && event.modifiers == KeyModifiers::CONTROL
+        }
+        _ => false,
+    })
+}
+
 fn normalize_api_key_alias(key: &str) -> &str {
     match key {
         "C-c" | "c-c" => "ctrl+c",
@@ -400,5 +412,20 @@ mod one_short_line_tests {
         );
         // No space before the ellipsis.
         assert_eq!(one_short_line("ab cd", 4).as_deref(), Some("ab…"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupt_keys_are_esc_and_ctrl_c() {
+        for key in ["escape", "esc", "ctrl+c", "C-c"] {
+            assert!(is_interrupt_api_key(key), "{key}");
+        }
+        for key in ["enter", "c", "ctrl+d", "shift+escape", "not-a-key"] {
+            assert!(!is_interrupt_api_key(key), "{key}");
+        }
     }
 }

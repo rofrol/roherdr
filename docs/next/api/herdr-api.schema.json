@@ -3634,12 +3634,20 @@
             "agent": {
               "type": "string"
             },
+            "continuation": {
+              "description": "With `started`: the turn continues the running prompt's work (a background task's\nnotification) instead of starting a new prompt, so it ends no prompt's turn.",
+              "type": "boolean"
+            },
             "error": {
               "description": "With `finished`: the turn ended on this error (Claude's `StopFailure`), so the prompts\nit ran end as failed.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "interrupted": {
+              "description": "With `finished`: the turn was interrupted, so the prompts it ran end as interrupted.",
+              "type": "boolean"
             },
             "pane_id": {
               "type": "string"
@@ -9028,12 +9036,6 @@
         "AgentPromptRequestState": {
           "oneOf": [
             {
-              "enum": [
-                "unknown"
-              ],
-              "type": "string"
-            },
-            {
               "const": "accepted",
               "description": "Typed into the agent; the turn it starts has not been reported yet.",
               "type": "string"
@@ -9060,12 +9062,17 @@
             },
             {
               "const": "interrupted",
-              "description": "Another turn started before this one reported its end.",
+              "description": "The turn was interrupted: herdr sent an interrupt key while it worked, or the agent\nreported its end as interrupted.",
               "type": "string"
             },
             {
               "const": "exited",
               "description": "The agent's process ended before the turn did.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Another turn started before this one reported its end, with no signal saying why; also\nany state this client does not know.",
               "type": "string"
             }
           ]
@@ -9114,12 +9121,6 @@
           "description": "How the turn of a followed prompt ended.",
           "oneOf": [
             {
-              "enum": [
-                "unknown"
-              ],
-              "type": "string"
-            },
-            {
               "const": "finished",
               "description": "The agent reported the turn's end (Claude's `Stop`).",
               "type": "string"
@@ -9131,7 +9132,7 @@
             },
             {
               "const": "interrupted",
-              "description": "Another turn started before this one reported its end: the user interrupted it\n(Claude reports no `Stop` for a turn ended with Esc).",
+              "description": "The turn was interrupted: herdr sent the agent an interrupt key (Esc, Ctrl-C) while it\nworked and another turn started before its end report, or the agent reported its end\nas interrupted.",
               "type": "string"
             },
             {
@@ -9142,6 +9143,11 @@
             {
               "const": "unknown_request",
               "description": "Herdr does not follow this request: it never did, it was dropped as the oldest, or the\nserver restarted and lost it. Its turn's outcome is not known.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Another turn started before this one reported its end, with no signal saying why: the\nuser may have interrupted it (Claude reports no `Stop` for a turn ended with Esc), or\nthe agent took a queued message into its work. Also any reason this client does not\nknow.",
               "type": "string"
             }
           ]

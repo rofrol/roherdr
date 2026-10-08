@@ -4881,11 +4881,11 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
 }
 
 /// A herdr socket for the Claude stop check: answers `pane.get` and `tab.get` with a tab of
-/// `role`, `{}` to anything else, and records each method until a `quit` request.
+/// `role`, `{}` to anything else, and records each request until a `quit` request.
 #[cfg(unix)]
 struct StopCheckServer {
     path: PathBuf,
-    methods: std::thread::JoinHandle<Vec<String>>,
+    requests: std::thread::JoinHandle<Vec<Value>>,
 }
 
 #[cfg(unix)]
@@ -4901,8 +4901,8 @@ impl StopCheckServer {
         ));
         let _ = fs::remove_file(&path);
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let methods = std::thread::spawn(move || {
-            let mut methods = Vec::new();
+        let requests = std::thread::spawn(move || {
+            let mut requests = Vec::new();
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let mut line = String::new();
@@ -4912,7 +4912,7 @@ impl StopCheckServer {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let method = request["method"].as_str().unwrap_or_default().to_owned();
                 if method == "quit" {
-                    return methods;
+                    return requests;
                 }
                 let result = match method.as_str() {
                     "pane.get" => json!({"type": "pane_info", "pane": {"tab_id": "w1:t1"}}),
@@ -4923,21 +4923,29 @@ impl StopCheckServer {
                 };
                 let reply = json!({"id": request["id"], "result": result});
                 let _ = writeln!(stream, "{reply}");
-                methods.push(method);
+                requests.push(request);
             }
-            methods
+            requests
         });
-        Self { path, methods }
+        Self { path, requests }
+    }
+
+    /// The requests it was sent, once the hook has exited.
+    fn requests(self) -> Vec<Value> {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.path).unwrap();
+        writeln!(stream, "{}", json!({"id": "q", "method": "quit"})).unwrap();
+        let requests = self.requests.join().unwrap();
+        let _ = fs::remove_file(&self.path);
+        requests
     }
 
     /// The methods it was asked, once the hook has exited.
     fn methods(self) -> Vec<String> {
-        use std::io::Write;
-        let mut stream = std::os::unix::net::UnixStream::connect(&self.path).unwrap();
-        writeln!(stream, "{}", json!({"id": "q", "method": "quit"})).unwrap();
-        let methods = self.methods.join().unwrap();
-        let _ = fs::remove_file(&self.path);
-        methods
+        self.requests()
+            .iter()
+            .map(|request| request["method"].as_str().unwrap_or_default().to_owned())
+            .collect()
     }
 }
 
@@ -5136,4 +5144,60 @@ fn claude_stop_check_asks_about_workers_only_in_a_coordinator_that_ran_them() {
     );
     assert_eq!((stdout.trim(), args.as_str()), ("", ""));
     assert_eq!(methods, ["pane.report_turn"]);
+}
+
+/// The `pane.report_turn` params the Claude hook's `reminder` sends for a `UserPromptSubmit`
+/// with `prompt`.
+#[cfg(unix)]
+fn reported_turn_start(prompt: &str) -> Value {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let server = StopCheckServer::start("worker");
+    let mut child = Command::new("sh")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/integration/assets/claude/herdr-agent-state.sh"),
+        )
+        .arg("reminder")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "p1")
+        .env("HERDR_SOCKET_PATH", &server.path)
+        .env_remove("CURSOR_VERSION")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": prompt});
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.requests();
+    let [request] = requests.as_slice() else {
+        panic!("expected one request: {requests:?}");
+    };
+    assert_eq!(request["method"], "pane.report_turn");
+    request["params"].clone()
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_reports_a_background_task_notification_as_a_continuation() {
+    let params = reported_turn_start("review the diff");
+    assert_eq!(params["phase"], "started");
+    assert_eq!(params["prompt"], "review the diff");
+    assert!(params.get("continuation").is_none(), "{params}");
+
+    let params = reported_turn_start(
+        "<task-notification>\n<tool-use-id>toolu_1</tool-use-id>\n\
+         <status>completed</status>\n</task-notification>",
+    );
+    assert_eq!(params["phase"], "started");
+    assert_eq!(params["continuation"], true);
 }

@@ -585,6 +585,7 @@ impl App {
                     PromptTurnState::Failed => AgentPromptRequestState::Failed,
                     PromptTurnState::Interrupted => AgentPromptRequestState::Interrupted,
                     PromptTurnState::Exited => AgentPromptRequestState::Exited,
+                    PromptTurnState::Unknown => AgentPromptRequestState::Unknown,
                 };
                 return encode_success(
                     id,
@@ -741,13 +742,14 @@ impl App {
             .workspaces
             .get(resolved.ws_idx)
             .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
+            .cloned()
         else {
             return agent_not_found(id, &params.target);
         };
         let Some(expected_agent) = self
             .state
             .terminals
-            .get(terminal_id)
+            .get(&terminal_id)
             .and_then(|terminal| terminal.effective_known_agent())
         else {
             return agent_not_ready(id, &params.target);
@@ -767,6 +769,17 @@ impl App {
         let bytes: Vec<u8> = encoded.into_iter().flatten().collect();
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "agent_send_keys_failed", err.to_string());
+        }
+        // An explicit interrupt: the working prompt's turn, cut off by the next turn's start,
+        // ends as interrupted rather than unknown.
+        if params
+            .keys
+            .iter()
+            .any(|key| super::super::api_helpers::is_interrupt_api_key(key))
+        {
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.prompt_turns.interrupt_sent();
+            }
         }
         self.clear_awaiting_reply_on_pane_input(resolved.ws_idx, resolved.pane_id);
 
@@ -1353,16 +1366,99 @@ mod tests {
         assert_eq!(request.error.as_deref(), Some("server_error: overloaded"));
     }
 
+    fn report_turn_with(app: &mut App, params: serde_json::Value) {
+        let response =
+            app.handle_pane_report_turn("turn".into(), serde_json::from_value(params).unwrap());
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&response).is_ok(),
+            "{response}"
+        );
+    }
+
     #[tokio::test]
-    async fn a_turn_the_user_interrupts_ends_when_the_next_one_starts() {
+    async fn a_turn_cut_off_by_the_next_one_without_a_signal_ends_as_unknown() {
         let mut app = app_with_agent();
         let (pane, _rx) = claude_with_runtime(&mut app);
         let request_id = working_prompt(&mut app, &pane);
+        // No `Stop`, then a new turn: an Esc or a queued message, nothing tells which.
+        report_turn(&mut app, &pane, "started", Some("do something else"));
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_herdr_interrupts_ends_as_interrupted_when_the_next_one_starts() {
+        let mut app = app_with_agent();
+        let (pane, mut rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        let sent = app.handle_agent_send_keys(
+            "keys".into(),
+            AgentSendKeysParams {
+                target: "reviewer".into(),
+                prefer_workspace_id: None,
+                keys: vec!["escape".into()],
+            },
+        );
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&sent).is_ok(),
+            "{sent}"
+        );
+        while rx.try_recv().is_ok() {}
         // Esc ends Claude's turn without a `Stop`; the next prompt starts a turn.
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Working
+        );
         report_turn(&mut app, &pane, "started", Some("do something else"));
         assert_eq!(
             prompt_state(&mut app, &request_id),
             AgentPromptRequestState::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_reported_as_interrupted_interrupts_the_prompt() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        report_turn_with(
+            &mut app,
+            serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished", "interrupted": true,
+            }),
+        );
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn a_background_task_notification_turn_finishes_with_the_prompts_stop() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let request_id = working_prompt(&mut app, &pane);
+        // A background task the prompt started completes: Claude submits its notification as
+        // a prompt while the prompt's work goes on, and its `Stop` comes later.
+        report_turn_with(
+            &mut app,
+            serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "started", "continuation": true,
+                "prompt": "<task-notification><tool-use-id>toolu_1</tool-use-id></task-notification>",
+            }),
+        );
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Working
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request_id),
+            AgentPromptRequestState::Finished
         );
     }
 

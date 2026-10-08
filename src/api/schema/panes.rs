@@ -415,6 +415,13 @@ pub struct PaneReportTurnParams {
     /// it ran end as failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// With `finished`: the turn was interrupted, so the prompts it ran end as interrupted.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub interrupted: bool,
+    /// With `started`: the turn continues the running prompt's work (a background task's
+    /// notification) instead of starting a new prompt, so it ends no prompt's turn.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub continuation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

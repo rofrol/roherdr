@@ -43,6 +43,10 @@ if phase == "started":
     if not isinstance(prompt, str):
         raise SystemExit(0)
     params["prompt"] = prompt
+    if prompt.lstrip().startswith("<task-notification>"):
+        # A background task's notification goes on with the running prompt's work: that
+        # prompt's turn ends at the `Stop` that follows, not here.
+        params["continuation"] = True
 elif hook_input.get("hook_event_name") == "StopFailure":
     # The turn ended on an error: its prompts end as failed, with the error.
     error = hook_input.get("error")
