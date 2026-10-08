@@ -1563,6 +1563,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   The per-coordinator inbox (planned) replaces the two-layer wait later;
   no `--then-wait` glue until then (MiMo, sol).
 
+- [ ] Compare the current headless worker implementation with T3 Code again,
+  with the models (user, 2026-10-08: "in spare time, maybe give the models
+  the current implementation to analyse again and let them compare it with
+  t3code"). A worker reads `src/workers/` (store, wait, receipts, outbox,
+  obligations, escalation, sandbox, folder slot, handoff) and
+  `vendor/t3code` (orchestration-v2, the Claude and Codex adapters),
+  briefs sol, MiMo and DeepSeek with code excerpts, verifies their claims
+  and writes a report (`docs/headless-workers-vs-t3code-<date>.md`): what
+  T3 does better, what we do better, gaps, and follow-up items in order.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
