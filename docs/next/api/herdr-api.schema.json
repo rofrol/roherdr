@@ -5678,6 +5678,16 @@
                 "null"
               ]
             },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment, which `command` and the `generated`\ncommands run with instead of the server's (`HERDR_*` variables are\ndropped). The CLI sends its own; absent, they run in the server's\nenvironment.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
             "expected_message": {
               "description": "The exact commit message: one subject line, no body or trailers.",
               "type": "string"

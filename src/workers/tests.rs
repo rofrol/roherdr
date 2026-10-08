@@ -4099,8 +4099,16 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
         base,
         expected_message: "feat: b".into(),
         allowed_paths: vec!["*.txt".into()],
-        command: Some("test \"$(cat a.txt)\" = b".into()),
+        // The caller's environment, not the server's, reaches the command.
+        command: Some("test \"$(cat a.txt)\" = \"$VERIFY_EXPECTED\"".into()),
         generated: Vec::new(),
+        env: Some(
+            [
+                ("PATH".to_owned(), std::env::var("PATH").unwrap_or_default()),
+                ("VERIFY_EXPECTED".to_owned(), "b".to_owned()),
+            ]
+            .into(),
+        ),
     };
 
     // While its process runs, the commit is not ready.
