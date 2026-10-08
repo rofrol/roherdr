@@ -122,6 +122,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
   prompts confirm that the agent accepted them`, installed). Left: the
   false `interrupted` above.
+  Fixed 2026-10-08 by headless worker `w21` (`fix: wait_turn reports
+  interrupted only on an explicit signal`): `interrupted` only from Esc or
+  Ctrl-C sent through `agent.send_keys` or the agent's own interrupted
+  report; a turn started by a background-task notification is a
+  continuation (the Claude hook marks it); ambiguous order gives `unknown`.
+  Left, decided by the coordinator: confirm live that Claude sends
+  `UserPromptSubmit` for a background-task notification mid-turn; the
+  user's own Esc in the pane now gives `unknown` (better than a false
+  `interrupted`); an explicit signal for it could come from the
+  transcript's `[Request interrupted by user` marker, verified live first.
 
 - [ ] Why the "added delay is a bug signal" rule did not hold (user,
   2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
