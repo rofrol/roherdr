@@ -92,8 +92,8 @@ pub struct TodoResumeParams {
 pub struct TodoWaitParams {
     pub run_id: String,
     /// The `event_id` the previous wait returned: only a later event
-    /// counts. A run that ended (`done`, `blocked`) returns its last event
-    /// however old.
+    /// counts. A run that ended (`done`, `blocked`, `aborted`) returns its
+    /// last event however old.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<i64>,
 }
@@ -130,8 +130,10 @@ pub enum TodoAction {
     SkipTodo,
     /// Push again (after `push_failed`), still only as a fast-forward.
     RetryPush,
-    /// End the run as blocked where it stands (after a failed install,
-    /// TODO edit or push); the commit stays on `master`.
+    /// End the run as `aborted` where it stands, from any event it waits
+    /// on or from `blocked`: its worker is stopped when it still runs, and
+    /// its branches and commits (also one already on `master`) stay as
+    /// they are.
     Abort,
     #[serde(other)]
     Unknown,
@@ -160,6 +162,9 @@ pub enum TodoStep {
     /// Deletes the run's branches that are fully merged.
     Cleanup,
     Done,
+    /// The coordinator aborted the run: its worker is stopped, then the
+    /// run ends `aborted`.
+    Abort,
     #[serde(other)]
     Unknown,
 }
@@ -172,11 +177,15 @@ pub enum TodoRunStatus {
     /// It waits for the coordinator's `todo.resume` to its pending event.
     Waiting,
     /// It stopped and needs a person: a refused preflight, a conflict, the
-    /// attempts used up. Nothing more happens.
+    /// attempts used up. Nothing more happens unless the coordinator
+    /// aborts it.
     Blocked,
     /// The commit is on `master`, installed, recorded and pushed (each as
     /// far as registered and approved), and the merged branches are gone.
     Done,
+    /// The coordinator aborted it; its worker exited, its branches and
+    /// commits are left as they were.
+    Aborted,
     #[serde(other)]
     Unknown,
 }
@@ -204,8 +213,11 @@ pub enum TodoEventKind {
     /// `master` could not be pushed as a fast-forward (or the push failed):
     /// retry it or abort. Never forced.
     PushFailed,
+    /// The run is blocked; it takes `abort`.
     Blocked,
     Done,
+    /// The run was aborted: why, its branches and its commits.
+    Aborted,
     #[serde(other)]
     Unknown,
 }
@@ -240,7 +252,7 @@ pub struct TodoRunInfo {
     /// The event waiting for `todo.resume`, while `waiting`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_event: Option<i64>,
-    /// Why it is blocked.
+    /// Why it is blocked or was aborted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// The commit the cherry-pick made on `master`.
@@ -288,7 +300,8 @@ pub struct TodoRunEvent {
     /// With `verify_failed`: the verdict and each check's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<WorkerVerification>,
-    /// With `blocked`: why; with `still_alive`: what is still running;
+    /// With `blocked` and `aborted`: why (`aborted` also names the run's
+    /// branches); with `still_alive`: what is still running;
     /// with `install_failed`, `todo_failed` and `push_failed`: what failed,
     /// with the output's last lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]

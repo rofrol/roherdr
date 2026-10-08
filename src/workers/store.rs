@@ -304,6 +304,49 @@ CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
 -- from before these steps.
 ALTER TABLE runs ADD COLUMN finish TEXT;
 "#,
+    r#"
+-- A run the coordinator aborted ends `aborted`. SQLite cannot change a
+-- CHECK constraint, so the table is rebuilt with the same columns. A run at
+-- its `abort` step (stopping its worker before it ends) no longer claims
+-- its repository: the folder slot's busy check keeps a new run out while
+-- that worker still runs.
+CREATE TABLE runs_new (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    step TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('running', 'waiting', 'blocked', 'done', 'aborted')),
+    attempt INTEGER NOT NULL,
+    base TEXT,
+    worker_id TEXT,
+    branch TEXT,
+    task TEXT NOT NULL,
+    message TEXT NOT NULL,
+    paths TEXT NOT NULL,
+    check_name TEXT NOT NULL,
+    check_argv TEXT NOT NULL,
+    owner_pane TEXT,
+    owner_session TEXT,
+    last_acked_seq INTEGER,
+    pending_event INTEGER,
+    error TEXT,
+    picked TEXT,
+    created_ms INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL,
+    finish TEXT
+);
+INSERT INTO runs_new (id, repo, item, step, status, attempt, base, worker_id, branch, task,
+    message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq,
+    pending_event, error, picked, created_ms, updated_ms, finish)
+    SELECT id, repo, item, step, status, attempt, base, worker_id, branch, task,
+    message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq,
+    pending_event, error, picked, created_ms, updated_ms, finish FROM runs ORDER BY rowid;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
+    WHERE status IN ('running', 'waiting') AND step != 'abort';
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1225,7 +1268,7 @@ impl Store {
             .query_row(
                 &format!(
                     "SELECT {RUN_COLUMNS} FROM runs \
-                     WHERE repo = ?1 AND status IN ('running', 'waiting')"
+                     WHERE repo = ?1 AND status IN ('running', 'waiting') AND step != 'abort'"
                 ),
                 [repo],
                 run_from_row,
@@ -1644,7 +1687,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 8
+                MIGRATIONS.len() - 9
             ))
             .unwrap();
         drop(store);

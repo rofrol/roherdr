@@ -255,7 +255,10 @@ impl Driving {
             }
             _ => {
                 driving.remove(&self.run_id);
+                drop(driving);
                 self.released = true;
+                #[cfg(test)]
+                claim_released();
                 true
             }
         }
@@ -266,7 +269,38 @@ impl Drop for Driving {
     fn drop(&mut self) {
         if !self.released {
             lock(&DRIVING).remove(&self.run_id);
+            #[cfg(test)]
+            claim_released();
         }
+    }
+}
+
+/// Test only: wakes [`wait_undriven`] when a driver lets go of its claim.
+#[cfg(test)]
+fn claim_released() {
+    *lock(&CHANGES.generation) += 1;
+    CHANGES.changed.notify_all();
+}
+
+/// Test only: blocks until no driver of this process claims the run, woken
+/// when one lets go. A driver that recorded the event a test waited for
+/// reads the run once more before it lets go; a test that resumes the run
+/// and plans a crash before that would have two drivers, and the one the
+/// crash missed drives on, which a real crash would have ended too.
+#[cfg(all(test, unix))]
+pub(super) fn wait_undriven(run_id: &str, hang_guard: Duration) {
+    let started = std::time::Instant::now();
+    let mut generation = lock(&CHANGES.generation);
+    while lock(&DRIVING).contains_key(run_id) {
+        assert!(
+            started.elapsed() < hang_guard,
+            "the driver of {run_id} hung"
+        );
+        generation = CHANGES
+            .changed
+            .wait_timeout(generation, Duration::from_millis(100))
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
     }
 }
 
@@ -579,13 +613,17 @@ fn step_name(step: TodoStep) -> String {
         .unwrap_or_default()
 }
 
-/// What `todo.resume` takes for an event of `kind` while it is pending.
+/// What `todo.resume` takes for an event of `kind` while it is pending (or,
+/// for `blocked`, while it is the blocked run's last event): every one of
+/// them also takes `abort`.
 fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
     match kind {
-        TodoEventKind::Question => vec![TodoAction::Answer],
-        TodoEventKind::Review => vec![TodoAction::Approve, TodoAction::Retry],
-        TodoEventKind::VerifyFailed => vec![TodoAction::Retry, TodoAction::Verify],
-        TodoEventKind::StillAlive => vec![TodoAction::ForceStop],
+        TodoEventKind::Question => vec![TodoAction::Answer, TodoAction::Abort],
+        TodoEventKind::Review => vec![TodoAction::Approve, TodoAction::Retry, TodoAction::Abort],
+        TodoEventKind::VerifyFailed => {
+            vec![TodoAction::Retry, TodoAction::Verify, TodoAction::Abort]
+        }
+        TodoEventKind::StillAlive => vec![TodoAction::ForceStop, TodoAction::Abort],
         TodoEventKind::InstallFailed => vec![
             TodoAction::RetryInstall,
             TodoAction::SkipInstall,
@@ -599,6 +637,7 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
             ]
         }
         TodoEventKind::PushFailed => vec![TodoAction::RetryPush, TodoAction::Abort],
+        TodoEventKind::Blocked => vec![TodoAction::Abort],
         _ => Vec::new(),
     }
 }
@@ -619,12 +658,16 @@ fn new_event(kind: TodoEventKind) -> TodoRunEvent {
 }
 
 /// A stored `run_event` as `todo.wait` returns it: its id, and its actions
-/// only while the run waits on it.
+/// only while the run waits on it, or while it is the `blocked` event of a
+/// run that is still blocked (the run's latest event, as every caller
+/// passes).
 fn event_of(seq: i64, body: &Value, run: &TodoRunInfo) -> TodoRunEvent {
     let mut event: TodoRunEvent = serde_json::from_value(body["event"].clone())
         .unwrap_or_else(|_| new_event(TodoEventKind::Unknown));
     event.event_id = seq;
-    event.actions = if run.status == TodoRunStatus::Waiting && run.pending_event == Some(seq) {
+    let open = (run.status == TodoRunStatus::Waiting && run.pending_event == Some(seq))
+        || (run.status == TodoRunStatus::Blocked && event.kind == TodoEventKind::Blocked);
+    event.actions = if open {
         actions_for(event.kind)
     } else {
         Vec::new()
@@ -954,7 +997,10 @@ impl WorkerSupervisor {
     /// exit.
     fn stopping(run: &Run) -> bool {
         run.info.status == TodoRunStatus::Running
-            && matches!(run.info.step, TodoStep::Stop | TodoStep::Restart)
+            && matches!(
+                run.info.step,
+                TodoStep::Stop | TodoStep::Restart | TodoStep::Abort
+            )
     }
 
     /// The runs, of the repository `repo` is in when given, oldest first.
@@ -989,7 +1035,7 @@ impl WorkerSupervisor {
             {
                 let ended = matches!(
                     run.info.status,
-                    TodoRunStatus::Done | TodoRunStatus::Blocked
+                    TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
                 );
                 let waits_on = run.info.status == TodoRunStatus::Waiting
                     && run.info.pending_event == Some(seq);
@@ -1015,35 +1061,53 @@ impl WorkerSupervisor {
     /// turn to the stop, verify and cherry-pick, `retry` starts the next
     /// attempt with new task text (after the third, the run is blocked once
     /// the worker stopped), `verify` runs the verify again, `force-stop`
-    /// SIGKILLs a worker still alive after its stop. An event that is not
-    /// the pending one is refused as stale. The environment it carries
-    /// replaces the one the run's checks run with; none leaves them none.
+    /// SIGKILLs a worker still alive after its stop, `abort` takes the run
+    /// to its abort step, which stops the worker and ends the run
+    /// `aborted`. An event that is not the pending one (for a blocked run:
+    /// its `blocked` event, which takes only `abort`) is refused as stale.
+    /// The environment it carries replaces the one the run's checks run
+    /// with; none leaves them none.
     pub(crate) fn todo_resume(&self, params: TodoResumeParams) -> Result<TodoRunInfo, WorkerError> {
         let run = self.load_run(&params.run_id)?;
+        let store = self.run_store()?;
+        let latest = store
+            .latest_run_event(&params.run_id)
+            .map_err(store_error)?;
+        // A blocked run gets no event after its `blocked` one: no driver
+        // writes it, so this stays its last event until an abort.
+        let blocked_event = latest.as_ref().map(|(seq, _)| *seq);
         let stale = |run: &Run| {
-            if run.info.status == TodoRunStatus::Waiting
-                && run.info.pending_event == Some(params.event)
-            {
+            let open = match run.info.status {
+                TodoRunStatus::Waiting => run.info.pending_event == Some(params.event),
+                TodoRunStatus::Blocked => blocked_event == Some(params.event),
+                _ => false,
+            };
+            if open {
                 return None;
             }
-            Some(WorkerError::EventStale(match run.info.pending_event {
-                Some(pending) if run.info.status == TodoRunStatus::Waiting => format!(
-                    "event {} is not the one run {} waits on ({pending})",
-                    params.event, run.info.run_id
-                ),
-                _ => format!(
-                    "run {} waits on no event; event {} is stale",
-                    run.info.run_id, params.event
-                ),
-            }))
+            Some(WorkerError::EventStale(
+                match (run.info.status, run.info.pending_event) {
+                    (TodoRunStatus::Waiting, Some(pending)) => format!(
+                        "event {} is not the one run {} waits on ({pending})",
+                        params.event, run.info.run_id
+                    ),
+                    (TodoRunStatus::Blocked, _) => format!(
+                        "event {} is not run {}'s blocked event ({})",
+                        params.event,
+                        run.info.run_id,
+                        blocked_event.map(|seq| seq.to_string()).unwrap_or_default()
+                    ),
+                    _ => format!(
+                        "run {} waits on no event; event {} is stale",
+                        run.info.run_id, params.event
+                    ),
+                },
+            ))
         };
         if let Some(error) = stale(&run) {
             return Err(error);
         }
-        let store = self.run_store()?;
-        let kind = store
-            .latest_run_event(&params.run_id)
-            .map_err(store_error)?
+        let kind = latest
             .filter(|(seq, _)| *seq == params.event)
             .map(|(seq, body)| event_of(seq, &body, &run.info).kind)
             .unwrap_or(TodoEventKind::Unknown);
@@ -1113,25 +1177,12 @@ impl WorkerSupervisor {
                 }
                 exhausted = run.info.attempt >= MAX_ATTEMPTS;
             }
+            // The kill follows the recorded resume: the driver waiting for
+            // the worker's exit goes on as soon as it dies, and its write
+            // would make this event stale before the resume is recorded.
             TodoAction::ForceStop => {
-                let worker_id = run
-                    .info
-                    .worker_id
-                    .clone()
-                    .ok_or_else(|| WorkerError::Invalid("the run has no worker".into()))?;
-                let kill = WorkerKillParams {
-                    worker_id,
-                    force: false,
-                    caller_pane_id: run.owner_pane.clone(),
-                    command_id: Some(format!("{}:{}:force-stop", run.info.run_id, params.event)),
-                };
-                match self.kill_command(&kill) {
-                    Ok(_) => {}
-                    // It exited meanwhile: nothing left to stop.
-                    Err(error @ (WorkerError::NeedsForce(_) | WorkerError::NotRunning(_))) => {
-                        note = Some(error.to_string());
-                    }
-                    Err(error) => return Err(error),
+                if run.info.worker_id.is_none() {
+                    return Err(WorkerError::Invalid("the run has no worker".into()));
                 }
             }
             TodoAction::Approve
@@ -1160,6 +1211,7 @@ impl WorkerSupervisor {
             "note": note,
             "todo_note": params.note,
             "close": params.close,
+            "message": (params.action == TodoAction::Abort).then_some(&params.message),
         });
         let outcome = store
             .transaction(|tx| {
@@ -1172,6 +1224,7 @@ impl WorkerSupervisor {
                 if let Some(error) = stale(&current) {
                     return Ok(Err(error));
                 }
+                let was_blocked = current.info.status == TodoRunStatus::Blocked;
                 current.info.status = TodoRunStatus::Running;
                 match params.action {
                     TodoAction::Answer => current.info.step = TodoStep::Attention,
@@ -1197,35 +1250,58 @@ impl WorkerSupervisor {
                             current.info.task = params.task.clone().unwrap_or_default();
                         }
                     }
-                    // The stop's wait goes on, at the run's step; an abort
-                    // ends the run below.
+                    // The driver's abort step stops the worker, then ends
+                    // the run. An abort at that step (of its `still_alive`
+                    // event) keeps the first reason.
+                    TodoAction::Abort if current.info.step != TodoStep::Abort => {
+                        let at = if was_blocked {
+                            format!("blocked at its {} step", step_name(current.info.step))
+                        } else {
+                            format!("at its {} step", step_name(current.info.step))
+                        };
+                        let reason = params
+                            .message
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|reason| !reason.is_empty())
+                            .map(|reason| format!(": {reason}"))
+                            .unwrap_or_default();
+                        current.info.error =
+                            Some(format!("the coordinator aborted the run {at}{reason}"));
+                        current.info.step = TodoStep::Abort;
+                    }
+                    // The stop's wait goes on, at the run's step.
                     TodoAction::ForceStop | TodoAction::Abort | TodoAction::Unknown => {}
                 }
                 tx.run_event(&mut current, &event, false, now_ms())?;
-                if params.action == TodoAction::Abort {
-                    let why = format!(
-                        "the coordinator aborted the run at its {} step",
-                        step_name(current.info.step)
-                    );
-                    current.info.status = TodoRunStatus::Blocked;
-                    current.info.error = Some(why.clone());
-                    let mut blocked = new_event(TodoEventKind::Blocked);
-                    blocked.error = Some(why);
-                    let body = json!({
-                        "type": "run_event",
-                        "kind": blocked.kind,
-                        "step": current.info.step,
-                        "status": current.info.status,
-                        "attempt": current.info.attempt,
-                        "event": blocked,
-                    });
-                    tx.run_event(&mut current, &body, false, now_ms())?;
-                }
                 Ok(Ok(current))
             })
             .map_err(store_error)?;
         let run = outcome?;
         announce();
+        if params.action == TodoAction::ForceStop {
+            if let Some(worker_id) = run.info.worker_id.clone() {
+                let kill = WorkerKillParams {
+                    worker_id,
+                    force: false,
+                    caller_pane_id: run.owner_pane.clone(),
+                    command_id: Some(format!("{}:{}:force-stop", run.info.run_id, params.event)),
+                };
+                match self.kill_command(&kill) {
+                    Ok(_) => {}
+                    // It exited meanwhile: nothing left to stop.
+                    Err(error @ (WorkerError::NeedsForce(_) | WorkerError::NotRunning(_))) => {
+                        self.run_note(
+                            &run.info.run_id,
+                            json!({"type": "run_force_stop", "note": error.to_string()}),
+                        );
+                    }
+                    // The run still waits for the exit; asked again,
+                    // `todo.status` raises a new `still_alive` event.
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         self.spawn_driver(&run.info.run_id);
         Ok(run.info)
     }
@@ -1377,7 +1453,7 @@ impl WorkerSupervisor {
             if run.info.status != TodoRunStatus::Running {
                 if matches!(
                     run.info.status,
-                    TodoRunStatus::Done | TodoRunStatus::Blocked
+                    TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
                 ) {
                     lock(&RUN_ENV).remove(run_id);
                     // Ended: no driver needs its lock again.
@@ -1406,6 +1482,7 @@ impl WorkerSupervisor {
                 TodoStep::Todo => self.step_todo(&mut run),
                 TodoStep::Push => self.step_push(&mut run),
                 TodoStep::Cleanup => self.step_cleanup(&mut run),
+                TodoStep::Abort => self.step_abort(&mut run),
                 step @ (TodoStep::Review | TodoStep::Done | TodoStep::Unknown) => {
                     Err(format!("a running run cannot be at step {step:?}"))
                 }
@@ -1674,6 +1751,10 @@ impl WorkerSupervisor {
 
     fn step_stop(&self, run: &mut Run) -> Result<(), String> {
         self.stop_worker(run)?;
+        // Aborted at a `still_alive` event: the abort step goes on.
+        if run.info.step == TodoStep::Abort {
+            return Ok(());
+        }
         run.info.step = TodoStep::Verify;
         self.run_step(
             run,
@@ -1686,6 +1767,9 @@ impl WorkerSupervisor {
     /// branch from the same base, the task text the retry gave.
     fn step_restart(&self, run: &mut Run) -> Result<(), String> {
         self.stop_worker(run)?;
+        if run.info.step == TodoStep::Abort {
+            return Ok(());
+        }
         if run.info.attempt >= MAX_ATTEMPTS {
             return Err(format!(
                 "the run used its {MAX_ATTEMPTS} attempts; a retry was asked after the last"
@@ -1710,6 +1794,80 @@ impl WorkerSupervisor {
                 "step": run.info.step,
             }),
         )?;
+        Ok(())
+    }
+
+    /// Ends an aborted run: stops its worker when it still runs and waits
+    /// for its exit event ([`Self::stop_worker`]), then records the run
+    /// `aborted` with the coordinator's reason and what it leaves as it is:
+    /// its attempts' branches with their commits since the base, and a
+    /// commit already picked onto `master`. Nothing is deleted or reverted.
+    fn step_abort(&self, run: &mut Run) -> Result<(), String> {
+        self.stop_worker(run)?;
+        let repo = PathBuf::from(&run.info.repo);
+        let mut branches: Vec<String> = (1..=run.info.attempt)
+            .map(|attempt| branch_of(&run.info.item, &run.info.run_id, attempt))
+            .chain(run.info.branch.clone())
+            .collect();
+        branches.dedup();
+        let mut left = Vec::new();
+        let mut commits = Vec::new();
+        for branch in branches {
+            let Ok(head) = git(
+                &repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}^{{commit}}"),
+                ],
+            ) else {
+                continue;
+            };
+            let since_base = run.info.base.as_deref().and_then(|base| {
+                git(
+                    &repo,
+                    &["rev-list", "--reverse", &format!("{base}..{branch}")],
+                )
+                .ok()
+            });
+            let own: Vec<String> = since_base
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            left.push(format!(
+                "{branch} at {} ({} commit{} since the base)",
+                &head.trim()[..head.trim().len().min(12)],
+                own.len(),
+                if own.len() == 1 { "" } else { "s" }
+            ));
+            for commit in own {
+                if !commits.contains(&commit) {
+                    commits.push(commit);
+                }
+            }
+        }
+        let mut why = run
+            .info
+            .error
+            .clone()
+            .unwrap_or_else(|| "the coordinator aborted the run".to_owned());
+        if left.is_empty() {
+            why.push_str("; the run has no branch left");
+        } else {
+            why.push_str(&format!("; branches left as they are: {}", left.join(", ")));
+        }
+        if let Some(picked) = &run.info.picked {
+            why.push_str(&format!("; commit {picked} stays on master"));
+        }
+        run.info.status = TodoRunStatus::Aborted;
+        run.info.error = Some(why.clone());
+        let mut event = new_event(TodoEventKind::Aborted);
+        event.error = Some(why);
+        event.commits = commits;
+        self.record_run_event(run, &event)?;
         Ok(())
     }
 
