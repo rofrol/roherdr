@@ -59,6 +59,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      settings, hooks) go to "Needs a decision" only when the user has a
      second account per provider, together with the subscription terms on
      several accounts (both models: all of them can be suspended at once).
+  Part 2 done 2026-10-09 (run `r-ig33cwd2`): per-provider account (never a
+  token) and per-window `observed_at` and `fresh | stale | failed`; stale or
+  failed keeps the last value, documented as unknown; the sidebar dims it
+  and shows `?%` after a reset. Threshold chosen by the worker, kept by the
+  coordinator: a reading is stale after two poll intervals (external
+  polling) or once its `resets_at` passed. Also: an empty
+  `CLAUDE_CONFIG_DIR` now means `~/.claude` for `.credentials.json`, as for
+  the Keychain name. Left: part 3 (the coordinator's Claude/pi choice).
 
 - [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY [t-fjbflpho]
   per agent (user, 2026-10-07: "we ran out of pseudo-terminals today;
