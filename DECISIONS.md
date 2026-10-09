@@ -695,3 +695,13 @@ layer, per-change identities and line anchors (if wanted later: run id +
 `git patch-id` + path + byte range + context hashes, reported as exact,
 ambiguous or orphaned; git-ai's notes format is the closest open model),
 and jj (it would snapshot other sessions' files in the shared checkout).
+
+## Flaky: `workers::tests::todo_runs::a_run_goes_from_preflight_to_the_cherry_pick`
+
+A todo run's driver released the run's lock file after giving up its claim,
+so a second driver in the same process (started by a resume) could find the
+lock still held and record a stray `run_lock_wait`. The claim now owns the
+lock and releases it under the same mutex before the claim goes; a
+`run_lock_wait` appears only when another server holds it (a live handoff).
+Reproduced with a temporary probe widening the window, 20/20 under load
+after the fix (run `r-xfw65eg7`, 2026-10-10).
