@@ -46,6 +46,7 @@ pub(super) fn command() -> Command {
         .subcommand(coordinator_command())
         .subcommand(todo_command())
         .subcommand(history_command())
+        .subcommand(usage_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -480,6 +481,20 @@ fn history_command() -> Command {
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
                 .arg(flag("json")),
         )
+}
+
+fn usage_command() -> Command {
+    Command::new("usage")
+        .about("Estimate tokens and cost per workspace from agent transcripts")
+        .arg(
+            Arg::new("workspace")
+                .long("workspace")
+                .value_name("WORKSPACE")
+                .num_args(0..=1)
+                .help("Every workspace, or the one named by id, number or label"),
+        )
+        .arg(option("since", "DATE"))
+        .arg(flag("json"))
 }
 
 fn agent_command() -> Command {
