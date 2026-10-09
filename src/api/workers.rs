@@ -134,12 +134,8 @@ fn handle_immediate(
             supervisor.escalate(&params.worker_id, &params.request_id)?
         }
         Method::WorkerRuns(params) => {
-            let (items, unassigned, landing) = supervisor.runs(&params)?;
-            return Ok(ResponseResult::WorkerRuns {
-                items,
-                unassigned,
-                landing,
-            });
+            let (items, unassigned) = supervisor.runs(&params)?;
+            return Ok(ResponseResult::WorkerRuns { items, unassigned });
         }
         Method::WorkerVerify(params) => {
             return Ok(ResponseResult::WorkerVerification {

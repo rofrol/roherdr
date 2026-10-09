@@ -1391,17 +1391,6 @@ impl WorkerSupervisor {
         Ok((runs, None))
     }
 
-    /// The workers of the run's attempts, first first.
-    pub(super) fn run_workers(&self, run_id: &str) -> Result<Vec<String>, WorkerError> {
-        Ok(self
-            .run_store()?
-            .attempts(run_id)
-            .map_err(store_error)?
-            .into_iter()
-            .filter_map(|row| row.worker_id)
-            .collect())
-    }
-
     /// Blocks until the run waits on an event after `after`, or has ended
     /// (then its last event, however old). Woken by the run's writes; the
     /// liveness check only lets a caller that went away give up. Returns
