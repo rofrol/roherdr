@@ -1776,6 +1776,23 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   call give usable boundaries. Not scheduled; the `attempts` table and
   explicit worktree snapshots come first.
 
+- [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
+  (Decided by the user 2026-10-09 after consult round
+  20261009-141652-8a76, sol + MiMo + DeepSeek: "shadow, then block").
+  The 2026-10-09 audit found 3 silent coordinator stops the ABANDON
+  wording missed. In the herdr Claude Stop check (coordinator tabs), log a
+  would-block decision when all hold: no active `todo run` for the repo
+  and approved runnable items exist (the driver's state, not TODO text);
+  the Stop input's `background_tasks` is present and empty (absent =
+  unknown = pass); no `awaiting-reply` marked and no question pending;
+  the repo is not paused (new `herdr todo pause|resume <repo>`; a plain
+  stop/pause message from the user sets it); at most one block per turn
+  and three in a row per session. Shadow phase only logs; replay the 244
+  audited turn ends (`scripts/coordinator_turn_audit.py`) as fixtures:
+  target 3/3 silent stops caught and at most 1 false per 100; kill
+  criterion more than 1 false per 20. Enforcing the block is a later
+  decision of the user. Keep the worker-obligation block as it is.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -2049,15 +2066,6 @@ Items agents add. Not approved until the user moves them up.
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
-
-- [ ] Should the coordinator's Stop hook block on state, not wording (a [t-5njp4uab]
-  coordinator tab, no background task of the session running, no question
-  asked this turn, and "Next, in order" not empty)?
-  Options: block on state, once per turn, with `herdr todo run` as the main path (Recommended) | keep wording-only and rely on `herdr todo run` | no hook change
-  Checked: the 2026-10-09 audit (`docs/coordinator-audit-2026-10-09.md`)
-  found 3 silent stops the wording missed; an earlier consult rejected a
-  state rule for its false-alarm cost (a coordinator that correctly waits on
-  the user with "Next" non-empty would be blocked once).
 
 ### Decide
 
