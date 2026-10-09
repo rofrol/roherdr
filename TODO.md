@@ -103,6 +103,34 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   report them; a diff under `src/api/` or `tests/fixtures/` adds the `tests`
   check (`run_check_added` event); the v1 client-method line.
 
+- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
+  baby-sitting the models through rules in AGENTS.md etc.; where are the
+  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
+  the coordinator, holding push and install rights, is the riskiest actor;
+  a boundary is hard only if the actor cannot remove it (a hook in `.git`
+  is not; a GitHub ruleset or a credential the agent lacks is). Their
+  five, in order: protect the fork's history (a ruleset against
+  force-push and deletion, which conflicts with the rebase-and-force-push
+  fork sync unless agents get a separate credential without bypass);
+  remove upstream write paths; install only through `just clean-install`
+  (a PreToolUse deny for anything else); restrict the coordinator's writes
+  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
+  commit messages (no co-author lines) and `unwrap()` in production code.
+  Guidance stays guidance for consult rounds, language and "do not touch
+  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
+  now; done the same day by the coordinator in this checkout's
+  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
+  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
+  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
+  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
+  open issues upstream, and PATH wrappers are bypassable), the fork
+  ruleset, the install and push allowlist for the coordinator, its write
+  scope, and the CI checks.
+  Promoted 2026-10-10 (the user: "choose with the models"; round
+  20261010-010542-7df5): the coordinator's write scope and install/push only
+  through allowed commands go into the allowlist slice of `t-s3oaxcki`;
+  GitHub branch protection and CI stay here as their own slice.
+
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
   coordinating at T? ask the models"). Today: no; workers store only
@@ -286,6 +314,35 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and re-arm; a worker started and one exiting during a wait; live handoff
   and restart keep the sequence; re-owning during a wait and a stale answer
   from the old owner; a wake while the coordinator's turn is busy.
+  Added 2026-10-10 from Proposed (round 20261010-010542-7df5): one
+  regression check that the old wait bugs are gone (t-jnema5dg `agent wait`
+  EmptyResponse in herdr-job, t-gp6n6qbx `agent start` ready before input,
+  t-bojbiegs a live handoff breaking other sessions' waits) against
+  `herdr todo wait`'s reconnect and `agent prompt`'s acknowledgement; close
+  each one only when its check passes.
+
+- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
+  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
+  coordinator's `herdr pane wait-output` on its worker failed with
+  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
+  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
+  reconnect across a handoff instead of failing.
+
+- [ ] herdr: `agent start` reports ready before Claude accepts typed input, [t-gp6n6qbx]
+  and `agent prompt` returns `agent_prompted` without knowing the prompt
+  arrived (2026-10-07: the bussiness-ideas coordinator's first prompt was
+  lost; workers' prompts too until the coordinator resent them). A
+  structured `awaiting_user_action` state from `agent start` instead of
+  `agent_not_ready` for a startup prompt (sol, round
+  `20261007-040046-b1c7`). The launcher (dotfiles `140fc7f`) works around
+  both: it waits up to 10 minutes for the user to answer Claude's trust
+  prompt and resends the first prompt once unless the agent turns working.
+
+- [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside [t-jnema5dg]
+  herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
+  after 4-5 minutes, four times, while the workers kept running (reported
+  by the email-assistant coordinator, 2026-10-07). Long waits must survive;
+  find where the socket returns an empty response (a server-side timeout?).
 
 - [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
   screenshot: "this circle is grey, it looks as if the coordinator is not
@@ -337,6 +394,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker lines, capabilities, review queue, T3 comparison, crate, tracker.
   All three: `t-khw7lira` is superseded by `herdr todo wait`; decided by the
   coordinator: it is done together with `t-cguvhgwu`, then closed.
+
+- [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
+  turn) or "a new request is queued, everything else goes to a worker"?
+  Report from the email-assistant coordinator (2026-10-07): the user said
+  "do todo: ... ask the models", it ran the consult at once before writing
+  the TODO entry; the user asked why the coordinator works itself. The herdr
+  coordinator ran its consults itself all day too. The rules do not say.
+  Promoted 2026-10-10 (the user: "choose with the models"; sol and
+  DeepSeek: settle it before the decision menus item; MiMo: a one-line
+  policy decision).
 
 - [ ] Coordinators present "Needs a decision" questions as clickable [t-vs3664vc]
   options (user via the try-roguix coordinator, 2026-10-07: it moved four
@@ -1207,28 +1274,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
 
 Items agents add. Not approved until the user moves them up.
 
-- [ ] While coordinating, which wins: "ask the models" (consult now, in this [t-hgs7p6b4]
-  turn) or "a new request is queued, everything else goes to a worker"?
-  Report from the email-assistant coordinator (2026-10-07): the user said
-  "do todo: ... ask the models", it ran the consult at once before writing
-  the TODO entry; the user asked why the coordinator works itself. The herdr
-  coordinator ran its consults itself all day too. The rules do not say.
-- [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside [t-jnema5dg]
-  herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
-  after 4-5 minutes, four times, while the workers kept running (reported
-  by the email-assistant coordinator, 2026-10-07). Long waits must survive;
-  find where the socket returns an empty response (a server-side timeout?).
-
-- [ ] herdr: `agent start` reports ready before Claude accepts typed input, [t-gp6n6qbx]
-  and `agent prompt` returns `agent_prompted` without knowing the prompt
-  arrived (2026-10-07: the bussiness-ideas coordinator's first prompt was
-  lost; workers' prompts too until the coordinator resent them). A
-  structured `awaiting_user_action` state from `agent start` instead of
-  `agent_not_ready` for a startup prompt (sol, round
-  `20261007-040046-b1c7`). The launcher (dotfiles `140fc7f`) works around
-  both: it waits up to 10 minutes for the user to answer Claude's trust
-  prompt and resends the first prompt once unless the agent turns working.
-
 - [ ] Agents name tabs by ids the user cannot see (user, 2026-10-07, [t-7a2ext64]
   screenshot of the `?` list: "how do I know which tab that is?" for
   "approve the edit in tab w4:t6Z"). The sidebar shows space names and tab
@@ -1247,13 +1292,6 @@ Items agents add. Not approved until the user moves them up.
   the detection screen at the flicker (`herdr agent explain --json`) to find
   which rule matches between tool calls. The coordinator's workaround: wait
   for the `WORKER-` line, debounce done/idle for 120 s.
-
-- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
-  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
-  coordinator's `herdr pane wait-output` on its worker failed with
-  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
-  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
-  reconnect across a handoff instead of failing.
 
 - [ ] Coordinator gaps reported by the rormpc coordinator (todo-rormpc, [t-e5tslo5h]
   2026-10-07, forwarded by the user). After the user answered two "Needs a
@@ -1407,70 +1445,6 @@ Items agents add. Not approved until the user moves them up.
     an overflow menu, a second row as last resort. Bug found on the way:
     `sidebar.rs:482` silently skips a non-zero indicator when it does not
     fit, against "never hide a non-zero indicator".
-
-- [ ] Workers follow the repository's commit rules mechanically (proposed by [t-ti3yszn6]
-  the coordinator 2026-10-07 after the user asked why worker `w1` tried to
-  commit with a `Co-Authored-By` line that AGENTS.md forbids: "did it not
-  know or ignore it? ask the models", then: "Claude Code already reads
-  AGENTS.md, github.com/anthropics/claude-code/tree/main/mods/agents-md; ask
-  the models"). Corrected finding: the coordinator first said it did not
-  know (it never opened AGENTS.md); the user was right: Claude Code 2.1.293
-  loads AGENTS.md as project instructions when there is no CLAUDE.md (the
-  built-in `agents-md` plugin), and a session launched exactly like a
-  worker (`disableAllHooks` included) confirms it has AGENTS.md. So it knew
-  and did not apply "no AI co-author lines" against Claude Code's
-  attribution reminder, which sits next to the commit and names CLAUDE.md
-  and memory, not AGENTS.md, as overriding it (DeepSeek). Round
-  `20261007-211912-b075` (sol, MiMo, DeepSeek), agreeing: not a knowledge
-  problem; enforce it: (1) turn commit attribution off in the worker's
-  settings (verify the setting's name and effect under `--settings` in
-  this version); (2) the task gives the exact full commit message and says
-  "no body, no trailers"; (3) the coordinator checks the resulting
-  commit's message (`git log --format=%B`) before cherry-picking and
-  rejects a violation (a `commit-msg` hook is bypassable with
-  `--no-verify`). Keep one copy of each rule (MiMo): no CLAUDE.md
-  restating AGENTS.md.
-  Hooks (user, 2026-10-07: "so maybe the worker should have hooks enabled?
-  ask the models"). Round `20261007-212023-f5fe` (sol, MiMo, DeepSeek), all
-  three: not the user's global hooks (they target interactive panes: the
-  awaiting-reply reminder would land in worker prompts, the coordinator
-  stop-check and `uncommitted-notes.sh` would block workers' stops in a
-  shared checkout; making each hook worker-aware rots as hooks change), but
-  herdr's own worker hook set: the user's settings left out with
-  `--setting-sources project,local` (Claude Code 2.1.293 has it; verify the
-  user's CLAUDE.md and login stay) instead of `disableAllHooks` (which would
-  also turn off herdr's hooks), and herdr's hooks given with `--settings`.
-  Candidates: a Stop hook that checks the worker's own new commits
-  (message rules, no trailers, the task's subject) and its worktree, and
-  refuses to stop with the reason, with a way out after a refusal so it
-  cannot loop (sol, MiMo); a PreToolUse Bash check on `git commit` only as
-  a hint (bypassable by `git -C`, `-F`, scripts). Needed because
-  auto-mode calls never reach `can_use_tool`. The coordinator's check of
-  the commits before cherry-picking stays the gate.
-
-- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
-  baby-sitting the models through rules in AGENTS.md etc.; where are the
-  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
-  the coordinator, holding push and install rights, is the riskiest actor;
-  a boundary is hard only if the actor cannot remove it (a hook in `.git`
-  is not; a GitHub ruleset or a credential the agent lacks is). Their
-  five, in order: protect the fork's history (a ruleset against
-  force-push and deletion, which conflicts with the rebase-and-force-push
-  fork sync unless agents get a separate credential without bypass);
-  remove upstream write paths; install only through `just clean-install`
-  (a PreToolUse deny for anything else); restrict the coordinator's writes
-  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
-  commit messages (no co-author lines) and `unwrap()` in production code.
-  Guidance stays guidance for consult rounds, language and "do not touch
-  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
-  now; done the same day by the coordinator in this checkout's
-  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
-  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
-  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
-  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
-  open issues upstream, and PATH wrappers are bypassable), the fork
-  ruleset, the install and push allowlist for the coordinator, its write
-  scope, and the CI checks.
 
 - [ ] Headless pi workers in `herdr todo run` (from the usage gate decision, [t-wcrqag77]
   2026-10-09): a second worker kind with its own stream parser, tool policy
