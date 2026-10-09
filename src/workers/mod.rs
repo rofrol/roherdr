@@ -260,6 +260,9 @@ pub(crate) enum WorkerError {
     EventStale(String),
     /// The repository already has a run in progress; the message names it.
     RunActive(String),
+    /// A `todo.resume` from a pane other than the run's owner, whose pane is
+    /// still there; the message names the owner.
+    RunOwnedElsewhere(String),
     /// A `todo.run`'s preflight refused it; the message says which check.
     Preflight(String),
     Io(std::io::Error),
@@ -286,6 +289,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "todo_run_not_found",
     "todo_event_stale",
     "todo_run_active",
+    "run_owned_elsewhere",
     "todo_preflight_failed",
 ];
 
@@ -312,6 +316,7 @@ impl WorkerError {
             Self::RunNotFound(_) => "todo_run_not_found",
             Self::EventStale(_) => "todo_event_stale",
             Self::RunActive(_) => "todo_run_active",
+            Self::RunOwnedElsewhere(_) => "run_owned_elsewhere",
             Self::Preflight(_) => "todo_preflight_failed",
         }
     }
@@ -349,6 +354,7 @@ impl std::fmt::Display for WorkerError {
             | Self::RunNotFound(message)
             | Self::EventStale(message)
             | Self::RunActive(message)
+            | Self::RunOwnedElsewhere(message)
             | Self::Preflight(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -1925,6 +1931,11 @@ struct Registry {
     /// state, a limit, an ack), Unix milliseconds. Shown next to a quiet
     /// question; it decides nothing.
     owner_seen_ms: BTreeMap<String, u64>,
+    /// Owner panes whose pane closed or whose agent exited, with why: a
+    /// `todo.resume` from another pane takes over a run they own. Only this
+    /// server's memory: herdr re-evaluates the owners when it starts
+    /// ([`owners_at_start`]), the runs' owners among them.
+    gone_owners: BTreeMap<String, String>,
     /// The drain before an install, while new turns are refused. Only this
     /// server's memory: the server a handoff starts does not drain.
     drain: Option<Drain>,
@@ -4349,24 +4360,39 @@ impl WorkerSupervisor {
     }
 
     /// The owner panes of the workers that have not ended and whose owner is
-    /// not gone, and the panes of the active coordination tenures: those
-    /// [`Self::owner_event`] can still act on.
+    /// not gone, the panes of the active coordination tenures and the
+    /// owner panes of the `todo.run`s not ended whose owner is not gone:
+    /// those [`Self::owner_event`] can still act on.
     fn owner_panes(&self) -> Vec<String> {
         let tenure_panes = self.coordinator_panes().unwrap_or_else(|error| {
             warn!(%error, "cannot read the coordination tenures' panes");
             Vec::new()
         });
+        let run_panes = self.run_owner_panes();
         let registry = lock(&self.shared.registry);
+        let run_panes = run_panes
+            .into_iter()
+            .filter(|pane| !registry.gone_owners.contains_key(pane));
         let mut panes: Vec<String> = registry
             .workers
             .values()
             .filter(|entry| !entry.status.is_gone() && entry.status.owner_gone.is_none())
             .filter_map(|entry| entry.status.owner_pane.clone())
             .chain(tenure_panes)
+            .chain(run_panes)
             .collect();
         panes.sort();
         panes.dedup();
         panes
+    }
+
+    /// Why owner pane `pane_id` is gone (its pane closed or its agent
+    /// exited), as herdr's events reported it; `None` while it is there.
+    pub(super) fn gone_owner(&self, pane_id: &str) -> Option<String> {
+        lock(&self.shared.registry)
+            .gone_owners
+            .get(pane_id)
+            .cloned()
     }
 
     /// [`owners_at_start`] for this supervisor.
@@ -4398,6 +4424,20 @@ impl WorkerSupervisor {
         let mut any = false;
         {
             let mut registry = lock(&self.shared.registry);
+            // Also for an owner of no worker now: a run it owns may start
+            // its next attempt's worker later, or be resumed elsewhere.
+            match (event, event.cause()) {
+                (OwnerEvent::PaneClosed | OwnerEvent::AgentExited, Some(cause)) => {
+                    registry
+                        .gone_owners
+                        .insert(pane_id.to_owned(), format!("{cause}{cause_suffix}"));
+                }
+                // An agent works in the pane again: it is there.
+                (OwnerEvent::Working, _) => {
+                    registry.gone_owners.remove(pane_id);
+                }
+                _ => {}
+            }
             let owned: Vec<u64> = registry
                 .workers
                 .iter()

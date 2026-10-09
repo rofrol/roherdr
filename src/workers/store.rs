@@ -347,6 +347,11 @@ ALTER TABLE runs_new RENAME TO runs;
 CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
     WHERE status IN ('running', 'waiting') AND step != 'abort';
 "#,
+    r#"
+-- The workspace of the pane that owns the run (`owner_pane`), which lists
+-- the run's workers. Runs recorded before have none.
+ALTER TABLE runs ADD COLUMN workspace TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1098,7 +1103,7 @@ impl Store {
 
 const RUN_COLUMNS: &str = "id, repo, item, step, status, attempt, base, worker_id, branch, task, \
 message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq, pending_event, \
-error, picked, created_ms, updated_ms, finish";
+error, picked, created_ms, updated_ms, finish, workspace";
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
     let list = |index: usize| -> StoreResult<Vec<String>> {
@@ -1149,6 +1154,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         finish,
         owner_pane: row.get(14)?,
         owner_session: row.get(15)?,
+        workspace: row.get(23)?,
     })
 }
 
@@ -1179,7 +1185,7 @@ impl Tx<'_> {
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
                  ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
-                 ?23) \
+                 ?23, ?24) \
                  ON CONFLICT (id) DO UPDATE SET {}",
                 RUN_COLUMNS
                     .split(", ")
@@ -1212,6 +1218,7 @@ impl Tx<'_> {
                 info.created_ms as i64,
                 info.updated_ms as i64,
                 serde_json::to_string(&run.finish_with_results()).ok(),
+                run.workspace,
             ],
         )?;
         Ok(seq)
@@ -1687,7 +1694,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 9
+                MIGRATIONS.len() - 10
             ))
             .unwrap();
         drop(store);

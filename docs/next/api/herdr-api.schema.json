@@ -5408,6 +5408,25 @@
               },
               "type": "array"
             },
+            "caller_pane_id": {
+              "description": "The caller's pane. A run owned by another pane that is still there\nis refused (`run_owned_elsewhere`); once the owner's pane or agent\nis gone, the caller takes the run over: its pane, agent session and\nworkspace then own the run and its later workers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "close": {
               "description": "With `approve`: the decision that closes the item. The run removes\nthe item from `TODO.md` and adds the decision to `DECISIONS.md` as a\nsection (its first line, when it starts with `#`, is the section's\ntitle; otherwise the item's title is), committed by path. Excludes\n`note`.",
               "type": [
@@ -5513,7 +5532,7 @@
               "type": "string"
             },
             "owner_pane_id": {
-              "description": "The coordinator's pane, which owns the run's workers.",
+              "description": "The coordinator's pane, which owns the run's workers (their\nquestions, obligations and coordination tenure) and resumes the run.",
               "type": [
                 "string",
                 "null"
@@ -5535,6 +5554,13 @@
             "task": {
               "description": "The worker's task text, stored with the run as it is.",
               "type": "string"
+            },
+            "workspace_id": {
+              "description": "The coordinator's workspace, which lists the run's workers.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

@@ -234,6 +234,13 @@ fn one_run_id(subcommand: &str, rest: &[String]) -> Result<String, String> {
     }
 }
 
+/// The caller's agent session, sent only with its pane, as `worker start`
+/// does.
+fn caller_session(pane: Option<&str>) -> Option<String> {
+    pane.and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+        .filter(|session| !session.trim().is_empty())
+}
+
 /// `Ok(None)` asks for help.
 fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -271,11 +278,9 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 message,
                 paths,
                 checks,
-                owner_session_id: pane
-                    .as_ref()
-                    .and(std::env::var("CLAUDE_CODE_SESSION_ID").ok())
-                    .filter(|session| !session.trim().is_empty()),
+                owner_session_id: caller_session(pane.as_deref()),
                 owner_pane_id: pane,
+                workspace_id: super::target::caller_workspace_id(),
                 env: super::worker::caller_env(),
             })
         }
@@ -353,6 +358,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 [word] if word == "deny" => (Some(WorkerDecision::Deny), Vec::new()),
                 answers => (None, answers.to_vec()),
             };
+            let pane = super::target::caller_pane_id();
             Method::TodoResume(TodoResumeParams {
                 run_id: run_id.clone(),
                 action,
@@ -365,6 +371,9 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 env: super::worker::caller_env(),
                 note,
                 close,
+                caller_session_id: caller_session(pane.as_deref()),
+                caller_pane_id: pane,
+                caller_workspace_id: super::target::caller_workspace_id(),
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {

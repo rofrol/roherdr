@@ -5218,6 +5218,7 @@ mod todo_runs {
             checks: check.split(' ').map(str::to_owned).collect(),
             owner_pane_id: Some("p-coordinator".into()),
             owner_session_id: None,
+            workspace_id: Some("ws-coordinator".into()),
             env: Some(caller_env()),
         }
     }
@@ -5276,6 +5277,9 @@ mod todo_runs {
             env: Some(caller_env()),
             note: None,
             close: None,
+            caller_pane_id: Some("p-coordinator".into()),
+            caller_session_id: None,
+            caller_workspace_id: Some("ws-coordinator".into()),
         })
     }
 
@@ -5402,11 +5406,11 @@ mod todo_runs {
         ] {
             assert!(task.contains(part), "{part:?} missing from {task}");
         }
-        // The run handled the worker's events: its owner owes nothing.
-        assert!(fixture
-            .supervisor
-            .obligations(Some("p-coordinator"))
-            .is_empty());
+        // Until the coordinator resumes the run, its pane owes the review.
+        let owed = fixture.supervisor.obligations(Some("p-coordinator"));
+        assert_eq!(owed.len(), 1, "{owed:#?}");
+        assert_eq!(owed[0].worker_id, worker_id);
+        assert_eq!(owed[0].reason, WorkerAttentionReason::TurnEnd);
 
         resume(
             &fixture,
@@ -5529,6 +5533,9 @@ mod todo_runs {
                 env: Some(caller_env()),
                 note: None,
                 close: None,
+                caller_pane_id: Some("p-coordinator".into()),
+                caller_session_id: None,
+                caller_workspace_id: Some("ws-coordinator".into()),
             })
             .unwrap();
         let (review, _) = wait(&fixture, &run.run_id, Some(question.event_id));
@@ -5851,6 +5858,197 @@ mod todo_runs {
         assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
     }
 
+    /// A resume of `event` sent from `pane` in `workspace`.
+    fn resume_from(
+        run_id: &str,
+        event: i64,
+        action: TodoAction,
+        pane: &str,
+        workspace: &str,
+    ) -> TodoResumeParams {
+        TodoResumeParams {
+            caller_pane_id: Some(pane.into()),
+            caller_session_id: Some(format!("{pane}-session")),
+            caller_workspace_id: Some(workspace.into()),
+            ..resume_params(run_id, event, action)
+        }
+    }
+
+    #[test]
+    fn a_runs_worker_belongs_to_the_coordinators_pane_workspace_and_tenure() {
+        let fixture = todo_repo("todo-owner");
+        let tenure = fixture
+            .supervisor
+            .coordinator_start(
+                &fixture.repo.display().to_string(),
+                "p-coordinator",
+                Some("s-coordinator"),
+            )
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                owner_session_id: Some("s-coordinator".into()),
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let worker_id = waiting.worker_id.clone().unwrap();
+        let worker = fixture.supervisor.status(&worker_id).unwrap();
+        assert_eq!(worker.workspace_id.as_deref(), Some("ws-coordinator"));
+        assert_eq!(worker.owner_pane_id.as_deref(), Some("p-coordinator"));
+        assert_eq!(worker.owner_session_id.as_deref(), Some("s-coordinator"));
+        assert_eq!(
+            worker.owner_coordinator_id.as_deref(),
+            Some(tenure.coordinator_id.as_str())
+        );
+        assert!(fixture
+            .supervisor
+            .list()
+            .iter()
+            .any(|listed| listed.worker_id == worker_id
+                && listed.workspace_id.as_deref() == Some("ws-coordinator")));
+        // The review is the coordinator pane's obligation.
+        let owed = fixture.supervisor.obligations(Some("p-coordinator"));
+        assert_eq!(owed.len(), 1, "{owed:#?}");
+        assert_eq!(
+            (owed[0].worker_id.as_str(), owed[0].reason),
+            (worker_id.as_str(), WorkerAttentionReason::TurnEnd)
+        );
+
+        // Another pane that is there cannot resume it, nor can a caller
+        // outside a pane.
+        let refused = fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+                "p-other",
+                "ws-other",
+            ))
+            .unwrap_err();
+        assert_eq!(refused.code(), "run_owned_elsewhere", "{refused}");
+        assert!(refused.to_string().contains("p-coordinator"), "{refused}");
+        let outside = fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                caller_pane_id: None,
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap_err();
+        assert_eq!(outside.code(), "run_owned_elsewhere", "{outside}");
+        assert_eq!(
+            fixture.supervisor.obligations(Some("p-coordinator")).len(),
+            1
+        );
+
+        // Its owner's resume settles the obligation.
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+        assert!(run_events(&fixture, &run.run_id, "run_owner_taken").is_empty());
+    }
+
+    #[test]
+    fn after_its_owner_pane_is_gone_a_resume_takes_the_run_over() {
+        let fixture = todo_repo("todo-takeover");
+        let task = format!("commit a.txt {SUBJECT}");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // The coordinator's pane closes: its runs are listed as owners
+        // herdr checks when panes close.
+        assert!(fixture
+            .supervisor
+            .owner_panes()
+            .contains(&"p-coordinator".to_owned()));
+        fixture
+            .supervisor
+            .owner_event("p-coordinator", OwnerEvent::PaneClosed, "");
+
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                task: Some(task.clone()),
+                ..resume_from(
+                    &run.run_id,
+                    review.event_id,
+                    TodoAction::Retry,
+                    "p-new",
+                    "ws-new",
+                )
+            })
+            .unwrap();
+        let taken = run_events(&fixture, &run.run_id, "run_owner_taken");
+        assert_eq!(taken.len(), 1, "{taken:#?}");
+        assert_eq!(taken[0]["from_pane"], "p-coordinator");
+        assert_eq!(taken[0]["to_pane"], "p-new");
+        assert_eq!(taken[0]["to_workspace"], "ws-new");
+        assert!(
+            taken[0]["cause"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("p-coordinator"),
+            "{taken:#?}"
+        );
+
+        // The next attempt's worker belongs to the pane that took it over.
+        let (second, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(second.kind, TodoEventKind::Review, "{second:#?}");
+        assert_eq!(waiting.attempt, 2);
+        let worker = fixture
+            .supervisor
+            .status(waiting.worker_id.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(worker.owner_pane_id.as_deref(), Some("p-new"));
+        assert_eq!(worker.owner_session_id.as_deref(), Some("p-new-session"));
+        assert_eq!(worker.workspace_id.as_deref(), Some("ws-new"));
+        assert_eq!(fixture.supervisor.obligations(Some("p-new")).len(), 1);
+
+        // The new owner is there now: another pane is refused.
+        let refused = fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                second.event_id,
+                TodoAction::Approve,
+                "p-coordinator",
+                "ws-coordinator",
+            ))
+            .unwrap_err();
+        assert_eq!(refused.code(), "run_owned_elsewhere", "{refused}");
+        assert!(refused.to_string().contains("p-new"), "{refused}");
+        fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                second.event_id,
+                TodoAction::Approve,
+                "p-new",
+                "ws-new",
+            ))
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(second.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(fixture.supervisor.obligations(Some("p-new")).is_empty());
+    }
+
     fn resume_params(run_id: &str, event: i64, action: TodoAction) -> TodoResumeParams {
         TodoResumeParams {
             run_id: run_id.to_owned(),
@@ -5864,6 +6062,9 @@ mod todo_runs {
             env: Some(caller_env()),
             note: None,
             close: None,
+            caller_pane_id: Some("p-coordinator".into()),
+            caller_session_id: None,
+            caller_workspace_id: Some("ws-coordinator".into()),
         }
     }
 
