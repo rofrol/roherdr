@@ -49,6 +49,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   First block in use (2026-10-08): it denied the coordinator's `sleep 0`
   (a no-op, a habit, not a wait); harmless but a false positive: `sleep 0`
   and `timeout 0` could pass, or the denial could say to drop the no-op.
+  The `sleep 0` false positive fixed 2026-10-09 (worker `w51`, approved by the
+  user, dotfiles 903e9f0): zero-length sleeps, timeouts, durations and
+  `setTimeout(fn, 0)` pass; `TIMEOUT = 0.5` no longer slips through. Left: the
+  headless-worker gap (run `r-idd6p7io`).
 
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about [t-ul4yd4ll]
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
