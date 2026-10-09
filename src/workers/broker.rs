@@ -184,6 +184,8 @@ pub(super) fn start(
         .stderr(log);
     crate::platform::configure_background_command(&mut command);
     let mut process = command.spawn()?;
+    #[cfg(test)]
+    tests::track(socket, process.id());
     let report = process.stdout.take().map(read_report);
     let pid = match report {
         Some(Ok(pid)) => pid,
@@ -854,6 +856,10 @@ fn serve(spec: &Spec) -> std::io::Result<()> {
         let what = what.to_owned();
         move |error: std::io::Error| std::io::Error::new(error.kind(), format!("{what}: {error}"))
     };
+    // First: the broker outlives whoever started it, so it must not keep
+    // their descriptors (a test runner's lock held forever), nor pass them
+    // to its guard or its worker.
+    crate::platform::close_inherited_descriptors().map_err(context("inherited descriptors"))?;
     crate::platform::start_new_session().map_err(context("new session"))?;
     // Before any thread of the broker's own and before the worker, so the
     // guard holds none of their descriptors.
@@ -1165,6 +1171,162 @@ pub(super) mod tests {
         }
     }
 
+    /// Every broker this test binary started, with its socket, until a
+    /// [`Reaper`] ends it.
+    static STARTED: Mutex<Vec<(PathBuf, u32)>> = Mutex::new(Vec::new());
+
+    pub(super) fn track(socket: &Path, pid: u32) {
+        lock(&STARTED).push((socket.to_owned(), pid));
+    }
+
+    /// Ends and reaps, when dropped, every broker started with its socket
+    /// under `root`, so a test leaves none behind, also when it fails: a
+    /// broker outlives its server by design, and one left running holds
+    /// what it holds until someone kills it.
+    pub(in crate::workers) struct Reaper {
+        root: PathBuf,
+    }
+
+    impl Reaper {
+        pub(in crate::workers) fn new(root: &Path) -> Self {
+            Self {
+                root: root.to_owned(),
+            }
+        }
+    }
+
+    impl Drop for Reaper {
+        fn drop(&mut self) {
+            let mine: Vec<u32> = {
+                let mut started = lock(&STARTED);
+                let (mine, others) = started
+                    .drain(..)
+                    .partition(|(socket, _)| socket.starts_with(&self.root));
+                *started = others;
+                mine.into_iter().map(|(_, pid)| pid).collect()
+            };
+            for pid in mine {
+                reap(pid);
+            }
+        }
+    }
+
+    /// Kills and reaps the broker `pid`, this process's child, unless it was
+    /// reaped already (its server waited for it). An unreaped child keeps
+    /// its pid, so the kill cannot reach another process.
+    fn reap(pid: u32) {
+        let pid = pid as libc::pid_t;
+        let mut status = 0;
+        // 0: still running; its pid, now reaped; -1: reaped by its server.
+        if unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != 0 {
+            return;
+        }
+        // Its death guard ends its worker.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &mut status, 0);
+        }
+    }
+
+    /// Whether `pid` is a process at all (a zombie counts).
+    fn exists(pid: u32) -> bool {
+        let found = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    const INHERIT_ENV: &str = "HERDR_TEST_INHERITED_LOCK";
+
+    /// Takes a `flock` on the file in [`INHERIT_ENV`] through a descriptor
+    /// its children inherit, starts a broker (worker `sleep`), closes its own
+    /// copy and reports the broker's pid; at the end of its stdin, ends the
+    /// broker.
+    #[test]
+    fn inherit_process_entry() {
+        use std::os::fd::AsRawFd;
+
+        let Some(path) = std::env::var_os(INHERIT_ENV) else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let file = File::create(&path).unwrap();
+        let fd = file.as_raw_fd();
+        assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX) }, 0);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let dir = path.parent().unwrap();
+        let started = start(
+            &test_launcher(),
+            &dir.join("w.sock"),
+            &dir.join("w.log"),
+            Path::new("sleep"),
+            &["1000".to_owned()],
+            dir,
+            |_| {},
+        )
+        .unwrap();
+        drop(file);
+        report(&format!("brokered {}", started.process.id()));
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+        let mut process = started.process;
+        let _ = process.kill();
+        let _ = process.wait();
+    }
+
+    /// A helper process that ends with its stdin: dropped, it closes its
+    /// stdin and waits for it.
+    struct Helper(Child);
+
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            self.0.stdin.take();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn a_broker_does_not_hold_a_descriptor_its_starter_inherited() {
+        let module = module_path!();
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
+        // Short: a socket's path has at most 103 bytes.
+        let dir = std::env::temp_dir().join(format!("hi{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock_path = dir.join("lock");
+        let mut helper = Helper(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("{module}::inherit_process_entry"),
+                    "--nocapture",
+                ])
+                .env(INHERIT_ENV, &lock_path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = helper.0.stdout.take().unwrap();
+        let broker: u32 = BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .find_map(|line| line.split_once("brokered ")?.1.trim().parse().ok())
+            .expect("the helper started no broker");
+        assert!(exists(broker));
+
+        // The helper closed its copy: only a broker that kept the inherited
+        // one still holds the lock.
+        let file = File::open(&lock_path).unwrap();
+        let taken = unsafe {
+            libc::flock(
+                std::os::fd::AsRawFd::as_raw_fd(&file),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        };
+        assert_eq!(taken, 0, "the broker holds its starter's lock");
+
+        drop(helper);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     const GUARD_ENV: &str = "HERDR_TEST_DEATH_GUARD";
 
     /// Guards a `sleep` in its own process group, as a broker guards its
@@ -1196,8 +1358,29 @@ pub(super) mod tests {
         }
     }
 
+    /// A [`guard_process_entry`] helper and the group it guards: dropped,
+    /// it kills and reaps the helper and kills the group, so a failing test
+    /// leaves neither.
+    struct Guarded {
+        helper: Child,
+        group: u32,
+    }
+
+    impl Drop for Guarded {
+        fn drop(&mut self) {
+            let _ = self.helper.kill();
+            let _ = self.helper.wait();
+            if crate::platform::process_group_alive(self.group) {
+                let _ = crate::platform::signal_process_group(
+                    self.group,
+                    crate::platform::Signal::Kill,
+                );
+            }
+        }
+    }
+
     /// Starts [`guard_process_entry`] and returns it with the guarded pid.
-    fn guarded(mode: &str) -> (Child, u32) {
+    fn guarded(mode: &str) -> Guarded {
         let module = module_path!();
         let module = module.split_once("::").map_or(module, |(_, rest)| rest);
         let mut helper = Command::new(std::env::current_exe().unwrap())
@@ -1217,15 +1400,16 @@ pub(super) mod tests {
             .map_while(Result::ok)
             .find_map(|line| line.split_once("guarded ")?.1.trim().parse().ok())
             .unwrap();
-        (helper, pid)
+        Guarded { helper, group: pid }
     }
 
     #[test]
     fn a_death_guard_kills_its_group_when_its_process_dies() {
-        let (mut helper, pid) = guarded("kill");
+        let mut guarded = guarded("kill");
+        let pid = guarded.group;
         assert!(crate::platform::process_group_alive(pid));
-        helper.kill().unwrap();
-        helper.wait().unwrap();
+        guarded.helper.kill().unwrap();
+        guarded.helper.wait().unwrap();
         // The guard's kill sends this test no event: poll; the bound only
         // fails a broken test.
         let started = std::time::Instant::now();
@@ -1240,9 +1424,10 @@ pub(super) mod tests {
 
     #[test]
     fn a_disarmed_death_guard_leaves_its_group_alone() {
-        let (mut helper, pid) = guarded("disarm");
-        helper.kill().unwrap();
-        helper.wait().unwrap();
+        let mut guarded = guarded("disarm");
+        let pid = guarded.group;
+        guarded.helper.kill().unwrap();
+        guarded.helper.wait().unwrap();
         // Disarming reaped the guard, so nothing is left to kill it.
         assert!(crate::platform::process_group_alive(pid));
         assert!(crate::platform::signal_process_group(pid, crate::platform::Signal::Kill).unwrap());
