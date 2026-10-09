@@ -518,3 +518,22 @@ The (2026-10-09, worker w48, approved by the user):
   most once per unchanged dirty set (content hashes in `<ledger>.acked`), and its
   reason is one line that keeps "grants no permission to commit, push or continue
   stopped work". Tests: `uncommitted-notes-test.sh` (bash 3.2). Dotfiles d4c8412.
+
+## Worker brokers drop inherited descriptors
+
+A broker started by a test inherited `herdr-job`'s slot flock through `cargo
+nextest` and outlived it, so an install waited 30 minutes for a slot nobody
+held (2026-10-09). The broker now closes every inherited descriptor without
+`FD_CLOEXEC` when it starts (`platform::close_inherited_descriptors`; it opens
+its own pipes afterwards), and broker tests end and reap every broker they
+start through a `Drop` reaper, also when they fail (499bcb02, run `r-ziisd3ny`).
+
+## A todo run's worker belongs to its coordinator
+
+`herdr todo run` workers once appeared in the `~` space with no owner, so
+their questions had no obligations or escalation (user's screenshot,
+2026-10-09). A run now stores the caller's pane, session and workspace; every
+attempt's worker belongs to that pane, workspace and coordinator tenure; a
+resume from another live pane is refused (`run_owned_elsewhere`), and after
+the owner pane or agent is gone (herdr's own events, no timer) a resume takes
+the run over as a `run_owner_taken` event (658e3924, run `r-6edkrlwq`).

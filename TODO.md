@@ -11,33 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A broker test's orphaned broker held the herdr-job slot forever [t-tjw6wudc]
-  (found by the coordinator 2026-10-09, run `r-rpathqga`'s install): `just
-  check` under `herdr-job slot` ran `cargo nextest`, which inherited the
-  slot's flock fd; the test `workers::broker::tests::broker_process_entry`
-  left its broker process alive (parent pid 1, setsid), holding fd 4 on
-  `~/.local/state/herdr-job/slots/slot-0`, so the same install's
-  `windows-lint` waited 30 minutes for a slot nobody would release. Fix both
-  sides: the broker closes every inherited fd except its own pipes and socket
-  when it daemonizes (or herdr marks them CLOEXEC before spawning it), and
-  the broker tests end and reap every broker they start (a test that fails
-  still ends them). Test: a broker started with an extra inherited fd does
-  not hold it; after the broker tests no broker process remains.
-
-- [ ] A `herdr todo run` worker shows up in the `~` space (user, 2026-10-09, [t-ge6g24g3]
-  with a screenshot: "I see you opened a tab with the worker in space `~`").
-  The driver starts the worker in the server with no owner: run
-  `r-ziisd3ny` has `owner_pane: null`, `owner_session: null`, and its worker
-  `w46` has `workspace_id: null`, so the sidebar lists it under the first
-  space instead of the coordinator's (`herdr`), and nobody owns its
-  questions (no obligations, no escalation when the coordinator goes away).
-  `herdr todo run` must send the caller's pane, session and workspace (as
-  `herdr worker start` does from the coordinator's pane), the run stores
-  them, and every attempt's worker is started owned by that pane in that
-  workspace; `todo resume` from another pane is refused or transfers
-  ownership explicitly. Test: a run started from a pane lists its worker
-  under that pane's workspace and owner.
-
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
