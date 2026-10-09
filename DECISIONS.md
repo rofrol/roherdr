@@ -561,3 +561,13 @@ runs `[workers] pre_tool_checks` through an SDK PreToolUse callback instead
 (d2c166a6; failures fail open as `pre_tool_check_failed` events), and the
 user's herdr config sets it to the delay check (dotfiles 9c70342, approved
 2026-10-09).
+
+## Headless workers do not wait in the background
+
+A headless worker ran its tests with `run_in_background`, armed a Monitor
+and ended its `claude -p` turn; nothing wakes a headless worker, so its
+work sat uncommitted (run `r-idd6p7io`, 2026-10-09). herdr now denies every
+headless worker `run_in_background` (Bash, Agent), `Monitor`,
+`ScheduleWakeup` and `CronCreate`, in its policy and in an always-registered
+PreToolUse callback, with the reason that nothing wakes it; the driver's
+task contract says the same (5be67f20, run `r-xelv6o5o`).
