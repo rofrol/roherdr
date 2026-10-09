@@ -27,6 +27,7 @@
 #[cfg(unix)]
 pub(crate) mod broker;
 pub(crate) mod coordinators;
+mod history;
 #[cfg(test)]
 mod install_script_tests;
 mod log;
@@ -270,6 +271,8 @@ pub(crate) enum WorkerError {
     /// unknown; the message names each window, its value, the reading's
     /// age, its freshness and `resets_at`.
     UsageGate(String),
+    /// `history.item` named an item without records.
+    HistoryNotFound(String),
     Io(std::io::Error),
 }
 
@@ -297,6 +300,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "run_owned_elsewhere",
     "todo_preflight_failed",
     "usage_gate",
+    "history_item_not_found",
 ];
 
 impl WorkerError {
@@ -325,6 +329,7 @@ impl WorkerError {
             Self::RunOwnedElsewhere(_) => "run_owned_elsewhere",
             Self::Preflight(_) => "todo_preflight_failed",
             Self::UsageGate(_) => "usage_gate",
+            Self::HistoryNotFound(_) => "history_item_not_found",
         }
     }
 
@@ -363,7 +368,8 @@ impl std::fmt::Display for WorkerError {
             | Self::RunActive(message)
             | Self::RunOwnedElsewhere(message)
             | Self::Preflight(message)
-            | Self::UsageGate(message) => f.write_str(message),
+            | Self::UsageGate(message)
+            | Self::HistoryNotFound(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }

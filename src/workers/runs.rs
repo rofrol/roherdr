@@ -894,7 +894,7 @@ fn event_of(seq: i64, body: &Value, run: &TodoRunInfo) -> TodoRunEvent {
     event
 }
 
-fn store_error(error: rusqlite::Error) -> WorkerError {
+pub(super) fn store_error(error: rusqlite::Error) -> WorkerError {
     WorkerError::Io(std::io::Error::other(format!(
         "the worker store failed: {error}"
     )))
@@ -948,7 +948,7 @@ struct Preflighted {
 }
 
 impl WorkerSupervisor {
-    fn run_store(&self) -> Result<&super::store::Store, WorkerError> {
+    pub(super) fn run_store(&self) -> Result<&super::store::Store, WorkerError> {
         self.shared
             .store
             .as_ref()
@@ -1033,6 +1033,11 @@ impl WorkerSupervisor {
         }
         let preflighted = self.preflight(&params, Path::new(&repo))?;
         let usage = self.usage_gate(&repo, params.ignore_usage)?;
+        // The item as the claim records it: its text and every id in TODO.md
+        // now, which the close compares with to name the follow-ups.
+        let todo = std::fs::read_to_string(Path::new(&repo).join(TODO_FILE)).unwrap_or_default();
+        let item_text = todo_titles::item_text(&todo, &params.item);
+        let item_ids = todo_titles::item_ids(&todo);
         let at = now_ms();
         let run_id = new_run_id(&repo, &params.item);
         let mut run = Run {
@@ -1089,6 +1094,8 @@ impl WorkerSupervisor {
             "workspace": params.workspace_id,
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
+            "item_text": item_text,
+            "item_ids": item_ids,
         });
         match store.transaction(|tx| tx.run_event(&mut run, &event, false, at)) {
             Ok(_) => {}

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod common;
 pub mod coordinators;
 pub mod events;
+pub mod history;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
@@ -23,6 +24,7 @@ pub use commands::*;
 pub use common::*;
 pub use coordinators::*;
 pub use events::*;
+pub use history::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
@@ -140,6 +142,16 @@ pub enum Method {
     TodoStatus(TodoRunTarget),
     #[serde(rename = "todo.runs")]
     TodoRuns(TodoRunsParams),
+    /// The TODO items herdr recorded, each with its latest record.
+    #[serde(rename = "history.list")]
+    HistoryList(HistoryListParams),
+    /// One TODO item's timeline: its records and the runs they name.
+    #[serde(rename = "history.item")]
+    HistoryItem(HistoryItemParams),
+    /// Compares a repository's `TODO.md` with the records: claims without
+    /// an end, items deleted without a `closed` record. Reports only.
+    #[serde(rename = "history.reconcile")]
+    HistoryReconcile(HistoryReconcileParams),
     /// Claims a repository's coordination for a pane: a tenure, refused
     /// while another one of the repository is active.
     #[serde(rename = "coordinator.start")]

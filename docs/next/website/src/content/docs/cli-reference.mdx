@@ -475,6 +475,16 @@ build_id = ["herdr", "--build-commit"]
 
 `todo run` keeps the checks' argv as preflight read them from the repository's checkout, so the worker's commit cannot change its own checks. Each step is recorded in herdr's worker store as an intent before its side effect and its result after it (the run's `run_*` events, with its row, in one transaction), and a herdr server that starts drives every run in progress again from its step: the start and the stop carry command ids derived from the run, so a repeated one returns the first outcome; the wait on the worker starts after the events the run already handled; a cherry-pick whose commit `master` already has is not made again; an install whose `build_id` already names `master`'s commit (a clean build of it) is not run again; a TODO commit `master` already has is not made again; and a push is not repeated when `origin`'s `master` already contains the local one. One server drives a run at a time: its driver holds the run's lock file next to the worker store (`run-<run-id>.lock`). After a live handoff the old server's drivers let go of their runs at their next step or liveness check, without blocking them, and the new server's driver waits for the lock (a `run_lock_wait` event) until the old server let go or ended; the operating system releases the lock then, so no timer decides it.
 
+Herdr's server records the life of each TODO item a run works on, so you can look through finished items afterwards (see `history.*` in the socket API):
+
+```bash
+herdr history [--repo DIR] [--json]
+herdr history --item <item-id> [--repo DIR] [--json]
+herdr history reconcile [--repo DIR] [--json]
+```
+
+The records live in the worker store on this machine, outside the repository and never committed, one append-only row per event of an item's life, written in the transaction of the run event that causes it: `claimed` when `todo run` starts a run (with the item's whole text in `TODO.md` at that moment and the ids of every item there), `noted` when a run's `--note` is committed (the note), `closed` when a run's `--close` is committed (the decision, the item's last text, and the follow-ups: the items in `TODO.md` after the close that were not there at the claim), `aborted` and `blocked` when the run ends so (the reason). A record names its run and attempt by id and copies nothing of them. `history` lists the recorded items, the most recent first, each with its last record and title. `history --item` prints the item's timeline: each record, then each run with its status and TODO commit, and each attempt with its worker, verdict, the coordinator's decision, its commit and the commit it landed; an item without records is refused with `history_item_not_found`. `history reconcile`, meant for a coordinator's start, compares the repository's `TODO.md` (of `--repo DIR`, default the current directory) with the records and reports claims without an end (no note, close, abort or block of their run; a run still in progress is marked so) and items seen at a claim that left `TODO.md` without a `closed` record. It only reports; it never writes or drops a record. Runs started before the records existed have none. Times are printed in UTC; `--json` prints the server's reply.
+
 ## Direct terminal attach
 
 ```bash

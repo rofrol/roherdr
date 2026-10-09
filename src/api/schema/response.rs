@@ -4,6 +4,7 @@ use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::coordinators::CoordinatorInfo;
 use super::events::EventEnvelope;
+use super::history::{HistoryItem, HistoryItemSummary, HistoryReconcile};
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
@@ -109,6 +110,19 @@ pub enum ResponseResult {
         /// With `commit`: the landing that named the run.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         landing: Option<TodoLanding>,
+    },
+    /// `history.list`'s reply: each recorded item with its latest record,
+    /// the most recent first.
+    HistoryList {
+        items: Vec<HistoryItemSummary>,
+    },
+    /// `history.item`'s reply.
+    HistoryItem {
+        item: HistoryItem,
+    },
+    /// `history.reconcile`'s reply.
+    HistoryReconcile {
+        reconcile: HistoryReconcile,
     },
     /// `todo.wait`'s reply: the event and the run as it is now.
     TodoRunEvent {

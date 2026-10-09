@@ -1343,7 +1343,10 @@ impl App {
             | Method::TodoResume(_)
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
-            | Method::TodoRuns(_) => {
+            | Method::TodoRuns(_)
+            | Method::HistoryList(_)
+            | Method::HistoryItem(_)
+            | Method::HistoryReconcile(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",
