@@ -548,3 +548,16 @@ transcripts (2026-10-09, `docs/coordinator-audit-2026-10-09.md`: 244 turn
 ends, 0 caught by wording, 3 silent stops by hand, 1.2 per 100 vs 5.6
 before). The follow-up is the item "A state-based coordinator stop check,
 in shadow mode first" (decided by the user 2026-10-09).
+
+## Enforcing the added-delay rule
+
+The global rule "added delay is a bug signal" (dotfiles c348422) did not
+hold on its own, so it got enforcement: a PreToolUse hook
+(`~/.claude/hooks/delay-check.py`, dotfiles be4a352) denies waits and
+give-up times without a `delay: <reason>` marker; zero-length values pass
+since 2026-10-09 (dotfiles 903e9f0, which also stopped `TIMEOUT = 0.5`
+slipping through). Headless workers start with `disableAllHooks`, so herdr
+runs `[workers] pre_tool_checks` through an SDK PreToolUse callback instead
+(d2c166a6; failures fail open as `pre_tool_check_failed` events), and the
+user's herdr config sets it to the delay check (dotfiles 9c70342, approved
+2026-10-09).
