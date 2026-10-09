@@ -1681,6 +1681,16 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the item history keep them reachable; per-state glyphs instead of
   one green circle.
 
+- [ ] DeepSeek joins the default consult round as a third model (user, [t-evfsfkkc]
+  2026-10-09, relayed by the try-roguix coordinator: "add deepseek as an
+  additional one to those two models" ... "in the skill"). In
+  `plugins/consult/skills/consult/SKILL.md`, the default set becomes sol +
+  MiMo + DeepSeek (`python3 "$D/../deepseek/ask_deepseek.py"`), replacing
+  "DeepSeek left the default set on 2026-10-03"; keep the history line and
+  the self-consultation pairs consistent (a MiMo or GPT coordinator still
+  never asks itself). Check the installed copy under `~/.claude/skills`
+  follows the plugin.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
