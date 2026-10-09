@@ -102,6 +102,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   lists each verify check by name and argv and asks the worker to run and
   report them; a diff under `src/api/` or `tests/fixtures/` adds the `tests`
   check (`run_check_added` event); the v1 client-method line.
+  Allowlist slice done 2026-10-10 (run `r-5ft5ezc4`): a PreToolUse check in
+  coordinator tabs (compound commands parsed, unparseable denied; writes only
+  in the scratchpad; TODO.md/DECISIONS.md only through todo_edit; denials name
+  the allowed path); `# herdr-override: <reason>` recorded through
+  `coordinator.record_override` (append-only table, a notification) and
+  listed by `herdr history overrides`. Kept by the coordinator: Read/Grep/Glob
+  everywhere, Skill, ToolSearch, TodoWrite and the own-background-task tools
+  allowed. Not active until `herdr integration install claude` runs, which
+  needs the user's approval (Needs a decision). Limits: the scratchpad is
+  recognised by Claude's path layout; no check without python3; Windows'
+  PowerShell hook ignores it.
 
 - [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
   baby-sitting the models through rules in AGENTS.md etc.; where are the
