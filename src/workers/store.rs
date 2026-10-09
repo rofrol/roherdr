@@ -19,8 +19,8 @@ use serde_json::Value;
 use super::runs::{Attempt, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{
-    TodoLanding, TodoLandingSource, TodoRunInfo, TodoRunStatus, TodoStep, WorkerState,
-    WorkerTurnResult,
+    HistoryEvent, HistoryEventKind, TodoLanding, TodoLandingSource, TodoRunInfo, TodoRunStatus,
+    TodoStep, WorkerState, WorkerTurnResult,
 };
 
 /// The database file, inside the session's worker directory.
@@ -465,6 +465,37 @@ SELECT json_extract(p.body, '$.commit'), r.id, r.attempt, r.item,
     p.ts_ms
 FROM events p JOIN runs r ON r.id = p.worker_id
 WHERE p.type = 'run_picked' AND json_extract(p.body, '$.commit') IS NOT NULL;
+"#,
+    r#"
+-- The life of each TODO item, one row per event, written with the run event
+-- that caused it in the same transaction: `claimed` (`run_created`; its
+-- `item_text` the item's text in TODO.md then, `ids_at_claim` the ids of
+-- every item there then), `noted` and `closed` (`run_todo_committed`; `text`
+-- the note or the decision, a close's `item_text` the item's last text and
+-- `follow_ups` the ids in TODO.md after it that were not there at the
+-- claim), `aborted` and `blocked` (the run's event of that kind; `text`
+-- why). Rows name runs and attempts by id (landings by run and attempt);
+-- they never copy them. Append-only: the triggers refuse every change.
+-- Runs recorded before have no rows.
+CREATE TABLE item_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('claimed', 'noted', 'closed', 'aborted', 'blocked')),
+    run_id TEXT,
+    attempt INTEGER,
+    text TEXT,
+    item_text TEXT,
+    ids_at_claim TEXT NOT NULL DEFAULT '[]',
+    follow_ups TEXT NOT NULL DEFAULT '[]',
+    ts INTEGER NOT NULL
+);
+CREATE INDEX item_history_by_item ON item_history (repo, item, id);
+CREATE TRIGGER item_history_no_update BEFORE UPDATE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+CREATE TRIGGER item_history_no_delete BEFORE DELETE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
 "#,
 ];
 
@@ -1312,6 +1343,130 @@ fn attempt_from_row(row: &rusqlite::Row<'_>, at: usize) -> StoreResult<Attempt> 
     })
 }
 
+/// A record of an item's life as it is appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NewHistory {
+    pub(super) repo: String,
+    pub(super) item: String,
+    pub(super) kind: HistoryEventKind,
+    pub(super) run_id: Option<String>,
+    pub(super) attempt: Option<u32>,
+    pub(super) text: Option<String>,
+    pub(super) item_text: Option<String>,
+    pub(super) ids_at_claim: Vec<String>,
+    pub(super) follow_ups: Vec<String>,
+}
+
+/// The record a run's event writes, if any: the claim with `run_created`
+/// (which carries the item's text and the ids in TODO.md), the note or close
+/// with `run_todo_committed` (a close carries the item's last text and the
+/// follow-ups), the run's `blocked` and `aborted` events.
+fn history_of(run: &Run, event: &Value) -> Option<NewHistory> {
+    let strings = |value: &Value| -> Vec<String> {
+        serde_json::from_value(value.clone()).unwrap_or_default()
+    };
+    let text = |value: &Value| value.as_str().map(str::to_owned);
+    let record = |kind| NewHistory {
+        repo: run.info.repo.clone(),
+        item: run.info.item.clone(),
+        kind,
+        run_id: Some(run.info.run_id.clone()),
+        attempt: Some(run.info.attempt),
+        text: None,
+        item_text: None,
+        ids_at_claim: Vec::new(),
+        follow_ups: Vec::new(),
+    };
+    match event["type"].as_str()? {
+        "run_created" => Some(NewHistory {
+            item_text: text(&event["item_text"]),
+            ids_at_claim: strings(&event["item_ids"]),
+            ..record(HistoryEventKind::Claimed)
+        }),
+        "run_todo_committed" => match (&run.finish.note, &run.finish.close) {
+            (Some(note), _) => Some(NewHistory {
+                text: Some(note.clone()),
+                ..record(HistoryEventKind::Noted)
+            }),
+            (None, Some(decision)) => Some(NewHistory {
+                text: Some(decision.clone()),
+                item_text: text(&event["item_text"]),
+                follow_ups: strings(&event["follow_ups"]),
+                ..record(HistoryEventKind::Closed)
+            }),
+            (None, None) => None,
+        },
+        "run_event" => {
+            let kind = match event["kind"].as_str()? {
+                "blocked" => HistoryEventKind::Blocked,
+                "aborted" => HistoryEventKind::Aborted,
+                _ => return None,
+            };
+            Some(NewHistory {
+                text: text(&event["event"]["error"]),
+                ..record(kind)
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A stored record of an item's life, with the ids TODO.md had at a claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StoredHistory {
+    pub(super) event: HistoryEvent,
+    pub(super) ids_at_claim: Vec<String>,
+}
+
+impl Store {
+    /// The records of items' lives, oldest first: of `repo` and `item` when
+    /// given.
+    pub(super) fn item_history(
+        &self,
+        repo: Option<&str>,
+        item: Option<&str>,
+    ) -> StoreResult<Vec<StoredHistory>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT id, repo, item, kind, ts, run_id, attempt, text, item_text, ids_at_claim, \
+             follow_ups FROM item_history
+             WHERE (?1 IS NULL OR repo = ?1) AND (?2 IS NULL OR item = ?2) ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![repo, item], |row| {
+            let list = |index: usize| -> StoreResult<Vec<String>> {
+                Ok(serde_json::from_str(&row.get::<_, String>(index)?).unwrap_or_default())
+            };
+            Ok(StoredHistory {
+                event: HistoryEvent {
+                    id: row.get(0)?,
+                    repo: row.get(1)?,
+                    item: row.get(2)?,
+                    kind: serde_json::from_value(Value::String(row.get(3)?))
+                        .unwrap_or(HistoryEventKind::Unknown),
+                    ts_ms: row.get::<_, i64>(4)? as u64,
+                    run_id: row.get(5)?,
+                    attempt: row.get(6)?,
+                    text: row.get(7)?,
+                    item_text: row.get(8)?,
+                    follow_ups: list(10)?,
+                },
+                ids_at_claim: list(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// The commits a run landed, by attempt.
+    pub(super) fn landings_of_run(&self, run_id: &str) -> StoreResult<Vec<(u32, String)>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT attempt, landed_sha FROM landings WHERE run_id = ?1 ORDER BY ts, landed_sha",
+        )?;
+        let rows = statement.query_map([run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+}
+
 /// One row of `attempts`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AttemptRow {
@@ -1414,7 +1569,31 @@ impl Tx<'_> {
                 attempt.verification,
             ],
         )?;
+        if let Some(record) = history_of(run, event) {
+            self.item_history(&record, at_ms)?;
+        }
         Ok(seq)
+    }
+
+    /// Appends one record of an item's life.
+    fn item_history(&self, record: &NewHistory, at_ms: u64) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO item_history (repo, item, kind, run_id, attempt, text, item_text, \
+             ids_at_claim, follow_ups, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                record.repo,
+                record.item,
+                enum_text(&record.kind),
+                record.run_id,
+                record.attempt,
+                record.text,
+                record.item_text,
+                serde_json::to_string(&record.ids_at_claim).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&record.follow_ups).unwrap_or_else(|_| "[]".into()),
+                at_ms as i64,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Records a commit the run landed on `master`; a landing recorded
@@ -1938,6 +2117,7 @@ mod tests {
                  DROP TABLE usage_gates;
                  DROP TABLE attempts;
                  DROP TABLE landings;
+                 DROP TABLE item_history;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1991,8 +2171,9 @@ mod tests {
                  DROP TABLE usage_gates;
                  DROP TABLE attempts;
                  DROP TABLE landings;
+                 DROP TABLE item_history;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 12
+                MIGRATIONS.len() - 13
             ))
             .unwrap();
         drop(store);
@@ -2037,8 +2218,9 @@ mod tests {
                  UPDATE workers SET verification = '{{\"verdict\":\"verified\"}}' WHERE id = 'w2';
                  DROP TABLE attempts;
                  DROP TABLE landings;
+                 DROP TABLE item_history;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 1
+                MIGRATIONS.len() - 2
             ))
             .unwrap();
         drop(store);
@@ -2099,6 +2281,104 @@ mod tests {
             "landed1"
         );
         assert_eq!(store.landing_of("c1").unwrap(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_runs_events_append_its_items_history_which_takes_no_change() {
+        let dir = scratch("item-history");
+        let store = Store::open(&dir.join(STORE_FILE)).unwrap();
+        store
+            .connection()
+            .execute_batch(
+                "INSERT INTO runs (id, repo, item, step, status, attempt, task, message, paths,
+                     check_name, check_argv, created_ms, updated_ms)
+                 VALUES ('r-aaaaaaaa', '/repo', 't-abcd2345', 'start', 'running', 1, 'task',
+                     'feat: x', '[]', 'ok', '[]', 1, 1);",
+            )
+            .unwrap();
+        let mut run = store.run("r-aaaaaaaa").unwrap().unwrap();
+        let write = |run: &mut Run, event: Value, at: u64| {
+            store
+                .transaction(|tx| tx.run_event(run, &event, false, at))
+                .unwrap();
+        };
+        write(
+            &mut run,
+            json!({"type": "run_created", "item_text": "- [ ] X [t-abcd2345]\n",
+                "item_ids": ["t-abcd2345", "t-bcde3456"]}),
+            10,
+        );
+        // Events that are not part of the item's life write no record.
+        write(&mut run, json!({"type": "run_installed"}), 11);
+        write(
+            &mut run,
+            json!({"type": "run_event", "kind": "review", "event": {}}),
+            12,
+        );
+        run.info.status = TodoRunStatus::Blocked;
+        write(
+            &mut run,
+            json!({"type": "run_event", "kind": "blocked", "event": {"error": "no base"}}),
+            13,
+        );
+        run.finish.close = Some("## Decided\n".into());
+        write(
+            &mut run,
+            json!({"type": "run_todo_committed", "item_text": "- [ ] X [t-abcd2345]\n  more\n",
+                "follow_ups": ["t-cdef4567"]}),
+            14,
+        );
+        let records = store
+            .item_history(Some("/repo"), Some("t-abcd2345"))
+            .unwrap();
+        let kinds: Vec<_> = records.iter().map(|record| record.event.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Blocked,
+                HistoryEventKind::Closed
+            ]
+        );
+        let (claimed, blocked, closed) = (&records[0], &records[1], &records[2]);
+        assert_eq!(claimed.ids_at_claim, ["t-abcd2345", "t-bcde3456"]);
+        assert_eq!(
+            (
+                claimed.event.item_text.as_deref(),
+                claimed.event.ts_ms,
+                claimed.event.run_id.as_deref(),
+                claimed.event.attempt
+            ),
+            (
+                Some("- [ ] X [t-abcd2345]\n"),
+                10,
+                Some("r-aaaaaaaa"),
+                Some(1)
+            )
+        );
+        assert_eq!(blocked.event.text.as_deref(), Some("no base"));
+        assert_eq!(closed.event.text.as_deref(), Some("## Decided\n"));
+        assert_eq!(
+            closed.event.item_text.as_deref(),
+            Some("- [ ] X [t-abcd2345]\n  more\n")
+        );
+        assert_eq!(closed.event.follow_ups, ["t-cdef4567"]);
+        assert!(store.item_history(Some("/other"), None).unwrap().is_empty());
+
+        // Append-only: a change or a deletion is refused.
+        for change in [
+            "UPDATE item_history SET text = 'x'",
+            "DELETE FROM item_history",
+        ] {
+            let refused = store
+                .connection()
+                .execute(change, [])
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("append-only"), "{refused}");
+        }
+        assert_eq!(count(&store, "item_history"), 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 

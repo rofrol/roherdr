@@ -17,7 +17,7 @@ use super::{
     command_with, git, git_with, new_event, tail, todo_titles, Run, CHECKS_FILE, DECISIONS_FILE,
     RUN_ENV, TODO_EDIT, TODO_FILE,
 };
-use crate::api::schema::{TodoEventKind, TodoRunStatus, TodoStep};
+use crate::api::schema::{HistoryEventKind, TodoEventKind, TodoRunStatus, TodoStep};
 use crate::workers::{lock, WorkerSupervisor};
 
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
@@ -409,6 +409,13 @@ impl WorkerSupervisor {
         message: &str,
         already: bool,
     ) -> Result<(), String> {
+        // A close records the item's last text and the items added since
+        // the claim with this event, in the item's history.
+        let (item_text, follow_ups) = if run.finish.note.is_none() && run.finish.close.is_some() {
+            self.closed_item(run, &commit)
+        } else {
+            (None, Vec::new())
+        };
         run.info.todo_commit = Some(commit.clone());
         run.info.step = TodoStep::Push;
         self.run_step(
@@ -419,9 +426,52 @@ impl WorkerSupervisor {
                 "message": message,
                 "already": already,
                 "step": run.info.step,
+                "item_text": item_text,
+                "follow_ups": follow_ups,
             }),
         )?;
         Ok(())
+    }
+
+    /// The closed item's text before the close commit `commit`, and the
+    /// ids of the items in TODO.md after it that were not there at the
+    /// run's claim (or, for a run claimed before claims were recorded, at
+    /// its base).
+    fn closed_item(&self, run: &Run, commit: &str) -> (Option<String>, Vec<String>) {
+        let repo = Path::new(&run.info.repo);
+        let todo_at = |rev: &str| git(repo, &["show", &format!("{rev}:{TODO_FILE}")]).ok();
+        let item_text = todo_at(&format!("{commit}^"))
+            .and_then(|text| todo_titles::item_text(&text, &run.info.item));
+        let claimed: Option<BTreeSet<String>> = self
+            .run_store()
+            .ok()
+            .and_then(|store| {
+                store
+                    .item_history(Some(&run.info.repo), Some(&run.info.item))
+                    .ok()
+            })
+            .and_then(|records| {
+                records.into_iter().find(|record| {
+                    record.event.kind == HistoryEventKind::Claimed
+                        && record.event.run_id.as_deref() == Some(run.info.run_id.as_str())
+                })
+            })
+            .map(|record| record.ids_at_claim.into_iter().collect());
+        let before = claimed.or_else(|| {
+            run.info
+                .base
+                .as_deref()
+                .and_then(todo_at)
+                .map(|text| todo_titles::item_ids(&text))
+        });
+        let follow_ups = match (before, todo_at(commit)) {
+            (Some(before), Some(after)) => todo_titles::item_ids(&after)
+                .into_iter()
+                .filter(|id| !before.contains(id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        (item_text, follow_ups)
     }
 
     /// The step's files as `todo_edit.py` leaves them, edited on copies of

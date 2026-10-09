@@ -2564,6 +2564,48 @@
           ],
           "type": "object"
         },
+        "HistoryItemParams": {
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "repo": {
+              "description": "The item's repository: a directory in it. Without it, the item's\nrecords in every repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "type": "object"
+        },
+        "HistoryListParams": {
+          "properties": {
+            "repo": {
+              "description": "Only the items of this repository: a directory in it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "HistoryReconcileParams": {
+          "properties": {
+            "repo": {
+              "description": "A directory in the repository whose `TODO.md` is compared with its\nrecords.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo"
+          ],
+          "type": "object"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -7137,6 +7179,57 @@
           "type": "object"
         },
         {
+          "description": "The TODO items herdr recorded, each with its latest record.",
+          "properties": {
+            "method": {
+              "const": "history.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/HistoryListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One TODO item's timeline: its records and the runs they name.",
+          "properties": {
+            "method": {
+              "const": "history.item",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/HistoryItemParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Compares a repository's `TODO.md` with the records: claims without\nan end, items deleted without a `closed` record. Reports only.",
+          "properties": {
+            "method": {
+              "const": "history.reconcile",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/HistoryReconcileParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Claims a repository's coordination for a pane: a tenure, refused\nwhile another one of the repository is active.",
           "properties": {
             "method": {
@@ -10707,6 +10800,349 @@
           ],
           "type": "object"
         },
+        "HistoryAttempt": {
+          "description": "One attempt of a run on the item, from the run's records.",
+          "properties": {
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "commit": {
+              "description": "The attempt's commit as the coordinator's decision saw it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The coordinator's decision: `approve`, `retry` or `abort`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "landed_sha": {
+              "description": "The commit the attempt landed on `master`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "verdict": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerdict"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The attempt's latest verdict."
+            },
+            "worker_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "attempt"
+          ],
+          "type": "object"
+        },
+        "HistoryDeletedItem": {
+          "description": "An item herdr saw in `TODO.md` (at a claim) that is gone from it without\na `closed` record.",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "last": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/HistoryEvent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its latest record, when it has one."
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "type": "object"
+        },
+        "HistoryEvent": {
+          "description": "One record of an item's life, in the order they were written.",
+          "properties": {
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "follow_ups": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "The record's number, growing in the order of writing.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "item": {
+              "type": "string"
+            },
+            "item_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/HistoryEventKind"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "repo",
+            "item",
+            "kind",
+            "ts_ms"
+          ],
+          "type": "object"
+        },
+        "HistoryEventKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "claimed",
+              "description": "A run started on the item; `item_text` is its text in `TODO.md`\nthen.",
+              "type": "string"
+            },
+            {
+              "const": "noted",
+              "description": "The coordinator's note was appended to the item; `text` is the note.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "The item left `TODO.md` for `DECISIONS.md`: `text` is the decision,\n`item_text` the item's last text, `follow_ups` the items added since\nthe claim.",
+              "type": "string"
+            },
+            {
+              "const": "aborted",
+              "description": "The run was aborted; `text` is why.",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "description": "The run was blocked; `text` is why.",
+              "type": "string"
+            }
+          ]
+        },
+        "HistoryItem": {
+          "description": "An item's timeline.",
+          "properties": {
+            "events": {
+              "description": "The records, oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/HistoryEvent"
+              },
+              "type": "array"
+            },
+            "item": {
+              "type": "string"
+            },
+            "runs": {
+              "description": "The runs the records name, oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/HistoryRun"
+              },
+              "type": "array"
+            },
+            "title": {
+              "description": "The item's title, from its text at the last claim.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "item",
+            "events",
+            "runs"
+          ],
+          "type": "object"
+        },
+        "HistoryItemSummary": {
+          "description": "An item with its latest record.",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "last": {
+              "$ref": "#/schemas/success_response/$defs/HistoryEvent"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "repo",
+            "item",
+            "last"
+          ],
+          "type": "object"
+        },
+        "HistoryOpenClaim": {
+          "description": "A claim no `noted`, `closed`, `aborted` or `blocked` record of its run\nfollowed.",
+          "properties": {
+            "claimed_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "item": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "run_status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The run's status now; absent when the store has no such run."
+            }
+          },
+          "required": [
+            "item",
+            "run_id",
+            "claimed_ms"
+          ],
+          "type": "object"
+        },
+        "HistoryReconcile": {
+          "description": "What `history.reconcile` found; it reports, it never changes a record.",
+          "properties": {
+            "deleted_without_close": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/HistoryDeletedItem"
+              },
+              "type": "array"
+            },
+            "open_claims": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/HistoryOpenClaim"
+              },
+              "type": "array"
+            },
+            "repo": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo",
+            "open_claims",
+            "deleted_without_close"
+          ],
+          "type": "object"
+        },
+        "HistoryRun": {
+          "description": "A run on the item, with its attempts.",
+          "properties": {
+            "attempts": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/HistoryAttempt"
+              },
+              "type": "array"
+            },
+            "created_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/TodoRunStatus"
+            },
+            "todo_commit": {
+              "description": "The run's TODO commit (its note or close), when it made one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run_id",
+            "status",
+            "created_ms",
+            "attempts"
+          ],
+          "type": "object"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -12885,6 +13321,60 @@
               "required": [
                 "type",
                 "runs"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/HistoryItemSummary"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "history_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`history.item`'s reply.",
+              "properties": {
+                "item": {
+                  "$ref": "#/schemas/success_response/$defs/HistoryItem"
+                },
+                "type": {
+                  "const": "history_item",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "item"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`history.reconcile`'s reply.",
+              "properties": {
+                "reconcile": {
+                  "$ref": "#/schemas/success_response/$defs/HistoryReconcile"
+                },
+                "type": {
+                  "const": "history_reconcile",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reconcile"
               ],
               "type": "object"
             },

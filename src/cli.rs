@@ -26,6 +26,7 @@ mod agent;
 mod api;
 mod completion;
 mod coordinator;
+mod history;
 mod integration;
 mod machine;
 mod notification;
@@ -131,6 +132,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "worker" => worker::run_worker_command(&args[2..])?,
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
         "todo" => todo::run_todo_command(&args[2..])?,
+        "history" => history::run_history_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,

@@ -36,6 +36,9 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
+            | Method::HistoryList(_)
+            | Method::HistoryItem(_)
+            | Method::HistoryReconcile(_)
     )
 }
 
@@ -161,6 +164,21 @@ fn handle_immediate(
             let (runs, landing) =
                 supervisor.todo_runs(params.repo.as_deref(), params.commit.as_deref())?;
             return Ok(ResponseResult::TodoRuns { runs, landing });
+        }
+        Method::HistoryList(params) => {
+            return Ok(ResponseResult::HistoryList {
+                items: supervisor.history_list(params.repo.as_deref())?,
+            })
+        }
+        Method::HistoryItem(params) => {
+            return Ok(ResponseResult::HistoryItem {
+                item: supervisor.history_item(&params.item, params.repo.as_deref())?,
+            })
+        }
+        Method::HistoryReconcile(params) => {
+            return Ok(ResponseResult::HistoryReconcile {
+                reconcile: supervisor.history_reconcile(&params.repo)?,
+            })
         }
         Method::WorkerDrain(params) => {
             return Ok(ResponseResult::WorkerDrain {

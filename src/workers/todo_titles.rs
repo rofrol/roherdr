@@ -4,7 +4,7 @@
 //! id right after the box (`- [ ] [t-xxxxxxxx] <title>`), as
 //! `scripts/todo_edit.py` writes them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 /// Characters a title keeps; a longer one is cut with `…`.
@@ -20,6 +20,52 @@ pub(super) fn read_titles(repo: &Path) -> HashMap<String, String> {
 
 pub(super) fn parse_titles(text: &str) -> HashMap<String, String> {
     text.lines().filter_map(item_title).collect()
+}
+
+/// The ids of the items in `text`.
+pub(super) fn item_ids(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter_map(item_title)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The whole text of item `id` in `text`: its first line and every line up
+/// to the next item or heading (outside a code fence), trailing blank lines
+/// dropped, as `scripts/todo_edit.py` delimits an item.
+pub(super) fn item_text(text: &str, id: &str) -> Option<String> {
+    let mut in_fence = false;
+    let mut lines: Option<Vec<&str>> = None;
+    for line in text.lines() {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+        }
+        let starts_item = ["- [ ] ", "- [x] ", "- [X] "]
+            .iter()
+            .any(|box_| line.starts_with(box_));
+        if !in_fence && (line.starts_with('#') || starts_item) {
+            if lines.is_some() {
+                break;
+            }
+            if item_title(line).is_some_and(|(found, _)| found == id) {
+                lines = Some(vec![line]);
+            }
+            continue;
+        }
+        if let Some(lines) = lines.as_mut() {
+            lines.push(line);
+        }
+    }
+    let mut lines = lines?;
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    Some(lines.join("\n") + "\n")
+}
+
+/// An item's title from its text's first line.
+pub(super) fn title_of_text(text: &str) -> Option<String> {
+    item_title(text.lines().next()?).map(|(_, title)| title)
 }
 
 /// An item's first line as `(id, title)`; none for any other line or an
@@ -71,6 +117,30 @@ mod tests {
         );
         assert_eq!(titles["t-qrst6723"], "Which one?");
         assert_eq!(titles["t-bbbbbbbb"], "Done already");
+    }
+
+    #[test]
+    fn an_items_text_runs_to_the_next_item_or_heading() {
+        let text = "# TODO\n\n\
+                    - [ ] First [t-abcd2345]\n  more\n\n  ```\n  # not a heading\n  ```\n\n\
+                    - [ ] Second [t-qrst6723]\n  two\n\n## Done\n";
+        assert_eq!(
+            item_text(text, "t-abcd2345").as_deref(),
+            Some("- [ ] First [t-abcd2345]\n  more\n\n  ```\n  # not a heading\n  ```\n")
+        );
+        assert_eq!(
+            item_text(text, "t-qrst6723").as_deref(),
+            Some("- [ ] Second [t-qrst6723]\n  two\n")
+        );
+        assert_eq!(item_text(text, "t-zzzzzzzz"), None);
+        assert_eq!(
+            item_ids(text).into_iter().collect::<Vec<_>>(),
+            ["t-abcd2345", "t-qrst6723"]
+        );
+        assert_eq!(
+            title_of_text("- [ ] Second [t-qrst6723]\n  two\n").as_deref(),
+            Some("Second")
+        );
     }
 
     #[test]

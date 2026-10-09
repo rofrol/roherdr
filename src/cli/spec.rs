@@ -45,6 +45,7 @@ pub(super) fn command() -> Command {
         .subcommand(worker_command())
         .subcommand(coordinator_command())
         .subcommand(todo_command())
+        .subcommand(history_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -454,6 +455,20 @@ fn todo_command() -> Command {
             Command::new("runs")
                 .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
+}
+
+fn history_command() -> Command {
+    Command::new("history")
+        .about("Show the recorded life of TODO items: claims, runs, notes, closes")
+        .arg(option("item", "ITEM_ID"))
+        .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+        .arg(flag("json"))
+        .subcommand(
+            Command::new("reconcile")
+                .about("Report claims without an end and items deleted without a close")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("json")),
         )
 }
 

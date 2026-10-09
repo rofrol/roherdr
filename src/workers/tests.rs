@@ -5432,8 +5432,9 @@ fn a_handoff_keeps_a_brokered_worker_mid_turn_and_the_new_server_ends_its_turn()
 mod todo_runs {
     use super::*;
     use crate::api::schema::{
-        TodoAction, TodoEventKind, TodoLandingSource, TodoResumeParams, TodoRunEvent, TodoRunInfo,
-        TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams, WorkerCheckOutcome, WorkerVerdict,
+        HistoryEventKind, TodoAction, TodoEventKind, TodoLandingSource, TodoResumeParams,
+        TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams,
+        WorkerCheckOutcome, WorkerVerdict,
     };
 
     const ITEM: &str = "t-abcd2345";
@@ -6514,6 +6515,18 @@ mod todo_runs {
         // The repository is free for the next run.
         let store = fixture.supervisor.shared.store.as_ref().unwrap();
         assert!(store.active_run(&run.repo).unwrap().is_none());
+        // The item's history ends the claim with the block and its reason.
+        let item = fixture
+            .supervisor
+            .history_item(ITEM, Some(&run.repo))
+            .unwrap();
+        let kinds: Vec<_> = item.events.iter().map(|event| event.kind).collect();
+        assert_eq!(
+            kinds,
+            [HistoryEventKind::Claimed, HistoryEventKind::Blocked]
+        );
+        assert_eq!(item.events[1].text, blocked.error);
+        assert_eq!(item.events[1].attempt, Some(3));
     }
 
     #[test]
@@ -7637,6 +7650,199 @@ mod todo_runs {
         let cleaned = run_events(&fixture, &second.run_id, "run_cleaned");
         assert_eq!(cleaned[0]["deleted"], serde_json::json!([]));
         assert_eq!(rev(&remote, "master"), rev(&fixture.repo, "master"));
+    }
+
+    /// The repository as runs record it.
+    fn repo_of(fixture: &Fixture) -> String {
+        crate::workers::repository_of(&fixture.repo).unwrap()
+    }
+
+    fn history_kinds(item: &crate::api::schema::HistoryItem) -> Vec<HistoryEventKind> {
+        item.events.iter().map(|event| event.kind).collect()
+    }
+
+    #[test]
+    fn an_items_history_records_its_claim_close_and_follow_ups_and_reconcile_reports_gaps() {
+        let fixture = todo_repo("history-close");
+        with_finish(&fixture);
+        let repo = repo_of(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The coordinator files a follow-up while the run works.
+        let todo = fixture.repo.join("TODO.md");
+        let mut text = std::fs::read_to_string(&todo).unwrap();
+        text.push_str("\n- [ ] A follow-up [t-cdef4567]\n");
+        std::fs::write(&todo, text).unwrap();
+        git_in(
+            &fixture.repo,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "docs(todo): follow-up",
+                "--",
+                "TODO.md",
+            ],
+        );
+        let decision = "## Closed by the driver\n\n- Chosen.\n";
+        approve_with(&fixture, &run.run_id, review.event_id, None, Some(decision));
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+
+        let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history_kinds(&item),
+            [HistoryEventKind::Claimed, HistoryEventKind::Closed]
+        );
+        assert_eq!(item.title.as_deref(), Some("The driven item"));
+        let item_text = format!("- [ ] The driven item [{ITEM}]\n  Its text.\n");
+        let (claimed, closed) = (&item.events[0], &item.events[1]);
+        assert_eq!(claimed.item_text.as_deref(), Some(item_text.as_str()));
+        assert_eq!(claimed.run_id.as_deref(), Some(run.run_id.as_str()));
+        assert_eq!(closed.text.as_deref(), Some(decision));
+        assert_eq!(closed.item_text.as_deref(), Some(item_text.as_str()));
+        assert_eq!(closed.follow_ups, ["t-cdef4567"]);
+        assert_eq!(item.runs.len(), 1, "{item:#?}");
+        let recorded = &item.runs[0];
+        assert_eq!(
+            (recorded.status, &recorded.todo_commit),
+            (TodoRunStatus::Done, &finished.todo_commit)
+        );
+        let attempt = &recorded.attempts[0];
+        assert_eq!(
+            (
+                attempt.verdict,
+                attempt.decision.as_deref(),
+                attempt.landed_sha.as_ref()
+            ),
+            (
+                Some(WorkerVerdict::Verified),
+                Some("approve"),
+                finished.picked.as_ref()
+            )
+        );
+        let list = fixture.supervisor.history_list(Some(&repo)).unwrap();
+        assert_eq!(list.len(), 1, "{list:#?}");
+        assert_eq!(
+            (list[0].item.as_str(), list[0].last.kind),
+            (ITEM, HistoryEventKind::Closed)
+        );
+        assert_eq!(list[0].title.as_deref(), Some("The driven item"));
+        let clean = fixture.supervisor.history_reconcile(&repo).unwrap();
+        assert!(clean.open_claims.is_empty(), "{clean:#?}");
+        assert!(clean.deleted_without_close.is_empty(), "{clean:#?}");
+
+        // An item seen at the claim that leaves TODO.md by hand is reported.
+        let text = std::fs::read_to_string(&todo).unwrap();
+        let line = format!("- [ ] The second item [{ITEM2}]\n");
+        assert!(text.contains(&line), "{text}");
+        std::fs::write(&todo, text.replace(&line, "")).unwrap();
+        let gaps = fixture.supervisor.history_reconcile(&repo).unwrap();
+        assert!(gaps.open_claims.is_empty(), "{gaps:#?}");
+        assert_eq!(gaps.deleted_without_close.len(), 1, "{gaps:#?}");
+        assert_eq!(gaps.deleted_without_close[0].item, ITEM2);
+        // The reconcile reports; it writes nothing.
+        assert_eq!(
+            fixture
+                .supervisor
+                .history_item(ITEM, Some(&repo))
+                .unwrap()
+                .events,
+            item.events
+        );
+        let unknown = fixture
+            .supervisor
+            .history_item("t-zzzzzzzz", Some(&repo))
+            .unwrap_err();
+        assert_eq!(unknown.code(), "history_item_not_found", "{unknown}");
+    }
+
+    #[test]
+    fn notes_aborts_and_runs_in_progress_are_in_the_items_history() {
+        let fixture = todo_repo("history-note");
+        with_finish(&fixture);
+        let repo = repo_of(&fixture);
+        let first = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &first.run_id, None);
+        approve_with(
+            &fixture,
+            &first.run_id,
+            review.event_id,
+            Some("Done by the driver.\n"),
+            None,
+        );
+        let (done, _) = wait(&fixture, &first.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+
+        let second = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                message: "feat: add b".into(),
+                ..params(&fixture, "commit b.txt feat: add b", "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &second.run_id, None);
+        abort(&fixture, &second.run_id, review.event_id);
+
+        let third = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                message: "feat: add c".into(),
+                ..params(&fixture, "commit c.txt feat: add c", "ok")
+            })
+            .unwrap();
+        let (review, _) = wait(&fixture, &third.run_id, None);
+        let reconcile = fixture.supervisor.history_reconcile(&repo).unwrap();
+        assert_eq!(reconcile.open_claims.len(), 1, "{reconcile:#?}");
+        assert_eq!(
+            (
+                reconcile.open_claims[0].run_id.as_str(),
+                reconcile.open_claims[0].run_status
+            ),
+            (third.run_id.as_str(), Some(TodoRunStatus::Waiting))
+        );
+
+        let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history_kinds(&item),
+            [
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Noted,
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Aborted,
+                HistoryEventKind::Claimed
+            ]
+        );
+        assert_eq!(
+            item.events[1].text.as_deref(),
+            Some("Done by the driver.\n")
+        );
+        let aborted = item.events[3].text.as_deref().unwrap_or_default();
+        assert!(aborted.contains("superseded"), "{aborted}");
+        // The note's run is the claim's: its run is ended by it.
+        assert_eq!(item.events[1].run_id, item.events[0].run_id);
+        let statuses: Vec<_> = item.runs.iter().map(|run| run.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                TodoRunStatus::Done,
+                TodoRunStatus::Aborted,
+                TodoRunStatus::Waiting
+            ]
+        );
+        abort(&fixture, &third.run_id, review.event_id);
+        assert!(fixture
+            .supervisor
+            .history_reconcile(&repo)
+            .unwrap()
+            .open_claims
+            .is_empty());
     }
 
     #[test]
