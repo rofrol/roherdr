@@ -11,6 +11,91 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Ideas from Delta (delta.dev, the Zed team) for item history and the [t-sjjnjbxn]
+  review queue (user, 2026-10-09: "analyse with the models, also deepseek";
+  consult round 20261009-114040-88b8, sol + MiMo + DeepSeek). Delta pairs
+  each agent conversation with its checkout ("threads" instead of PRs) and
+  anchors comments to fine-grained deltas (DeltaDB, a CRDT layer over git).
+  Copy concepts only (license not stated). Agreed by all three: the
+  CRDT/delta layer is a trap for one user, one Mac and one worker slot; it
+  matters only once two writers edit the same checkout at the same time.
+  Worth taking, cheapest form:
+  - Code to conversation: the driver adds `Herdr-Item: t-...` and
+    `Herdr-Run: r-...` trailers when it lands the commit (the worker's
+    commit stays subject-only, as `verify` requires), and the store records
+    the worker and landed shas; `herdr worker runs --commit <sha>` (or
+    `herdr blame`) finds the run, its transcript and verdict. Trailers survive
+    cherry-pick and the upstream rebase; git notes do not, so not notes. A
+    run id is provenance of a commit, not a line-level anchor.
+  - Review shows the run's transcript, task, diff and check results together,
+    and an approval is bound to the exact commit and base (a new commit
+    invalidates it).
+  - `retry` carries the previous attempt automatically: its commit (to start
+    from) and the coordinator's review text, instead of the coordinator
+    writing "cherry-pick <sha> first" into every retry task.
+  Dismissed: verify on the landed tree (already done: `just clean-install`
+  runs `just check` on master with the cherry-pick before installing and
+  pushing). Consider (MiMo): the crate extraction before a second consumer
+  exists may be premature.
+  Decided by the user 2026-10-09: approved, with this data design.
+  Today `runs` keeps one row per run and overwrites `worker_id`, `branch`
+  and `task` on `retry`, so attempts survive only as `events` plus `workers`
+  rows. Design:
+  1. `attempts(run_id, attempt, worker_id, branch, base, task, from_attempt,
+     from_commit, commit, review_event, review_decision, review_text,
+     verification, PRIMARY KEY (run_id, attempt))`. On `retry` the driver
+     itself cherry-picks `from_commit` onto the new branch before starting
+     the worker and appends the previous attempt's `review_text` to the task.
+  2. `approve` records `(commit, base)`; before the cherry-pick the driver
+     compares the branch tip with the approved commit and raises a new
+     `review` instead of landing a different one.
+  3. `landings(landed_sha PRIMARY KEY, run_id, attempt, item, worker_commit,
+     ts)`, plus `Herdr-Item: t-...` and `Herdr-Run: r-.../N` trailers added
+     by the driver to the landed commit (the worker's commit stays
+     subject-only). `herdr worker runs --commit <sha>` looks in `landings`,
+     then falls back to the trailers in `git log` (shas change on the
+     upstream rebase, trailers stay).
+  4. The review view joins `attempts`, `events`, the worker's transcript and
+     `git diff base..commit`; no new table.
+  Out of scope: per-change identities and line anchors (DeltaDB).
+  Line anchors and per-edit provenance, researched 2026-10-09 (user asked;
+  consult round 20261009-115028-45b9 with sol, MiMo, DeepSeek, plus a web
+  survey with licenses checked by `gh api`): no open-source project does all
+  of DeltaDB (it is not released; Zed's `text` anchor crate is
+  GPL-3.0-or-later, concepts only). Closest: git-ai (Apache-2.0, 2.8k stars,
+  active) keeps agent line ranges in `refs/notes/ai`, rewrites them on
+  rebase/amend/cherry-pick and links transcripts; jj change ids (Apache-2.0)
+  and Gerrit Change-Id are commit-level; Loro/Automerge/Yrs (MIT, Rust) give
+  exact CRDT anchors but every edit must be fed into them (agents write files
+  directly, so it becomes diff-ingestion anyway); Radicle (Apache-2.0) and
+  GitHub anchor review comments to revision + lines and mark them outdated.
+  If line anchors are wanted later, the cheap design all three models
+  converged on: anchor = (run id, `git patch-id --stable` of the commit, path,
+  byte range, preimage and context hashes), remapped by exact preimage search,
+  then rename-aware diffs, then `blame -M -C`, reported as exact, ambiguous
+  or orphaned (never moved silently). Per-edit provenance: snapshot the
+  worktree per tool call and diff (Edit/Write strings miss Bash/sed edits,
+  formatters and whole-file writes); evaluate git-ai's notes format before
+  inventing one. Not scheduled: commit-level trailers above come first.
+  Would jj help? (user, 2026-10-09: "would jj help here? ask the models";
+  round 20261009-115641-7377, sol + MiMo + DeepSeek; jj 0.45.1 is installed
+  here). All three: not in the shared checkout and not in the driver. jj
+  snapshots the whole working copy, so it would absorb other sessions'
+  uncommitted files into a change and break the allowed-paths rule; it
+  snapshots only when a jj command runs (no watcher), so per-tool-call
+  history still needs an explicit call per tool call; `jj op restore` undoes
+  jj's own state, not an install, a push or other sessions' git work;
+  workers (and Claude) know git and would bypass it; change ids do not
+  survive our git cherry-pick or the upstream rebase, so trailers + SQLite
+  stay the source of truth; jj-lib is pre-1.0, so the CLI at most. Where it
+  helps: one change id with `jj evolog` across retry/amend attempts, and
+  first-class conflicts when jj does the fork-sync rebase. Smallest
+  experiment, if ever: only in the worker slot (a jj workspace seeded from
+  master), the driver and landing stay git; measure whether `evolog`
+  replaces the planned `attempts` table and whether jj calls after each tool
+  call give usable boundaries. Not scheduled; the `attempts` table and
+  explicit worktree snapshots come first.
+
 - [ ] A history of finished TODO items to look through afterwards (user, [t-jlw2bqrz]
   2026-10-07, next: "some dropdown list under the coordinator with the TODO
   text, what was done and what conclusions, whether new TODO entries were
@@ -44,6 +129,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (`[t-...]`, minted when claimed, also a `Todo-Item:` commit trailer); the
   history is kept outside the repository, under herdr's state dir per
   repository, not committed (so it is private and local to this machine).
+  Ordered by the coordinator 2026-10-09: the item "Ideas from Delta" goes
+  first; its `attempts` and `landings` tables and the driver's
+  `Herdr-Item`/`Herdr-Run` trailers are this history's data (the decided
+  `Todo-Item:` trailer becomes `Herdr-Item:`), then a close record per item
+  and `herdr history`, then the dropdown.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user, [t-e3wrhvox]
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
@@ -1104,91 +1194,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the self-consultation pairs consistent (a MiMo or GPT coordinator still
   never asks itself). Check the installed copy under `~/.claude/skills`
   follows the plugin.
-
-- [ ] Ideas from Delta (delta.dev, the Zed team) for item history and the [t-sjjnjbxn]
-  review queue (user, 2026-10-09: "analyse with the models, also deepseek";
-  consult round 20261009-114040-88b8, sol + MiMo + DeepSeek). Delta pairs
-  each agent conversation with its checkout ("threads" instead of PRs) and
-  anchors comments to fine-grained deltas (DeltaDB, a CRDT layer over git).
-  Copy concepts only (license not stated). Agreed by all three: the
-  CRDT/delta layer is a trap for one user, one Mac and one worker slot; it
-  matters only once two writers edit the same checkout at the same time.
-  Worth taking, cheapest form:
-  - Code to conversation: the driver adds `Herdr-Item: t-...` and
-    `Herdr-Run: r-...` trailers when it lands the commit (the worker's
-    commit stays subject-only, as `verify` requires), and the store records
-    the worker and landed shas; `herdr worker runs --commit <sha>` (or
-    `herdr blame`) finds the run, its transcript and verdict. Trailers survive
-    cherry-pick and the upstream rebase; git notes do not, so not notes. A
-    run id is provenance of a commit, not a line-level anchor.
-  - Review shows the run's transcript, task, diff and check results together,
-    and an approval is bound to the exact commit and base (a new commit
-    invalidates it).
-  - `retry` carries the previous attempt automatically: its commit (to start
-    from) and the coordinator's review text, instead of the coordinator
-    writing "cherry-pick <sha> first" into every retry task.
-  Dismissed: verify on the landed tree (already done: `just clean-install`
-  runs `just check` on master with the cherry-pick before installing and
-  pushing). Consider (MiMo): the crate extraction before a second consumer
-  exists may be premature.
-  Decided by the user 2026-10-09: approved, with this data design.
-  Today `runs` keeps one row per run and overwrites `worker_id`, `branch`
-  and `task` on `retry`, so attempts survive only as `events` plus `workers`
-  rows. Design:
-  1. `attempts(run_id, attempt, worker_id, branch, base, task, from_attempt,
-     from_commit, commit, review_event, review_decision, review_text,
-     verification, PRIMARY KEY (run_id, attempt))`. On `retry` the driver
-     itself cherry-picks `from_commit` onto the new branch before starting
-     the worker and appends the previous attempt's `review_text` to the task.
-  2. `approve` records `(commit, base)`; before the cherry-pick the driver
-     compares the branch tip with the approved commit and raises a new
-     `review` instead of landing a different one.
-  3. `landings(landed_sha PRIMARY KEY, run_id, attempt, item, worker_commit,
-     ts)`, plus `Herdr-Item: t-...` and `Herdr-Run: r-.../N` trailers added
-     by the driver to the landed commit (the worker's commit stays
-     subject-only). `herdr worker runs --commit <sha>` looks in `landings`,
-     then falls back to the trailers in `git log` (shas change on the
-     upstream rebase, trailers stay).
-  4. The review view joins `attempts`, `events`, the worker's transcript and
-     `git diff base..commit`; no new table.
-  Out of scope: per-change identities and line anchors (DeltaDB).
-  Line anchors and per-edit provenance, researched 2026-10-09 (user asked;
-  consult round 20261009-115028-45b9 with sol, MiMo, DeepSeek, plus a web
-  survey with licenses checked by `gh api`): no open-source project does all
-  of DeltaDB (it is not released; Zed's `text` anchor crate is
-  GPL-3.0-or-later, concepts only). Closest: git-ai (Apache-2.0, 2.8k stars,
-  active) keeps agent line ranges in `refs/notes/ai`, rewrites them on
-  rebase/amend/cherry-pick and links transcripts; jj change ids (Apache-2.0)
-  and Gerrit Change-Id are commit-level; Loro/Automerge/Yrs (MIT, Rust) give
-  exact CRDT anchors but every edit must be fed into them (agents write files
-  directly, so it becomes diff-ingestion anyway); Radicle (Apache-2.0) and
-  GitHub anchor review comments to revision + lines and mark them outdated.
-  If line anchors are wanted later, the cheap design all three models
-  converged on: anchor = (run id, `git patch-id --stable` of the commit, path,
-  byte range, preimage and context hashes), remapped by exact preimage search,
-  then rename-aware diffs, then `blame -M -C`, reported as exact, ambiguous
-  or orphaned (never moved silently). Per-edit provenance: snapshot the
-  worktree per tool call and diff (Edit/Write strings miss Bash/sed edits,
-  formatters and whole-file writes); evaluate git-ai's notes format before
-  inventing one. Not scheduled: commit-level trailers above come first.
-  Would jj help? (user, 2026-10-09: "would jj help here? ask the models";
-  round 20261009-115641-7377, sol + MiMo + DeepSeek; jj 0.45.1 is installed
-  here). All three: not in the shared checkout and not in the driver. jj
-  snapshots the whole working copy, so it would absorb other sessions'
-  uncommitted files into a change and break the allowed-paths rule; it
-  snapshots only when a jj command runs (no watcher), so per-tool-call
-  history still needs an explicit call per tool call; `jj op restore` undoes
-  jj's own state, not an install, a push or other sessions' git work;
-  workers (and Claude) know git and would bypass it; change ids do not
-  survive our git cherry-pick or the upstream rebase, so trailers + SQLite
-  stay the source of truth; jj-lib is pre-1.0, so the CLI at most. Where it
-  helps: one change id with `jj evolog` across retry/amend attempts, and
-  first-class conflicts when jj does the fork-sync rebase. Smallest
-  experiment, if ever: only in the worker slot (a jj workspace seeded from
-  master), the driver and landing stay git; measure whether `evolog`
-  replaces the planned `attempts` table and whether jj calls after each tool
-  call give usable boundaries. Not scheduled; the `attempts` table and
-  explicit worktree snapshots come first.
 
 - [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
   (Decided by the user 2026-10-09 after consult round
