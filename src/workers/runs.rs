@@ -971,36 +971,23 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// The time a test's usage gate judges its reading at: readings are built
-/// relative to it, so a reading's age does not depend on how long the test
-/// took to reach the gate.
+/// Claude's usage at 0%: what a test's usage gate reads from the
+/// "provider" unless the test sets another answer.
 #[cfg(test)]
-pub(super) const USAGE_NOW_FOR_TEST: u64 = 1_800_000_000;
-
-/// A fresh Claude reading at 0%: what a test's usage gate reads unless the
-/// test sets another one.
-#[cfg(test)]
-pub(super) fn low_usage_for_test() -> crate::api::schema::UsageReport {
-    use crate::api::schema::{
-        ProviderUsage, ProviderUsageStatus, UsageFreshness, UsageReport, UsageWindow,
-    };
-    let now = USAGE_NOW_FOR_TEST;
+pub(super) fn low_usage_for_test() -> crate::api::schema::ProviderUsage {
+    use crate::api::schema::{ProviderUsage, ProviderUsageStatus, UsageWindow};
     let mut claude = ProviderUsage::pending("claude", "Claude");
     claude.status = ProviderUsageStatus::Ok;
-    claude.observed_at = Some(now);
     claude.windows = vec![UsageWindow {
         id: "five_hour".into(),
         label: "5h".into(),
         used_percent: 0,
-        resets_at: Some(now + 3_600),
-        observed_at: Some(now),
-        freshness: Some(UsageFreshness::Fresh),
+        resets_at: None,
+        observed_at: None,
+        freshness: None,
         error_kind: None,
     }];
-    UsageReport {
-        enabled: true,
-        providers: vec![claude],
-    }
+    claude
 }
 
 /// What preflight found.
@@ -1019,22 +1006,25 @@ impl WorkerSupervisor {
             .map_err(|error| WorkerError::Io(std::io::Error::other(error.clone())))
     }
 
-    /// The usage reading as `usage.read` returns it now, and that now.
-    fn usage_reading(&self) -> (Option<crate::api::schema::UsageReport>, u64) {
+    /// Claude's usage read from the provider now, in this call (a test's
+    /// injected answer instead); never the usage poller's cached report.
+    fn read_claude_usage(&self) -> Result<crate::api::schema::ProviderUsage, String> {
         #[cfg(test)]
         {
-            (lock(&self.shared.usage_reading).clone(), USAGE_NOW_FOR_TEST)
+            lock(&self.shared.claude_usage).clone()
         }
         #[cfg(not(test))]
         {
-            let now = crate::usage::now_unix();
-            (crate::usage::published_reading(now), now)
+            crate::usage::read_claude_now()
         }
     }
 
     #[cfg(all(test, unix))]
-    pub(super) fn set_usage_for_test(&self, report: Option<crate::api::schema::UsageReport>) {
-        *lock(&self.shared.usage_reading) = report;
+    pub(super) fn set_usage_for_test(
+        &self,
+        answer: Result<crate::api::schema::ProviderUsage, String>,
+    ) {
+        *lock(&self.shared.claude_usage) = answer;
     }
 
     /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`:
@@ -1045,17 +1035,12 @@ impl WorkerSupervisor {
     pub(super) fn usage_gate(&self, repo: &str, ignore_usage: bool) -> Result<Value, WorkerError> {
         let store = self.run_store()?;
         let closed = store.usage_gate_closed(repo).map_err(store_error)?;
-        let (reading, now) = self.usage_reading();
-        let decision = usage_gate::decide(reading.as_ref(), closed, now);
+        let answer = self.read_claude_usage();
+        let decision = usage_gate::decide(answer.as_ref().map_err(String::as_str), closed);
         let recorded = usage_gate::decision_json(&decision, ignore_usage);
-        // A stale window (its reset passed, or polls were missed) needs a
-        // new reading; it never admits by itself.
-        if matches!(decision, usage_gate::Decision::Refuse { refresh: true, .. }) {
-            crate::usage::request_refresh();
-        }
         match decision {
             usage_gate::Decision::Refuse { .. } if ignore_usage => {}
-            usage_gate::Decision::Refuse { blockers, .. } => {
+            usage_gate::Decision::Refuse { blockers } => {
                 store
                     .set_usage_gate(repo, true, &recorded, now_ms())
                     .map_err(store_error)?;

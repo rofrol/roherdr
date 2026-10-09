@@ -269,8 +269,8 @@ pub(crate) enum WorkerError {
     /// A `todo.run`'s preflight refused it; the message says which check.
     Preflight(String),
     /// A new run or attempt refused while Claude's usage is high or
-    /// unknown; the message names each window, its value, the reading's
-    /// age, its freshness and `resets_at`.
+    /// unknown; the message names each window and its value, or the
+    /// failed read of Claude's usage.
     UsageGate(String),
     /// `history.item` named an item without records.
     HistoryNotFound(String),
@@ -2060,10 +2060,10 @@ struct Shared {
     /// config file instead.
     #[cfg(test)]
     pre_tool_checks: Mutex<Vec<Vec<String>>>,
-    /// The usage reading a test sets for `todo.run`'s usage gate, already
-    /// stamped with freshness; the server reads its usage poller's instead.
+    /// The answer a test sets for `todo.run`'s usage gate in place of
+    /// Claude's provider, which the server asks.
     #[cfg(test)]
-    usage_reading: Mutex<Option<crate::api::schema::UsageReport>>,
+    claude_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -2643,7 +2643,7 @@ impl WorkerSupervisor {
                 #[cfg(test)]
                 pre_tool_checks: Mutex::new(Vec::new()),
                 #[cfg(test)]
-                usage_reading: Mutex::new(Some(runs::low_usage_for_test())),
+                claude_usage: Mutex::new(Ok(runs::low_usage_for_test())),
             }),
         };
         for (number, held) in unowned {
