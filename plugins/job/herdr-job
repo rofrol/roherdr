@@ -87,9 +87,16 @@ def read_meta(path):
 
 
 def write_atomic(target, text):
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(target)
+    # A temporary name of its own, so two writers cannot tear each other's file.
+    fd, tmp = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def write_meta(path, meta):
@@ -155,6 +162,15 @@ def status(path, meta=None, tabs=None):
     meta = meta or read_meta(path)
     if result := finished(path):
         return result
+    if launching(path, meta):
+        if launcher_alive(path):
+            return "pending", None
+        # Its launcher died before the launch was through: settle the record.
+        if not resolve_launch(path, tabs):
+            return "pending", None
+        meta = read_meta(path)
+        if result := finished(path):
+            return result
     if lock_held(path, meta):
         return "running", None
     # `_exec` may have written `exit` and let go of the lock between the checks.
@@ -217,7 +233,105 @@ def job_labels(meta):
     """The labels a job's tab carries: herdr builds without tab statuses get
     the state icon in the label."""
     name = short(meta["name"], 30)
-    return {name} if meta.get("tab_status") else {f"{mark} {name}" for mark in "⧖✓✗"}
+    labels = {name} if meta.get("tab_status") else {f"{mark} {name}" for mark in "⧖✓✗"}
+    if meta.get("intent"):
+        labels.add(intent_label(meta))
+    return labels
+
+
+# A launch is a sequence the launcher can die in the middle of: the job's
+# record comes first (`pending`, with an intent id, while the launcher holds
+# the job's `launch.lock`), then a tab created with the intent id in its
+# label, then the tab id in the record, the tab's real label, and the `pane
+# run` that starts the executor; a `launched` file ends it. Until then, a record whose launcher is
+# gone is settled by `resolve_launch`, so a crash at any step leaves no tab
+# nobody owns and no job that stays pending for ever.
+LAUNCHED = "launched"
+
+
+def intent_label(meta):
+    """The label a job's tab is created with, before the record knows the tab."""
+    return f"{short(meta['name'], 30)} ·{meta['intent']}"
+
+
+def launching(path, meta):
+    return bool(meta.get("intent")) and not (path / LAUNCHED).exists()
+
+
+LAUNCH_HOLD = "launch.lock"
+
+
+def hold_launch(path):
+    """Taken by the launcher before it writes the job's first record and
+    held until it exits. The kernel drops the lock however the launcher
+    ends, so neither a reused pid nor a slow launch is taken for a live one."""
+    fd = os.open(path / LAUNCH_HOLD, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def launcher_alive(path):
+    """Whether the process that launches the job still runs (`hold_launch`)."""
+    try:
+        fd = os.open(path / LAUNCH_HOLD, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def resolve_launch(path, tabs=None):
+    """Settles a launch whose launcher died. A job whose executor took its
+    lock or started is adopted (it runs, or ran, in its recorded tab); one
+    that never started gets its tab closed, found by the recorded id or the
+    intent id in the label, and is marked failed (exit 125). Returns False
+    when it cannot decide now (herdr does not answer, or the tab does not
+    close), so the record stays pending and the next look tries again.
+
+    Concurrent resolvers queue on `resolve.lock`; the job's own `lock`, held
+    here while deciding, keeps `_exec` from starting meanwhile, and `_exec`
+    refuses a job that has an `exit` file."""
+    with flocked(path / "resolve.lock"):
+        if finished(path) or (path / LAUNCHED).exists():
+            return True
+        if launcher_alive(path):
+            return False
+        fd = os.open(path / "lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                write_atomic(path / LAUNCHED, "adopted: the executor runs\n")
+                return True
+            meta = read_meta(path)
+            if "started" in meta:
+                write_atomic(path / LAUNCHED, "adopted: the executor started\n")
+                return True
+            if tabs is None:
+                try:
+                    tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+                except (SystemExit, ValueError, KeyError, TypeError):
+                    return False
+            # The record knows its tab's status before the tab gets its real label.
+            mine = [tab_id for tab_id, tab in tabs.items()
+                    if tab.get("label") == intent_label(meta)
+                    or (tab_id == meta.get("tab_id") and tab.get("label") in job_labels(meta))]
+            for tab_id in mine:
+                if not herdr_ok("tab", "close", tab_id):
+                    return False
+                tabs.pop(tab_id)  # the caller's view of the tabs stays true
+            with open(path / "log", "a") as log:
+                log.write("herdr-job: the launch stopped before the job started (its launcher is gone); "
+                          f"{'closed its tab' if mine else 'it had no tab'}, nothing ran\n")
+            write_atomic(path / "exit", f"{EXIT_LOST}\n")
+            return True
+        finally:
+            os.close(fd)
 
 
 def job_tabs(tabs):
@@ -279,7 +393,8 @@ def reconcile_tabs():
         return
     for tab_id, (path, meta) in job_tabs(tabs).items():
         st, code = status(path, meta, tabs)
-        if active(st):
+        # Settling a dead launcher's job closes its tab (`resolve_launch`).
+        if active(st) or tab_id not in tabs:
             continue
         if meta.get("tab_status") and tabs[tab_id].get("status") in ("running", None):
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
@@ -793,10 +908,11 @@ def job_tab_counts(tabs):
     """Running jobs and failed (or lost) jobs whose tab is still open, per
     owner, and the failed ones oldest first. A job that has not started yet
     counts as running, so a launch in progress holds its place."""
+    # The states first: settling a dead launcher's job may close its tab.
+    states = [(path, meta, status(path, meta, tabs)[0]) for path, meta in all_jobs()]
     owned = job_tabs(tabs)
     running, failed = collections.Counter(), collections.defaultdict(list)
-    for path, meta in all_jobs():
-        st, _ = status(path, meta, tabs)
+    for path, meta, st in states:
         if active(st):
             running[job_owner(meta)] += 1
         elif st in ("failed", "lost") and owned.get(meta.get("tab_id"), (None,))[0] == path:
@@ -823,7 +939,7 @@ def prune_failed_tabs(owner, tabs, failed):
 
 def check_launch(owner, name, force):
     """Refuses a launch over the caps, before its tab exists. Runs under
-    LAUNCH_LOCK, held until the new job's meta.json is written."""
+    LAUNCH_LOCK, held until the new job's tab is recorded."""
     if not force and (failures := recent_failures(owner, name)) >= NAME_FAILURES_MAX:
         raise SystemExit(
             f"herdr-job: not starting {name!r}: it failed {failures} times in the last "
@@ -860,7 +976,8 @@ def cmd_run(args):
             return
         root = root_owner(owner)
         check_launch(root, args.name, getattr(args, "force", False))
-        # The lock is held until meta.json exists: from then on the job counts.
+        # The lock is held until the job's tab is recorded: the job counts
+        # from its first record on, and the key is taken with it.
         meta = start_job(args, owner, root, key)
     launch_started_job(meta)
 
@@ -875,8 +992,6 @@ def start_job(args, owner, root, key=None):
     cwd = str(Path(args.cwd or os.getcwd()).resolve())
     command = args.command[0] if len(args.command) == 1 else shlex.join(args.command)
     job_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
-    create = ["tab", "create", "--no-focus", "--label", short(args.name, 30), "--cwd", cwd]
-    create += ["--env", f"HISTORY_IGNORE={HISTORY_IGNORE}"]
     origin = "started by hand"
     owner_is_agent = False
     if owner:
@@ -884,17 +999,12 @@ def start_job(args, owner, root, key=None):
         workspace = json.loads(herdr("workspace", "get", pane["workspace_id"]))["result"]["workspace"]
         origin = f"from {pane.get('agent') or 'pane ' + owner} in {workspace.get('label') or pane['workspace_id']}"
         owner_is_agent = bool(pane.get("agent"))
-    # herdr nests the tab under the agent's tab (a second tab row with a
-    # summary on the agent's tab) and draws the state icon from the tab status.
-    # Older herdr builds have neither, so the label carries the icon there.
-    parent_tab = top_level_tab(pane["tab_id"]) if owner and pane.get("tab_id") else None
-    created = create_job_tab(create, pane["workspace_id"] if owner else None, parent_tab)
-    tab_id = created["tab"]["tab_id"]
-    tab_status = herdr_ok("tab", "status", tab_id, "running")
-    if not tab_status:
-        herdr("tab", "rename", tab_id, f"⧖ {short(args.name, 30)}", check=False)
+    # The record first, so a launcher that dies from here on leaves something
+    # `herdr-job` sees and settles (`resolve_launch`); the tab carries the
+    # intent id in its label until the record names it.
     path = STATE / job_id
     path.mkdir(parents=True, mode=0o700)
+    hold_launch(path)  # held until this process exits
     meta = {
         "id": job_id,
         "name": args.name,
@@ -909,13 +1019,27 @@ def start_job(args, owner, root, key=None):
         "origin": origin,
         "owner_pane": owner,
         "root_owner": root,
-        "tab_id": tab_id,
-        "tab_status": tab_status,
-        "pane_id": created["root_pane"]["pane_id"],
+        "intent": secrets.token_hex(4),
+        "launcher_pid": os.getpid(),
         "created": time.time(),
     }
     if key is not None:
         meta["key"] = key
+    write_meta(path, meta)
+    create = ["tab", "create", "--no-focus", "--label", intent_label(meta), "--cwd", cwd]
+    create += ["--env", f"HISTORY_IGNORE={HISTORY_IGNORE}"]
+    # herdr nests the tab under the agent's tab (a second tab row with a
+    # summary on the agent's tab) and draws the state icon from the tab status.
+    # Older herdr builds have neither, so the label carries the icon there.
+    parent_tab = top_level_tab(pane["tab_id"]) if owner and pane.get("tab_id") else None
+    created = create_job_tab(create, pane["workspace_id"] if owner else None, parent_tab)
+    meta["tab_id"] = created["tab"]["tab_id"]
+    meta["pane_id"] = created["root_pane"]["pane_id"]
+    meta["tab_status"] = herdr_ok("tab", "status", meta["tab_id"], "running")
+    # Recorded before the rename, so the tab is recognized by either label.
+    write_meta(path, meta)
+    label = short(args.name, 30) if meta["tab_status"] else f"⧖ {short(args.name, 30)}"
+    herdr("tab", "rename", meta["tab_id"], label, check=False)
     meta["client_footer"] = register_job_metadata(meta)
     write_meta(path, meta)
     return meta
@@ -923,7 +1047,13 @@ def start_job(args, owner, root, key=None):
 
 def launch_started_job(meta):
     # `pane run` types into the tab's interactive shell; see HISTORY_IGNORE.
-    launch_job_executor(meta, meta["id"])
+    try:
+        launch_job_executor(meta, meta["id"])
+    finally:
+        # The launch is through, whether `pane run` answered or not: a job
+        # whose `pane run` failed stays pending until its tab is closed (the
+        # command may have been typed although the reply was lost).
+        write_atomic(STATE / meta["id"] / LAUNCHED, "launched\n")
     update_owner_token(meta["owner_pane"])
     reconcile_tabs()
     print(meta["id"])
@@ -1206,7 +1336,8 @@ def cmd_exec(args):
         meta["started"] = True
     # Never run a job twice: after a server restart the relaunch plugin replays
     # the command line typed into this pane, which is `herdr-job _exec <id>`.
-    if "started" in meta:
+    # An `exit` before the start: the launch was given up (`resolve_launch`).
+    if "started" in meta or (path / "exit").exists():
         print(f"herdr-job {meta['id']} already ran; not running it again", file=sys.stderr)
         sys.exit(1)
     # The lock stays held until this process exits, and the command inherits
@@ -1443,7 +1574,7 @@ def cmd_wait(args):
 
     if not stream and not args.quiet:
         meta = read_meta(path)
-        print(f"herdr-job {args.id} ({meta['name']}): waiting; to look at it: herdr tab focus {meta['tab_id']}", flush=True)
+        print(f"herdr-job {args.id} ({meta['name']}): waiting; to look at it: herdr tab focus {meta.get('tab_id')}", flush=True)
     while True:
         drain()
         st, code = status(path)
@@ -1685,7 +1816,7 @@ def cmd_list(_args):
         end = meta.get("ended") or time.time()
         minutes = int((end - meta.get("started", meta["created"])) // 60)
         state = st if code is None else f"{st} ({code})"
-        print(f"{meta['id']}  {state:<12} {minutes:>4}m  {meta['name']}  [{meta['tab_id']}]")
+        print(f"{meta['id']}  {state:<12} {minutes:>4}m  {meta['name']}  [{meta.get('tab_id') or 'no tab'}]")
 
 
 LINK_JOB = re.compile(r"herdr-job://(\d{8}-\d{6}-[0-9a-f]{4})")
@@ -1724,11 +1855,11 @@ def cmd_clean(args):
     owners = set()
     here = os.environ.get("HERDR_PANE_ID")
     tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    mine = [(path, meta) for path, meta in all_jobs() if args.all or meta.get("owner_pane") == here]
+    # The states first: settling a dead launcher's job may close its tab.
+    states = [(path, meta, status(path, meta, tabs)[0]) for path, meta in mine]
     owned = job_tabs(tabs)
-    for path, meta in all_jobs():
-        if not args.all and meta.get("owner_pane") != here:
-            continue
-        st, _ = status(path, meta, tabs)
+    for path, meta, st in states:
         if active(st):
             continue
         # A reused tab id or a renamed tab is not this job's to close.
