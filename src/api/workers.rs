@@ -40,6 +40,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::HistoryList(_)
             | Method::HistoryItem(_)
             | Method::HistoryReconcile(_)
+            | Method::HistoryOverrides(_)
     )
 }
 
@@ -188,6 +189,11 @@ fn handle_immediate(
         Method::HistoryReconcile(params) => {
             return Ok(ResponseResult::HistoryReconcile {
                 reconcile: supervisor.history_reconcile(&params.repo)?,
+            })
+        }
+        Method::HistoryOverrides(params) => {
+            return Ok(ResponseResult::HistoryOverrides {
+                overrides: supervisor.overrides(params.repo.as_deref())?,
             })
         }
         Method::WorkerDrain(params) => {

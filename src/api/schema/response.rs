@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
-use super::coordinators::CoordinatorInfo;
+use super::coordinators::{CoordinatorInfo, CoordinatorOverride};
 use super::events::EventEnvelope;
 use super::history::{HistoryItem, HistoryItemSummary, HistoryReconcile};
 use super::integrations::{
@@ -140,6 +140,15 @@ pub enum ResponseResult {
     /// `coordinator.status`'s reply: the active tenures, oldest first.
     Coordinators {
         coordinators: Vec<CoordinatorInfo>,
+    },
+    /// `coordinator.record_override`'s reply: the stored record.
+    CoordinatorOverride {
+        record: CoordinatorOverride,
+    },
+    /// `history.overrides`' reply: the recorded allowlist exceptions, oldest
+    /// first.
+    HistoryOverrides {
+        overrides: Vec<CoordinatorOverride>,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

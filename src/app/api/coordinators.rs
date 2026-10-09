@@ -7,8 +7,9 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    CoordinatorEndParams, CoordinatorInfo, CoordinatorStartParams, CoordinatorStatusParams,
-    ResponseResult, TabRole,
+    CoordinatorEndParams, CoordinatorInfo, CoordinatorRecordOverrideParams, CoordinatorStartParams,
+    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
+    TabRole,
 };
 use crate::app::App;
 use crate::workers::{WorkerError, WorkerSupervisor};
@@ -111,6 +112,43 @@ impl App {
         };
         match listed {
             Ok(coordinators) => encode_success(id, ResponseResult::Coordinators { coordinators }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// Records an allowlist exception and shows it as an in-app toast; the
+    /// headless server answers this method itself, with a notification for
+    /// its client shells.
+    pub(super) fn handle_coordinator_record_override(
+        &mut self,
+        id: String,
+        params: CoordinatorRecordOverrideParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        if self.parse_pane_id(&params.pane_id).is_none() {
+            return encode_error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane_id),
+            );
+        }
+        let pane = self.canonical_pane_id(&params.pane_id);
+        match coordinators.record_override(&pane, &params) {
+            Ok(record) => {
+                let (title, body) = crate::workers::coordinators::override_notice(&record);
+                let _ = self.handle_notification_show(
+                    id.clone(),
+                    NotificationShowParams {
+                        title,
+                        body: Some(body),
+                        position: None,
+                        sound: NotificationShowSound::Request,
+                    },
+                );
+                encode_success(id, ResponseResult::CoordinatorOverride { record })
+            }
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

@@ -3028,6 +3028,12 @@ impl HeadlessServer {
             let _ = msg.respond_to.send(response);
             return true;
         }
+        if let api::schema::Method::CoordinatorRecordOverride(params) = &msg.request.method {
+            let response =
+                self.handle_coordinator_record_override_api(msg.request.id.clone(), params);
+            let _ = msg.respond_to.send(response);
+            return true;
+        }
         if let api::schema::Method::NotificationShowForPane(params) = &msg.request.method {
             let response = self.handle_notification_show_api(
                 msg.request.id.clone(),

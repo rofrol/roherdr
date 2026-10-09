@@ -167,6 +167,13 @@ pub enum Method {
     /// The active coordination tenures.
     #[serde(rename = "coordinator.status")]
     CoordinatorStatus(CoordinatorStatusParams),
+    /// Records one exception to a coordinator tab's command allowlist and
+    /// notifies the user.
+    #[serde(rename = "coordinator.record_override")]
+    CoordinatorRecordOverride(CoordinatorRecordOverrideParams),
+    /// The recorded allowlist exceptions, oldest first.
+    #[serde(rename = "history.overrides")]
+    HistoryOverrides(HistoryOverridesParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

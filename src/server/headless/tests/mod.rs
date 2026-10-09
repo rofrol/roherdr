@@ -7036,6 +7036,101 @@ fn notification_show_for_pane_sends_the_pane_tab_and_workspace_ids() {
 }
 
 #[test]
+fn a_coordinator_override_is_stored_and_notified() {
+    let root = std::env::temp_dir().join(format!(
+        "herdr-headless-override-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    crate::workers::set_test_coordinators(crate::workers::WorkerSupervisor::open(
+        root.join("workers"),
+        "claude".into(),
+    ));
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("todo")];
+    let pane = server.app.state.workspaces[0].tabs[0].layout.focused();
+    let pane_id = server.app.public_pane_id(0, pane).unwrap();
+    let (shell_tx, shell_control, _shell_frames) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new_with_mode(
+            ClientConnectionMode::ClientShell,
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(shell_tx),
+        ),
+    );
+    let params = api::schema::CoordinatorRecordOverrideParams {
+        pane_id: pane_id.clone(),
+        tool: "Bash".into(),
+        command: "cargo build # herdr-override: the user asked".into(),
+        reason: "the user asked".into(),
+        cwd: None,
+        session_id: None,
+    };
+
+    let response = server.handle_coordinator_record_override_api("o".into(), &params);
+    let response: api::schema::SuccessResponse = serde_json::from_str(&response).unwrap();
+    let api::schema::ResponseResult::CoordinatorOverride { record } = response.result else {
+        panic!("expected the stored record");
+    };
+    assert_eq!(record.pane_id, pane_id);
+    assert_eq!(record.reason, "the user asked");
+    // The handler queues the notification before it returns; the test
+    // writer's drain thread forwards it to this channel on its own, so wait
+    // for the message itself instead of polling the channel once.
+    let ServerMessage::SemanticNotification(event) =
+        read_server_message(shell_control.recv().expect("override notification"))
+    else {
+        panic!("expected a semantic notification");
+    };
+    assert_eq!(event.title, "Coordinator override");
+    assert_eq!(
+        event.body.as_deref(),
+        Some("the user asked: cargo build # herdr-override: the user asked")
+    );
+    assert_eq!(event.pane_id.as_deref(), Some(pane_id.as_str()));
+    assert_eq!(
+        event.sound,
+        Some(protocol::SemanticNotificationSound::Request)
+    );
+    assert_eq!(server.notification_history.len(), 1);
+    assert_eq!(
+        crate::workers::coordinators()
+            .unwrap()
+            .overrides(None)
+            .unwrap(),
+        vec![record]
+    );
+
+    // Nothing is stored or notified for an unknown pane or without a reason.
+    let unknown = api::schema::CoordinatorRecordOverrideParams {
+        pane_id: "w9:p9".into(),
+        ..params.clone()
+    };
+    let response: api::schema::ErrorResponse =
+        serde_json::from_str(&server.handle_coordinator_record_override_api("o".into(), &unknown))
+            .unwrap();
+    assert_eq!(response.error.code, "pane_not_found");
+    let reasonless = api::schema::CoordinatorRecordOverrideParams {
+        reason: " ".into(),
+        ..params
+    };
+    let response: api::schema::ErrorResponse = serde_json::from_str(
+        &server.handle_coordinator_record_override_api("o".into(), &reasonless),
+    )
+    .unwrap();
+    assert_eq!(response.error.code, "invalid_request");
+    assert_eq!(server.notification_history.len(), 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn client_local_notifications_target_foreground_client_only() {
     let mut server = test_headless_server();
     let (background_tx, background_control_rx, _background_rx) = test_client_writer();

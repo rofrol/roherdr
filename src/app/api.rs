@@ -1262,6 +1262,9 @@ impl App {
             Method::CoordinatorStatus(params) => {
                 return self.handle_coordinator_status(request.id, params);
             }
+            Method::CoordinatorRecordOverride(params) => {
+                return self.handle_coordinator_record_override(request.id, params);
+            }
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }
@@ -1344,7 +1347,8 @@ impl App {
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
-            | Method::HistoryReconcile(_) => {
+            | Method::HistoryReconcile(_)
+            | Method::HistoryOverrides(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

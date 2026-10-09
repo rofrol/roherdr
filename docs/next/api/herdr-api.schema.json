@@ -2127,6 +2127,48 @@
           },
           "type": "object"
         },
+        "CoordinatorRecordOverrideParams": {
+          "description": "Records an exception to a coordinator tab's command allowlist: one tool\ncall that carried `# herdr-override: <reason>`. The server stores it\n(append-only, in the worker store) and notifies the user; the hook lets\nthe call run only after this succeeded.",
+          "properties": {
+            "command": {
+              "description": "The call's command, as the agent wrote it.",
+              "type": "string"
+            },
+            "cwd": {
+              "description": "The agent's directory, which names the repository when the pane has\nno active tenure.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The coordinator's pane (the hook sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            },
+            "reason": {
+              "description": "The reason after `herdr-override:`; one line.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The agent session that made the call.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "description": "The tool the call used, such as `Bash`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "tool",
+            "command",
+            "reason"
+          ],
+          "type": "object"
+        },
         "CoordinatorStartParams": {
           "description": "Claims a repository's coordination: starts a tenure bound to the pane\n(one active tenure per repository). Setting a tab's role to\n`coordinator` starts one for the tab's focused pane.",
           "properties": {
@@ -2586,6 +2628,19 @@
           "properties": {
             "repo": {
               "description": "Only the items of this repository: a directory in it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "HistoryOverridesParams": {
+          "description": "Lists the recorded allowlist exceptions, of one repository when given.",
+          "properties": {
+            "repo": {
+              "description": "A directory in the repository.",
               "type": [
                 "string",
                 "null"
@@ -7323,6 +7378,40 @@
           "type": "object"
         },
         {
+          "description": "Records one exception to a coordinator tab's command allowlist and\nnotifies the user.",
+          "properties": {
+            "method": {
+              "const": "coordinator.record_override",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorRecordOverrideParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The recorded allowlist exceptions, oldest first.",
+          "properties": {
+            "method": {
+              "const": "history.overrides",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/HistoryOverridesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "notification.show",
@@ -10101,6 +10190,71 @@
             "repo",
             "started_ms",
             "epoch"
+          ],
+          "type": "object"
+        },
+        "CoordinatorOverride": {
+          "description": "One exception to a coordinator tab's command allowlist.",
+          "properties": {
+            "command": {
+              "description": "The command, cut to its first 4000 characters.",
+              "type": "string"
+            },
+            "coordinator_id": {
+              "description": "The pane's active tenure then.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The record's number, growing in the order of writing.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "item": {
+              "description": "The TODO item that tenure worked on.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "repo": {
+              "description": "The repository: the pane's tenure's, else that of `cwd`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "ts_ms",
+            "pane_id",
+            "tool",
+            "command",
+            "reason"
           ],
           "type": "object"
         },
@@ -13493,6 +13647,43 @@
               "required": [
                 "type",
                 "coordinators"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.record_override`'s reply: the stored record.",
+              "properties": {
+                "record": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorOverride"
+                },
+                "type": {
+                  "const": "coordinator_override",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "record"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`history.overrides`' reply: the recorded allowlist exceptions, oldest\nfirst.",
+              "properties": {
+                "overrides": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/CoordinatorOverride"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "history_overrides",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "overrides"
               ],
               "type": "object"
             },

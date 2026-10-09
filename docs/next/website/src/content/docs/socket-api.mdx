@@ -110,9 +110,9 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
 | Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over` |
-| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status` |
+| Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.record_override` |
 | TODO runs | `todo.run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.review` |
-| Item history | `history.list`, `history.item`, `history.reconcile` |
+| Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -966,6 +966,21 @@ timer ends one. The tenures are recorded as `coordinator_started` and
 `coordinator_ended` events in the worker store's event log, with their tables
 written in the same transaction. A worker started by a pane bound to an
 active tenure carries its id as `owner_coordinator_id`.
+`coordinator.record_override` (`pane_id`, `tool`, `command`, `reason`, optional
+`cwd` and `session_id`) records one exception to a coordinator tab's command
+allowlist: a tool call that carried `# herdr-override: <reason>` (the Claude
+integration's `PreToolUse` hook sends it before it lets such a call run). The
+server stores it append-only in the worker store with the pane's active tenure
+(`coordinator_id`, its `repo` and `item`; without one, the repository of
+`cwd`), cuts the command to its first 4000 characters, notifies the client
+shells (`Coordinator override`, with the reason and the command's first line,
+no rate limit; it also enters `notification.list`) and answers
+`coordinator_override` with `record`: `id`, `ts_ms`, `pane_id`, `tool`,
+`command`, `reason`, `repo`, `coordinator_id`, `item` and `session_id`. An
+unknown pane is refused with `pane_not_found`, a reason that is empty, not one
+line or longer than 500 bytes with `invalid_request`; the hook then denies the
+call. `history.overrides` (optional `repo`, a directory in it) answers
+`overrides`, the recorded exceptions, oldest first.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

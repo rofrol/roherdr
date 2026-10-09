@@ -19,8 +19,8 @@ use serde_json::Value;
 use super::runs::{Attempt, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{
-    HistoryEvent, HistoryEventKind, TodoLanding, TodoLandingSource, TodoRunInfo, TodoRunStatus,
-    TodoStep, WorkerState, WorkerTurnResult,
+    CoordinatorOverride, HistoryEvent, HistoryEventKind, TodoLanding, TodoLandingSource,
+    TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult,
 };
 
 /// The database file, inside the session's worker directory.
@@ -496,6 +496,30 @@ CREATE TRIGGER item_history_no_update BEFORE UPDATE ON item_history
 BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
 CREATE TRIGGER item_history_no_delete BEFORE DELETE ON item_history
 BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+"#,
+    r#"
+-- Exceptions to a coordinator tab's command allowlist: each tool call that
+-- carried `# herdr-override: <reason>` and ran (`coordinator.record_override`).
+-- `repo`, `coordinator_id` and `item` are the pane's active tenure then (the
+-- repository of the agent's directory when it had none). `ts` is Unix
+-- milliseconds. Append-only: the triggers refuse every change.
+CREATE TABLE coordinator_overrides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    repo TEXT,
+    coordinator_id TEXT,
+    item TEXT,
+    pane_id TEXT NOT NULL,
+    session_id TEXT,
+    tool TEXT NOT NULL,
+    command TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+CREATE INDEX coordinator_overrides_by_repo ON coordinator_overrides (repo, id);
+CREATE TRIGGER coordinator_overrides_no_update BEFORE UPDATE ON coordinator_overrides
+BEGIN SELECT RAISE(ABORT, 'coordinator_overrides is append-only'); END;
+CREATE TRIGGER coordinator_overrides_no_delete BEFORE DELETE ON coordinator_overrides
+BEGIN SELECT RAISE(ABORT, 'coordinator_overrides is append-only'); END;
 "#,
 ];
 
@@ -1419,6 +1443,57 @@ pub(super) struct StoredHistory {
 }
 
 impl Store {
+    /// Appends one allowlist exception and returns it as stored.
+    pub(super) fn record_override(
+        &self,
+        record: &CoordinatorOverride,
+    ) -> StoreResult<CoordinatorOverride> {
+        let conn = lock(&self.conn);
+        conn.execute(
+            "INSERT INTO coordinator_overrides (ts, repo, coordinator_id, item, pane_id, \
+             session_id, tool, command, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.ts_ms as i64,
+                record.repo,
+                record.coordinator_id,
+                record.item,
+                record.pane_id,
+                record.session_id,
+                record.tool,
+                record.command,
+                record.reason
+            ],
+        )?;
+        Ok(CoordinatorOverride {
+            id: conn.last_insert_rowid(),
+            ..record.clone()
+        })
+    }
+
+    /// The allowlist exceptions, oldest first: of `repo` when given.
+    pub(super) fn overrides(&self, repo: Option<&str>) -> StoreResult<Vec<CoordinatorOverride>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT id, ts, repo, coordinator_id, item, pane_id, session_id, tool, command, \
+             reason FROM coordinator_overrides WHERE (?1 IS NULL OR repo = ?1) ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![repo], |row| {
+            Ok(CoordinatorOverride {
+                id: row.get(0)?,
+                ts_ms: row.get::<_, i64>(1)? as u64,
+                repo: row.get(2)?,
+                coordinator_id: row.get(3)?,
+                item: row.get(4)?,
+                pane_id: row.get(5)?,
+                session_id: row.get(6)?,
+                tool: row.get(7)?,
+                command: row.get(8)?,
+                reason: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     /// The records of items' lives, oldest first: of `repo` and `item` when
     /// given.
     pub(super) fn item_history(
@@ -2118,6 +2193,7 @@ mod tests {
                  DROP TABLE attempts;
                  DROP TABLE landings;
                  DROP TABLE item_history;
+                 DROP TABLE coordinator_overrides;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2172,8 +2248,9 @@ mod tests {
                  DROP TABLE attempts;
                  DROP TABLE landings;
                  DROP TABLE item_history;
+                 DROP TABLE coordinator_overrides;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 13
+                MIGRATIONS.len() - 14
             ))
             .unwrap();
         drop(store);
@@ -2219,8 +2296,9 @@ mod tests {
                  DROP TABLE attempts;
                  DROP TABLE landings;
                  DROP TABLE item_history;
+                 DROP TABLE coordinator_overrides;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 2
+                MIGRATIONS.len() - 3
             ))
             .unwrap();
         drop(store);
