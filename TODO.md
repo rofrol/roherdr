@@ -1960,6 +1960,33 @@ Items agents add. Not approved until the user moves them up.
   ruleset, the install and push allowlist for the coordinator, its write
   scope, and the CI checks.
 
+- [ ] Ideas from Delta (delta.dev, the Zed team) for item history and the [t-sjjnjbxn]
+  review queue (user, 2026-10-09: "analyse with the models, also deepseek";
+  consult round 20261009-114040-88b8, sol + MiMo + DeepSeek). Delta pairs
+  each agent conversation with its checkout ("threads" instead of PRs) and
+  anchors comments to fine-grained deltas (DeltaDB, a CRDT layer over git).
+  Copy concepts only (license not stated). Agreed by all three: the
+  CRDT/delta layer is a trap for one user, one Mac and one worker slot; it
+  matters only once two writers edit the same checkout at the same time.
+  Worth taking, cheapest form:
+  - Code to conversation: the driver adds `Herdr-Item: t-...` and
+    `Herdr-Run: r-...` trailers when it lands the commit (the worker's
+    commit stays subject-only, as `verify` requires), and the store records
+    the worker and landed shas; `herdr worker runs --commit <sha>` (or
+    `herdr blame`) finds the run, its transcript and verdict. Trailers survive
+    cherry-pick and the upstream rebase; git notes do not, so not notes. A
+    run id is provenance of a commit, not a line-level anchor.
+  - Review shows the run's transcript, task, diff and check results together,
+    and an approval is bound to the exact commit and base (a new commit
+    invalidates it).
+  - `retry` carries the previous attempt automatically: its commit (to start
+    from) and the coordinator's review text, instead of the coordinator
+    writing "cherry-pick <sha> first" into every retry task.
+  Dismissed: verify on the landed tree (already done: `just clean-install`
+  runs `just check` on master with the cherry-pick before installing and
+  pushing). Consider (MiMo): the crate extraction before a second consumer
+  exists may be premature.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
