@@ -580,3 +580,16 @@ fail at once naming the sandbox when a socket is refused (measured 311 µs
 and 11.8 ms), and a failing test reaps its brokers before anything else
 (15ef5230, run `r-a2kcuznp`). Eight orphaned test brokers from 2026-10-08,
 from before the reaper, were ended by hand on 2026-10-09.
+
+## Guards against a runaway wait loop
+
+A coordinator's retry loop around `herdr-job run` opened ~400 tabs and used
+up the Mac's PTYs (2026-10-07). Guards: herdr-job caps running and failed
+jobs per owner pane and globally before a tab exists and refuses a name
+that failed 3 times in 10 minutes (02796a77); `herdr-job wait-agent` waits
+in one job and retries only transport errors; herdr refuses a new pane
+cleanly as `pty_exhausted` below 64 free PTYs and reports `server.pty_usage`
+(5de0c204, cca46c1f). The agent rule "one wait command per wait, no retry
+loop around herdr-job; on a failing wait check status once and report;
+bound every loop" is in ~/.claude/CLAUDE.md (dotfiles 082d7ab) and Rule 10
+of ~/personal_projects/agents.md/AGENTS.md (7151ac3), 2026-10-09.
