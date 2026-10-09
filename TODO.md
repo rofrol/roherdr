@@ -1751,6 +1751,25 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   4. The review view joins `attempts`, `events`, the worker's transcript and
      `git diff base..commit`; no new table.
   Out of scope: per-change identities and line anchors (DeltaDB).
+  Line anchors and per-edit provenance, researched 2026-10-09 (user asked;
+  consult round 20261009-115028-45b9 with sol, MiMo, DeepSeek, plus a web
+  survey with licenses checked by `gh api`): no open-source project does all
+  of DeltaDB (it is not released; Zed's `text` anchor crate is
+  GPL-3.0-or-later, concepts only). Closest: git-ai (Apache-2.0, 2.8k stars,
+  active) keeps agent line ranges in `refs/notes/ai`, rewrites them on
+  rebase/amend/cherry-pick and links transcripts; jj change ids (Apache-2.0)
+  and Gerrit Change-Id are commit-level; Loro/Automerge/Yrs (MIT, Rust) give
+  exact CRDT anchors but every edit must be fed into them (agents write files
+  directly, so it becomes diff-ingestion anyway); Radicle (Apache-2.0) and
+  GitHub anchor review comments to revision + lines and mark them outdated.
+  If line anchors are wanted later, the cheap design all three models
+  converged on: anchor = (run id, `git patch-id --stable` of the commit, path,
+  byte range, preimage and context hashes), remapped by exact preimage search,
+  then rename-aware diffs, then `blame -M -C`, reported as exact, ambiguous
+  or orphaned (never moved silently). Per-edit provenance: snapshot the
+  worktree per tool call and diff (Edit/Write strings miss Bash/sed edits,
+  formatters and whole-file writes); evaluate git-ai's notes format before
+  inventing one. Not scheduled: commit-level trailers above come first.
 
 ## Proposed
 
