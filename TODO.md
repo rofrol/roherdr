@@ -1270,6 +1270,38 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   herdr checkout (read-only prompts, a short background task), results into
   this item.
 
+- [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
+  (user, 2026-10-09: "the coordinator-worker model is meant to become a
+  protocol with an implementation in Odin etc., not hardcoded crates.io";
+  consult round 20261009-190333-40fb, sol + MiMo + DeepSeek agreeing;
+  decided by the user: "prepare + capabilities"). The coordination layer
+  names no registry, language or tool:
+  - Protocol (language-neutral, versioned): capabilities `net.egress{hosts}`,
+    `fs.write{paths}`, `env{names}`, `exec{argv}`; a repository or item
+    requests, the user's policy grants, the worker kind's adapter enforces;
+    an unknown or unsupported capability is refused (fail closed); every
+    run records its effective grants.
+  - Repository (`.herdr/`), read by the driver from the run's base commit,
+    never from the worker's tree: `[prepare]` argv (here `cargo fetch
+    --locked`) with the capabilities it needs (here egress to crates.io and
+    static.crates.io). A repository diff that changes requested
+    capabilities is a question to the user, never self-granted.
+  - Driver: prepare runs in its own sandbox (only the granted egress, no
+    secrets, writes only the dependency cache); the worker stays offline
+    and builds from that cache.
+  - Worker kinds map grants to their own sandbox (Claude Code: its
+    `sandbox` settings); a pi or Odin worker implements the same contract.
+  Belongs with the item "Extract the coordination layer into its own crate";
+  do this slice first, in today's code, as the crate's first protocol piece.
+
+- [ ] Draft an upstream issue on Claude Code's shared sandbox `$TMPDIR` [t-uilmqtpb]
+  (decided by the user 2026-10-09: "prepare a draft"): a worker writes the
+  issue text to `docs/upstream/claude-code-sandbox-tmpdir.md` (current vs
+  expected behavior, a minimal reproduction, version 2.1.293+, herdr's
+  workaround of a private 0700 temp dir, `mktemp -d` ignoring `$TMPDIR` in
+  a vendored script); the user reads and files it himself. Nothing is
+  posted by an agent.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1550,14 +1582,6 @@ Items agents add. Not approved until the user moves them up.
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
-
-- [ ] [t-vuk5dil4] May headless workers reach the network for cargo (crates.io and static.crates.io only), so an item that adds or updates a dependency can build in the worker?
-  Options: allow crates.io domains in the worker sandbox (Recommended) | keep no network; dependency changes are done by the coordinator's clean tree | decide per item
-  Checked: the worker sandbox has `allowedDomains: []`; every build so far used the warm slot's cache; no item has needed a new crate yet. From the item "Headless workers ask the user almost never".
-
-- [ ] [t-nxeb6lo6] Report Claude Code's shared sandbox `$TMPDIR` upstream (anthropics/claude-code)?
-  Options: I draft the issue, you file it (Recommended) | file it from your account after you read it | drop it
-  Checked: herdr works around it with a private 0700 temp dir per worker; vendored `libsystem_override.sh` calls `mktemp -d`, which ignores `$TMPDIR`. Filing is outward-facing, so it needs you.
 
 ### Decide
 
