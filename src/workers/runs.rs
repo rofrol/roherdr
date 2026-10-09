@@ -94,6 +94,8 @@ pub(super) struct Run {
     pub(super) checks: Vec<RunCheck>,
     pub(super) owner_pane: Option<String>,
     pub(super) owner_session: Option<String>,
+    /// The owner pane's workspace, which lists the run's workers.
+    pub(super) workspace: Option<String>,
     pub(super) finish: RunFinish,
 }
 
@@ -760,6 +762,7 @@ impl WorkerSupervisor {
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
             owner_session: params.owner_session_id.clone(),
+            workspace: params.workspace_id.clone(),
             finish: RunFinish {
                 install: preflighted.install.clone(),
                 ..RunFinish::default()
@@ -775,6 +778,9 @@ impl WorkerSupervisor {
             "paths": params.paths,
             "task": params.task,
             "step": run.info.step,
+            "owner_pane": params.owner_pane_id,
+            "owner_session": params.owner_session_id,
+            "workspace": params.workspace_id,
         });
         match store.transaction(|tx| tx.run_event(&mut run, &event, false, at)) {
             Ok(_) => {}
@@ -795,6 +801,58 @@ impl WorkerSupervisor {
         announce();
         self.spawn_driver(&run_id);
         Ok(run.info)
+    }
+
+    /// Whether `caller` may resume the run, and why it takes the run over
+    /// when it does: `None` for its owner (or anyone, for a run nobody
+    /// owns resumed from outside a pane). A run owned by another pane that
+    /// is still there is refused; once that pane or its agent is gone
+    /// (herdr's own events, never a timer), the caller takes it over.
+    fn run_takeover(&self, run: &Run, caller: Option<&str>) -> Result<Option<String>, WorkerError> {
+        match (run.owner_pane.as_deref(), caller) {
+            (Some(owner), Some(caller)) if owner == caller => Ok(None),
+            (None, None) => Ok(None),
+            (None, Some(_)) => Ok(Some("the run had no owner".to_owned())),
+            (Some(owner), _) => match self.gone_owner(owner) {
+                Some(cause) => Ok(Some(format!("its owner pane {owner} is gone: {cause}"))),
+                None => Err(Self::owned_elsewhere(run)),
+            },
+        }
+    }
+
+    fn owned_elsewhere(run: &Run) -> WorkerError {
+        let owner = run.owner_pane.as_deref().unwrap_or("none");
+        let session = run
+            .owner_session
+            .as_deref()
+            .map(|session| format!(" (agent session {session})"))
+            .unwrap_or_default();
+        WorkerError::RunOwnedElsewhere(format!(
+            "run {} belongs to pane {owner}{session}; resume it from that pane, or from another \
+             once that pane or its agent is gone, which takes the run over",
+            run.info.run_id
+        ))
+    }
+
+    /// The owner panes of the runs that have not ended.
+    pub(super) fn run_owner_panes(&self) -> Vec<String> {
+        let runs = match self.run_store().map(|store| store.runs(None)) {
+            Ok(Ok(runs)) => runs,
+            Ok(Err(error)) => {
+                warn!(%error, "cannot read the todo runs' owners");
+                return Vec::new();
+            }
+            Err(_) => return Vec::new(),
+        };
+        runs.into_iter()
+            .filter(|run| {
+                matches!(
+                    run.info.status,
+                    TodoRunStatus::Running | TodoRunStatus::Waiting | TodoRunStatus::Blocked
+                )
+            })
+            .filter_map(|run| run.owner_pane)
+            .collect()
     }
 
     fn run_active(active: &Run) -> WorkerError {
@@ -1107,6 +1165,7 @@ impl WorkerSupervisor {
         if let Some(error) = stale(&run) {
             return Err(error);
         }
+        let takeover = self.run_takeover(&run, params.caller_pane_id.as_deref())?;
         let kind = latest
             .filter(|(seq, _)| *seq == params.event)
             .map(|(seq, body)| event_of(seq, &body, &run.info).kind)
@@ -1224,6 +1283,27 @@ impl WorkerSupervisor {
                 if let Some(error) = stale(&current) {
                     return Ok(Err(error));
                 }
+                // Another resume took the run over meanwhile.
+                if current.owner_pane != run.owner_pane {
+                    return Ok(Err(Self::owned_elsewhere(&current)));
+                }
+                if let Some(cause) = &takeover {
+                    let taken = json!({
+                        "type": "run_owner_taken",
+                        "event": params.event,
+                        "from_pane": current.owner_pane,
+                        "from_session": current.owner_session,
+                        "from_workspace": current.workspace,
+                        "to_pane": params.caller_pane_id,
+                        "to_session": params.caller_session_id,
+                        "to_workspace": params.caller_workspace_id,
+                        "cause": cause,
+                    });
+                    tx.run_note(&current.info.run_id, &taken, now_ms())?;
+                    current.owner_pane = params.caller_pane_id.clone();
+                    current.owner_session = params.caller_session_id.clone();
+                    current.workspace = params.caller_workspace_id.clone();
+                }
                 let was_blocked = current.info.status == TodoRunStatus::Blocked;
                 current.info.status = TodoRunStatus::Running;
                 match params.action {
@@ -1279,6 +1359,11 @@ impl WorkerSupervisor {
             .map_err(store_error)?;
         let run = outcome?;
         announce();
+        // The coordinator handled the worker's events up to the one it
+        // answered: its owner owes nothing more for them.
+        if let (Some(worker_id), Some(seq)) = (&run.info.worker_id, run.info.last_acked_seq) {
+            self.ack_quietly(worker_id, seq);
+        }
         if params.action == TodoAction::ForceStop {
             if let Some(worker_id) = run.info.worker_id.clone() {
                 let kill = WorkerKillParams {
@@ -1306,9 +1391,10 @@ impl WorkerSupervisor {
         Ok(run.info)
     }
 
-    /// Drives every run in progress again, as a server that starts does:
-    /// a running one from its step; a waiting one only acknowledges its
-    /// worker's events again (an ack lost to a crash).
+    /// Drives every run in progress again, as a server that starts does,
+    /// from its step, after acknowledging its worker's events the
+    /// coordinator handled (an ack lost to a crash). A waiting run's events
+    /// stay its owner's obligation.
     pub(crate) fn resume_runs(&self) {
         let runs = match self.run_store().map(|store| store.runs(None)) {
             Ok(Ok(runs)) => runs,
@@ -1319,16 +1405,12 @@ impl WorkerSupervisor {
             Err(_) => return,
         };
         for run in runs {
-            match run.info.status {
-                TodoRunStatus::Running => self.spawn_driver(&run.info.run_id),
-                TodoRunStatus::Waiting => {
-                    if let (Some(worker_id), Some(seq)) =
-                        (&run.info.worker_id, run.info.last_acked_seq)
-                    {
-                        self.ack_quietly(worker_id, seq);
-                    }
+            if run.info.status == TodoRunStatus::Running {
+                if let (Some(worker_id), Some(seq)) = (&run.info.worker_id, run.info.last_acked_seq)
+                {
+                    self.ack_quietly(worker_id, seq);
                 }
-                _ => {}
+                self.spawn_driver(&run.info.run_id);
             }
         }
     }
@@ -1598,7 +1680,7 @@ impl WorkerSupervisor {
             prompt: worker_task(&run.info),
             model: None,
             name: None,
-            workspace_id: None,
+            workspace_id: run.workspace.clone(),
             folder_slot: Some(SLOT.to_owned()),
             branch: Some(branch),
             base: run.info.base.clone(),
@@ -1633,8 +1715,10 @@ impl WorkerSupervisor {
     /// run's acknowledged seq. A question the worker policy did not decide
     /// becomes a `question` event; a turn's end or the worker's end a
     /// `review` event. Either way the run then waits for the coordinator,
-    /// and the worker's events up to there are acknowledged: the run owns
-    /// them now.
+    /// and the worker's events up to there stay unacknowledged until the
+    /// coordinator resumes the run ([`Self::todo_resume`]): until then its
+    /// owner pane has an obligation for them, as for a worker it started
+    /// by hand.
     fn step_attention(&self, run: &mut Run) -> Result<(), String> {
         let worker_id = run
             .info
@@ -1687,7 +1771,6 @@ impl WorkerSupervisor {
         };
         run.info.status = TodoRunStatus::Waiting;
         self.record_run_event(run, &event)?;
-        self.ack_quietly(&worker_id, seq);
         Ok(())
     }
 

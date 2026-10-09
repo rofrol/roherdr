@@ -29,11 +29,15 @@ pub struct TodoRunParams {
     /// The names of checks in the repository's `.herdr/checks.toml`, run
     /// in this order; every one must pass.
     pub checks: Vec<String>,
-    /// The coordinator's pane, which owns the run's workers.
+    /// The coordinator's pane, which owns the run's workers (their
+    /// questions, obligations and coordination tenure) and resumes the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    /// The coordinator's workspace, which lists the run's workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     /// The caller's environment, which the check runs with (`HERDR_*`
     /// dropped); kept in the server's memory only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +90,16 @@ pub struct TodoResumeParams {
     /// `note`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close: Option<String>,
+    /// The caller's pane. A run owned by another pane that is still there
+    /// is refused (`run_owned_elsewhere`); once the owner's pane or agent
+    /// is gone, the caller takes the run over: its pane, agent session and
+    /// workspace then own the run and its later workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
