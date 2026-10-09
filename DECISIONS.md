@@ -667,3 +667,16 @@ each item's timeline (claim text, attempts with verdict and landed commit,
 notes, close and decision, follow-ups), fetched only on the user's action,
 local times. Coordinators close driver items with `approve --close` and run
 `herdr history reconcile` at their start. A web page or exports stay later.
+
+## Show how many pseudo-terminals are in use, e.g. `108/511` (user,
+
+The user asked (2026-10-07) to see how many pseudo-terminals are in use
+after a runaway loop exhausted the Mac's pool. The sidebar footer shows
+`PTY <herdr's own> · sys ~<in use>/<max>` (dim; amber at 70%, red at 90%)
+from an optional snapshot field the server fills (herdr's count on each
+spawn and close, the system pool sampled on the server: external polling);
+the client never polls. Notifications at 80% and 90% with hysteresis, carried
+across a live handoff so installs do not repeat them (one after a cold
+start, decided by the coordinator 2026-10-09); pool exhaustion always warns,
+also when herdr's own 64-PTY reserve refuses a pane. Clicking the footer to
+list PTY users stays a later idea.
