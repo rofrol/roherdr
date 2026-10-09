@@ -266,6 +266,10 @@ pub(crate) enum WorkerError {
     RunOwnedElsewhere(String),
     /// A `todo.run`'s preflight refused it; the message says which check.
     Preflight(String),
+    /// A new run or attempt refused while Claude's usage is high or
+    /// unknown; the message names each window, its value, the reading's
+    /// age, its freshness and `resets_at`.
+    UsageGate(String),
     Io(std::io::Error),
 }
 
@@ -292,6 +296,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "todo_run_active",
     "run_owned_elsewhere",
     "todo_preflight_failed",
+    "usage_gate",
 ];
 
 impl WorkerError {
@@ -319,6 +324,7 @@ impl WorkerError {
             Self::RunActive(_) => "todo_run_active",
             Self::RunOwnedElsewhere(_) => "run_owned_elsewhere",
             Self::Preflight(_) => "todo_preflight_failed",
+            Self::UsageGate(_) => "usage_gate",
         }
     }
 
@@ -356,7 +362,8 @@ impl std::fmt::Display for WorkerError {
             | Self::EventStale(message)
             | Self::RunActive(message)
             | Self::RunOwnedElsewhere(message)
-            | Self::Preflight(message) => f.write_str(message),
+            | Self::Preflight(message)
+            | Self::UsageGate(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -2046,6 +2053,10 @@ struct Shared {
     /// config file instead.
     #[cfg(test)]
     pre_tool_checks: Mutex<Vec<Vec<String>>>,
+    /// The usage reading a test sets for `todo.run`'s usage gate, already
+    /// stamped with freshness; the server reads its usage poller's instead.
+    #[cfg(test)]
+    usage_reading: Mutex<Option<crate::api::schema::UsageReport>>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -2624,6 +2635,8 @@ impl WorkerSupervisor {
                 broker,
                 #[cfg(test)]
                 pre_tool_checks: Mutex::new(Vec::new()),
+                #[cfg(test)]
+                usage_reading: Mutex::new(Some(runs::low_usage_for_test())),
             }),
         };
         for (number, held) in unowned {

@@ -5468,6 +5468,7 @@ mod todo_runs {
             owner_session_id: None,
             workspace_id: Some("ws-coordinator".into()),
             env: Some(caller_env()),
+            ignore_usage: false,
         }
     }
 
@@ -5523,6 +5524,7 @@ mod todo_runs {
             answers: Vec::new(),
             message: None,
             env: Some(caller_env()),
+            ignore_usage: false,
             note: None,
             close: None,
             caller_pane_id: Some("p-coordinator".into()),
@@ -5573,6 +5575,169 @@ mod todo_runs {
         );
         assert!(!fixture.supervisor.run_lock_path(run_id).exists());
         (aborted, ended)
+    }
+
+    /// A Claude reading as `usage.read` returns it: one window per
+    /// `(id, used, freshness)`, observed 30 seconds ago.
+    fn claude_usage(
+        windows: &[(&str, u8, crate::api::schema::UsageFreshness)],
+    ) -> crate::api::schema::UsageReport {
+        let mut report = runs::low_usage_for_test();
+        let now = crate::usage::now_unix();
+        report.providers[0].windows = windows
+            .iter()
+            .map(|(id, used, freshness)| crate::api::schema::UsageWindow {
+                id: (*id).into(),
+                label: (*id).into(),
+                used_percent: *used,
+                resets_at: Some(now + 3_600),
+                observed_at: Some(now - 30),
+                freshness: Some(*freshness),
+                error_kind: None,
+            })
+            .collect();
+        report
+    }
+
+    fn fresh_usage(five_hour: u8, weekly: u8) -> crate::api::schema::UsageReport {
+        use crate::api::schema::UsageFreshness::Fresh;
+        claude_usage(&[
+            ("five_hour", five_hour, Fresh),
+            ("seven_day", weekly, Fresh),
+        ])
+    }
+
+    fn usage_refusal(fixture: &Fixture) -> String {
+        let refused = fixture
+            .supervisor
+            .todo_run(params(fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap_err();
+        assert_eq!(refused.code(), "usage_gate", "{refused}");
+        refused.to_string()
+    }
+
+    #[test]
+    fn the_usage_gate_refuses_at_90_and_reopens_only_below_80_across_a_restart() {
+        let fixture = todo_repo("todo-usage-gate");
+        let repo = repository_of(&fixture.repo).unwrap();
+        fixture
+            .supervisor
+            .set_usage_for_test(Some(fresh_usage(40, 91)));
+        let message = usage_refusal(&fixture);
+        for part in [
+            "seven_day",
+            "91% used",
+            "fresh",
+            "read 30s ago",
+            "resets_at",
+        ] {
+            assert!(message.contains(part), "{part:?} not in {message}");
+        }
+        // A refusal starts nothing.
+        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+        assert!(fixture.supervisor.list().is_empty());
+
+        // Closed: 89 is not enough to reopen, after a restart too.
+        fixture
+            .supervisor
+            .set_usage_for_test(Some(fresh_usage(89, 10)));
+        assert!(usage_refusal(&fixture).contains("below 80%"));
+        let restarted =
+            WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+        restarted.set_usage_for_test(Some(fresh_usage(80, 10)));
+        assert_eq!(
+            restarted.usage_gate(&repo, false).unwrap_err().code(),
+            "usage_gate"
+        );
+        restarted.set_usage_for_test(Some(fresh_usage(79, 79)));
+        let admitted = restarted.usage_gate(&repo, false).unwrap();
+        assert_eq!(admitted["decision"], "admit");
+        assert_eq!(admitted["reopened"], true);
+        // Open again: 89 admits, 90 closes it.
+        restarted.set_usage_for_test(Some(fresh_usage(89, 89)));
+        assert_eq!(
+            restarted.usage_gate(&repo, false).unwrap()["reopened"],
+            false
+        );
+        restarted.set_usage_for_test(Some(fresh_usage(90, 0)));
+        assert!(restarted.usage_gate(&repo, false).is_err());
+        restarted.set_usage_for_test(Some(fresh_usage(85, 0)));
+        assert!(restarted.usage_gate(&repo, false).is_err());
+    }
+
+    #[test]
+    fn a_stale_failed_or_missing_claude_reading_refuses_a_run() {
+        use crate::api::schema::UsageFreshness::{Failed, Fresh, Stale};
+        let fixture = todo_repo("todo-usage-unknown");
+        for (reading, expected) in [
+            (
+                claude_usage(&[("five_hour", 5, Stale), ("seven_day", 5, Fresh)]),
+                "stale",
+            ),
+            (claude_usage(&[("five_hour", 5, Failed)]), "failed"),
+            (claude_usage(&[]), "no reading"),
+        ] {
+            fixture.supervisor.set_usage_for_test(Some(reading));
+            let message = usage_refusal(&fixture);
+            assert!(message.contains(expected), "{expected:?} not in {message}");
+        }
+        fixture.supervisor.set_usage_for_test(None);
+        assert!(usage_refusal(&fixture).contains("no usage reading"));
+        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ignore_usage_starts_a_run_and_a_retry_and_is_recorded() {
+        let fixture = todo_repo("todo-usage-ignored");
+        fixture
+            .supervisor
+            .set_usage_for_test(Some(fresh_usage(95, 10)));
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                ignore_usage: true,
+                ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        let created = run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["ignore_usage"], true, "{created:#?}");
+        assert_eq!(created[0]["usage_gate"]["decision"], "ignored");
+        assert_eq!(created[0]["usage_gate"]["windows"][0]["used_percent"], 95);
+
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // A retry starts a new attempt: the gate refuses it, and the run
+        // keeps waiting on the same event.
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Retry,
+            Some(&format!("commit b.txt {SUBJECT}")),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "usage_gate", "{refused}");
+        let waiting = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(
+            (waiting.status, waiting.pending_event, waiting.attempt),
+            (TodoRunStatus::Waiting, Some(review.event_id), 1)
+        );
+        let retried = fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                task: Some(format!("commit b.txt {SUBJECT}")),
+                ignore_usage: true,
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Retry)
+            })
+            .unwrap();
+        assert_eq!(retried.step, TodoStep::Restart);
+        let resumed = run_events(&fixture, &run.run_id, "run_resumed");
+        let last = resumed.last().unwrap();
+        assert_eq!(last["ignore_usage"], true, "{resumed:#?}");
+        assert_eq!(last["usage_gate"]["decision"], "ignored");
+        let (review, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        abort(&fixture, &run.run_id, review.event_id);
     }
 
     #[test]
@@ -5779,6 +5944,7 @@ mod todo_runs {
                 answers: Vec::new(),
                 message: None,
                 env: Some(caller_env()),
+                ignore_usage: false,
                 note: None,
                 close: None,
                 caller_pane_id: Some("p-coordinator".into()),
@@ -6308,6 +6474,7 @@ mod todo_runs {
             answers: Vec::new(),
             message: None,
             env: Some(caller_env()),
+            ignore_usage: false,
             note: None,
             close: None,
             caller_pane_id: Some("p-coordinator".into()),

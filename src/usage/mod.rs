@@ -21,6 +21,7 @@ pub(crate) use keys::DEFAULT_AUTH_FILE;
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use self::cache::{Plan, UsageCache};
@@ -79,7 +80,46 @@ enum UsageCommand {
 
 /// Handle to the usage polling thread. Dropping it stops the thread.
 pub(crate) struct UsagePoller {
-    commands: mpsc::Sender<UsageCommand>,
+    commands: Arc<mpsc::Sender<UsageCommand>>,
+}
+
+/// The poller's last report as `usage.read` would return it, for readers
+/// outside the app loop (`herdr todo run`'s usage gate). It holds the
+/// poller only weakly, so dropping the poller still stops its thread, and a
+/// report of a poller that is gone (usage turned off) reads as none.
+struct Published {
+    poller: Weak<mpsc::Sender<UsageCommand>>,
+    report: Option<(UsageReport, UsageConfig)>,
+}
+
+static PUBLISHED: Mutex<Published> = Mutex::new(Published {
+    poller: Weak::new(),
+    report: None,
+});
+
+fn published() -> std::sync::MutexGuard<'static, Published> {
+    PUBLISHED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The running poller's last report, stamped with freshness at `now` as
+/// `usage.read` stamps it; none while no poller runs or before its first
+/// report.
+pub(crate) fn published_reading(now: u64) -> Option<UsageReport> {
+    let published = published();
+    published.poller.upgrade()?;
+    let (report, config) = published.report.as_ref()?;
+    Some(with_freshness(report, config, now))
+}
+
+/// Asks the running poller for a new reading, as `usage.read --refresh`
+/// does; a no-op while none runs.
+pub(crate) fn request_refresh() {
+    let poller = published().poller.upgrade();
+    if let Some(commands) = poller {
+        let _ = commands.send(UsageCommand::Refresh);
+    }
 }
 
 impl UsagePoller {
@@ -88,9 +128,16 @@ impl UsagePoller {
         events: tokio::sync::mpsc::Sender<AppEvent>,
     ) -> std::io::Result<Self> {
         let (commands, receiver) = mpsc::channel();
+        let commands = Arc::new(commands);
+        {
+            let mut published = published();
+            published.poller = Arc::downgrade(&commands);
+            published.report = None;
+        }
+        let me = Arc::downgrade(&commands);
         std::thread::Builder::new()
             .name("herdr-usage".into())
-            .spawn(move || run(config, receiver, events))?;
+            .spawn(move || run(config, receiver, events, me))?;
         Ok(Self { commands })
     }
 
@@ -274,6 +321,7 @@ fn run(
     mut config: UsageConfig,
     commands: mpsc::Receiver<UsageCommand>,
     events: tokio::sync::mpsc::Sender<AppEvent>,
+    me: Weak<mpsc::Sender<UsageCommand>>,
 ) {
     let mut last = BTreeMap::<Provider, ProviderUsage>::new();
     let mut forced = false;
@@ -289,7 +337,7 @@ fn run(
                     .unwrap_or_else(|| ProviderUsage::pending(provider.id(), provider.label()))
             });
         }
-        if !publish(&events, &config, &last) {
+        if !publish(&events, &config, &last, &me) {
             return;
         }
         let fetched_at = Instant::now();
@@ -298,7 +346,7 @@ fn run(
                 let previous = last.remove(&provider);
                 last.insert(provider, merge_result(provider, previous, result));
             }
-            if !publish(&events, &config, &last) {
+            if !publish(&events, &config, &last, &me) {
                 return;
             }
         }
@@ -426,11 +474,19 @@ fn publish(
     events: &tokio::sync::mpsc::Sender<AppEvent>,
     config: &UsageConfig,
     last: &BTreeMap<Provider, ProviderUsage>,
+    me: &Weak<mpsc::Sender<UsageCommand>>,
 ) -> bool {
     let report = UsageReport {
         enabled: config.enabled,
         providers: last.values().cloned().collect(),
     };
+    {
+        // A poller replaced by a newer one must not overwrite its report.
+        let mut published = published();
+        if Weak::ptr_eq(&published.poller, me) {
+            published.report = Some((report.clone(), config.clone()));
+        }
+    }
     events.blocking_send(AppEvent::UsageUpdated(report)).is_ok()
 }
 
@@ -727,6 +783,28 @@ mod tests {
         assert!(json["providers"][0]["windows"][0]
             .get("freshness")
             .is_none());
+    }
+
+    #[test]
+    fn the_published_reading_lives_as_long_as_its_poller() {
+        let config = UsageConfig {
+            enabled: false,
+            ..UsageConfig::default()
+        };
+        let (events, mut received) = tokio::sync::mpsc::channel(4);
+        let poller = UsagePoller::spawn(config, events).unwrap();
+        // The poller's first report: published before it is sent.
+        let Some(AppEvent::UsageUpdated(report)) = received.blocking_recv() else {
+            panic!("no usage report");
+        };
+        let read = published_reading(now_unix()).expect("a reading while the poller runs");
+        assert_eq!(read, report);
+        assert!(!read.enabled);
+        request_refresh();
+        drop(poller);
+        // A poller that is gone (usage turned off) has no reading.
+        assert_eq!(published_reading(now_unix()), None);
+        request_refresh();
     }
 
     #[test]

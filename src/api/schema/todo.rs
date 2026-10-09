@@ -42,6 +42,10 @@ pub struct TodoRunParams {
     /// dropped); kept in the server's memory only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// Start even while the usage gate refuses (Claude's usage is high or
+    /// unknown), on the user's word; recorded in the run's events.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub ignore_usage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -100,6 +104,10 @@ pub struct TodoResumeParams {
     pub caller_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_workspace_id: Option<String>,
+    /// With `retry`: start the next attempt even while the usage gate
+    /// refuses, on the user's word; recorded in the run's events.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub ignore_usage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
