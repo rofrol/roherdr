@@ -632,3 +632,14 @@ herdr-job locks follow the command; one coordinator per repository
 record intent and result; and herdr-job writes a job's record, holding a
 launch lock, before creating its tab, so a dead launcher leaves no orphan
 tab (98cf1d11). The other findings were folded into the reliability plan.
+
+## Headless workers rarely ask
+
+Headless workers ask the user almost never (2026-10-07/09): Claude Code's
+Bash sandbox with herdr's policy (sandboxed Bash allowed, `.env` and
+credential paths denied at any depth, credential env vars removed, a private
+temp dir, no network), the persistent folder slot with a warm `target/`,
+waits that wake on a worker's question (`worker wait --attention`), and the
+post-turn checks in `herdr worker verify` (one commit, exact subject,
+allowed paths, clean tree, no leftover process). A real smoke run asked 0
+questions; the driver runs since have asked none.
