@@ -147,12 +147,7 @@ impl ClientShellState {
 }
 
 pub(super) fn local_utc_offset_secs() -> i64 {
-    let Some(local) = crate::platform::local_datetime() else {
-        return 0;
-    };
-    let offset = local.assume_utc().unix_timestamp() - crate::usage::now_unix() as i64;
-    // Round away the seconds that elapsed between the two clock reads.
-    (offset as f64 / 900.0).round() as i64 * 900
+    crate::usage::local_utc_offset_secs()
 }
 
 /// `Wed 15:29` in the captured local offset.

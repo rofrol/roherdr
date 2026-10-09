@@ -1344,8 +1344,6 @@ impl App {
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
-            | Method::HistoryList(_)
-            | Method::HistoryItem(_)
             | Method::HistoryReconcile(_) => {
                 return responses::encode_error(
                     request.id,
@@ -1356,6 +1354,10 @@ impl App {
             // A client's Items popup asks for it when it opens; the local
             // JSON API server answers it before it gets here.
             Method::WorkerRuns(params) => return self.handle_worker_runs(request.id, params),
+            // So do `history.list` and `history.item`, when the popup lists
+            // finished items and opens one.
+            Method::HistoryList(params) => return self.handle_history_list(request.id, params),
+            Method::HistoryItem(params) => return self.handle_history_item(request.id, params),
             Method::WorkerOpenLog(target) => {
                 return self.handle_worker_open_log(request.id, target)
             }
