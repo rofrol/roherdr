@@ -5935,13 +5935,6 @@
         "WorkerRunsParams": {
           "description": "Lists the workers' runs grouped by the TODO item they worked on.",
           "properties": {
-            "commit": {
-              "description": "Only the runs of the `herdr todo run` that landed this commit (a sha\nor a prefix of at least 7 characters, the landed commit or the\nworker's): found in the store's landings, else by the commit's\n`Herdr-Run` trailer in `repo`'s history; the reply's `landing` names\nit. Refused with `todo_run_not_found` when neither names a run.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "item": {
               "description": "Only the runs of this item (`t-abcd2345`); then no unassigned runs.",
               "type": [
@@ -12812,17 +12805,6 @@
                     "$ref": "#/schemas/success_response/$defs/WorkerItemRuns"
                   },
                   "type": "array"
-                },
-                "landing": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/schemas/success_response/$defs/TodoLanding"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "With `commit`: the landing that named the run."
                 },
                 "type": {
                   "const": "worker_runs",

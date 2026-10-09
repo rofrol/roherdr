@@ -2515,14 +2515,6 @@ pub(crate) fn supervisor() -> &'static WorkerSupervisor {
     })
 }
 
-/// `worker.runs`' reply: the items' runs, the unassigned runs, and the
-/// landing a `commit` named.
-pub(crate) type RunsListing = (
-    Vec<WorkerItemRuns>,
-    Vec<WorkerRun>,
-    Option<crate::api::schema::TodoLanding>,
-);
-
 impl WorkerSupervisor {
     /// Opens the worker directory and its store, and rebuilds the workers
     /// from the store's projections. A journal the store does not hold yet
@@ -4113,28 +4105,17 @@ impl WorkerSupervisor {
 
     /// Every worker's run grouped by its item and repository, the group
     /// whose first run started first first, and the runs without an item.
-    /// With `commit`, only the workers of the todo run that landed it (its
-    /// attempts', or its item's when the store does not know them), and
-    /// that landing.
-    pub(crate) fn runs(&self, params: &WorkerRunsParams) -> Result<RunsListing, WorkerError> {
+    pub(crate) fn runs(
+        &self,
+        params: &WorkerRunsParams,
+    ) -> Result<(Vec<WorkerItemRuns>, Vec<WorkerRun>), WorkerError> {
         if let Some(item) = &params.item {
             check_item_id(item)?;
         }
-        let landing = params
-            .commit
-            .as_deref()
-            .map(|commit| self.landing_of(params.repo.as_deref(), commit))
-            .transpose()?;
-        let landed_workers = match &landing {
-            Some(landing) => Some(self.run_workers(&landing.run_id)?),
-            None => None,
-        };
-        // Any directory in the repository names it; a landing names its
-        // workers instead.
+        // Any directory in the repository names it.
         let repo = params
             .repo
             .as_ref()
-            .filter(|_| landing.is_none())
             .map(|dir| repository_of(Path::new(dir)).unwrap_or_else(|| dir.clone()));
         let registry = lock(&self.shared.registry);
         let mut items: Vec<WorkerItemRuns> = Vec::new();
@@ -4147,17 +4128,6 @@ impl WorkerSupervisor {
             }
             if params.item.is_some() && status.item != params.item {
                 continue;
-            }
-            match (&landing, &landed_workers) {
-                (Some(_), Some(workers)) if !workers.is_empty() => {
-                    if !workers.contains(&status.worker_id) {
-                        continue;
-                    }
-                }
-                (Some(landing), _) if status.item.as_deref() != Some(landing.item.as_str()) => {
-                    continue;
-                }
-                _ => {}
             }
             let run = status.run(&entry.journal_path);
             let Some(item) = &status.item else {
@@ -4201,7 +4171,7 @@ impl WorkerSupervisor {
                 .or_insert_with(|| todo_titles::read_titles(Path::new(repo)));
             group.title = repo_titles.get(&group.item).cloned();
         }
-        Ok((items, unassigned, landing))
+        Ok((items, unassigned))
     }
 
     /// Checks the worker's commit in its directory ([`verify::verify`]) and

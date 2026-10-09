@@ -4147,7 +4147,7 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
         .iter()
         .any(|worker| worker.item.as_deref() == Some(ITEM)));
 
-    let (items, unassigned, _) = fixture
+    let (items, unassigned) = fixture
         .supervisor
         .runs(&WorkerRunsParams::default())
         .unwrap();
@@ -4191,23 +4191,21 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
     );
 
     // Filtered by item and repository (any directory in it names it).
-    let (items, unassigned, _) = fixture
+    let (items, unassigned) = fixture
         .supervisor
         .runs(&WorkerRunsParams {
             item: Some(ITEM.into()),
             repo: Some(fixture.root.join("other").display().to_string()),
-            commit: None,
         })
         .unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].runs[0].worker_id, elsewhere.worker_id);
     assert!(unassigned.is_empty());
-    let (items, unassigned, _) = fixture
+    let (items, unassigned) = fixture
         .supervisor
         .runs(&WorkerRunsParams {
             item: Some("t-zzzz2222".into()),
             repo: None,
-            commit: None,
         })
         .unwrap();
     assert!(items.is_empty() && unassigned.is_empty());
@@ -4217,7 +4215,7 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (items, _, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(items[0].runs[0].commits, ["abc1234", "def5678"]);
     assert_eq!(items[0].runs[0].outcome, WorkerRunOutcome::Finished);
 }
@@ -4241,7 +4239,6 @@ fn an_item_that_is_not_a_todo_id_is_refused() {
         let refused = fixture.supervisor.runs(&WorkerRunsParams {
             item: Some(bad.into()),
             repo: None,
-            commit: None,
         });
         assert!(matches!(refused, Err(WorkerError::Invalid(_))), "{bad:?}");
     }
@@ -4365,7 +4362,7 @@ fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
         worker
     };
     let title = || {
-        let (items, _, _) = fixture
+        let (items, _) = fixture
             .supervisor
             .runs(&WorkerRunsParams::default())
             .unwrap();
@@ -4396,7 +4393,7 @@ fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (items, _, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(items[0].title.as_deref(), Some("Items popup"));
 }
 
@@ -4451,7 +4448,7 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
     let events = fixture.herdr_events(&id, "verification");
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["verification"]["verdict"], "verified");
-    let (_, unassigned, _) = fixture
+    let (_, unassigned) = fixture
         .supervisor
         .runs(&WorkerRunsParams::default())
         .unwrap();
@@ -4462,7 +4459,7 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (_, unassigned, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (_, unassigned) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(unassigned[0].verification.as_ref(), Some(&verified));
 
     let missing = fixture
@@ -6216,27 +6213,6 @@ mod todo_runs {
                 )
             );
         }
-        // `worker.runs` keeps the run's worker, with its transcript.
-        let (items, unassigned, landing) = fixture
-            .supervisor
-            .runs(&WorkerRunsParams {
-                item: None,
-                repo: Some(repo.clone()),
-                commit: Some(picked[..8].to_owned()),
-            })
-            .unwrap();
-        assert!(unassigned.is_empty());
-        assert_eq!(items.len(), 1, "{items:#?}");
-        assert_eq!(
-            items[0]
-                .runs
-                .iter()
-                .map(|run| run.worker_id.clone())
-                .collect::<Vec<_>>(),
-            [finished.worker_id.clone().unwrap()]
-        );
-        assert_eq!(landing.unwrap().run_id, run.run_id);
-
         // The upstream rebase changes the sha, not the trailers: the run is
         // found by them.
         git_in(

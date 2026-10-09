@@ -24,15 +24,13 @@ const USAGE: &str =
     become the worker's owner.
   herdr worker status <worker_id>
   herdr worker list
-  herdr worker runs [--item ID] [--repo DIR] [--commit SHA]
+  herdr worker runs [--item ID] [--repo DIR]
     Every worker's run (one worker process; prompts add turns to it) grouped
     by its TODO item and repository: start and end, outcome, turns, the
     commits its WORKER-DONE lines named, questions, journal and its latest
     verification. Runs started without --item are listed as unassigned. --repo DIR keeps the runs of
-    DIR's repository. --commit SHA keeps the workers of the todo run that
-    landed SHA (the landed commit or the worker's), found in the worker
-    store or by its Herdr-Run trailer in the history of DIR (default: the
-    current directory), and prints that landing.
+    DIR's repository. The run that landed a commit is found with
+    herdr todo runs --commit SHA.
   herdr worker wait <worker_id> [--exit | --attention [--after SEQ]]
     Returns at the end of the turn, or with --exit when the process ended.
     --attention returns at once or at the first of a pending question, a
@@ -188,16 +186,9 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "runs" => {
             let (item, rest) = take_string_option(rest, "--item")?;
             let (repo, rest) = take_string_option(&rest, "--repo")?;
-            let (commit, rest) = take_string_option(&rest, "--commit")?;
             if !rest.is_empty() {
-                return Err("runs takes only --item, --repo and --commit".into());
+                return Err("runs takes only --item and --repo".into());
             }
-            // A commit's trailers are read in the current directory's
-            // repository unless --repo names another.
-            let repo = match (repo, &commit) {
-                (None, Some(_)) => Some(".".to_owned()),
-                (repo, _) => repo,
-            };
             let repo = repo
                 .map(|dir| {
                     std::path::absolute(&dir)
@@ -205,7 +196,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
                         .map_err(|error| error.to_string())
                 })
                 .transpose()?;
-            Method::WorkerRuns(WorkerRunsParams { item, repo, commit })
+            Method::WorkerRuns(WorkerRunsParams { item, repo })
         }
         "prompt" => match rest {
             [worker_id, text] => Method::WorkerPrompt(WorkerPromptParams {
@@ -1026,15 +1017,6 @@ mod tests {
             Ok(Some(Method::WorkerRuns(WorkerRunsParams {
                 item: Some("t-abcd2345".into()),
                 repo: Some("/repo".into()),
-                commit: None,
-            })))
-        );
-        assert_eq!(
-            parse_worker_args(&args(&["runs", "--commit", "abc1234", "--repo", "/repo"])),
-            Ok(Some(Method::WorkerRuns(WorkerRunsParams {
-                item: None,
-                repo: Some("/repo".into()),
-                commit: Some("abc1234".into()),
             })))
         );
         assert_eq!(

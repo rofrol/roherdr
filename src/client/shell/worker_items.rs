@@ -357,7 +357,6 @@ impl ClientShellState {
         let method = crate::api::schema::Method::WorkerRuns(WorkerRunsParams {
             item: None,
             repo: repo.clone(),
-            commit: None,
         });
         let fetch = if repo.is_none() {
             ItemsFetch::Failed("this tab is not in a git repository".into())
@@ -395,9 +394,9 @@ impl ClientShellState {
             return (false, Vec::new());
         }
         overlay.fetch = match result {
-            Ok(crate::api::schema::ResponseResult::WorkerRuns {
-                items, unassigned, ..
-            }) => ItemsFetch::Loaded { items, unassigned },
+            Ok(crate::api::schema::ResponseResult::WorkerRuns { items, unassigned }) => {
+                ItemsFetch::Loaded { items, unassigned }
+            }
             Ok(_) => ItemsFetch::Failed("unexpected reply".into()),
             Err(error) => ItemsFetch::Failed(error.message),
         };

@@ -94,9 +94,6 @@ pub enum ResponseResult {
         items: Vec<WorkerItemRuns>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unassigned: Vec<WorkerRun>,
-        /// With `commit`: the landing that named the run.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        landing: Option<TodoLanding>,
     },
     /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
     WorkerVerification {
