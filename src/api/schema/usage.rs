@@ -63,6 +63,13 @@ pub struct ProviderUsage {
     /// Unix seconds of the last successful observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<u64>,
+    /// Which login the allowance was read with, so data of the wrong account
+    /// is visible. Never a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<UsageAccount>,
+    /// Why the latest refresh failed; set together with `status: error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<UsageErrorKind>,
     /// Rate-limit windows in provider order.
     #[serde(default)]
     pub windows: Vec<UsageWindow>,
@@ -101,7 +108,7 @@ pub enum ProviderUsageStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UsageWindow {
     /// Stable window id such as `five_hour` or `weekly`.
     pub id: String,
@@ -112,6 +119,71 @@ pub struct UsageWindow {
     /// Unix seconds when the window resets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<u64>,
+    /// Unix seconds when `used_percent` was observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<u64>,
+    /// Whether `used_percent` is current. Only `fresh` is; a `stale` or
+    /// `failed` window's `used_percent` is the last observation, and the
+    /// current value is unknown (neither 0 nor 100). Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<UsageFreshness>,
+    /// Why the latest refresh failed, with `freshness: failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<UsageErrorKind>,
+}
+
+/// The login a provider's allowance was read with: where herdr found it and
+/// whom it names, never the credential itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageAccount {
+    /// Where the login came from: `file:<path>`, `keychain:<item name>`,
+    /// `env:<variable>`, or `cli:<command>` when the provider's own CLI reads
+    /// its login.
+    pub source: String,
+    /// The provider CLI's config directory that selects the login, such as
+    /// `~/.claude` or `$CODEX_HOME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
+    /// Account email, where the provider's data names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Organization name, where the provider's data names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageFreshness {
+    /// Observed by the latest refresh, recently enough, and the window has
+    /// not reset since.
+    Fresh,
+    /// Older than two refresh intervals, or the window reset after it was
+    /// observed.
+    Stale,
+    /// The latest refresh failed; `error_kind` says why.
+    Failed,
+    /// A future state this client does not understand; treat as unknown.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageErrorKind {
+    /// The provider rate-limited the usage endpoint; herdr backs off.
+    RateLimited,
+    /// The login or key was missing, expired or rejected.
+    Auth,
+    /// Something must be set up first; `setup` on the provider lists the steps.
+    Setup,
+    /// The request did not reach the provider.
+    Network,
+    /// Any other failure: an unexpected response or a provider CLI error.
+    Failed,
+    /// A future kind this client does not understand.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -174,6 +246,8 @@ impl ProviderUsage {
             message: None,
             plan: None,
             observed_at: None,
+            account: None,
+            error_kind: None,
             windows: Vec::new(),
             balances: Vec::new(),
             notes: Vec::new(),

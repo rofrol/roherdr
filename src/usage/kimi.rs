@@ -23,14 +23,19 @@ struct BalanceData {
 }
 
 pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
-    let key = super::keys::api_key(config, &super::keys::KeyedProvider::Kimi)?;
-    let authorization = format!("Bearer {key}");
+    let key = super::keys::api_key(config, &super::keys::KeyedProvider::Kimi)
+        .map_err(FetchError::Auth)?;
+    let authorization = format!("Bearer {}", key.secret);
     let host = config.kimi_host.trim();
     let url = format!("https://{host}/v1/users/me/balance");
     let response = super::http::get(&url, &[("Authorization", &authorization)])?;
     match response.status {
-        200 => Ok(parse(&response.body, currency(host))?),
-        401 | 403 => Err(FetchError::Failed("Kimi rejected the API key".into())),
+        200 => {
+            let mut usage = parse(&response.body, currency(host))?;
+            usage.account = Some(key.account());
+            Ok(usage)
+        }
+        401 | 403 => Err(FetchError::Auth("Kimi rejected the API key".into())),
         429 => Err(FetchError::RateLimited),
         status => Err(FetchError::Failed(format!(
             "Kimi balance request failed ({status})"

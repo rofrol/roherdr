@@ -10,10 +10,24 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::api::schema::{ProviderUsage, UsageBalance, UsageResetCredit, UsageWindow};
+use crate::api::schema::{
+    ProviderUsage, UsageAccount, UsageBalance, UsageResetCredit, UsageWindow,
+};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const RATE_LIMITS_REQUEST_ID: u64 = 2;
+const ACCOUNT_REQUEST_ID: u64 = 3;
+
+/// `account/read`'s answer; only a ChatGPT login carries an email.
+#[derive(Deserialize)]
+struct AccountResult {
+    account: Option<Account>,
+}
+
+#[derive(Deserialize)]
+struct Account {
+    email: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,10 +97,39 @@ pub(super) fn fetch() -> Result<ProviderUsage, String> {
     let result = request_rate_limits(&mut child);
     let _ = child.kill();
     let _ = child.wait();
-    parse_result(result?)
+    let (rate_limits, account) = result?;
+    let mut usage = parse_result(rate_limits)?;
+    usage.account = Some(UsageAccount {
+        source: "cli:codex app-server".into(),
+        config_dir: codex_home(),
+        email: account.and_then(account_email),
+        organization: None,
+    });
+    Ok(usage)
 }
 
-fn request_rate_limits(child: &mut Child) -> Result<serde_json::Value, String> {
+/// The directory Codex keeps its login in: `$CODEX_HOME`, else `~/.codex`.
+fn codex_home() -> Option<String> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".codex")))
+        .map(|dir| dir.display().to_string())
+}
+
+fn account_email(result: serde_json::Value) -> Option<String> {
+    serde_json::from_value::<AccountResult>(result)
+        .ok()?
+        .account?
+        .email
+        .map(|email| email.trim().to_owned())
+        .filter(|email| !email.is_empty())
+}
+
+/// The rate limits and, when Codex answered it, `account/read`'s result.
+fn request_rate_limits(
+    child: &mut Child,
+) -> Result<(serde_json::Value, Option<serde_json::Value>), String> {
     let stdout = child
         .stdout
         .take()
@@ -120,6 +163,12 @@ fn request_rate_limits(child: &mut Child) -> Result<serde_json::Value, String> {
             "id": RATE_LIMITS_REQUEST_ID,
             "method": "account/rateLimits/read",
         }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": ACCOUNT_REQUEST_ID,
+            "method": "account/read",
+            "params": {"refreshToken": false},
+        }),
     ];
     for request in requests {
         writeln!(stdin, "{request}")
@@ -130,23 +179,39 @@ fn request_rate_limits(child: &mut Child) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("codex app-server write failed: {error}"))?;
 
     let deadline = Instant::now() + RESPONSE_TIMEOUT;
+    let mut rate_limits = None;
+    // `None` until answered; an error answer is `Some(None)`: no account to name.
+    let mut account: Option<Option<serde_json::Value>> = None;
     loop {
         let timeout = deadline.saturating_duration_since(Instant::now());
-        let line = lines_rx
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => "codex app-server timed out".to_owned(),
-                mpsc::RecvTimeoutError::Disconnected => "codex app-server exited".to_owned(),
-            })?;
-        if let Some(result) = rate_limits_response(&line) {
-            return result;
+        let line = match lines_rx.recv_timeout(timeout) {
+            Ok(line) => line,
+            // The account only names the login; the limits stand without it.
+            Err(_) if rate_limits.is_some() => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err("codex app-server timed out".to_owned())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("codex app-server exited".to_owned())
+            }
+        };
+        if let Some(result) = response(&line, RATE_LIMITS_REQUEST_ID) {
+            rate_limits = Some(result?);
+        } else if let Some(result) = response(&line, ACCOUNT_REQUEST_ID) {
+            account = Some(result.ok());
+        }
+        if rate_limits.is_some() && account.is_some() {
+            break;
         }
     }
+    let rate_limits =
+        rate_limits.ok_or_else(|| "codex app-server returned no result".to_owned())?;
+    Ok((rate_limits, account.flatten()))
 }
 
-fn rate_limits_response(line: &str) -> Option<Result<serde_json::Value, String>> {
+fn response(line: &str, id: u64) -> Option<Result<serde_json::Value, String>> {
     let message = serde_json::from_str::<serde_json::Value>(line).ok()?;
-    if message.get("id").and_then(serde_json::Value::as_u64) != Some(RATE_LIMITS_REQUEST_ID) {
+    if message.get("id").and_then(serde_json::Value::as_u64) != Some(id) {
         return None;
     }
     if let Some(error) = message.get("error") {
@@ -176,12 +241,16 @@ fn parse_result(result: serde_json::Value) -> Result<ProviderUsage, String> {
         let Some(window) = window else {
             continue;
         };
+        let Some(used_percent) = super::clamp_percent(window.used_percent) else {
+            continue;
+        };
         let (id, label) = window_identity(window.window_duration_mins, fallback_id);
         usage.windows.push(UsageWindow {
             id,
             label,
-            used_percent: super::clamp_percent(window.used_percent),
+            used_percent,
             resets_at: window.resets_at,
+            ..Default::default()
         });
     }
     if let Some(credits) = limits.credits {
@@ -297,21 +366,55 @@ mod tests {
     }
 
     #[test]
+    fn the_account_email_comes_from_a_chatgpt_login_only() {
+        assert_eq!(
+            account_email(serde_json::json!({
+                "account": {"type": "chatgpt", "email": "you@example.com", "planType": "plus"},
+                "requiresOpenaiAuth": true
+            }))
+            .as_deref(),
+            Some("you@example.com")
+        );
+        assert_eq!(
+            account_email(serde_json::json!({
+                "account": {"type": "apiKey"},
+                "requiresOpenaiAuth": true
+            })),
+            None
+        );
+        assert_eq!(
+            account_email(serde_json::json!({"account": null, "requiresOpenaiAuth": true})),
+            None
+        );
+        assert!(
+            response(r#"{"id":3,"result":{"account":null}}"#, ACCOUNT_REQUEST_ID)
+                .is_some_and(|result| result.is_ok())
+        );
+        assert!(response(r#"{"id":3,"result":{}}"#, RATE_LIMITS_REQUEST_ID).is_none());
+    }
+
+    #[test]
     fn missing_rate_limits_is_an_error() {
         assert!(parse_result(serde_json::json!({"rateLimits": null})).is_err());
     }
 
+    fn rate_limits_response_for_test(line: &str) -> Option<Result<serde_json::Value, String>> {
+        response(line, RATE_LIMITS_REQUEST_ID)
+    }
+
     #[test]
     fn only_the_rate_limit_response_is_selected() {
-        assert!(rate_limits_response(r#"{"id":1,"result":{}}"#).is_none());
-        assert!(rate_limits_response(r#"{"method":"account/updated","params":{}}"#).is_none());
-        assert!(rate_limits_response("not json").is_none());
+        assert!(rate_limits_response_for_test(r#"{"id":1,"result":{}}"#).is_none());
+        assert!(
+            rate_limits_response_for_test(r#"{"method":"account/updated","params":{}}"#).is_none()
+        );
+        assert!(rate_limits_response_for_test("not json").is_none());
         assert!(matches!(
-            rate_limits_response(r#"{"id":2,"error":{"message":"not logged in"}}"#),
+            rate_limits_response_for_test(r#"{"id":2,"error":{"message":"not logged in"}}"#),
             Some(Err(message)) if message.contains("not logged in")
         ));
         assert!(matches!(
-            rate_limits_response(r#"{"id":2,"result":{"rateLimits":null}}"#),
+            rate_limits_response_for_test(r#"{"id":2,"result":{"rateLimits":null}}"#),
             Some(Ok(_))
         ));
     }

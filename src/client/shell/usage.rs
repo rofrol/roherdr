@@ -3,7 +3,8 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    ProviderUsage, ProviderUsageStatus, UsageReport, UsageResetCredit, UsageWindow,
+    ProviderUsage, ProviderUsageStatus, UsageAccount, UsageErrorKind, UsageFreshness, UsageReport,
+    UsageResetCredit, UsageWindow,
 };
 
 use super::render::{display_width, put_segment, put_text};
@@ -400,13 +401,30 @@ fn render_provider_row(
             let Some(window) = window else {
                 continue;
             };
+            if window_reset_passed(window, now_unix) {
+                // The value is from before the reset; the current one is unknown.
+                end = put_segment(
+                    buffer,
+                    row.x.saturating_add(column),
+                    row.y,
+                    row.right(),
+                    "  ?%",
+                    Style::default().fg(palette.overlay0),
+                );
+                continue;
+            }
+            let color = if window_is_current(window, now_unix) {
+                used_color(window.used_percent, palette)
+            } else {
+                palette.overlay0
+            };
             end = put_segment(
                 buffer,
                 row.x.saturating_add(column),
                 row.y,
                 row.right(),
                 &format!("{:>3}%", window.used_percent),
-                Style::default().fg(used_color(window.used_percent, palette)),
+                Style::default().fg(color),
             );
             if let Some(resets_at) = window.resets_at {
                 end = put_segment(
@@ -554,6 +572,61 @@ fn footer_windows(provider: &ProviderUsage) -> (Option<&UsageWindow>, Option<&Us
         shared().find(|window| short.is_none_or(|short| !std::ptr::eq(*window, short)))
     });
     (short, weekly)
+}
+
+/// Whether the window has reset since it was observed, so its percentage
+/// describes the previous window.
+pub(super) fn window_reset_passed(window: &UsageWindow, now_unix: u64) -> bool {
+    window
+        .resets_at
+        .is_some_and(|resets_at| resets_at <= now_unix)
+}
+
+/// Whether a window's percentage is current: the server calls it fresh (an
+/// older server says nothing either way) and it has not reset since.
+/// A stale or failed window shows its last value dimmed, never as current.
+pub(super) fn window_is_current(window: &UsageWindow, now_unix: u64) -> bool {
+    matches!(window.freshness, None | Some(UsageFreshness::Fresh))
+        && !window_reset_passed(window, now_unix)
+}
+
+/// The window's freshness for the details, when it is not current.
+pub(super) fn window_staleness(window: &UsageWindow, now_unix: u64) -> Option<String> {
+    if window_reset_passed(window, now_unix) {
+        return Some("reset since, now unknown".into());
+    }
+    match window.freshness? {
+        UsageFreshness::Fresh => None,
+        UsageFreshness::Stale => Some("stale".into()),
+        UsageFreshness::Failed => Some(match window.error_kind {
+            Some(kind) => format!("refresh failed: {}", error_kind_text(kind)),
+            None => "refresh failed".into(),
+        }),
+        UsageFreshness::Unknown => Some("freshness unknown".into()),
+    }
+}
+
+fn error_kind_text(kind: UsageErrorKind) -> &'static str {
+    match kind {
+        UsageErrorKind::RateLimited => "rate limited",
+        UsageErrorKind::Auth => "login",
+        UsageErrorKind::Setup => "setup needed",
+        UsageErrorKind::Network => "network",
+        UsageErrorKind::Failed | UsageErrorKind::Unknown => "error",
+    }
+}
+
+/// `you@example.com · Org · keychain:Claude Code-credentials`, for the details.
+pub(super) fn account_text(account: &UsageAccount) -> String {
+    let mut parts = Vec::new();
+    parts.extend(account.email.as_deref());
+    parts.extend(account.organization.as_deref());
+    parts.push(account.source.as_str());
+    let mut text = parts.join(" · ");
+    if let Some(dir) = account.config_dir.as_deref() {
+        text.push_str(&format!(" ({dir})"));
+    }
+    text
 }
 
 pub(super) fn provider_code(provider: &ProviderUsage) -> String {
@@ -768,6 +841,7 @@ mod tests {
             label: "w".into(),
             used_percent,
             resets_at: Some(resets_at),
+            ..Default::default()
         }
     }
 
@@ -802,12 +876,14 @@ mod tests {
                 label: "5h".into(),
                 used_percent: short,
                 resets_at: Some(1_000 + 47 * 60),
+                ..Default::default()
             },
             UsageWindow {
                 id: "weekly".into(),
                 label: "week".into(),
                 used_percent: weekly,
                 resets_at: Some(1_000 + 6 * 86_400),
+                ..Default::default()
             },
         ];
         usage
@@ -837,6 +913,71 @@ mod tests {
         assert_eq!(rows[1], " AN   2% 47m   12% 6d");
         assert_eq!(rows[2], " OA  87% 47m  100% 6d");
         assert_eq!(rows[3], " DS $13.41 balance");
+    }
+
+    #[test]
+    fn footer_dims_stale_windows_and_hides_values_from_before_a_reset() {
+        let mut claude = windowed("claude", "Claude", 30, 100);
+        claude.windows[0].freshness = Some(UsageFreshness::Fresh);
+        claude.windows[1].freshness = Some(UsageFreshness::Failed);
+        let mut codex = windowed("codex", "Codex", 100, 40);
+        // Observed before its reset at 999, so the 100% describes the last window.
+        codex.windows[0].resets_at = Some(999);
+        let report = UsageReport {
+            enabled: true,
+            providers: vec![claude, codex],
+        };
+
+        let rows = footer_text(&report, 26);
+        assert_eq!(rows[1], " AN  30% 47m  100% 6d");
+        assert_eq!(rows[2], " OA   ?%       40% 6d");
+
+        let area = Rect::new(0, 0, 26, footer_height(&report));
+        let mut buffer = Buffer::empty(area);
+        render_usage_footer(
+            &mut buffer,
+            area,
+            &report,
+            1_000,
+            &Palette::catppuccin(),
+            &mut ShellHitMap::default(),
+        );
+        let palette = Palette::catppuccin();
+        assert_eq!(buffer[(5, 1)].fg, palette.green);
+        assert_eq!(buffer[(15, 1)].fg, palette.overlay0);
+        assert_eq!(buffer[(6, 2)].fg, palette.overlay0);
+    }
+
+    #[test]
+    fn window_staleness_names_the_reason() {
+        let mut window = window(50, 2_000);
+        assert_eq!(window_staleness(&window, 1_000), None);
+        window.freshness = Some(UsageFreshness::Stale);
+        assert_eq!(window_staleness(&window, 1_000).as_deref(), Some("stale"));
+        window.freshness = Some(UsageFreshness::Failed);
+        window.error_kind = Some(UsageErrorKind::RateLimited);
+        assert_eq!(
+            window_staleness(&window, 1_000).as_deref(),
+            Some("refresh failed: rate limited")
+        );
+        assert_eq!(
+            window_staleness(&window, 2_000).as_deref(),
+            Some("reset since, now unknown")
+        );
+    }
+
+    #[test]
+    fn account_text_names_whom_and_where() {
+        let account = UsageAccount {
+            source: "keychain:Claude Code-credentials".into(),
+            config_dir: Some("/home/me/.claude".into()),
+            email: Some("me@example.com".into()),
+            organization: None,
+        };
+        assert_eq!(
+            account_text(&account),
+            "me@example.com · keychain:Claude Code-credentials (/home/me/.claude)"
+        );
     }
 
     fn with_credit(mut usage: ProviderUsage, expires_at: u64) -> ProviderUsage {
@@ -1048,12 +1189,14 @@ mod tests {
                 label: "5h".into(),
                 used_percent: 4,
                 resets_at: None,
+                ..Default::default()
             },
             UsageWindow {
                 id: "weekly".into(),
                 label: "week".into(),
                 used_percent: 100,
                 resets_at: None,
+                ..Default::default()
             },
             only_scoped,
         ];

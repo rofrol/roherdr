@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::FetchError;
-use crate::api::schema::{ProviderUsage, UsageCompletionTokens, UsageSpend};
+use crate::api::schema::{ProviderUsage, UsageAccount, UsageCompletionTokens, UsageSpend};
 use crate::config::UsageConfig;
 
 const COSTS_URL: &str = "https://api.openai.com/v1/organization/costs";
@@ -85,6 +85,13 @@ pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
     let costs: Vec<CostResult> = fetch_all(COSTS_URL, since, &authorization)?;
     let completions: Vec<CompletionsResult> = fetch_all(COMPLETIONS_URL, since, &authorization)?;
     let mut usage = ProviderUsage::pending("openai_api", "OpenAI API");
+    usage.account = Some(UsageAccount {
+        source: format!(
+            "file:{}",
+            super::expand_home(config.openai_admin_key_file.trim()).display()
+        ),
+        ..UsageAccount::default()
+    });
     usage.spend = spend(&costs, since);
     usage.completion_tokens = Some(completion_tokens(&completions, since));
     // Spend without the limit is still worth showing, so a failed limit read
@@ -171,12 +178,12 @@ fn fetch_all<T: serde::de::DeserializeOwned>(
         match response.status {
             200 => {}
             401 => {
-                return Err(FetchError::Failed(
+                return Err(FetchError::Auth(
                     "OpenAI rejected the admin key as invalid or revoked".into(),
                 ))
             }
             403 => {
-                return Err(FetchError::Failed(
+                return Err(FetchError::Auth(
                     "the OpenAI admin key needs read access to usage and costs".into(),
                 ))
             }

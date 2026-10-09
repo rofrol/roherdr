@@ -40,13 +40,14 @@ struct Credits {
 }
 
 pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
-    let key = super::keys::api_key(config, &super::keys::KeyedProvider::OpenRouter)?;
-    let authorization = format!("Bearer {key}");
+    let key = super::keys::api_key(config, &super::keys::KeyedProvider::OpenRouter)
+        .map_err(FetchError::Auth)?;
+    let authorization = format!("Bearer {}", key.secret);
     let headers = [("Authorization", authorization.as_str())];
     let response = super::http::get(KEY_URL, &headers)?;
     let key_info = match response.status {
         200 => parse::<KeyInfo>(&response.body)?,
-        401 | 403 => return Err(FetchError::Failed("OpenRouter rejected the API key".into())),
+        401 | 403 => return Err(FetchError::Auth("OpenRouter rejected the API key".into())),
         429 => return Err(FetchError::RateLimited),
         status => {
             return Err(FetchError::Failed(format!(
@@ -59,7 +60,10 @@ pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
         .ok()
         .filter(|response| response.status == 200)
         .and_then(|response| parse::<Credits>(&response.body).ok());
-    Ok(usage(key_info, credits))
+    let mut usage = usage(key_info, credits);
+    // `/key`'s `label` is a truncated key, so it never names the account.
+    usage.account = Some(key.account());
+    Ok(usage)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, String> {
@@ -124,6 +128,13 @@ mod tests {
         assert!(usage
             .notes
             .contains(&"key limit $20.00, resets monthly".into()));
+    }
+
+    #[test]
+    fn the_key_label_never_reaches_the_report() {
+        let usage = usage(parse::<KeyInfo>(KEY).unwrap(), None);
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(!json.contains("sk-or-v1"), "{json}");
     }
 
     #[test]

@@ -574,6 +574,8 @@ mod limit_tests {
                 message: None,
                 plan: None,
                 observed_at: None,
+                account: None,
+                error_kind: None,
                 windows: windows
                     .iter()
                     .map(|(used_percent, resets_at)| UsageWindow {
@@ -581,6 +583,7 @@ mod limit_tests {
                         label: "w".into(),
                         used_percent: *used_percent,
                         resets_at: *resets_at,
+                        ..Default::default()
                     })
                     .collect(),
                 balances: Vec::new(),

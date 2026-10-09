@@ -25,7 +25,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use self::cache::{Plan, UsageCache};
 use crate::api::schema::{
-    ProviderUsage, ProviderUsageStatus, UsageProviderSetting, UsageReport, UsageSettings,
+    ProviderUsage, ProviderUsageStatus, UsageErrorKind, UsageFreshness, UsageProviderSetting,
+    UsageReport, UsageSettings,
 };
 use crate::config::UsageConfig;
 use crate::events::AppEvent;
@@ -36,6 +37,10 @@ const MIN_MANUAL_REFRESH_GAP: Duration = Duration::from_secs(30);
 /// Why a provider refresh failed. A rate limit backs the provider off.
 enum FetchError {
     RateLimited,
+    /// The login or key is missing, expired or rejected.
+    Auth(String),
+    /// The request did not reach the provider.
+    Network(String),
     Failed(String),
     /// The user must set something up first; `setup` lists the steps.
     Setup {
@@ -46,13 +51,15 @@ enum FetchError {
 
 /// A failed refresh as the report shows it.
 struct Failure {
+    kind: UsageErrorKind,
     message: String,
     setup: Option<String>,
 }
 
-impl From<String> for Failure {
-    fn from(message: String) -> Self {
+impl Failure {
+    fn new(kind: UsageErrorKind, message: String) -> Self {
         Self {
+            kind,
             message,
             setup: None,
         }
@@ -362,9 +369,10 @@ fn refresh(
     UsageCache::update(|cache| {
         for (provider, plan, fetched) in fetched {
             let result = match (plan, fetched) {
-                (Plan::Blocked(retry_in), _) => {
-                    Err(rate_limited_message(provider, retry_in).into())
-                }
+                (Plan::Blocked(retry_in), _) => Err(Failure::new(
+                    UsageErrorKind::RateLimited,
+                    rate_limited_message(provider, retry_in),
+                )),
                 (Plan::Fresh(usage), _) => Ok(*usage),
                 (Plan::Fetch, Some(Ok(mut usage))) => {
                     usage.provider = provider.id().to_owned();
@@ -376,14 +384,29 @@ fn refresh(
                 }
                 (Plan::Fetch, Some(Err(FetchError::RateLimited))) => {
                     let retry_in = cache.record_rate_limit(provider.id(), now);
-                    Err(rate_limited_message(provider, retry_in).into())
+                    Err(Failure::new(
+                        UsageErrorKind::RateLimited,
+                        rate_limited_message(provider, retry_in),
+                    ))
                 }
-                (Plan::Fetch, Some(Err(FetchError::Failed(message)))) => Err(message.into()),
+                (Plan::Fetch, Some(Err(FetchError::Auth(message)))) => {
+                    Err(Failure::new(UsageErrorKind::Auth, message))
+                }
+                (Plan::Fetch, Some(Err(FetchError::Network(message)))) => {
+                    Err(Failure::new(UsageErrorKind::Network, message))
+                }
+                (Plan::Fetch, Some(Err(FetchError::Failed(message)))) => {
+                    Err(Failure::new(UsageErrorKind::Failed, message))
+                }
                 (Plan::Fetch, Some(Err(FetchError::Setup { message, setup }))) => Err(Failure {
+                    kind: UsageErrorKind::Setup,
                     message,
                     setup: Some(setup),
                 }),
-                (Plan::Fetch, None) => Err(String::from("usage fetch did not run").into()),
+                (Plan::Fetch, None) => Err(Failure::new(
+                    UsageErrorKind::Failed,
+                    "usage fetch did not run".into(),
+                )),
             };
             results.push((provider, result));
         }
@@ -423,17 +446,64 @@ fn merge_result(
             usage.label = provider.label().to_owned();
             usage.status = ProviderUsageStatus::Ok;
             usage.observed_at = usage.observed_at.or_else(|| Some(now_unix()));
+            usage.error_kind = None;
             usage
         }
-        Err(Failure { message, setup }) => {
+        Err(Failure {
+            kind,
+            message,
+            setup,
+        }) => {
             tracing::debug!(provider = provider.id(), %message, "usage refresh failed");
             let mut usage =
                 previous.unwrap_or_else(|| ProviderUsage::pending(provider.id(), provider.label()));
             usage.status = ProviderUsageStatus::Error;
+            usage.error_kind = Some(kind);
             usage.message = Some(message);
             usage.setup = setup;
             usage
         }
+    }
+}
+
+/// The report as `usage.read` returns it: each window stamped with when it
+/// was observed and whether that value is still current at `now`.
+pub(crate) fn with_freshness(report: &UsageReport, config: &UsageConfig, now: u64) -> UsageReport {
+    let mut report = report.clone();
+    for usage in &mut report.providers {
+        let stale_after = ALL_PROVIDERS
+            .into_iter()
+            .find(|provider| provider.id() == usage.provider)
+            .map_or(0, Provider::min_refresh_secs)
+            .max(config.refresh_interval().as_secs())
+            .saturating_mul(STALE_AFTER_INTERVALS);
+        stamp_freshness(usage, now, stale_after);
+    }
+    report
+}
+
+/// An observation older than this many refresh intervals missed at least one
+/// refresh, so it no longer describes the window.
+const STALE_AFTER_INTERVALS: u64 = 2;
+
+fn stamp_freshness(usage: &mut ProviderUsage, now: u64, stale_after_secs: u64) {
+    let failed = !matches!(usage.status, ProviderUsageStatus::Ok);
+    let error_kind = failed.then(|| usage.error_kind.unwrap_or(UsageErrorKind::Failed));
+    for window in &mut usage.windows {
+        window.observed_at = window.observed_at.or(usage.observed_at);
+        let too_old = window
+            .observed_at
+            .is_none_or(|at| now.saturating_sub(at) > stale_after_secs);
+        // After its reset the window holds a value nobody has observed yet.
+        let reset_since = window.resets_at.is_some_and(|resets_at| resets_at <= now);
+        window.freshness = Some(if failed {
+            UsageFreshness::Failed
+        } else if too_old || reset_since {
+            UsageFreshness::Stale
+        } else {
+            UsageFreshness::Fresh
+        });
+        window.error_kind = error_kind;
     }
 }
 
@@ -443,12 +513,11 @@ pub(crate) fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-fn clamp_percent(value: f64) -> u8 {
-    if value.is_finite() {
-        value.round().clamp(0.0, 100.0) as u8
-    } else {
-        0
-    }
+/// `None` for a value that is not a number: the window is unknown, never 0%.
+fn clamp_percent(value: f64) -> Option<u8> {
+    value
+        .is_finite()
+        .then(|| value.round().clamp(0.0, 100.0) as u8)
 }
 
 fn expand_home(path: &str) -> std::path::PathBuf {
@@ -471,6 +540,7 @@ mod tests {
             label: "5h".into(),
             used_percent,
             resets_at: Some(10),
+            ..Default::default()
         }
     }
 
@@ -484,13 +554,179 @@ mod tests {
         let merged = merge_result(
             Provider::Claude,
             Some(good),
-            Err(String::from("offline").into()),
+            Err(Failure::new(UsageErrorKind::Network, "offline".into())),
         );
 
         assert_eq!(merged.status, ProviderUsageStatus::Error);
         assert_eq!(merged.message.as_deref(), Some("offline"));
         assert_eq!(merged.windows, vec![window(40)]);
         assert_eq!(merged.observed_at, Some(5));
+    }
+
+    #[test]
+    fn failed_refresh_records_its_kind_and_success_clears_it() {
+        let failed = merge_result(
+            Provider::Claude,
+            None,
+            Err(Failure::new(
+                UsageErrorKind::RateLimited,
+                "slow down".into(),
+            )),
+        );
+        assert_eq!(failed.error_kind, Some(UsageErrorKind::RateLimited));
+        // No earlier observation: no window at all, never an invented 0% or 100%.
+        assert!(failed.windows.is_empty());
+
+        let recovered = merge_result(
+            Provider::Claude,
+            Some(failed),
+            Ok(ProviderUsage::pending("", "")),
+        );
+        assert_eq!(recovered.error_kind, None);
+    }
+
+    fn observed_report(provider: &str, status: ProviderUsageStatus, at: u64) -> UsageReport {
+        let mut usage = ProviderUsage::pending(provider, provider);
+        usage.status = status;
+        usage.observed_at = Some(at);
+        usage.windows = vec![
+            UsageWindow {
+                id: "five_hour".into(),
+                label: "5h".into(),
+                used_percent: 40,
+                resets_at: Some(at + 3_600),
+                ..Default::default()
+            },
+            UsageWindow {
+                id: "weekly".into(),
+                label: "week".into(),
+                used_percent: 100,
+                resets_at: None,
+                ..Default::default()
+            },
+        ];
+        UsageReport {
+            enabled: true,
+            providers: vec![usage],
+        }
+    }
+
+    fn freshness(report: &UsageReport) -> Vec<(Option<UsageFreshness>, Option<u64>, u8)> {
+        report.providers[0]
+            .windows
+            .iter()
+            .map(|window| (window.freshness, window.observed_at, window.used_percent))
+            .collect()
+    }
+
+    #[test]
+    fn a_recent_observation_is_fresh_per_window() {
+        let config = UsageConfig::default();
+        let interval = config.refresh_interval().as_secs();
+        let report = observed_report("claude", ProviderUsageStatus::Ok, 1_000);
+        let read = with_freshness(&report, &config, 1_000 + interval);
+        assert_eq!(
+            freshness(&read),
+            vec![
+                (Some(UsageFreshness::Fresh), Some(1_000), 40),
+                (Some(UsageFreshness::Fresh), Some(1_000), 100)
+            ]
+        );
+        assert!(read.providers[0]
+            .windows
+            .iter()
+            .all(|window| window.error_kind.is_none()));
+        // The stored report itself stays unstamped.
+        assert_eq!(report.providers[0].windows[0].freshness, None);
+    }
+
+    #[test]
+    fn an_old_observation_is_stale_and_keeps_its_last_value() {
+        let config = UsageConfig::default();
+        let interval = config.refresh_interval().as_secs();
+        let report = observed_report("claude", ProviderUsageStatus::Ok, 1_000);
+        let read = with_freshness(&report, &config, 1_000 + 2 * interval + 1);
+        assert_eq!(
+            freshness(&read)
+                .into_iter()
+                .map(|(freshness, _, used)| (freshness, used))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(UsageFreshness::Stale), 40),
+                (Some(UsageFreshness::Stale), 100)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_past_its_reset_is_stale_while_the_others_stay_fresh() {
+        let report = observed_report("claude", ProviderUsageStatus::Ok, 1_000);
+        // delay: not a wait, a poll interval long enough that age alone keeps it fresh.
+        let config = UsageConfig {
+            refresh_interval_secs: 3_600,
+            ..UsageConfig::default()
+        };
+        let read = with_freshness(&report, &config, 1_000 + 3_600);
+        assert_eq!(
+            freshness(&read)
+                .into_iter()
+                .map(|(freshness, _, _)| freshness)
+                .collect::<Vec<_>>(),
+            vec![Some(UsageFreshness::Stale), Some(UsageFreshness::Fresh)]
+        );
+    }
+
+    #[test]
+    fn a_failed_refresh_marks_every_window_failed_with_its_kind() {
+        let mut report = observed_report("claude", ProviderUsageStatus::Error, 1_000);
+        report.providers[0].error_kind = Some(UsageErrorKind::Auth);
+        let read = with_freshness(&report, &UsageConfig::default(), 1_010);
+        for window in &read.providers[0].windows {
+            assert_eq!(window.freshness, Some(UsageFreshness::Failed));
+            assert_eq!(window.error_kind, Some(UsageErrorKind::Auth));
+        }
+        // The last observation is kept as it was, never rewritten to 0 or 100.
+        assert_eq!(
+            freshness(&read)
+                .into_iter()
+                .map(|(_, at, used)| (at, used))
+                .collect::<Vec<_>>(),
+            vec![(Some(1_000), 40), (Some(1_000), 100)]
+        );
+    }
+
+    #[test]
+    fn slow_providers_go_stale_after_their_own_minimum_gap() {
+        // OpenAI API has a longer minimum refresh gap than the configured interval.
+        let config = UsageConfig::default();
+        let report = observed_report("openai_api", ProviderUsageStatus::Ok, 0);
+        let read = with_freshness(&report, &config, 2 * OPENAI_API_MIN_REFRESH_SECS);
+        assert_eq!(
+            read.providers[0].windows[1].freshness,
+            Some(UsageFreshness::Fresh)
+        );
+    }
+
+    #[test]
+    fn freshness_fields_are_optional_for_older_clients_and_servers() {
+        let old: UsageWindow =
+            serde_json::from_str(r#"{"id":"weekly","label":"week","used_percent":5}"#).unwrap();
+        assert_eq!(
+            (old.freshness, old.observed_at, old.error_kind),
+            (None, None, None)
+        );
+        let unknown: UsageWindow = serde_json::from_str(
+            r#"{"id":"weekly","label":"week","used_percent":5,"freshness":"later","error_kind":"later"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.freshness, Some(UsageFreshness::Unknown));
+        assert_eq!(unknown.error_kind, Some(UsageErrorKind::Unknown));
+        let json =
+            serde_json::to_value(observed_report("claude", ProviderUsageStatus::Ok, 1)).unwrap();
+        assert!(json["providers"][0].get("account").is_none());
+        assert!(json["providers"][0]["windows"][0]
+            .get("freshness")
+            .is_none());
     }
 
     #[test]
@@ -574,6 +810,7 @@ mod tests {
             Provider::OpenAiApi,
             None,
             Err(Failure {
+                kind: UsageErrorKind::Setup,
                 message: "no key".into(),
                 setup: Some("step one\nstep two".into()),
             }),
@@ -584,9 +821,10 @@ mod tests {
 
     #[test]
     fn percent_is_rounded_and_clamped() {
-        assert_eq!(clamp_percent(31.6), 32);
-        assert_eq!(clamp_percent(140.0), 100);
-        assert_eq!(clamp_percent(-3.0), 0);
-        assert_eq!(clamp_percent(f64::NAN), 0);
+        assert_eq!(clamp_percent(31.6), Some(32));
+        assert_eq!(clamp_percent(140.0), Some(100));
+        assert_eq!(clamp_percent(-3.0), Some(0));
+        assert_eq!(clamp_percent(f64::NAN), None);
+        assert_eq!(clamp_percent(f64::INFINITY), None);
     }
 }
