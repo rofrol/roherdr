@@ -606,6 +606,690 @@ if [ "$action" = "stop-check" ]; then
   exit 0
 fi
 
+# PreToolUse hook: in a tab whose role is `coordinator`, the agent runs only the commands a
+# coordinator needs (herdr's todo, worker, history and coordinator commands, read-only git and
+# file reads, `git commit -- TODO.md DECISIONS.md`, `scripts/todo_edit.py`, the consult helpers)
+# and writes only under its session's scratchpad; anything else is denied with the allowed path.
+# A compound command is allowed only when every part is, and one the hook cannot read for certain
+# is denied. One Bash command that carries `# herdr-override: <reason>` runs anyway, recorded
+# by herdr (`coordinator.record_override`, which notifies the user and lists it in
+# `herdr history overrides`); when herdr cannot record it, it is denied. An allowed call asks
+# herdr nothing; a refused one asks the tab's role, and outside a coordinator tab, or when herdr
+# cannot tell, the hook does nothing.
+if [ "$action" = "pre-tool" ]; then
+  [ "${HERDR_ENV:-}" = "1" ] || exit 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  command -v python3 >/dev/null 2>&1 || exit 0
+  HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+import json
+import os
+import re
+import socket
+import time
+
+COORDINATOR_ROLE = "coordinator"
+HOME = os.path.expanduser("~")
+OVERRIDE = re.compile(r"(?:^|[ \t;])#[ \t]*herdr-override:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+INSTALL_REASON = "builds, installs and pushes happen in `herdr todo run`"
+CODE_REASON = "code goes to a worker (`herdr todo run`)"
+TODO_REASON = "edit TODO.md and DECISIONS.md with `python3 scripts/todo_edit.py`"
+SCRATCH_REASON = "write notes only under this session's scratchpad"
+ALLOWED = (
+    "a coordinator tab runs only `herdr todo|worker|history|coordinator`, `herdr agent "
+    "read|list|get|explain|awaiting-reply|set-task`, `herdr-job run|wait|list|log|watch` (run with "
+    "an allowed command), read-only git (status, log, diff, show, fetch, rev-parse, branch --list, "
+    "ls-files), `git commit -- TODO.md DECISIONS.md`, `python3 scripts/todo_edit.py`, cat, head, "
+    "tail, grep, rg, sed -n, jq, ls, wc, date, df, du and the consult helpers"
+)
+OVERRIDE_HINT = (
+    "Only when the user asked for it or no allowed path exists, end that one command with "
+    "`# herdr-override: <reason>`: it then runs, and the user is notified."
+)
+# Tools that only read, ask the user or manage the session's own shells and plan.
+FREE_TOOLS = {
+    "AskUserQuestion", "Read", "Grep", "Glob", "TodoWrite", "ToolSearch", "Skill",
+    "BashOutput", "TaskOutput", "KillShell", "TaskStop",
+}
+WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
+               "NotebookEdit": "notebook_path"}
+READ_TOOLS = {"cat", "head", "tail", "grep", "jq", "ls", "wc", "df", "du"}
+HERDR_FREE = {"todo", "worker", "history", "coordinator"}
+HERDR_AGENT = {"read", "list", "get", "explain", "status", "awaiting-reply", "set-task"}
+JOB_FREE = {"wait", "list", "log", "watch"}
+GIT_READ = {"status", "log", "diff", "show", "fetch", "rev-parse", "ls-files"}
+# Options of read-only git commands that write a file or run a program.
+GIT_UNSAFE = ("--output", "--upload-pack", "--exec", "--ext-diff", "--open-files-in-pager")
+GIT_LANDING = {"push", "cherry-pick", "merge", "rebase", "pull", "tag", "am", "revert"}
+BRANCH_SAFE = {
+    "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--merged", "--no-merged",
+    "--contains", "--no-contains", "--points-at", "--sort", "--format", "--color", "--no-color",
+    "--column", "--no-column", "-i", "--ignore-case", "--omit-empty", "--abbrev", "--no-abbrev",
+}
+BUILDERS = {"just", "cargo", "make", "npm", "pnpm", "yarn", "brew", "rustup", "zig"}
+SED_ADDRESS = r"(?:\d+|\$|/[^/\\]*/)"
+SED_RANGE = rf"{SED_ADDRESS}(?:\s*,\s*{SED_ADDRESS})?"
+SED_PRINT = re.compile(rf"^\s*{SED_RANGE}\s*p(?:\s*;\s*{SED_RANGE}\s*p)*\s*;?\s*$")
+HELPER = re.compile(
+    r"^(?:" + re.escape(HOME) + r"/\.claude|(?:\./)?plugins/consult)/skills/[\w.-]+/"
+    r"(?:scripts/)?(?:ask_[\w.-]+|consult\.py)$"
+)
+
+
+class Denied(Exception):
+    """A part of the call the allowlist refuses; the message says why and the allowed path."""
+
+
+class Unparseable(Exception):
+    """A command the allowlist cannot read reliably; it is refused."""
+
+
+class Word:
+    def __init__(self, text, dynamic, glob, quoted):
+        self.text = text
+        self.dynamic = dynamic
+        self.glob = glob
+        self.quoted = quoted
+
+
+def real(path, cwd):
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(cwd or os.getcwd(), path)
+    return os.path.realpath(path)
+
+
+def in_scratchpad(path, cwd, session):
+    """Whether `path` is under Claude's scratchpad of this session:
+    `<tmp>/claude[-<uid>]/<project>/<session>/scratchpad/`."""
+    if not isinstance(path, str) or not path or not session:
+        return False
+    parts = real(path, cwd).split(os.sep)
+    for index in range(3, len(parts) - 1):
+        if (parts[index] == "scratchpad" and parts[index - 1] == session
+                and re.fullmatch(r"claude(?:-\d+)?", parts[index - 3])):
+            return True
+    return False
+
+
+class Lexer:
+    """A conservative reader of a POSIX shell command: it finds every simple command, those
+    inside `$(...)` too, and refuses what it cannot read for certain (backticks, subshells, brace
+    and arithmetic expansion, unknown parameter forms)."""
+
+    def __init__(self, text, writable, depth=0):
+        self.s = text
+        self.i = 0
+        self.writable = writable
+        self.depth = depth
+        self.commands = []
+        self.heredocs = []
+
+    def parse(self, closing=False):
+        if self.depth > 8:
+            raise Unparseable("command substitutions nest too deep")
+        current = []
+        s = self.s
+        while True:
+            self.blanks()
+            if self.i >= len(s):
+                if closing:
+                    raise Unparseable("an unclosed `$(`")
+                if self.heredocs:
+                    raise Unparseable("a heredoc without its end")
+                self.finish(current)
+                return self.commands
+            c = s[self.i]
+            if c == "#":
+                end = s.find("\n", self.i)
+                self.i = len(s) if end < 0 else end
+                continue
+            if c == "\n":
+                self.i += 1
+                self.finish(current)
+                current = []
+                self.heredoc_bodies()
+                continue
+            if c == ")":
+                if not closing:
+                    raise Unparseable("an unmatched `)`")
+                if self.heredocs:
+                    raise Unparseable("a heredoc inside `$(...)`")
+                self.i += 1
+                self.finish(current)
+                return self.commands
+            if c == "(":
+                raise Unparseable("a subshell")
+            if s.startswith("&>", self.i):
+                self.redirect(current)
+                continue
+            if c in ";|&":
+                op = self.operator()
+                if op == "&":
+                    raise Denied("a command in the background (`&`) is not allowed")
+                if op not in (";", "&&", "||", "|", "|&"):
+                    raise Unparseable(f"the operator `{op}`")
+                self.finish(current)
+                current = []
+                continue
+            if c in "<>":
+                self.redirect(current)
+                continue
+            word = self.word()
+            if (self.i < len(s) and s[self.i] in "<>" and word.text.isdigit()
+                    and not word.quoted and not word.dynamic):
+                self.redirect(current)
+                continue
+            current.append(word)
+
+    def finish(self, current):
+        if current:
+            self.commands.append(current)
+
+    def blanks(self):
+        s = self.s
+        while self.i < len(s):
+            if s[self.i] in " \t":
+                self.i += 1
+            elif s.startswith("\\\n", self.i):
+                self.i += 2
+            else:
+                break
+
+    def operator(self):
+        s = self.s
+        for op in ("&&", "||", "|&", ";;", ";&", "|", ";", "&"):
+            if s.startswith(op, self.i):
+                self.i += len(op)
+                return op
+        raise Unparseable("an operator")
+
+    def target(self):
+        self.blanks()
+        if self.i >= len(self.s) or self.s[self.i] in "\n;&|<>()":
+            raise Unparseable("a redirection without a target")
+        return self.word()
+
+    def redirect(self, current):
+        s = self.s
+        if s.startswith("<<<", self.i):
+            self.i += 3
+            self.target()
+            return
+        if s.startswith("<<", self.i):
+            strip = s.startswith("<<-", self.i)
+            self.i += 3 if strip else 2
+            delimiter = self.target()
+            if delimiter.dynamic or not delimiter.text:
+                raise Unparseable("a heredoc delimiter")
+            self.heredocs.append((delimiter.text, strip, delimiter.quoted))
+            return
+        if s.startswith("<>", self.i):
+            raise Denied("`<>` opens a file for writing; " + SCRATCH_REASON)
+        if s.startswith("<&", self.i) or s.startswith(">&", self.i):
+            self.i += 2
+            fd = self.target()
+            if fd.dynamic or not (fd.text.isdigit() or fd.text == "-"):
+                raise Denied("`>&` to a file writes it; " + SCRATCH_REASON)
+            return
+        if s[self.i] == "<":
+            self.i += 1
+            self.target()
+            return
+        for op in ("&>>", "&>", ">>", ">|", ">"):
+            if s.startswith(op, self.i):
+                self.i += len(op)
+                break
+        target = self.target()
+        if target.dynamic or target.glob:
+            raise Denied(f"`{op}` to a path built at run time is not allowed")
+        if target.text == "/dev/null" or self.writable(target.text):
+            return
+        raise Denied(f"`{op} {target.text}` writes a file; " + SCRATCH_REASON)
+
+    def heredoc_bodies(self):
+        s = self.s
+        for delimiter, strip, quoted in self.heredocs:
+            while True:
+                if self.i >= len(s):
+                    raise Unparseable("a heredoc without its end")
+                end = s.find("\n", self.i)
+                line = s[self.i:] if end < 0 else s[self.i:end]
+                self.i = len(s) if end < 0 else end + 1
+                if (line.lstrip("\t") if strip else line) == delimiter:
+                    break
+                if not quoted and ("$(" in line or "`" in line):
+                    raise Unparseable("a command substitution in a heredoc")
+        self.heredocs = []
+
+    def word(self):
+        s = self.s
+        text = []
+        dynamic = glob = quoted = False
+        start = self.i
+        while self.i < len(s):
+            c = s[self.i]
+            if c in " \t\n;&|<>()":
+                break
+            if c == "\\":
+                if self.i + 1 >= len(s):
+                    raise Unparseable("a trailing backslash")
+                if s[self.i + 1] != "\n":
+                    text.append(s[self.i + 1])
+                    quoted = True
+                self.i += 2
+            elif c == "'":
+                end = s.find("'", self.i + 1)
+                if end < 0:
+                    raise Unparseable("an unclosed quote")
+                text.append(s[self.i + 1:end])
+                quoted = True
+                self.i = end + 1
+            elif c == '"':
+                self.i += 1
+                dynamic |= self.double_quoted(text)
+                quoted = True
+            elif c == "`":
+                raise Unparseable("backticks")
+            elif c == "$":
+                dynamic |= self.dollar(text)
+            elif c in "{}":
+                raise Unparseable("brace expansion")
+            elif c == "~" and self.i == start:
+                following = s[self.i + 1:self.i + 2]
+                if following not in ("", "/") and following not in " \t\n;&|<>()":
+                    raise Unparseable("`~user`")
+                text.append(HOME)
+                self.i += 1
+            else:
+                if c in "*?[":
+                    glob = True
+                text.append(c)
+                self.i += 1
+        return Word("".join(text), dynamic, glob, quoted)
+
+    def double_quoted(self, text):
+        s = self.s
+        dynamic = False
+        while self.i < len(s):
+            c = s[self.i]
+            if c == '"':
+                self.i += 1
+                return dynamic
+            if c == "\\":
+                following = s[self.i + 1:self.i + 2]
+                if following in ('"', "\\", "$", "`"):
+                    text.append(following)
+                    self.i += 2
+                elif following == "\n":
+                    self.i += 2
+                else:
+                    text.append("\\")
+                    self.i += 1
+            elif c == "`":
+                raise Unparseable("backticks")
+            elif c == "$":
+                dynamic |= self.dollar(text)
+            else:
+                text.append(c)
+                self.i += 1
+        raise Unparseable("an unclosed quote")
+
+    def dollar(self, text):
+        """Reads one expansion at `$`; True when its value is only known at run time."""
+        s = self.s
+        following = s[self.i + 1:self.i + 2]
+        if s.startswith("$((", self.i):
+            raise Unparseable("arithmetic expansion")
+        if following == "(":
+            self.i += 2
+            nested = Lexer(s, self.writable, self.depth + 1)
+            nested.i = self.i
+            self.commands.extend(nested.parse(closing=True))
+            self.i = nested.i
+            return True
+        if following == "{":
+            end = s.find("}", self.i)
+            name = s[self.i + 2:end] if end > 0 else ""
+            if not re.fullmatch(r"[A-Za-z_]\w*", name):
+                raise Unparseable("a parameter expansion")
+            self.i = end + 1
+        elif re.match(r"[A-Za-z_]", following):
+            name = re.match(r"[A-Za-z_]\w*", s[self.i + 1:]).group(0)
+            self.i += 1 + len(name)
+        elif following and following in "?$!#@*-0123456789":
+            self.i += 2
+            return True
+        elif following in ("'", '"'):
+            raise Unparseable("`$'...'` quoting")
+        else:
+            text.append("$")
+            self.i += 1
+            return False
+        if name == "HOME":
+            text.append(HOME)
+            return False
+        return True
+
+
+def parse(command, writable):
+    if len(command) > 100_000:
+        raise Unparseable("a command this long")
+    return Lexer(command, writable).parse()
+
+
+def static(words, what):
+    for word in words:
+        if word.dynamic:
+            raise Denied(f"{what}: an argument built at run time is not allowed")
+
+
+def is_helper(path):
+    return bool(HELPER.match(path)) and ".." not in path.split("/")
+
+
+def check_herdr(args):
+    static(args[:2], "herdr")
+    sub = args[0].text if args else ""
+    if sub in HERDR_FREE:
+        return
+    if sub == "agent":
+        action = args[1].text if len(args) > 1 else ""
+        if action in HERDR_AGENT:
+            return
+        raise Denied(f"`herdr agent {action}` is not allowed: a coordinator reads agents "
+                     "(`herdr agent read|list|get|explain`) and reports itself "
+                     "(`awaiting-reply`, `set-task`); work goes to a worker (`herdr todo run`)")
+    raise Denied(f"`herdr {sub}` is not allowed: {ALLOWED}")
+
+
+def check_job(args, depth):
+    static(args[:1], "herdr-job")
+    sub = args[0].text if args else ""
+    if sub in JOB_FREE:
+        return
+    if sub != "run":
+        raise Denied(f"`herdr-job {sub}` is not allowed: {ALLOWED}")
+    for index, word in enumerate(args):
+        if word.text == "--" and not word.quoted:
+            inner = args[index + 1:]
+            break
+    else:
+        raise Denied("`herdr-job run` needs `-- <command>`")
+    static(inner, "herdr-job run")
+    try:
+        if len(inner) == 1:
+            # herdr-job runs a single argument as a shell command.
+            for command in parse(inner[0].text, lambda path: False):
+                check_command(command, depth + 1)
+        else:
+            check_command(inner, depth + 1)
+    except (Denied, Unparseable) as error:
+        raise Denied(f"`herdr-job run` runs only allowed commands: {error}")
+
+
+def check_git(args):
+    index = 0
+    while index < len(args) and args[index].text.startswith("-"):
+        option = args[index]
+        static([option], "git")
+        if option.text == "-C" and index + 1 < len(args):
+            static([args[index + 1]], "git -C")
+            index += 2
+        elif option.text == "--no-pager":
+            index += 1
+        else:
+            raise Denied(f"the git option `{option.text}` is not allowed")
+    if index >= len(args):
+        raise Denied("git without a command is not allowed")
+    static(args[index:index + 1], "git")
+    sub = args[index].text
+    rest = args[index + 1:]
+    if sub in GIT_READ:
+        static(rest, f"git {sub}")
+        for word in rest:
+            if word.text.startswith(GIT_UNSAFE):
+                raise Denied(f"`git {sub} {word.text}` writes a file or runs a program")
+        return
+    if sub == "branch":
+        return check_branch(rest)
+    if sub == "commit":
+        return check_commit(rest)
+    if sub in GIT_LANDING:
+        raise Denied(f"`git {sub}` is not allowed: cherry-picks, installs and pushes happen in "
+                     "`herdr todo run`")
+    raise Denied(f"`git {sub}` is not allowed: a coordinator runs read-only git and "
+                 f"`git commit -- TODO.md DECISIONS.md`; {CODE_REASON}")
+
+
+def check_branch(args):
+    static(args, "git branch")
+    listing = False
+    for word in args:
+        if word.text in ("--list", "-l", "--show-current"):
+            listing = True
+        elif word.text.startswith("-") and word.text.split("=", 1)[0] not in BRANCH_SAFE:
+            raise Denied(f"`git branch {word.text}` changes branches; only `git branch --list`")
+    if not listing:
+        raise Denied("only `git branch --list` (or `--show-current`) is allowed")
+
+
+def check_commit(args):
+    index = 0
+    paths = None
+    while index < len(args):
+        word = args[index]
+        text = word.text
+        if text == "--" and not word.quoted:
+            paths = args[index + 1:]
+            break
+        static([word], "git commit")
+        if text in ("-m", "--message", "-F", "--file") and index + 1 < len(args):
+            index += 2
+            continue
+        if (text.startswith(("--message=", "--file=")) or (text.startswith("-m") and len(text) > 2)
+                or text in ("-q", "--quiet", "-o", "--only")):
+            index += 1
+            continue
+        raise Denied(f"`git commit {text}` is not allowed: commit by path, "
+                     "`git commit -m <message> -- TODO.md DECISIONS.md`")
+    if not paths:
+        raise Denied("commit by path: `git commit -m <message> -- TODO.md DECISIONS.md`")
+    for path in paths:
+        if path.dynamic or path.glob or os.path.normpath(path.text) not in ("TODO.md",
+                                                                             "DECISIONS.md"):
+            raise Denied(f"`git commit` of `{path.text}` is not allowed: a coordinator commits "
+                         f"only TODO.md and DECISIONS.md; {CODE_REASON}")
+
+
+def check_sed(args):
+    quiet = False
+    script = None
+    for word in args:
+        if script is None:
+            static([word], "sed")
+            if word.text in ("-n", "--quiet", "--silent"):
+                quiet = True
+                continue
+            if word.text in ("-E", "-r", "--regexp-extended"):
+                continue
+            if word.text.startswith("-"):
+                raise Denied(f"`sed {word.text}` is not allowed: only `sed -n '<lines>p'`")
+            script = word.text
+    if not quiet or script is None or not SED_PRINT.match(script):
+        raise Denied("only `sed -n '<lines>p'` (printing lines) is allowed")
+
+
+def check_date(args):
+    static(args, "date")
+    previous = ""
+    for word in args:
+        if word.text in ("-s", "--set") or word.text.startswith("--set="):
+            raise Denied("`date` may not set the clock")
+        if word.text.isdigit() and previous not in ("-r", "-d", "-v"):
+            raise Denied("`date` may not set the clock")
+        previous = word.text
+
+
+def check_command(words, depth=0):
+    if not words:
+        return
+    first = words[0]
+    if re.match(r"[A-Za-z_]\w*=", first.text):
+        raise Denied("environment assignments before a command are not allowed")
+    if first.dynamic or first.glob:
+        raise Denied("a command name built at run time is not allowed")
+    name = first.text
+    args = words[1:]
+    if name == "herdr":
+        return check_herdr(args)
+    if name == "herdr-job":
+        return check_job(args, depth)
+    if name == "git":
+        return check_git(args)
+    if name in ("python3", "python", "sh", "bash"):
+        static(args[:1], name)
+        script = args[0].text if args else ""
+        if is_helper(script) or (name.startswith("python") and script in (
+                "scripts/todo_edit.py", "./scripts/todo_edit.py")):
+            return
+        raise Denied(f"`{name}` runs only `scripts/todo_edit.py` and the consult helpers; "
+                     + CODE_REASON)
+    if is_helper(name):
+        return
+    if name == "sed":
+        return check_sed(args)
+    if name == "rg":
+        static(args, "rg")
+        if any(word.text.startswith("--pre") for word in args):
+            raise Denied("`rg --pre` runs a program")
+        return
+    if name == "date":
+        return check_date(args)
+    if name in READ_TOOLS:
+        return
+    base = os.path.basename(name)
+    if base in BUILDERS or base == "herdr_live.sh":
+        raise Denied(f"`{base}` is not allowed: {INSTALL_REASON}; {CODE_REASON}")
+    raise Denied(f"`{name}` is not allowed: {ALLOWED}; {CODE_REASON}")
+
+
+def check_bash(command, cwd, session):
+    """None when every part of the Bash command is allowed, else why not."""
+    try:
+        for words in parse(command, lambda path: in_scratchpad(path, cwd, session)):
+            check_command(words)
+    except Denied as error:
+        return str(error)
+    except Unparseable as error:
+        return f"the command cannot be read for certain ({error}); split it into plain commands"
+    return None
+
+
+def check_call(tool, tool_input, cwd, session):
+    """None when the tool call is allowed in a coordinator tab, else why not."""
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "Bash":
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            return "a Bash call without a command"
+        return check_bash(command, cwd, session)
+    if tool in FREE_TOOLS:
+        return None
+    if tool in WRITE_TOOLS:
+        path = tool_input.get(WRITE_TOOLS[tool])
+        if in_scratchpad(path, cwd, session):
+            return None
+        if isinstance(path, str) and os.path.basename(path) in ("TODO.md", "DECISIONS.md"):
+            return f"{tool} of {os.path.basename(path)} is not allowed: {TODO_REASON}"
+        return f"{tool} of {path} is not allowed: {CODE_REASON}; {SCRATCH_REASON}"
+    if tool in ("Agent", "Task"):
+        return "a coordinator hands work to a worker (`herdr todo run`), not to a subagent"
+    return f"the {tool} tool is not allowed: {ALLOWED}"
+
+
+def ask_server(method, params):
+    """The result of one request to the herdr server, or None on any failure."""
+    request = {"id": f"herdr:claude:{method}:{int(time.time() * 1000)}", "method": method,
+               "params": params}
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(os.environ["HERDR_SOCKET_PATH"])
+        client.sendall((json.dumps(request) + "\n").encode())
+        reply = b""
+        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+        client.close()
+        result = json.loads(reply.decode("utf-8", "replace")).get("result")
+        return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+
+
+def tab_role():
+    """The role of the pane's tab (`tab.set_role`), or None when it is unknown."""
+    pane = (ask_server("pane.get", {"pane_id": os.environ["HERDR_PANE_ID"]}) or {}).get("pane")
+    tab_id = pane.get("tab_id") if isinstance(pane, dict) else None
+    if not isinstance(tab_id, str) or not tab_id:
+        return None
+    tab = (ask_server("tab.get", {"tab_id": tab_id}) or {}).get("tab")
+    role = tab.get("role") if isinstance(tab, dict) else None
+    return role if isinstance(role, str) else None
+
+
+def deny(reason):
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": "Herdr coordinator allowlist: " + reason,
+    }}))
+    raise SystemExit(0)
+
+
+try:
+    with open(os.environ["HERDR_HOOK_INPUT_FILE"], encoding="utf-8") as handle:
+        hook_input = json.loads(handle.read() or "{}")
+except Exception:
+    raise SystemExit(0)
+if not isinstance(hook_input, dict) or hook_input.get("hook_event_name") != "PreToolUse":
+    raise SystemExit(0)
+tool = hook_input.get("tool_name")
+tool_input = hook_input.get("tool_input")
+tool_input = tool_input if isinstance(tool_input, dict) else {}
+cwd = hook_input.get("cwd") if isinstance(hook_input.get("cwd"), str) else None
+session = hook_input.get("session_id")
+session = session if isinstance(session, str) and session else None
+reason = check_call(str(tool), tool_input, cwd, session)
+# An allowed call needs no question to herdr; only a refusal asks whether this is a coordinator.
+if reason is None or tab_role() != COORDINATOR_ROLE:
+    raise SystemExit(0)
+command = tool_input.get("command") if tool == "Bash" else None
+overrides = OVERRIDE.findall(command) if isinstance(command, str) else []
+if overrides:
+    why = overrides[-1].strip()
+    if not why:
+        deny("an override needs its reason: `# herdr-override: <reason>`")
+    params = {"pane_id": os.environ["HERDR_PANE_ID"], "tool": tool, "command": command,
+              "reason": why}
+    if cwd:
+        params["cwd"] = cwd
+    if session:
+        params["session_id"] = session
+    recorded = ask_server("coordinator.record_override", params)
+    if isinstance(recorded, dict) and recorded.get("type") == "coordinator_override":
+        raise SystemExit(0)
+    deny("herdr could not record the override, so the command does not run (" + reason + ")")
+deny(reason + ". " + OVERRIDE_HINT)
+PY
+  exit 0
+fi
+
 # PostToolUse hook for TodoWrite: report how far the agent's own todo list is as the `plan` token
 # (`3/7`), which the sidebar shows beside the tab. HERDR_AGENT_PLAN=0 turns it off.
 if [ "$action" = "plan" ]; then

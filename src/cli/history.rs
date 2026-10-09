@@ -3,9 +3,9 @@
 //! timeline or, with `--json`, as the server's reply.
 
 use crate::api::schema::{
-    HistoryEvent, HistoryEventKind, HistoryItem, HistoryItemParams, HistoryItemSummary,
-    HistoryListParams, HistoryReconcile, HistoryReconcileParams, Method, Request, TodoRunStatus,
-    WorkerVerdict,
+    CoordinatorOverride, HistoryEvent, HistoryEventKind, HistoryItem, HistoryItemParams,
+    HistoryItemSummary, HistoryListParams, HistoryOverridesParams, HistoryReconcile,
+    HistoryReconcileParams, Method, Request, TodoRunStatus, WorkerVerdict,
 };
 
 use super::worker::take_string_option;
@@ -25,6 +25,10 @@ const USAGE: &str = "usage:
       records: claims no note, close, abort or block followed, and items seen
       at a claim that left TODO.md without a closed record. It only reports;
       it changes no record. Run it when a coordinator starts.
+  herdr history overrides [--repo DIR] [--json]
+      The exceptions to a coordinator tab's command allowlist, oldest first:
+      each command that carried `# herdr-override: <reason>` and ran, with
+      its time, reason, pane and the coordinator's tenure and item.
 The records live in herdr's worker store on this machine, outside the
 repository; times are in local time.";
 
@@ -32,6 +36,7 @@ enum Command {
     List(HistoryListParams),
     Item(HistoryItemParams),
     Reconcile(HistoryReconcileParams),
+    Overrides(HistoryOverridesParams),
 }
 
 pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
@@ -51,6 +56,7 @@ pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
         Command::List(params) => Method::HistoryList(params),
         Command::Item(params) => Method::HistoryItem(params),
         Command::Reconcile(params) => Method::HistoryReconcile(params),
+        Command::Overrides(params) => Method::HistoryOverrides(params),
     };
     let response = super::send_request(&Request {
         id: "cli:history".into(),
@@ -67,6 +73,8 @@ pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
             .map(|item: HistoryItem| print_item(&item)),
         Some("history_reconcile") => serde_json::from_value(result["reconcile"].clone())
             .map(|reconcile: HistoryReconcile| print_reconcile(&reconcile)),
+        Some("history_overrides") => serde_json::from_value(result["overrides"].clone())
+            .map(|overrides: Vec<CoordinatorOverride>| print_overrides(&overrides)),
         _ => return super::print_response(&response),
     };
     match printed {
@@ -107,6 +115,10 @@ fn parse(args: &[String]) -> Result<Option<(Command, bool)>, String> {
             },
         }),
         ([word], Some(_)) if word == "reconcile" => return Err("reconcile takes no --item".into()),
+        ([word], None) if word == "overrides" => {
+            Command::Overrides(HistoryOverridesParams { repo })
+        }
+        ([word], Some(_)) if word == "overrides" => return Err("overrides takes no --item".into()),
         (other, _) => return Err(format!("unexpected arguments: {}", other.join(" "))),
     };
     Ok(Some((command, json)))
@@ -187,6 +199,45 @@ fn list_text(items: &[HistoryItemSummary], offset: i64) -> String {
                 summary.title.as_deref().unwrap_or("-"),
                 summary.repo
             )
+        })
+        .collect()
+}
+
+fn print_overrides(overrides: &[CoordinatorOverride]) {
+    print!(
+        "{}",
+        overrides_text(overrides, crate::usage::local_utc_offset_secs())
+    );
+}
+
+fn overrides_text(overrides: &[CoordinatorOverride], offset: i64) -> String {
+    if overrides.is_empty() {
+        return "no recorded overrides\n".into();
+    }
+    overrides
+        .iter()
+        .map(|record| {
+            let mut out = format!(
+                "{}  {}  pane {}",
+                when(record.ts_ms, offset),
+                record.reason,
+                record.pane_id
+            );
+            if let Some(coordinator) = &record.coordinator_id {
+                out.push_str(&format!("  {coordinator}"));
+            }
+            if let Some(item) = &record.item {
+                out.push_str(&format!("  {item}"));
+            }
+            if let Some(repo) = &record.repo {
+                out.push_str(&format!("  ({repo})"));
+            }
+            out.push('\n');
+            out.push_str(&indented(
+                &format!("{}: {}", record.tool, record.command),
+                "    ",
+            ));
+            out
         })
         .collect()
 }
@@ -424,6 +475,36 @@ mod tests {
         assert!(text.contains(
             "    attempt 1  worker w1  verified  approve  commit fedcba987654  landed aaaabbbbcccc\n"
         ), "{text}");
+    }
+
+    #[test]
+    fn overrides_are_listed_with_their_reason_pane_tenure_and_command() {
+        assert!(matches!(
+            parse(&args(&["overrides", "--json"])),
+            Ok(Some((
+                Command::Overrides(HistoryOverridesParams { repo: None }),
+                true
+            )))
+        ));
+        assert!(parse(&args(&["overrides", "--item", "t-abcd2345"])).is_err());
+        let record = CoordinatorOverride {
+            id: 1,
+            ts_ms: 1_800_000_000_000,
+            pane_id: "w1:p2".into(),
+            tool: "Bash".into(),
+            command: "just clean-install TODO.md # herdr-override: asked".into(),
+            reason: "asked".into(),
+            repo: Some("/repo".into()),
+            coordinator_id: Some("c-abcdefgh".into()),
+            item: None,
+            session_id: None,
+        };
+        assert_eq!(
+            overrides_text(&[record], 0),
+            "2027-01-15 08:00  asked  pane w1:p2  c-abcdefgh  (/repo)\n    \
+             Bash: just clean-install TODO.md # herdr-override: asked\n"
+        );
+        assert_eq!(overrides_text(&[], 0), "no recorded overrides\n");
     }
 
     #[test]

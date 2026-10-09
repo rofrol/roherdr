@@ -43,6 +43,10 @@ const SESSION_END_EVENT: &str = "SessionEnd";
 const STOP_FAILURE_ACTION: &str = "stop-failure";
 const STOP_FAILURE_EVENT: &str = "StopFailure";
 const STOP_FAILURE_MATCHER: &str = "^(rate_limit|billing_error)$";
+/// The hook action that, in a tab whose role is `coordinator`, denies every tool call outside the
+/// coordinator's allowlist. It runs for every tool and does nothing in other tabs.
+const PRE_TOOL_ACTION: &str = "pre-tool";
+const PRE_TOOL_EVENT: &str = "PreToolUse";
 
 struct HookRemoval {
     event: &'static str,
@@ -222,7 +226,8 @@ pub(crate) fn remove_awaiting_reply_permission(
 /// Adds the `UserPromptSubmit` hook that repeats the awaiting-reply instruction on every prompt,
 /// since the `SessionStart` context sits far back in a long session, and herdr's other event
 /// hooks (the stop check, the plan token, `SessionEnd`, which forgets a session the user
-/// ended, and `StopFailure`, which reports a turn a limit ended). Kept apart from `install`, like the permission rule, so the `SessionStart` hook stays
+/// ended, `StopFailure`, which reports a turn a limit ended, and `PreToolUse`, the coordinator
+/// tab's command allowlist). Kept apart from `install`, like the permission rule, so the `SessionStart` hook stays
 /// the only canonical one.
 pub(crate) fn add_awaiting_reply_reminder(
     content: &str,
@@ -261,13 +266,21 @@ pub(crate) fn add_awaiting_reply_reminder(
         SESSION_END_ACTION,
         None,
     )?;
-    add_event_hook(
+    let with_stop_failure = add_event_hook(
         &with_session_end,
         settings_path,
         hook_path,
         STOP_FAILURE_EVENT,
         STOP_FAILURE_ACTION,
         Some(STOP_FAILURE_MATCHER),
+    )?;
+    add_event_hook(
+        &with_stop_failure,
+        settings_path,
+        hook_path,
+        PRE_TOOL_EVENT,
+        PRE_TOOL_ACTION,
+        None,
     )
 }
 
@@ -387,12 +400,19 @@ pub(crate) fn remove_awaiting_reply_reminder(
         SESSION_END_EVENT,
         SESSION_END_ACTION,
     )?;
-    remove_event_hook(
+    let without_stop_failure = remove_event_hook(
         &without_session_end,
         settings_path,
         hook_path,
         STOP_FAILURE_EVENT,
         STOP_FAILURE_ACTION,
+    )?;
+    remove_event_hook(
+        &without_stop_failure,
+        settings_path,
+        hook_path,
+        PRE_TOOL_EVENT,
+        PRE_TOOL_ACTION,
     )
 }
 

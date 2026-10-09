@@ -976,7 +976,7 @@ fn install_claude_writes_hook_and_updates_settings() {
         .unwrap()
         .contains(" session"));
     assert_only_the_reminder_prompt_hook(&settings);
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    assert_only_the_pre_tool_hook(&settings);
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert_only_the_plan_hook(&settings);
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
@@ -996,6 +996,17 @@ fn assert_only_the_reminder_prompt_hook(settings: &Value) {
     let hooks = entries[0]["hooks"].as_array().unwrap();
     assert_eq!(hooks.len(), 1);
     assert!(hooks[0]["command"].as_str().unwrap().ends_with(" reminder"));
+}
+
+/// Install leaves herdr only its coordinator allowlist on `PreToolUse`, for every tool; the old
+/// working hook is gone.
+fn assert_only_the_pre_tool_hook(settings: &Value) {
+    let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(entries[0].get("matcher").is_none());
+    let hooks = entries[0]["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0]["command"].as_str().unwrap().ends_with(" pre-tool"));
 }
 
 /// Install leaves herdr only its todo-list report on `PostToolUse`, for `TodoWrite` alone.
@@ -1143,7 +1154,7 @@ fn install_claude_is_idempotent_for_hook_entries() {
         1
     );
     assert_only_the_reminder_prompt_hook(&settings);
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    assert_only_the_pre_tool_hook(&settings);
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert_only_the_plan_hook(&settings);
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
@@ -1225,7 +1236,7 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
         "echo keep-session-end"
     );
     assert_only_the_reminder_prompt_hook(&settings);
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    assert_only_the_pre_tool_hook(&settings);
     assert_only_the_stop_check_hook(&settings);
 
     std::env::remove_var("HOME");
@@ -4891,6 +4902,11 @@ struct StopCheckServer {
 #[cfg(unix)]
 impl StopCheckServer {
     fn start(role: &'static str) -> Self {
+        Self::start_with(role, true)
+    }
+
+    /// `records` decides whether `coordinator.record_override` succeeds.
+    fn start_with(role: &'static str, records: bool) -> Self {
         use std::io::{BufRead, BufReader, Write};
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         // Short: a Unix socket path holds at most 104 bytes on macOS.
@@ -4919,9 +4935,17 @@ impl StopCheckServer {
                     "tab.get" => {
                         json!({"type": "tab_info", "tab": {"tab_id": "w1:t1", "role": role}})
                     }
+                    "coordinator.record_override" if records => {
+                        json!({"type": "coordinator_override", "record": {"id": 1}})
+                    }
                     _ => json!({}),
                 };
-                let reply = json!({"id": request["id"], "result": result});
+                let reply = if method == "coordinator.record_override" && !records {
+                    json!({"id": request["id"], "error": {"code": "worker_io_error",
+                                                          "message": "store failed"}})
+                } else {
+                    json!({"id": request["id"], "result": result})
+                };
                 let _ = writeln!(stream, "{reply}");
                 requests.push(request);
             }
@@ -5200,4 +5224,389 @@ fn claude_reports_a_background_task_notification_as_a_continuation() {
     );
     assert_eq!(params["phase"], "started");
     assert_eq!(params["continuation"], true);
+}
+
+/// Runs the Claude hook's `pre-tool` on a `PreToolUse` of `tool` with `input`, in a tab whose role
+/// is `role` (`None`: herdr cannot be asked). Returns the hook's stdout and the requests herdr got.
+#[cfg(unix)]
+fn run_pre_tool(
+    role: Option<&'static str>,
+    records: bool,
+    tool: &str,
+    input: Value,
+) -> (String, Vec<Value>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let server = StopCheckServer::start_with(role.unwrap_or("none"), records);
+    let socket = if role.is_some() {
+        server.path.clone()
+    } else {
+        server.path.with_extension("missing")
+    };
+    let mut child = Command::new("sh")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/integration/assets/claude/herdr-agent-state.sh"),
+        )
+        .arg("pre-tool")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "p1")
+        .env("HERDR_SOCKET_PATH", &socket)
+        .env_remove("CURSOR_VERSION")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let hook_input = json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": PRE_TOOL_SESSION,
+        "cwd": "/repo",
+        "tool_name": tool,
+        "tool_input": input,
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(hook_input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    (String::from_utf8(output.stdout).unwrap(), server.requests())
+}
+
+#[cfg(unix)]
+const PRE_TOOL_SESSION: &str = "5e55-10n";
+
+/// The session's scratchpad, as Claude names it.
+#[cfg(unix)]
+fn pre_tool_scratchpad() -> String {
+    format!("/private/tmp/claude-501/-repo/{PRE_TOOL_SESSION}/scratchpad")
+}
+
+/// The reason the hook denied the call with, or `None` when it let it through.
+#[cfg(unix)]
+fn pre_tool_denial(stdout: &str) -> Option<String> {
+    if stdout.trim().is_empty() {
+        return None;
+    }
+    let decision: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let output = &decision["hookSpecificOutput"];
+    assert_eq!(output["hookEventName"], "PreToolUse");
+    assert_eq!(output["permissionDecision"], "deny");
+    Some(
+        output["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    )
+}
+
+#[cfg(unix)]
+fn coordinator_bash(command: &str) -> Option<String> {
+    let (stdout, _) = run_pre_tool(
+        Some("coordinator"),
+        true,
+        "Bash",
+        json!({"command": command}),
+    );
+    pre_tool_denial(&stdout)
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_lets_a_coordinator_run_each_allowed_class() {
+    let scratchpad = pre_tool_scratchpad();
+    let allowed = [
+        // herdr's coordinator commands
+        "herdr todo run t-abcd2345 --task task.md --message 'feat: x' --paths 'src/**'",
+        "herdr worker wait w12 --attention --after 4",
+        "herdr history --item t-abcd2345",
+        "herdr coordinator status",
+        "herdr agent read p2 --source detection",
+        "herdr agent awaiting-reply 'Install now?'",
+        "herdr agent set-task 'Work through the TODO'",
+        // herdr-job with an allowed command
+        "herdr-job run --name wait -- herdr worker wait w12 --attention",
+        "herdr-job wait 7",
+        "herdr-job log 7",
+        // read-only git
+        "git status --short",
+        "git log --oneline -5",
+        "git diff HEAD~1 -- src/main.rs",
+        "git show --stat HEAD",
+        "git fetch origin",
+        "git rev-parse HEAD",
+        "git branch --list 'todo/*'",
+        "git ls-files TODO.md",
+        "git -C /repo status",
+        // TODO.md and DECISIONS.md by path
+        "git commit -m 'docs(todo): queue' -- TODO.md",
+        "git commit -m 'docs(todo): close' -- TODO.md DECISIONS.md",
+        // todo_edit, also with a quoted heredoc that holds shell syntax
+        "python3 scripts/todo_edit.py find 'A coordinator'",
+        "python3 scripts/todo_edit.py add --text-file - <<'EOF'\n- [ ] x $(rm -rf /) `id`\nEOF",
+        // read-only shell tools
+        "cat TODO.md",
+        "head -40 TODO.md",
+        "tail -n 5 DECISIONS.md",
+        "grep -n 'Next, in order' TODO.md",
+        "rg -n coordinator src",
+        "sed -n '1,40p' TODO.md",
+        "jq .result status.json",
+        "ls -la",
+        "wc -l TODO.md",
+        "date +%F",
+        "df -h .",
+        "du -sh target",
+        // the consult helpers
+        "~/.claude/skills/gpt/ask_gpt.sh -f - <<'EOF'\nbrief\nEOF",
+        "python3 ~/.claude/skills/consult-stats/consult.py rate 20261010",
+    ];
+    for command in allowed {
+        let (stdout, requests) = run_pre_tool(
+            Some("coordinator"),
+            true,
+            "Bash",
+            json!({"command": command}),
+        );
+        assert_eq!(pre_tool_denial(&stdout), None, "{command}");
+        // An allowed call asks herdr nothing.
+        assert!(requests.is_empty(), "{command}: {requests:?}");
+    }
+    // Output into the scratchpad, or nowhere.
+    for command in [
+        format!("git diff > {scratchpad}/review.diff"),
+        "git status 2>/dev/null".to_owned(),
+        "grep -c x TODO.md 2>&1".to_owned(),
+    ] {
+        assert_eq!(coordinator_bash(&command), None, "{command}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_denies_a_coordinator_everything_else_naming_the_allowed_path() {
+    let denied = [
+        ("cargo build --release", "happen in `herdr todo run`"),
+        ("just clean-install TODO.md", "happen in `herdr todo run`"),
+        (
+            "scripts/herdr_live.sh install",
+            "happen in `herdr todo run`",
+        ),
+        (
+            "git push origin master",
+            "pushes happen in `herdr todo run`",
+        ),
+        ("git cherry-pick abc123", "`herdr todo run`"),
+        ("git checkout -b x", "code goes to a worker"),
+        ("git add src/main.rs", "code goes to a worker"),
+        ("git commit -am 'feat: x'", "commit by path"),
+        (
+            "git commit -m x -- src/main.rs",
+            "only TODO.md and DECISIONS.md",
+        ),
+        ("git commit -m x", "commit by path"),
+        ("git branch -D todo/x", "only `git branch --list`"),
+        ("git diff --output=/repo/src/x.rs", "writes a file"),
+        ("git -c core.pager=sh log", "git option"),
+        ("herdr pane close p2", "is not allowed"),
+        ("herdr agent start w --kind pi", "herdr agent start"),
+        ("rm -rf target", "code goes to a worker"),
+        ("python3 -c 'print(1)'", "runs only `scripts/todo_edit.py`"),
+        ("sed -i s/a/b/ TODO.md", "sed -n"),
+        ("sed -n '1w /tmp/x' TODO.md", "sed -n"),
+        ("rg --pre sh x", "runs a program"),
+        ("date -s 0101", "set the clock"),
+        ("cat x > src/main.rs", "writes a file"),
+        ("tee TODO.md < /dev/null", "is not allowed"),
+        ("cd /tmp", "is not allowed"),
+        (
+            "herdr-job run --name x -- just check",
+            "runs only allowed commands",
+        ),
+        (
+            "herdr-job run --name x -- 'herdr worker list; rm -rf src'",
+            "runs only allowed commands",
+        ),
+        ("~/.claude/skills/../../tmp/ask_x.sh", "is not allowed"),
+        ("FOO=1 herdr todo runs", "environment assignments"),
+    ];
+    for (command, named) in denied {
+        let reason = coordinator_bash(command).unwrap_or_else(|| panic!("{command} ran"));
+        assert!(reason.contains(named), "{command}: {reason}");
+        assert!(
+            reason.contains("# herdr-override: <reason>"),
+            "{command}: {reason}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_checks_every_part_of_a_compound_command() {
+    for command in [
+        "git status && git log -1",
+        "cat TODO.md | grep x | wc -l",
+        "git fetch origin; git status",
+        "git diff --quiet || git status",
+        "git status\ngit log -1",
+        "cat \"$(git rev-parse --show-toplevel)/TODO.md\"",
+        "herdr worker wait \"$(cat /dev/null)\"",
+    ] {
+        assert_eq!(coordinator_bash(command), None, "{command}");
+    }
+    for command in [
+        "git status && cargo test",
+        "cat TODO.md | sh",
+        "git status; git push",
+        "git status || rm -rf src",
+        "cat $(rm -rf src)",
+        "git $(echo push)",
+        "$GIT status",
+        "cat `ls`",
+        "(git status)",
+        "git status &",
+        "ls {a,b}",
+        "echo $((1+1))",
+        "python3 scripts/todo_edit.py add --text-file - <<EOF\n$(rm -rf src)\nEOF",
+        "cat <<EOF\nno end",
+        "cat 'unclosed",
+    ] {
+        assert!(coordinator_bash(command).is_some(), "{command} ran");
+    }
+    assert!(coordinator_bash("cat 'unclosed")
+        .unwrap()
+        .contains("cannot be read for certain"));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_limits_a_coordinators_other_tools() {
+    let scratchpad = pre_tool_scratchpad();
+    let cases = [
+        ("AskUserQuestion", json!({"questions": []}), None),
+        ("Read", json!({"file_path": "/repo/src/main.rs"}), None),
+        ("Grep", json!({"pattern": "x"}), None),
+        (
+            "Write",
+            json!({"file_path": format!("{scratchpad}/task.md")}),
+            None,
+        ),
+        (
+            "Edit",
+            json!({"file_path": format!("{scratchpad}/task.md")}),
+            None,
+        ),
+        (
+            "Write",
+            json!({"file_path": "/repo/TODO.md"}),
+            Some("scripts/todo_edit.py"),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "/repo/DECISIONS.md"}),
+            Some("scripts/todo_edit.py"),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "/repo/src/main.rs"}),
+            Some("code goes to a worker"),
+        ),
+        (
+            "Write",
+            json!({"file_path": format!("{scratchpad}/../../escape.md")}),
+            Some("code goes to a worker"),
+        ),
+        (
+            "Agent",
+            json!({"prompt": "fix it"}),
+            Some("not to a subagent"),
+        ),
+        (
+            "WebFetch",
+            json!({"url": "https://x"}),
+            Some("is not allowed"),
+        ),
+    ];
+    for (tool, input, named) in cases {
+        let (stdout, _) = run_pre_tool(Some("coordinator"), true, tool, input.clone());
+        match (pre_tool_denial(&stdout), named) {
+            (None, None) => {}
+            (Some(reason), Some(named)) => assert!(reason.contains(named), "{tool}: {reason}"),
+            (outcome, _) => panic!("{tool} {input}: {outcome:?}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_records_an_override_and_never_lets_one_through_silently() {
+    let command = "just clean-install TODO.md # herdr-override: the user asked to install now";
+    let (stdout, requests) = run_pre_tool(
+        Some("coordinator"),
+        true,
+        "Bash",
+        json!({"command": command}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    let recorded = requests
+        .iter()
+        .find(|request| request["method"] == "coordinator.record_override")
+        .expect("the override is recorded");
+    assert_eq!(recorded["params"]["pane_id"], "p1");
+    assert_eq!(recorded["params"]["tool"], "Bash");
+    assert_eq!(recorded["params"]["command"], command);
+    assert_eq!(
+        recorded["params"]["reason"],
+        "the user asked to install now"
+    );
+    assert_eq!(recorded["params"]["session_id"], PRE_TOOL_SESSION);
+    assert_eq!(recorded["params"]["cwd"], "/repo");
+
+    // herdr cannot record it: the command does not run.
+    let (stdout, _) = run_pre_tool(
+        Some("coordinator"),
+        false,
+        "Bash",
+        json!({"command": command}),
+    );
+    assert!(pre_tool_denial(&stdout)
+        .unwrap()
+        .contains("could not record the override"));
+    // An override without a reason is refused.
+    let reason = coordinator_bash("cargo build # herdr-override:  ").unwrap();
+    assert!(reason.contains("needs its reason"), "{reason}");
+    // An allowed command with the marker runs without a record.
+    let (stdout, requests) = run_pre_tool(
+        Some("coordinator"),
+        true,
+        "Bash",
+        json!({"command": "git status # herdr-override: x"}),
+    );
+    assert_eq!((pre_tool_denial(&stdout), requests.len()), (None, 0));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_leaves_other_tabs_alone() {
+    for role in [Some("worker"), Some(""), None] {
+        for (tool, input) in [
+            ("Bash", json!({"command": "cargo build && git push"})),
+            ("Bash", json!({"command": "cat 'unclosed"})),
+            ("Edit", json!({"file_path": "/repo/src/main.rs"})),
+            ("Agent", json!({"prompt": "x"})),
+        ] {
+            let (stdout, requests) = run_pre_tool(role, true, tool, input.clone());
+            assert_eq!(stdout.trim(), "", "{role:?} {tool} {input}");
+            assert!(
+                !requests
+                    .iter()
+                    .any(|request| request["method"] == "coordinator.record_override"),
+                "{requests:?}"
+            );
+        }
+    }
 }

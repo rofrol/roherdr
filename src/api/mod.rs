@@ -60,6 +60,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabSetRole(_)
             | Method::CoordinatorStart(_)
             | Method::CoordinatorEnd(_)
+            | Method::CoordinatorRecordOverride(_)
             | Method::TabSetJobMetadata(_)
             | Method::LayoutApply(_)
             | Method::LayoutSetSplitRatio(_)

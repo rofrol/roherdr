@@ -302,6 +302,65 @@ impl HeadlessServer {
         ))
     }
 
+    /// `coordinator.record_override`: stores the allowlist exception, then
+    /// notifies the client shells about it (also into `notification.list`),
+    /// with no rate limit, since an exception is never silent. A failed
+    /// record is an error, and the hook then denies the call.
+    pub(super) fn handle_coordinator_record_override_api(
+        &mut self,
+        id: String,
+        params: &api::schema::CoordinatorRecordOverrideParams,
+    ) -> String {
+        let error = |id: String, code: &str, message: String| {
+            serde_json::to_string(&api::schema::ErrorResponse {
+                id,
+                error: api::schema::ErrorBody {
+                    code: code.into(),
+                    message,
+                },
+            })
+            .unwrap_or_else(|_| "{}".to_string())
+        };
+        let Some((workspace_id, tab_id, pane_id)) = self.notification_target(&params.pane_id)
+        else {
+            return error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane_id),
+            );
+        };
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return error(
+                id,
+                "worker_io_error",
+                "coordination tenures are unavailable on this server".into(),
+            );
+        };
+        let record = match coordinators.record_override(&pane_id, params) {
+            Ok(record) => record,
+            Err(failure) => return error(id, failure.code(), failure.to_string()),
+        };
+        let (title, body) = crate::workers::coordinators::override_notice(&record);
+        self.send_to_client_shells(ServerMessage::SemanticNotification(
+            protocol::SemanticNotification {
+                kind: protocol::SemanticNotificationKind::Custom,
+                title,
+                body: sanitize_notification_text(&body, 240),
+                sound: Some(protocol::SemanticNotificationSound::Request),
+                agent: None,
+                workspace_id: Some(workspace_id),
+                tab_id,
+                pane_id: Some(pane_id),
+                position: None,
+            },
+        ));
+        serde_json::to_string(&api::schema::SuccessResponse {
+            id,
+            result: api::schema::ResponseResult::CoordinatorOverride { record },
+        })
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
     /// `target_pane` (from `notification.show_for_pane`) gives the notification
     /// the pane, tab and workspace ids the client turns into its click action.
     pub(super) fn handle_notification_show_api(

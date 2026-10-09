@@ -16,7 +16,7 @@ use tracing::warn;
 
 use super::store::{NewTenure, StoredTenure};
 use super::{notify_clients, now_ms, WorkerError, WorkerSupervisor, SUPERVISOR};
-use crate::api::schema::CoordinatorInfo;
+use crate::api::schema::{CoordinatorInfo, CoordinatorOverride, CoordinatorRecordOverrideParams};
 
 /// `coordinator_ended`'s reason when its pane closed or its agent exited.
 pub(crate) const ORPHANED: &str = "orphaned";
@@ -24,6 +24,8 @@ pub(crate) const ORPHANED: &str = "orphaned";
 pub(crate) const ROLE_CLEARED: &str = "role_cleared";
 /// `coordinator.end`'s reason when none is given.
 pub(crate) const ENDED: &str = "ended";
+/// How many characters of an allowlist exception's command are kept.
+const OVERRIDE_COMMAND_CHARS: usize = 4000;
 
 #[cfg(test)]
 thread_local! {
@@ -110,6 +112,17 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
         error,
         rusqlite::Error::SqliteFailure(failure, _)
             if failure.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
+
+/// The title and body of the notification that tells the user about an
+/// allowlist exception: the reason, then the command's first line.
+pub(crate) fn override_notice(record: &CoordinatorOverride) -> (String, String) {
+    let command = record.command.lines().next().unwrap_or_default();
+    let command: String = command.chars().take(120).collect();
+    (
+        "Coordinator override".to_owned(),
+        format!("{}: {command}", record.reason),
     )
 }
 
@@ -255,6 +268,68 @@ impl WorkerSupervisor {
         Ok(panes)
     }
 
+    /// Records one exception to a coordinator tab's command allowlist, made
+    /// in pane `pane_id` (its public id): with the pane's active tenure, its
+    /// repository and item, else the repository of `params.cwd`. The reason
+    /// is one line of at most 500 bytes; a longer command is cut to its first
+    /// [`OVERRIDE_COMMAND_CHARS`] characters, so the record is never refused
+    /// for its size.
+    pub(crate) fn record_override(
+        &self,
+        pane_id: &str,
+        params: &CoordinatorRecordOverrideParams,
+    ) -> Result<CoordinatorOverride, WorkerError> {
+        let reason = params.reason.trim();
+        if reason.is_empty() || reason.len() > 500 || reason.chars().any(char::is_control) {
+            return Err(WorkerError::Invalid(
+                "reason must be one nonempty line of at most 500 bytes".into(),
+            ));
+        }
+        let tool = params.tool.trim();
+        if tool.is_empty() || tool.len() > 100 || tool.chars().any(char::is_control) {
+            return Err(WorkerError::Invalid("tool must be a tool's name".into()));
+        }
+        if params.command.trim().is_empty() {
+            return Err(WorkerError::Invalid("command is empty".into()));
+        }
+        let tenure = self.coordinator_of_pane(pane_id);
+        let repo = match &tenure {
+            Some(tenure) => Some(tenure.repo.clone()),
+            None => params.cwd.as_deref().and_then(super::repository_of_dir),
+        };
+        let record = CoordinatorOverride {
+            id: 0,
+            ts_ms: now_ms(),
+            pane_id: pane_id.to_owned(),
+            tool: tool.to_owned(),
+            command: params
+                .command
+                .chars()
+                .take(OVERRIDE_COMMAND_CHARS)
+                .collect(),
+            reason: reason.to_owned(),
+            repo,
+            coordinator_id: tenure.as_ref().map(|tenure| tenure.coordinator_id.clone()),
+            item: tenure.and_then(|tenure| tenure.item),
+            session_id: params.session_id.clone(),
+        };
+        self.tenure_store()?
+            .record_override(&record)
+            .map_err(store_error)
+    }
+
+    /// The recorded allowlist exceptions, oldest first: of the repository of
+    /// `repo` (a directory in it) when given.
+    pub(crate) fn overrides(
+        &self,
+        repo: Option<&str>,
+    ) -> Result<Vec<CoordinatorOverride>, WorkerError> {
+        let repo = repo.map(|dir| super::repository_of_dir(dir).unwrap_or_else(|| dir.to_owned()));
+        self.tenure_store()?
+            .overrides(repo.as_deref())
+            .map_err(store_error)
+    }
+
     /// Ends the tenure bound to `pane_id` as orphaned: its pane closed or its
     /// agent exited (`cause`).
     pub(super) fn orphan_coordinator(&self, pane_id: &str, cause: &str) {
@@ -286,6 +361,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let supervisor = WorkerSupervisor::open(root.join("workers"), "claude".into());
         (root, supervisor)
+    }
+
+    fn override_params(command: &str, reason: &str) -> CoordinatorRecordOverrideParams {
+        CoordinatorRecordOverrideParams {
+            pane_id: "p1".into(),
+            tool: "Bash".into(),
+            command: command.into(),
+            reason: reason.into(),
+            cwd: None,
+            session_id: Some("s-1".into()),
+        }
+    }
+
+    #[test]
+    fn allowlist_overrides_are_recorded_with_the_panes_tenure_and_never_changed() {
+        let (root, supervisor) = scratch("overrides");
+        let tenure = supervisor
+            .coordinator_start("/repo", "p1", Some("s-1"))
+            .unwrap();
+        let first = supervisor
+            .record_override(
+                "p1",
+                &override_params("cargo build # herdr-override: x", " x "),
+            )
+            .unwrap();
+        assert_eq!(first.reason, "x");
+        assert_eq!(first.repo.as_deref(), Some("/repo"));
+        assert_eq!(
+            first.coordinator_id.as_deref(),
+            Some(tenure.coordinator_id.as_str())
+        );
+        assert_eq!(first.session_id.as_deref(), Some("s-1"));
+        // A pane without a tenure, whose directory is in no repository.
+        let long = "x".repeat(OVERRIDE_COMMAND_CHARS + 10);
+        let mut params = override_params(&long, "the user asked");
+        params.cwd = Some(root.display().to_string());
+        let second = supervisor.record_override("p9", &params).unwrap();
+        assert_eq!(second.coordinator_id, None);
+        assert_eq!(second.command.chars().count(), OVERRIDE_COMMAND_CHARS);
+        assert!(second.id > first.id);
+
+        assert_eq!(
+            supervisor.overrides(None).unwrap(),
+            vec![first.clone(), second]
+        );
+        assert_eq!(supervisor.overrides(Some("/repo")).unwrap(), vec![first]);
+        let (title, body) = override_notice(&supervisor.overrides(None).unwrap()[0]);
+        assert_eq!(title, "Coordinator override");
+        assert_eq!(body, "x: cargo build # herdr-override: x");
+
+        for (command, reason) in [("ls", ""), ("ls", "two\nlines"), (" ", "why")] {
+            let refused = supervisor
+                .record_override("p1", &override_params(command, reason))
+                .unwrap_err();
+            assert_eq!(refused.code(), "invalid_request", "{command:?} {reason:?}");
+        }
+        let store = supervisor.tenure_store().unwrap();
+        for change in [
+            "UPDATE coordinator_overrides SET reason = 'y'",
+            "DELETE FROM coordinator_overrides",
+        ] {
+            assert!(store.connection().execute(change, []).is_err(), "{change}");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

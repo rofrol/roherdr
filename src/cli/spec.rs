@@ -481,6 +481,12 @@ fn history_command() -> Command {
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
                 .arg(flag("json")),
         )
+        .subcommand(
+            Command::new("overrides")
+                .about("List the commands a coordinator ran past its allowlist")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("json")),
+        )
 }
 
 fn usage_command() -> Command {
