@@ -155,7 +155,19 @@ pub(super) struct RunFinish {
     pub(super) pushed: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) kept_branches: Vec<String>,
+    /// The registered [`CONTRACT_CHECK`] as preflight read it, when the run
+    /// does not name it: the verify adds it when the attempt's diff touches
+    /// [`CONTRACT_PATHS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) contract_check: Option<RunCheck>,
 }
+
+/// The check the verify adds by itself to a run whose diff touches
+/// [`CONTRACT_PATHS`]: the full suite, which holds the frozen client
+/// endpoint contract tests (AGENTS.md, "Stable client endpoint contract").
+const CONTRACT_CHECK: &str = "tests";
+/// The paths whose change makes the verify add [`CONTRACT_CHECK`].
+const CONTRACT_PATHS: [&str; 2] = ["src/api/", "tests/fixtures/"];
 
 /// `[install]` of `.herdr/checks.toml`: the program and arguments that
 /// install `master` (no shell), and optionally one whose first output line
@@ -619,20 +631,62 @@ fn git_with(
 /// contract the verify checks, so the worker does not invent its own: the
 /// exact commit subject with no body or trailers, the paths it may touch,
 /// that it runs everything in the foreground (herdr denies background waits,
-/// [`super::policy::background_wait_denial`]) and its last line; for a later
-/// attempt, first what its branch starts from ([`carry_note`]).
-fn worker_task(run: &TodoRunInfo, carried: Option<&str>) -> String {
+/// [`super::policy::background_wait_denial`]), the checks the verify runs,
+/// which it runs first where its sandbox lets it, and its last line; for a
+/// later attempt, first what its branch starts from ([`carry_note`]).
+fn worker_task(run: &Run, carried: Option<&str>) -> String {
+    let info = &run.info;
     format!(
         "{}\n\n---\n{}Run everything in the foreground: no `run_in_background`, no Monitor. \
          You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this \
          subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
-         {}\nEnd your last reply with the line `WORKER-DONE <sha> | <summary>`, or \
-         `WORKER-BLOCKED <reason>` when you cannot finish.\n",
-        run.task.trim_end(),
+         {}\n{}Advertised client methods keep their v1 shape: add a new method instead of \
+         changing one (AGENTS.md, Stable client endpoint contract).\nEnd your last reply with \
+         the line `WORKER-DONE <sha> | <summary>`, or `WORKER-BLOCKED <reason>` when you \
+         cannot finish.\n",
+        info.task.trim_end(),
         carried.unwrap_or_default(),
-        run.message,
-        run.paths.join(" "),
+        info.message,
+        info.paths.join(" "),
+        checks_note(run),
     )
+}
+
+/// The contract's part about the verify's checks: each by name and argv,
+/// the [`CONTRACT_CHECK`] the verify adds for [`CONTRACT_PATHS`], and that
+/// the worker runs them before its last line and reports each result.
+fn checks_note(run: &Run) -> String {
+    let argv = |check: &RunCheck| serde_json::to_string(&check.argv).unwrap_or_default();
+    let mut note =
+        String::from("The verify runs these checks in your folder, each as its argv (no shell):\n");
+    for check in &run.checks {
+        note.push_str(&format!("- `{}`: `{}`\n", check.name, argv(check)));
+    }
+    if let Some(check) = &run.finish.contract_check {
+        note.push_str(&format!(
+            "- `{}`: `{}`, added by the verify when your diff touches {}, so an API change \
+             is verified with the frozen client contract tests\n",
+            check.name,
+            argv(check),
+            CONTRACT_PATHS
+                .iter()
+                .map(|path| format!("`{path}`"))
+                .collect::<Vec<_>>()
+                .join(" or "),
+        ));
+    }
+    note.push_str(
+        "Before your last line, run every one of them you can in your sandbox (`windows-lint` \
+         works there) and report each one's result, or the sandbox error that stopped it.\n",
+    );
+    note
+}
+
+/// Whether a diff's changed paths touch [`CONTRACT_PATHS`].
+fn touches_contract(changed: &str) -> bool {
+    changed
+        .lines()
+        .any(|path| CONTRACT_PATHS.iter().any(|prefix| path.starts_with(prefix)))
 }
 
 /// The next attempt's task: the previous attempt's with its review.
@@ -945,6 +999,7 @@ struct Preflighted {
     base: String,
     checks: Vec<RunCheck>,
     install: Option<InstallCommand>,
+    contract_check: Option<RunCheck>,
 }
 
 impl WorkerSupervisor {
@@ -1072,6 +1127,7 @@ impl WorkerSupervisor {
             workspace: params.workspace_id.clone(),
             finish: RunFinish {
                 install: preflighted.install.clone(),
+                contract_check: preflighted.contract_check.clone(),
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1085,6 +1141,7 @@ impl WorkerSupervisor {
             "base": preflighted.base,
             "checks": preflighted.checks,
             "install": preflighted.install,
+            "contract_check": preflighted.contract_check,
             "message": params.message,
             "paths": params.paths,
             "task": params.task,
@@ -1263,10 +1320,22 @@ impl WorkerSupervisor {
             .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
             .trim()
             .to_owned();
+        // The check the verify adds for a diff that touches the API, when
+        // the repository registers it and the run does not name it.
+        let contract_check = checks
+            .checks
+            .get(CONTRACT_CHECK)
+            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+            .filter(|_| !registered.iter().any(|check| check.name == CONTRACT_CHECK))
+            .map(|argv| RunCheck {
+                name: CONTRACT_CHECK.to_owned(),
+                argv: argv.clone(),
+            });
         Ok(Preflighted {
             base,
             checks: registered,
             install: checks.install,
+            contract_check,
         })
     }
 
@@ -2078,7 +2147,7 @@ impl WorkerSupervisor {
         )?;
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
-            prompt: worker_task(&run.info, carry_note(run, start.as_deref()).as_deref()),
+            prompt: worker_task(run, carry_note(run, start.as_deref()).as_deref()),
             model: None,
             name: None,
             workspace_id: run.workspace.clone(),
@@ -2392,6 +2461,7 @@ impl WorkerSupervisor {
             .clone()
             .ok_or("the run has no worker to verify")?;
         let base = run.info.base.clone().ok_or("the run has no base")?;
+        self.add_contract_check(run, &worker_id, &base)?;
         self.run_step(
             run,
             json!({"type": "run_verify_intent", "worker_id": worker_id, "checks": run.info.checks}),
@@ -2446,6 +2516,47 @@ impl WorkerSupervisor {
         event.verification = Some(verification);
         run.info.status = TodoRunStatus::Waiting;
         self.record_run_event(run, &event)?;
+        Ok(())
+    }
+
+    /// Adds the run's [`CONTRACT_CHECK`] to its checks when the attempt's
+    /// diff from the base touches [`CONTRACT_PATHS`] (or cannot be read),
+    /// recorded as a `run_check_added` event; once added, it stays for the
+    /// later attempts.
+    fn add_contract_check(&self, run: &mut Run, worker_id: &str, base: &str) -> Result<(), String> {
+        let Some(check) = run.finish.contract_check.clone() else {
+            return Ok(());
+        };
+        if run.checks.iter().any(|known| known.name == check.name) {
+            return Ok(());
+        }
+        let changed = self
+            .status(worker_id)
+            .map_err(|error| error.to_string())
+            .and_then(|worker| {
+                git(
+                    Path::new(&worker.cwd),
+                    &["diff", "--name-only", base, "HEAD"],
+                )
+            });
+        let reason = match &changed {
+            Ok(changed) if touches_contract(changed) => {
+                format!("the diff touches {}", CONTRACT_PATHS.join(" or "))
+            }
+            Ok(_) => return Ok(()),
+            Err(error) => format!("the diff could not be read: {error}"),
+        };
+        run.info.checks.push(check.name.clone());
+        run.checks.push(check.clone());
+        self.run_step(
+            run,
+            json!({
+                "type": "run_check_added",
+                "check": check,
+                "reason": reason,
+                "checks": run.info.checks,
+            }),
+        )?;
         Ok(())
     }
 
