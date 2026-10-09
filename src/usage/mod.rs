@@ -10,12 +10,14 @@ mod cache;
 mod claude;
 mod codex;
 mod deepseek;
+pub(crate) mod estimate;
 mod gemini;
 mod http;
 mod keys;
 mod kimi;
 mod openai_api;
 mod openrouter;
+mod prices;
 
 pub(crate) use keys::DEFAULT_AUTH_FILE;
 
