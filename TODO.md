@@ -597,6 +597,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     `sandbox` settings); a pi or Odin worker implements the same contract.
   Belongs with the item "Extract the coordination layer into its own crate";
   do this slice first, in today's code, as the crate's first protocol piece.
+  Second case (try-roguix coordinator, 2026-10-10, headless worker `w78`,
+  item t-w2soppgg, WORKER-BLOCKED): the worker sandbox stops that
+  repository's real work: launching a test VM (codesign
+  CSSMERR_TP_NOT_TRUSTED for its ad-hoc or locally signed QEMU/app), `ps`,
+  `herdr-job` outside a herdr pane, and `make test` (temp-dir writes, PTYs,
+  local sockets). Only docs and research items run there today. The
+  capability vocabulary must cover these as named, user-granted requests
+  per repository (e.g. `exec.unsandboxed{argv}` for a listed launcher,
+  `proc.list`, `pty`, `net.local`), and a worker kind that cannot enforce a
+  grant refuses the run (fail closed) so the coordinator routes it to a
+  pane worker instead of the worker blocking mid-task.
 
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
   ends with new commits, list them as "to review" until I acknowledge them.
@@ -1497,6 +1508,10 @@ user needs to decide or do.
 - [ ] [t-tv3r5whl] How should herdr surface a headless worker stuck mid-turn on a silent command, within the no-timer decision of 2026-10-08?
   Options: an observable fact, not silence: herdr reports when a tool call's own process has exited but descendants still hold its output pipe open (the exact cause seen), and which processes those are (Recommended) | a silence threshold labelled as a designed timeout, raised to the coordinator, never killing anything | only the task-text rule (the worker stops a silent command itself)
   Checked (try-roguix coordinator report, 2026-10-10, pane w6:p87): a worker's ssh command printed nothing for ~2.5 h because background processes in the guest inherited the ssh session's stderr, so the channel never reached EOF; `herdr worker wait --attention` wakes only on a question, a turn end or an exit, none of which happened. "No output for N" is a negative wait the user's rule forbids; the inherited-pipe state is a positive, checkable fact (the command's process gone, its pipe's other ends held by named pids), and the same class as the orphaned broker that held the job slot (2026-10-09). A consult round on this is still to run.
+
+- [ ] [t-oj2cnjt5] Until worker capabilities exist, how should the try-roguix coordinator run items that build or run the app, a VM or the builder?
+  Options: pane workers for those items, headless for docs and research (Recommended) | wait for the capabilities item before any such item | a per-repository widened worker sandbox now, by hand
+  Checked: its first headless worker (w78, 2026-10-10) blocked on codesign of the ad-hoc QEMU/app, `ps`, `herdr-job` outside a pane and `make test` (temp dir, PTYs, local sockets); the capabilities item [t-ih3cmtjf] now names these cases.
 
 ### Decide
 
