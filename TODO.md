@@ -100,56 +100,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `todo.runs` only, `worker.runs` keeps its v1 shape). Left: point 4, the
   review view.
 
-- [ ] A history of finished TODO items to look through afterwards (user, [t-jlw2bqrz]
-  2026-10-07, next: "some dropdown list under the coordinator with the TODO
-  text, what was done and what conclusions, whether new TODO entries were
-  made after it finished. Store it somewhere in SQL? Ask the models. I want
-  to look through it after the fact. So it would be like a ticket system
-  that could even get a web interface later? Ask the models.").
-  Round `20261007-204300-9a56` (sol, MiMo, DeepSeek), agreeing: not a ticket
-  system and no web app now: an audit log of finished items. TODO.md stays
-  the open work; an append-only `.herdr/history.jsonl` committed in the
-  repository holds finished items (SQLite only later as a rebuildable index,
-  never the truth: a per-repo database diverges from clones and discarded
-  worktrees; git alone cannot show aborted or no-commit items, the user's
-  decisions or follow-ups). Each item needs a stable id minted when it is
-  claimed (DeepSeek: a ULID, and a `Todo-Item: <id>` commit trailer, which
-  cherry-pick keeps). Events: `claimed` written before a worker starts, then
-  `done`/`aborted`/`blocked` with the item text at claim and at the end,
-  commits, workers and their journals, review findings, the user's
-  decisions, consult round ids (references into consult-stats), follow-up
-  items created (written at close: not derivable later), checks, timings.
-  A reconcile step at coordinator start reports claims without an end and
-  TODO deletions without a record, loudly, never dropped. Smallest slice:
-  the ledger and the dropdown under the coordinator; then `herdr history
-  --html`, one static page, for review after the fact; GitHub issues or
-  Datasette only as exports. Overlaps the fresh-coordinator item (verified
-  writes, reconcilable records): build them together.
-  Diverged: who writes it (sol, MiMo: herdr's server, the coordinator only
-  proposes; DeepSeek: the coordinator, every TODO edit its own commit).
-  Decided by the user 2026-10-07 (menu): herdr's server writes the records
-  through a `herdr history` call that checks the commits and the TODO
-  change first; each item gets a short id at the end of its first line
-  (`[t-...]`, minted when claimed, also a `Todo-Item:` commit trailer); the
-  history is kept outside the repository, under herdr's state dir per
-  repository, not committed (so it is private and local to this machine).
-  Ordered by the coordinator 2026-10-09: the item "Ideas from Delta" goes
-  first; its `attempts` and `landings` tables and the driver's
-  `Herdr-Item`/`Herdr-Run` trailers are this history's data (the decided
-  `Todo-Item:` trailer becomes `Herdr-Item:`), then a close record per item
-  and `herdr history`, then the dropdown.
-  Slice 2 done 2026-10-09 (run `r-ekruigf7`): `item_history` (claimed, noted,
-  closed, aborted, blocked) and `herdr history [--item] [reconcile]`. Decided
-  by the coordinator: items finished through the driver are closed with
-  `approve --close <decision-file>` from now on, not by a separate
-  `todo_edit.py remove`, so the history gets its `closed` record; the
-  coordinator runs `herdr history reconcile` at its start. Left: the
-  dropdown under the coordinator.
-  For the dropdown slice: `herdr history` prints times in UTC ("18:36" for
-  20:36 local); show local time like the rest of the UI. The pre-history
-  items show "(no title recorded)"; take the title from TODO.md while the
-  item is open.
-
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user, [t-e3wrhvox]
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
   many for the current terminal, now Ghostty, e.g. 450/500; ask the models";
