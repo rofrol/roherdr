@@ -1301,6 +1301,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the environment). Found: `herdr todo wait` dies with `EmptyResponse` when
   the install's live handoff replaces the server; it should reconnect to
   the new server and keep waiting on the same run.
+  Decided by the coordinator 2026-10-09: Windows dead code in test-only
+  helpers failed `verify` four times (runs `r-idd6p7io`, `r-f63lelnd` and two
+  earlier). The contract the driver appends should name each registered
+  check the run will verify with and tell the worker to run those it can
+  (`windows-lint` works in the worker sandbox) before its last line.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
