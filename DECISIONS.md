@@ -643,3 +643,12 @@ waits that wake on a worker's question (`worker wait --attention`), and the
 post-turn checks in `herdr worker verify` (one commit, exact subject,
 allowed paths, clean tree, no leftover process). A real smoke run asked 0
 questions; the driver runs since have asked none.
+
+## The usage gate tests read one clock
+
+A usage gate test failed once under load: the test and the gate each read the
+clock, and a second could pass between them ("read 31s ago"). The gate's
+tests now judge readings at one fixed test instant; reproduced
+deterministically by a temporary loop waiting for the next second, 30/30
+stress passes after (df272dc1, the first commit landed with `Herdr-Item` and
+`Herdr-Run` trailers).
