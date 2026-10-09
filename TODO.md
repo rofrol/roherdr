@@ -1585,6 +1585,61 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the other chips (a glyph whose width differs between terminals must not
   shift the row), and keep its click and tooltip behavior.
 
+- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
+  about 30 minutes? too much? why any asynchronous workaround at all? make
+  a TODO with the models to fix this and do it next"). Supersedes the
+  polling/deadline design below (worker `w-worker-end`'s commit is not taken).
+  Round `20261007-175803-0ec5` (sol, MiMo, DeepSeek), agreeing: a turn end
+  is an event, a task end is a verdict. The coordinator starts the worker
+  with `agent.prompt_turn` (or prompt + request id) and blocks on that
+  request's end: Stop, StopFailure, interrupt, the agent process's exit
+  (track the agent's process, not the pane's shell), or a server restart
+  reported as such; then reads the transcript once and classifies: done
+  (WORKER-DONE with its sha on the branch), blocked, awaiting input (a
+  question: escalate), failed, crashed, tracking lost. No timer decides
+  anything: no deadline, no idle debounce, no resend after N seconds; at
+  most a human-facing "overdue" notice for a real agreed deadline.
+  herdr needs: `agent.wait_turn <request id> [since <cursor>]` with an
+  atomic check-and-subscribe, a terminal reason enum, process-exit events,
+  and request ids that survive a server restart (or an explicit error);
+  check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
+  acknowledged, idempotent delivery instead of "resend after 15 s".
+  Done 2026-10-07 by a worker (`feat: wait for a prompt's turn by event`):
+  `agent.wait_turn` (finished, failed with StopFailure's error, interrupted,
+  exited, unknown_request), `agent.prompt_tracked`, `herdr agent
+  wait-turn`, `herdr-job wait-agent <pane> --request <id>` reading the
+  transcript once; screen polling and the deadline are gone. Gap: Claude
+  sends no Stop on Esc, so an interrupted turn shows only when the next
+  turn starts; a coordinator waiting on a worker the user interrupted waits
+  until then. Left: acknowledged startup prompt delivery.
+  Bug at first use (2026-10-07): the Keychain worker finished normally
+  (WORKER-DONE at 16:43 UTC) but `wait_turn` returned `interrupted`. The
+  inference "another turn started before this one reported its end" seems
+  to fire when a background task's notification starts a turn inside the
+  same prompt's work; check the hook order for task notifications and
+  derive `interrupted` only from an explicit signal.
+  Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
+  prompts confirm that the agent accepted them`, installed). Left: the
+  false `interrupted` above.
+  Fixed 2026-10-08 by headless worker `w21` (`fix: wait_turn reports
+  interrupted only on an explicit signal`): `interrupted` only from Esc or
+  Ctrl-C sent through `agent.send_keys` or the agent's own interrupted
+  report; a turn started by a background-task notification is a
+  continuation (the Claude hook marks it); ambiguous order gives `unknown`.
+  Left, decided by the coordinator: confirm live that Claude sends
+  `UserPromptSubmit` for a background-task notification mid-turn; the
+  user's own Esc in the pane now gives `unknown` (better than a false
+  `interrupted`); an explicit signal for it could come from the
+  transcript's `[Request interrupted by user` marker, verified live first.
+  Moved to "Needs a decision" 2026-10-09 by the coordinator: the remaining
+  live check needs an interactive Claude in a pane, which may hit a folder
+  trust dialog that agents must not answer.
+  Question: may a worker run the live check in a throwaway pane in an already trusted folder (the herdr checkout), or will you run it?
+  Options: worker in the trusted herdr checkout, read-only prompts (Recommended) | I run it myself | drop the live check
+  Decided by the user 2026-10-09: a worker runs the live check in the trusted
+  herdr checkout (read-only prompts, a short background task), results into
+  this item.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1858,58 +1913,6 @@ Items agents add. Not approved until the user moves them up.
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
-
-- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
-  about 30 minutes? too much? why any asynchronous workaround at all? make
-  a TODO with the models to fix this and do it next"). Supersedes the
-  polling/deadline design below (worker `w-worker-end`'s commit is not taken).
-  Round `20261007-175803-0ec5` (sol, MiMo, DeepSeek), agreeing: a turn end
-  is an event, a task end is a verdict. The coordinator starts the worker
-  with `agent.prompt_turn` (or prompt + request id) and blocks on that
-  request's end: Stop, StopFailure, interrupt, the agent process's exit
-  (track the agent's process, not the pane's shell), or a server restart
-  reported as such; then reads the transcript once and classifies: done
-  (WORKER-DONE with its sha on the branch), blocked, awaiting input (a
-  question: escalate), failed, crashed, tracking lost. No timer decides
-  anything: no deadline, no idle debounce, no resend after N seconds; at
-  most a human-facing "overdue" notice for a real agreed deadline.
-  herdr needs: `agent.wait_turn <request id> [since <cursor>]` with an
-  atomic check-and-subscribe, a terminal reason enum, process-exit events,
-  and request ids that survive a server restart (or an explicit error);
-  check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
-  acknowledged, idempotent delivery instead of "resend after 15 s".
-  Done 2026-10-07 by a worker (`feat: wait for a prompt's turn by event`):
-  `agent.wait_turn` (finished, failed with StopFailure's error, interrupted,
-  exited, unknown_request), `agent.prompt_tracked`, `herdr agent
-  wait-turn`, `herdr-job wait-agent <pane> --request <id>` reading the
-  transcript once; screen polling and the deadline are gone. Gap: Claude
-  sends no Stop on Esc, so an interrupted turn shows only when the next
-  turn starts; a coordinator waiting on a worker the user interrupted waits
-  until then. Left: acknowledged startup prompt delivery.
-  Bug at first use (2026-10-07): the Keychain worker finished normally
-  (WORKER-DONE at 16:43 UTC) but `wait_turn` returned `interrupted`. The
-  inference "another turn started before this one reported its end" seems
-  to fire when a background task's notification starts a turn inside the
-  same prompt's work; check the hook order for task notifications and
-  derive `interrupted` only from an explicit signal.
-  Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
-  prompts confirm that the agent accepted them`, installed). Left: the
-  false `interrupted` above.
-  Fixed 2026-10-08 by headless worker `w21` (`fix: wait_turn reports
-  interrupted only on an explicit signal`): `interrupted` only from Esc or
-  Ctrl-C sent through `agent.send_keys` or the agent's own interrupted
-  report; a turn started by a background-task notification is a
-  continuation (the Claude hook marks it); ambiguous order gives `unknown`.
-  Left, decided by the coordinator: confirm live that Claude sends
-  `UserPromptSubmit` for a background-task notification mid-turn; the
-  user's own Esc in the pane now gives `unknown` (better than a false
-  `interrupted`); an explicit signal for it could come from the
-  transcript's `[Request interrupted by user` marker, verified live first.
-  Moved to "Needs a decision" 2026-10-09 by the coordinator: the remaining
-  live check needs an interactive Claude in a pane, which may hit a folder
-  trust dialog that agents must not answer.
-  Question: may a worker run the live check in a throwaway pane in an already trusted folder (the herdr checkout), or will you run it?
-  Options: worker in the trusted herdr checkout, read-only prompts (Recommended) | I run it myself | drop the live check
 
 ### Decide
 
