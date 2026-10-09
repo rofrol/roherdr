@@ -272,6 +272,10 @@ static DRIVING: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 struct Driving {
     run_id: String,
     released: bool,
+    /// The run's lock while this driver holds it. It goes before the claim
+    /// does: a driver that claims the run next in this process then finds
+    /// the lock free instead of waiting for it as if another server held it.
+    held: Option<File>,
 }
 
 impl Driving {
@@ -289,6 +293,7 @@ impl Driving {
                 Some(Self {
                     run_id: run_id.to_owned(),
                     released: false,
+                    held: None,
                 })
             }
         }
@@ -304,6 +309,7 @@ impl Driving {
                 false
             }
             _ => {
+                self.held = None;
                 driving.remove(&self.run_id);
                 drop(driving);
                 self.released = true;
@@ -318,7 +324,10 @@ impl Driving {
 impl Drop for Driving {
     fn drop(&mut self) {
         if !self.released {
-            lock(&DRIVING).remove(&self.run_id);
+            let mut driving = lock(&DRIVING);
+            self.held = None;
+            driving.remove(&self.run_id);
+            drop(driving);
             #[cfg(test)]
             claim_released();
         }
@@ -1949,8 +1958,8 @@ impl WorkerSupervisor {
         let Some(mut driving) = Driving::claim(run_id) else {
             return;
         };
-        let _held = match self.take_run_lock(run_id) {
-            Ok(held) => held,
+        driving.held = match self.take_run_lock(run_id) {
+            Ok(held) => Some(held),
             Err(error) => {
                 warn!(run_id, error, "cannot take the todo run's lock");
                 return;
