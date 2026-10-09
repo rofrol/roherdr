@@ -1513,6 +1513,10 @@ user needs to decide or do.
   Options: pane workers for those items, headless for docs and research (Recommended) | wait for the capabilities item before any such item | a per-repository widened worker sandbox now, by hand
   Checked: its first headless worker (w78, 2026-10-10) blocked on codesign of the ad-hoc QEMU/app, `ps`, `herdr-job` outside a pane and `make test` (temp dir, PTYs, local sockets); the capabilities item [t-ih3cmtjf] now names these cases.
 
+- [ ] [t-ra4i7neu] Install herdr's Claude integration with the coordinator allowlist (`herdr integration install claude`)?
+  Options: install now and commit the settings.json diff in the dotfiles (Recommended) | install after one coordinator session tried it in shadow (log only) | not now
+  Checked: the allowlist (run `r-5ft5ezc4`, 2026-10-10) is in herdr's integration assets; the installer rewrites its hook script and entries in ~/.claude/settings.json, a hook change that needs the user's approval of the whole patch (AGENTS.md "Installing a fix"). Until then coordinator tabs run unrestricted. Also active for the try-roguix, rormpc and other coordinators once installed.
+
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
