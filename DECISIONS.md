@@ -509,3 +509,12 @@ test 2026-10-08: a worker reading 19 files survived a server handoff
 mid-turn and finished its turn through the new server, not degraded.
 Windows keeps direct pipes (a gap); workers started before the broker keep
 the install queue.
+
+## Quieter uncommitted-files Stop hook
+
+The (2026-10-09, worker w48, approved by the user):
+  `~/.claude/hooks/uncommitted-notes.sh check` stays quiet when the final message
+  names every dirty file (`last_assistant_message`, else the transcript), blocks at
+  most once per unchanged dirty set (content hashes in `<ledger>.acked`), and its
+  reason is one line that keeps "grants no permission to commit, push or continue
+  stopped work". Tests: `uncommitted-notes-test.sh` (bash 3.2). Dotfiles d4c8412.
