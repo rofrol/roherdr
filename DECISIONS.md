@@ -607,3 +607,14 @@ everywhere, never stops an admitted run, `--ignore-usage` overrides
 "switch to pi" plan was unreachable because the driver starts only headless
 Claude). Named accounts (`--account`) wait until the user has a second
 account per provider.
+
+## From the T3 Code comparison to headless workers
+
+Comparing T3 Code (agents through their SDKs, not a PTY) led to herdr's
+headless workers (2026-10-07): `claude -p` stream-json under herdr's tool
+policy and sandbox, sidebar lines, a log popup and takeover. The open parts
+of that item are done since: headless workers became the coordinators'
+default (the `todo` skill and rule), fewer questions (policy, sandbox,
+folder slot), wake on questions (`worker wait --attention`), commit rules
+enforced by `herdr worker verify`, and the driver `herdr todo run`
+(2026-10-08/09). A second, module-by-module comparison is its own item.
