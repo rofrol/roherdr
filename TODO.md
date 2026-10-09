@@ -86,6 +86,14 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   and the Stop hook's nudge itself. Left: step 5 (the audit over real
   coordinator transcripts after a few days, compare with 5.6 per 100); a
   variant of the trial that asks while the coordinator idles.
+  Step 5 done 2026-10-09 (run `r-bfvvtxn3`, `docs/coordinator-audit-2026-10-09.md`):
+  5 coordinator sessions since 2026-10-07 13:48, 244 turn ends, 0 caught by
+  the ABANDON wording, but 3 silent stops between items found by hand
+  (1.2 per 100, all in the herdr coordinator session cdbf366a: a run ended,
+  the coordinator reported and ended its turn with 55-59 items queued, no
+  background wait, no question; one gap lasted 4.6 h). The Stop hook only
+  matches wording and only in `coordinator` tabs. Open question moved to
+  "Needs a decision".
 - [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
   about 30 minutes? too much? why any asynchronous workaround at all? make
   a TODO with the models to fix this and do it next"). Supersedes the
