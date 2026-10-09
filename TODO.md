@@ -96,6 +96,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   call give usable boundaries. Not scheduled; the `attempts` table and
   explicit worktree snapshots come first.
 
+- [ ] Flaky: `todo_runs::the_usage_gate_refuses_at_90_and_reopens_only_below_80_across_a_restart` [t-5o3654pf]
+  failed once in a large parallel run in worker `r-ib4o5jzl`'s sandbox
+  (2026-10-09; the message was not kept), passes alone and in 3 stress
+  passes. Reproduce with the AGENTS.md "Flaky tests" stress recipe under
+  load, find the race (a shared usage reading published by the poller
+  across tests is a suspect), fix it; never raise a wait or add retries.
+
 - [ ] A history of finished TODO items to look through afterwards (user, [t-jlw2bqrz]
   2026-10-07, next: "some dropdown list under the coordinator with the TODO
   text, what was done and what conclusions, whether new TODO entries were
