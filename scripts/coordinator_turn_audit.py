@@ -26,14 +26,19 @@ continue therefore counts as abandoned unless it went through a tool.
 A turn ends whenever the session goes idle: before the next user prompt or
 task notification, or at the transcript's end. The labels are a screen for
 review, not ground truth; each abandoned turn is listed with the tail of its
-final text. Read only; nothing is sent anywhere, and nothing beyond those
-tails is printed.
+final text (and, in JSON, its head). Read only; nothing is sent anywhere, and
+nothing beyond those excerpts is printed.
 
-    scripts/coordinator_turn_audit.py [paths ...] [--json] [--tail 200]
+`--since` counts only turn ends at or after a time (ISO 8601; without an
+offset it is local time), so a rule change can be measured on the turns that
+followed it even in a session that started before it.
+
+    scripts/coordinator_turn_audit.py [paths ...] [--json] [--tail 200] [--since TIME]
 """
 
 import argparse
 import collections
+import datetime
 import glob
 import json
 import os
@@ -110,6 +115,7 @@ def is_abandon_text(text):
 class TurnEnd:
     def __init__(self, started):
         self.started = started
+        self.ended = started  # the last assistant entry's time
         self.final_text = ""
         self.last_tool = ""
         self.ran_report = False
@@ -124,10 +130,28 @@ class Session:
         self.ordered_at = ""
         self.turns = []
 
+    def since(self, moment):
+        """Keep only the turn ends at or after `moment` (an aware datetime)."""
+        kept = []
+        for turn in self.turns:
+            ended = parse_time(turn.ended)
+            if ended is not None and ended >= moment:
+                kept.append(turn)
+        self.turns = kept
+
     def counts(self):
         counter = collections.Counter({label: 0 for label in LABELS})
         counter.update(turn.label for turn in self.turns)
         return counter
+
+
+def parse_time(text):
+    """An aware datetime from an ISO 8601 string (local time without an offset), or None."""
+    try:
+        moment = datetime.datetime.fromisoformat(text.strip())
+    except (AttributeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.astimezone()
 
 
 def label(turn):
@@ -210,6 +234,8 @@ def parse_session(path, lines):
         elif kind == "assistant" and current is not None:
             if message.get("model") == "<synthetic>":
                 continue
+            if entry.get("timestamp"):
+                current.ended = str(entry["timestamp"])
             for block in message.get("content") or []:
                 if not isinstance(block, dict):
                     continue
@@ -245,8 +271,13 @@ def load_session(path):
     return parse_session(path, data.decode("utf-8", errors="replace").splitlines())
 
 
-def audit(paths):
-    return [s for s in (load_session(p) for p in paths) if s is not None]
+def audit(paths, since=None):
+    sessions = [s for s in (load_session(p) for p in paths) if s is not None]
+    if since is None:
+        return sessions
+    for session in sessions:
+        session.since(since)
+    return [s for s in sessions if s.turns]
 
 
 def default_paths():
@@ -257,13 +288,23 @@ def tail_of(text, size):
     return last_paragraph(text)[-size:].replace("\n", " ")
 
 
+def head_of(text, size):
+    return text.strip()[:size].replace("\n", " ")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("paths", nargs="*", help="transcripts (default: ~/.claude/projects/*/*.jsonl)")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--tail", type=int, default=200, help="characters of each abandoned tail")
+    parser.add_argument("--since", help="count only turn ends at or after this ISO 8601 time")
     args = parser.parse_args(argv)
-    sessions = audit(args.paths or default_paths())
+    since = None
+    if args.since:
+        since = parse_time(args.since)
+        if since is None:
+            parser.error("--since: not an ISO 8601 time: %s" % args.since)
+    sessions = audit(args.paths or default_paths(), since)
     totals = collections.Counter({label: 0 for label in LABELS})
     for session in sessions:
         totals.update(session.counts())
@@ -277,7 +318,12 @@ def main(argv=None):
                     "ordered_at": s.ordered_at,
                     "counts": dict(s.counts()),
                     "abandoned": [
-                        {"started": t.started, "tail": tail_of(t.final_text, args.tail)}
+                        {
+                            "started": t.started,
+                            "ended": t.ended,
+                            "head": head_of(t.final_text, args.tail),
+                            "tail": tail_of(t.final_text, args.tail),
+                        }
                         for t in s.turns
                         if t.label == "abandoned"
                     ],

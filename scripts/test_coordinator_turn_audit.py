@@ -156,6 +156,48 @@ class Labels(unittest.TestCase):
         self.assertEqual(self.labels(lines), ["other"])
 
 
+class Since(unittest.TestCase):
+    def write(self, lines):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        handle.write("\n".join(lines.lines) + "\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def report(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            audit.main(list(argv) + ["--json"])
+        return json.loads(out.getvalue())
+
+    def test_only_turn_ends_at_or_after_the_time_count(self):
+        # Turn ends at 00:02 (order at 00:01), 00:04 and 00:06.
+        lines = Lines().user(ORDER).say("Zlecę ją, gdy powiesz dalej.")
+        lines.user("why?").say("Should I continue?")
+        lines.user("go").say("Queue empty; done.")
+        path = self.write(lines)
+
+        everything = self.report(path)
+        self.assertEqual(everything["turn_ends"], 3)
+
+        later = self.report(path, "--since", "2026-10-07T00:04:00Z")
+        self.assertEqual(later["turn_ends"], 2)
+        self.assertEqual(later["totals"], {"asked": 0, "waiting": 0, "abandoned": 1, "other": 1})
+        abandoned = later["sessions"][0]["abandoned"]
+        self.assertEqual([a["ended"] for a in abandoned], ["2026-10-07T00:04:00Z"])
+        self.assertEqual(abandoned[0]["head"], "Should I continue?")
+
+        # An offset is honoured: 02:05+02:00 is 00:05Z.
+        self.assertEqual(self.report(path, "--since", "2026-10-07T02:05:00+02:00")["turn_ends"], 1)
+        # A session with no turn end left is not counted at all.
+        none = self.report(path, "--since", "2026-10-08T00:00:00Z")
+        self.assertEqual((none["coordinator_sessions"], none["turn_ends"]), (0, 0))
+
+    def test_a_bad_time_is_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            audit.main(["--since", "yesterday", "--json"])
+
+
 class Output(unittest.TestCase):
     def test_table_json_and_tails(self):
         lines = Lines().user(ORDER).tools(bash("t1", "cat TODO.md"))
