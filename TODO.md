@@ -954,6 +954,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `tests` check too; better, the driver adds `tests` itself when the diff
   touches `src/api/` or `tests/fixtures/`, and the appended contract names
   the frozen-contract rule.
+  Contract slice done 2026-10-09 (run `r-ueeoumgj`): the appended contract
+  lists each verify check by name and argv and asks the worker to run and
+  report them; a diff under `src/api/` or `tests/fixtures/` adds the `tests`
+  check (`run_check_added` event); the v1 client-method line.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
