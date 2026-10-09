@@ -2050,6 +2050,15 @@ Items agents add. Not approved until the user moves them up.
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
 
+- [ ] Should the coordinator's Stop hook block on state, not wording (a [t-5njp4uab]
+  coordinator tab, no background task of the session running, no question
+  asked this turn, and "Next, in order" not empty)?
+  Options: block on state, once per turn, with `herdr todo run` as the main path (Recommended) | keep wording-only and rely on `herdr todo run` | no hook change
+  Checked: the 2026-10-09 audit (`docs/coordinator-audit-2026-10-09.md`)
+  found 3 silent stops the wording missed; an earlier consult rejected a
+  state rule for its false-alarm cost (a coordinator that correctly waits on
+  the user with "Next" non-empty would be blocked once).
+
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
