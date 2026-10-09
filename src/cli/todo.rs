@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoResumeParams, TodoRunParams, TodoRunTarget, TodoRunsParams,
-    TodoWaitParams, WorkerDecision,
+    Method, Request, TodoAction, TodoResumeParams, TodoReviewParams, TodoRunParams, TodoRunTarget,
+    TodoRunsParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -75,6 +75,14 @@ const USAGE: &str = "usage:
   herdr todo status <run-id>
       Prints the run. Asked while its worker has not exited since the stop,
       it raises a still_alive event first, which takes force-stop.
+  herdr todo review <run-id> [--attempt N] [--diff] [--json]
+      Prints in one view what you review of the run's attempt N (default:
+      its current one): the task the worker got with the contract appended,
+      its last reply, its questions with their answers, the tool calls that
+      failed or were denied, git diff --stat base commit (with --diff the
+      full diff too), the verify's checks with their outcome and evidence,
+      your decision, and the (commit, base) an approval is bound to. --json
+      prints the server's reply.
   herdr todo runs [--repo DIR] [--commit SHA]
       The runs, of DIR's repository with --repo. --commit SHA prints only the
       run that landed SHA (the landed commit or the worker's) and that
@@ -100,6 +108,10 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         id: format!("cli:todo:{}", args[0]),
         method,
     };
+    if let Method::TodoReview(_) = &request.method {
+        let json = args.iter().any(|arg| arg == "--json");
+        return super::todo_review::print_review(&super::send_request(&request)?, json);
+    }
     if matches!(request.method, Method::TodoWait(_)) && !super::target::is_remote() {
         return wait_across_handoffs(&request);
     }
@@ -410,6 +422,25 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "status" => Method::TodoStatus(TodoRunTarget {
             run_id: one_run_id("status", rest)?,
         }),
+        "review" => {
+            let (_, rest) = take_switch(rest, "--json")?;
+            let (diff, rest) = take_switch(&rest, "--diff")?;
+            let (attempt, rest) = take_string_option(&rest, "--attempt")?;
+            let attempt = attempt
+                .map(|value| {
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|attempt| *attempt > 0)
+                        .ok_or_else(|| format!("--attempt takes an attempt number, not {value}"))
+                })
+                .transpose()?;
+            Method::TodoReview(TodoReviewParams {
+                run_id: one_run_id("review", &rest)?,
+                attempt,
+                diff,
+            })
+        }
         "runs" => {
             let (repo, rest) = take_string_option(rest, "--repo")?;
             let (commit, rest) = take_string_option(&rest, "--commit")?;

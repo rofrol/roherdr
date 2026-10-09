@@ -539,6 +539,7 @@ impl ClientShellState {
                 | PendingEndpointKind::WorkerRuns { .. }
                 | PendingEndpointKind::HistoryList { .. }
                 | PendingEndpointKind::HistoryItem { .. }
+                | PendingEndpointKind::TodoReview { .. }
                 | PendingEndpointKind::GitBranchList { .. }
                 | PendingEndpointKind::AgentKindList { .. }
                 | PendingEndpointKind::IntegrationList

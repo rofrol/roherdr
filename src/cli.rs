@@ -41,6 +41,7 @@ mod status;
 mod tab;
 mod target;
 mod todo;
+mod todo_review;
 mod worker;
 mod workspace;
 mod worktree;

@@ -391,3 +391,128 @@ pub struct TodoRunEvent {
     pub error: Option<String>,
     pub ts_ms: u64,
 }
+
+/// `todo.review`: one attempt of a run as the coordinator reviews it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoReviewParams {
+    pub run_id: String,
+    /// The attempt (1 for the first); the run's current one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    /// Also the full diff (`git diff base commit`), not only its stat.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub diff: bool,
+}
+
+/// One attempt of a run in one view: the run's `attempts` row, the
+/// worker's journal (its transcript) and `git diff base commit` in the
+/// run's repository. Nothing of it is stored apart from those.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoReview {
+    pub run_id: String,
+    pub item: String,
+    pub repo: String,
+    pub status: TodoRunStatus,
+    pub attempt: u32,
+    /// How many attempts the run has had so far.
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The commit the attempt is verified and reviewed against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The attempt's commit: the one the coordinator's decision saw, else
+    /// the verify's head, else the branch's tip when it is past the base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The previous attempt and its commit this one's branch starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_commit: Option<String>,
+    /// The task the worker got: its first prompt, the run's contract
+    /// appended; the run's stored task when its journal is not there.
+    pub task: String,
+    /// The worker's last reply (its last turn's result).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_message: Option<String>,
+    /// The questions the worker asked, oldest first, each with its answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<TodoReviewQuestion>,
+    /// The tool calls that failed or were denied, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_failures: Vec<TodoReviewToolFailure>,
+    /// `git diff --stat base commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stat: Option<String>,
+    /// `git diff base commit`, when asked for (`diff`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// Why the diff could not be read (no commit yet, git failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_error: Option<String>,
+    /// Herdr's latest verify of the attempt: each check with its outcome
+    /// and evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<WorkerVerification>,
+    /// The coordinator's decision on the attempt: `approve`, `retry` or
+    /// `abort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    /// With `retry`: the review the next attempt got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_text: Option<String>,
+    /// With `approve`: the commit and base the approval is bound to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<TodoApproval>,
+    /// The commit on `master` the attempt landed as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed_sha: Option<String>,
+}
+
+/// The `(commit, base)` an approval is bound to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoApproval {
+    pub commit: String,
+    pub base: String,
+}
+
+/// A question the worker asked and how it was answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoReviewQuestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    pub tool_name: String,
+    pub text: String,
+    /// The answer (`allow`, `deny` or the choices); absent while it waits
+    /// or when it was never answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+}
+
+/// A tool call that failed or was denied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoReviewToolFailure {
+    pub kind: TodoToolFailureKind,
+    pub tool_name: String,
+    /// The call's most telling input: the command, the path or the URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// The error, or who denied it and why.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoToolFailureKind {
+    /// The tool ran and returned an error.
+    Failed,
+    /// The policy, a pre-tool check, the user or the CLI's permission
+    /// mode denied the call.
+    Denied,
+    #[serde(other)]
+    Unknown,
+}

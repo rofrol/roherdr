@@ -36,6 +36,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
+            | Method::TodoReview(_)
             | Method::HistoryList(_)
             | Method::HistoryItem(_)
             | Method::HistoryReconcile(_)
@@ -164,6 +165,15 @@ fn handle_immediate(
             let (runs, landing) =
                 supervisor.todo_runs(params.repo.as_deref(), params.commit.as_deref())?;
             return Ok(ResponseResult::TodoRuns { runs, landing });
+        }
+        Method::TodoReview(params) => {
+            return Ok(ResponseResult::TodoReview {
+                review: Box::new(supervisor.todo_review(
+                    &params.run_id,
+                    params.attempt,
+                    params.diff,
+                )?),
+            })
         }
         Method::HistoryList(params) => {
             return Ok(ResponseResult::HistoryList {

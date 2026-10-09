@@ -452,6 +452,16 @@ fn todo_command() -> Command {
         )
         .subcommand(id_command("status", "run_id", "Show a run"))
         .subcommand(
+            id_command(
+                "review",
+                "run_id",
+                "Show an attempt of a run as it is reviewed",
+            )
+            .arg(option("attempt", "N"))
+            .arg(flag("diff"))
+            .arg(flag("json")),
+        )
+        .subcommand(
             Command::new("runs")
                 .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),

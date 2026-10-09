@@ -5131,6 +5131,67 @@ fn history_item_reply() -> crate::api::schema::ResponseResult {
     }
 }
 
+fn todo_review_reply() -> crate::api::schema::ResponseResult {
+    use crate::api::schema::{
+        TodoApproval, TodoReview, TodoReviewQuestion, TodoReviewToolFailure, TodoToolFailureKind,
+        WorkerCheckOutcome, WorkerVerdict, WorkerVerification, WorkerVerifyCheck,
+    };
+    crate::api::schema::ResponseResult::TodoReview {
+        review: Box::new(TodoReview {
+            run_id: "r-aaaaaaaa".into(),
+            item: "t-qrst6723".into(),
+            repo: "/repo".into(),
+            status: crate::api::schema::TodoRunStatus::Done,
+            attempt: 1,
+            attempts: 1,
+            worker_id: Some("w3".into()),
+            branch: Some("todo/t-qrst6723-r-aaaaaaaa-1".into()),
+            base: Some("0123456789abcdef".into()),
+            commit: Some("fedcba9876543210".into()),
+            from_attempt: None,
+            from_commit: None,
+            task: "Do the item\n\n---\nCommit as exactly one commit".into(),
+            final_message: Some("WORKER-DONE fedcba98 | done".into()),
+            questions: vec![TodoReviewQuestion {
+                request_id: Some("q1".into()),
+                tool_name: "WebFetch".into(),
+                text: "https://example.com".into(),
+                answer: Some("allow".into()),
+            }],
+            tool_failures: vec![TodoReviewToolFailure {
+                kind: TodoToolFailureKind::Denied,
+                tool_name: "Bash".into(),
+                input: Some("git push".into()),
+                detail: "denied by the policy: no pushes".into(),
+            }],
+            diff_stat: Some(" a.txt | 1 +".into()),
+            diff: None,
+            diff_error: None,
+            verification: Some(WorkerVerification {
+                verdict: WorkerVerdict::Verified,
+                base: "0123456789abcdef".into(),
+                head: Some("fedcba9876543210".into()),
+                commits: vec!["fedcba9876543210".into()],
+                checks: vec![WorkerVerifyCheck {
+                    check: "command".into(),
+                    outcome: WorkerCheckOutcome::Passed,
+                    path: None,
+                    name: Some("ok".into()),
+                    detail: String::new(),
+                }],
+                verified_ms: 1_790_633_000_000,
+            }),
+            decision: Some("approve".into()),
+            review_text: None,
+            approved: Some(TodoApproval {
+                commit: "fedcba9876543210".into(),
+                base: "0123456789abcdef".into(),
+            }),
+            landed_sha: Some("aaaabbbbccccdddd".into()),
+        }),
+    }
+}
+
 fn items_button(state: &ClientShellState) -> Rect {
     state
         .hits
@@ -5446,11 +5507,128 @@ fn the_items_popup_lists_finished_items_and_an_item_opens_its_history() {
     );
     state.compose(140, 40).unwrap();
 
-    // The attempt opens its worker's log.
+    // The attempt opens its review, asked on the click, without the full
+    // diff.
+    let pending = state.pending_requests.len();
     let attempt = state.hits.worker_items_rows[4].0;
     let outcome = left_click(&mut state, (attempt.x + 3, attempt.y));
+    let asked: Vec<_> = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::TodoReview(params) => Some(params.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        asked,
+        [crate::api::schema::TodoReviewParams {
+            run_id: "r-aaaaaaaa".into(),
+            attempt: Some(1),
+            diff: false,
+        }]
+    );
+    assert_eq!(state.pending_requests.len(), pending + 1);
+    let frame = state.compose(140, 40).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert!(
+        rows[0].contains("‹ attempt 1 · run r-aaaaaaaa"),
+        "{rows:#?}"
+    );
+    assert!(rows[1].contains("loading the review"), "{rows:#?}");
+    // A reply for another attempt is not taken.
+    assert!(
+        !state
+            .complete_todo_review(
+                ClientEndpointId::Local,
+                "r-aaaaaaaa".into(),
+                2,
+                Ok(todo_review_reply())
+            )
+            .0
+    );
+    state.complete_todo_review(
+        ClientEndpointId::Local,
+        "r-aaaaaaaa".into(),
+        1,
+        Ok(todo_review_reply()),
+    );
+    let frame = state.compose(140, 40).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    let expected = [
+        "‹ attempt 1 · run r-aaaaaaaa",
+        "open the log · w3",
+        "Do the item",
+        "---",
+        "Commit as exactly one commit",
+        "WORKER-DONE fedcba98 | done",
+        "WebFetch: https://example.com → allow",
+        "Bash `git push` denied",
+        "a.txt | 1 +",
+        "verified",
+        "command ok: passed",
+        "approve",
+        "approved fedcba98 on base 01234567",
+        "landed as aaaabbbb",
+    ];
+    assert_eq!(rows.len(), expected.len(), "{rows:#?}");
+    for (row, text) in rows.iter().zip(expected) {
+        assert!(row.contains(text), "{text:?} in {rows:#?}");
+    }
+    let text = frame_rows(&frame).join("\n");
+    for group in [
+        "Task",
+        "Final message",
+        "Questions (1)",
+        "Verify",
+        "Decision",
+    ] {
+        assert!(text.contains(group), "{group} in {text}");
+    }
+
+    // Its log row opens the worker's log.
+    let log = state.hits.worker_items_rows[1].0;
+    let outcome = left_click(&mut state, (log.x + 3, log.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
                 if target.worker_id == "w3"))));
+}
+
+#[test]
+fn back_from_an_attempts_review_returns_to_its_timeline() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    with_coordinator(&mut state, Some((1, 0)));
+    state.compose(140, 40).unwrap();
+    let button = items_button(&state);
+    left_click(&mut state, (button.x + 2, button.y));
+    state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    state.complete_history_list(ClientEndpointId::Local, Ok(history_list_reply()));
+    state.compose(140, 40).unwrap();
+    let finished = state.hits.worker_items_rows[2].0;
+    left_click(&mut state, (finished.x + 3, finished.y));
+    state.complete_history_item(
+        ClientEndpointId::Local,
+        "t-qrst6723".into(),
+        Ok(history_item_reply()),
+    );
+    state.compose(140, 40).unwrap();
+    let attempt = state.hits.worker_items_rows[4].0;
+    left_click(&mut state, (attempt.x + 3, attempt.y));
+    state.complete_todo_review(
+        ClientEndpointId::Local,
+        "r-aaaaaaaa".into(),
+        1,
+        Ok(todo_review_reply()),
+    );
+    assert!(state.worker_items_back());
+    let frame = state.compose(140, 40).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert!(
+        rows[0].contains("‹ The closed item · t-qrst6723") && rows[4].contains("attempt 1 · w3"),
+        "{rows:#?}"
+    );
 }
