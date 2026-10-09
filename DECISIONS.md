@@ -725,3 +725,18 @@ decision first (what is decided, what is authoritative, where and when it
 is read, what happens when the read fails), and ask whether the design would
 still contain a timer if the read were instant and free; a `delay:` label
 is not a review.
+
+## Usage summed per workspace. The author asked every session for its
+
+Usage summed per workspace (user's decision 2026-10-06: CLI first, resumed
+sessions once, an estimate, no sidebar total): `herdr usage --workspace
+[<space>] [--since <local date>] [--json]` reads the transcripts of the
+sessions herdr still knows (open panes' current or last session, the
+server's workers) on the user's call, counts each session id once, puts
+headless workers under their owner's space, and prices tokens from one
+dated table (`src/usage/prices.rs`, Anthropic list prices as of
+2026-10-06); a model without a row shows as unpriced tokens with its id.
+Three rows priced "from memory" (Opus 4/4.1, Haiku 3.5, in none of the
+user's transcripts) were removed after the user asked about them (consult
+round 20261010-005643-3ed3): a price needs a source. Labelled "estimate,
+not the provider's bill".
