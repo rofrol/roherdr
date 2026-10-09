@@ -680,3 +680,18 @@ across a live handoff so installs do not repeat them (one after a cold
 start, decided by the coordinator 2026-10-09); pool exhaustion always warns,
 also when herdr's own 64-PTY reserve refuses a pane. Clicking the footer to
 list PTY users stays a later idea.
+
+## Ideas from Delta (delta.dev, the Zed team) for item history and the
+
+Ideas taken from Delta (delta.dev, by the Zed team; consult rounds
+20261009-114040-88b8, 20261009-115028-45b9, 20261009-115641-7377), concepts
+only. Built 2026-10-09: an `attempts` table (a retry carries the previous
+attempt's commit and review), approvals bound to `(commit, base)`, a
+`landings` table and `Herdr-Item`/`Herdr-Run` trailers on landed commits
+with `herdr todo runs --commit`, and `herdr todo review` (task, final
+message, questions, failed tool calls, diff, verify, approval), opened from
+the Items timeline. Rejected for one user on one machine: a CRDT/delta
+layer, per-change identities and line anchors (if wanted later: run id +
+`git patch-id` + path + byte range + context hashes, reported as exact,
+ambiguous or orphaned; git-ai's notes format is the closest open model),
+and jj (it would snapshot other sessions' files in the shared checkout).
