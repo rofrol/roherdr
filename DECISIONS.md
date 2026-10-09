@@ -747,3 +747,20 @@ Workers once tried a `Co-Authored-By` trailer that AGENTS.md forbids
 (2026-10-07). Done mechanically since: `herdr worker verify` requires exactly
 one commit with exactly the approved subject, no body and no trailers, and
 the driver adds its own `Herdr-Item`/`Herdr-Run` trailers only when landing.
+
+## The deterministic coordinator driver
+
+The user wanted a coordinator that cannot choose badly between options
+("can't a program restrict the options?", 2026-10-08). `herdr todo run`
+drives an item end to end in the server: preflight (usage gate asking the
+provider), a headless worker in the folder slot owned by the coordinator's
+pane, events the coordinator answers with `herdr todo resume` (stale ids
+refused), `verify` with registered checks (plus `tests` when `src/api/` or
+fixtures change), cherry-pick with `Herdr-Item`/`Herdr-Run` trailers,
+`just clean-install`, the TODO note or close, a fast-forward push, cleanup;
+every step records intent and result and resumes after a crash or a live
+handoff (run lock, environments carried). Attempts, approvals bound to a
+commit, landings, item history and `herdr todo review` sit on it. The last
+slice (2026-10-10, e08a6305) is a PreToolUse allowlist for coordinator tabs
+with recorded `# herdr-override:` exceptions; it is active once the
+integration is installed (a decision of the user).
