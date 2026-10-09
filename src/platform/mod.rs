@@ -536,9 +536,10 @@ pub(crate) use unix_common::{
 };
 /// A headless worker's broker: its own session, so it outlives the server
 /// (`start_new_session`), and a guard that kills the worker when the broker
-/// dies (`fork_death_guard`).
+/// dies (`fork_death_guard`), holding nothing its parent left open
+/// (`close_inherited_descriptors`).
 #[cfg(unix)]
-pub(crate) use unix_common::{fork_death_guard, start_new_session};
+pub(crate) use unix_common::{close_inherited_descriptors, fork_death_guard, start_new_session};
 
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};

@@ -510,6 +510,36 @@ pub(crate) fn start_new_session() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Closes every descriptor above stderr that this process inherited: those
+/// without `FD_CLOEXEC`, since every descriptor Rust opens has it, so what
+/// lacks it survived the `exec` that started this process. A daemon that
+/// outlives its parent would otherwise hold its parent's files, pipes and
+/// locks (a `flock` its parent's parent took) for as long as it runs.
+pub(crate) fn close_inherited_descriptors() -> std::io::Result<()> {
+    // Listed first, so the directory's own descriptor (opened close-on-exec)
+    // is closed before any is checked.
+    let listed: Option<Vec<libc::c_int>> = std::fs::read_dir("/dev/fd").ok().map(|entries| {
+        entries
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+            .collect()
+    });
+    let fds = listed.unwrap_or_else(|| {
+        let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+        let max = if max <= 0 { 1024 } else { max.min(65536) };
+        (0..max as libc::c_int).collect()
+    });
+    for fd in fds.into_iter().filter(|fd| *fd > 2) {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags >= 0 && flags & libc::FD_CLOEXEC == 0 && unsafe { libc::close(fd) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EINTR) {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The parent's end of a death guard ([`fork_death_guard`]).
 pub(crate) struct DeathGuard {
     pid: libc::pid_t,
@@ -722,6 +752,96 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const INHERIT_ENV: &str = "HERDR_TEST_INHERIT_LOCK";
+    const INHERIT_MODE_ENV: &str = "HERDR_TEST_INHERIT_MODE";
+
+    fn this_test(name: &str) -> std::process::Command {
+        let module = module_path!();
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", &format!("{module}::{name}"), "--nocapture"]);
+        command
+    }
+
+    /// Mode `lock`: takes a `flock` on the file in [`INHERIT_ENV`] through
+    /// a descriptor its children inherit, starts itself in mode `close` or
+    /// `keep` (`INHERIT_MODE_ENV`'s value after `lock-`) on its own stdio,
+    /// and exits, closing its copy. Mode `close` closes what it inherited,
+    /// `keep` does not; both then report `ready` and wait for the end of
+    /// their stdin.
+    #[test]
+    fn inherit_process_entry() {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+
+        let (Some(path), Ok(mode)) = (
+            std::env::var_os(INHERIT_ENV),
+            std::env::var(INHERIT_MODE_ENV),
+        ) else {
+            return;
+        };
+        if let Some(next) = mode.strip_prefix("lock-") {
+            let file = std::fs::File::create(&path).unwrap();
+            let fd = file.as_raw_fd();
+            assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX) }, 0);
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+            this_test("inherit_process_entry")
+                .env(INHERIT_MODE_ENV, next)
+                .spawn()
+                .unwrap();
+            std::process::exit(0);
+        }
+        if mode == "close" {
+            close_inherited_descriptors().unwrap();
+        }
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "ready").unwrap();
+        stdout.flush().unwrap();
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+        std::process::exit(0);
+    }
+
+    /// Whether a process started with a locked descriptor it inherited
+    /// still holds the lock once its starter is gone.
+    fn inherited_lock_held(mode: &str) -> bool {
+        use std::io::BufRead;
+        use std::os::fd::AsRawFd;
+
+        let dir = std::env::temp_dir().join(format!("herdr-inherit-{mode}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lock");
+        let mut starter = this_test("inherit_process_entry")
+            .env(INHERIT_ENV, &path)
+            .env(INHERIT_MODE_ENV, format!("lock-{mode}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Ends the started process (an orphan, so not this test's to reap)
+        // when the test returns or fails.
+        let _stdin = starter.stdin.take();
+        let stdout = starter.stdout.take().unwrap();
+        let ready = std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .any(|line| line == "ready");
+        assert!(ready, "the started process did not report");
+        assert!(starter.wait().unwrap().success());
+        let file = std::fs::File::open(&path).unwrap();
+        let held = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+        held
+    }
+
+    #[test]
+    fn a_process_that_closes_its_inherited_descriptors_releases_its_starters_lock() {
+        // Without the close the lock stays held: the test can tell.
+        assert!(inherited_lock_held("keep"));
+        assert!(!inherited_lock_held("close"));
+    }
 
     #[test]
     fn server_signal_monitor_survives_hangup_and_reports_terminate() {

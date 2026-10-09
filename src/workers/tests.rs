@@ -225,6 +225,9 @@ struct Fixture {
     root: PathBuf,
     repo: PathBuf,
     supervisor: WorkerSupervisor,
+    /// Dropped after the supervisor's workers are killed: ends and reaps the
+    /// brokers that are left.
+    _brokers: broker::tests::Reaper,
 }
 
 impl Fixture {
@@ -259,6 +262,7 @@ impl Fixture {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let supervisor = WorkerSupervisor::open_with(root.join("workers"), stub, broker);
         Self {
+            _brokers: broker::tests::Reaper::new(&root),
             root,
             repo,
             supervisor,
@@ -4489,6 +4493,27 @@ fn through_a_broker_a_turn_runs_and_the_workers_exit_ends_the_broker() {
         .join("workers")
         .join(format!("{id}.broker.log"))
         .exists());
+}
+
+#[test]
+fn a_broker_test_leaves_no_broker_behind_even_when_it_fails() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fixture = Fixture::with_broker();
+        let id = fixture.start("block");
+        let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+        sender
+            .send(broker_of(&fixture.supervisor, &id).pid)
+            .unwrap();
+        // A server gone mid-turn: the fixture's kill no longer reaches the
+        // worker, and its broker would serve it forever.
+        live.sever();
+        panic!("a failing broker test");
+    }));
+    assert!(failed.is_err());
+    let broker = receiver.recv().unwrap();
+    // Reaped: not even a zombie is left.
+    assert_ne!(unsafe { libc::kill(broker as libc::pid_t, 0) }, 0);
 }
 
 #[test]
