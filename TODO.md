@@ -95,6 +95,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   replaces the planned `attempts` table and whether jj calls after each tool
   call give usable boundaries. Not scheduled; the `attempts` table and
   explicit worktree snapshots come first.
+  Points 1-3 done 2026-10-09 (1d464dae, f0d72c81: attempts, approvals bound
+  to a commit, landings and trailers; the commit lookup lives on
+  `todo.runs` only, `worker.runs` keeps its v1 shape). Left: point 4, the
+  review view.
 
 - [ ] Flaky: `todo_runs::the_usage_gate_refuses_at_90_and_reopens_only_below_80_across_a_restart` [t-5o3654pf]
   failed once in a large parallel run in worker `r-ib4o5jzl`'s sandbox
