@@ -1358,6 +1358,8 @@ impl App {
             // finished items and opens one.
             Method::HistoryList(params) => return self.handle_history_list(request.id, params),
             Method::HistoryItem(params) => return self.handle_history_item(request.id, params),
+            // And `todo.review`, when it opens an attempt of the timeline.
+            Method::TodoReview(params) => return self.handle_todo_review(request.id, params),
             Method::WorkerOpenLog(target) => {
                 return self.handle_worker_open_log(request.id, target)
             }

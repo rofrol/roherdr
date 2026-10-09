@@ -1,12 +1,13 @@
 //! The worker actions a client starts that need the app: `worker.open_log`
 //! (a popup) and `worker.take_over` (a tab), and `worker.runs`,
-//! `history.list` and `history.item` for its Items popup. The other
-//! `worker.*` methods, and those from the JSON API, run on the API
-//! connection's thread (`crate::api::workers`).
+//! `history.list`, `history.item` and `todo.review` for its Items popup.
+//! The other `worker.*` methods, and those from the JSON API, run on the
+//! API connection's thread (`crate::api::workers`).
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    HistoryItemParams, HistoryListParams, ResponseResult, WorkerRunsParams, WorkerTarget,
+    HistoryItemParams, HistoryListParams, ResponseResult, TodoReviewParams, WorkerRunsParams,
+    WorkerTarget,
 };
 use crate::app::App;
 use crate::events::AppEvent;
@@ -37,6 +38,21 @@ impl App {
     pub(super) fn handle_history_item(&mut self, id: String, params: HistoryItemParams) -> String {
         match crate::workers::supervisor().history_item(&params.item, params.repo.as_deref()) {
             Ok(item) => encode_success(id, ResponseResult::HistoryItem { item }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// One attempt of a run, asked when the user opens it in the Items
+    /// popup's timeline.
+    pub(super) fn handle_todo_review(&mut self, id: String, params: TodoReviewParams) -> String {
+        match crate::workers::supervisor().todo_review(&params.run_id, params.attempt, params.diff)
+        {
+            Ok(review) => encode_success(
+                id,
+                ResponseResult::TodoReview {
+                    review: Box::new(review),
+                },
+            ),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

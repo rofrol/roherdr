@@ -7901,6 +7901,115 @@ mod todo_runs {
     }
 
     #[test]
+    fn an_attempts_review_joins_its_task_reply_diff_verify_and_approval() {
+        let fixture = todo_repo("todo-review");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // Before the decision: the branch's commit, no verify, no approval.
+        let before = fixture
+            .supervisor
+            .todo_review(&run.run_id, None, false)
+            .unwrap();
+        assert_eq!((before.attempt, before.attempts), (1, 1));
+        assert_eq!(before.status, TodoRunStatus::Waiting);
+        assert_eq!(before.worker_id, waiting.worker_id);
+        // The task as the worker got it, the run's contract appended.
+        assert!(
+            before
+                .task
+                .starts_with(&format!("commit a.txt {SUBJECT}\n")),
+            "{}",
+            before.task
+        );
+        assert!(
+            before.task.contains("no body and no trailers"),
+            "{}",
+            before.task
+        );
+        assert!(
+            before
+                .final_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("WORKER-DONE"),
+            "{before:#?}"
+        );
+        assert_eq!(before.base, waiting.base);
+        assert_eq!(before.commit.as_ref(), review.commits.last());
+        assert!(
+            before
+                .diff_stat
+                .as_deref()
+                .unwrap_or_default()
+                .contains("a.txt"),
+            "{before:#?}"
+        );
+        assert!(before.diff.is_none(), "{before:#?}");
+        assert!(before.questions.is_empty() && before.tool_failures.is_empty());
+        assert!(before.verification.is_none() && before.decision.is_none());
+        assert!(before.approved.is_none() && before.landed_sha.is_none());
+
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (_, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        let after = fixture
+            .supervisor
+            .todo_review(&run.run_id, Some(1), true)
+            .unwrap();
+        let verification = after.verification.clone().expect("verified");
+        assert_eq!(verification.verdict, WorkerVerdict::Verified);
+        assert!(
+            verification
+                .checks
+                .iter()
+                .any(|check| check.name.as_deref() == Some("ok")
+                    && check.outcome == WorkerCheckOutcome::Passed),
+            "{verification:#?}"
+        );
+        assert_eq!(after.decision.as_deref(), Some("approve"));
+        assert_eq!(
+            after.approved,
+            Some(crate::api::schema::TodoApproval {
+                commit: review.commits.last().cloned().unwrap(),
+                base: waiting.base.clone().unwrap(),
+            })
+        );
+        assert_eq!(after.landed_sha, finished.picked);
+        assert!(
+            after
+                .diff
+                .as_deref()
+                .unwrap_or_default()
+                .contains("+change"),
+            "{after:#?}"
+        );
+        // The JSON reply carries the parts by name.
+        let reply = serde_json::to_value(crate::api::schema::ResponseResult::TodoReview {
+            review: Box::new(after),
+        })
+        .unwrap();
+        assert_eq!(reply["type"], "todo_review");
+        assert_eq!(reply["review"]["approved"]["base"], waiting.base.unwrap());
+        assert_eq!(reply["review"]["verification"]["verdict"], "verified");
+
+        let missing = fixture
+            .supervisor
+            .todo_review(&run.run_id, Some(2), false)
+            .unwrap_err();
+        assert_eq!(missing.code(), "todo_run_not_found", "{missing}");
+    }
+
+    #[test]
     fn two_runs_of_the_same_item_in_a_row_both_start() {
         let fixture = todo_repo("todo-same-item");
         let first = fixture

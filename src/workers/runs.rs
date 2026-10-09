@@ -131,7 +131,7 @@ pub(super) struct Attempt {
 }
 
 /// An attempt's decision as `attempts.review_decision` holds it.
-const APPROVE: &str = "approve";
+pub(super) const APPROVE: &str = "approve";
 const RETRY: &str = "retry";
 const ABORT: &str = "abort";
 
@@ -583,7 +583,7 @@ fn free_gib(dir: &Path) -> Result<f64, String> {
     Ok(available / (1024.0 * 1024.0))
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(super) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_with(dir, args, None)
 }
 
@@ -1062,7 +1062,7 @@ impl WorkerSupervisor {
         Ok(recorded)
     }
 
-    fn load_run(&self, run_id: &str) -> Result<Run, WorkerError> {
+    pub(super) fn load_run(&self, run_id: &str) -> Result<Run, WorkerError> {
         self.run_store()?
             .run(run_id)
             .map_err(store_error)?

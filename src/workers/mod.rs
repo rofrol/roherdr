@@ -33,6 +33,7 @@ mod install_script_tests;
 mod log;
 mod policy;
 mod pre_tool_checks;
+mod review;
 mod runs;
 mod slot;
 mod store;

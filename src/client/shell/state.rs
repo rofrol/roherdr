@@ -1067,6 +1067,12 @@ pub(super) enum PendingEndpointKind {
         endpoint_id: ClientEndpointId,
         item: String,
     },
+    /// `todo.review` for the attempt the Items dropdown opened.
+    TodoReview {
+        endpoint_id: ClientEndpointId,
+        run_id: String,
+        attempt: u32,
+    },
     GitBranchList {
         workspace_id: String,
     },

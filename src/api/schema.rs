@@ -142,6 +142,11 @@ pub enum Method {
     TodoStatus(TodoRunTarget),
     #[serde(rename = "todo.runs")]
     TodoRuns(TodoRunsParams),
+    /// One attempt of a run as the coordinator reviews it: its task, the
+    /// worker's last reply, questions and failed tool calls, the diff, the
+    /// verify and the approval.
+    #[serde(rename = "todo.review")]
+    TodoReview(TodoReviewParams),
     /// The TODO items herdr recorded, each with its latest record.
     #[serde(rename = "history.list")]
     HistoryList(HistoryListParams),

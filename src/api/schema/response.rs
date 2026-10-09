@@ -20,7 +20,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::todo::{TodoLanding, TodoRunEvent, TodoRunInfo};
+use super::todo::{TodoLanding, TodoReview, TodoRunEvent, TodoRunInfo};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
     WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
@@ -110,6 +110,10 @@ pub enum ResponseResult {
         /// With `commit`: the landing that named the run.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         landing: Option<TodoLanding>,
+    },
+    /// `todo.review`'s reply: one attempt of a run in one view.
+    TodoReview {
+        review: Box<TodoReview>,
     },
     /// `history.list`'s reply: each recorded item with its latest record,
     /// the most recent first.

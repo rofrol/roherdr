@@ -11,19 +11,24 @@
 //! herdr's verdict, the coordinator's decision and the commit it landed,
 //! the notes, the close with its decision and the follow-up items), then
 //! the worker runs no attempt names (worker, start and end, outcome,
-//! verdict, turns, commits, questions); a run or an attempt opens its log,
-//! a follow-up its own history.
+//! verdict, turns, commits, questions); a run opens its log, an attempt
+//! its review (what `herdr todo review` prints: the task the worker got,
+//! its last reply, its questions and failed tool calls, the diff stat, the
+//! verify's checks and the decision, with a row that opens its log), a
+//! follow-up its own history.
 //!
-//! Everything is fetched when the user opens the dropdown or an item,
-//! never in the background: a background request would hold the machine's
-//! command lane, and a click in that moment would be refused as busy. So
-//! the dropdown asks one thing at a time: `worker.runs`, then once it
-//! answered `history.list`; an item's `history.item` when it opens.
+//! Everything is fetched when the user opens the dropdown, an item or an
+//! attempt, never in the background: a background request would hold the
+//! machine's command lane, and a click in that moment would be refused as
+//! busy. So the dropdown asks one thing at a time: `worker.runs`, then once
+//! it answered `history.list`; an item's `history.item` when it opens; an
+//! attempt's `todo.review` when it opens.
 //! Drawing reads only what those replies brought.
 
 use crate::api::schema::{
     AgentStatus, HistoryEventKind, HistoryItem, HistoryItemParams, HistoryItemSummary,
-    HistoryListParams, HistoryRun, TodoRunStatus, WorkerItemRuns, WorkerRun, WorkerRunOutcome,
+    HistoryListParams, HistoryRun, TodoReview, TodoReviewParams, TodoRunStatus,
+    TodoToolFailureKind, WorkerCheckOutcome, WorkerItemRuns, WorkerRun, WorkerRunOutcome,
     WorkerRunsParams, WorkerVerdict,
 };
 
@@ -56,7 +61,28 @@ pub(super) struct WorkerItemsOverlay {
     /// The open item's timeline (`history.item`); none for an item without
     /// records.
     pub(super) timeline: Option<TimelineFetch>,
+    /// The attempt of the timeline it shows (`todo.review`); none for the
+    /// timeline itself.
+    pub(super) review: Option<AttemptReview>,
+    /// The machine answers `todo.review`: an attempt opens its review,
+    /// otherwise its worker's log.
+    pub(super) reviews: bool,
     pub(super) highlighted: Option<usize>,
+}
+
+/// An attempt the dropdown shows, and its review once it came.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AttemptReview {
+    pub(super) run_id: String,
+    pub(super) attempt: u32,
+    pub(super) fetch: ReviewFetch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReviewFetch {
+    Loading,
+    Failed(String),
+    Loaded(Box<TodoReview>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +126,11 @@ pub(super) enum ItemsRowAction {
     Open(ItemKey),
     Back,
     Log(String),
+    /// An attempt of a run: its review.
+    Review {
+        run_id: String,
+        attempt: u32,
+    },
 }
 
 /// A row as the dropdown draws it ([`super::render::LogRow`]) and what it does.
@@ -261,8 +292,9 @@ fn message_row(text: &str) -> ItemsRow {
 }
 
 /// A record's text as dim rows of its day, at most [`MAX_TEXT_LINES`],
-/// blank lines left out.
-fn text_rows(text: &str, day: &str) -> Vec<ItemsRow> {
+/// blank lines left out; the rest is counted, with `whole`, the command
+/// that prints it whole.
+fn text_rows(text: &str, day: &str, whole: &str) -> Vec<ItemsRow> {
     let lines = text
         .lines()
         .map(str::trim_end)
@@ -290,8 +322,8 @@ fn text_rows(text: &str, day: &str) -> Vec<ItemsRow> {
                 Some(day.to_owned()),
                 String::new(),
                 match lines.len() - MAX_TEXT_LINES {
-                    1 => "  … 1 more line (herdr history --item)".to_owned(),
-                    more => format!("  … {more} more lines (herdr history --item)"),
+                    1 => format!("  … 1 more line ({whole})"),
+                    more => format!("  … {more} more lines ({whole})"),
                 },
                 false,
                 None,
@@ -304,11 +336,13 @@ fn text_rows(text: &str, day: &str) -> Vec<ItemsRow> {
     rows
 }
 
-/// A run's attempts, each with its worker (whose log it opens), herdr's
-/// verdict, the coordinator's decision and the commit it landed.
+/// A run's attempts, each with its worker, herdr's verdict, the
+/// coordinator's decision and the commit it landed; each opens its review
+/// when the machine has `todo.review` (`reviews`), else its worker's log.
 fn attempt_rows(
     run: &HistoryRun,
     day: &str,
+    reviews: bool,
     icon: &impl Fn(AgentStatus) -> (&'static str, ratatui::style::Color),
 ) -> Vec<ItemsRow> {
     run.attempts
@@ -347,10 +381,17 @@ fn attempt_rows(
                     (!detail.is_empty()).then(|| detail.join(" · ")),
                     false,
                 ),
-                action: attempt
-                    .worker_id
-                    .clone()
-                    .map_or(ItemsRowAction::None, ItemsRowAction::Log),
+                action: if reviews {
+                    ItemsRowAction::Review {
+                        run_id: run.run_id.clone(),
+                        attempt: attempt.attempt,
+                    }
+                } else {
+                    attempt
+                        .worker_id
+                        .clone()
+                        .map_or(ItemsRowAction::None, ItemsRowAction::Log)
+                },
             }
         })
         .collect()
@@ -362,6 +403,7 @@ fn attempt_rows(
 /// record names come last.
 fn timeline_rows(
     history: &HistoryItem,
+    reviews: bool,
     title: impl Fn(&str) -> Option<String>,
     icon: &impl Fn(AgentStatus) -> (&'static str, ratatui::style::Color),
     now_unix: u64,
@@ -399,12 +441,15 @@ fn timeline_rows(
             HistoryEventKind::Claimed => event.item_text.as_deref(),
             _ => event.text.as_deref(),
         };
-        rows.extend(body.map(|body| text_rows(body, &day)).unwrap_or_default());
+        rows.extend(
+            body.map(|body| text_rows(body, &day, "herdr history --item"))
+                .unwrap_or_default(),
+        );
         if event.kind == HistoryEventKind::Claimed {
             if let Some(run) = event.run_id.as_deref().and_then(run_of) {
                 if !shown.contains(&run.run_id.as_str()) {
                     shown.push(&run.run_id);
-                    rows.extend(attempt_rows(run, &day, icon));
+                    rows.extend(attempt_rows(run, &day, reviews, icon));
                 }
             }
         }
@@ -443,8 +488,198 @@ fn timeline_rows(
             ),
             action: ItemsRowAction::None,
         });
-        rows.extend(attempt_rows(run, &day, icon));
+        rows.extend(attempt_rows(run, &day, reviews, icon));
     }
+    rows
+}
+
+/// A dim row of the group `day` that does nothing.
+fn dim_row(day: &str, text: String, detail: Option<String>) -> ItemsRow {
+    ItemsRow {
+        row: (
+            Some(day.to_owned()),
+            String::new(),
+            text,
+            false,
+            None,
+            detail,
+            true,
+        ),
+        action: ItemsRowAction::None,
+    }
+}
+
+/// An attempt's review, as `herdr todo review` prints it: a row back to
+/// the timeline, one that opens the worker's log, then each part as its
+/// own group, long texts cut as a timeline's are.
+fn review_rows(
+    open: &AttemptReview,
+    icon: &impl Fn(AgentStatus) -> (&'static str, ratatui::style::Color),
+) -> Vec<ItemsRow> {
+    const WHOLE: &str = "herdr todo review";
+    let mut rows = vec![ItemsRow {
+        row: (
+            None,
+            String::new(),
+            format!("‹ attempt {} · run {}", open.attempt, open.run_id),
+            false,
+            None,
+            None,
+            false,
+        ),
+        action: ItemsRowAction::Back,
+    }];
+    let review = match &open.fetch {
+        ReviewFetch::Loading => {
+            rows.push(message_row("loading the review…"));
+            return rows;
+        }
+        ReviewFetch::Failed(error) => {
+            rows.push(message_row(&format!("could not read the review: {error}")));
+            return rows;
+        }
+        ReviewFetch::Loaded(review) => review,
+    };
+    if let Some(worker) = &review.worker_id {
+        rows.push(ItemsRow {
+            row: (
+                None,
+                String::new(),
+                format!("open the log · {worker}"),
+                false,
+                None,
+                review.branch.clone(),
+                false,
+            ),
+            action: ItemsRowAction::Log(worker.clone()),
+        });
+    }
+    rows.extend(text_rows(&review.task, "Task", WHOLE));
+    match &review.final_message {
+        Some(text) => rows.extend(text_rows(text, "Final message", WHOLE)),
+        None => rows.push(dim_row("Final message", "  none".into(), None)),
+    }
+    let day = format!("Questions ({})", review.questions.len());
+    if review.questions.is_empty() {
+        rows.push(dim_row(&day, "  none".into(), None));
+    }
+    rows.extend(review.questions.iter().map(|question| {
+        dim_row(
+            &day,
+            format!(
+                "  {}: {} → {}",
+                question.tool_name,
+                question.text,
+                question.answer.as_deref().unwrap_or("not answered")
+            ),
+            None,
+        )
+    }));
+    let day = format!(
+        "Failed or denied tool calls ({})",
+        review.tool_failures.len()
+    );
+    if review.tool_failures.is_empty() {
+        rows.push(dim_row(&day, "  none".into(), None));
+    }
+    rows.extend(review.tool_failures.iter().map(|failure| {
+        let how = match failure.kind {
+            TodoToolFailureKind::Failed => "failed",
+            TodoToolFailureKind::Denied => "denied",
+            TodoToolFailureKind::Unknown => "unknown",
+        };
+        let input = failure
+            .input
+            .as_deref()
+            .map(|input| format!(" `{input}`"))
+            .unwrap_or_default();
+        dim_row(
+            &day,
+            format!("  ✗ {}{input} {how}", failure.tool_name),
+            (!failure.detail.is_empty()).then(|| failure.detail.clone()),
+        )
+    }));
+    let day = match (&review.base, &review.commit) {
+        (Some(base), Some(commit)) => format!("Diff {}..{}", short(base), short(commit)),
+        _ => "Diff".to_owned(),
+    };
+    match (&review.diff_error, &review.diff_stat) {
+        (Some(error), _) => rows.push(dim_row(&day, format!("  {error}"), None)),
+        (None, Some(stat)) => rows.extend(text_rows(stat, &day, WHOLE)),
+        (None, None) => rows.push(dim_row(&day, "  no changes".into(), None)),
+    }
+    match &review.verification {
+        None => rows.push(dim_row("Verify", "  not verified".into(), None)),
+        Some(verification) => {
+            rows.push(ItemsRow {
+                row: (
+                    Some("Verify".to_owned()),
+                    String::new(),
+                    verdict(verification.verdict).to_owned(),
+                    false,
+                    Some(icon(verdict_status(Some(verification.verdict)))),
+                    None,
+                    false,
+                ),
+                action: ItemsRowAction::None,
+            });
+            rows.extend(verification.checks.iter().map(|check| {
+                let said = match check.outcome {
+                    WorkerCheckOutcome::Passed => "passed",
+                    WorkerCheckOutcome::Failed => "failed",
+                    WorkerCheckOutcome::Unavailable => "unavailable",
+                    WorkerCheckOutcome::Skipped => "skipped",
+                    WorkerCheckOutcome::Unknown => "unknown",
+                };
+                let name = [check.name.as_deref(), check.path.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .map(|name| format!(" {name}"))
+                    .collect::<String>();
+                // The evidence's last line: what failed, or how it ended.
+                let evidence = check
+                    .detail
+                    .lines()
+                    .map(str::trim)
+                    .rfind(|line| !line.is_empty())
+                    .map(str::to_owned);
+                dim_row(
+                    "Verify",
+                    format!("  {}{name}: {said}", check.check),
+                    evidence,
+                )
+            }));
+        }
+    }
+    let mut decision = vec![dim_row(
+        "Decision",
+        format!("  {}", review.decision.as_deref().unwrap_or("none yet")),
+        review.review_text.as_deref().map(|text| {
+            text.lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default()
+                .to_owned()
+        }),
+    )];
+    if let Some(approved) = &review.approved {
+        decision.push(dim_row(
+            "Decision",
+            format!(
+                "  approved {} on base {}",
+                short(&approved.commit),
+                short(&approved.base)
+            ),
+            None,
+        ));
+    }
+    if let Some(landed) = &review.landed_sha {
+        decision.push(dim_row(
+            "Decision",
+            format!("  landed as {}", short(landed)),
+            None,
+        ));
+    }
+    rows.extend(decision);
     rows
 }
 
@@ -495,6 +730,9 @@ impl WorkerItemsOverlay {
             }
             ItemsFetch::Loaded { items, unassigned } => (items, unassigned),
         };
+        if let Some(review) = &self.review {
+            return review_rows(review, &icon);
+        }
         match &self.open {
             None => self.list_rows(items, unassigned, &icon, now_unix, offset),
             Some(open) => self.open_rows(open, items, unassigned, &icon, now_unix, offset),
@@ -684,6 +922,7 @@ impl WorkerItemsOverlay {
             Some(TimelineFetch::Loaded(history)) => {
                 rows.extend(timeline_rows(
                     history,
+                    self.reviews,
                     |item| self.title(item),
                     icon,
                     now_unix,
@@ -785,6 +1024,13 @@ impl ClientShellState {
             repo: repo.clone(),
         });
         let mut history = None;
+        let reviews = self.supports_endpoint_method(&crate::api::schema::Method::TodoReview(
+            TodoReviewParams {
+                run_id: String::new(),
+                attempt: None,
+                diff: false,
+            },
+        ));
         let fetch = if repo.is_none() {
             ItemsFetch::Failed("this tab is not in a git repository".into())
         } else if self.endpoint_is_online(&endpoint_id) && self.supports_endpoint_method(&method) {
@@ -814,6 +1060,8 @@ impl ClientShellState {
             history,
             open: None,
             timeline: None,
+            review: None,
+            reviews,
             highlighted: None,
         }));
     }
@@ -911,6 +1159,76 @@ impl ClientShellState {
         (true, Vec::new())
     }
 
+    /// Takes an attempt's review into the dropdown, while it still shows
+    /// that attempt.
+    pub(super) fn complete_todo_review(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        run_id: String,
+        attempt: u32,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> (bool, Vec<ClientShellAction>) {
+        let Some(ClientShellOverlay::WorkerItems(overlay)) = self.overlay.as_mut() else {
+            return (false, Vec::new());
+        };
+        let Some(review) = overlay.review.as_mut() else {
+            return (false, Vec::new());
+        };
+        if overlay.endpoint_id != endpoint_id
+            || review.run_id != run_id
+            || review.attempt != attempt
+        {
+            return (false, Vec::new());
+        }
+        review.fetch = match result {
+            Ok(crate::api::schema::ResponseResult::TodoReview { review }) => {
+                ReviewFetch::Loaded(review)
+            }
+            Ok(_) => ReviewFetch::Failed("unexpected reply".into()),
+            Err(error) => ReviewFetch::Failed(error.message),
+        };
+        (true, Vec::new())
+    }
+
+    /// Opens an attempt's review in the dropdown and asks for it; back
+    /// returns to the timeline it was opened from.
+    fn open_worker_review(&mut self, run_id: String, attempt: u32, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::WorkerItems(overlay)) = self.overlay.as_mut() else {
+            return;
+        };
+        overlay.highlighted = None;
+        overlay.review = Some(AttemptReview {
+            run_id: run_id.clone(),
+            attempt,
+            fetch: ReviewFetch::Loading,
+        });
+        let endpoint_id = overlay.endpoint_id.clone();
+        // Only the stat: the dropdown shows no full diff.
+        let method = crate::api::schema::Method::TodoReview(TodoReviewParams {
+            run_id: run_id.clone(),
+            attempt: Some(attempt),
+            diff: false,
+        });
+        let sent = self.endpoint_is_online(&endpoint_id)
+            && self.supports_endpoint_method(&method)
+            && self.push_endpoint_method_with_kind(
+                method,
+                PendingEndpointKind::TodoReview {
+                    endpoint_id,
+                    run_id,
+                    attempt,
+                },
+                outcome,
+            );
+        if !sent {
+            if let Some(ClientShellOverlay::WorkerItems(overlay)) = self.overlay.as_mut() {
+                if let Some(review) = overlay.review.as_mut() {
+                    review.fetch = ReviewFetch::Failed("the request was not sent".into());
+                }
+            }
+        }
+    }
+
     /// Opens an item's history (or the unassigned runs) in the dropdown and,
     /// for an item with records, asks for its timeline.
     fn open_worker_item(&mut self, key: ItemKey, outcome: &mut ClientShellInput) {
@@ -920,6 +1238,7 @@ impl ClientShellState {
         overlay.open = Some(key.clone());
         overlay.highlighted = None;
         overlay.timeline = None;
+        overlay.review = None;
         let ItemKey::Item { item, .. } = key else {
             return;
         };
@@ -988,9 +1307,14 @@ impl ClientShellState {
         });
     }
 
-    /// Back from an item's runs to the list of items.
+    /// Back from an attempt's review to its timeline, or from an item's
+    /// runs to the list of items.
     pub(super) fn worker_items_back(&mut self) -> bool {
         if let Some(ClientShellOverlay::WorkerItems(overlay)) = self.overlay.as_mut() {
+            if overlay.review.take().is_some() {
+                overlay.highlighted = None;
+                return true;
+            }
             if overlay.open.take().is_some() {
                 overlay.highlighted = None;
                 overlay.timeline = None;
@@ -1000,8 +1324,9 @@ impl ClientShellState {
         false
     }
 
-    /// Does what row `index` does: opens an item's history, goes back, or
-    /// opens a run's log (the worker log popup) and closes the dropdown.
+    /// Does what row `index` does: opens an item's history or an attempt's
+    /// review, goes back, or opens a run's log (the worker log popup) and
+    /// closes the dropdown.
     pub(super) fn activate_worker_items_row(
         &mut self,
         index: usize,
@@ -1017,6 +1342,9 @@ impl ClientShellState {
                 self.worker_items_back();
             }
             ItemsRowAction::Open(key) => self.open_worker_item(key, outcome),
+            ItemsRowAction::Review { run_id, attempt } => {
+                self.open_worker_review(run_id, attempt, outcome)
+            }
             ItemsRowAction::Log(worker_id) => {
                 self.overlay = None;
                 self.open_worker_log(worker_id, outcome);
@@ -1080,6 +1408,8 @@ mod tests {
             }])),
             open,
             timeline,
+            review: None,
+            reviews: true,
             highlighted: None,
         }
     }

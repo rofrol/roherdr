@@ -212,7 +212,7 @@ fn prefixed(prefix: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
-fn user_text(event: &Value) -> Option<String> {
+pub(super) fn user_text(event: &Value) -> Option<String> {
     let content = &event["message"]["content"];
     if let Some(text) = content.as_str() {
         return Some(text.to_owned());
@@ -228,7 +228,7 @@ fn user_text(event: &Value) -> Option<String> {
 
 /// A tool call's input as its most telling field: the command, the path or
 /// the URL, else the input itself.
-fn tool_input(input: &Value) -> String {
+pub(super) fn tool_input(input: &Value) -> String {
     [
         "command",
         "file_path",
@@ -243,7 +243,7 @@ fn tool_input(input: &Value) -> String {
     .unwrap_or_else(|| one_line(&input.to_string(), DETAIL_MAX))
 }
 
-fn tool_result_text(content: &Value) -> String {
+pub(super) fn tool_result_text(content: &Value) -> String {
     match content {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => blocks

@@ -5545,6 +5545,31 @@
           ],
           "type": "object"
         },
+        "TodoReviewParams": {
+          "description": "`todo.review`: one attempt of a run as the coordinator reviews it.",
+          "properties": {
+            "attempt": {
+              "description": "The attempt (1 for the first); the run's current one when absent.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "diff": {
+              "description": "Also the full diff (`git diff base commit`), not only its stat.",
+              "type": "boolean"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
         "TodoRunParams": {
           "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
@@ -7170,6 +7195,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoRunsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One attempt of a run as the coordinator reviews it: its task, the\nworker's last reply, questions and failed tool calls, the diff, the\nverify and the approval.",
+          "properties": {
+            "method": {
+              "const": "todo.review",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoReviewParams"
             }
           },
           "required": [
@@ -13326,6 +13368,23 @@
               "type": "object"
             },
             {
+              "description": "`todo.review`'s reply: one attempt of a run in one view.",
+              "properties": {
+                "review": {
+                  "$ref": "#/schemas/success_response/$defs/TodoReview"
+                },
+                "type": {
+                  "const": "todo_review",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "review"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
               "properties": {
                 "items": {
@@ -15204,6 +15263,22 @@
             }
           ]
         },
+        "TodoApproval": {
+          "description": "The `(commit, base)` an approval is bound to.",
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "commit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "commit",
+            "base"
+          ],
+          "type": "object"
+        },
         "TodoEventKind": {
           "description": "A run's event that needs the coordinator or ends the run.",
           "oneOf": [
@@ -15340,6 +15415,230 @@
               "type": "string"
             }
           ]
+        },
+        "TodoReview": {
+          "description": "One attempt of a run in one view: the run's `attempts` row, the\nworker's journal (its transcript) and `git diff base commit` in the\nrun's repository. Nothing of it is stored apart from those.",
+          "properties": {
+            "approved": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoApproval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `approve`: the commit and base the approval is bound to."
+            },
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "attempts": {
+              "description": "How many attempts the run has had so far.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "base": {
+              "description": "The commit the attempt is verified and reviewed against.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "commit": {
+              "description": "The attempt's commit: the one the coordinator's decision saw, else\nthe verify's head, else the branch's tip when it is past the base.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The coordinator's decision on the attempt: `approve`, `retry` or\n`abort`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "diff": {
+              "description": "`git diff base commit`, when asked for (`diff`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "diff_error": {
+              "description": "Why the diff could not be read (no commit yet, git failed).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "diff_stat": {
+              "description": "`git diff --stat base commit`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "final_message": {
+              "description": "The worker's last reply (its last turn's result).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_attempt": {
+              "description": "The previous attempt and its commit this one's branch starts from.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "from_commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "item": {
+              "type": "string"
+            },
+            "landed_sha": {
+              "description": "The commit on `master` the attempt landed as.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "questions": {
+              "description": "The questions the worker asked, oldest first, each with its answer.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoReviewQuestion"
+              },
+              "type": "array"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "review_text": {
+              "description": "With `retry`: the review the next attempt got.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/TodoRunStatus"
+            },
+            "task": {
+              "description": "The task the worker got: its first prompt, the run's contract\nappended; the run's stored task when its journal is not there.",
+              "type": "string"
+            },
+            "tool_failures": {
+              "description": "The tool calls that failed or were denied, oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoReviewToolFailure"
+              },
+              "type": "array"
+            },
+            "verification": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerVerification"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Herdr's latest verify of the attempt: each check with its outcome\nand evidence."
+            },
+            "worker_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run_id",
+            "item",
+            "repo",
+            "status",
+            "attempt",
+            "attempts",
+            "task"
+          ],
+          "type": "object"
+        },
+        "TodoReviewQuestion": {
+          "description": "A question the worker asked and how it was answered.",
+          "properties": {
+            "answer": {
+              "description": "The answer (`allow`, `deny` or the choices); absent while it waits\nor when it was never answered.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool_name",
+            "text"
+          ],
+          "type": "object"
+        },
+        "TodoReviewToolFailure": {
+          "description": "A tool call that failed or was denied.",
+          "properties": {
+            "detail": {
+              "description": "The error, or who denied it and why.",
+              "type": "string"
+            },
+            "input": {
+              "description": "The call's most telling input: the command, the path or the URL.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/TodoToolFailureKind"
+            },
+            "tool_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_name"
+          ],
+          "type": "object"
         },
         "TodoRunEvent": {
           "properties": {
@@ -15645,6 +15944,26 @@
             {
               "const": "abort",
               "description": "The coordinator aborted the run: its worker is stopped, then the\nrun ends `aborted`.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoToolFailureKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The tool ran and returned an error.",
+              "type": "string"
+            },
+            {
+              "const": "denied",
+              "description": "The policy, a pre-tool check, the user or the CLI's permission\nmode denied the call.",
               "type": "string"
             }
           ]
