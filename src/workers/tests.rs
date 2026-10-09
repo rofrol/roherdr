@@ -5597,12 +5597,13 @@ mod todo_runs {
     }
 
     /// A Claude reading as `usage.read` returns it: one window per
-    /// `(id, used, freshness)`, observed 30 seconds ago.
+    /// `(id, used, freshness)`, observed 30 seconds before the gate's
+    /// test clock.
     fn claude_usage(
         windows: &[(&str, u8, crate::api::schema::UsageFreshness)],
     ) -> crate::api::schema::UsageReport {
         let mut report = runs::low_usage_for_test();
-        let now = crate::usage::now_unix();
+        let now = runs::USAGE_NOW_FOR_TEST;
         report.providers[0].windows = windows
             .iter()
             .map(|(id, used, freshness)| crate::api::schema::UsageWindow {
