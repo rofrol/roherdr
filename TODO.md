@@ -11,34 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
-  baby-sitting the models through rules in AGENTS.md etc.; where are the
-  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
-  the coordinator, holding push and install rights, is the riskiest actor;
-  a boundary is hard only if the actor cannot remove it (a hook in `.git`
-  is not; a GitHub ruleset or a credential the agent lacks is). Their
-  five, in order: protect the fork's history (a ruleset against
-  force-push and deletion, which conflicts with the rebase-and-force-push
-  fork sync unless agents get a separate credential without bypass);
-  remove upstream write paths; install only through `just clean-install`
-  (a PreToolUse deny for anything else); restrict the coordinator's writes
-  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
-  commit messages (no co-author lines) and `unwrap()` in production code.
-  Guidance stays guidance for consult rounds, language and "do not touch
-  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
-  now; done the same day by the coordinator in this checkout's
-  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
-  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
-  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
-  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
-  open issues upstream, and PATH wrappers are bypassable), the fork
-  ruleset, the install and push allowlist for the coordinator, its write
-  scope, and the CI checks.
-  Promoted 2026-10-10 (the user: "choose with the models"; round
-  20261010-010542-7df5): the coordinator's write scope and install/push only
-  through allowed commands go into the allowlist slice of `t-s3oaxcki`;
-  GitHub branch protection and CI stay here as their own slice.
-
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
   coordinating at T? ask the models"). Today: no; workers store only
@@ -1424,6 +1396,42 @@ user needs to decide or do.
 - [ ] [t-ra4i7neu] Install herdr's Claude integration with the coordinator allowlist (`herdr integration install claude`)?
   Options: install now and commit the settings.json diff in the dotfiles (Recommended) | install after one coordinator session tried it in shadow (log only) | not now
   Checked: the allowlist (run `r-5ft5ezc4`, 2026-10-10) is in herdr's integration assets; the installer rewrites its hook script and entries in ~/.claude/settings.json, a hook change that needs the user's approval of the whole patch (AGENTS.md "Installing a fix"). Until then coordinator tabs run unrestricted. Also active for the try-roguix, rormpc and other coordinators once installed.
+
+- [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
+  baby-sitting the models through rules in AGENTS.md etc.; where are the
+  hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
+  the coordinator, holding push and install rights, is the riskiest actor;
+  a boundary is hard only if the actor cannot remove it (a hook in `.git`
+  is not; a GitHub ruleset or a credential the agent lacks is). Their
+  five, in order: protect the fork's history (a ruleset against
+  force-push and deletion, which conflicts with the rebase-and-force-push
+  fork sync unless agents get a separate credential without bypass);
+  remove upstream write paths; install only through `just clean-install`
+  (a PreToolUse deny for anything else); restrict the coordinator's writes
+  to TODO.md/DECISIONS.md through the verified tool (PreToolUse); CI for
+  commit messages (no co-author lines) and `unwrap()` in production code.
+  Guidance stays guidance for consult rounds, language and "do not touch
+  others' hunks". Decided by the user 2026-10-08: the upstream cut-off
+  now; done the same day by the coordinator in this checkout's
+  `.git/config` (a sandboxed worker cannot write it): `upstream`'s push
+  URL is `DISABLED: ...` (a push fails) and `gh repo set-default
+  rofrol/roherdr` (gh defaulted to herdrdev/herdr before). Not chosen now,
+  kept here: a `gh` wrapper refusing other repositories (soft: anyone may
+  open issues upstream, and PATH wrappers are bypassable), the fork
+  ruleset, the install and push allowlist for the coordinator, its write
+  scope, and the CI checks.
+  Promoted 2026-10-10 (the user: "choose with the models"; round
+  20261010-010542-7df5): the coordinator's write scope and install/push only
+  through allowed commands go into the allowlist slice of `t-s3oaxcki`;
+  GitHub branch protection and CI stay here as their own slice.
+  Moved to "Needs a decision" 2026-10-10 by the coordinator: the coordinator's
+  write scope and install/push paths are done in the allowlist (e08a6305).
+  Left: GitHub protection of the fork and CI. CI alone is not a hard boundary
+  (an agent can still push without it); it becomes one only with a ruleset that
+  requires its checks, and a ruleset against force-push conflicts with the
+  fork sync, which rebases onto upstream and force-pushes `master`.
+  Question: protect the fork's master on GitHub, and how does the fork sync push then?
+  Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
 
 ### Decide
 
