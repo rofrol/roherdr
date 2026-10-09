@@ -1195,8 +1195,9 @@ pub(super) mod tests {
         }
     }
 
-    impl Drop for Reaper {
-        fn drop(&mut self) {
+    impl Reaper {
+        /// Ends and reaps the brokers started so far, as dropping does.
+        pub(in crate::workers) fn reap_now(&self) {
             let mine: Vec<u32> = {
                 let mut started = lock(&STARTED);
                 let (mine, others) = started
@@ -1208,6 +1209,12 @@ pub(super) mod tests {
             for pid in mine {
                 reap(pid);
             }
+        }
+    }
+
+    impl Drop for Reaper {
+        fn drop(&mut self) {
+            self.reap_now();
         }
     }
 
@@ -1232,6 +1239,111 @@ pub(super) mod tests {
     fn exists(pid: u32) -> bool {
         let found = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    /// Fails the test at once, naming the cause, when a Unix socket cannot
+    /// be bound in `dir` or connected to: a sandbox that refuses them (as
+    /// Claude Code's does, with `EPERM`) would otherwise fail every broker
+    /// start with a message about the worker.
+    pub(in crate::workers) fn require_unix_sockets(dir: &Path) {
+        let probe = dir.join("probe.sock");
+        let _ = std::fs::remove_file(&probe);
+        let result = UnixListener::bind(&probe).and_then(|listener| {
+            let stream = UnixStream::connect(&probe);
+            drop(listener);
+            stream.map(drop)
+        });
+        let _ = std::fs::remove_file(&probe);
+        match result {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => panic!(
+                "the sandbox refuses Unix sockets: run this test outside it ({}: {error})",
+                probe.display()
+            ),
+            Err(error) => panic!("cannot use a Unix socket at {}: {error}", probe.display()),
+        }
+    }
+
+    /// delay: not a wait, the bound a measured fail-fast stays under; no
+    /// test waits for it to pass.
+    const AT_ONCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// A directory this process may not write in, made writable again and
+    /// removed when dropped.
+    struct ReadOnlyDir(PathBuf);
+
+    impl ReadOnlyDir {
+        fn new(name: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Short: a socket's path has at most 103 bytes.
+            let dir = std::env::temp_dir().join(format!("{name}{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for ReadOnlyDir {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_refused_socket_fails_the_socket_check_at_once_naming_the_sandbox() {
+        // Refused as the sandbox refuses it: `EACCES` here, `EPERM` there.
+        let dir = ReadOnlyDir::new("hr");
+        let started = std::time::Instant::now();
+        let failed = std::panic::catch_unwind(|| require_unix_sockets(&dir.0));
+        let elapsed = started.elapsed();
+        eprintln!("the socket check failed after {elapsed:?}");
+        let message = failed.expect_err("a refused socket passed the check");
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(
+            message.contains("the sandbox refuses Unix sockets"),
+            "{message}"
+        );
+        assert!(elapsed < AT_ONCE, "{elapsed:?}");
+    }
+
+    #[test]
+    fn a_broker_whose_socket_is_refused_fails_its_start_at_once_and_leaves_no_process() {
+        let dir = ReadOnlyDir::new("hs");
+        let _reaper = Reaper::new(&dir.0);
+        let log = std::env::temp_dir().join(format!("hs{}.log", std::process::id()));
+        let started = std::time::Instant::now();
+        let result = start(
+            &test_launcher(),
+            &dir.0.join("w.sock"),
+            &log,
+            Path::new("sleep"),
+            &["1000".to_owned()],
+            &dir.0,
+            |_| {},
+        );
+        let elapsed = started.elapsed();
+        eprintln!("the broker start failed after {elapsed:?}");
+        let _ = std::fs::remove_file(&log);
+        let error = result.err().expect("a broker started on a refused socket");
+        assert!(error.to_string().contains("socket"), "{error}");
+        // The start waits only for the broker's report.
+        assert!(elapsed < AT_ONCE, "{elapsed:?}");
+        let brokers: Vec<u32> = lock(&STARTED)
+            .iter()
+            .filter(|(socket, _)| socket.starts_with(&dir.0))
+            .map(|(_, pid)| *pid)
+            .collect();
+        assert_eq!(brokers.len(), 1, "{brokers:?}");
+        // The failed start reaped it: not even a zombie is left.
+        assert!(!exists(brokers[0]), "broker {} is left", brokers[0]);
     }
 
     const INHERIT_ENV: &str = "HERDR_TEST_INHERITED_LOCK";
@@ -1290,6 +1402,7 @@ pub(super) mod tests {
         let dir = std::env::temp_dir().join(format!("hi{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        require_unix_sockets(&dir);
         let lock_path = dir.join("lock");
         let mut helper = Helper(
             Command::new(std::env::current_exe().unwrap())

@@ -257,7 +257,7 @@ struct Fixture {
     supervisor: WorkerSupervisor,
     /// Dropped after the supervisor's workers are killed: ends and reaps the
     /// brokers that are left.
-    _brokers: broker::tests::Reaper,
+    brokers: broker::tests::Reaper,
 }
 
 impl Fixture {
@@ -287,12 +287,15 @@ impl Fixture {
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
+        if broker.is_some() {
+            broker::tests::require_unix_sockets(&root);
+        }
         let stub = root.join("claude-stub");
         std::fs::write(&stub, STUB).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let supervisor = WorkerSupervisor::open_with(root.join("workers"), stub, broker);
         Self {
-            _brokers: broker::tests::Reaper::new(&root),
+            brokers: broker::tests::Reaper::new(&root),
             root,
             repo,
             supervisor,
@@ -465,6 +468,12 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // A failed test (a hang guard fired) may have left the supervisor
+        // stuck: end the brokers first, whose death guards end their
+        // workers, so nothing below can keep one alive past the test.
+        if std::thread::panicking() {
+            self.brokers.reap_now();
+        }
         for worker in self.supervisor.list() {
             if !matches!(worker.state, WorkerState::Exited | WorkerState::Lost) {
                 let _ = self.supervisor.kill(&worker.worker_id, false);
@@ -4729,7 +4738,9 @@ fn through_a_broker_a_turn_runs_and_the_workers_exit_ends_the_broker() {
 #[test]
 fn a_broker_test_leaves_no_broker_behind_even_when_it_fails() {
     let (sender, receiver) = std::sync::mpsc::channel();
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // `move`: the closure owns the sender, so a panic before its send (no
+    // broker could start) is seen below instead of a `recv` that never ends.
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let fixture = Fixture::with_broker();
         let id = fixture.start("block");
         let (_, live, _) = fixture.supervisor.live(&id).unwrap();
@@ -4741,8 +4752,14 @@ fn a_broker_test_leaves_no_broker_behind_even_when_it_fails() {
         live.sever();
         panic!("a failing broker test");
     }));
-    assert!(failed.is_err());
-    let broker = receiver.recv().unwrap();
+    let Err(panic) = failed else {
+        panic!("the failing broker test passed");
+    };
+    // The closure has returned: its send happened or never will.
+    let Ok(broker) = receiver.try_recv() else {
+        // It failed before its broker started: report that failure.
+        std::panic::resume_unwind(panic);
+    };
     // Reaped: not even a zombie is left.
     assert_ne!(unsafe { libc::kill(broker as libc::pid_t, 0) }, 0);
 }
