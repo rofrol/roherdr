@@ -145,6 +145,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `todo_edit.py remove`, so the history gets its `closed` record; the
   coordinator runs `herdr history reconcile` at its start. Left: the
   dropdown under the coordinator.
+  For the dropdown slice: `herdr history` prints times in UTC ("18:36" for
+  20:36 local); show local time like the rest of the UI. The pre-history
+  items show "(no title recorded)"; take the title from TODO.md while the
+  item is open.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user, [t-e3wrhvox]
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
