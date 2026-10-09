@@ -11,6 +11,16 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The usage gate refused a run on a reading that was stale between [t-6sgp2zau]
+  normal polls (coordinator, 2026-10-09 23:21: Claude 5h at 16%, "stale,
+  read 186s ago"; ten seconds later the next poll admitted the run). A
+  reading must not turn stale while the poller is healthy: check how
+  `observed_at` is set when the shared cache answers instead of a fetch
+  (the cached observation's age plus a full interval can exceed two
+  intervals), and make stale mean "a poll was missed" (the poller's own
+  last attempt, not the cached observation's age), with a test that a
+  healthy poller with a cache hit never reports stale.
+
 - [ ] Ideas from Delta (delta.dev, the Zed team) for item history and the [t-sjjnjbxn]
   review queue (user, 2026-10-09: "analyse with the models, also deepseek";
   consult round 20261009-114040-88b8, sol + MiMo + DeepSeek). Delta pairs
