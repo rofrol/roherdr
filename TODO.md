@@ -1007,6 +1007,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   earlier). The contract the driver appends should name each registered
   check the run will verify with and tell the worker to run those it can
   (`windows-lint` works in the worker sandbox) before its last line.
+  Decided by the coordinator 2026-10-09: run `r-ib4o5jzl` passed `verify` with
+  only the `workers` check and landed a commit that broke the frozen v1
+  client contract test (found by the install's `just check`, so nothing was
+  pushed or installed). A run that changes `src/api/` must verify with the
+  `tests` check too; better, the driver adds `tests` itself when the diff
+  touches `src/api/` or `tests/fixtures/`, and the appended contract names
+  the frozen-contract rule.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
