@@ -1305,6 +1305,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   keeps the last successful reading's time; label a `limit_remaining`
   fallback as the key's limit, not the account balance.
 
+- [ ] Consult helpers: clearer refusals for two caller mistakes (reported [t-65oyloai]
+  by the rormpc coordinator, 2026-10-09). (1) `ask_gpt.sh` reads stdin only
+  with `-f -` (on purpose: a background job can inherit a stdin that never
+  closes), but a piped brief without it just prints "Empty prompt"; when the
+  prompt is empty and stdin is not a TTY, say "stdin is read only with
+  -f -". (2) `ask_openrouter.sh -f <file>` refuses a file outside a git
+  repository (deliberate vetting), while agents keep drafts in their
+  scratchpad: name the way out in the refusal (pass the brief inline or via
+  `-f -`) and say it in the consult and openrouter SKILL.md files.
+  Approved by the user 2026-10-09 ("zgoda jest").
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1580,16 +1591,6 @@ Items agents add. Not approved until the user moves them up.
   Claude's windows are at 90% (then the old 90/80 switch). All three models
   advised building it only as a reviewed backend, not a quota stopgap, and
   MiMo to measure first how often a Claude window reaches 90%.
-
-- [ ] Consult helpers: clearer refusals for two caller mistakes (reported [t-65oyloai]
-  by the rormpc coordinator, 2026-10-09). (1) `ask_gpt.sh` reads stdin only
-  with `-f -` (on purpose: a background job can inherit a stdin that never
-  closes), but a piped brief without it just prints "Empty prompt"; when the
-  prompt is empty and stdin is not a TTY, say "stdin is read only with
-  -f -". (2) `ask_openrouter.sh -f <file>` refuses a file outside a git
-  repository (deliberate vetting), while agents keep drafts in their
-  scratchpad: name the way out in the refusal (pass the brief inline or via
-  `-f -`) and say it in the consult and openrouter SKILL.md files.
 
 ## Needs a decision
 
