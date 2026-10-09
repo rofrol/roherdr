@@ -38,6 +38,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ownership explicitly. Test: a run started from a pane lists its worker
   under that pane's workspace and owner.
 
+- [ ] The uncommitted-files Stop hook buries a one-line answer (user, [t-zy5ozsqo]
+  2026-10-09, screenshot of the try-roguix menu-click worker: "I ask one
+  question and the agent spits out a ton of junk"). The user asked "what
+  should I do?"; the agent answered and already named its two dirty files,
+  then `~/.claude/hooks/uncommitted-notes.sh check` blocked the stop with a
+  ~120-word reason, which the UI shows as "Stop hook error", and the agent
+  repeated the list. It fires on every turn while files stay dirty on
+  purpose (waiting for the user's test). Fix in the hook (dotfiles; a hook
+  change needs one approval of the whole patch, prepared outside `~`):
+  (1) do not block when the last assistant message already names every
+  dirty path (repo-relative path or basename; read it from the Stop input's
+  `last_assistant_message` if Claude Code sends it, else the transcript's
+  last assistant text); (2) block at most once per unchanged dirty set
+  (record the acknowledged set and the files' content hashes; block again
+  only when a new file appears or a file changes); (3) a short reason (one
+  line naming the files and "name them as dirty or commit them by path").
+  Tests next to the hook with sample Stop inputs.
+
 - [ ] A coordinator stops between items without being asked (user, [t-xe6hpo4z]
   2026-10-07: "why aren't you delegating anything? ... explain why; we want
   to improve the process, not have you start working now and forget"). Twice
