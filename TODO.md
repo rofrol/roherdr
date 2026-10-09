@@ -138,6 +138,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `Herdr-Item`/`Herdr-Run` trailers are this history's data (the decided
   `Todo-Item:` trailer becomes `Herdr-Item:`), then a close record per item
   and `herdr history`, then the dropdown.
+  Slice 2 done 2026-10-09 (run `r-ekruigf7`): `item_history` (claimed, noted,
+  closed, aborted, blocked) and `herdr history [--item] [reconcile]`. Decided
+  by the coordinator: items finished through the driver are closed with
+  `approve --close <decision-file>` from now on, not by a separate
+  `todo_edit.py remove`, so the history gets its `closed` record; the
+  coordinator runs `herdr history reconcile` at its start. Left: the
+  dropdown under the coordinator.
 
 - [ ] Show how many pseudo-terminals are in use, e.g. `108/511` (user, [t-e3wrhvox]
   2026-10-07: "show somewhere how many pseudo-terminals are used out of how
