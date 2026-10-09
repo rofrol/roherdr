@@ -15,6 +15,11 @@
 //! the CLI never asks it about a sandboxed Bash command, nor about a call a
 //! user's allow rule permits.
 //!
+//! The hook is registered for every worker, checks or none: it also runs
+//! herdr's own rule against waiting in the background
+//! ([`super::policy::background_wait_denial`]) before any check, for
+//! [`MATCHER`]'s tools; the checks run only for [`CHECKED_TOOLS`].
+//!
 //! Each check runs in the worker's directory, outside the worker's sandbox,
 //! with the hook input on stdin, as Claude Code runs a command hook, one
 //! after the other until one denies. A check denies by exiting 0 with
@@ -45,8 +50,13 @@ use crate::platform::Signal;
 /// The callback id herdr registers; the CLI names it in each `hook_callback`.
 pub(super) const CALLBACK_ID: &str = "herdr-pre-tool-checks";
 
+/// The tools the hook runs for: the checked ones and those that can wait in
+/// the background.
+pub(super) const MATCHER: &str =
+    "Bash|Write|Edit|MultiEdit|Monitor|ScheduleWakeup|CronCreate|Agent|Task";
+
 /// The tools the checks run for.
-pub(super) const MATCHER: &str = "Bash|Write|Edit|MultiEdit";
+pub(super) const CHECKED_TOOLS: &[&str] = &["Bash", "Write", "Edit", "MultiEdit"];
 
 /// The request id of herdr's `initialize` request.
 pub(super) const INITIALIZE_REQUEST_ID: &str = "herdr-initialize";
@@ -121,15 +131,20 @@ impl Outcome {
     pub(super) fn response(&self) -> Value {
         match &self.verdict {
             Verdict::Allow => json!({}),
-            Verdict::Deny(_, reason) => json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                },
-            }),
+            Verdict::Deny(_, reason) => denial(reason),
         }
     }
+}
+
+/// The `hook_callback` answer that denies the call with `reason`.
+pub(super) fn denial(reason: &str) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    })
 }
 
 /// A request's running check: its process group, once it runs, and whether
@@ -157,8 +172,9 @@ impl Runner {
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.checks.is_empty()
+    /// Whether a check runs for `tool_name`.
+    pub(super) fn checks_tool(&self, tool_name: &str) -> bool {
+        !self.checks.is_empty() && CHECKED_TOOLS.contains(&tool_name)
     }
 
     /// Runs the checks for the `hook_callback` request `request_id` with
@@ -534,11 +550,23 @@ if "sleep 5" in call.get("tool_input", {}).get("command", ""):
     }
 
     #[test]
-    fn the_initialize_request_registers_the_hook_for_the_checked_tools() {
+    fn the_initialize_request_registers_the_hook_for_every_tool_herdr_decides() {
         let request = initialize_request();
         assert_eq!(request["request"]["subtype"], "initialize");
         let entry = &request["request"]["hooks"]["PreToolUse"][0];
-        assert_eq!(entry["matcher"], "Bash|Write|Edit|MultiEdit");
+        let matcher = entry["matcher"].as_str().unwrap();
+        let tools: Vec<&str> = matcher.split('|').collect();
+        for tool in CHECKED_TOOLS
+            .iter()
+            .chain(super::super::policy::BACKGROUND_WAIT_TOOLS)
+            .chain(
+                super::super::policy::BACKGROUND_CAPABLE_TOOLS
+                    .iter()
+                    .map(|(tool, _)| tool),
+            )
+        {
+            assert!(tools.contains(tool), "{tool} missing from {matcher}");
+        }
         assert_eq!(entry["hookCallbackIds"], json!([CALLBACK_ID]));
     }
 }

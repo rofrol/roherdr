@@ -21,7 +21,8 @@
 //! `stubborn-commit <file> <subject...>` (`ignore-term`, then `commit`) and
 //! `hook <tool> <words...>` (a PreToolUse `hook_callback` for the hook an
 //! `initialize` request registered for that tool, whose command is the
-//! words; the result is its answer as JSON, or `unregistered`).
+//! words; the result is its answer as JSON, or `unregistered`) and
+//! `hook-bg <tool> <words...>` (the same with `run_in_background: true`).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -90,15 +91,18 @@ def ask_host(tool, tool_input, reason_type=None):
     assert response["request_id"] == "perm-1", answer
     return response["response"]
 
-def hook_callback(tool, command):
+def hook_callback(tool, command, background=False):
     import re
+    tool_input = {"command": command}
+    if background:
+        tool_input["run_in_background"] = True
     for entry in hooks.get("PreToolUse", []):
         if re.fullmatch(entry.get("matcher") or ".*", tool):
             emit({"type": "control_request", "request_id": "hook-1", "request": {
                 "subtype": "hook_callback", "callback_id": entry["hookCallbackIds"][0],
                 "tool_use_id": "toolu-1",
                 "input": {"hook_event_name": "PreToolUse", "tool_name": tool,
-                          "tool_input": {"command": command}}}})
+                          "tool_input": tool_input}}})
             response = read()["response"]
             assert response["request_id"] == "hook-1", response
             return json.dumps(response["response"], sort_keys=True)
@@ -120,8 +124,8 @@ while True:
     command = words[0]
     if command == "finish":
         result()
-    elif command == "hook":
-        result(text=hook_callback(words[1], " ".join(words[2:])))
+    elif command in ("hook", "hook-bg"):
+        result(text=hook_callback(words[1], " ".join(words[2:]), command == "hook-bg"))
     elif command == "done":
         result(text="work done\nWORKER-DONE " + words[1] + " | summary")
     elif command == "commit":
@@ -4560,18 +4564,53 @@ fn pre_tool_checks_deny_sleep_5_and_allow_ls() {
 }
 
 #[test]
-fn without_pre_tool_checks_no_hook_is_registered() {
+fn without_pre_tool_checks_the_hook_objects_to_nothing_and_runs_nothing() {
     let fixture = Fixture::new("no-pre-tool-checks");
     let id = fixture.start("hook Bash sleep 5");
     let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
-    assert_eq!(
-        worker.last_result.unwrap().text.as_deref(),
-        Some("unregistered")
-    );
-    assert!(!fixture
-        .journal(&id)
-        .iter()
-        .any(|record| record["dir"] == "in" && record["event"]["type"] == "control_request"));
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("{}"));
+    assert!(fixture.herdr_events(&id, "pre_tool_check").is_empty());
+    assert!(fixture.herdr_events(&id, "permission").is_empty());
+}
+
+#[test]
+fn headless_workers_may_not_wait_in_the_background() {
+    // Denied with no checks configured, and before a check that would allow.
+    for fixture in [
+        Fixture::new("background-waits"),
+        Fixture::new("background-waits-checked").with_sleep_check(),
+    ] {
+        let id = fixture.start("hook-bg Bash just test");
+        for (prompt, tool) in [
+            (None, "Bash"),
+            (Some("hook Monitor tail -f log"), "Monitor"),
+        ] {
+            if let Some(prompt) = prompt {
+                fixture.supervisor.prompt(&id, prompt).unwrap();
+            }
+            let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+            let text = worker.last_result.unwrap().text.unwrap();
+            assert_eq!(
+                hook_denial(&text).as_deref(),
+                Some(policy::BACKGROUND_WAIT_DENIAL),
+                "{tool}: {text}"
+            );
+            let denials = fixture.herdr_events(&id, "permission");
+            let last = denials.last().unwrap();
+            assert_eq!(last["tool_name"], tool);
+            assert_eq!(last["decision"], "deny");
+        }
+        assert!(fixture.herdr_events(&id, "pre_tool_check").is_empty());
+
+        // The same command in the foreground goes on.
+        fixture
+            .supervisor
+            .prompt(&id, "hook Bash just test")
+            .unwrap();
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("{}"));
+        assert_eq!(fixture.herdr_events(&id, "permission").len(), 2);
+    }
 }
 
 #[test]

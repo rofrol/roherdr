@@ -3316,10 +3316,9 @@ impl WorkerSupervisor {
         }
 
         // The CLI buffers input written before `system/init` (trial 1). The
-        // hook is registered before the prompt, so it covers the first call.
-        if !checks.is_empty() {
-            live.send(self, &pre_tool_checks::initialize_request())?;
-        }
+        // hook is registered before the prompt, so it covers the first call;
+        // every worker has it, for the rule against background waits.
+        live.send(self, &pre_tool_checks::initialize_request())?;
         let turn_seq = live.send(self, &user_message(prompt))?;
         let mut info = self.status(&worker_id)?;
         info.turn_seq = Some(turn_seq);
@@ -6071,11 +6070,13 @@ impl Reader {
         }
     }
 
-    /// Runs the pre-tool checks for a `hook_callback` request and answers it,
-    /// on a thread of its own, so the worker's output is read on meanwhile
-    /// (a cancel of this request among it). Each check that failed is a
-    /// `pre_tool_check_failed` event, and the verdict a `pre_tool_check`
-    /// event.
+    /// Answers a `hook_callback` request: herdr's rule against background
+    /// waits denies first, as a `permission` event; otherwise the pre-tool
+    /// checks run for it on a thread of its own, so the worker's output is
+    /// read on meanwhile (a cancel of this request among it). Each check that
+    /// failed is a `pre_tool_check_failed` event, and the verdict a
+    /// `pre_tool_check` event. A tool no check runs for gets no objection
+    /// and no event.
     fn answer_hook(&self, event: &Value) {
         let request = &event["request"];
         let request_id = event["request_id"].as_str().unwrap_or("").to_owned();
@@ -6105,6 +6106,30 @@ impl Reader {
                     ),
                 }),
             );
+            answer(&supervisor, json!({}));
+            return;
+        }
+        let tool_input = input
+            .get("tool_input")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let tool = tool_name.as_str().unwrap_or("");
+        if let Some(reason) = policy::background_wait_denial(tool, &tool_input) {
+            supervisor.record(
+                number,
+                Direction::Herdr,
+                &json!({
+                    "type": "permission",
+                    "tool_name": tool_name,
+                    "tool_use_id": tool_use_id,
+                    "decision": "deny",
+                    "message": reason,
+                }),
+            );
+            answer(&supervisor, pre_tool_checks::denial(reason));
+            return;
+        }
+        if !self.checks.checks_tool(tool) {
             answer(&supervisor, json!({}));
             return;
         }

@@ -16,6 +16,12 @@
 //!   `.envrc`) are denied wherever they are. A `Glob` pattern or `Grep` glob
 //!   that is absolute outside those roots, starts with `~` or has a `..`
 //!   component is denied too.
+//! - A call that would wait in the background is denied: Bash or an agent
+//!   with `run_in_background`, `Monitor`, `ScheduleWakeup` and `CronCreate`.
+//!   Nothing wakes a headless worker after its turn ends, so it would stop
+//!   with its work undone ([`background_wait_denial`]). The same rule runs in
+//!   herdr's PreToolUse hook, because the CLI asks herdr about a sandboxed
+//!   Bash command only through that hook.
 //! - A request the CLI's auto mode classifier escalated
 //!   (`decision_reason_type: "classifier"`), a Bash request whose
 //!   `blocked_path` is outside the roots, every `AskUserQuestion` and every
@@ -27,6 +33,36 @@
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
+
+/// Why a worker may not wait in the background.
+pub(super) const BACKGROUND_WAIT_DENIAL: &str =
+    "you are a headless worker: nothing wakes you after your turn ends, so run it in the foreground";
+
+/// The tools that only wait in the background, whatever their input.
+pub(super) const BACKGROUND_WAIT_TOOLS: &[&str] = &["Monitor", "ScheduleWakeup", "CronCreate"];
+
+/// The tools that wait in the background when their input asks for it, and
+/// whether they do when it does not say (an agent runs in the background by
+/// default).
+pub(super) const BACKGROUND_CAPABLE_TOOLS: &[(&str, bool)] =
+    &[("Bash", false), ("Agent", true), ("Task", true)];
+
+/// The denial for a call that would leave the worker waiting in the
+/// background for something to wake it, which never comes: a headless
+/// worker's turn ends and nothing starts the next one.
+pub(super) fn background_wait_denial(tool_name: &str, input: &Value) -> Option<&'static str> {
+    if BACKGROUND_WAIT_TOOLS.contains(&tool_name) {
+        return Some(BACKGROUND_WAIT_DENIAL);
+    }
+    let (_, default) = BACKGROUND_CAPABLE_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool_name)?;
+    let background = input
+        .get("run_in_background")
+        .and_then(Value::as_bool)
+        .unwrap_or(*default);
+    background.then_some(BACKGROUND_WAIT_DENIAL)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Decision {
@@ -71,6 +107,9 @@ impl Policy {
         reason_type: Option<&str>,
         blocked_path: Option<&str>,
     ) -> Decision {
+        if let Some(reason) = background_wait_denial(tool_name, input) {
+            return Decision::Deny(reason.to_owned());
+        }
         if reason_type == Some("classifier") {
             return Decision::Ask(
                 "the auto mode classifier blocked repeated actions and asks for a review".into(),
@@ -436,6 +475,47 @@ mod tests {
                 "{blocked_path}"
             );
         }
+    }
+
+    #[test]
+    fn waiting_in_the_background_is_denied() {
+        let dirs = Dirs::new("background");
+        let policy = dirs.policy();
+        let denied = Decision::Deny(BACKGROUND_WAIT_DENIAL.into());
+        for (tool, input) in [
+            (
+                "Bash",
+                json!({"command": "just test", "run_in_background": true}),
+            ),
+            ("Monitor", json!({"command": "tail -f log"})),
+            ("ScheduleWakeup", json!({})),
+            ("CronCreate", json!({})),
+            ("Agent", json!({"prompt": "look"})),
+            (
+                "Agent",
+                json!({"prompt": "look", "run_in_background": true}),
+            ),
+        ] {
+            assert_eq!(
+                policy.decide(tool, &input, None, None),
+                denied,
+                "{tool} {input}"
+            );
+        }
+        for input in [
+            json!({"command": "just test"}),
+            json!({"command": "just test", "run_in_background": false}),
+        ] {
+            assert_eq!(
+                policy.decide("Bash", &input, None, None),
+                Decision::Allow,
+                "{input}"
+            );
+        }
+        assert_eq!(
+            background_wait_denial("Agent", &json!({"run_in_background": false})),
+            None
+        );
     }
 
     #[test]
