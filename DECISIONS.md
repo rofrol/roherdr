@@ -593,3 +593,17 @@ cleanly as `pty_exhausted` below 64 free PTYs and reports `server.pty_usage`
 loop around herdr-job; on a failing wait check status once and report;
 bound every loop" is in ~/.claude/CLAUDE.md (dotfiles 082d7ab) and Rule 10
 of ~/personal_projects/agents.md/AGENTS.md (7151ac3), 2026-10-09.
+
+## Agent accounts and usage limits
+
+From Omarchy's "agent account" (2026-10-07): Claude's Keychain item name
+honours `CLAUDE_CONFIG_DIR` (a4c5885b); `usage.read` reports the account
+and, per window, `observed_at` and `fresh | stale | failed` (stale after two
+poll intervals or a passed reset; never shown as 0% or 100%; f03549b8);
+`herdr todo run` refuses a new run while a Claude window is fresh and >=90%
+or the reading is stale or failed, admits again on a fresh reading below 80%
+everywhere, never stops an admitted run, `--ignore-usage` overrides
+(142c64a0; the user chose "refuse" for unknown data, 2026-10-09; the old
+"switch to pi" plan was unreachable because the driver starts only headless
+Claude). Named accounts (`--account`) wait until the user has a second
+account per provider.
