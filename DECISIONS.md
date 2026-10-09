@@ -705,3 +705,23 @@ lock and releases it under the same mutex before the claim goes; a
 `run_lock_wait` appears only when another server holds it (a live handoff).
 Reproduced with a temporary probe widening the window, 20/20 under load
 after the fix (run `r-xfw65eg7`, 2026-10-10).
+
+## The usage gate refused a run on a reading that was stale between
+
+The usage gate first decided from the poller's cached reading, so it needed a
+time model (stale after two intervals, expired after `resets_at`) and refused
+a run at 16% right after a 5h reset (2026-10-09). Two fixes in the time
+domain were rejected: a poller wake 1 s after the reset (approved by the
+coordinator as a `delay: external deadline`, questioned by the user) and a
+refresh plus waiting for a post-reset reading. The user: "why yet again an
+async workaround?"; consult round 20261010-002251-d7f7 (sol, MiMo, DeepSeek):
+the gate predicted from a cached copy instead of asking. Now the gate reads
+Claude's usage from the provider synchronously when it decides (same fetch
+code as the poller): refuse at >=90%, after a refusal admit only below 80%,
+refuse on a failed read (a 429 included), `--ignore-usage` overrides; no
+cache, age, stale, expired or reset in the gate. Lesson recorded by the
+coordinator, without a new rule: review a proposed wait by tracing the
+decision first (what is decided, what is authoritative, where and when it
+is read, what happens when the read fails), and ask whether the design would
+still contain a timer if the read were instant and free; a `delay:` label
+is not a review.
