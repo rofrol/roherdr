@@ -11,18 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Headless workers end their turn on a background task or Monitor [t-2amq2ode]
-  (found by the coordinator 2026-10-09, run `r-idd6p7io`, worker `w50`):
-  the worker ran the full test suite with `run_in_background`, armed a
-  Monitor, wrote "waiting for the monitor's event" and its `claude -p`
-  turn ended; nothing wakes a headless worker, so its work sat
-  uncommitted and the driver raised `review` with no commit. herdr should
-  deny `Monitor` and `run_in_background: true` for workers in its policy
-  (the denial says: run it in the foreground, nothing wakes a headless
-  worker), and the driver's appended contract should say so. Test: a
-  worker's Bash call with `run_in_background` and a Monitor call are
-  denied with that reason.
-
 - [ ] Broker tests hang in a worker's sandbox instead of failing fast [t-xq4pjef6]
   (found by the coordinator 2026-10-09, runs `r-6edkrlwq`, `r-xelv6o5o`):
   without socket permission `a_broker_test_leaves_no_broker_behind_even_when_it_fails`
