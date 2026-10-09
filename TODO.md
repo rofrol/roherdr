@@ -374,6 +374,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   moves to headless workers and `herdr todo run` (its `.herdr/` checks and
   install registered in that repository), and 4, 5, 7, 8 and 9 are fixed for
   pane workers.
+  Done 2026-10-10 by the herdr coordinator at the user's request: told the
+  try-roguix coordinator (w6:p87) to run its workers headless from its next
+  item (start, `worker wait --attention`, answer, ack, `verify` before a
+  cherry-pick), and to propose registering its checks for `herdr todo run`
+  to the user. Left here: the pane-worker fixes 4, 5, 7, 8, 9.
 
 - [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
   screenshot: "this circle is grey, it looks as if the coordinator is not
