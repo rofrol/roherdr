@@ -537,3 +537,14 @@ attempt's worker belongs to that pane, workspace and coordinator tenure; a
 resume from another live pane is refused (`run_owned_elsewhere`), and after
 the owner pane or agent is gone (herdr's own events, no timer) a resume takes
 the run over as a `run_owner_taken` event (658e3924, run `r-6edkrlwq`).
+
+## Coordinators stopping between items
+
+Coordinators ended turns between approved items without being asked
+(user, 2026-10-03 onwards). Done: the rule line in the global instructions,
+the coordinator Stop hook (worker obligations, the ABANDON wording), the
+headless trial (2026-10-07: 5/5 runs, 0 abandoned) and the audit of real
+transcripts (2026-10-09, `docs/coordinator-audit-2026-10-09.md`: 244 turn
+ends, 0 caught by wording, 3 silent stops by hand, 1.2 per 100 vs 5.6
+before). The follow-up is the item "A state-based coordinator stop check,
+in shadow mode first" (decided by the user 2026-10-09).
