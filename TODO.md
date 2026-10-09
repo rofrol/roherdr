@@ -20,6 +20,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   intervals), and make stale mean "a poll was missed" (the poller's own
   last attempt, not the cached observation's age), with a test that a
   healthy poller with a cache hit never reports stale.
+  Correction by the coordinator: the default interval is 300 s, so the
+  threshold should be 600 s, yet a 186 s old reading was "stale"; the cause
+  is something else (another rule marking stale, or the gate using a
+  different interval than `usage.read`). Find it from the code first.
 
 - [ ] Ideas from Delta (delta.dev, the Zed team) for item history and the [t-sjjnjbxn]
   review queue (user, 2026-10-09: "analyse with the models, also deepseek";
