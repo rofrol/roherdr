@@ -47,14 +47,21 @@ const USAGE: &str = "usage:
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
       approve stops the worker, verifies its commit with the checks,
-      cherry-picks it onto master, runs the [install] of .herdr/checks.toml,
+      cherry-picks it onto master with the trailers Herdr-Item: <item-id> and
+      Herdr-Run: <run-id>/<attempt> (only when the branch is still at the
+      commit the event showed; otherwise a new review event), runs the
+      [install] of .herdr/checks.toml,
       appends --note FILE's lines to the item in TODO.md (or, with --close
       FILE, removes the item and adds FILE as a section of DECISIONS.md)
       with scripts/todo_edit.py and commits that by path, pushes master to
       origin only as a fast-forward, and deletes the run's merged branches;
-      retry starts the next attempt with FILE's text (at most 3 attempts,
-      then the run is blocked; the usage gate of todo run applies, and its
-      refusal leaves the run waiting on the same event); answer sends the worker allow, deny or one
+      retry starts the next attempt with FILE's text as the review of this
+      one: its branch starts from this attempt's commit (cherry-picked onto
+      the base) and its task is this attempt's with the review appended (at
+      most 3 attempts, then the run is blocked; the usage gate of todo run
+      applies, and its refusal leaves the run waiting on the same event); a
+      commit that does not cherry-pick is a retry_conflict event, whose retry
+      (no --task) starts that attempt from the base; answer sends the worker allow, deny or one
       choice per question; verify runs the verify again; force-stop SIGKILLs
       a worker still alive after its stop. After install_failed, todo_failed
       or push_failed: retry-install or skip-install, retry-todo or skip-todo,
@@ -68,7 +75,11 @@ const USAGE: &str = "usage:
   herdr todo status <run-id>
       Prints the run. Asked while its worker has not exited since the stop,
       it raises a still_alive event first, which takes force-stop.
-  herdr todo runs [--repo DIR]";
+  herdr todo runs [--repo DIR] [--commit SHA]
+      The runs, of DIR's repository with --repo. --commit SHA prints only the
+      run that landed SHA (the landed commit or the worker's) and that
+      landing, found in the worker store or by the commit's Herdr-Run
+      trailer in the history of DIR (default: the current directory).";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -369,9 +380,6 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let note = note.map(|path| read_text("--note", &path)).transpose()?;
             let close = close.map(|path| read_text("--close", &path)).transpose()?;
             let task = task.map(|path| read_task(&path)).transpose()?;
-            if action == TodoAction::Retry && task.is_none() {
-                return Err("--action retry needs --task FILE, the next attempt's task".into());
-            }
             let (decision, answers) = match answer {
                 [] if action == TodoAction::Answer => {
                     return Err("--action answer takes allow, deny or the chosen options".into())
@@ -404,9 +412,16 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         }),
         "runs" => {
             let (repo, rest) = take_string_option(rest, "--repo")?;
+            let (commit, rest) = take_string_option(&rest, "--commit")?;
             if !rest.is_empty() {
-                return Err("runs takes only --repo".into());
+                return Err("runs takes only --repo and --commit".into());
             }
+            // A commit's trailers are read in the current directory's
+            // repository unless --repo names another.
+            let repo = match (repo, &commit) {
+                (None, Some(_)) => Some(".".to_owned()),
+                (repo, _) => repo,
+            };
             let repo = repo
                 .map(|dir| {
                     std::path::absolute(&dir)
@@ -414,7 +429,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                         .map_err(|error| format!("--repo {dir}: {error}"))
                 })
                 .transpose()?;
-            Method::TodoRuns(TodoRunsParams { repo })
+            Method::TodoRuns(TodoRunsParams { repo, commit })
         }
         "help" | "--help" | "-h" => return Ok(None),
         other => return Err(format!("unknown todo command: {other}")),
@@ -552,15 +567,28 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(dir);
         assert!(parse(&args(&["resume", "r-abcd2345", "--action", "approve"])).is_err());
-        assert!(parse(&args(&[
+        // A retry of a retry_conflict event takes no task; the server
+        // refuses one without a task for any other event.
+        let Ok(Some(Method::TodoResume(retry))) = parse(&args(&[
             "resume",
             "r-abcd2345",
             "--event",
             "1",
             "--action",
-            "retry"
-        ]))
-        .is_err());
+            "retry",
+        ])) else {
+            panic!("retry without --task did not parse");
+        };
+        assert_eq!((retry.action, retry.task), (TodoAction::Retry, None));
+        let Ok(Some(Method::TodoRuns(runs))) =
+            parse(&args(&["runs", "--commit", "abc1234", "--repo", "/repo"]))
+        else {
+            panic!("runs --commit did not parse");
+        };
+        assert_eq!(
+            (runs.repo.as_deref(), runs.commit.as_deref()),
+            (Some("/repo"), Some("abc1234"))
+        );
         assert!(parse(&args(&[
             "resume",
             "r-abcd2345",

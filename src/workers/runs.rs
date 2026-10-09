@@ -10,8 +10,10 @@
 //! `master` to `origin` only as a fast-forward and deleting the run's merged
 //! branches.
 //!
-//! A run lives in the worker store: its row in `runs` and its `run_*`
-//! events, written in one transaction. Every side effect is recorded as an
+//! A run lives in the worker store: its row in `runs`, its current
+//! attempt's row in `attempts` and its `run_*` events, written in one
+//! transaction; a commit it lands is recorded in `landings` and carries the
+//! `Herdr-Item` and `Herdr-Run` trailers. Every side effect is recorded as an
 //! intent before it and its result after it, and each step can run again
 //! after a crash: the start and the stop carry command ids derived from the
 //! run, the attention wait is level-triggered from the run's acknowledged
@@ -59,10 +61,11 @@ use tracing::warn;
 use super::verify::{tail, CheckCommand};
 use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
-    TodoAction, TodoEventKind, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams,
-    TodoRunStatus, TodoStep, TodoWaitParams, WorkerAnswerParams, WorkerAttentionReason,
-    WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion, WorkerQuestionState,
-    WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerifyParams, WorkerWaitUntil,
+    TodoAction, TodoEventKind, TodoLanding, TodoLandingSource, TodoResumeParams, TodoRunEvent,
+    TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams, WorkerAnswerParams,
+    WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion,
+    WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerifyParams,
+    WorkerWaitUntil,
 };
 
 mod finish;
@@ -98,7 +101,39 @@ pub(super) struct Run {
     /// The owner pane's workspace, which lists the run's workers.
     pub(super) workspace: Option<String>,
     pub(super) finish: RunFinish,
+    /// The current attempt's row of `attempts`, beside what [`TodoRunInfo`]
+    /// shows of it (its number, worker, branch and task).
+    pub(super) current: Attempt,
 }
+
+/// What a run keeps of an attempt beside its number, worker, branch and
+/// task: written with the run's row, one `attempts` row per attempt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Attempt {
+    /// The commit the attempt is verified and reviewed against: the run's
+    /// base.
+    pub(super) base: Option<String>,
+    /// The previous attempt, when this one followed a retry.
+    pub(super) from_attempt: Option<u32>,
+    /// The previous attempt's commit the attempt's branch starts from,
+    /// cherry-picked by the driver; none when it starts from the base.
+    pub(super) from_commit: Option<String>,
+    /// The attempt's commit as the coordinator's decision saw it: the one
+    /// an approval names, or the one a retry carries on.
+    pub(super) commit: Option<String>,
+    /// The event the coordinator decided on, the decision (`approve`,
+    /// `retry`, `abort`) and, for a retry, its text: the review.
+    pub(super) review_event: Option<i64>,
+    pub(super) review_decision: Option<String>,
+    pub(super) review_text: Option<String>,
+    /// The attempt's latest verdict ([`WorkerVerification`] as JSON).
+    pub(super) verification: Option<String>,
+}
+
+/// An attempt's decision as `attempts.review_decision` holds it.
+const APPROVE: &str = "approve";
+const RETRY: &str = "retry";
+const ABORT: &str = "abort";
 
 /// What a run does after its cherry-pick, stored with it (`runs.finish`):
 /// the registered install as preflight read it, the coordinator's TODO note
@@ -584,18 +619,196 @@ fn git_with(
 /// contract the verify checks, so the worker does not invent its own: the
 /// exact commit subject with no body or trailers, the paths it may touch,
 /// that it runs everything in the foreground (herdr denies background waits,
-/// [`super::policy::background_wait_denial`]) and its last line.
-fn worker_task(run: &TodoRunInfo) -> String {
+/// [`super::policy::background_wait_denial`]) and its last line; for a later
+/// attempt, first what its branch starts from ([`carry_note`]).
+fn worker_task(run: &TodoRunInfo, carried: Option<&str>) -> String {
     format!(
-        "{}\n\n---\nRun everything in the foreground: no `run_in_background`, no Monitor. \
+        "{}\n\n---\n{}Run everything in the foreground: no `run_in_background`, no Monitor. \
          You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this \
          subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
          {}\nEnd your last reply with the line `WORKER-DONE <sha> | <summary>`, or \
          `WORKER-BLOCKED <reason>` when you cannot finish.\n",
         run.task.trim_end(),
+        carried.unwrap_or_default(),
         run.message,
         run.paths.join(" "),
     )
+}
+
+/// The next attempt's task: the previous attempt's with its review.
+fn next_task(task: &str, attempt: u32, review: &str) -> String {
+    format!(
+        "{}\n\nReview of attempt {attempt}:\n{}",
+        task.trim_end(),
+        review.trim()
+    )
+}
+
+/// What a later attempt's worker is told about the commit its branch
+/// starts from, before the run's contract.
+fn carry_note(run: &Run, start: Option<&str>) -> Option<String> {
+    let from = run.current.from_attempt?;
+    Some(match (&run.current.from_commit, start) {
+        (Some(commit), Some(_)) => format!(
+            "Your branch already holds attempt {from}'s commit {commit}, cherry-picked onto \
+             the base: build on it and amend that commit (`git commit --amend`), so the \
+             branch keeps exactly one commit.\n"
+        ),
+        _ => format!(
+            "Your branch starts from the base, without a commit of attempt {from}; its branch \
+             {} shows what that attempt did.\n",
+            branch_of(&run.info.item, &run.info.run_id, from)
+        ),
+    })
+}
+
+/// A `Herdr-Run` trailer's value: the run and the attempt.
+fn run_trailer(run: &TodoRunInfo) -> String {
+    format!("{}/{}", run.run_id, run.attempt)
+}
+
+/// The previous attempt's commit cherry-picked onto `base` without a
+/// worktree (`git merge-tree`, then `git commit-tree` with its author,
+/// committer, dates and message, so the same pick makes the same sha
+/// again). The inner error is the conflict.
+fn carry_commit(repo: &Path, base: &str, from: &str) -> Result<Result<String, String>, String> {
+    let parent = git(
+        repo,
+        &["rev-parse", "--verify", &format!("{from}^{{commit}}^")],
+    )
+    .map_err(|error| format!("commit {from} has no parent to pick it from: {error}"))?
+    .trim()
+    .to_owned();
+    let merged = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            &format!("--merge-base={parent}"),
+            base,
+            from,
+        ])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+    let out = String::from_utf8_lossy(&merged.stdout);
+    match merged.status.code() {
+        Some(0) => {}
+        Some(1) => {
+            let conflict: Vec<&str> = out
+                .lines()
+                .skip(1)
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            return Ok(Err(format!(
+                "attempt commit {from} does not cherry-pick onto the base {base}: {}",
+                conflict.join("; ")
+            )));
+        }
+        _ => {
+            return Err(format!(
+                "git merge-tree {base} {from}: {}",
+                String::from_utf8_lossy(&merged.stderr).trim()
+            ))
+        }
+    }
+    let tree = out.lines().next().unwrap_or_default().trim().to_owned();
+    let fields = git(
+        repo,
+        &[
+            "log",
+            "-1",
+            "--date=raw",
+            "--format=%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%B",
+            from,
+        ],
+    )?;
+    let fields: Vec<&str> = fields.splitn(7, '\0').collect();
+    let [author, author_email, author_date, committer, committer_email, committer_date, message] =
+        fields[..]
+    else {
+        return Err(format!("cannot read commit {from}'s author and message"));
+    };
+    let created = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit-tree", &tree, "-p", base, "-m", message.trim()])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_AUTHOR_NAME", author)
+        .env("GIT_AUTHOR_EMAIL", author_email)
+        .env("GIT_AUTHOR_DATE", author_date)
+        .env("GIT_COMMITTER_NAME", committer)
+        .env("GIT_COMMITTER_EMAIL", committer_email)
+        .env("GIT_COMMITTER_DATE", committer_date)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+    if !created.status.success() {
+        return Err(format!(
+            "git commit-tree {tree}: {}",
+            String::from_utf8_lossy(&created.stderr).trim()
+        ));
+    }
+    Ok(Ok(String::from_utf8_lossy(&created.stdout)
+        .trim()
+        .to_owned()))
+}
+
+/// A branch's commits since `base`, oldest first, and their diff stat.
+fn branch_evidence(repo: &Path, base: &str, branch: &str) -> (Option<String>, Vec<String>) {
+    let diff_stat = git(repo, &["diff", "--stat", base, branch])
+        .ok()
+        .map(|stat| stat.trim_end().to_owned())
+        .filter(|stat| !stat.is_empty());
+    let commits = git(
+        repo,
+        &["rev-list", "--reverse", &format!("{base}..{branch}")],
+    )
+    .map(|out| out.lines().map(str::to_owned).collect())
+    .unwrap_or_default();
+    (diff_stat, commits)
+}
+
+/// A sha or a prefix of one, as `--commit` takes it: 7 to 64 hex digits.
+fn check_commit(commit: &str) -> Result<String, WorkerError> {
+    let commit = commit.trim().to_ascii_lowercase();
+    if (7..=64).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(commit)
+    } else {
+        Err(WorkerError::Invalid(format!(
+            "{commit:?} is not a commit sha (7 to 64 hex digits)"
+        )))
+    }
+}
+
+/// The `Herdr-Item` and `Herdr-Run` trailers of `commit` in `repo`: the
+/// item, the run and the attempt.
+fn landing_trailers(repo: &Path, commit: &str) -> Option<(String, String, u32)> {
+    let trailers = git(
+        repo,
+        &["log", "-1", "--format=%(trailers:only,unfold)", commit],
+    )
+    .ok()?;
+    let value = |key: &str| {
+        trailers.lines().rev().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case(key)
+                .then(|| value.trim().to_owned())
+        })
+    };
+    let (run_id, attempt) = value("Herdr-Run")?
+        .split_once('/')
+        .and_then(|(run, attempt)| Some((run.to_owned(), attempt.parse().ok()?)))?;
+    Some((value("Herdr-Item").unwrap_or_default(), run_id, attempt))
 }
 
 fn is_gone(worker: &WorkerInfo) -> bool {
@@ -643,6 +856,7 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
         }
         TodoEventKind::PushFailed => vec![TodoAction::RetryPush, TodoAction::Abort],
         TodoEventKind::Blocked => vec![TodoAction::Abort],
+        TodoEventKind::RetryConflict => vec![TodoAction::Retry, TodoAction::Abort],
         _ => Vec::new(),
     }
 }
@@ -846,6 +1060,10 @@ impl WorkerSupervisor {
             finish: RunFinish {
                 install: preflighted.install.clone(),
                 ..RunFinish::default()
+            },
+            current: Attempt {
+                base: Some(preflighted.base.clone()),
+                ..Attempt::default()
             },
         };
         let event = json!({
@@ -1143,15 +1361,44 @@ impl WorkerSupervisor {
             )
     }
 
-    /// The runs, of the repository `repo` is in when given, oldest first.
-    pub(crate) fn todo_runs(&self, repo: Option<&str>) -> Result<Vec<TodoRunInfo>, WorkerError> {
+    /// The runs, of the repository `repo` is in when given, oldest first;
+    /// with `commit`, only the run that landed it ([`Self::landing_of`],
+    /// whose trailers are read in `repo`), and that landing.
+    pub(crate) fn todo_runs(
+        &self,
+        repo: Option<&str>,
+        commit: Option<&str>,
+    ) -> Result<(Vec<TodoRunInfo>, Option<TodoLanding>), WorkerError> {
+        if let Some(commit) = commit {
+            let landing = self.landing_of(repo, commit)?;
+            let runs = self
+                .run_store()?
+                .run(&landing.run_id)
+                .map_err(store_error)?
+                .map(|run| run.info)
+                .into_iter()
+                .collect();
+            return Ok((runs, Some(landing)));
+        }
         let repo = repo.map(|dir| repository_of(Path::new(dir)).unwrap_or_else(|| dir.to_owned()));
-        Ok(self
+        let runs = self
             .run_store()?
             .runs(repo.as_deref())
             .map_err(store_error)?
             .into_iter()
             .map(|run| run.info)
+            .collect();
+        Ok((runs, None))
+    }
+
+    /// The workers of the run's attempts, first first.
+    pub(super) fn run_workers(&self, run_id: &str) -> Result<Vec<String>, WorkerError> {
+        Ok(self
+            .run_store()?
+            .attempts(run_id)
+            .map_err(store_error)?
+            .into_iter()
+            .filter_map(|row| row.worker_id)
             .collect())
     }
 
@@ -1248,10 +1495,14 @@ impl WorkerSupervisor {
             return Err(error);
         }
         let takeover = self.run_takeover(&run, params.caller_pane_id.as_deref())?;
-        let kind = latest
+        let answered = latest
             .filter(|(seq, _)| *seq == params.event)
-            .map(|(seq, body)| event_of(seq, &body, &run.info).kind)
-            .unwrap_or(TodoEventKind::Unknown);
+            .map(|(seq, body)| event_of(seq, &body, &run.info));
+        let kind = answered
+            .as_ref()
+            .map_or(TodoEventKind::Unknown, |event| event.kind);
+        // The commit the event showed: what an approval binds.
+        let reviewed = answered.and_then(|event| event.commits.last().cloned());
         if !actions_for(kind).contains(&params.action) {
             return Err(WorkerError::Invalid(format!(
                 "event {} takes {}",
@@ -1283,7 +1534,6 @@ impl WorkerSupervisor {
             }
         }
         let mut note = None;
-        let mut exhausted = false;
         let mut usage = None;
         match params.action {
             TodoAction::Answer => {
@@ -1310,18 +1560,31 @@ impl WorkerSupervisor {
                     Err(error) => return Err(error),
                 }
             }
+            // The attempt whose commit did not cherry-pick starts from the
+            // base instead; its review and usage gate were the retry's.
+            TodoAction::Retry if kind == TodoEventKind::RetryConflict => {
+                if params.task.is_some() {
+                    return Err(WorkerError::Invalid(
+                        "a retry after retry_conflict starts the attempt from the base with \
+                         the review it has; it takes no task text"
+                            .into(),
+                    ));
+                }
+            }
             TodoAction::Retry => {
                 let task = params.task.as_deref().unwrap_or_default();
                 if task.trim().is_empty() {
                     return Err(WorkerError::Invalid(
-                        "retry needs the next attempt's task text".into(),
+                        "retry needs the review of the attempt, which the next attempt's task \
+                         appends"
+                            .into(),
                     ));
                 }
-                exhausted = run.info.attempt >= MAX_ATTEMPTS;
-                // A new attempt starts a new worker: the usage gate applies.
-                // The run itself is not touched by a refusal: it keeps
-                // waiting on the same event.
-                if !exhausted {
+                // A new attempt starts a new worker: the usage gate applies
+                // (not to a retry after the last attempt, which only blocks
+                // the run). The run itself is not touched by a refusal: it
+                // keeps waiting on the same event.
+                if run.info.attempt < MAX_ATTEMPTS {
                     usage = Some(self.usage_gate(&run.info.repo, params.ignore_usage)?);
                 }
             }
@@ -1403,6 +1666,11 @@ impl WorkerSupervisor {
                         current.info.step = TodoStep::Stop;
                         current.finish.note = params.note.clone();
                         current.finish.close = params.close.clone();
+                        current.current.review_event = Some(params.event);
+                        current.current.review_decision = Some(APPROVE.to_owned());
+                        current.current.review_text = None;
+                        current.current.commit = reviewed.clone();
+                        current.current.base = current.info.base.clone();
                     }
                     TodoAction::RetryInstall => current.info.step = TodoStep::Install,
                     TodoAction::SkipInstall | TodoAction::RetryTodo => {
@@ -1415,16 +1683,23 @@ impl WorkerSupervisor {
                     // A retry after the last attempt only stops the worker
                     // (a retry asked at a review: it still runs in the
                     // slot); the restart then blocks the run.
+                    TodoAction::Retry if kind == TodoEventKind::RetryConflict => {
+                        current.info.step = TodoStep::Start;
+                        current.current.from_commit = None;
+                    }
                     TodoAction::Retry => {
                         current.info.step = TodoStep::Restart;
-                        if !exhausted {
-                            current.info.task = params.task.clone().unwrap_or_default();
-                        }
+                        current.current.review_event = Some(params.event);
+                        current.current.review_decision = Some(RETRY.to_owned());
+                        current.current.review_text = params.task.clone();
                     }
                     // The driver's abort step stops the worker, then ends
                     // the run. An abort at that step (of its `still_alive`
                     // event) keeps the first reason.
                     TodoAction::Abort if current.info.step != TodoStep::Abort => {
+                        current.current.review_event = Some(params.event);
+                        current.current.review_decision = Some(ABORT.to_owned());
+                        current.current.review_text = None;
                         let at = if was_blocked {
                             format!("blocked at its {} step", step_name(current.info.step))
                         } else {
@@ -1749,6 +2024,37 @@ impl WorkerSupervisor {
     /// driver after a crash gets the same worker back instead of a second.
     fn step_start(&self, run: &mut Run) -> Result<(), String> {
         self.release_slot(run)?;
+        // A later attempt's branch starts from the previous attempt's
+        // commit, cherry-picked onto the base; a conflict asks the
+        // coordinator, who may start it from the base instead.
+        let start = match run.current.from_commit.clone() {
+            Some(from) => {
+                let base = run.info.base.clone().ok_or("the run has no base")?;
+                match carry_commit(Path::new(&run.info.repo), &base, &from)? {
+                    Ok(start) => {
+                        self.run_step(
+                            run,
+                            json!({
+                                "type": "run_carried",
+                                "from_attempt": run.current.from_attempt,
+                                "from_commit": from,
+                                "start": start,
+                            }),
+                        )?;
+                        Some(start)
+                    }
+                    Err(conflict) => {
+                        run.info.status = TodoRunStatus::Waiting;
+                        let mut event = new_event(TodoEventKind::RetryConflict);
+                        event.commits = vec![from];
+                        event.error = Some(conflict);
+                        self.record_run_event(run, &event)?;
+                        return Ok(());
+                    }
+                }
+            }
+            None => None,
+        };
         let command_id = format!("{}:{}:start", run.info.run_id, run.info.attempt);
         let branch = run
             .info
@@ -1768,13 +2074,13 @@ impl WorkerSupervisor {
         )?;
         let params = WorkerStartParams {
             cwd: run.info.repo.clone(),
-            prompt: worker_task(&run.info),
+            prompt: worker_task(&run.info, carry_note(run, start.as_deref()).as_deref()),
             model: None,
             name: None,
             workspace_id: run.workspace.clone(),
             folder_slot: Some(SLOT.to_owned()),
             branch: Some(branch),
-            base: run.info.base.clone(),
+            base: start.or_else(|| run.info.base.clone()),
             fresh_build: false,
             owner_pane_id: run.owner_pane.clone(),
             owner_session_id: run.owner_session.clone(),
@@ -1949,7 +2255,33 @@ impl WorkerSupervisor {
                 "the run used its {MAX_ATTEMPTS} attempts; a retry was asked after the last"
             ));
         }
+        // The attempt's commit, which the next attempt starts from: its
+        // branch's tip when it has commits since the base.
+        let repo = PathBuf::from(&run.info.repo);
+        let branch = run.info.branch.clone().ok_or("the run has no branch")?;
+        let base = run.info.base.clone().ok_or("the run has no base")?;
+        let tip = branch_evidence(&repo, &base, &format!("refs/heads/{branch}"))
+            .1
+            .last()
+            .cloned();
+        run.current.commit = tip.clone();
+        self.run_step(
+            run,
+            json!({
+                "type": "run_attempt_ended",
+                "attempt": run.info.attempt,
+                "commit": tip,
+            }),
+        )?;
         let previous = run.info.worker_id.take();
+        let review = run.current.review_text.clone().unwrap_or_default();
+        run.info.task = next_task(&run.info.task, run.info.attempt, &review);
+        run.current = Attempt {
+            base: Some(base),
+            from_attempt: Some(run.info.attempt),
+            from_commit: tip,
+            ..Attempt::default()
+        };
         run.info.attempt += 1;
         run.info.branch = Some(branch_of(
             &run.info.item,
@@ -1965,6 +2297,7 @@ impl WorkerSupervisor {
                 "previous_worker_id": previous,
                 "attempt": run.info.attempt,
                 "branch": run.info.branch,
+                "from_commit": run.current.from_commit,
                 "step": run.info.step,
             }),
         )?;
@@ -2087,6 +2420,7 @@ impl WorkerSupervisor {
         let verification = self
             .verify_with(&params, commands)
             .map_err(|error| format!("verifying worker {worker_id}: {error}"))?;
+        run.current.verification = serde_json::to_string(&verification).ok();
         if verification.verdict == WorkerVerdict::Verified {
             run.info.step = TodoStep::CherryPick;
             self.run_step(
@@ -2112,11 +2446,16 @@ impl WorkerSupervisor {
     }
 
     /// Picks the attempt's verified commit onto `master` in the
-    /// repository's shared checkout. Refused (blocked) when that checkout
-    /// is not on `master`, has uncommitted changes or a cherry-pick in
-    /// progress, or its `master` no longer contains the base; a conflict is
-    /// aborted and blocks too. A commit `master` already has (a pick a crash
-    /// did not record) is not picked again.
+    /// repository's shared checkout, with the `Herdr-Item` and `Herdr-Run`
+    /// trailers added to the landed commit's message, and records the
+    /// landing. The branch's tip must be the commit and base the approval
+    /// named: otherwise the run raises a new `review` instead of landing
+    /// another commit. Refused (blocked) when that checkout is not on
+    /// `master`, has uncommitted changes or a cherry-pick in progress, or
+    /// its `master` no longer contains the base; a conflict is aborted and
+    /// blocks too. A commit `master` already has (a pick a crash did not
+    /// record) is not picked again, and its trailers are added only while
+    /// it is `master`'s head.
     fn step_cherry_pick(&self, run: &mut Run) -> Result<(), String> {
         let repo = PathBuf::from(&run.info.repo);
         let branch = run.info.branch.clone().ok_or("the run has no branch")?;
@@ -2131,6 +2470,12 @@ impl WorkerSupervisor {
         )?
         .trim()
         .to_owned();
+        if run.current.review_decision.as_deref() == Some(APPROVE)
+            && (run.current.commit.as_deref() != Some(commit.as_str())
+                || run.current.base != run.info.base)
+        {
+            return self.review_again(run, &repo, &branch, &base, &commit);
+        }
         let on = git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .map(|branch| branch.trim().to_owned())
             .unwrap_or_default();
@@ -2199,20 +2544,156 @@ impl WorkerSupervisor {
         }
         // The commit on master carrying the change: the newest one since
         // the base with the run's subject.
-        let picked = git(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?
+        let mut picked = git(&repo, &["log", "--format=%H %s", &format!("{base}..HEAD")])?
             .lines()
             .find_map(|line| {
                 let (sha, subject) = line.split_once(' ')?;
                 (subject == run.info.message).then(|| sha.to_owned())
             })
             .ok_or_else(|| format!("master has no commit {:?} after the pick", run.info.message))?;
+        let trailer = run_trailer(&run.info);
+        let mut trailers = landing_trailers(&repo, &picked)
+            .is_some_and(|(_, run_id, attempt)| format!("{run_id}/{attempt}") == trailer);
+        let head = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+        if !trailers && head == picked {
+            // Only the message changes (`--only` without paths leaves the
+            // index out); the worker's own commit stays subject-only.
+            git(
+                &repo,
+                &[
+                    "commit",
+                    "--quiet",
+                    "--amend",
+                    "--only",
+                    "--no-edit",
+                    "--no-verify",
+                    "--trailer",
+                    &format!("Herdr-Item: {}", run.info.item),
+                    "--trailer",
+                    &format!("Herdr-Run: {trailer}"),
+                ],
+            )
+            .map_err(|error| format!("adding the trailers to {picked}: {error}"))?;
+            picked = git(&repo, &["rev-parse", "HEAD"])?.trim().to_owned();
+            trailers = true;
+        }
         run.info.picked = Some(picked.clone());
         run.info.step = TodoStep::Install;
-        self.run_step(
-            run,
-            json!({"type": "run_picked", "commit": picked, "step": run.info.step}),
-        )?;
+        let at = now_ms();
+        let landing = TodoLanding {
+            landed_sha: picked.clone(),
+            run_id: run.info.run_id.clone(),
+            attempt: run.info.attempt,
+            item: run.info.item.clone(),
+            worker_commit: Some(commit.clone()),
+            worker_id: run.info.worker_id.clone(),
+            ts_ms: Some(at),
+            source: TodoLandingSource::Store,
+        };
+        let event = json!({
+            "type": "run_picked",
+            "commit": picked,
+            "worker_commit": commit,
+            "trailers": trailers,
+            "step": run.info.step,
+        });
+        let store = self.run_store().map_err(|error| error.to_string())?;
+        store
+            .transaction(|tx| {
+                let seq = tx.run_event(run, &event, false, at)?;
+                tx.landing(&landing)?;
+                Ok(seq)
+            })
+            .map_err(|error| format!("the worker store failed: {error}"))?;
+        announce();
         Ok(())
+    }
+
+    /// The branch moved since the approval (or the approval named another
+    /// base): a new `review` event with the branch's evidence, which the
+    /// run waits on; nothing is picked.
+    fn review_again(
+        &self,
+        run: &mut Run,
+        repo: &Path,
+        branch: &str,
+        base: &str,
+        tip: &str,
+    ) -> Result<(), String> {
+        let (diff_stat, commits) = branch_evidence(repo, base, &format!("refs/heads/{branch}"));
+        let mut event = new_event(TodoEventKind::Review);
+        event.diff_stat = diff_stat;
+        event.commits = commits;
+        event.error = Some(format!(
+            "the approval named commit {} on base {}, but branch {branch} is at {tip} on base \
+             {base}; nothing was picked: review it again",
+            run.current.commit.as_deref().unwrap_or("none"),
+            run.current.base.as_deref().unwrap_or("none"),
+        ));
+        run.info.step = TodoStep::Review;
+        run.info.status = TodoRunStatus::Waiting;
+        self.record_run_event(run, &event)?;
+        Ok(())
+    }
+
+    /// The landing of `commit` (a sha or a prefix of one, the landed
+    /// commit or the worker's): the store's record, else the commit's
+    /// `Herdr-Run` trailer in `repo`'s history (shas change on the
+    /// upstream rebase, trailers stay).
+    pub(crate) fn landing_of(
+        &self,
+        repo: Option<&str>,
+        commit: &str,
+    ) -> Result<TodoLanding, WorkerError> {
+        let commit = check_commit(commit)?;
+        let store = self.run_store()?;
+        let full = repo.and_then(|dir| {
+            git(
+                Path::new(dir),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{commit}^{{commit}}"),
+                ],
+            )
+            .ok()
+            .map(|sha| sha.trim().to_owned())
+        });
+        if let Some(landing) = store
+            .landing_of(full.as_deref().unwrap_or(&commit))
+            .map_err(store_error)?
+        {
+            return Ok(landing);
+        }
+        if let (Some(dir), Some(full)) = (repo, &full) {
+            if let Some((item, run_id, attempt)) = landing_trailers(Path::new(dir), full) {
+                let worker_id = store
+                    .attempts(&run_id)
+                    .map_err(store_error)?
+                    .into_iter()
+                    .find(|row| row.number == attempt)
+                    .and_then(|row| row.worker_id);
+                return Ok(TodoLanding {
+                    landed_sha: full.clone(),
+                    run_id,
+                    attempt,
+                    item,
+                    worker_commit: None,
+                    worker_id,
+                    ts_ms: None,
+                    source: TodoLandingSource::Trailers,
+                });
+            }
+        }
+        Err(WorkerError::RunNotFound(format!(
+            "no todo run landed commit {commit}: the worker store has no landing of it{}",
+            match (repo, &full) {
+                (None, _) => " (and no repository was given to read its trailers in)".to_owned(),
+                (Some(dir), None) => format!(" and {dir} has no such commit"),
+                (Some(_), Some(full)) => format!(" and {full} has no Herdr-Run trailer"),
+            }
+        )))
     }
 }
 

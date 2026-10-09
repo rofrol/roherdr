@@ -16,9 +16,12 @@ use std::time::Duration;
 use rusqlite::{named_params, params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use super::runs::{Run, RunCheck, RunFinish};
+use super::runs::{Attempt, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
-use crate::api::schema::{TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult};
+use crate::api::schema::{
+    TodoLanding, TodoLandingSource, TodoRunInfo, TodoRunStatus, TodoStep, WorkerState,
+    WorkerTurnResult,
+};
 
 /// The database file, inside the session's worker directory.
 pub(super) const STORE_FILE: &str = "workers.sqlite3";
@@ -363,6 +366,105 @@ CREATE TABLE usage_gates (
     body TEXT NOT NULL,
     updated_ms INTEGER NOT NULL
 );
+"#,
+    r#"
+-- A run's attempts, one row each; `runs` keeps pointing at the current one
+-- (its `attempt`, `worker_id`, `branch` and `task`), and both are written in
+-- the transaction of the run's event. `base` is the commit the attempt is
+-- verified and reviewed against; `from_attempt` and `from_commit` the
+-- previous attempt and its commit the attempt's branch starts from (none
+-- for the first, or for one started from the base after a conflict);
+-- `commit` the attempt's commit as the coordinator's decision saw it (the
+-- approved one, or the one a retry carries on); `review_event`,
+-- `review_decision` and `review_text` that decision (`approve`, `retry`,
+-- `abort`; the retry's text); `verification` its latest verdict as JSON.
+CREATE TABLE attempts (
+    run_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    worker_id TEXT,
+    branch TEXT,
+    base TEXT,
+    task TEXT NOT NULL,
+    from_attempt INTEGER,
+    from_commit TEXT,
+    "commit" TEXT,
+    review_event INTEGER,
+    review_decision TEXT,
+    review_text TEXT,
+    verification TEXT,
+    PRIMARY KEY (run_id, attempt)
+);
+-- Runs recorded before: filled from their events as far as they allow.
+-- Attempt N's worker is what the restart to N + 1 replaced (the run's own
+-- for its current attempt), its task the retry's text before that restart
+-- (the run's first task for attempt 1), its decision the coordinator's last
+-- approve, retry or abort of an event of that attempt, its commit that
+-- event's last commit; none of them carried a commit.
+WITH RECURSIVE numbered (run_id, attempt, last) AS (
+    SELECT id, 1, attempt FROM runs
+    UNION ALL SELECT run_id, attempt + 1, last FROM numbered WHERE attempt < last
+)
+INSERT INTO attempts (run_id, attempt, worker_id, branch, base, task)
+SELECT n.run_id, n.attempt,
+    coalesce((SELECT json_extract(e.body, '$.previous_worker_id') FROM events e
+            WHERE e.worker_id = n.run_id AND e.type = 'run_restarted'
+              AND json_extract(e.body, '$.attempt') = n.attempt + 1
+            ORDER BY e.seq LIMIT 1),
+        CASE WHEN n.attempt = n.last THEN r.worker_id END),
+    CASE WHEN n.attempt = n.last AND r.branch IS NOT NULL THEN r.branch
+        ELSE 'todo/' || r.item || '-' || r.id || '-' || n.attempt END,
+    r.base,
+    coalesce(CASE WHEN n.attempt = 1 THEN (SELECT json_extract(e.body, '$.task') FROM events e
+                WHERE e.worker_id = n.run_id AND e.type = 'run_created' ORDER BY e.seq LIMIT 1)
+            ELSE (SELECT json_extract(e.body, '$.task') FROM events e
+                WHERE e.worker_id = n.run_id AND e.type = 'run_resumed'
+                  AND json_extract(e.body, '$.action') = 'retry'
+                  AND e.seq < (SELECT min(s.seq) FROM events s
+                      WHERE s.worker_id = n.run_id AND s.type = 'run_restarted'
+                        AND json_extract(s.body, '$.attempt') = n.attempt)
+                ORDER BY e.seq DESC LIMIT 1) END,
+        CASE WHEN n.attempt = n.last THEN r.task END, '')
+FROM numbered n JOIN runs r ON r.id = n.run_id;
+CREATE TEMP TABLE attempt_reviews AS
+SELECT d.worker_id AS run_id, json_extract(a.body, '$.attempt') AS attempt, d.seq AS seq,
+    json_extract(d.body, '$.event') AS review_event,
+    json_extract(d.body, '$.action') AS review_decision,
+    CASE WHEN json_extract(d.body, '$.action') = 'retry'
+        THEN json_extract(d.body, '$.task') END AS review_text,
+    json_extract(a.body, '$.event.commits[#-1]') AS reviewed
+FROM events d JOIN events a
+    ON a.seq = json_extract(d.body, '$.event') AND a.worker_id = d.worker_id
+WHERE d.type = 'run_resumed'
+  AND json_extract(d.body, '$.action') IN ('approve', 'retry', 'abort');
+UPDATE attempts SET (review_event, review_decision, review_text, "commit") = (
+    SELECT review_event, review_decision, review_text, reviewed FROM attempt_reviews v
+    WHERE v.run_id = attempts.run_id AND v.attempt = attempts.attempt
+    ORDER BY v.seq DESC LIMIT 1)
+WHERE EXISTS (SELECT 1 FROM attempt_reviews v
+    WHERE v.run_id = attempts.run_id AND v.attempt = attempts.attempt);
+DROP TABLE attempt_reviews;
+UPDATE attempts SET verification = (SELECT verification FROM workers
+    WHERE id = attempts.worker_id) WHERE worker_id IS NOT NULL;
+-- The commits runs landed on `master`, written with the cherry-pick's
+-- event; `ts` is Unix milliseconds. Filled from the `run_picked` events of
+-- runs recorded before (their commits carry no trailers).
+CREATE TABLE landings (
+    landed_sha TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    worker_commit TEXT,
+    ts INTEGER NOT NULL
+);
+CREATE INDEX landings_by_worker_commit ON landings (worker_commit);
+INSERT OR IGNORE INTO landings (landed_sha, run_id, attempt, item, worker_commit, ts)
+SELECT json_extract(p.body, '$.commit'), r.id, r.attempt, r.item,
+    (SELECT json_extract(v.body, '$.head') FROM events v
+        WHERE v.worker_id = r.id AND v.type = 'run_verified' AND v.seq < p.seq
+        ORDER BY v.seq DESC LIMIT 1),
+    p.ts_ms
+FROM events p JOIN runs r ON r.id = p.worker_id
+WHERE p.type = 'run_picked' AND json_extract(p.body, '$.commit') IS NOT NULL;
 "#,
 ];
 
@@ -1170,7 +1272,54 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         owner_pane: row.get(14)?,
         owner_session: row.get(15)?,
         workspace: row.get(23)?,
+        current: attempt_from_row(row, 24)?,
     })
+}
+
+/// The run's columns and its current attempt's ([`ATTEMPT_COLUMNS`]),
+/// which [`run_from_row`] reads, then `filter` over `runs r`.
+fn run_select(filter: &str) -> String {
+    let columns = RUN_COLUMNS
+        .split(", ")
+        .map(|column| format!("r.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let attempt = ATTEMPT_COLUMNS
+        .split(", ")
+        .map(|column| format!("a.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT {columns}, {attempt} FROM runs r \
+         LEFT JOIN attempts a ON a.run_id = r.id AND a.attempt = r.attempt {filter}"
+    )
+}
+
+/// What `attempts` holds beside the run's own columns.
+const ATTEMPT_COLUMNS: &str = "base, from_attempt, from_commit, \"commit\", review_event, \
+review_decision, review_text, verification";
+
+fn attempt_from_row(row: &rusqlite::Row<'_>, at: usize) -> StoreResult<Attempt> {
+    Ok(Attempt {
+        base: row.get(at)?,
+        from_attempt: row.get(at + 1)?,
+        from_commit: row.get(at + 2)?,
+        commit: row.get(at + 3)?,
+        review_event: row.get(at + 4)?,
+        review_decision: row.get(at + 5)?,
+        review_text: row.get(at + 6)?,
+        verification: row.get(at + 7)?,
+    })
+}
+
+/// One row of `attempts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AttemptRow {
+    pub(super) number: u32,
+    pub(super) worker_id: Option<String>,
+    pub(super) branch: Option<String>,
+    pub(super) task: String,
+    pub(super) attempt: Attempt,
 }
 
 impl Tx<'_> {
@@ -1236,7 +1385,54 @@ impl Tx<'_> {
                 run.workspace,
             ],
         )?;
+        let attempt = &run.current;
+        self.tx.execute(
+            &format!(
+                "INSERT INTO attempts (run_id, attempt, worker_id, branch, task, {ATTEMPT_COLUMNS}) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+                 ON CONFLICT (run_id, attempt) DO UPDATE SET worker_id = excluded.worker_id, \
+                 branch = excluded.branch, task = excluded.task, {}",
+                ATTEMPT_COLUMNS
+                    .split(", ")
+                    .map(|column| format!("{column} = excluded.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            params![
+                info.run_id,
+                info.attempt,
+                info.worker_id,
+                info.branch,
+                info.task,
+                attempt.base,
+                attempt.from_attempt,
+                attempt.from_commit,
+                attempt.commit,
+                attempt.review_event,
+                attempt.review_decision,
+                attempt.review_text,
+                attempt.verification,
+            ],
+        )?;
         Ok(seq)
+    }
+
+    /// Records a commit the run landed on `master`; a landing recorded
+    /// already (a step a crash cut off) is replaced by the same row.
+    pub(super) fn landing(&self, landing: &TodoLanding) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT OR REPLACE INTO landings (landed_sha, run_id, attempt, item, worker_commit, ts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                landing.landed_sha,
+                landing.run_id,
+                landing.attempt,
+                landing.item,
+                landing.worker_commit,
+                landing.ts_ms.unwrap_or_default() as i64,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Appends an event to a run without writing its row: all a driver
@@ -1253,11 +1449,7 @@ impl Tx<'_> {
     /// The run as this transaction sees it.
     pub(super) fn run(&self, run_id: &str) -> StoreResult<Option<Run>> {
         self.tx
-            .query_row(
-                &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
-                [run_id],
-                run_from_row,
-            )
+            .query_row(&run_select("WHERE r.id = ?1"), [run_id], run_from_row)
             .optional()
     }
 }
@@ -1265,20 +1457,15 @@ impl Tx<'_> {
 impl Store {
     pub(super) fn run(&self, run_id: &str) -> StoreResult<Option<Run>> {
         lock(&self.conn)
-            .query_row(
-                &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
-                [run_id],
-                run_from_row,
-            )
+            .query_row(&run_select("WHERE r.id = ?1"), [run_id], run_from_row)
             .optional()
     }
 
     /// The runs, of one repository when given, oldest first.
     pub(super) fn runs(&self, repo: Option<&str>) -> StoreResult<Vec<Run>> {
         let conn = lock(&self.conn);
-        let mut statement = conn.prepare(&format!(
-            "SELECT {RUN_COLUMNS} FROM runs WHERE ?1 IS NULL OR repo = ?1 \
-             ORDER BY created_ms, rowid"
+        let mut statement = conn.prepare(&run_select(
+            "WHERE ?1 IS NULL OR r.repo = ?1 ORDER BY r.created_ms, r.rowid",
         ))?;
         let runs = statement.query_map([repo], run_from_row)?;
         runs.collect()
@@ -1318,14 +1505,74 @@ impl Store {
     pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
         lock(&self.conn)
             .query_row(
-                &format!(
-                    "SELECT {RUN_COLUMNS} FROM runs \
-                     WHERE repo = ?1 AND status IN ('running', 'waiting') AND step != 'abort'"
+                &run_select(
+                    "WHERE r.repo = ?1 AND r.status IN ('running', 'waiting') \
+                     AND r.step != 'abort'",
                 ),
                 [repo],
                 run_from_row,
             )
             .optional()
+    }
+
+    /// The landing of `commit`: a full sha, or a prefix of at least 7 hex
+    /// characters, of the landed commit or of the worker's commit it was
+    /// picked from. The newest when a prefix names several.
+    pub(super) fn landing_of(&self, commit: &str) -> StoreResult<Option<TodoLanding>> {
+        let conn = lock(&self.conn);
+        let landing = conn
+            .query_row(
+                "SELECT landed_sha, run_id, attempt, item, worker_commit, ts FROM landings
+                 WHERE landed_sha = ?1 OR worker_commit = ?1
+                    OR substr(landed_sha, 1, length(?1)) = ?1
+                    OR substr(worker_commit, 1, length(?1)) = ?1
+                 ORDER BY (landed_sha = ?1 OR worker_commit = ?1) DESC, ts DESC LIMIT 1",
+                [commit],
+                |row| {
+                    Ok(TodoLanding {
+                        landed_sha: row.get(0)?,
+                        run_id: row.get(1)?,
+                        attempt: row.get(2)?,
+                        item: row.get(3)?,
+                        worker_commit: row.get(4)?,
+                        worker_id: None,
+                        ts_ms: Some(row.get::<_, i64>(5)? as u64),
+                        source: TodoLandingSource::Store,
+                    })
+                },
+            )
+            .optional()?;
+        drop(conn);
+        match landing {
+            Some(mut landing) => {
+                landing.worker_id = self
+                    .attempts(&landing.run_id)?
+                    .into_iter()
+                    .find(|row| row.number == landing.attempt)
+                    .and_then(|row| row.worker_id);
+                Ok(Some(landing))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The run's attempts, first first.
+    pub(super) fn attempts(&self, run_id: &str) -> StoreResult<Vec<AttemptRow>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&format!(
+            "SELECT attempt, worker_id, branch, task, {ATTEMPT_COLUMNS} FROM attempts \
+             WHERE run_id = ?1 ORDER BY attempt"
+        ))?;
+        let rows = statement.query_map([run_id], |row| {
+            Ok(AttemptRow {
+                number: row.get(0)?,
+                worker_id: row.get(1)?,
+                branch: row.get(2)?,
+                task: row.get(3)?,
+                attempt: attempt_from_row(row, 4)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// The run's latest coordinator-facing event (`run_event`): its `seq`
@@ -1689,6 +1936,8 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
                  DROP TABLE usage_gates;
+                 DROP TABLE attempts;
+                 DROP TABLE landings;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1740,8 +1989,10 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
                  DROP TABLE usage_gates;
+                 DROP TABLE attempts;
+                 DROP TABLE landings;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 11
+                MIGRATIONS.len() - 12
             ))
             .unwrap();
         drop(store);
@@ -1751,6 +2002,103 @@ mod tests {
             Some("Items popup")
         );
         assert_eq!(store.load("w2").unwrap().unwrap().item_title, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attempts_and_landings_are_filled_from_the_events_of_older_runs() {
+        let dir = scratch("attempts");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        append(&store, "w1", &json!({"type": "started", "cwd": "/repo"})).unwrap();
+        append(&store, "w2", &json!({"type": "started", "cwd": "/repo"})).unwrap();
+        let run = "r-legacy01";
+        let note = |event: Value| store.transaction(|tx| tx.run_note(run, &event, 7)).unwrap();
+        note(json!({"type": "run_created", "task": "task one", "base": "base0"}));
+        let first = note(json!({"type": "run_event", "kind": "review", "attempt": 1,
+            "event": {"kind": "review", "commits": ["c0", "c1"]}}));
+        note(
+            json!({"type": "run_resumed", "event": first, "action": "retry",
+            "task": "review one"}),
+        );
+        note(json!({"type": "run_restarted", "previous_worker_id": "w1", "attempt": 2}));
+        let second = note(json!({"type": "run_event", "kind": "review", "attempt": 2,
+            "event": {"kind": "review", "commits": ["c2"]}}));
+        note(json!({"type": "run_resumed", "event": second, "action": "approve"}));
+        note(json!({"type": "run_verified", "head": "c2"}));
+        note(json!({"type": "run_picked", "commit": "landed1"}));
+        store
+            .connection()
+            .execute_batch(&format!(
+                "INSERT INTO runs (id, repo, item, step, status, attempt, base, worker_id, branch,
+                     task, message, paths, check_name, check_argv, created_ms, updated_ms)
+                 VALUES ('{run}', '/repo', 't-abcd2345', 'done', 'done', 2, 'base0', 'w2',
+                     'todo/t-abcd2345-{run}-2', 'review one', 'feat: x', '[]', 'ok', '[]', 1, 1);
+                 UPDATE workers SET verification = '{{\"verdict\":\"verified\"}}' WHERE id = 'w2';
+                 DROP TABLE attempts;
+                 DROP TABLE landings;
+                 UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
+                MIGRATIONS.len() - 1
+            ))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let attempts = store.attempts(run).unwrap();
+        assert_eq!(attempts.len(), 2, "{attempts:#?}");
+        let (one, two) = (&attempts[0], &attempts[1]);
+        assert_eq!(
+            (one.number, one.worker_id.as_deref(), one.task.as_str()),
+            (1, Some("w1"), "task one")
+        );
+        assert_eq!(
+            one.branch.as_deref(),
+            Some(format!("todo/t-abcd2345-{run}-1").as_str())
+        );
+        assert_eq!(
+            one.attempt,
+            Attempt {
+                base: Some("base0".into()),
+                commit: Some("c1".into()),
+                review_event: Some(first),
+                review_decision: Some("retry".into()),
+                review_text: Some("review one".into()),
+                ..Attempt::default()
+            }
+        );
+        assert_eq!(
+            (two.number, two.worker_id.as_deref(), two.task.as_str()),
+            (2, Some("w2"), "review one")
+        );
+        assert_eq!(
+            two.attempt,
+            Attempt {
+                base: Some("base0".into()),
+                commit: Some("c2".into()),
+                review_event: Some(second),
+                review_decision: Some("approve".into()),
+                verification: Some("{\"verdict\":\"verified\"}".into()),
+                ..Attempt::default()
+            }
+        );
+        // The run reads its current attempt.
+        assert_eq!(store.run(run).unwrap().unwrap().current, two.attempt);
+        let landing = store.landing_of("landed1").unwrap().unwrap();
+        assert_eq!(
+            (
+                landing.run_id.as_str(),
+                landing.attempt,
+                landing.item.as_str(),
+                landing.worker_commit.as_deref(),
+                landing.worker_id.as_deref(),
+                landing.ts_ms,
+            ),
+            (run, 2, "t-abcd2345", Some("c2"), Some("w2"), Some(7))
+        );
+        assert_eq!(
+            store.landing_of("c2").unwrap().unwrap().landed_sha,
+            "landed1"
+        );
+        assert_eq!(store.landing_of("c1").unwrap(), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

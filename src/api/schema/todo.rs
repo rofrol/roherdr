@@ -61,7 +61,9 @@ pub struct TodoResumeParams {
     /// The event answered: the `event_id` `todo.wait` returned. Any other
     /// is refused as stale (`todo_event_stale`).
     pub event: i64,
-    /// With `retry`: the next attempt's task text.
+    /// With `retry` (of a `review` or `verify_failed` event): the review of
+    /// the attempt, which the next attempt's task appends to this one's.
+    /// Refused after `retry_conflict`, which keeps the review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
     /// With `answer`: the question answered; the only pending one when
@@ -125,15 +127,64 @@ pub struct TodoRunsParams {
     /// Only the runs of this repository: a directory in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// Only the run that landed this commit (a sha or a prefix of at least
+    /// 7 characters, the landed commit or the worker's): found in the
+    /// store's landings, else by the `Herdr-Run` trailer of the commit in
+    /// `repo`'s history. Refused with `todo_run_not_found` when neither
+    /// names a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+/// Where a landing was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoLandingSource {
+    /// The worker store's record, written when the run landed the commit.
+    Store,
+    /// The commit's `Herdr-Item` and `Herdr-Run` trailers (the store has no
+    /// record of it: another machine's run, or a sha the upstream rebase
+    /// changed).
+    Trailers,
+    #[serde(other)]
+    Unknown,
+}
+
+/// A commit a run landed on `master`, with the run and attempt it came
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoLanding {
+    /// The commit on `master`, which carries the trailers.
+    pub landed_sha: String,
+    pub run_id: String,
+    pub attempt: u32,
+    pub item: String,
+    /// The worker's commit it was picked from (subject only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_commit: Option<String>,
+    /// The attempt's worker, whose journal is the run's transcript; absent
+    /// when the store does not know the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    /// Unix milliseconds of the landing; absent when found by trailers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts_ms: Option<u64>,
+    pub source: TodoLandingSource,
 }
 
 /// What the coordinator may answer an event with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoAction {
-    /// The worker's turn is accepted: stop it, verify, cherry-pick.
+    /// The worker's turn is accepted: stop it, verify, cherry-pick. The
+    /// approval is bound to the commit and base the event showed: a branch
+    /// that moved since is reviewed again instead of landed.
     Approve,
-    /// Start the next attempt with new task text (at most 3 attempts).
+    /// Start the next attempt, its task text being the review of this one
+    /// (at most 3 attempts): the next attempt's branch starts from this
+    /// attempt's commit, and its task is this attempt's with the review
+    /// appended. After `retry_conflict`: start that attempt from the base
+    /// instead, without the previous commit (no task text).
     Retry,
     /// Answer the worker's pending question.
     Answer,
@@ -218,7 +269,9 @@ pub enum TodoRunStatus {
 pub enum TodoEventKind {
     /// The worker asked a question the worker policy does not decide.
     Question,
-    /// The worker's turn ended (or the worker did): review its work.
+    /// The worker's turn ended (or the worker did): review its work. Also
+    /// raised before the cherry-pick when the branch's tip is not the
+    /// commit the approval named (`error` says so): review it again.
     Review,
     /// The verify failed or could not run: give the next attempt's task,
     /// or verify again.
@@ -240,6 +293,10 @@ pub enum TodoEventKind {
     Done,
     /// The run was aborted: why, its branches and its commits.
     Aborted,
+    /// The previous attempt's commit does not cherry-pick onto the next
+    /// attempt's branch (`error` names the conflict): retry starts that
+    /// attempt from the base without it, or abort.
+    RetryConflict,
     #[serde(other)]
     Unknown,
 }
@@ -262,7 +319,8 @@ pub struct TodoRunInfo {
     pub worker_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// The current attempt's task text.
+    /// The current attempt's task text: the first attempt's is the run's,
+    /// each later one is the previous attempt's with its review appended.
     pub task: String,
     pub message: String,
     pub paths: Vec<String>,
@@ -277,7 +335,8 @@ pub struct TodoRunInfo {
     /// Why it is blocked or was aborted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The commit the cherry-pick made on `master`.
+    /// The commit the cherry-pick made on `master`, with the `Herdr-Item`
+    /// and `Herdr-Run` trailers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<String>,
     /// The build the install reported (the registered `build_id` command's
@@ -323,7 +382,9 @@ pub struct TodoRunEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<WorkerVerification>,
     /// With `blocked` and `aborted`: why (`aborted` also names the run's
-    /// branches); with `still_alive`: what is still running;
+    /// branches); with `still_alive`: what is still running; with a
+    /// `review` raised before the cherry-pick: the approved commit and the
+    /// branch's tip; with `retry_conflict`: the commit and the conflict;
     /// with `install_failed`, `todo_failed` and `push_failed`: what failed,
     /// with the output's last lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]

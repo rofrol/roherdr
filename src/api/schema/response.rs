@@ -19,7 +19,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::todo::{TodoRunEvent, TodoRunInfo};
+use super::todo::{TodoLanding, TodoRunEvent, TodoRunInfo};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
     WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
@@ -94,6 +94,9 @@ pub enum ResponseResult {
         items: Vec<WorkerItemRuns>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unassigned: Vec<WorkerRun>,
+        /// With `commit`: the landing that named the run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        landing: Option<TodoLanding>,
     },
     /// `worker.verify`'s reply: the verdict herdr decided and its evidence.
     WorkerVerification {
@@ -106,6 +109,9 @@ pub enum ResponseResult {
     /// `todo.runs`' reply, oldest first.
     TodoRuns {
         runs: Vec<TodoRunInfo>,
+        /// With `commit`: the landing that named the run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        landing: Option<TodoLanding>,
     },
     /// `todo.wait`'s reply: the event and the run as it is now.
     TodoRunEvent {

@@ -70,6 +70,13 @@ pub struct WorkerRunsParams {
     /// `repo` shows (the parent of its git common directory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// Only the runs of the `herdr todo run` that landed this commit (a sha
+    /// or a prefix of at least 7 characters, the landed commit or the
+    /// worker's): found in the store's landings, else by the commit's
+    /// `Herdr-Run` trailer in `repo`'s history; the reply's `landing` names
+    /// it. Refused with `todo_run_not_found` when neither names a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// One item's runs, oldest first. Ids of different repositories are never
