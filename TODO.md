@@ -11,20 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The usage gate refused a run on a reading that was stale between [t-6sgp2zau]
-  normal polls (coordinator, 2026-10-09 23:21: Claude 5h at 16%, "stale,
-  read 186s ago"; ten seconds later the next poll admitted the run). A
-  reading must not turn stale while the poller is healthy: check how
-  `observed_at` is set when the shared cache answers instead of a fetch
-  (the cached observation's age plus a full interval can exceed two
-  intervals), and make stale mean "a poll was missed" (the poller's own
-  last attempt, not the cached observation's age), with a test that a
-  healthy poller with a cache hit never reports stale.
-  Correction by the coordinator: the default interval is 300 s, so the
-  threshold should be 600 s, yet a 186 s old reading was "stale"; the cause
-  is something else (another rule marking stale, or the gate using a
-  different interval than `usage.read`). Find it from the code first.
-
 - [ ] Usage summed per workspace. The author asked every session for its [t-kjpuc4zm]
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
