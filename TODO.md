@@ -626,14 +626,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   keeping tracker items with the repository rather than in a private
   database (git-bug is the git analogue).
 
-- [ ] Usage summed per workspace. The author asked every session for its [t-kjpuc4zm]
-  `/session` accounting by hand and had an agent record the total. The
-  fork's usage module has the numbers per agent. Risk: totals that disagree
-  with the provider's bill, and resumed sessions counted twice (sol).
-  Decided by the user 2026-10-06: CLI first (`herdr usage --workspace` or
-  similar), resumed sessions counted once by session id, labelled an
-  estimate, not the bill; no sidebar total yet.
-
 - [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job, [t-xieekngb]
   but it did not close the job." The explicit close is fixed (`DECISIONS.md`,
   "Closing a parent's last pane"); a parent whose shell exits by itself
