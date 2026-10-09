@@ -571,3 +571,12 @@ headless worker `run_in_background` (Bash, Agent), `Monitor`,
 `ScheduleWakeup` and `CronCreate`, in its policy and in an always-registered
 PreToolUse callback, with the reason that nothing wakes it; the driver's
 task contract says the same (5be67f20, run `r-xelv6o5o`).
+
+## Broker tests fail fast in a sandbox
+
+Broker tests waited 600 s in a worker's sandbox (no Unix sockets) on a
+`recv` that never ended, and their processes outlived the worker. They now
+fail at once naming the sandbox when a socket is refused (measured 311 µs
+and 11.8 ms), and a failing test reaps its brokers before anything else
+(15ef5230, run `r-a2kcuznp`). Eight orphaned test brokers from 2026-10-08,
+from before the reaper, were ended by hand on 2026-10-09.
