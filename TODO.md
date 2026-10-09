@@ -11,49 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Why the "added delay is a bug signal" rule did not hold (user, [t-v65dxbip]
-  2026-10-07: "is that rule somewhere in CLAUDE.md? where? why didn't you
-  apply it? ask the models"). It is in `~/.claude/CLAUDE.md` ("Added delay
-  is a bug signal") and Rule 10 of `~/personal_projects/agents.md/AGENTS.md`.
-  The coordinator wrote a 120 s "debounce" ("a debounce, not a delay"),
-  delegated a 30-minute deadline and a 2-minute idle debounce, polled a
-  transcript every 5 s and resent prompts after 15 s. Round
-  `20261007-180041-55f7` (sol, MiMo, DeepSeek), agreeing: it rationalised (its
-  own scripts felt like "tooling" outside the rule; relabelling; the
-  exception list is the escape hatch; delegation dilutes; consults suggest
-  timers; queue pressure). Fixes: every wait names a positive observable
-  condition and its producer (a required `awaits:` field), negative
-  conditions ("idle for N", "no marker for N") banned; a hook that flags
-  time constants in the agent's own commands, scripts and worker tasks,
-  outside the agent's edit scope; worker tasks state "terminates when";
-  the rule says it covers coordinator scripts and delegated tasks and that
-  a label does not qualify a delay. Verdicts on today's: 120 s and 2 min
-  debounces not allowed; 30 min deadline not allowed (not external); 15 s
-  blind resend not allowed (needs ack + idempotency); 5 s transcript poll
-  borderline (external polling of an authoritative file, but the event
-  exists). Rule text is the user's file: a worker, with his approval.
-  Rule text done 2026-10-07 (dotfiles `c348422`, approved by the user):
-  the rule covers own commands, scripts and delegated tasks; a label does
-  not qualify a delay; every wait names its positive event and producer; no
-  negative conditions; retries need an acknowledgement and an idempotent
-  action. Left: the hook that flags time constants.
-  Hook done 2026-10-08: prepared by headless worker `w22` as files (no
-  edits under ~), shown to the user with its risks, installed after his
-  yes (dotfiles `be4a352 claude: hook flags time constants without a delay
-  reason`): a PreToolUse hook on Bash/Write/Edit/MultiEdit denies waits and
-  give-up times (`sleep N`, `--timeout`, `Duration::from_secs(N)`,
-  `Instant::now() +`, `setTimeout(`, deadline/debounce wording in code and
-  agent instruction files) without a `delay: <reason>` marker; 28 tests.
-  Known gap: headless workers start with `disableAllHooks`, so it does not
-  reach them.
-  First block in use (2026-10-08): it denied the coordinator's `sleep 0`
-  (a no-op, a habit, not a wait); harmless but a false positive: `sleep 0`
-  and `timeout 0` could pass, or the denial could say to drop the no-op.
-  The `sleep 0` false positive fixed 2026-10-09 (worker `w51`, approved by the
-  user, dotfiles 903e9f0): zero-length sleeps, timeouts, durations and
-  `setTimeout(fn, 0)` pass; `TIMEOUT = 0.5` no longer slips through. Left: the
-  headless-worker gap (run `r-idd6p7io`).
-
 - [ ] Headless workers end their turn on a background task or Monitor [t-2amq2ode]
   (found by the coordinator 2026-10-09, run `r-idd6p7io`, worker `w50`):
   the worker ran the full test suite with `run_in_background`, armed a
