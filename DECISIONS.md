@@ -652,3 +652,18 @@ tests now judge readings at one fixed test instant; reproduced
 deterministically by a temporary loop waiting for the next second, 30/30
 stress passes after (df272dc1, the first commit landed with `Herdr-Item` and
 `Herdr-Run` trailers).
+
+## A history of finished TODO items to look through afterwards (user,
+
+The user asked (2026-10-07) for a history of finished TODO items to look
+through afterwards, "like a ticket system". Decided: an audit log, not a
+ticket system; herdr's server writes it outside the repository (private,
+per machine); items carry stable ids. Built 2026-10-09: the driver's
+`attempts` and `landings` tables and `Herdr-Item`/`Herdr-Run` trailers on
+landed commits; an append-only `item_history` (claimed, noted, closed,
+aborted, blocked) with `herdr history [--item] [reconcile]`; and the Items
+list under a coordinator, which lists finished items newest first and opens
+each item's timeline (claim text, attempts with verdict and landed commit,
+notes, close and decision, follow-ups), fetched only on the user's action,
+local times. Coordinators close driver items with `approve --close` and run
+`herdr history reconcile` at their start. A web page or exports stay later.
