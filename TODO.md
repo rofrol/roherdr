@@ -54,6 +54,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `setTimeout(fn, 0)` pass; `TIMEOUT = 0.5` no longer slips through. Left: the
   headless-worker gap (run `r-idd6p7io`).
 
+- [ ] Headless workers end their turn on a background task or Monitor [t-2amq2ode]
+  (found by the coordinator 2026-10-09, run `r-idd6p7io`, worker `w50`):
+  the worker ran the full test suite with `run_in_background`, armed a
+  Monitor, wrote "waiting for the monitor's event" and its `claude -p`
+  turn ended; nothing wakes a headless worker, so its work sat
+  uncommitted and the driver raised `review` with no commit. herdr should
+  deny `Monitor` and `run_in_background: true` for workers in its policy
+  (the denial says: run it in the foreground, nothing wakes a headless
+  worker), and the driver's appended contract should say so. Test: a
+  worker's Bash call with `run_in_background` and a Monitor call are
+  denied with that reason.
+
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about [t-ul4yd4ll]
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
