@@ -1514,6 +1514,9 @@ pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
     Some(super::SystemPtyUsage {
         in_use: count_macos_pty_slave_names(names),
         max,
+        // macOS has no sysctl for the number in use; the device nodes are
+        // an estimate.
+        exact: false,
     })
 }
 

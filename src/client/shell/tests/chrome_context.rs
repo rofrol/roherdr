@@ -1034,3 +1034,71 @@ fn build_row_shows_the_endpoint_commit_and_flags_a_different_client() {
         format!("server 0badc0de fix: old server · client {client_hash}")
     );
 }
+
+#[test]
+fn footer_shows_pty_usage_from_the_snapshot_without_asking_on_a_timer() {
+    fn pty_row(state: &mut ClientShellState) -> Option<String> {
+        let frame = state.compose(106, 30).expect("frame");
+        (0..30)
+            .map(|row| {
+                frame.cells[row * 106..(row + 1) * 106]
+                    .iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .find(|row| row.contains("PTY "))
+    }
+    let usage = |herdr, in_use| crate::protocol::ClientShellPtyUsage {
+        herdr,
+        system: Some(crate::protocol::ClientShellSystemPtyUsage {
+            in_use,
+            max: 511,
+            exact: false,
+        }),
+    };
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    assert_eq!(pty_row(&mut state), None, "older servers send no usage");
+
+    let mut with_usage = snapshot();
+    with_usage.pty_usage = Some(usage(65, 108));
+    state.set_snapshot(Box::new(with_usage.clone()));
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+    let row = pty_row(&mut state).expect("usage row");
+    assert!(row.contains("PTY 65 · sys ~108/511"), "{row:?}");
+
+    // The client's timers never ask for the numbers.
+    let start = std::time::Instant::now();
+    for tick in 0..5 {
+        let now = start + std::time::Duration::from_secs(tick * 31);
+        let mut outcome = ClientShellInput::default();
+        state.tick_usage(now, &mut outcome);
+        state.tick_notifications(now);
+        state.tick_endpoint_error(now);
+        state.tick_motion(now);
+    }
+    assert!(
+        state
+            .pending_requests
+            .values()
+            .all(|request| request.method_name != "server.pty_usage"),
+        "{:?}",
+        state
+            .pending_requests
+            .values()
+            .map(|request| &request.method_name)
+            .collect::<Vec<_>>()
+    );
+
+    // A new snapshot is how a new count arrives.
+    with_usage.revision += 1;
+    with_usage.pty_usage = Some(usage(66, 470));
+    state.set_snapshot(Box::new(with_usage));
+    let mut next_surface = surface();
+    next_surface.projection_revision = 2;
+    state.set_pane_surface(next_surface);
+    let row = pty_row(&mut state).expect("usage row");
+    assert!(row.contains("PTY 66 · sys ~470/511"), "{row:?}");
+}

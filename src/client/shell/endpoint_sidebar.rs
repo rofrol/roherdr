@@ -281,6 +281,8 @@ pub(super) fn render_expanded(
         crate::build_info::commit_line(),
     );
     let (sections, build_area) = super::sidebar::split_build_row(area, build);
+    let pty_usage = active_snapshot.and_then(|snapshot| snapshot.pty_usage.as_ref());
+    let (sections, pty_area) = super::pty_footer::split_row(sections, pty_usage);
     hits.sidebar_sections = sections;
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
@@ -750,6 +752,9 @@ pub(super) fn render_expanded(
         state.agent_scroll,
         hits,
     );
+    if let Some(usage) = pty_usage {
+        super::pty_footer::render_row(buffer, pty_area, usage, palette);
+    }
     if let Some(build) = build {
         super::sidebar::render_build_row(buffer, build_area, build, palette);
         hits.tooltips

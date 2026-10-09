@@ -854,6 +854,36 @@ impl HeadlessServer {
     }
 }
 
+impl HeadlessServer {
+    /// Notifies the client shells when pseudo-terminal usage crosses a
+    /// threshold or a spawn found the pool exhausted. Cheap when nothing
+    /// changed: one atomic load.
+    pub(super) fn forward_pty_usage_alerts(&mut self) {
+        let Some(state) = crate::pty::usage::take_change(&mut self.pty_usage_seen) else {
+            return;
+        };
+        let herdr = u32::try_from(self.app.terminal_runtimes.len()).unwrap_or(u32::MAX);
+        for alert in self.pty_alerts.observe(state) {
+            let (title, body) = alert.text(herdr);
+            let sound = matches!(alert, crate::pty::usage::PtyAlert::Exhausted { .. })
+                .then_some(protocol::SemanticNotificationSound::Request);
+            self.send_to_client_shells(ServerMessage::SemanticNotification(
+                protocol::SemanticNotification {
+                    kind: protocol::SemanticNotificationKind::Custom,
+                    title,
+                    body: Some(body),
+                    sound,
+                    agent: None,
+                    workspace_id: None,
+                    tab_id: None,
+                    pane_id: None,
+                    position: None,
+                },
+            ));
+        }
+    }
+}
+
 /// How many notifications `notification.list` keeps.
 const NOTIFICATION_HISTORY_LEN: usize = 100;
 

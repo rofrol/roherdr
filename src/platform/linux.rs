@@ -1452,6 +1452,7 @@ pub(super) fn system_pty_usage_platform() -> Option<super::SystemPtyUsage> {
     Some(super::SystemPtyUsage {
         in_use: read("/proc/sys/kernel/pty/nr")?,
         max: read("/proc/sys/kernel/pty/max")?,
+        exact: true,
     })
 }
 

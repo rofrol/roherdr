@@ -966,6 +966,34 @@ pub struct ClientShellSnapshot {
     /// `worker.runs` for this client; none from a server that does not.
     #[serde(default)]
     pub worker_items: Vec<ClientShellWorkerItems>,
+    /// Pseudo-terminals in use, for the sidebar footer; none from a server
+    /// that does not send it.
+    #[serde(default)]
+    pub pty_usage: Option<ClientShellPtyUsage>,
+}
+
+/// Pseudo-terminals in use: herdr's own and, where the platform has a fixed
+/// pool, the whole system's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellPtyUsage {
+    /// Pseudo-terminals herdr's panes hold, exact.
+    pub herdr: u32,
+    /// The system's pool, sampled on the server; none where it has no fixed
+    /// pool (Windows) or the count cannot be read.
+    #[serde(default)]
+    pub system: Option<ClientShellSystemPtyUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellSystemPtyUsage {
+    /// Pseudo-terminals open on the whole machine, herdr's included.
+    pub in_use: u32,
+    /// The kernel limit.
+    pub max: u32,
+    /// The kernel counts `in_use` itself; false where it is an estimate
+    /// (macOS), which the footer marks with `~`.
+    #[serde(default)]
+    pub exact: bool,
 }
 
 /// The TODO items with workers on them in a coordinator tab's repository.
@@ -3016,6 +3044,14 @@ mod tests {
                 in_progress: 3,
                 attention: 1,
             }],
+            pty_usage: Some(ClientShellPtyUsage {
+                herdr: 65,
+                system: Some(ClientShellSystemPtyUsage {
+                    in_use: 108,
+                    max: 511,
+                    exact: false,
+                }),
+            }),
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

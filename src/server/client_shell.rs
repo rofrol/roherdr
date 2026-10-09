@@ -324,6 +324,10 @@ pub(super) fn snapshot_with_completions(
             .collect(),
         workers: client_shell_workers(crate::workers::summaries()),
         worker_items,
+        pty_usage: Some(client_shell_pty_usage(
+            app.terminal_runtimes.len(),
+            crate::pty::usage::latest(),
+        )),
     };
     (shell, completions)
 }
@@ -688,6 +692,22 @@ fn split_hit_rect(
 
 /// The workers the sidebar lists as the snapshot carries them, their state
 /// as `worker.status` names it.
+/// Herdr's count is its live pane runtimes (popups included), so it follows
+/// pane create and close; the system figure is the server's last sample.
+fn client_shell_pty_usage(
+    runtimes: usize,
+    system: Option<crate::platform::SystemPtyUsage>,
+) -> protocol::ClientShellPtyUsage {
+    protocol::ClientShellPtyUsage {
+        herdr: u32::try_from(runtimes).unwrap_or(u32::MAX),
+        system: system.map(|usage| protocol::ClientShellSystemPtyUsage {
+            in_use: usage.in_use,
+            max: usage.max,
+            exact: usage.exact,
+        }),
+    }
+}
+
 fn client_shell_workers(
     workers: Vec<crate::workers::WorkerSummary>,
 ) -> Vec<protocol::ClientShellWorker> {
@@ -913,6 +933,11 @@ mod tests {
 
         let (shell, completions) = snapshot_with_completions(&app, "boot", 9, None, None);
         assert_eq!(shell.panes.len(), 3);
+        assert_eq!(
+            shell.pty_usage.map(|usage| usage.herdr),
+            Some(app.terminal_runtimes.len() as u32),
+            "herdr's PTY count is its pane runtimes"
+        );
         assert_eq!(shell.agents.len(), 2);
         assert_eq!(shell.focused_pane_id, metadata.focused_pane_id);
         for (pane, public_pane) in shell.panes.iter().zip(&metadata.panes) {
@@ -934,6 +959,28 @@ mod tests {
             .terminal_runtimes
             .values()
             .all(|runtime| runtime.test_scroll_metrics_reads() == 1));
+    }
+
+    #[test]
+    fn pty_usage_keeps_whether_the_system_count_is_exact() {
+        let usage = client_shell_pty_usage(
+            4,
+            Some(crate::platform::SystemPtyUsage {
+                in_use: 108,
+                max: 511,
+                exact: false,
+            }),
+        );
+        assert_eq!(usage.herdr, 4);
+        assert_eq!(
+            usage.system,
+            Some(protocol::ClientShellSystemPtyUsage {
+                in_use: 108,
+                max: 511,
+                exact: false,
+            })
+        );
+        assert_eq!(client_shell_pty_usage(0, None).system, None);
     }
 
     #[test]

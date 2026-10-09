@@ -61,6 +61,11 @@ pub(crate) struct HandoffManifest {
     /// disk. Absent from manifests written before this field existed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub run_envs: BTreeMap<String, HashMap<String, String>>,
+    /// The pseudo-terminal thresholds already announced, so an install's
+    /// handoff does not announce the current level again. Absent from
+    /// manifests written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pty_alerts: Option<crate::pty::usage::PtyAlertsHandoff>,
 }
 
 #[cfg(unix)]
@@ -333,6 +338,7 @@ pub(crate) fn manifest_for(
         panes,
         api_window_title,
         run_envs,
+        pty_alerts: None,
     }
 }
 
@@ -592,6 +598,29 @@ mod tests {
 
         assert!(older.api_window_title.is_none());
         assert!(older.run_envs.is_empty());
+        assert!(older.pty_alerts.is_none());
+    }
+
+    #[test]
+    fn a_handoff_carries_the_announced_pty_thresholds() {
+        let mut manifest = manifest_for(
+            empty_snapshot(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            BTreeMap::new(),
+        );
+        let announced = crate::pty::usage::PtyAlertsHandoff {
+            announced: Some(80),
+        };
+        manifest.pty_alerts = Some(announced);
+        let value = serde_json::to_value(&manifest).expect("manifest should serialize");
+
+        let received: HandoffManifest =
+            serde_json::from_value(value).expect("the manifest should load");
+
+        assert_eq!(received.pty_alerts, Some(announced));
     }
 
     #[test]
