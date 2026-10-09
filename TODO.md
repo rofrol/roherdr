@@ -1453,6 +1453,33 @@ Items agents add. Not approved until the user moves them up.
   advised building it only as a reviewed backend, not a quota stopgap, and
   MiMo to measure first how often a Claude window reaches 90%.
 
+- [ ] Waiting for a pane worker's final report (reported by the try-roguix [t-audxade5]
+  coordinator, pane w6:p87, 2026-10-10, at the user's request). It drives
+  interactive Claude workers in panes and scrapes them. Its nine points,
+  with what herdr has since (checked by the coordinator):
+  1. No "worker finished its task" signal (idle is not finished): headless
+     workers end their turn with `herdr worker wait --attention` and their
+     `WORKER-DONE` in `last_result`; `herdr todo run` drives the whole item.
+  2-3. Scraping false positives (its own prompt, the task example, old
+     scrollback, `WORKER-DONE a b c |` not matching, a finished worker
+     unnoticed for ~6 h): gone with headless workers (the final text is
+     structured, not scraped); the driver's contract allows one sha.
+  4. Waits end on a server restart: `herdr todo wait` reconnects (8eaec1f2);
+     `pane wait-output`/`agent wait` still do not.
+  5. `agent read --lines` fails while the agent works: open.
+  6. A stuck worker is invisible (no output for 2.5 h): open; must be an
+     observable fact, not a silence timer (the delay rule).
+  7. Text the user typed into a worker's input box is lost when its tab or
+     worktree closes, and a coordinator's prompt is appended to it: open.
+  8. `worktree create` without `--cwd` uses the focused workspace's repo:
+     open.
+  9. `agent start` in a never-trusted folder returns `agent_not_ready`
+     without naming the trust dialog: `agent prompt` names it since
+     (`agent_prompt_blocked`); `agent start` should too.
+  Proposed: move that coordinator to headless workers and `herdr todo run`
+  (needs the driver to run in its repository: checks and install registered
+  in its `.herdr/`), and fix 4 (pane waits), 5, 7, 8, 9 for pane workers.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
