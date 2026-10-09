@@ -1784,6 +1784,24 @@ and `20261006-030215-b8ca`); both put the first two at the top.
   worktree per tool call and diff (Edit/Write strings miss Bash/sed edits,
   formatters and whole-file writes); evaluate git-ai's notes format before
   inventing one. Not scheduled: commit-level trailers above come first.
+  Would jj help? (user, 2026-10-09: "would jj help here? ask the models";
+  round 20261009-115641-7377, sol + MiMo + DeepSeek; jj 0.45.1 is installed
+  here). All three: not in the shared checkout and not in the driver. jj
+  snapshots the whole working copy, so it would absorb other sessions'
+  uncommitted files into a change and break the allowed-paths rule; it
+  snapshots only when a jj command runs (no watcher), so per-tool-call
+  history still needs an explicit call per tool call; `jj op restore` undoes
+  jj's own state, not an install, a push or other sessions' git work;
+  workers (and Claude) know git and would bypass it; change ids do not
+  survive our git cherry-pick or the upstream rebase, so trailers + SQLite
+  stay the source of truth; jj-lib is pre-1.0, so the CLI at most. Where it
+  helps: one change id with `jj evolog` across retry/amend attempts, and
+  first-class conflicts when jj does the fork-sync rebase. Smallest
+  experiment, if ever: only in the worker slot (a jj workspace seeded from
+  master), the driver and landing stay git; measure whether `evolog`
+  replaces the planned `attempts` table and whether jj calls after each tool
+  call give usable boundaries. Not scheduled; the `attempts` table and
+  explicit worktree snapshots come first.
 
 ## Proposed
 
