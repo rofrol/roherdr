@@ -23,6 +23,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker's Bash call with `run_in_background` and a Monitor call are
   denied with that reason.
 
+- [ ] Broker tests hang in a worker's sandbox instead of failing fast [t-xq4pjef6]
+  (found by the coordinator 2026-10-09, runs `r-6edkrlwq`, `r-xelv6o5o`):
+  without socket permission `a_broker_test_leaves_no_broker_behind_even_when_it_fails`
+  waited over 600 s and its process outlived the worker (orphaned, parent
+  pid 1), so `verify`'s process check failed until the coordinator ended
+  it. A broker test should fail at once when the socket bind is refused
+  (an explicit "sandbox: no sockets" skip or error naming the cause), and
+  its hang guard must end the test process, not leave it behind. Test:
+  with binding refused the test fails in well under a second and no
+  process remains.
+
 - [ ] A runaway wait loop exhausted the Mac's PTYs (user, 2026-10-07: "about [t-ul4yd4ll]
   400 tabs, opened by the bussiness-ideas coordinator when it looped on
   retrying its wait for a worker; it closed them and removed the loop. Ask
