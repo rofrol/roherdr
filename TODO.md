@@ -11,14 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Flaky: `workers::tests::todo_runs::a_run_goes_from_preflight_to_the_cherry_pick` [t-dydsc2kv]
-  got an extra `run_lock_wait` event once (worker of run `r-5bu5uym6`,
-  2026-10-09; 30/30 alone). Suspect a race in the run-lock handover
-  between two drivers of one run (see the earlier fix in 8eaec1f2, where a
-  second thread drove a run past a simulated crash). Reproduce with the
-  AGENTS.md stress recipe under load and fix the cause; no waits or
-  retries added.
-
 - [ ] The usage gate refused a run on a reading that was stale between [t-6sgp2zau]
   normal polls (coordinator, 2026-10-09 23:21: Claude 5h at 16%, "stale,
   read 186s ago"; ten seconds later the next poll admitted the run). A
