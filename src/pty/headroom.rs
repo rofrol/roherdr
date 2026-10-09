@@ -95,6 +95,11 @@ impl UsageCache {
         }
     }
 
+    /// The last sample, with the PTYs allocated since counted in.
+    fn current(&self) -> Option<SystemPtyUsage> {
+        self.sampled.and_then(|(_, usage)| usage)
+    }
+
     #[cfg(unix)]
     fn invalidate(&mut self) {
         self.sampled = None;
@@ -122,25 +127,46 @@ fn with_cache<T>(f: impl FnOnce(&mut UsageCache) -> T) -> T {
 
 /// The system's PTY usage, sampled at most once a second.
 pub(crate) fn system_usage() -> Option<SystemPtyUsage> {
-    with_cache(|cache| cache.get(Instant::now(), crate::platform::system_pty_usage))
+    let usage = with_cache(|cache| cache.get(Instant::now(), crate::platform::system_pty_usage));
+    super::usage::record_sample(usage);
+    usage
 }
 
 /// Called once before a pane's PTY is opened.
 pub(crate) fn ensure_spawn_headroom() -> io::Result<()> {
-    with_cache(|cache| cache.ensure_headroom(Instant::now(), crate::platform::system_pty_usage))
-        .map_err(io::Error::from)
+    let (result, usage) = with_cache(|cache| {
+        let result = cache.ensure_headroom(Instant::now(), crate::platform::system_pty_usage);
+        (result, cache.current())
+    });
+    match result {
+        Ok(()) => {
+            super::usage::record_sample(usage);
+            Ok(())
+        }
+        Err(err) => {
+            super::usage::record_exhausted(err.usage);
+            Err(err.into())
+        }
+    }
 }
 
 /// Maps a failed `openpty` to [`PtyExhausted`] when the OS reports the pool
 /// is full, with a fresh count; any other failure keeps its message.
 #[cfg(unix)]
 pub(crate) fn openpty_error(err: impl std::fmt::Display) -> io::Error {
-    openpty_error_with(&err.to_string(), || {
+    let err = openpty_error_with(&err.to_string(), || {
         with_cache(|cache| {
             cache.invalidate();
             cache.get(Instant::now(), crate::platform::system_pty_usage)
         })
-    })
+    });
+    if let Some(exhausted) = err
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<PtyExhausted>())
+    {
+        super::usage::record_exhausted(exhausted.usage);
+    }
+    err
 }
 
 #[cfg(unix)]
@@ -191,7 +217,11 @@ mod tests {
     use super::*;
 
     fn usage(in_use: u32, max: u32) -> Option<SystemPtyUsage> {
-        Some(SystemPtyUsage { in_use, max })
+        Some(SystemPtyUsage {
+            in_use,
+            max,
+            exact: false,
+        })
     }
 
     #[test]

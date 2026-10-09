@@ -192,6 +192,10 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         // Carried across before any client attaches, so the first title sent is
         // the override rather than the configured one it replaced.
         server.api_window_title = received.manifest.api_window_title.take();
+        // Likewise the announced PTY thresholds, so this server does not
+        // notify again about the level the old one already reported.
+        server.pty_alerts =
+            crate::pty::usage::PtyAlerts::from_handoff(received.manifest.pty_alerts.take());
         crate::server::handoff::report_ready(&mut received.stream)?;
         crate::server::handoff::wait_committed(&mut received.stream)?;
         server.app.assume_handoff_ownership();

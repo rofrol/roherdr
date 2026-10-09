@@ -41,6 +41,9 @@ fn monitor_host_shutdown(
 pub(crate) struct SystemPtyUsage {
     pub in_use: u32,
     pub max: u32,
+    /// The kernel counts `in_use` itself (Linux's `kernel.pty.nr`); false
+    /// where it is inferred, such as from the device nodes in `/dev`.
+    pub exact: bool,
 }
 
 /// Counts the system's live pseudo-terminals, or `None` where the platform

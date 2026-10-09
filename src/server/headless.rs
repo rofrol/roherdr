@@ -206,6 +206,10 @@ pub struct HeadlessServer {
     /// The last notifications sent to client shells, for `notification.list`.
     notification_history: std::collections::VecDeque<api::schema::NotificationRecord>,
     next_notification_id: u64,
+    /// The pseudo-terminal thresholds already announced.
+    pty_alerts: crate::pty::usage::PtyAlerts,
+    /// The last PTY usage change the loop handled.
+    pty_usage_seen: u64,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
@@ -357,6 +361,8 @@ impl HeadlessServer {
             tab_geometry_controllers: HashMap::new(),
             notification_history: std::collections::VecDeque::new(),
             next_notification_id: 1,
+            pty_alerts: Default::default(),
+            pty_usage_seen: 0,
             popup_owner_tab_id: None,
             client_shell_boot_id: format!(
                 "{}-{}",
@@ -423,6 +429,14 @@ impl HeadlessServer {
             render_dirty.request_generic();
             render_notify.notify_one();
         }));
+        // A new pseudo-terminal sample rebuilds the snapshots, which carry
+        // it, and may raise a notification.
+        let render_dirty = self.app.render_dirty.clone();
+        let render_notify = self.app.render_notify.clone();
+        crate::pty::usage::start_sampler(move || {
+            render_dirty.request_generic();
+            render_notify.notify_one();
+        });
         // Workers a previous server ran through brokers are re-attached.
         crate::workers::resume_brokered_at_start();
         // `herdr todo run` runs a previous server left in progress go on
@@ -523,6 +537,8 @@ impl HeadlessServer {
                 needs_graphics_render = false;
                 crate::render_prof::event("full_render_cause.scheduled_tasks");
             }
+
+            self.forward_pty_usage_alerts();
 
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {

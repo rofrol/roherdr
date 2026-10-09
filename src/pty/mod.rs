@@ -3,3 +3,4 @@ pub(crate) mod backend;
 #[cfg(unix)]
 pub(crate) mod fd;
 pub(crate) mod headroom;
+pub(crate) mod usage;

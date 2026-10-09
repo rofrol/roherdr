@@ -319,6 +319,7 @@ pub(crate) fn render_sidebar(
         crate::build_info::commit_line(),
     );
     let (sections, build_area) = split_build_row(area, build);
+    let (sections, pty_area) = super::pty_footer::split_row(sections, snapshot.pty_usage.as_ref());
     hits.sidebar_sections = sections;
     let agents_panel = config.show_agents_panel;
     let (workspace_area, detail_area) = if agents_panel {
@@ -1285,6 +1286,9 @@ pub(crate) fn render_sidebar(
         );
     }
 
+    if let Some(usage) = snapshot.pty_usage.as_ref() {
+        super::pty_footer::render_row(buffer, pty_area, usage, palette);
+    }
     if let Some(build) = build {
         render_build_row(buffer, build_area, build, palette);
         hits.tooltips.push(build_row_tooltip(build_area, build));

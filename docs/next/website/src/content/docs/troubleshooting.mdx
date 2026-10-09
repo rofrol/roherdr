@@ -70,6 +70,12 @@ herdr
 
 Stopping a server exits its pane processes. Named sessions use `herdr session stop <name>`. See [Install Herdr](/docs/install/#update) for updater, package-manager, and live-handoff behavior.
 
+## New tabs fail because pseudo-terminals ran out
+
+Every pane holds one pseudo-terminal, and the system has a fixed number of them for every terminal app together (`kern.tty.ptmx_max` on macOS, `kernel.pty.max` on Linux). The sidebar footer shows the count, dim, as `PTY 65 · sys ~108/511`: the pseudo-terminals Herdr's panes hold first, then the whole system's in use and its limit. The `~` marks an estimate: macOS has no counter for the pseudo-terminals in use, so Herdr counts their device nodes; Linux counts them itself. The line turns amber at 70% of the limit and red at 90%. Herdr's count follows pane create and close; the server samples the system figure on every new pane and on a timer in between, more often once half the pool is used. Windows has no fixed pool and shows only Herdr's count.
+
+Herdr notifies you once when usage reaches 80% and once at 90%. A notice repeats only after usage has dropped below the next lower threshold (70% and 80%). A live handoff (`herdr server live-handoff`, which `herdr update --handoff` also sends) keeps what was already announced, so the new server does not notify again about the same level. A new pane that finds the pool exhausted always notifies. Close idle tabs, or run `herdr-job clean` to close finished job tabs.
+
 ## Keychain-backed tools fail inside Herdr on macOS
 
 Check the server launch context from a Herdr pane:

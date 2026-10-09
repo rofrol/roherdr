@@ -126,6 +126,8 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         tab_geometry_controllers: HashMap::new(),
         notification_history: std::collections::VecDeque::new(),
         next_notification_id: 1,
+        pty_alerts: Default::default(),
+        pty_usage_seen: 0,
         popup_owner_tab_id: None,
         client_shell_boot_id: "test-boot".into(),
         sent_window_title: None,
