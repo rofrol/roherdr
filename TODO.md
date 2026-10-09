@@ -1687,6 +1687,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   criterion more than 1 false per 20. Enforcing the block is a later
   decision of the user. Keep the worker-obligation block as it is.
 
+- [ ] The space row's `T` becomes the coordinator crown (user, 2026-10-09: [t-czovnhtt]
+  "the T icon in the herdr space line should be a crown icon, like in the
+  tab"). `TODO_LABEL` (" T ", src/client/shell/sidebar.rs) starts the
+  space's `todo_command`, i.e. a coordinator; use the same crown glyph the
+  sidebar shows for a `coordinator` tab, with the same width handling as
+  the other chips (a glyph whose width differs between terminals must not
+  shift the row), and keep its click and tooltip behavior.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
