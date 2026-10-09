@@ -1279,6 +1279,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a vendored script); the user reads and files it himself. Nothing is
   posted by an agent.
 
+- [ ] The footer showed "OR $0.39 balance" after a $10 top-up (user, [t-mwwgqlah]
+  2026-10-09: "why does the OR usage widget show $0.39 although I already
+  topped up $10; add to TODO, ask the models"). Checked by the coordinator:
+  the formula is right (`/credits` total minus usage); `usage.read` returned
+  $10.39 a few minutes later. Cause: the server polls every 300 s and the
+  footer shows no age, so a fresh top-up looks lost. Consult round
+  20261009-233730-c86a (sol, MiMo, DeepSeek): all three: show the reading's
+  age in the footer row (e.g. `OR $10.39 · 4m`) and offer a manual refresh
+  through the existing rate-limited `usage.read --refresh` path, never a
+  shorter interval or a refresh on focus or timers. Diverged on where:
+  sol: a Refresh button in the details popup (the row's click keeps
+  opening details); MiMo, DeepSeek: clicking the row refreshes. Decided by
+  the coordinator: the age in the row and a Refresh action in the details
+  popup, with feedback (in flight, done "checked just now", or "refreshed
+  20s ago, next in 40s" when the minimum gap refuses). A failed refresh
+  keeps the last successful reading's time; label a `limit_remaining`
+  fallback as the key's limit, not the account balance.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
