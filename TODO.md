@@ -11,6 +11,621 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A deterministic coordinator driver: `herdr todo run` (user, 2026-10-08, [t-s3oaxcki]
+  after the coordinator passed a whole label where `--expect-build` takes
+  an id: "can't a program restrict the options instead of the agent
+  choosing well once and badly once? I dislike the non-determinism in the
+  coordinator's work; ask the models"). Round `20261008-181228-d7a1` (sol, MiMo, DeepSeek),
+  agreeing: the coordinator chooses intent, the driver owns execution.
+  - `herdr todo run <item-id> --task <file> --message <subject> --paths
+    <globs> --check <registered check>`: a run persisted in herdr's SQLite
+    (run id, item, step, attempt, base sha, worker, branch, command ids,
+    last seq, error), an immutable task snapshot, typed argv (never shell
+    strings), checks from a registered list; every side effect recorded as
+    intent before and result after, reconciled after a crash against
+    commit ids, worker ids and remote refs.
+  - Steps: preflight (TODO structure, repo state, disk, slot) → start
+    worker → attention (policy-covered questions answered and acked; others
+    become a question event) → review (base-relative diff and the task:
+    the model approves or asks for changes) → stop and confirm exit →
+    verify → cherry-pick → `just clean-install` → TODO update with
+    `todo_edit` → push → cleanup. A failed verify or rejected review asks
+    the model for the next attempt's task text (attempts capped, then
+    escalate); a conflict or failed check stops as a blocked event; never
+    a silent continue or auto-rebase.
+  - The coordinator waits once on the driver's event stream (`herdr todo
+    wait`), answers with `herdr todo resume <run> --action ...` naming the
+    event id; stale answers refused. No job-id grepping, labels, quoting or
+    sleeps in the coordinator's hands.
+  - Kept to the model: task text, questions outside policy, the diff's
+    intent, retry text, exception approval.
+  - A PreToolUse allowlist for the coordinator: `herdr todo ...`, read-only
+    git and file reads, `todo_edit`; exceptions through an audited
+    `--override --reason` step, never a general shell escape.
+  - First slice: preflight → start → attention → ack → stop → verify
+    (→ cherry-pick), persisted, resumable, one wait; clean-install, TODO,
+    push and the allowlist next.
+  First slice done 2026-10-08 by `w38` (`feat: herdr todo run drives an
+  item from preflight to cherry-pick`, verified after the coordinator ended
+  8 `yes` load processes the worker left: `verify`'s process check caught
+  them). Decided by the coordinator for the next slice, from earlier
+  decisions: `herdr todo resume` sends the caller's environment again (never
+  stored: it may hold credentials); without it a resumed check is
+  `unavailable`; a per-run lock held by the server driving it, so after a
+  live handoff the new server drives the run only once the old one let go
+  (the cherry-pick race w38 named); a worker ignoring SIGTERM gives a
+  "still alive" event to the coordinator, no kill on a timer; `todo.*`
+  stays local like `worker.*`. Also: AGENTS.md's flaky-test stress recipe
+  starts `yes` loads with `&` and relies on `pkill yes`; make the loads end
+  with the command (a trap or one process group killed at exit).
+  Pattern seen three times on 2026-10-08 (prompt/kill, then the driver's
+  test helpers): unix-only test helpers dead on Windows fail
+  `just windows-lint` only at the coordinator's clean-install. Register a
+  `windows-lint` check (`python3 scripts/windows_cross.py lint`) in
+  `.herdr/checks.toml` and pass it with `--check` for changes under `src/`,
+  so `verify` catches it before the cherry-pick.
+  Second slice done 2026-10-08 through the driver itself (run `r-5wjbvf3m`,
+  the first item done by `herdr todo run` end to end: attempt 1 rejected in
+  review for a 5 s timer and a missing commit subject in the worker's task;
+  attempt 2 approved, verified, cherry-picked as `be9b9a7b`; installed).
+  Next slice: clean-install, TODO update, push, cleanup in the driver, then
+  the coordinator's allowlist hook.
+  Slice 3 open point (run `r-7yjpuc43`, decided by the coordinator): the
+  install's live handoff starts a server without the coordinator's
+  environment (never stored), so every herdr run would stop at
+  `push_failed` until `retry-push`. Next: the old server hands the runs'
+  in-memory environments to the new one inside the live handoff payload
+  (like the PTY fds), never on disk.
+  Run `r-5gsvuqm6` (2026-10-08): the first run of an item the second time blocked
+  at start on a branch-name collision; fixed in this run (branches carry the
+  run id). Also found: `herdr todo resume --action abort` on a blocked run
+  (`r-cese4nxv`) changed nothing; a blocked run must be abortable.
+  Run `r-5gsvuqm6` went end to end through the driver (verify, cherry-pick,
+  install, TODO note, push) on 2026-10-08; its push needed one
+  `retry-push` because the old binary did the install (the next run carries
+  the environment). Found: `herdr todo wait` dies with `EmptyResponse` when
+  the install's live handoff replaces the server; it should reconnect to
+  the new server and keep waiting on the same run.
+  Decided by the coordinator 2026-10-09: Windows dead code in test-only
+  helpers failed `verify` four times (runs `r-idd6p7io`, `r-f63lelnd` and two
+  earlier). The contract the driver appends should name each registered
+  check the run will verify with and tell the worker to run those it can
+  (`windows-lint` works in the worker sandbox) before its last line.
+  Decided by the coordinator 2026-10-09: run `r-ib4o5jzl` passed `verify` with
+  only the `workers` check and landed a commit that broke the frozen v1
+  client contract test (found by the install's `just check`, so nothing was
+  pushed or installed). A run that changes `src/api/` must verify with the
+  `tests` check too; better, the driver adds `tests` itself when the diff
+  touches `src/api/` or `tests/fixtures/`, and the appended contract names
+  the frozen-contract rule.
+  Contract slice done 2026-10-09 (run `r-ueeoumgj`): the appended contract
+  lists each verify check by name and argv and asks the worker to run and
+  report them; a diff under `src/api/` or `tests/fixtures/` adds the `tests`
+  check (`run_check_added` event); the v1 client-method line.
+
+- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
+  written to SQL that there is now a coordinator with id X that started
+  coordinating at T? ask the models"). Today: no; workers store only
+  `owner_pane`/`owner_session`; being a coordinator is a tab role flag.
+  Round `20261008-104011-d7f1` (sol, MiMo, DeepSeek), agreeing, chosen by the
+  coordinator:
+  - a coordination tenure with its own id (`c-...`), never the pane or
+    Claude session id: those are bindings that change on resume or a move
+    to another pane (a `coordinator_bindings` table: pane, session, from,
+    to); a resume keeps the tenure, a handoff starts a new one;
+  - events `coordinator_started` / `coordinator_ended` (with the reason) /
+    later `handoff` in the same events log, the `coordinators` table their
+    projection in the same transaction (repo, current item, started_at,
+    ended_at, end reason, epoch);
+  - one active coordinator per repository (the TODO rule), enforced by a
+    partial unique index on the repo where `ended_at IS NULL`;
+  - the server is the source of truth: setting the tab role coordinator
+    calls `coordinator.start`, the crown is drawn from the table, ending it
+    calls `coordinator.end`; `workers.owner_coordinator_id` points at the
+    tenure, the pane/session stay for routing and escalation; obligations
+    key on the tenure;
+  - a crashed coordinator: closed on the owner events herdr already has
+    (pane closed, agent exited) and re-evaluated at server start
+    (`end_reason = orphaned`), no heartbeat reaper (DeepSeek's, dismissed
+    under the user's events-only decision of 2026-10-08);
+  - first slice: the table, the bindings, the two events, start/end calls
+    wired to the tab role, the unique index, `owner_coordinator_id`;
+    handoff epochs with the handoff item, item history later.
+  First slice done 2026-10-08 by `w31` (`feat: coordinator tenures, one per
+  repository`, verified, installed); the first tenure is `c-6xve3ubo`
+  (the herdr coordinator's tab). Left: obligations keyed on the tenure,
+  the current item, handoff epochs, resume keeping the tenure.
+
+- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
+  2026-10-07: "can't it be compacted or cleared now and then? ask the
+  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
+  per item, state only in files, herdr owns the waits, a thin chat session
+  stays for talking with the user). Slices, one worker each:
+  1. Verified writes: a small tool the coordinator uses for TODO.md and
+     DECISIONS.md edits that fails loudly when the anchor is missing or the
+     text did not land (the 2026-10-07 lost edits), and the rule that a
+     preference said only in chat goes to DECISIONS.md before the turn ends.
+  2. Records a new coordinator can reconcile: each delegated item in
+     TODO.md carries its worker id, worktree, branch, base SHA and the event
+     waited for; open menus listed in TODO.md.
+  3. The per-item coordinator: herdr starts a headless coordinator for the
+     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
+     `herdr worker list`, `herdr-job list`), which ends after committing the
+     item; the next starts on that event. The chat session only answers and
+     queues. The `/todo` skill and the rule change accordingly.
+  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
+  and then? ask the models"). Measured on 2026-10-07: the coordinator made
+  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
+  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
+  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
+  sol `/clear` now and a fresh process later; all three reject `/compact`
+  (a lossy summary, the session already lost track of failed TODO edits
+  after one). Needed first under any choice: TODO/DECISIONS writes read
+  back and verified (that bug), chat-only preferences written to
+  DECISIONS.md before the turn ends, worker/job records a new coordinator
+  can reconcile (worker id, worktree, branch, base SHA, the event waited
+  for), pending menus in TODO.md.
+
+- [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
+  (Decided by the user 2026-10-09 after consult round
+  20261009-141652-8a76, sol + MiMo + DeepSeek: "shadow, then block").
+  The 2026-10-09 audit found 3 silent coordinator stops the ABANDON
+  wording missed. In the herdr Claude Stop check (coordinator tabs), log a
+  would-block decision when all hold: no active `todo run` for the repo
+  and approved runnable items exist (the driver's state, not TODO text);
+  the Stop input's `background_tasks` is present and empty (absent =
+  unknown = pass); no `awaiting-reply` marked and no question pending;
+  the repo is not paused (new `herdr todo pause|resume <repo>`; a plain
+  stop/pause message from the user sets it); at most one block per turn
+  and three in a row per session. Shadow phase only logs; replay the 244
+  audited turn ends (`scripts/coordinator_turn_audit.py`) as fixtures:
+  target 3/3 silent stops caught and at most 1 false per 100; kill
+  criterion more than 1 false per 20. Enforcing the block is a later
+  decision of the user. Keep the worker-obligation block as it is.
+
+- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
+  about 30 minutes? too much? why any asynchronous workaround at all? make
+  a TODO with the models to fix this and do it next"). Supersedes the
+  polling/deadline design below (worker `w-worker-end`'s commit is not taken).
+  Round `20261007-175803-0ec5` (sol, MiMo, DeepSeek), agreeing: a turn end
+  is an event, a task end is a verdict. The coordinator starts the worker
+  with `agent.prompt_turn` (or prompt + request id) and blocks on that
+  request's end: Stop, StopFailure, interrupt, the agent process's exit
+  (track the agent's process, not the pane's shell), or a server restart
+  reported as such; then reads the transcript once and classifies: done
+  (WORKER-DONE with its sha on the branch), blocked, awaiting input (a
+  question: escalate), failed, crashed, tracking lost. No timer decides
+  anything: no deadline, no idle debounce, no resend after N seconds; at
+  most a human-facing "overdue" notice for a real agreed deadline.
+  herdr needs: `agent.wait_turn <request id> [since <cursor>]` with an
+  atomic check-and-subscribe, a terminal reason enum, process-exit events,
+  and request ids that survive a server restart (or an explicit error);
+  check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
+  acknowledged, idempotent delivery instead of "resend after 15 s".
+  Done 2026-10-07 by a worker (`feat: wait for a prompt's turn by event`):
+  `agent.wait_turn` (finished, failed with StopFailure's error, interrupted,
+  exited, unknown_request), `agent.prompt_tracked`, `herdr agent
+  wait-turn`, `herdr-job wait-agent <pane> --request <id>` reading the
+  transcript once; screen polling and the deadline are gone. Gap: Claude
+  sends no Stop on Esc, so an interrupted turn shows only when the next
+  turn starts; a coordinator waiting on a worker the user interrupted waits
+  until then. Left: acknowledged startup prompt delivery.
+  Bug at first use (2026-10-07): the Keychain worker finished normally
+  (WORKER-DONE at 16:43 UTC) but `wait_turn` returned `interrupted`. The
+  inference "another turn started before this one reported its end" seems
+  to fire when a background task's notification starts a turn inside the
+  same prompt's work; check the hook order for task notifications and
+  derive `interrupted` only from an explicit signal.
+  Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
+  prompts confirm that the agent accepted them`, installed). Left: the
+  false `interrupted` above.
+  Fixed 2026-10-08 by headless worker `w21` (`fix: wait_turn reports
+  interrupted only on an explicit signal`): `interrupted` only from Esc or
+  Ctrl-C sent through `agent.send_keys` or the agent's own interrupted
+  report; a turn started by a background-task notification is a
+  continuation (the Claude hook marks it); ambiguous order gives `unknown`.
+  Left, decided by the coordinator: confirm live that Claude sends
+  `UserPromptSubmit` for a background-task notification mid-turn; the
+  user's own Esc in the pane now gives `unknown` (better than a false
+  `interrupted`); an explicit signal for it could come from the
+  transcript's `[Request interrupted by user` marker, verified live first.
+  Moved to "Needs a decision" 2026-10-09 by the coordinator: the remaining
+  live check needs an interactive Claude in a pane, which may hit a folder
+  trust dialog that agents must not answer.
+  Question: may a worker run the live check in a throwaway pane in an already trusted folder (the herdr checkout), or will you run it?
+  Options: worker in the trusted herdr checkout, read-only prompts (Recommended) | I run it myself | drop the live check
+  Decided by the user 2026-10-09: a worker runs the live check in the trusted
+  herdr checkout (read-only prompts, a short background task), results into
+  this item.
+
+- [ ] One wait over all of a coordinator's workers (user, 2026-10-07: [t-cguvhgwu]
+  "waiting for several workers at once was deferred: so work out a new TODO
+  entry with the models"). Builds on "A coordinator is woken by its
+  worker's question". Round `20261007-205522-d711` (sol, MiMo, DeepSeek), all
+  three: not `worker.wait --any` or an id list (membership races: workers
+  started, exiting or re-owned during a wait) but a per-coordinator inbox:
+  1. `worker.events --owner <coordinator> --after <cursor> --wait`: blocks
+     while empty, returns every pending event in order as a bounded batch
+     with `next_cursor` (two questions at once arrive together; returning
+     only the first lets one unanswered question starve the rest). Events:
+     question, turn end, exit, joined, left, re-owned. `worker.wait` stays
+     as a shorthand over it.
+  2. One server-wide monotonic sequence filtered by owner, with the
+     server's incarnation (`epoch, seq`); kept across live handoff; a
+     cursor the server can no longer serve gets `resync_required` and a
+     snapshot, never a silent skip.
+  3. Reading is not resolving (sol): pending questions are durable state;
+     a reconnecting or new coordinator gets a snapshot of its workers'
+     states and pending questions first, even when their events are older
+     than its cursor.
+  4. Handing over, as a transaction, not "hop siup" (user, 2026-10-07: "the
+     old coordinator's answers are rejected: what? why is there no handoff?
+     It must be like a database transaction"). Round `20261007-210018-c710`
+     (sol, MiMo, DeepSeek): workers belong to the item: a coordinator
+     finishes and reviews its item's workers before it ends, so normally
+     only the item is handed over, not live workers (sol, MiMo). When a
+     worker must go on (a crash, a long task), `coordinator.handoff {note}`
+     is one server transaction, serialized with answers: it stores the note
+     (what was being done, decisions said only in chat, each worker's
+     purpose and what to check in review, answers given and why), moves
+     ownership and the epoch, and captures worker states, pending questions
+     and the cursor; an answer lands either before it (and is in the
+     record) or after it (and goes to the new owner). herdr's TODO runner,
+     not the old coordinator, picks and starts the successor, which reads
+     and acknowledges the package before acting; the old one exits after
+     the commit. Workers keep running meanwhile; their questions stay
+     queued. Fencing only for a crashed, hung or stale old coordinator: its
+     late actions are refused with `ownership_transferred` naming the
+     successor, and its late answers are kept and passed to the successor
+     as information, never applied and never dropped.
+  5. One background job per coordinator (`herdr-job run -- herdr worker
+     events --owner ... --wait`), not one per worker; events arriving while
+     the coordinator's turn is busy wait in the inbox; after a wake the
+     coordinator drains the batch and re-arms from its last cursor.
+  Tests: two simultaneous questions in one batch; an event between drain
+  and re-arm; a worker started and one exiting during a wait; live handoff
+  and restart keep the sequence; re-owning during a wait and a stale answer
+  from the old owner; a wake while the coordinator's turn is busy.
+
+- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
+  screenshot: "this circle is grey, it looks as if the coordinator is not
+  working"). Its only running job is `herdr agent wait <worker pane>`: no
+  output and no CPU, so after 5 minutes herdr-job reports it `--activity
+  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
+  the uncommitted idle-mark change lands), while the worker it waits on
+  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
+  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
+  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
+  state instead of its own CPU and output.
+
+- [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
+  coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
+  wait failed at once: "how is it armed? ask the models"). Round
+  `20261008-104136-8de5` (sol, MiMo, DeepSeek): a shell-care rule alone is a
+  wish; make it mechanical:
+  1. `herdr worker wait <id> --attention` without `--after` starts after
+     the caller's acknowledged seq when the caller owns the worker (the
+     server keeps `acked_seq` since step 4), so the coordinator's loop is:
+     wait, handle, `herdr worker ack <id> <seq>`, the same wait again; no
+     variable in the shell (chosen by the coordinator: it reuses what the
+     server already stores, instead of a second cursor file as DeepSeek
+     proposed). User 2026-10-08: "what is --after for? ask the models";
+     round `20261008-104542-e5d4`: the wait is level-triggered (nothing that
+     happened before it began is missed), so a finished turn would wake it
+     again for ever without a cursor; the cursor is needed, the flag is not
+     for an owner (sol, DeepSeek): the default is the owner's acked seq,
+     and an ack means handled, not seen, so a crash before handling wakes
+     it again; non-owners do not inherit the owner's cursor; `--after`
+     stays for recovery, tests and observers. MiMo's "clear the state when
+     the coordinator acts" was dismissed: it can hide a question or exit
+     that arrives at the same time (DeepSeek). The seq is durable (SQLite
+     AUTOINCREMENT), so an old cursor stays valid.
+  2. `--after=<seq>` accepted as one token; a stray argument names itself
+     in the usage error (MiMo).
+  3. `herdr-job run` prints the job id as its first stdout line (everything
+     else to stderr), so nobody finds a job with `herdr-job list | grep`,
+     which can pick the wrong one when several run (MiMo, sol).
+  4. AGENTS.md: pass arguments literally; never build options with
+     `${X:+...}` or unquoted expansions (zsh does not split them); use
+     arrays for lists; treat a failed wait as a failure, not as the worker
+     needing attention.
+  The per-coordinator inbox (planned) replaces the two-layer wait later;
+  no `--then-wait` glue until then (MiMo, sol).
+  Ordered 2026-10-10 (user: coordinator items to the top; consult round
+  20261010-010542-7df5, sol + MiMo + DeepSeek): allowlist, tenures, fresh
+  coordinator per item, stop check, hook order, waits, decision menus,
+  worker lines, capabilities, review queue, T3 comparison, crate, tracker.
+  All three: `t-khw7lira` is superseded by `herdr todo wait`; decided by the
+  coordinator: it is done together with `t-cguvhgwu`, then closed.
+
+- [ ] Coordinators present "Needs a decision" questions as clickable [t-vs3664vc]
+  options (user via the try-roguix coordinator, 2026-10-07: it moved four
+  items there and only mentioned them; "fix the process so a coordinator
+  that records questions also presents them as clickable options at once or
+  at a defined point; ask the models"; the user: "does the collector have to
+  be in herdr? earlier you also said something had to be in herdr and the
+  /todo skill was enough"). The herdr coordinator did the same with three
+  questions on 2026-10-07. Consult rounds `20261007-025516-0631` and
+  `20261007-025602-9f40` (sol, MiMo). Both: no herdr collector needed now;
+  TODO.md is already the durable state; a script plus a `/decisions` skill
+  first, herdr only after lost updates or unseen questions are observed.
+  - Each question carries its options in the TODO line (`Options: a | b |
+    c`); a skill never invents choices (MiMo); a short id or hash lets the
+    asker re-read and skip a question changed meanwhile (both).
+  - Timing in the `/todo` skill: right after delegating an item (the worker
+    runs meanwhile), ask the new questions with the multiple-choice tool, 4
+    per call; if unanswered or on the phone, plain text plus `herdr agent
+    awaiting-reply "N decisions"`, which already shows in the `?` list, so no
+    herdr badge is needed (MiMo wanted a badge for visibility).
+  - Answers are written back as "Decided by the user <date>: ..." and the
+    item moves to "Next, in order" only on an explicit approval; writers
+    re-read before writing and commit `TODO.md` by path (both). Coordinators
+    re-read `TODO.md` before each item, never from memory (MiMo).
+  - Done 2026-10-07 (user chose it from a menu): the global rule and the
+    `/todo` skill (dotfiles `9b851dd`) require `Options:` on each question,
+    ask new ones right after starting the next worker, fall back to plain
+    text plus `awaiting-reply`, write answers back, re-read `TODO.md`; the
+    false "herdr collects them" is gone. Left: the cross-repository script
+    plus `/decisions` skill, and the test below.
+  - (sol, before:) The global rule's "herdr collects them from there" was not
+    true and had to go. Fix the coordinator stopping between items first, or
+    stalls get blamed on the wrong change (both, round 1).
+  - Test: a fixture repo with one trivial item and two questions, no user
+    present: the item still lands and both questions are asked once; an
+    answer written back is not asked again after a restart.
+  - Second rormpc report (2026-10-07, forwarded by the user; "fix the
+    process, consult the models"): its coordinator piled up 13 questions in
+    "Needs a decision" and never asked them; with "Next, in order" down to
+    one item it waited on a worker and reported, so work would have
+    stopped; only after the user asked "is nothing left? why don't you hand
+    it to workers?" did it ask 4 in a menu, which unblocked 3 items at once.
+    Expected: ask as soon as they are added, at the latest while a worker
+    runs, so "Next" never runs dry while answerable questions wait; record
+    answers and queue the work. The rule of `9b851dd` covers only new
+    questions, not a backlog of old ones without `Options:`.
+  - Other languages (user, 2026-10-07: "what if I also start in Odin? other
+    rules than for Rust"): how workers build (worktree or not, a shared
+    cache) depends on the repository; it belongs in each repository's
+    AGENTS.md, the global rule stays language-neutral.
+
+- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
+  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
+  header-arrows` and its Bash question: "a headless worker's entry cannot
+  be clicked; ask the models").
+  Checked: the `?` row of a worker question has no pane, tab or space
+  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
+  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
+  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
+  style bound to the request id (not the worker): worker name and task, the
+  full command (monospace, newlines kept, scrollable, never truncated: an
+  approval must not rest on a preview) or the question with its options as
+  buttons; Allow once / Deny (optional deny message) / View log; no default
+  action on Enter. If the request is answered elsewhere or the worker exits
+  while it is open, the dialog shows that and disables its buttons; the
+  server rejects stale request ids. Several pending requests: "1 of 3", the
+  next opens after the answer. No "allow this pattern" for now (both: a
+  single command does not show a safe pattern). Keyboard works too.
+
+- [ ] A headless worker's line shows how long it has been working and which [t-jfo7bcvb]
+  TODO task it got (user, 2026-10-08: "I don't see how long a given worker
+  has been working, nor which task from the TODO it got; ask the models").
+  Round `20261008-031505-ffde` (sol, MiMo, DeepSeek), agreeing, chosen by the
+  coordinator:
+  - the line: a per-state glyph (with a text state in the tooltip, not
+    colour alone), the task title (not the coordinator's nickname,
+    truncated with `…`) and the age right-aligned (`<1m`, `12m`, `1h05`,
+    `2d03h`), counted from the worker's start (it includes waiting; the
+    current turn's time goes to the tooltip and the log);
+  - the age refreshes with the sidebar's existing animation/minute
+    redraw, computed from the server's timestamps at render, no per-row
+    timer (render stays cheap);
+  - the tooltip: full TODO title, item id, worker name, state, branch,
+    folder slot, turns, current turn's time, last activity;
+  - the log popup header: the same, then the full assigned task text
+    (collapsible) above the log, and the takeover action visible there
+    (DeepSeek: right-click alone is undiscoverable);
+  - `worker.start --item <title or id>` separate from `--name`, stored as
+    the worker's item; without it, the prompt's first line (recorded as
+    inferred); the coordinator passes the TODO item title, and the id once
+    items have `[t-...]` ids;
+  - ended workers: their lines may go (item "Headless worker lines after
+    their work is done") but stay reachable in a history view (sol,
+    DeepSeek), which the item history can provide.
+
+- [ ] Headless worker lines in the sidebar after their work is done [t-nulti42o]
+  (proposed by the coordinator 2026-10-08 from the user's screenshot of the
+  herdr space: "header arrows lost", "answers name their q… lost",
+  "vendored mktemp us… exited", "takeover claimed o… exited", each with
+  the same green circle):
+  - `lost` is wrong for a worker that had finished its turn and only
+    waited for a next prompt when an install restarted the server: show
+    it as finished (ended by a server restart), not lost (relates to the
+    atomicity review's finding 1);
+  - the state glyph should differ by state (working, waiting for you,
+    finished, failed, exited, lost), as tab lines do;
+  - ended workers stay listed for ever: drop a line once its worker has
+    exited and the coordinator took its commit (or after the user opens
+    its log once), with the log still reachable via `herdr worker log`;
+  - a worker that finished its turn keeps its process and its folder slot
+    until `herdr worker stop`: decide whether the coordinator stops it
+    when it brings the commit in.
+  User 2026-10-08, with a screenshot of 19 worker lines under the
+  coordinator: "fold idle agents does not work on the tabs the coordinator
+  opened; why are they not closed at all? ask the models". Round `20261008-120458-71a7`
+  (sol, MiMo, DeepSeek), agreeing, chosen by the coordinator: a worker line
+  goes away once the worker is exited or finished, acked by its owner, and
+  has no open question or unacked event (not tied to the commit reaching
+  master: a cherry-pick can fail); acking a finished turn stops the worker
+  and frees its folder slot (an ack means handled); the ⊟ fold button folds
+  quiet worker lines with the quiet tabs, never one with a question or an
+  unacked event; ended workers collapse into one line per owner tab ("18
+  ended workers ▸", expanding on click); `herdr worker list --all`, the log
+  and the item history keep them reachable; per-state glyphs instead of
+  one green circle.
+
+- [ ] The space row's `T` becomes the coordinator crown (user, 2026-10-09: [t-czovnhtt]
+  "the T icon in the herdr space line should be a crown icon, like in the
+  tab"). `TODO_LABEL` (" T ", src/client/shell/sidebar.rs) starts the
+  space's `todo_command`, i.e. a coordinator; use the same crown glyph the
+  sidebar shows for a `coordinator` tab, with the same width handling as
+  the other chips (a glyph whose width differs between terminals must not
+  shift the row), and keep its click and tooltip behavior.
+
+- [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
+  (user, 2026-10-09: "the coordinator-worker model is meant to become a
+  protocol with an implementation in Odin etc., not hardcoded crates.io";
+  consult round 20261009-190333-40fb, sol + MiMo + DeepSeek agreeing;
+  decided by the user: "prepare + capabilities"). The coordination layer
+  names no registry, language or tool:
+  - Protocol (language-neutral, versioned): capabilities `net.egress{hosts}`,
+    `fs.write{paths}`, `env{names}`, `exec{argv}`; a repository or item
+    requests, the user's policy grants, the worker kind's adapter enforces;
+    an unknown or unsupported capability is refused (fail closed); every
+    run records its effective grants.
+  - Repository (`.herdr/`), read by the driver from the run's base commit,
+    never from the worker's tree: `[prepare]` argv (here `cargo fetch
+    --locked`) with the capabilities it needs (here egress to crates.io and
+    static.crates.io). A repository diff that changes requested
+    capabilities is a question to the user, never self-granted.
+  - Driver: prepare runs in its own sandbox (only the granted egress, no
+    secrets, writes only the dependency cache); the worker stays offline
+    and builds from that cache.
+  - Worker kinds map grants to their own sandbox (Claude Code: its
+    `sandbox` settings); a pi or Odin worker implements the same contract.
+  Belongs with the item "Extract the coordination layer into its own crate";
+  do this slice first, in today's code, as the crate's first protocol piece.
+
+- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
+  ends with new commits, list them as "to review" until I acknowledge them.
+  Decided by the user 2026-10-06: start with lazygit in a popup on the
+  tab's repository, no new code beyond that; a herdr-native list only if
+  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
+  unit is the commit (uncommitted changes in the shared checkout cannot be
+  attributed); at turn start record the session id and HEAD, at turn end
+  find new commits carrying `Claude-Session: <id>`; show each commit's own
+  patch, never `git diff first^..last` (other agents' commits fall in the
+  range); only an explicit acknowledgement clears "to review". Codex and pi
+  need an equivalent of the trailer.
+
+- [ ] Compare the current headless worker implementation with T3 Code again, [t-ofobwsra]
+  with the models (user, 2026-10-08: "in spare time, maybe give the models
+  the current implementation to analyse again and let them compare it with
+  t3code"). A worker reads `src/workers/` (store, wait, receipts, outbox,
+  obligations, escalation, sandbox, folder slot, handoff) and
+  `vendor/t3code` (orchestration-v2, the Claude and Codex adapters),
+  briefs sol, MiMo and DeepSeek with code excerpts, verifies their claims
+  and writes a report (`docs/headless-workers-vs-t3code-<date>.md`): what
+  T3 does better, what we do better, gaps, and follow-up items in order.
+  User 2026-10-08: "fragments? maybe modularise so a model can get a whole
+  module? ask the models"; "so check modules one by one, without context
+  rot?". Round `20261008-105941-b7f4` (sol, MiMo, DeepSeek), agreeing, so this
+  item becomes two steps:
+  1. Split `src/workers/mod.rs` (4038 lines; the god object is
+     `WorkerSupervisor`, ~50 methods) into cohesive modules of 400-900
+     lines, behaviour unchanged, tests green, re-exports keeping callers:
+     `status.rs` first (Status, questions, `apply` returning effects
+     instead of touching live processes or the registry: pure, the
+     highest review value), then `journal.rs`, `live.rs`/`process.rs`,
+     `registry.rs`, `types.rs`/`error.rs`, then `supervisor/` by verb
+     (lifecycle, commands/questions, takeover, views) and the tests next to
+     their modules. Mechanical moves only, one module per commit.
+  2. Review module by module, each in a fresh request (no accumulated
+     context): the whole module, its tests, and its neighbours'
+     signatures with their contracts (invariants, lock order, transaction
+     boundaries, failure semantics) plus a generated outline; T3 Code's
+     matching part as its interface and the relevant whole file where it
+     fits; per-model budget about 50-60k tokens of input (MiMo). Then one
+     separate integration review of cross-module paths (start, answer,
+     takeover, handoff), where atomicity bugs live (sol).
+
+- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
+  "the coordinator/worker code, the whole control, could be extracted as a
+  new package; much less code than all of herdr; then various TUIs, GUIs
+  could connect to it; analyse with the models"). Facts: `src/workers/` is
+  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
+  platform layer at 60 places (process groups, sessions, start tokens), API
+  schema types and thread helpers; herdr reaches into it from API handlers,
+  the coordinator tab role, takeover tabs, the live handoff and the client
+  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
+  - the boundary is real but not yet clean: generic orchestration (store,
+    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
+    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
+    takeover, coordinator as a tab role, sidebar, Items popup, live
+    handoff); coordinator authority must not depend on tab identity;
+  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
+    to import nothing from herdr, linked into herdr's server (still the
+    only daemon and API host); platform needs behind ports the crate owns
+    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
+    herdr implementing them, fakes in tests; decide whether Windows is in
+    scope for those ports (MiMo);
+  - a separate daemon only when a second client must run without herdr
+    (a third long-lived process next to the server and the brokers would
+    multiply recovery paths now);
+  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
+    events with sequence numbers, replay and snapshots, capabilities (e.g.
+    takeover); version the envelope, not a two-day-old schema; a web client
+    needs an authenticated gateway, not the local socket;
+  - when: after the driver's first slice lands (churn), together with the
+    planned split of `src/workers/mod.rs` [t-ofobwsra].
+  Approved by the user 2026-10-08 ("add it to the TODO"): after the
+  driver's first slice [t-s3oaxcki].
+  User 2026-10-08: "one could even design the protocol and make an
+  implementation in Odin etc.": so the protocol is specified language-
+  neutrally (a written spec plus JSON schemas for commands, events and
+  receipts, and a conformance test suite any implementation runs against
+  a socket), not defined by the Rust types; the Rust crate is the reference
+  implementation, and a second one (Odin or another language) is possible
+  once the spec and the conformance tests exist.
+
+- [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08: [t-dklsfhg4]
+  "maybe it's time for the TODO to be in an SQL database? ask the models";
+  "like jira or github issues"). Rounds `20261008-115256-4ae4` and `20261008-115345-2e9e` (sol, MiMo,
+  DeepSeek): a private database as the source of truth would strand the
+  ~10 repos using the global TODO rules, agents without herdr and git
+  review; GitHub Issues in the fork is the closest to Jira (search,
+  per-item history and threads, commit links, a board) but public, rate
+  limited, and `gh` in this checkout resolves to upstream
+  `herdrdev/herdr` by default (checked 2026-10-08), so every call must pin
+  `--repo rofrol/herdr`. Decided by the user 2026-10-08, in order:
+  1. stable ids `[t-...]` on every item in TODO.md (`todo_edit.py` mints
+     them for new items and adds them to the 71 open ones, keeping the
+     `?` + `Options:` question shape herdr parses);
+  2. a read-only SQLite index in herdr's state dir (`herdr todo sync`: repo,
+     id, section, order, title, content hash; no write-back), used by the
+     item history and worker links;
+  3. a pilot: about 5 items as GitHub Issues in the fork, `gh` pinned to
+     `rofrol/herdr` (and a guard that refuses upstream), to feel the
+     friction before any migration.
+  User 2026-10-08: "there is Codeberg, based on Forgejo, so we could use
+  Forgejo or copy something from its architecture; but for now a local SQL
+  database is probably enough for us? ask the models". Round `20261008-115719-8c5f` (sol,
+  DeepSeek; MiMo gave an empty answer): yes, local SQLite is enough; do not
+  self-host Forgejo now (a service, auth, UI to maintain for one user);
+  copy its concepts, not its schema: a stable global id apart from a
+  per-repo number, title and Markdown body, state, timestamps and a
+  version for stale-update detection, append-only comments with author,
+  labels, external references (later Forgejo/GitHub ids as mappings),
+  explicit order, and the decision questions stored as raw text plus
+  parsed fields; defer milestones, boards, timeline, permissions,
+  notifications, attachments. One authority per item: an item moved into
+  the tracker is no longer edited in Markdown. Step 3 changes: the pilot
+  of about 5 items runs in a local tracker in herdr's SQLite (`herdr todo`
+  commands, transactional writes), with versioned JSON export/import and a
+  Markdown export, instead of GitHub Issues.
+  Reference source (user, 2026-10-08): a Forgejo checkout at
+  `~/personal_projects/vendor/forgejo` (adfdb1a532); the tracker's model
+  is read from `models/issues/` (issue.go, issue_index.go for the per-repo
+  number, comment.go, content_history.go for edit history, issue_label.go,
+  dependency.go for blocks/blocked-by, issue_xref.go for references),
+  copying concepts, not code: Forgejo is GPL-3.0, herdr is Apache-2.0,
+  so copied code would force the GPL onto herdr.
+  Fossil (user, 2026-10-08: "fossil keeps issues in the repo"): its
+  tickets are append-only change artifacts stored and synced with the
+  repository, the current ticket table derived from them; the same
+  event-and-projection shape as herdr's worker store, and a model for
+  keeping tracker items with the repository rather than in a private
+  database (git-bug is the git analogue).
+
 - [ ] Usage summed per workspace. The author asked every session for its [t-kjpuc4zm]
   `/session` accounting by hand and had an agent record the total. The
   fork's usage module has the numbers per agent. Risk: totals that disagree
@@ -244,18 +859,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     draft check. Restart only an idle pane: not blocked, no draft, no
     subagents (`SubagentStop` hook), no jobs; one at a time.
 
-- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
-  ends with new commits, list them as "to review" until I acknowledge them.
-  Decided by the user 2026-10-06: start with lazygit in a popup on the
-  tab's repository, no new code beyond that; a herdr-native list only if
-  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
-  unit is the commit (uncommitted changes in the shared checkout cannot be
-  attributed); at turn start record the session id and HEAD, at turn end
-  find new commits carrying `Claude-Session: <id>`; show each commit's own
-  patch, never `git diff first^..last` (other agents' commits fall in the
-  range); only an explicit acknowledgement clears "to review". Codex and pi
-  need an equivalent of the trailer.
-
 - [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06, [t-cdr6gn32]
   after a consult round on GLM and Kimi, `20261006-221442-cf9e`, where both
   models advised checking this before adding any model.) From consult-stats,
@@ -382,67 +985,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   navigation history is cleared after a client restart, I can't go back").
   The header's back/forward (`focus_history.rs`) lives in client memory, so
   every reattach, and every install's live handoff, empties it.
-
-- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
-  screenshot: "this circle is grey, it looks as if the coordinator is not
-  working"). Its only running job is `herdr agent wait <worker pane>`: no
-  output and no CPU, so after 5 minutes herdr-job reports it `--activity
-  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
-  the uncommitted idle-mark change lands), while the worker it waits on
-  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
-  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
-  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
-  state instead of its own CPU and output.
-
-- [ ] Coordinators present "Needs a decision" questions as clickable [t-vs3664vc]
-  options (user via the try-roguix coordinator, 2026-10-07: it moved four
-  items there and only mentioned them; "fix the process so a coordinator
-  that records questions also presents them as clickable options at once or
-  at a defined point; ask the models"; the user: "does the collector have to
-  be in herdr? earlier you also said something had to be in herdr and the
-  /todo skill was enough"). The herdr coordinator did the same with three
-  questions on 2026-10-07. Consult rounds `20261007-025516-0631` and
-  `20261007-025602-9f40` (sol, MiMo). Both: no herdr collector needed now;
-  TODO.md is already the durable state; a script plus a `/decisions` skill
-  first, herdr only after lost updates or unseen questions are observed.
-  - Each question carries its options in the TODO line (`Options: a | b |
-    c`); a skill never invents choices (MiMo); a short id or hash lets the
-    asker re-read and skip a question changed meanwhile (both).
-  - Timing in the `/todo` skill: right after delegating an item (the worker
-    runs meanwhile), ask the new questions with the multiple-choice tool, 4
-    per call; if unanswered or on the phone, plain text plus `herdr agent
-    awaiting-reply "N decisions"`, which already shows in the `?` list, so no
-    herdr badge is needed (MiMo wanted a badge for visibility).
-  - Answers are written back as "Decided by the user <date>: ..." and the
-    item moves to "Next, in order" only on an explicit approval; writers
-    re-read before writing and commit `TODO.md` by path (both). Coordinators
-    re-read `TODO.md` before each item, never from memory (MiMo).
-  - Done 2026-10-07 (user chose it from a menu): the global rule and the
-    `/todo` skill (dotfiles `9b851dd`) require `Options:` on each question,
-    ask new ones right after starting the next worker, fall back to plain
-    text plus `awaiting-reply`, write answers back, re-read `TODO.md`; the
-    false "herdr collects them" is gone. Left: the cross-repository script
-    plus `/decisions` skill, and the test below.
-  - (sol, before:) The global rule's "herdr collects them from there" was not
-    true and had to go. Fix the coordinator stopping between items first, or
-    stalls get blamed on the wrong change (both, round 1).
-  - Test: a fixture repo with one trivial item and two questions, no user
-    present: the item still lands and both questions are asked once; an
-    answer written back is not asked again after a restart.
-  - Second rormpc report (2026-10-07, forwarded by the user; "fix the
-    process, consult the models"): its coordinator piled up 13 questions in
-    "Needs a decision" and never asked them; with "Next, in order" down to
-    one item it waited on a worker and reported, so work would have
-    stopped; only after the user asked "is nothing left? why don't you hand
-    it to workers?" did it ask 4 in a menu, which unblocked 3 items at once.
-    Expected: ask as soon as they are added, at the latest while a worker
-    runs, so "Next" never runs dry while answerable questions wait; record
-    answers and queue the work. The rule of `9b851dd` covers only new
-    questions, not a backlog of old ones without `Options:`.
-  - Other languages (user, 2026-10-07: "what if I also start in Odin? other
-    rules than for Rust"): how workers build (worktree or not, a shared
-    cache) depends on the repository; it belongs in each repository's
-    AGENTS.md, the global rule stays language-neutral.
 
 - [ ] Do the consult popups need `less`? (user, 2026-10-03: "less used in [t-74laujmv]
   consult stats? we have Rust. ask the models"). `page-consult` pages
@@ -607,54 +1149,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   transcripts, Claude and Codex first (DeepSeek), which could feed the
   forecast's pace (MiMo).
 
-- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
-  2026-10-07: "can't it be compacted or cleared now and then? ask the
-  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
-  per item, state only in files, herdr owns the waits, a thin chat session
-  stays for talking with the user). Slices, one worker each:
-  1. Verified writes: a small tool the coordinator uses for TODO.md and
-     DECISIONS.md edits that fails loudly when the anchor is missing or the
-     text did not land (the 2026-10-07 lost edits), and the rule that a
-     preference said only in chat goes to DECISIONS.md before the turn ends.
-  2. Records a new coordinator can reconcile: each delegated item in
-     TODO.md carries its worker id, worktree, branch, base SHA and the event
-     waited for; open menus listed in TODO.md.
-  3. The per-item coordinator: herdr starts a headless coordinator for the
-     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
-     `herdr worker list`, `herdr-job list`), which ends after committing the
-     item; the next starts on that event. The chat session only answers and
-     queues. The `/todo` skill and the rule change accordingly.
-  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
-  and then? ask the models"). Measured on 2026-10-07: the coordinator made
-  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
-  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
-  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
-  sol `/clear` now and a fresh process later; all three reject `/compact`
-  (a lossy summary, the session already lost track of failed TODO edits
-  after one). Needed first under any choice: TODO/DECISIONS writes read
-  back and verified (that bug), chat-only preferences written to
-  DECISIONS.md before the turn ends, worker/job records a new coordinator
-  can reconcile (worker id, worktree, branch, base SHA, the event waited
-  for), pending menus in TODO.md.
-
-- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
-  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
-  header-arrows` and its Bash question: "a headless worker's entry cannot
-  be clicked; ask the models").
-  Checked: the `?` row of a worker question has no pane, tab or space
-  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
-  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
-  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
-  style bound to the request id (not the worker): worker name and task, the
-  full command (monospace, newlines kept, scrollable, never truncated: an
-  approval must not rest on a preview) or the question with its options as
-  buttons; Allow once / Deny (optional deny message) / View log; no default
-  action on Enter. If the request is answered elsewhere or the worker exits
-  while it is open, the dialog shows that and disables its buttons; the
-  server rejects stale request ids. Several pending requests: "1 of 3", the
-  next opens after the answer. No "allow this pattern" for now (both: a
-  single command does not show a safe pattern). Keyboard works too.
-
 - [ ] Clicking outside the popup does not close it, only Escape does (user, [t-aonxduu7]
   2026-10-07, with a screenshot of a headless worker's log popup titled
   "popup": "clicking outside the modal does not close it, only escape
@@ -670,390 +1164,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   "popup". Chosen by the coordinator from the agreement: sol's and
   DeepSeek's rule.
 
-- [ ] One wait over all of a coordinator's workers (user, 2026-10-07: [t-cguvhgwu]
-  "waiting for several workers at once was deferred: so work out a new TODO
-  entry with the models"). Builds on "A coordinator is woken by its
-  worker's question". Round `20261007-205522-d711` (sol, MiMo, DeepSeek), all
-  three: not `worker.wait --any` or an id list (membership races: workers
-  started, exiting or re-owned during a wait) but a per-coordinator inbox:
-  1. `worker.events --owner <coordinator> --after <cursor> --wait`: blocks
-     while empty, returns every pending event in order as a bounded batch
-     with `next_cursor` (two questions at once arrive together; returning
-     only the first lets one unanswered question starve the rest). Events:
-     question, turn end, exit, joined, left, re-owned. `worker.wait` stays
-     as a shorthand over it.
-  2. One server-wide monotonic sequence filtered by owner, with the
-     server's incarnation (`epoch, seq`); kept across live handoff; a
-     cursor the server can no longer serve gets `resync_required` and a
-     snapshot, never a silent skip.
-  3. Reading is not resolving (sol): pending questions are durable state;
-     a reconnecting or new coordinator gets a snapshot of its workers'
-     states and pending questions first, even when their events are older
-     than its cursor.
-  4. Handing over, as a transaction, not "hop siup" (user, 2026-10-07: "the
-     old coordinator's answers are rejected: what? why is there no handoff?
-     It must be like a database transaction"). Round `20261007-210018-c710`
-     (sol, MiMo, DeepSeek): workers belong to the item: a coordinator
-     finishes and reviews its item's workers before it ends, so normally
-     only the item is handed over, not live workers (sol, MiMo). When a
-     worker must go on (a crash, a long task), `coordinator.handoff {note}`
-     is one server transaction, serialized with answers: it stores the note
-     (what was being done, decisions said only in chat, each worker's
-     purpose and what to check in review, answers given and why), moves
-     ownership and the epoch, and captures worker states, pending questions
-     and the cursor; an answer lands either before it (and is in the
-     record) or after it (and goes to the new owner). herdr's TODO runner,
-     not the old coordinator, picks and starts the successor, which reads
-     and acknowledges the package before acting; the old one exits after
-     the commit. Workers keep running meanwhile; their questions stay
-     queued. Fencing only for a crashed, hung or stale old coordinator: its
-     late actions are refused with `ownership_transferred` naming the
-     successor, and its late answers are kept and passed to the successor
-     as information, never applied and never dropped.
-  5. One background job per coordinator (`herdr-job run -- herdr worker
-     events --owner ... --wait`), not one per worker; events arriving while
-     the coordinator's turn is busy wait in the inbox; after a wake the
-     coordinator drains the batch and re-arms from its last cursor.
-  Tests: two simultaneous questions in one batch; an event between drain
-  and re-arm; a worker started and one exiting during a wait; live handoff
-  and restart keep the sequence; re-owning during a wait and a stale answer
-  from the old owner; a wake while the coordinator's turn is busy.
-
-- [ ] A headless worker's line shows how long it has been working and which [t-jfo7bcvb]
-  TODO task it got (user, 2026-10-08: "I don't see how long a given worker
-  has been working, nor which task from the TODO it got; ask the models").
-  Round `20261008-031505-ffde` (sol, MiMo, DeepSeek), agreeing, chosen by the
-  coordinator:
-  - the line: a per-state glyph (with a text state in the tooltip, not
-    colour alone), the task title (not the coordinator's nickname,
-    truncated with `…`) and the age right-aligned (`<1m`, `12m`, `1h05`,
-    `2d03h`), counted from the worker's start (it includes waiting; the
-    current turn's time goes to the tooltip and the log);
-  - the age refreshes with the sidebar's existing animation/minute
-    redraw, computed from the server's timestamps at render, no per-row
-    timer (render stays cheap);
-  - the tooltip: full TODO title, item id, worker name, state, branch,
-    folder slot, turns, current turn's time, last activity;
-  - the log popup header: the same, then the full assigned task text
-    (collapsible) above the log, and the takeover action visible there
-    (DeepSeek: right-click alone is undiscoverable);
-  - `worker.start --item <title or id>` separate from `--name`, stored as
-    the worker's item; without it, the prompt's first line (recorded as
-    inferred); the coordinator passes the TODO item title, and the id once
-    items have `[t-...]` ids;
-  - ended workers: their lines may go (item "Headless worker lines after
-    their work is done") but stay reachable in a history view (sol,
-    DeepSeek), which the item history can provide.
-
-- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
-  written to SQL that there is now a coordinator with id X that started
-  coordinating at T? ask the models"). Today: no; workers store only
-  `owner_pane`/`owner_session`; being a coordinator is a tab role flag.
-  Round `20261008-104011-d7f1` (sol, MiMo, DeepSeek), agreeing, chosen by the
-  coordinator:
-  - a coordination tenure with its own id (`c-...`), never the pane or
-    Claude session id: those are bindings that change on resume or a move
-    to another pane (a `coordinator_bindings` table: pane, session, from,
-    to); a resume keeps the tenure, a handoff starts a new one;
-  - events `coordinator_started` / `coordinator_ended` (with the reason) /
-    later `handoff` in the same events log, the `coordinators` table their
-    projection in the same transaction (repo, current item, started_at,
-    ended_at, end reason, epoch);
-  - one active coordinator per repository (the TODO rule), enforced by a
-    partial unique index on the repo where `ended_at IS NULL`;
-  - the server is the source of truth: setting the tab role coordinator
-    calls `coordinator.start`, the crown is drawn from the table, ending it
-    calls `coordinator.end`; `workers.owner_coordinator_id` points at the
-    tenure, the pane/session stay for routing and escalation; obligations
-    key on the tenure;
-  - a crashed coordinator: closed on the owner events herdr already has
-    (pane closed, agent exited) and re-evaluated at server start
-    (`end_reason = orphaned`), no heartbeat reaper (DeepSeek's, dismissed
-    under the user's events-only decision of 2026-10-08);
-  - first slice: the table, the bindings, the two events, start/end calls
-    wired to the tab role, the unique index, `owner_coordinator_id`;
-    handoff epochs with the handoff item, item history later.
-  First slice done 2026-10-08 by `w31` (`feat: coordinator tenures, one per
-  repository`, verified, installed); the first tenure is `c-6xve3ubo`
-  (the herdr coordinator's tab). Left: obligations keyed on the tenure,
-  the current item, handoff epochs, resume keeping the tenure.
-
-- [ ] A deterministic coordinator driver: `herdr todo run` (user, 2026-10-08, [t-s3oaxcki]
-  after the coordinator passed a whole label where `--expect-build` takes
-  an id: "can't a program restrict the options instead of the agent
-  choosing well once and badly once? I dislike the non-determinism in the
-  coordinator's work; ask the models"). Round `20261008-181228-d7a1` (sol, MiMo, DeepSeek),
-  agreeing: the coordinator chooses intent, the driver owns execution.
-  - `herdr todo run <item-id> --task <file> --message <subject> --paths
-    <globs> --check <registered check>`: a run persisted in herdr's SQLite
-    (run id, item, step, attempt, base sha, worker, branch, command ids,
-    last seq, error), an immutable task snapshot, typed argv (never shell
-    strings), checks from a registered list; every side effect recorded as
-    intent before and result after, reconciled after a crash against
-    commit ids, worker ids and remote refs.
-  - Steps: preflight (TODO structure, repo state, disk, slot) → start
-    worker → attention (policy-covered questions answered and acked; others
-    become a question event) → review (base-relative diff and the task:
-    the model approves or asks for changes) → stop and confirm exit →
-    verify → cherry-pick → `just clean-install` → TODO update with
-    `todo_edit` → push → cleanup. A failed verify or rejected review asks
-    the model for the next attempt's task text (attempts capped, then
-    escalate); a conflict or failed check stops as a blocked event; never
-    a silent continue or auto-rebase.
-  - The coordinator waits once on the driver's event stream (`herdr todo
-    wait`), answers with `herdr todo resume <run> --action ...` naming the
-    event id; stale answers refused. No job-id grepping, labels, quoting or
-    sleeps in the coordinator's hands.
-  - Kept to the model: task text, questions outside policy, the diff's
-    intent, retry text, exception approval.
-  - A PreToolUse allowlist for the coordinator: `herdr todo ...`, read-only
-    git and file reads, `todo_edit`; exceptions through an audited
-    `--override --reason` step, never a general shell escape.
-  - First slice: preflight → start → attention → ack → stop → verify
-    (→ cherry-pick), persisted, resumable, one wait; clean-install, TODO,
-    push and the allowlist next.
-  First slice done 2026-10-08 by `w38` (`feat: herdr todo run drives an
-  item from preflight to cherry-pick`, verified after the coordinator ended
-  8 `yes` load processes the worker left: `verify`'s process check caught
-  them). Decided by the coordinator for the next slice, from earlier
-  decisions: `herdr todo resume` sends the caller's environment again (never
-  stored: it may hold credentials); without it a resumed check is
-  `unavailable`; a per-run lock held by the server driving it, so after a
-  live handoff the new server drives the run only once the old one let go
-  (the cherry-pick race w38 named); a worker ignoring SIGTERM gives a
-  "still alive" event to the coordinator, no kill on a timer; `todo.*`
-  stays local like `worker.*`. Also: AGENTS.md's flaky-test stress recipe
-  starts `yes` loads with `&` and relies on `pkill yes`; make the loads end
-  with the command (a trap or one process group killed at exit).
-  Pattern seen three times on 2026-10-08 (prompt/kill, then the driver's
-  test helpers): unix-only test helpers dead on Windows fail
-  `just windows-lint` only at the coordinator's clean-install. Register a
-  `windows-lint` check (`python3 scripts/windows_cross.py lint`) in
-  `.herdr/checks.toml` and pass it with `--check` for changes under `src/`,
-  so `verify` catches it before the cherry-pick.
-  Second slice done 2026-10-08 through the driver itself (run `r-5wjbvf3m`,
-  the first item done by `herdr todo run` end to end: attempt 1 rejected in
-  review for a 5 s timer and a missing commit subject in the worker's task;
-  attempt 2 approved, verified, cherry-picked as `be9b9a7b`; installed).
-  Next slice: clean-install, TODO update, push, cleanup in the driver, then
-  the coordinator's allowlist hook.
-  Slice 3 open point (run `r-7yjpuc43`, decided by the coordinator): the
-  install's live handoff starts a server without the coordinator's
-  environment (never stored), so every herdr run would stop at
-  `push_failed` until `retry-push`. Next: the old server hands the runs'
-  in-memory environments to the new one inside the live handoff payload
-  (like the PTY fds), never on disk.
-  Run `r-5gsvuqm6` (2026-10-08): the first run of an item the second time blocked
-  at start on a branch-name collision; fixed in this run (branches carry the
-  run id). Also found: `herdr todo resume --action abort` on a blocked run
-  (`r-cese4nxv`) changed nothing; a blocked run must be abortable.
-  Run `r-5gsvuqm6` went end to end through the driver (verify, cherry-pick,
-  install, TODO note, push) on 2026-10-08; its push needed one
-  `retry-push` because the old binary did the install (the next run carries
-  the environment). Found: `herdr todo wait` dies with `EmptyResponse` when
-  the install's live handoff replaces the server; it should reconnect to
-  the new server and keep waiting on the same run.
-  Decided by the coordinator 2026-10-09: Windows dead code in test-only
-  helpers failed `verify` four times (runs `r-idd6p7io`, `r-f63lelnd` and two
-  earlier). The contract the driver appends should name each registered
-  check the run will verify with and tell the worker to run those it can
-  (`windows-lint` works in the worker sandbox) before its last line.
-  Decided by the coordinator 2026-10-09: run `r-ib4o5jzl` passed `verify` with
-  only the `workers` check and landed a commit that broke the frozen v1
-  client contract test (found by the install's `just check`, so nothing was
-  pushed or installed). A run that changes `src/api/` must verify with the
-  `tests` check too; better, the driver adds `tests` itself when the diff
-  touches `src/api/` or `tests/fixtures/`, and the appended contract names
-  the frozen-contract rule.
-  Contract slice done 2026-10-09 (run `r-ueeoumgj`): the appended contract
-  lists each verify check by name and argv and asks the worker to run and
-  report them; a diff under `src/api/` or `tests/fixtures/` adds the `tests`
-  check (`run_check_added` event); the v1 client-method line.
-
-- [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
-  "the coordinator/worker code, the whole control, could be extracted as a
-  new package; much less code than all of herdr; then various TUIs, GUIs
-  could connect to it; analyse with the models"). Facts: `src/workers/` is
-  ~17.5k lines (with ~5k of tests) of herdr's ~345k; it uses herdr's
-  platform layer at 60 places (process groups, sessions, start tokens), API
-  schema types and thread helpers; herdr reaches into it from API handlers,
-  the coordinator tab role, takeover tabs, the live handoff and the client
-  snapshot. Analysis, round `20261008-182824-1186` (sol, MiMo, DeepSeek), agreeing:
-  - the boundary is real but not yet clean: generic orchestration (store,
-    events, receipts, outbox, tenures, runs, broker, policy, verify, folder
-    slots, item ids/titles, `todo run`) vs multiplexer integration (PTY
-    takeover, coordinator as a tab role, sidebar, Items popup, live
-    handoff); coordinator authority must not depend on tab identity;
-  - a workspace crate first (e.g. `orchestrator-core`), compiler-enforced
-    to import nothing from herdr, linked into herdr's server (still the
-    only daemon and API host); platform needs behind ports the crate owns
-    (`ProcessSpawner`, `SessionRegistry`, `StartToken`, clock, files),
-    herdr implementing them, fakes in tests; decide whether Windows is in
-    scope for those ports (MiMo);
-  - a separate daemon only when a second client must run without herdr
-    (a third long-lived process next to the server and the brokers would
-    multiply recovery paths now);
-  - a versioned protocol for TUI/GUI/web clients: commands with receipts,
-    events with sequence numbers, replay and snapshots, capabilities (e.g.
-    takeover); version the envelope, not a two-day-old schema; a web client
-    needs an authenticated gateway, not the local socket;
-  - when: after the driver's first slice lands (churn), together with the
-    planned split of `src/workers/mod.rs` [t-ofobwsra].
-  Approved by the user 2026-10-08 ("add it to the TODO"): after the
-  driver's first slice [t-s3oaxcki].
-  User 2026-10-08: "one could even design the protocol and make an
-  implementation in Odin etc.": so the protocol is specified language-
-  neutrally (a written spec plus JSON schemas for commands, events and
-  receipts, and a conformance test suite any implementation runs against
-  a socket), not defined by the Rust types; the Rust crate is the reference
-  implementation, and a second one (Odin or another language) is possible
-  once the spec and the conformance tests exist.
-
-- [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
-  coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
-  wait failed at once: "how is it armed? ask the models"). Round
-  `20261008-104136-8de5` (sol, MiMo, DeepSeek): a shell-care rule alone is a
-  wish; make it mechanical:
-  1. `herdr worker wait <id> --attention` without `--after` starts after
-     the caller's acknowledged seq when the caller owns the worker (the
-     server keeps `acked_seq` since step 4), so the coordinator's loop is:
-     wait, handle, `herdr worker ack <id> <seq>`, the same wait again; no
-     variable in the shell (chosen by the coordinator: it reuses what the
-     server already stores, instead of a second cursor file as DeepSeek
-     proposed). User 2026-10-08: "what is --after for? ask the models";
-     round `20261008-104542-e5d4`: the wait is level-triggered (nothing that
-     happened before it began is missed), so a finished turn would wake it
-     again for ever without a cursor; the cursor is needed, the flag is not
-     for an owner (sol, DeepSeek): the default is the owner's acked seq,
-     and an ack means handled, not seen, so a crash before handling wakes
-     it again; non-owners do not inherit the owner's cursor; `--after`
-     stays for recovery, tests and observers. MiMo's "clear the state when
-     the coordinator acts" was dismissed: it can hide a question or exit
-     that arrives at the same time (DeepSeek). The seq is durable (SQLite
-     AUTOINCREMENT), so an old cursor stays valid.
-  2. `--after=<seq>` accepted as one token; a stray argument names itself
-     in the usage error (MiMo).
-  3. `herdr-job run` prints the job id as its first stdout line (everything
-     else to stderr), so nobody finds a job with `herdr-job list | grep`,
-     which can pick the wrong one when several run (MiMo, sol).
-  4. AGENTS.md: pass arguments literally; never build options with
-     `${X:+...}` or unquoted expansions (zsh does not split them); use
-     arrays for lists; treat a failed wait as a failure, not as the worker
-     needing attention.
-  The per-coordinator inbox (planned) replaces the two-layer wait later;
-  no `--then-wait` glue until then (MiMo, sol).
-
-- [ ] Compare the current headless worker implementation with T3 Code again, [t-ofobwsra]
-  with the models (user, 2026-10-08: "in spare time, maybe give the models
-  the current implementation to analyse again and let them compare it with
-  t3code"). A worker reads `src/workers/` (store, wait, receipts, outbox,
-  obligations, escalation, sandbox, folder slot, handoff) and
-  `vendor/t3code` (orchestration-v2, the Claude and Codex adapters),
-  briefs sol, MiMo and DeepSeek with code excerpts, verifies their claims
-  and writes a report (`docs/headless-workers-vs-t3code-<date>.md`): what
-  T3 does better, what we do better, gaps, and follow-up items in order.
-  User 2026-10-08: "fragments? maybe modularise so a model can get a whole
-  module? ask the models"; "so check modules one by one, without context
-  rot?". Round `20261008-105941-b7f4` (sol, MiMo, DeepSeek), agreeing, so this
-  item becomes two steps:
-  1. Split `src/workers/mod.rs` (4038 lines; the god object is
-     `WorkerSupervisor`, ~50 methods) into cohesive modules of 400-900
-     lines, behaviour unchanged, tests green, re-exports keeping callers:
-     `status.rs` first (Status, questions, `apply` returning effects
-     instead of touching live processes or the registry: pure, the
-     highest review value), then `journal.rs`, `live.rs`/`process.rs`,
-     `registry.rs`, `types.rs`/`error.rs`, then `supervisor/` by verb
-     (lifecycle, commands/questions, takeover, views) and the tests next to
-     their modules. Mechanical moves only, one module per commit.
-  2. Review module by module, each in a fresh request (no accumulated
-     context): the whole module, its tests, and its neighbours'
-     signatures with their contracts (invariants, lock order, transaction
-     boundaries, failure semantics) plus a generated outline; T3 Code's
-     matching part as its interface and the relevant whole file where it
-     fits; per-model budget about 50-60k tokens of input (MiMo). Then one
-     separate integration review of cross-module paths (start, answer,
-     takeover, handoff), where atomicity bugs live (sol).
-
-- [ ] The TODO as a tracker, like Jira or GitHub Issues (user, 2026-10-08: [t-dklsfhg4]
-  "maybe it's time for the TODO to be in an SQL database? ask the models";
-  "like jira or github issues"). Rounds `20261008-115256-4ae4` and `20261008-115345-2e9e` (sol, MiMo,
-  DeepSeek): a private database as the source of truth would strand the
-  ~10 repos using the global TODO rules, agents without herdr and git
-  review; GitHub Issues in the fork is the closest to Jira (search,
-  per-item history and threads, commit links, a board) but public, rate
-  limited, and `gh` in this checkout resolves to upstream
-  `herdrdev/herdr` by default (checked 2026-10-08), so every call must pin
-  `--repo rofrol/herdr`. Decided by the user 2026-10-08, in order:
-  1. stable ids `[t-...]` on every item in TODO.md (`todo_edit.py` mints
-     them for new items and adds them to the 71 open ones, keeping the
-     `?` + `Options:` question shape herdr parses);
-  2. a read-only SQLite index in herdr's state dir (`herdr todo sync`: repo,
-     id, section, order, title, content hash; no write-back), used by the
-     item history and worker links;
-  3. a pilot: about 5 items as GitHub Issues in the fork, `gh` pinned to
-     `rofrol/herdr` (and a guard that refuses upstream), to feel the
-     friction before any migration.
-  User 2026-10-08: "there is Codeberg, based on Forgejo, so we could use
-  Forgejo or copy something from its architecture; but for now a local SQL
-  database is probably enough for us? ask the models". Round `20261008-115719-8c5f` (sol,
-  DeepSeek; MiMo gave an empty answer): yes, local SQLite is enough; do not
-  self-host Forgejo now (a service, auth, UI to maintain for one user);
-  copy its concepts, not its schema: a stable global id apart from a
-  per-repo number, title and Markdown body, state, timestamps and a
-  version for stale-update detection, append-only comments with author,
-  labels, external references (later Forgejo/GitHub ids as mappings),
-  explicit order, and the decision questions stored as raw text plus
-  parsed fields; defer milestones, boards, timeline, permissions,
-  notifications, attachments. One authority per item: an item moved into
-  the tracker is no longer edited in Markdown. Step 3 changes: the pilot
-  of about 5 items runs in a local tracker in herdr's SQLite (`herdr todo`
-  commands, transactional writes), with versioned JSON export/import and a
-  Markdown export, instead of GitHub Issues.
-  Reference source (user, 2026-10-08): a Forgejo checkout at
-  `~/personal_projects/vendor/forgejo` (adfdb1a532); the tracker's model
-  is read from `models/issues/` (issue.go, issue_index.go for the per-repo
-  number, comment.go, content_history.go for edit history, issue_label.go,
-  dependency.go for blocks/blocked-by, issue_xref.go for references),
-  copying concepts, not code: Forgejo is GPL-3.0, herdr is Apache-2.0,
-  so copied code would force the GPL onto herdr.
-  Fossil (user, 2026-10-08: "fossil keeps issues in the repo"): its
-  tickets are append-only change artifacts stored and synced with the
-  repository, the current ticket table derived from them; the same
-  event-and-projection shape as herdr's worker store, and a model for
-  keeping tracker items with the repository rather than in a private
-  database (git-bug is the git analogue).
-
-- [ ] Headless worker lines in the sidebar after their work is done [t-nulti42o]
-  (proposed by the coordinator 2026-10-08 from the user's screenshot of the
-  herdr space: "header arrows lost", "answers name their q… lost",
-  "vendored mktemp us… exited", "takeover claimed o… exited", each with
-  the same green circle):
-  - `lost` is wrong for a worker that had finished its turn and only
-    waited for a next prompt when an install restarted the server: show
-    it as finished (ended by a server restart), not lost (relates to the
-    atomicity review's finding 1);
-  - the state glyph should differ by state (working, waiting for you,
-    finished, failed, exited, lost), as tab lines do;
-  - ended workers stay listed for ever: drop a line once its worker has
-    exited and the coordinator took its commit (or after the user opens
-    its log once), with the log still reachable via `herdr worker log`;
-  - a worker that finished its turn keeps its process and its folder slot
-    until `herdr worker stop`: decide whether the coordinator stops it
-    when it brings the commit in.
-  User 2026-10-08, with a screenshot of 19 worker lines under the
-  coordinator: "fold idle agents does not work on the tabs the coordinator
-  opened; why are they not closed at all? ask the models". Round `20261008-120458-71a7`
-  (sol, MiMo, DeepSeek), agreeing, chosen by the coordinator: a worker line
-  goes away once the worker is exited or finished, acked by its owner, and
-  has no open question or unacked event (not tied to the commit reaching
-  master: a cherry-pick can fail); acking a finished turn stops the worker
-  and frees its folder slot (an ack means handled); the ⊟ fold button folds
-  quiet worker lines with the quiet tabs, never one with a question or an
-  unacked event; ended workers collapse into one line per owner tab ("18
-  ended workers ▸", expanding on click); `herdr worker list --all`, the log
-  and the item history keep them reachable; per-state glyphs instead of
-  one green circle.
-
 - [ ] DeepSeek joins the default consult round as a third model (user, [t-evfsfkkc]
   2026-10-09, relayed by the try-roguix coordinator: "add deepseek as an
   additional one to those two models" ... "in the skill"). In
@@ -1063,110 +1173,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the self-consultation pairs consistent (a MiMo or GPT coordinator still
   never asks itself). Check the installed copy under `~/.claude/skills`
   follows the plugin.
-
-- [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
-  (Decided by the user 2026-10-09 after consult round
-  20261009-141652-8a76, sol + MiMo + DeepSeek: "shadow, then block").
-  The 2026-10-09 audit found 3 silent coordinator stops the ABANDON
-  wording missed. In the herdr Claude Stop check (coordinator tabs), log a
-  would-block decision when all hold: no active `todo run` for the repo
-  and approved runnable items exist (the driver's state, not TODO text);
-  the Stop input's `background_tasks` is present and empty (absent =
-  unknown = pass); no `awaiting-reply` marked and no question pending;
-  the repo is not paused (new `herdr todo pause|resume <repo>`; a plain
-  stop/pause message from the user sets it); at most one block per turn
-  and three in a row per session. Shadow phase only logs; replay the 244
-  audited turn ends (`scripts/coordinator_turn_audit.py`) as fixtures:
-  target 3/3 silent stops caught and at most 1 false per 100; kill
-  criterion more than 1 false per 20. Enforcing the block is a later
-  decision of the user. Keep the worker-obligation block as it is.
-
-- [ ] The space row's `T` becomes the coordinator crown (user, 2026-10-09: [t-czovnhtt]
-  "the T icon in the herdr space line should be a crown icon, like in the
-  tab"). `TODO_LABEL` (" T ", src/client/shell/sidebar.rs) starts the
-  space's `todo_command`, i.e. a coordinator; use the same crown glyph the
-  sidebar shows for a `coordinator` tab, with the same width handling as
-  the other chips (a glyph whose width differs between terminals must not
-  shift the row), and keep its click and tooltip behavior.
-
-- [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
-  about 30 minutes? too much? why any asynchronous workaround at all? make
-  a TODO with the models to fix this and do it next"). Supersedes the
-  polling/deadline design below (worker `w-worker-end`'s commit is not taken).
-  Round `20261007-175803-0ec5` (sol, MiMo, DeepSeek), agreeing: a turn end
-  is an event, a task end is a verdict. The coordinator starts the worker
-  with `agent.prompt_turn` (or prompt + request id) and blocks on that
-  request's end: Stop, StopFailure, interrupt, the agent process's exit
-  (track the agent's process, not the pane's shell), or a server restart
-  reported as such; then reads the transcript once and classifies: done
-  (WORKER-DONE with its sha on the branch), blocked, awaiting input (a
-  question: escalate), failed, crashed, tracking lost. No timer decides
-  anything: no deadline, no idle debounce, no resend after N seconds; at
-  most a human-facing "overdue" notice for a real agreed deadline.
-  herdr needs: `agent.wait_turn <request id> [since <cursor>]` with an
-  atomic check-and-subscribe, a terminal reason enum, process-exit events,
-  and request ids that survive a server restart (or an explicit error);
-  check that Esc-interrupt ends the turn (MiMo). Startup prompts need an
-  acknowledged, idempotent delivery instead of "resend after 15 s".
-  Done 2026-10-07 by a worker (`feat: wait for a prompt's turn by event`):
-  `agent.wait_turn` (finished, failed with StopFailure's error, interrupted,
-  exited, unknown_request), `agent.prompt_tracked`, `herdr agent
-  wait-turn`, `herdr-job wait-agent <pane> --request <id>` reading the
-  transcript once; screen polling and the deadline are gone. Gap: Claude
-  sends no Stop on Esc, so an interrupted turn shows only when the next
-  turn starts; a coordinator waiting on a worker the user interrupted waits
-  until then. Left: acknowledged startup prompt delivery.
-  Bug at first use (2026-10-07): the Keychain worker finished normally
-  (WORKER-DONE at 16:43 UTC) but `wait_turn` returned `interrupted`. The
-  inference "another turn started before this one reported its end" seems
-  to fire when a background task's notification starts a turn inside the
-  same prompt's work; check the hook order for task notifications and
-  derive `interrupted` only from an explicit signal.
-  Acknowledged startup prompt delivery done 2026-10-08 (`feat: agent
-  prompts confirm that the agent accepted them`, installed). Left: the
-  false `interrupted` above.
-  Fixed 2026-10-08 by headless worker `w21` (`fix: wait_turn reports
-  interrupted only on an explicit signal`): `interrupted` only from Esc or
-  Ctrl-C sent through `agent.send_keys` or the agent's own interrupted
-  report; a turn started by a background-task notification is a
-  continuation (the Claude hook marks it); ambiguous order gives `unknown`.
-  Left, decided by the coordinator: confirm live that Claude sends
-  `UserPromptSubmit` for a background-task notification mid-turn; the
-  user's own Esc in the pane now gives `unknown` (better than a false
-  `interrupted`); an explicit signal for it could come from the
-  transcript's `[Request interrupted by user` marker, verified live first.
-  Moved to "Needs a decision" 2026-10-09 by the coordinator: the remaining
-  live check needs an interactive Claude in a pane, which may hit a folder
-  trust dialog that agents must not answer.
-  Question: may a worker run the live check in a throwaway pane in an already trusted folder (the herdr checkout), or will you run it?
-  Options: worker in the trusted herdr checkout, read-only prompts (Recommended) | I run it myself | drop the live check
-  Decided by the user 2026-10-09: a worker runs the live check in the trusted
-  herdr checkout (read-only prompts, a short background task), results into
-  this item.
-
-- [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
-  (user, 2026-10-09: "the coordinator-worker model is meant to become a
-  protocol with an implementation in Odin etc., not hardcoded crates.io";
-  consult round 20261009-190333-40fb, sol + MiMo + DeepSeek agreeing;
-  decided by the user: "prepare + capabilities"). The coordination layer
-  names no registry, language or tool:
-  - Protocol (language-neutral, versioned): capabilities `net.egress{hosts}`,
-    `fs.write{paths}`, `env{names}`, `exec{argv}`; a repository or item
-    requests, the user's policy grants, the worker kind's adapter enforces;
-    an unknown or unsupported capability is refused (fail closed); every
-    run records its effective grants.
-  - Repository (`.herdr/`), read by the driver from the run's base commit,
-    never from the worker's tree: `[prepare]` argv (here `cargo fetch
-    --locked`) with the capabilities it needs (here egress to crates.io and
-    static.crates.io). A repository diff that changes requested
-    capabilities is a question to the user, never self-granted.
-  - Driver: prepare runs in its own sandbox (only the granted egress, no
-    secrets, writes only the dependency cache); the worker stays offline
-    and builds from that cache.
-  - Worker kinds map grants to their own sandbox (Claude Code: its
-    `sandbox` settings); a pi or Odin worker implements the same contract.
-  Belongs with the item "Extract the coordination layer into its own crate";
-  do this slice first, in today's code, as the crate's first protocol piece.
 
 - [ ] Draft an upstream issue on Claude Code's shared sandbox `$TMPDIR` [t-uilmqtpb]
   (decided by the user 2026-10-09: "prepare a draft"): a worker writes the
