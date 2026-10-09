@@ -333,6 +333,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
+    pub workers: WorkersConfig,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
@@ -908,6 +909,16 @@ pub struct IndexedKeysConfig {
 pub struct WorktreesConfig {
     /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
     pub directory: String,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct WorkersConfig {
+    /// Commands every headless worker runs before each Bash, Write, Edit and
+    /// MultiEdit call, each an argv list (`~` expanded), with Claude Code's
+    /// PreToolUse hook input on stdin. A check that denies refuses the call.
+    /// Empty by default.
+    pub pre_tool_checks: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

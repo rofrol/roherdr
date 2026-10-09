@@ -1650,6 +1650,18 @@
       ]
     },
     {
+      "id": "workers",
+      "title": "Headless workers",
+      "keys": [
+        {
+          "key": "workers.pre_tool_checks",
+          "type": "list of argv lists",
+          "default": "[]",
+          "description": "Commands every headless worker runs before each Bash, Write, Edit and MultiEdit call, each an argv list with `~` expanded, e.g. `[[\"python3\", \"~/.claude/hooks/delay-check.py\"]]`. Each gets Claude Code's PreToolUse hook input on stdin, like a command hook; one that denies (exit 0 with `permissionDecision` `deny`, or exit 2) refuses the call with its reason. A check that cannot run fails open and is reported in the worker's log. Read when a worker starts."
+        }
+      ]
+    },
+    {
       "id": "remote",
       "title": "Remote",
       "keys": [

@@ -17,8 +17,11 @@
 //! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
 //! `<fifo>` is written), `commit <file> <subject...>` (appends to
 //! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`),
-//! `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`) and
-//! `stubborn-commit <file> <subject...>` (`ignore-term`, then `commit`).
+//! `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`),
+//! `stubborn-commit <file> <subject...>` (`ignore-term`, then `commit`) and
+//! `hook <tool> <words...>` (a PreToolUse `hook_callback` for the hook an
+//! `initialize` request registered for that tool, whose command is the
+//! words; the result is its answer as JSON, or `unregistered`).
 #![cfg(unix)]
 
 use std::io::Read;
@@ -53,6 +56,7 @@ emit({"type": "system", "subtype": "init", "session_id": "stub-session",
                     ("CARGO_TARGET_DIR", "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR")}})
 
 ignore_term = False
+hooks = {}
 
 def commit(path, subject):
     with open(path, "a") as f:
@@ -86,8 +90,28 @@ def ask_host(tool, tool_input, reason_type=None):
     assert response["request_id"] == "perm-1", answer
     return response["response"]
 
+def hook_callback(tool, command):
+    import re
+    for entry in hooks.get("PreToolUse", []):
+        if re.fullmatch(entry.get("matcher") or ".*", tool):
+            emit({"type": "control_request", "request_id": "hook-1", "request": {
+                "subtype": "hook_callback", "callback_id": entry["hookCallbackIds"][0],
+                "tool_use_id": "toolu-1",
+                "input": {"hook_event_name": "PreToolUse", "tool_name": tool,
+                          "tool_input": {"command": command}}}})
+            response = read()["response"]
+            assert response["request_id"] == "hook-1", response
+            return json.dumps(response["response"], sort_keys=True)
+    return "unregistered"
+
 while True:
     message = read()
+    if message.get("type") == "control_request" and \
+            message["request"].get("subtype") == "initialize":
+        hooks = message["request"].get("hooks") or {}
+        emit({"type": "control_response", "response": {
+            "subtype": "success", "request_id": message["request_id"], "response": {}}})
+        continue
     if message.get("type") != "user":
         continue
     # The first line chooses: a todo run appends its contract below it.
@@ -96,6 +120,8 @@ while True:
     command = words[0]
     if command == "finish":
         result()
+    elif command == "hook":
+        result(text=hook_callback(words[1], " ".join(words[2:])))
     elif command == "done":
         result(text="work done\nWORKER-DONE " + words[1] + " | summary")
     elif command == "commit":
@@ -4443,6 +4469,172 @@ fn broker_of(supervisor: &WorkerSupervisor, worker_id: &str) -> BrokerRecord {
         .broker
         .clone()
         .unwrap()
+}
+
+/// A pre-tool check that denies a Bash `sleep 5` and allows everything else.
+const SLEEP_CHECK: &str = r#"#!/usr/bin/env python3
+import json, sys
+call = json.load(sys.stdin)
+if "sleep 5" in call.get("tool_input", {}).get("command", ""):
+    json.dump({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+               "permissionDecision": "deny",
+               "permissionDecisionReason": "sleep 5 waits for nothing"}}, sys.stdout)
+"#;
+
+impl Fixture {
+    /// Configures [`SLEEP_CHECK`] as the only pre-tool check.
+    fn with_sleep_check(self) -> Self {
+        let check = self.root.join("sleep-check.py");
+        std::fs::write(&check, SLEEP_CHECK).unwrap();
+        std::fs::set_permissions(&check, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *lock(&self.supervisor.shared.pre_tool_checks) = vec![vec![check.display().to_string()]];
+        self
+    }
+}
+
+fn hook_denial(text: &str) -> Option<String> {
+    let answer: Value = serde_json::from_str(text).ok()?;
+    let output = &answer["hookSpecificOutput"];
+    (output["permissionDecision"] == "deny").then(|| {
+        output["permissionDecisionReason"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    })
+}
+
+#[test]
+fn pre_tool_checks_deny_sleep_5_and_allow_ls() {
+    let fixture = Fixture::new("pre-tool-checks").with_sleep_check();
+
+    let id = fixture.start("hook Bash sleep 5 && ls");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let text = worker.last_result.unwrap().text.unwrap();
+    assert_eq!(
+        hook_denial(&text).as_deref(),
+        Some("sleep 5 waits for nothing"),
+        "{text}"
+    );
+    let decisions = fixture.herdr_events(&id, "pre_tool_check");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["tool_name"], "Bash");
+    assert_eq!(decisions[0]["tool_use_id"], "toolu-1");
+    assert!(fixture
+        .herdr_events(&id, "pre_tool_check_failed")
+        .is_empty());
+    let log: Vec<String> = fixture
+        .journal(&id)
+        .iter()
+        .flat_map(|record| log::log_lines(&record.to_string()))
+        .collect();
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Bash denied by a pre-tool check: sleep 5 waits for nothing")),
+        "{log:#?}"
+    );
+
+    // No objection is an empty answer, never an `allow` that would skip
+    // herdr's policy.
+    fixture.supervisor.prompt(&id, "hook Bash ls").unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("{}"));
+    let decisions = fixture.herdr_events(&id, "pre_tool_check");
+    assert_eq!(decisions[1]["decision"], "allow");
+
+    // Registered for the edit tools too, not for reads.
+    for (tool, registered) in [
+        ("Write", true),
+        ("Edit", true),
+        ("MultiEdit", true),
+        ("Read", false),
+    ] {
+        fixture
+            .supervisor
+            .prompt(&id, &format!("hook {tool} x"))
+            .unwrap();
+        let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+        let text = worker.last_result.unwrap().text.unwrap();
+        assert_eq!(text != "unregistered", registered, "{tool}: {text}");
+    }
+}
+
+#[test]
+fn without_pre_tool_checks_no_hook_is_registered() {
+    let fixture = Fixture::new("no-pre-tool-checks");
+    let id = fixture.start("hook Bash sleep 5");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(
+        worker.last_result.unwrap().text.as_deref(),
+        Some("unregistered")
+    );
+    assert!(!fixture
+        .journal(&id)
+        .iter()
+        .any(|record| record["dir"] == "in" && record["event"]["type"] == "control_request"));
+}
+
+#[test]
+fn a_pre_tool_check_that_cannot_run_is_reported_and_lets_the_call_go_on() {
+    let fixture = Fixture::new("pre-tool-check-missing");
+    let missing = fixture.root.join("missing-check").display().to_string();
+    *lock(&fixture.supervisor.shared.pre_tool_checks) = vec![vec![missing.clone()], Vec::new()];
+    let id = fixture.start("hook Bash sleep 5");
+    let worker = fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(worker.last_result.unwrap().text.as_deref(), Some("{}"));
+    let failures = fixture.herdr_events(&id, "pre_tool_check_failed");
+    // The empty argv when the worker started, the missing program at the call.
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(failures[0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("no program"));
+    assert_eq!(failures[1]["check"], serde_json::json!([missing]));
+    assert!(failures[1]["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("cannot start"));
+    assert_eq!(
+        fixture.herdr_events(&id, "pre_tool_check")[0]["decision"],
+        "allow"
+    );
+}
+
+#[test]
+fn a_new_server_runs_the_pre_tool_checks_the_worker_started_with() {
+    let fixture = Fixture::with_broker().with_sleep_check();
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert_eq!(broker_of(&fixture.supervisor, &id).pre_tool_checks.len(), 1);
+    let (_, live, _) = fixture.supervisor.live(&id).unwrap();
+    live.sever();
+
+    // The new server has no checks configured: the worker's record has them.
+    let next = WorkerSupervisor::open(fixture.root.join("workers"), PathBuf::from("unused"));
+    let number = worker_number(&id).unwrap();
+    {
+        let started = Instant::now();
+        let mut registry = lock(&next.shared.registry);
+        while registry.workers[&number].live.is_none() {
+            assert!(started.elapsed() < HANG_GUARD, "the re-attach hung");
+            registry = next
+                .shared
+                .changed
+                .wait_timeout(registry, Duration::from_millis(100))
+                .unwrap()
+                .0;
+        }
+    }
+    next.prompt(&id, "hook Bash sleep 5").unwrap();
+    let worker = wait_on(&next, &id, WorkerWaitUntil::TurnEnd);
+    let text = worker.last_result.unwrap().text.unwrap();
+    assert_eq!(
+        hook_denial(&text).as_deref(),
+        Some("sleep 5 waits for nothing"),
+        "{text}"
+    );
+    next.stop(&id).unwrap();
+    wait_on(&next, &id, WorkerWaitUntil::Exit);
 }
 
 #[test]

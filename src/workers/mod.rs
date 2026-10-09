@@ -31,6 +31,7 @@ pub(crate) mod coordinators;
 mod install_script_tests;
 mod log;
 mod policy;
+mod pre_tool_checks;
 mod runs;
 mod slot;
 mod store;
@@ -532,6 +533,10 @@ struct BrokerRecord {
     /// The worker's directory as asked for, before resolving links (its
     /// resolved one is [`Status::cwd`]).
     cwd: PathBuf,
+    /// The pre-tool checks its hook runs ([`pre_tool_checks`]), as they
+    /// were when it started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pre_tool_checks: Vec<Vec<String>>,
 }
 
 /// How many settled questions a worker remembers for `worker_question_gone`.
@@ -2037,6 +2042,10 @@ struct Shared {
     /// broker yet: a documented gap.
     #[cfg(unix)]
     broker: Option<broker::Launcher>,
+    /// The `[workers] pre_tool_checks` a test sets; the server reads its
+    /// config file instead.
+    #[cfg(test)]
+    pre_tool_checks: Mutex<Vec<Vec<String>>>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -2613,6 +2622,8 @@ impl WorkerSupervisor {
                 handed_off: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(unix)]
                 broker,
+                #[cfg(test)]
+                pre_tool_checks: Mutex::new(Vec::new()),
             }),
         };
         for (number, held) in unowned {
@@ -3087,6 +3098,7 @@ impl WorkerSupervisor {
         let temp_dir = self.create_temp_dir(&worker_id)?;
         let settings = worker_settings(&cwd_real, &temp_dir, &slot_caches).to_string();
         let contract = worker_contract(&temp_dir, slot.as_ref());
+        let (checks, check_errors) = self.configured_pre_tool_checks();
 
         let mut args: Vec<String> = [
             "-p",
@@ -3184,7 +3196,9 @@ impl WorkerSupervisor {
                 "pid": broker_pid,
                 "socket": socket,
                 "cwd": cwd_path,
+                "pre_tool_checks": checks,
             })),
+            "pre_tool_checks": checks,
             "program": self.shared.program.display().to_string(),
             "args": args,
             "owner": params.owner_pane_id.as_ref().map(|pane_id| json!({
@@ -3225,6 +3239,16 @@ impl WorkerSupervisor {
                     &json!({"type": "policy", "file_tool_roots": policy.roots()}),
                 ),
             );
+            for error in &check_errors {
+                self.commit_locked(
+                    &mut registry,
+                    number,
+                    Direction::Herdr,
+                    store::Recorded::Event(
+                        &json!({"type": "pre_tool_check_failed", "error": error}),
+                    ),
+                );
+            }
         }
         self.shared.changed.notify_all();
         notify_clients();
@@ -3236,11 +3260,13 @@ impl WorkerSupervisor {
             .map(|(_, socket)| broker::spool_path(socket));
         #[cfg(not(unix))]
         let spool = None;
+        let checks = pre_tool_checks::Runner::new(checks, &cwd_real);
         let reader = Reader {
             supervisor: self.clone(),
             number,
             pid,
             policy,
+            checks: checks.clone(),
             temp_dir: temp_dir.clone(),
             spool,
             live: Arc::clone(&live),
@@ -3289,11 +3315,48 @@ impl WorkerSupervisor {
             return Err(WorkerError::Io(error));
         }
 
-        // The CLI buffers input written before `system/init` (trial 1).
+        // The CLI buffers input written before `system/init` (trial 1). The
+        // hook is registered before the prompt, so it covers the first call.
+        if !checks.is_empty() {
+            live.send(self, &pre_tool_checks::initialize_request())?;
+        }
         let turn_seq = live.send(self, &user_message(prompt))?;
         let mut info = self.status(&worker_id)?;
         info.turn_seq = Some(turn_seq);
         Ok(info)
+    }
+
+    /// The `[workers] pre_tool_checks` for a worker that starts now, with
+    /// `~` expanded, and why a check is left out. The config file is read
+    /// at each start, so a change applies to the next worker. A config that
+    /// cannot be read runs no check: the worker starts anyway, and the
+    /// reason is its `pre_tool_check_failed` event.
+    fn configured_pre_tool_checks(&self) -> (Vec<Vec<String>>, Vec<String>) {
+        #[cfg(test)]
+        let configured: Result<Vec<Vec<String>>, String> =
+            Ok(lock(&self.shared.pre_tool_checks).clone());
+        #[cfg(not(test))]
+        let configured = match crate::config::load_live_config() {
+            Ok(loaded) if loaded.invalid_sections.iter().any(|name| name == "workers") => {
+                Err(loaded
+                    .diagnostics
+                    .into_iter()
+                    .filter(|diagnostic| diagnostic.contains("workers"))
+                    .collect::<Vec<_>>()
+                    .join("; "))
+            }
+            Ok(loaded) => Ok(loaded.config.workers.pre_tool_checks),
+            Err(diagnostics) => Err(diagnostics.join("; ")),
+        };
+        match configured {
+            Ok(checks) => pre_tool_checks::expand(&checks),
+            Err(error) => (
+                Vec::new(),
+                vec![format!(
+                    "the config could not be read, so no pre-tool check runs: {error}"
+                )],
+            ),
+        }
     }
 
     /// Starts a worker's process: through a broker when this server has a
@@ -3465,6 +3528,7 @@ impl WorkerSupervisor {
             number,
             pid,
             policy: policy::Policy::new(&record.cwd, &cwd_real, &temp_dir),
+            checks: pre_tool_checks::Runner::new(record.pre_tool_checks.clone(), &cwd_real),
             temp_dir,
             spool: Some(broker::spool_path(&record.socket)),
             live: Arc::clone(&live),
@@ -5820,6 +5884,8 @@ struct Reader {
     number: u64,
     pid: u32,
     policy: policy::Policy,
+    /// The pre-tool checks its `hook_callback` requests run.
+    checks: pre_tool_checks::Runner,
     temp_dir: PathBuf,
     /// The broker's spool, removed once the exit is stored.
     spool: Option<PathBuf>,
@@ -5953,19 +6019,146 @@ impl Reader {
             return self.record_line(broker_seq, Direction::Out, store::Recorded::Raw(line));
         };
         let spooled = self.record_line(broker_seq, Direction::Out, store::Recorded::Event(&event));
-        let permission = event["type"].as_str() == Some("control_request")
-            && event["request"]["subtype"].as_str() == Some("can_use_tool");
+        let request = event["type"].as_str() == Some("control_request")
+            && matches!(
+                event["request"]["subtype"].as_str(),
+                Some("can_use_tool" | "hook_callback")
+            );
+        if event["type"].as_str() == Some("control_cancel_request") {
+            if let Some(request_id) = event["request_id"].as_str() {
+                self.checks.cancel(request_id);
+            }
+        }
         if spooled == Spooled::Duplicate {
-            if permission && self.unhandled_request(&event) {
-                self.answer_permission(&event);
+            if request && self.unhandled_request(&event) {
+                self.answer_request(&event);
             }
             return spooled;
         }
         self.supervisor.record_tool_sessions(self.number, self.pid);
-        if permission {
-            self.answer_permission(&event);
+        if request {
+            self.answer_request(&event);
+        }
+        if event["type"].as_str() == Some("control_response")
+            && event["response"]["request_id"].as_str()
+                == Some(pre_tool_checks::INITIALIZE_REQUEST_ID)
+            && event["response"]["subtype"].as_str() == Some("error")
+        {
+            let error = event["response"]["error"]
+                .as_str()
+                .unwrap_or("no reason given");
+            self.supervisor.record(
+                self.number,
+                Direction::Herdr,
+                &json!({
+                    "type": "pre_tool_check_failed",
+                    "error": format!(
+                        "the CLI refused to register the pre-tool checks' hook, so none runs: {error}"
+                    ),
+                }),
+            );
         }
         spooled
+    }
+
+    /// Answers a `can_use_tool` request through the policy, or a
+    /// `hook_callback` request through the pre-tool checks.
+    fn answer_request(&self, event: &Value) {
+        if event["request"]["subtype"].as_str() == Some("hook_callback") {
+            self.answer_hook(event);
+        } else {
+            self.answer_permission(event);
+        }
+    }
+
+    /// Runs the pre-tool checks for a `hook_callback` request and answers it,
+    /// on a thread of its own, so the worker's output is read on meanwhile
+    /// (a cancel of this request among it). Each check that failed is a
+    /// `pre_tool_check_failed` event, and the verdict a `pre_tool_check`
+    /// event.
+    fn answer_hook(&self, event: &Value) {
+        let request = &event["request"];
+        let request_id = event["request_id"].as_str().unwrap_or("").to_owned();
+        let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
+        let tool_name = input.get("tool_name").cloned().unwrap_or(Value::Null);
+        let tool_use_id = request.get("tool_use_id").cloned().unwrap_or(Value::Null);
+        let supervisor = self.supervisor.clone();
+        let live = Arc::clone(&self.live);
+        let number = self.number;
+        let answer = move |supervisor: &WorkerSupervisor, response: Value| {
+            let answer = control_response(&request_id, response);
+            if let Err(error) = live.send(supervisor, &answer) {
+                warn!(%error, "worker pre-tool check answer not delivered");
+            }
+        };
+        if request["callback_id"].as_str() != Some(pre_tool_checks::CALLBACK_ID) {
+            supervisor.record(
+                number,
+                Direction::Herdr,
+                &json!({
+                    "type": "pre_tool_check_failed",
+                    "tool_name": tool_name,
+                    "tool_use_id": tool_use_id,
+                    "error": format!(
+                        "a hook callback herdr did not register ({}); no objection",
+                        request["callback_id"]
+                    ),
+                }),
+            );
+            answer(&supervisor, json!({}));
+            return;
+        }
+        let checks = self.checks.clone();
+        let check_request_id = event["request_id"].as_str().unwrap_or("").to_owned();
+        let spawned = crate::thread_spawn::spawn_named("herdr-worker-check", {
+            let supervisor = supervisor.clone();
+            move || {
+                let outcome = checks.run(&check_request_id, &input);
+                for (check, error) in &outcome.failures {
+                    supervisor.record(
+                        number,
+                        Direction::Herdr,
+                        &json!({
+                            "type": "pre_tool_check_failed",
+                            "check": check,
+                            "tool_name": tool_name,
+                            "tool_use_id": tool_use_id,
+                            "error": error,
+                        }),
+                    );
+                }
+                let (decision, check, message) = match &outcome.verdict {
+                    pre_tool_checks::Verdict::Allow => ("allow", Value::Null, Value::Null),
+                    pre_tool_checks::Verdict::Deny(check, reason) => {
+                        ("deny", json!(check), Value::String(reason.clone()))
+                    }
+                };
+                supervisor.record(
+                    number,
+                    Direction::Herdr,
+                    &json!({
+                        "type": "pre_tool_check",
+                        "tool_name": tool_name,
+                        "tool_use_id": tool_use_id,
+                        "decision": decision,
+                        "check": check,
+                        "message": message,
+                    }),
+                );
+                answer(&supervisor, outcome.response());
+            }
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "worker pre-tool check thread unavailable");
+            supervisor.record(
+                number,
+                Direction::Herdr,
+                &json!({
+                    "type": "pre_tool_check_failed",
+                    "error": format!("no thread to run the pre-tool checks: {error}; no objection"),
+                }),
+            );
+        }
     }
 
     /// Whether a permission request the store holds still needs its
@@ -6031,7 +6224,7 @@ impl Reader {
                         warn!(worker_id, %error, "worker permission answer not delivered");
                     }
                 }
-                None => self.answer_permission(&request),
+                None => self.answer_request(&request),
             }
         }
     }
@@ -6040,6 +6233,7 @@ impl Reader {
     /// nobody needs once the exit is stored.
     fn finish(self, exited: &Value, broker_seq: Option<u64>) {
         self.live.close_input();
+        self.checks.cancel_all();
         // The temp dir goes first, so a worker shown exited has none; the
         // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);

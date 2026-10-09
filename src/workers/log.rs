@@ -1,6 +1,6 @@
 //! A worker's journal as text for its log view: the assistant's words, its
-//! tool calls and their results, the policy's and the user's decisions, and
-//! each turn's result. Anything else (rate limits, control replies, the
+//! tool calls and their results, the policy's, the pre-tool checks' and the
+//! user's decisions, and each turn's result. Anything else (rate limits, control replies, the
 //! CLI's own bookkeeping) is left out.
 
 use serde_json::Value;
@@ -55,6 +55,26 @@ pub(crate) fn log_lines(record: &str) -> Vec<String> {
             // The question that follows says it.
             _ => Vec::new(),
         },
+        // An allowed call shows as the call itself.
+        ("herdr", "pre_tool_check") if event["decision"] == "deny" => vec![format!(
+            "  ✗ {} denied by a pre-tool check: {}",
+            event["tool_name"].as_str().unwrap_or("?"),
+            one_line(event["message"].as_str().unwrap_or(""), DETAIL_MAX)
+        )],
+        ("herdr", "pre_tool_check_failed") => vec![format!(
+            "! pre-tool check{}: {}",
+            event["check"]
+                .as_array()
+                .map(|argv| format!(
+                    " `{}`",
+                    argv.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ))
+                .unwrap_or_default(),
+            event["error"].as_str().unwrap_or("unknown error")
+        )],
         ("herdr", "question") => {
             let question = &event["question"];
             vec![format!(

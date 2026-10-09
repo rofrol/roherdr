@@ -534,11 +534,11 @@ impl Store {
         Ok(None)
     }
 
-    /// The `can_use_tool` requests a worker made after `since` (the turn's
-    /// first event) that were neither cancelled nor asked as a question,
-    /// oldest first, each with the `control_response` recorded for it, if
-    /// one was: for a server that re-attaches to settle what a gone server
-    /// stored and may not have answered.
+    /// The `can_use_tool` and `hook_callback` requests a worker made after
+    /// `since` (the turn's first event) that were neither cancelled nor
+    /// asked as a question, oldest first, each with the `control_response`
+    /// recorded for it, if one was: for a server that re-attaches to settle
+    /// what a gone server stored and may not have answered.
     #[cfg(unix)]
     pub(super) fn unasked_requests(
         &self,
@@ -567,7 +567,10 @@ impl Store {
             };
             match (direction.as_str(), kind.as_str()) {
                 ("out", "control_request")
-                    if event["request"]["subtype"].as_str() == Some("can_use_tool") =>
+                    if matches!(
+                        event["request"]["subtype"].as_str(),
+                        Some("can_use_tool" | "hook_callback")
+                    ) =>
                 {
                     requests.push((event, None));
                 }
