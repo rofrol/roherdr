@@ -650,6 +650,12 @@ impl ClientShellState {
         if let PendingEndpointKind::WorkerRuns { endpoint_id } = pending.kind {
             return self.complete_worker_runs(endpoint_id, result);
         }
+        if let PendingEndpointKind::HistoryList { endpoint_id } = pending.kind {
+            return self.complete_history_list(endpoint_id, result);
+        }
+        if let PendingEndpointKind::HistoryItem { endpoint_id, item } = pending.kind {
+            return self.complete_history_item(endpoint_id, item, result);
+        }
         if let PendingEndpointKind::GitBranchList { workspace_id } = pending.kind {
             return self.complete_git_branch_list(workspace_id, result);
         }

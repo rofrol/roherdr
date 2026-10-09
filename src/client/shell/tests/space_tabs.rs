@@ -5007,6 +5007,130 @@ fn worker_runs_reply() -> crate::api::schema::ResponseResult {
     }
 }
 
+fn history_list_requests(actions: &[ClientShellAction]) -> usize {
+    actions
+        .iter()
+        .filter(|action| {
+            matches!(action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(&request.method, crate::api::schema::Method::HistoryList(params)
+                    if params.repo.as_deref() == Some("/repo")))
+        })
+        .count()
+}
+
+fn history_item_requests(actions: &[ClientShellAction]) -> Vec<String> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::HistoryItem(params) => Some(params.item.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn history_event(
+    item: &str,
+    id: i64,
+    kind: crate::api::schema::HistoryEventKind,
+    ts_ms: u64,
+) -> crate::api::schema::HistoryEvent {
+    crate::api::schema::HistoryEvent {
+        id,
+        repo: "/repo".into(),
+        item: item.into(),
+        kind,
+        ts_ms,
+        run_id: Some("r-aaaaaaaa".into()),
+        attempt: Some(1),
+        text: None,
+        item_text: None,
+        follow_ups: Vec::new(),
+    }
+}
+
+/// The recorded items: t-qrst6723 closed (with a follow-up), an older
+/// closed item without runs or a title, t-abcd2345 claimed.
+fn history_list_reply() -> crate::api::schema::ResponseResult {
+    use crate::api::schema::{HistoryEventKind, HistoryItemSummary};
+    crate::api::schema::ResponseResult::HistoryList {
+        items: vec![
+            HistoryItemSummary {
+                repo: "/repo".into(),
+                item: "t-qrst6723".into(),
+                title: Some("The closed item".into()),
+                last: crate::api::schema::HistoryEvent {
+                    follow_ups: vec!["t-cdef4567".into()],
+                    ..history_event("t-qrst6723", 4, HistoryEventKind::Closed, 1_790_633_200_000)
+                },
+            },
+            HistoryItemSummary {
+                repo: "/repo".into(),
+                item: "t-abcd2345".into(),
+                title: Some("Items popup from the server".into()),
+                last: history_event(
+                    "t-abcd2345",
+                    3,
+                    HistoryEventKind::Claimed,
+                    1_790_632_600_000,
+                ),
+            },
+            HistoryItemSummary {
+                repo: "/repo".into(),
+                item: "t-bbbbbbbb".into(),
+                title: None,
+                last: history_event("t-bbbbbbbb", 1, HistoryEventKind::Closed, 1_790_500_000_000),
+            },
+        ],
+    }
+}
+
+fn history_item_reply() -> crate::api::schema::ResponseResult {
+    use crate::api::schema::{HistoryAttempt, HistoryEventKind, HistoryItem, HistoryRun};
+    crate::api::schema::ResponseResult::HistoryItem {
+        item: HistoryItem {
+            item: "t-qrst6723".into(),
+            title: Some("The closed item".into()),
+            events: vec![
+                crate::api::schema::HistoryEvent {
+                    item_text: Some(
+                        "- [ ] The closed item [t-qrst6723]\n  What the user asked.\n".into(),
+                    ),
+                    ..history_event(
+                        "t-qrst6723",
+                        2,
+                        HistoryEventKind::Claimed,
+                        1_790_632_000_000,
+                    )
+                },
+                crate::api::schema::HistoryEvent {
+                    text: Some("## The decision\n\n- Chosen: the timeline.\n".into()),
+                    follow_ups: vec!["t-cdef4567".into()],
+                    ..history_event("t-qrst6723", 4, HistoryEventKind::Closed, 1_790_633_200_000)
+                },
+            ],
+            runs: vec![HistoryRun {
+                run_id: "r-aaaaaaaa".into(),
+                status: crate::api::schema::TodoRunStatus::Done,
+                created_ms: 1_790_632_000_000,
+                todo_commit: None,
+                attempts: vec![HistoryAttempt {
+                    attempt: 1,
+                    worker_id: Some("w3".into()),
+                    branch: Some("todo/t-qrst6723-r-aaaaaaaa-1".into()),
+                    commit: Some("fedcba9876543210".into()),
+                    decision: Some("approve".into()),
+                    verdict: Some(crate::api::schema::WorkerVerdict::Verified),
+                    landed_sha: Some("aaaabbbbccccdddd".into()),
+                }],
+            }],
+        },
+    }
+}
+
 fn items_button(state: &ClientShellState) -> Rect {
     state
         .hits
@@ -5110,7 +5234,17 @@ fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
     assert_eq!(items_rows_text(&state, &frame).len(), 1);
     assert!(items_rows_text(&state, &frame)[0].contains("loading"));
 
-    state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    // The runs' reply frees the command lane: the recorded items are asked
+    // for next, once.
+    let (_, actions) = state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    assert_eq!(history_list_requests(&actions), 1);
+    let frame = state.compose(120, 30).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert!(rows[3].contains("loading the finished items"), "{rows:#?}");
+    state.complete_history_list(
+        ClientEndpointId::Local,
+        Ok(crate::api::schema::ResponseResult::HistoryList { items: Vec::new() }),
+    );
     let pending = state.pending_requests.len();
     let frame = state.compose(120, 30).unwrap();
     // Drawing again asks for nothing: the rows come from the reply.
@@ -5125,7 +5259,8 @@ fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
         "{rows:#?}"
     );
     assert!(
-        rows[1].contains("(not in TODO.md) · t-qrst6723") && rows[1].contains("last failed"),
+        // No title known: its id alone.
+        rows[1].contains(" t-qrst6723") && rows[1].contains("last failed"),
         "{rows:#?}"
     );
     assert!(rows[2].contains("Unassigned"), "{rows:#?}");
@@ -5188,4 +5323,134 @@ fn esc_goes_back_from_an_items_runs_then_closes_the_popup() {
     assert_eq!(open(&state), Some(false));
     state.handle_input_bytes(b"\x1b");
     assert_eq!(open(&state), None);
+}
+
+#[test]
+fn the_items_popup_lists_finished_items_and_an_item_opens_its_history() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    with_coordinator(&mut state, Some((1, 0)));
+    state.compose(140, 40).unwrap();
+    let button = items_button(&state);
+    left_click(&mut state, (button.x + 2, button.y));
+    let (_, actions) = state.complete_worker_runs(ClientEndpointId::Local, Ok(worker_runs_reply()));
+    assert_eq!(history_list_requests(&actions), 1);
+    state.complete_history_list(ClientEndpointId::Local, Ok(history_list_reply()));
+    let pending = state.pending_requests.len();
+    let frame = state.compose(140, 40).unwrap();
+    state.compose(140, 40).unwrap();
+    assert_eq!(
+        state.pending_requests.len(),
+        pending,
+        "drawing asks for nothing"
+    );
+    let rows = items_rows_text(&state, &frame);
+    assert_eq!(rows.len(), 4, "{rows:#?}");
+    // The item in progress, the unassigned runs, then the finished items,
+    // the most recently closed first; the closed item left the open ones.
+    assert!(
+        rows[0].contains("Items popup from the server · t-abcd2345"),
+        "{rows:#?}"
+    );
+    assert!(rows[1].contains("Unassigned"), "{rows:#?}");
+    assert!(
+        rows[2].contains("The closed item · t-qrst6723")
+            && rows[2].contains("closed · 1 run · 1 follow-up"),
+        "{rows:#?}"
+    );
+    // Without a title, its id.
+    assert!(
+        rows[3].contains(" t-bbbbbbbb") && rows[3].contains("closed · 0 runs"),
+        "{rows:#?}"
+    );
+    // Finished items are grouped by the day they closed.
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Finished · "), "{text}");
+
+    // A finished item asks for its timeline when it opens.
+    let pending = state.pending_requests.len();
+    let finished = state.hits.worker_items_rows[2].0;
+    let outcome = left_click(&mut state, (finished.x + 3, finished.y));
+    assert_eq!(history_item_requests(&outcome.actions), ["t-qrst6723"]);
+    assert_eq!(state.pending_requests.len(), pending + 1);
+    let frame = state.compose(140, 40).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    assert!(
+        rows[0].contains("‹ The closed item · t-qrst6723"),
+        "{rows:#?}"
+    );
+    assert!(rows[1].contains("loading the history"), "{rows:#?}");
+
+    // A reply for another item is not taken.
+    assert!(
+        !state
+            .complete_history_item(
+                ClientEndpointId::Local,
+                "t-abcd2345".into(),
+                Ok(history_item_reply())
+            )
+            .0
+    );
+    state.complete_history_item(
+        ClientEndpointId::Local,
+        "t-qrst6723".into(),
+        Ok(history_item_reply()),
+    );
+    let frame = state.compose(140, 40).unwrap();
+    let rows = items_rows_text(&state, &frame);
+    let expected = [
+        "‹ The closed item · t-qrst6723",
+        "claimed · run r-aaaaaaaa · done",
+        "- [ ] The closed item [t-qrst6723]",
+        "What the user asked.",
+        "attempt 1 · w3 · verified · approve · landed aaaabbbb",
+        "closed · run r-aaaaaaaa",
+        "## The decision",
+        "- Chosen: the timeline.",
+        "follow-up · t-cdef4567",
+    ];
+    assert_eq!(rows.len(), expected.len(), "{rows:#?}");
+    for (row, text) in rows.iter().zip(expected) {
+        assert!(row.contains(text), "{text:?} in {rows:#?}");
+    }
+    assert!(
+        rows[4].contains("todo/t-qrst6723-r-aaaaaaaa-1 · commit fedcba98"),
+        "{rows:#?}"
+    );
+    // The attempt's worker run is the attempt: it is not listed again.
+    assert!(
+        !rows.iter().any(|row| row.contains("w3 · failed")),
+        "{rows:#?}"
+    );
+
+    // The follow-up opens its own history.
+    let follow_up = state.hits.worker_items_rows[8].0;
+    let outcome = left_click(&mut state, (follow_up.x + 3, follow_up.y));
+    assert!(
+        history_item_requests(&outcome.actions).is_empty(),
+        "no records of it"
+    );
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::WorkerItems(overlay)) => assert!(
+            matches!(&overlay.open, Some(super::super::worker_items::ItemKey::Item { item, .. }) if item == "t-cdef4567")
+        ),
+        other => panic!("{other:?}"),
+    }
+    state.worker_items_back();
+    state.compose(140, 40).unwrap();
+    let finished = state.hits.worker_items_rows[2].0;
+    left_click(&mut state, (finished.x + 3, finished.y));
+    state.complete_history_item(
+        ClientEndpointId::Local,
+        "t-qrst6723".into(),
+        Ok(history_item_reply()),
+    );
+    state.compose(140, 40).unwrap();
+
+    // The attempt opens its worker's log.
+    let attempt = state.hits.worker_items_rows[4].0;
+    let outcome = left_click(&mut state, (attempt.x + 3, attempt.y));
+    assert!(outcome.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
+                if target.worker_id == "w3"))));
 }

@@ -569,6 +569,17 @@ pub(crate) fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// The local time's offset from UTC now, in seconds; 0 when the platform
+/// does not tell.
+pub(crate) fn local_utc_offset_secs() -> i64 {
+    let Some(local) = crate::platform::local_datetime() else {
+        return 0;
+    };
+    let offset = local.assume_utc().unix_timestamp() - now_unix() as i64;
+    // Round away the seconds that elapsed between the two clock reads.
+    (offset as f64 / 900.0).round() as i64 * 900
+}
+
 /// `None` for a value that is not a number: the window is unknown, never 0%.
 fn clamp_percent(value: f64) -> Option<u8> {
     value

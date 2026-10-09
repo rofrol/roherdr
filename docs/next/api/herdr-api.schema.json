@@ -11008,7 +11008,7 @@
               "type": "array"
             },
             "title": {
-              "description": "The item's title, from its text at the last claim.",
+              "description": "The item's title, from its text at the last claim; for an item\nwhose records hold no text, from `TODO.md` while it is still there.",
               "type": [
                 "string",
                 "null"
@@ -11035,6 +11035,7 @@
               "type": "string"
             },
             "title": {
+              "description": "The item's title, from its text at the last claim; for an item\nwhose records hold no text, from `TODO.md` while it is still there.",
               "type": [
                 "string",
                 "null"

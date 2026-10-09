@@ -26,7 +26,7 @@ const USAGE: &str = "usage:
       at a claim that left TODO.md without a closed record. It only reports;
       it changes no record. Run it when a coordinator starts.
 The records live in herdr's worker store on this machine, outside the
-repository; times are UTC.";
+repository; times are in local time.";
 
 enum Command {
     List(HistoryListParams),
@@ -112,9 +112,10 @@ fn parse(args: &[String]) -> Result<Option<(Command, bool)>, String> {
     Ok(Some((command, json)))
 }
 
-/// Unix milliseconds as `YYYY-MM-DD HH:MM` in UTC.
-fn when(ms: u64) -> String {
-    match time::OffsetDateTime::from_unix_timestamp((ms / 1000) as i64) {
+/// Unix milliseconds as `YYYY-MM-DD HH:MM` in local time, `offset` seconds
+/// east of UTC.
+fn when(ms: u64, offset: i64) -> String {
+    match time::OffsetDateTime::from_unix_timestamp(((ms / 1000) as i64).saturating_add(offset)) {
         Ok(at) => format!(
             "{:04}-{:02}-{:02} {:02}:{:02}",
             at.year(),
@@ -165,10 +166,13 @@ fn indented(text: &str, indent: &str) -> String {
 }
 
 fn print_list(items: &[HistoryItemSummary]) {
-    print!("{}", list_text(items));
+    print!(
+        "{}",
+        list_text(items, crate::usage::local_utc_offset_secs())
+    );
 }
 
-fn list_text(items: &[HistoryItemSummary]) -> String {
+fn list_text(items: &[HistoryItemSummary], offset: i64) -> String {
     if items.is_empty() {
         return "no recorded items\n".into();
     }
@@ -179,7 +183,7 @@ fn list_text(items: &[HistoryItemSummary]) -> String {
                 "{}  {:<8} {}  {}  ({})\n",
                 summary.item,
                 kind_name(summary.last.kind),
-                when(summary.last.ts_ms),
+                when(summary.last.ts_ms, offset),
                 summary.title.as_deref().unwrap_or("-"),
                 summary.repo
             )
@@ -188,11 +192,11 @@ fn list_text(items: &[HistoryItemSummary]) -> String {
 }
 
 fn print_item(item: &HistoryItem) {
-    print!("{}", item_text(item));
+    print!("{}", item_text(item, crate::usage::local_utc_offset_secs()));
 }
 
-fn event_text(event: &HistoryEvent) -> String {
-    let mut out = format!("{}  {}", when(event.ts_ms), kind_name(event.kind));
+fn event_text(event: &HistoryEvent, offset: i64) -> String {
+    let mut out = format!("{}  {}", when(event.ts_ms, offset), kind_name(event.kind));
     if let Some(run_id) = &event.run_id {
         out.push_str(&format!("  run {run_id}"));
         if let Some(attempt) = event.attempt {
@@ -231,14 +235,13 @@ fn event_text(event: &HistoryEvent) -> String {
     out
 }
 
-fn item_text(item: &HistoryItem) -> String {
-    let mut out = format!(
-        "{}  {}\n\n",
-        item.item,
-        item.title.as_deref().unwrap_or("(no title recorded)")
-    );
+fn item_text(item: &HistoryItem, offset: i64) -> String {
+    let mut out = match &item.title {
+        Some(title) => format!("{}  {title}\n\n", item.item),
+        None => format!("{}\n\n", item.item),
+    };
     for event in &item.events {
-        out.push_str(&event_text(event));
+        out.push_str(&event_text(event, offset));
     }
     if !item.runs.is_empty() {
         out.push_str("\nruns:\n");
@@ -248,7 +251,7 @@ fn item_text(item: &HistoryItem) -> String {
             "  {}  {}  started {}",
             run.run_id,
             status_name(run.status),
-            when(run.created_ms)
+            when(run.created_ms, offset)
         ));
         if let Some(commit) = &run.todo_commit {
             out.push_str(&format!("  todo commit {}", short(commit)));
@@ -278,10 +281,13 @@ fn item_text(item: &HistoryItem) -> String {
 }
 
 fn print_reconcile(reconcile: &HistoryReconcile) {
-    print!("{}", reconcile_text(reconcile));
+    print!(
+        "{}",
+        reconcile_text(reconcile, crate::usage::local_utc_offset_secs())
+    );
 }
 
-fn reconcile_text(reconcile: &HistoryReconcile) -> String {
+fn reconcile_text(reconcile: &HistoryReconcile, offset: i64) -> String {
     let mut out = format!("{}\n", reconcile.repo);
     if reconcile.open_claims.is_empty() && reconcile.deleted_without_close.is_empty() {
         out.push_str("every claim has an end and every item that left TODO.md was closed\n");
@@ -299,7 +305,7 @@ fn reconcile_text(reconcile: &HistoryReconcile) -> String {
                 "  {}  run {}  claimed {}  ({status})\n",
                 claim.item,
                 claim.run_id,
-                when(claim.claimed_ms)
+                when(claim.claimed_ms, offset)
             ));
         }
     }
@@ -315,7 +321,7 @@ fn reconcile_text(reconcile: &HistoryReconcile) -> String {
                 out.push_str(&format!(
                     "  (last: {} {})",
                     kind_name(last.kind),
-                    when(last.ts_ms)
+                    when(last.ts_ms, offset)
                 ));
             }
             out.push('\n');
@@ -405,7 +411,7 @@ mod tests {
                 }],
             }],
         };
-        let text = item_text(&item);
+        let text = item_text(&item, 0);
         assert!(text.starts_with("t-abcd2345  The item\n"), "{text}");
         assert!(
             text.contains(
@@ -422,20 +428,23 @@ mod tests {
 
     #[test]
     fn the_reconcile_names_open_claims_and_deleted_items() {
-        let text = reconcile_text(&HistoryReconcile {
-            repo: "/r".into(),
-            open_claims: vec![HistoryOpenClaim {
-                item: "t-abcd2345".into(),
-                run_id: "r-aaaaaaaa".into(),
-                claimed_ms: 1_800_000_000_000,
-                run_status: Some(TodoRunStatus::Waiting),
-            }],
-            deleted_without_close: vec![crate::api::schema::HistoryDeletedItem {
-                item: "t-bcde3456".into(),
-                title: None,
-                last: None,
-            }],
-        });
+        let text = reconcile_text(
+            &HistoryReconcile {
+                repo: "/r".into(),
+                open_claims: vec![HistoryOpenClaim {
+                    item: "t-abcd2345".into(),
+                    run_id: "r-aaaaaaaa".into(),
+                    claimed_ms: 1_800_000_000_000,
+                    run_status: Some(TodoRunStatus::Waiting),
+                }],
+                deleted_without_close: vec![crate::api::schema::HistoryDeletedItem {
+                    item: "t-bcde3456".into(),
+                    title: None,
+                    last: None,
+                }],
+            },
+            0,
+        );
         assert!(
             text.contains("claims without an end:\n  t-abcd2345  run r-aaaaaaaa"),
             "{text}"
@@ -445,5 +454,35 @@ mod tests {
             text.contains("without a closed record:\n  t-bcde3456  -\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn times_are_printed_in_local_time() {
+        // 2027-01-15 08:00 UTC.
+        let at = 1_800_000_000_000;
+        assert_eq!(when(at, 0), "2027-01-15 08:00");
+        assert_eq!(when(at, 2 * 3600), "2027-01-15 10:00");
+        assert_eq!(when(at, -9 * 3600), "2027-01-14 23:00");
+        let text = list_text(
+            &[HistoryItemSummary {
+                repo: "/r".into(),
+                item: "t-abcd2345".into(),
+                title: None,
+                last: event(HistoryEventKind::Claimed),
+            }],
+            2 * 3600,
+        );
+        assert!(text.contains("claimed  2027-01-15 10:00"), "{text}");
+    }
+
+    #[test]
+    fn an_item_without_a_title_shows_its_id_alone() {
+        let item = HistoryItem {
+            item: "t-abcd2345".into(),
+            title: None,
+            events: Vec::new(),
+            runs: Vec::new(),
+        };
+        assert_eq!(item_text(&item, 0), "t-abcd2345\n\n");
     }
 }

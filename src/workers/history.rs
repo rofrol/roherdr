@@ -4,7 +4,7 @@
 //! name. The reconcile compares the records with the repository's `TODO.md`
 //! and reports what has no record; it never writes or drops one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use super::runs::store_error;
@@ -28,6 +28,22 @@ fn title_of(records: &[&HistoryEvent]) -> Option<String> {
         .rev()
         .filter_map(|event| event.item_text.as_deref())
         .find_map(todo_titles::title_of_text)
+}
+
+/// The titles of the items in each repository's `TODO.md`, each file read
+/// at most once: the title of an item whose records hold none (one claimed
+/// before the records kept its text) while it is still in the file.
+#[derive(Default)]
+struct OpenTitles(HashMap<String, HashMap<String, String>>);
+
+impl OpenTitles {
+    fn title(&mut self, repo: &str, item: &str) -> Option<String> {
+        self.0
+            .entry(repo.to_owned())
+            .or_insert_with(|| todo_titles::read_titles(Path::new(repo)))
+            .get(item)
+            .cloned()
+    }
 }
 
 /// Whether a record ends its run's claim.
@@ -79,6 +95,13 @@ impl WorkerSupervisor {
                 })
             })
             .collect();
+        let mut open_titles = OpenTitles::default();
+        for summary in summaries
+            .iter_mut()
+            .filter(|summary| summary.title.is_none())
+        {
+            summary.title = open_titles.title(&summary.repo, &summary.item);
+        }
         summaries.sort_by_key(|summary| std::cmp::Reverse(summary.last.id));
         Ok(summaries)
     }
@@ -144,7 +167,13 @@ impl WorkerSupervisor {
                 attempts,
             });
         }
-        let title = title_of(&events.iter().collect::<Vec<_>>());
+        let title = title_of(&events.iter().collect::<Vec<_>>()).or_else(|| {
+            let mut open_titles = OpenTitles::default();
+            events
+                .iter()
+                .rev()
+                .find_map(|event| open_titles.title(&event.repo, item))
+        });
         Ok(HistoryItem {
             item: item.to_owned(),
             title,
@@ -222,5 +251,36 @@ impl WorkerSupervisor {
             open_claims,
             deleted_without_close,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_item_without_a_recorded_title_takes_it_from_todo_while_it_is_there() {
+        let repo = std::env::temp_dir().join(format!(
+            "herdr-history-titles-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("TODO.md"),
+            "# TODO\n\n- [ ] Still open [t-abcd2345]\n  Its text.\n",
+        )
+        .unwrap();
+        let repo_text = repo.display().to_string();
+        let mut titles = OpenTitles::default();
+        assert_eq!(
+            titles.title(&repo_text, "t-abcd2345").as_deref(),
+            Some("Still open")
+        );
+        // A closed item is gone from the file: no title, the id shows.
+        assert_eq!(titles.title(&repo_text, "t-bcde3456"), None);
+        // A repository whose TODO.md is gone has no titles.
+        assert_eq!(titles.title("/nonexistent/herdr-repo", "t-abcd2345"), None);
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 }

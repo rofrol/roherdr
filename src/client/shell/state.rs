@@ -1058,6 +1058,15 @@ pub(super) enum PendingEndpointKind {
     WorkerRuns {
         endpoint_id: ClientEndpointId,
     },
+    /// `history.list` for the Items dropdown's finished items.
+    HistoryList {
+        endpoint_id: ClientEndpointId,
+    },
+    /// `history.item` for the item the Items dropdown opened.
+    HistoryItem {
+        endpoint_id: ClientEndpointId,
+        item: String,
+    },
     GitBranchList {
         workspace_id: String,
     },

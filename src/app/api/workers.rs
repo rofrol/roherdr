@@ -1,10 +1,13 @@
 //! The worker actions a client starts that need the app: `worker.open_log`
-//! (a popup) and `worker.take_over` (a tab), and `worker.runs` for its
-//! Items popup. The other `worker.*` methods, and `worker.runs` from the
-//! JSON API, run on the API connection's thread (`crate::api::workers`).
+//! (a popup) and `worker.take_over` (a tab), and `worker.runs`,
+//! `history.list` and `history.item` for its Items popup. The other
+//! `worker.*` methods, and those from the JSON API, run on the API
+//! connection's thread (`crate::api::workers`).
 
 use super::responses::{encode_error, encode_success};
-use crate::api::schema::{ResponseResult, WorkerRunsParams, WorkerTarget};
+use crate::api::schema::{
+    HistoryItemParams, HistoryListParams, ResponseResult, WorkerRunsParams, WorkerTarget,
+};
 use crate::app::App;
 use crate::events::AppEvent;
 use crate::popup_size::PopupSize;
@@ -17,6 +20,23 @@ impl App {
             Ok((items, unassigned)) => {
                 encode_success(id, ResponseResult::WorkerRuns { items, unassigned })
             }
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// The recorded items, for the Items popup's finished items, asked when
+    /// the user opens it.
+    pub(super) fn handle_history_list(&mut self, id: String, params: HistoryListParams) -> String {
+        match crate::workers::supervisor().history_list(params.repo.as_deref()) {
+            Ok(items) => encode_success(id, ResponseResult::HistoryList { items }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// An item's timeline, asked when the user opens it in the Items popup.
+    pub(super) fn handle_history_item(&mut self, id: String, params: HistoryItemParams) -> String {
+        match crate::workers::supervisor().history_item(&params.item, params.repo.as_deref()) {
+            Ok(item) => encode_success(id, ResponseResult::HistoryItem { item }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

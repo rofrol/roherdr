@@ -18,6 +18,8 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "client_shell.surface.set",
     "command.invoke",
     "git.branch_list",
+    "history.item",
+    "history.list",
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
@@ -397,6 +399,14 @@ mod tests {
         assert_eq!(
             actual.remove("worker.runs").as_deref(),
             Some("9a63c233cba772fa170cb19d59b43e61f0ffef835d47aeda94aece4f6494ca3a")
+        );
+        assert_eq!(
+            actual.remove("history.item").as_deref(),
+            Some("37adacbe411040d6d8f0f19acad3832e19cd5f776a97c7e3c45425fd44414f6a")
+        );
+        assert_eq!(
+            actual.remove("history.list").as_deref(),
+            Some("35656e568017bd1989b9885359d591c46b3c840ce4a26716320fdcd621578e76")
         );
         assert_eq!(
             actual.remove("worker.take_over").as_deref(),

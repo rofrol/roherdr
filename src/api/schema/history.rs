@@ -112,7 +112,8 @@ pub struct HistoryRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HistoryItem {
     pub item: String,
-    /// The item's title, from its text at the last claim.
+    /// The item's title, from its text at the last claim; for an item
+    /// whose records hold no text, from `TODO.md` while it is still there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The records, oldest first.
@@ -126,6 +127,8 @@ pub struct HistoryItem {
 pub struct HistoryItemSummary {
     pub repo: String,
     pub item: String,
+    /// The item's title, from its text at the last claim; for an item
+    /// whose records hold no text, from `TODO.md` while it is still there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub last: HistoryEvent,
