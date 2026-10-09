@@ -5460,6 +5460,10 @@
               "format": "int64",
               "type": "integer"
             },
+            "ignore_usage": {
+              "description": "With `retry`: start the next attempt even while the usage gate\nrefuses, on the user's word; recorded in the run's events.",
+              "type": "boolean"
+            },
             "message": {
               "description": "With `answer`: the message the model gets with a denial.",
               "type": [
@@ -5522,6 +5526,10 @@
                 "object",
                 "null"
               ]
+            },
+            "ignore_usage": {
+              "description": "Start even while the usage gate refuses (Claude's usage is high or\nunknown), on the user's word; recorded in the run's events.",
+              "type": "boolean"
             },
             "item": {
               "description": "The TODO item's id (`t-abcd2345`); it must be in the repository's\n`TODO.md`.",

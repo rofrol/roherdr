@@ -66,6 +66,7 @@ use crate::api::schema::{
 };
 
 mod finish;
+mod usage_gate;
 
 /// A run's attempts: the first worker and two retries; a retry asked after
 /// the third blocks the run.
@@ -693,6 +694,32 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
     )
 }
 
+/// A fresh Claude reading at 0%: what a test's usage gate reads unless the
+/// test sets another one.
+#[cfg(test)]
+pub(super) fn low_usage_for_test() -> crate::api::schema::UsageReport {
+    use crate::api::schema::{
+        ProviderUsage, ProviderUsageStatus, UsageFreshness, UsageReport, UsageWindow,
+    };
+    let now = crate::usage::now_unix();
+    let mut claude = ProviderUsage::pending("claude", "Claude");
+    claude.status = ProviderUsageStatus::Ok;
+    claude.observed_at = Some(now);
+    claude.windows = vec![UsageWindow {
+        id: "five_hour".into(),
+        label: "5h".into(),
+        used_percent: 0,
+        resets_at: Some(now + 3_600),
+        observed_at: Some(now),
+        freshness: Some(UsageFreshness::Fresh),
+        error_kind: None,
+    }];
+    UsageReport {
+        enabled: true,
+        providers: vec![claude],
+    }
+}
+
 /// What preflight found.
 struct Preflighted {
     base: String,
@@ -706,6 +733,56 @@ impl WorkerSupervisor {
             .store
             .as_ref()
             .map_err(|error| WorkerError::Io(std::io::Error::other(error.clone())))
+    }
+
+    /// The usage reading as `usage.read` returns it now.
+    fn usage_reading(&self, now: u64) -> Option<crate::api::schema::UsageReport> {
+        #[cfg(test)]
+        {
+            let _ = now;
+            lock(&self.shared.usage_reading).clone()
+        }
+        #[cfg(not(test))]
+        crate::usage::published_reading(now)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn set_usage_for_test(&self, report: Option<crate::api::schema::UsageReport>) {
+        *lock(&self.shared.usage_reading) = report;
+    }
+
+    /// The usage gate ([`usage_gate`]) for a new run or attempt in `repo`:
+    /// refused as `usage_gate` unless `ignore_usage`; otherwise the
+    /// decision the run's events record. A refusal closes the repository's
+    /// gate and an admission of a closed one reopens it, in the store; an
+    /// override changes nothing there.
+    pub(super) fn usage_gate(&self, repo: &str, ignore_usage: bool) -> Result<Value, WorkerError> {
+        let store = self.run_store()?;
+        let closed = store.usage_gate_closed(repo).map_err(store_error)?;
+        let now = crate::usage::now_unix();
+        let decision = usage_gate::decide(self.usage_reading(now).as_ref(), closed, now);
+        let recorded = usage_gate::decision_json(&decision, ignore_usage);
+        // A stale window (its reset passed, or polls were missed) needs a
+        // new reading; it never admits by itself.
+        if matches!(decision, usage_gate::Decision::Refuse { refresh: true, .. }) {
+            crate::usage::request_refresh();
+        }
+        match decision {
+            usage_gate::Decision::Refuse { .. } if ignore_usage => {}
+            usage_gate::Decision::Refuse { blockers, .. } => {
+                store
+                    .set_usage_gate(repo, true, &recorded, now_ms())
+                    .map_err(store_error)?;
+                return Err(WorkerError::UsageGate(usage_gate::refusal_message(
+                    &blockers,
+                )));
+            }
+            usage_gate::Decision::Admit { reopened: true } => store
+                .set_usage_gate(repo, false, &recorded, now_ms())
+                .map_err(store_error)?,
+            usage_gate::Decision::Admit { reopened: false } => {}
+        }
+        Ok(recorded)
     }
 
     fn load_run(&self, run_id: &str) -> Result<Run, WorkerError> {
@@ -733,6 +810,7 @@ impl WorkerSupervisor {
             return Err(Self::run_active(&active));
         }
         let preflighted = self.preflight(&params, Path::new(&repo))?;
+        let usage = self.usage_gate(&repo, params.ignore_usage)?;
         let at = now_ms();
         let run_id = new_run_id(&repo, &params.item);
         let mut run = Run {
@@ -783,6 +861,8 @@ impl WorkerSupervisor {
             "owner_pane": params.owner_pane_id,
             "owner_session": params.owner_session_id,
             "workspace": params.workspace_id,
+            "ignore_usage": params.ignore_usage,
+            "usage_gate": usage,
         });
         match store.transaction(|tx| tx.run_event(&mut run, &event, false, at)) {
             Ok(_) => {}
@@ -1204,6 +1284,7 @@ impl WorkerSupervisor {
         }
         let mut note = None;
         let mut exhausted = false;
+        let mut usage = None;
         match params.action {
             TodoAction::Answer => {
                 let worker_id = run
@@ -1237,6 +1318,12 @@ impl WorkerSupervisor {
                     ));
                 }
                 exhausted = run.info.attempt >= MAX_ATTEMPTS;
+                // A new attempt starts a new worker: the usage gate applies.
+                // The run itself is not touched by a refusal: it keeps
+                // waiting on the same event.
+                if !exhausted {
+                    usage = Some(self.usage_gate(&run.info.repo, params.ignore_usage)?);
+                }
             }
             // The kill follows the recorded resume: the driver waiting for
             // the worker's exit goes on as soon as it dies, and its write
@@ -1273,6 +1360,8 @@ impl WorkerSupervisor {
             "todo_note": params.note,
             "close": params.close,
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
+            "ignore_usage": params.ignore_usage,
+            "usage_gate": usage,
         });
         let outcome = store
             .transaction(|tx| {

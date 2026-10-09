@@ -352,6 +352,18 @@ CREATE UNIQUE INDEX runs_one_active_per_repo ON runs (repo)
 -- the run's workers. Runs recorded before have none.
 ALTER TABLE runs ADD COLUMN workspace TEXT;
 "#,
+    r#"
+-- `herdr todo run`'s usage gate per repository: closed after it refused a
+-- run for Claude's usage, until a fresh reading shows every window below
+-- the reopening threshold. `body` is the last decision as a JSON object.
+-- No row is an open gate.
+CREATE TABLE usage_gates (
+    repo TEXT PRIMARY KEY,
+    closed INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1272,6 +1284,36 @@ impl Store {
         runs.collect()
     }
 
+    /// Whether `repo`'s usage gate is closed; an unknown repository's is
+    /// open.
+    pub(super) fn usage_gate_closed(&self, repo: &str) -> StoreResult<bool> {
+        Ok(lock(&self.conn)
+            .query_row(
+                "SELECT closed FROM usage_gates WHERE repo = ?1",
+                [repo],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
+    /// Records `repo`'s usage gate and the decision that set it.
+    pub(super) fn set_usage_gate(
+        &self,
+        repo: &str,
+        closed: bool,
+        body: &Value,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        lock(&self.conn).execute(
+            "INSERT INTO usage_gates (repo, closed, body, updated_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (repo) DO UPDATE SET closed = excluded.closed, body = excluded.body,
+                 updated_ms = excluded.updated_ms",
+            params![repo, closed, body.to_string(), at_ms as i64],
+        )?;
+        Ok(())
+    }
+
     /// The run in progress of `repo`, if any.
     pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
         lock(&self.conn)
@@ -1646,6 +1688,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN broker_seq;
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
+                 DROP TABLE usage_gates;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -1696,8 +1739,9 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN broker_seq;
                  ALTER TABLE workers DROP COLUMN continuity_gap;
                  DROP TABLE runs;
+                 DROP TABLE usage_gates;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 10
+                MIGRATIONS.len() - 11
             ))
             .unwrap();
         drop(store);

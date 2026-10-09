@@ -15,10 +15,15 @@ use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
+                 [--ignore-usage]
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
-      the verify runs them in order and every one must pass), then
+      the verify runs them in order and every one must pass; the usage gate:
+      refused as usage_gate while any Claude window is fresh and 90% or more
+      used, or Claude's reading is stale, failed or missing, and after such a
+      refusal until a fresh reading shows every Claude window below 80%;
+      --ignore-usage, on the user's word, starts anyway), then
       start a headless worker in the folder slot ../herdr-worktrees/worker on
       the branch todo/<item-id>-<attempt> from master with FILE's text as its
       task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
@@ -37,7 +42,7 @@ const USAGE: &str = "usage:
                     --action approve|retry|answer|verify|force-stop|
                              retry-install|skip-install|retry-todo|skip-todo|
                              retry-push|abort
-                    [--task FILE] [--note FILE | --close FILE]
+                    [--task FILE [--ignore-usage]] [--note FILE | --close FILE]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
@@ -48,7 +53,8 @@ const USAGE: &str = "usage:
       with scripts/todo_edit.py and commits that by path, pushes master to
       origin only as a fast-forward, and deletes the run's merged branches;
       retry starts the next attempt with FILE's text (at most 3 attempts,
-      then the run is blocked); answer sends the worker allow, deny or one
+      then the run is blocked; the usage gate of todo run applies, and its
+      refusal leaves the run waiting on the same event); answer sends the worker allow, deny or one
       choice per question; verify runs the verify again; force-stop SIGKILLs
       a worker still alive after its stop. After install_failed, todo_failed
       or push_failed: retry-install or skip-install, retry-todo or skip-todo,
@@ -234,6 +240,16 @@ fn one_run_id(subcommand: &str, rest: &[String]) -> Result<String, String> {
     }
 }
 
+/// Takes the switch `option` out of `args`: whether it was there.
+fn take_switch(args: &[String], option: &str) -> Result<(bool, Vec<String>), String> {
+    let rest: Vec<String> = args.iter().filter(|arg| *arg != option).cloned().collect();
+    match args.len() - rest.len() {
+        0 => Ok((false, rest)),
+        1 => Ok((true, rest)),
+        _ => Err(format!("{option} given twice")),
+    }
+}
+
 /// The caller's agent session, sent only with its pane, as `worker start`
 /// does.
 fn caller_session(pane: Option<&str>) -> Option<String> {
@@ -249,7 +265,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let rest = &args[1..];
     Ok(Some(match subcommand {
         "run" => {
-            let (paths, rest) = take_list(rest, "--paths")?;
+            let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
+            let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
             let (message, rest) = take_string_option(&rest, "--message")?;
@@ -282,6 +299,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 owner_pane_id: pane,
                 workspace_id: super::target::caller_workspace_id(),
                 env: super::worker::caller_env(),
+                ignore_usage,
             })
         }
         "wait" => {
@@ -299,7 +317,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             })
         }
         "resume" => {
-            let (event, rest) = take_string_option(rest, "--event")?;
+            let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
+            let (event, rest) = take_string_option(&rest, "--event")?;
             let (action, rest) = take_string_option(&rest, "--action")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
             let (request_id, rest) = take_string_option(&rest, "--request")?;
@@ -338,6 +357,9 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if action != TodoAction::Retry && task.is_some() {
                 return Err("only --action retry takes --task".into());
             }
+            if action != TodoAction::Retry && ignore_usage {
+                return Err("only --action retry takes --ignore-usage".into());
+            }
             if action != TodoAction::Approve && (note.is_some() || close.is_some()) {
                 return Err("only --action approve takes --note or --close".into());
             }
@@ -374,6 +396,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 caller_session_id: caller_session(pane.as_deref()),
                 caller_pane_id: pane,
                 caller_workspace_id: super::target::caller_workspace_id(),
+                ignore_usage,
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {
@@ -433,6 +456,24 @@ mod tests {
         assert_eq!(params.paths, ["src/**", "AGENTS.md"]);
         assert_eq!(params.task, "Do the thing\n");
         assert_eq!(params.checks, ["workers", "windows-lint"]);
+        assert!(!params.ignore_usage);
+        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--ignore-usage",
+            "--task",
+            &task,
+            "--message",
+            "feat: x",
+            "--paths",
+            "src/**",
+            "--check",
+            "workers",
+        ])) else {
+            panic!("run --ignore-usage did not parse");
+        };
+        assert!(params.ignore_usage);
+        assert_eq!(params.paths, ["src/**"]);
         assert!(parse(&args(&["run", "t-abcd2345", "--task", &task])).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
