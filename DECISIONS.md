@@ -618,3 +618,17 @@ default (the `todo` skill and rule), fewer questions (policy, sandbox,
 folder slot), wake on questions (`worker wait --attention`), commit rules
 enforced by `herdr worker verify`, and the driver `herdr todo run`
 (2026-10-08/09). A second, module-by-module comparison is its own item.
+
+## Atomicity fixes from the 2026-10-07 review
+
+The atomicity review (`docs/atomicity-review-2026-10-07.md`; user: "it must
+be like a database transaction") produced eight fixes, all done by
+2026-10-09: answers name their question; takeovers claimed once, released
+on failure, their tab carrying a takeover id; a live handoff keeps
+headless workers (later: brokers that survive it); `worker kill` checks
+process identity; build and install under one lock (`just clean-install`);
+herdr-job locks follow the command; one coordinator per repository
+(tenures) and a driver whose cherry-pick, install, TODO edit and push each
+record intent and result; and herdr-job writes a job's record, holding a
+launch lock, before creating its tab, so a dead launcher leaves no orphan
+tab (98cf1d11). The other findings were folded into the reliability plan.
