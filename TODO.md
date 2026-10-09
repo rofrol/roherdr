@@ -67,6 +67,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   polling) or once its `resets_at` passed. Also: an empty
   `CLAUDE_CONFIG_DIR` now means `~/.claude` for `.credentials.json`, as for
   the Keychain name. Left: part 3 (the coordinator's Claude/pi choice).
+  Part 3 decided by the user 2026-10-09 (consult round
+  20261009-180337-dd13, sol + MiMo + DeepSeek all for option A; the pi
+  switch was unreachable since the driver starts only headless Claude):
+  `herdr todo run`'s preflight reads `usage.read` and refuses a new run when
+  any Claude window is fresh and >=90% used, or when the reading is stale
+  or failed (the user chose "refuse"), naming the window, its value, the
+  reading's age and `resets_at`; it admits again only after a fresh reading
+  with every window below 80% (a passed `resets_at` triggers a new reading,
+  it does not admit by itself); an explicit `--ignore-usage` from the
+  coordinator, on the user's word, overrides. A run already admitted is
+  never stopped when a window crosses 90%. The refusal is a structured
+  error the coordinator reports and then stops on (it asks the user, it does
+  not poll). Headless pi workers become their own later item.
 
 - [ ] Compare the T3 Code approach: agents through their SDKs instead of a PTY [t-fjbflpho]
   per agent (user, 2026-10-07: "we ran out of pseudo-terminals today;
