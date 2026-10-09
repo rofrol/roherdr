@@ -581,11 +581,13 @@ fn git_with(
 
 /// The task a run hands its worker: the coordinator's text, then the
 /// contract the verify checks, so the worker does not invent its own: the
-/// exact commit subject with no body or trailers, the paths it may touch
-/// and its last line.
+/// exact commit subject with no body or trailers, the paths it may touch,
+/// that it runs everything in the foreground (herdr denies background waits,
+/// [`super::policy::background_wait_denial`]) and its last line.
 fn worker_task(run: &TodoRunInfo) -> String {
     format!(
-        "{}\n\n---\nCommit your work as exactly one commit whose message is exactly this \
+        "{}\n\n---\nRun everything in the foreground: no `run_in_background`, no Monitor. \
+         You are a headless worker: nothing wakes you after your turn ends.\nCommit your work as exactly one commit whose message is exactly this \
          subject, with no body and no trailers:\n{}\nTouch only these paths (git globs): \
          {}\nEnd your last reply with the line `WORKER-DONE <sha> | <summary>`, or \
          `WORKER-BLOCKED <reason>` when you cannot finish.\n",
