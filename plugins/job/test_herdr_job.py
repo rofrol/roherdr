@@ -684,6 +684,14 @@ with open(os.path.join(d, "lock"), "a") as lock:
     tabs = json.load(open(tabs_path)) if os.path.exists(tabs_path) else []
     def out(result):
         print(json.dumps({"result": result}))
+    # Kills the herdr-job process that called, as a crash would, before or
+    # after this call takes effect: STUB_KILL="tab create:before" etc.
+    kill = os.environ.get("STUB_KILL", "").split(":")
+    def crash(when):
+        if kill == [" ".join(args[:2]), when]:
+            os.kill(os.getppid(), 9)
+            sys.exit(1)
+    crash("before")
     if args[:2] == ["pane", "get"]:
         out({"pane": {"pane_id": args[2], "workspace_id": "w", "tab_id": "w:t0", "agent": "claude"}})
     elif args[:2] == ["workspace", "get"]:
@@ -693,12 +701,26 @@ with open(os.path.join(d, "lock"), "a") as lock:
     elif args[:2] == ["tab", "list"]:
         out({"tabs": tabs})
     elif args[:2] == ["tab", "create"]:
-        n = len(tabs) + 1
+        # Ids are not reused while the stub lives, so a closed tab's id stays gone.
+        n = max((int(t["tab_id"].split(":t")[1]) for t in tabs), default=0) + 1
+        counter = os.path.join(d, "tab_counter")
+        n = max(n, int(open(counter).read()) + 1 if os.path.exists(counter) else 1)
+        open(counter, "w").write(str(n))
         tabs.append({"tab_id": f"w:t{n}", "label": args[args.index("--label") + 1]})
         json.dump(tabs, open(tabs_path, "w"))
+        crash("after")
         out({"tab": {"tab_id": f"w:t{n}"}, "root_pane": {"pane_id": f"w:p{n}"}})
+    elif args[:2] == ["tab", "rename"]:
+        for tab in tabs:
+            if tab["tab_id"] == args[2]:
+                tab["label"] = args[3]
+        json.dump(tabs, open(tabs_path, "w"))
     elif args[:2] == ["tab", "close"]:
+        if not any(t["tab_id"] == args[2] for t in tabs):
+            sys.exit(1)
         json.dump([t for t in tabs if t["tab_id"] != args[2]], open(tabs_path, "w"))
+    elif args[:2] == ["pane", "run"]:
+        crash("after")
     elif args[:1] == ["agent"]:
         # Answers queued by the test, one per call: [exit code, stdout, stderr].
         queue_path = os.path.join(d, "agent.json")
@@ -835,6 +857,74 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(out.returncode, 1, out.stderr)
         failures = json.loads((self.state / "failures.json").read_text())
         self.assertEqual(len(failures["w:p0\tprobe"]), 1)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class LaunchCrashTests(unittest.TestCase):
+    """A launcher killed at any step of a launch leaves no orphan tab and no
+    job that stays pending: the job's record exists before its tab."""
+
+    setUp = GuardTests.setUp
+    run_job = GuardTests.run_job
+
+    def herdr_job(self, *args):
+        # Each call blocks until the herdr-job process exits.
+        return subprocess.run([str(Path(__file__).with_name("herdr-job")), *args],
+                              env={**self.env, "HERDR_JOB_KEEP_AWAKE": "0"}, capture_output=True, text=True)
+
+    def crash_launch(self, at):
+        out = self.run_job("build", env={"STUB_KILL": at})
+        self.assertEqual(out.returncode, -9, out.stderr)
+        return next(self.state.glob("2*"))
+
+    def open_tabs(self):
+        path = self.stub_dir / "tabs.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def list_jobs(self):
+        out = self.herdr_job("list")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_a_launcher_killed_before_or_after_creating_the_tab_leaves_no_tab_and_no_pending_job(self):
+        for at in ("tab create:before", "tab create:after", "tab rename:before", "pane run:after"):
+            with self.subTest(at=at):
+                for child in self.stub_dir.iterdir():
+                    child.unlink()
+                for path in self.state.glob("2*"):
+                    for child in path.iterdir():
+                        child.unlink()
+                    path.rmdir()
+                path = self.crash_launch(at)
+                self.assertEqual(len(self.open_tabs()), 0 if at == "tab create:before" else 1)
+                listed = self.list_jobs()
+                self.assertEqual(self.open_tabs(), [])
+                self.assertIn(f"{path.name}  failed (125)", listed)
+                self.assertNotIn("pending", listed)
+                self.assertIn("the launch stopped before the job started", (path / "log").read_text())
+                # A shell that still types `_exec` does not run the given-up job.
+                self.assertEqual(self.herdr_job("_exec", path.name).returncode, 1)
+                self.assertNotIn("started", json.loads((path / "meta.json").read_text()))
+                # The given-up job holds no place: the owner can launch again.
+                self.assertEqual(self.run_job("next").returncode, 0)
+
+    def test_a_job_whose_executor_runs_is_adopted_when_its_launcher_died(self):
+        path = self.crash_launch("pane run:after")
+        with open(path / "lock", "a") as executor:
+            fcntl.flock(executor, fcntl.LOCK_EX)
+            self.assertIn(f"{path.name}  running", self.list_jobs())
+        self.assertEqual([tab["label"] for tab in self.open_tabs()], ["build"])
+        self.assertTrue((path / "launched").exists())
+
+    def test_a_live_launcher_keeps_its_job_pending_however_old_it_is(self):
+        path = self.state / "20260101-000000-abcd"
+        path.mkdir(parents=True)
+        meta = {"id": path.name, "name": "build", "intent": "feedbeef", "created": 0}
+        (path / "meta.json").write_text(json.dumps(meta))
+        with open(path / "launch.lock", "a") as launcher:
+            fcntl.flock(launcher, fcntl.LOCK_EX)
+            self.assertIn(f"{path.name}  pending", self.list_jobs())
+        self.assertIn(f"{path.name}  failed (125)", self.list_jobs())
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

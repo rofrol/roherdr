@@ -78,6 +78,15 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   nothing holds its lock and it left no exit code; a job whose executor has
   not started yet is `pending` while its tab is open (with that job's
   label), however long that takes, and lost only once the tab is gone.
+- A launch cannot leave a tab nobody owns: `run` writes the job's record
+  first (`pending`, with an intent id, while it holds the job's
+  `launch.lock`), creates the tab with the intent id in its label, records
+  the tab, gives it its real label and types the executor's command. If the
+  launcher dies before that is through, the lock is gone, and the next
+  `list`, `run`, `wait` or `clean` settles the job: one whose executor runs
+  or ran is adopted; one that never started gets its tab closed and ends
+  `failed (125)`, with the reason in its log, and `_exec` refuses to run it
+  later. The lock decides, never a duration.
 - `run --key KEY` makes the launch idempotent: when a job with that key
   exists (in any state), `run` prints its id and starts nothing, so a caller
   that lost `run`'s reply can retry with the same key without running the
