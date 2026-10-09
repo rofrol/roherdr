@@ -20,9 +20,9 @@ const USAGE: &str = "usage:
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
       the verify runs them in order and every one must pass; the usage gate:
-      refused as usage_gate while any Claude window is fresh and 90% or more
-      used, or Claude's reading is stale, failed or missing, and after such a
-      refusal until a fresh reading shows every Claude window below 80%;
+      Claude's usage read from the provider now; refused as usage_gate while
+      any Claude window is 90% or more used or the read fails, and after such
+      a refusal until a read shows every Claude window below 80%;
       --ignore-usage, on the user's word, starts anyway), then
       start a headless worker in the folder slot ../herdr-worktrees/worker on
       the branch todo/<item-id>-<attempt> from master with FILE's text as its

@@ -21,7 +21,6 @@ pub(crate) use keys::DEFAULT_AUTH_FILE;
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use self::cache::{Plan, UsageCache};
@@ -80,46 +79,7 @@ enum UsageCommand {
 
 /// Handle to the usage polling thread. Dropping it stops the thread.
 pub(crate) struct UsagePoller {
-    commands: Arc<mpsc::Sender<UsageCommand>>,
-}
-
-/// The poller's last report as `usage.read` would return it, for readers
-/// outside the app loop (`herdr todo run`'s usage gate). It holds the
-/// poller only weakly, so dropping the poller still stops its thread, and a
-/// report of a poller that is gone (usage turned off) reads as none.
-struct Published {
-    poller: Weak<mpsc::Sender<UsageCommand>>,
-    report: Option<(UsageReport, UsageConfig)>,
-}
-
-static PUBLISHED: Mutex<Published> = Mutex::new(Published {
-    poller: Weak::new(),
-    report: None,
-});
-
-fn published() -> std::sync::MutexGuard<'static, Published> {
-    PUBLISHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// The running poller's last report, stamped with freshness at `now` as
-/// `usage.read` stamps it; none while no poller runs or before its first
-/// report.
-pub(crate) fn published_reading(now: u64) -> Option<UsageReport> {
-    let published = published();
-    published.poller.upgrade()?;
-    let (report, config) = published.report.as_ref()?;
-    Some(with_freshness(report, config, now))
-}
-
-/// Asks the running poller for a new reading, as `usage.read --refresh`
-/// does; a no-op while none runs.
-pub(crate) fn request_refresh() {
-    let poller = published().poller.upgrade();
-    if let Some(commands) = poller {
-        let _ = commands.send(UsageCommand::Refresh);
-    }
+    commands: mpsc::Sender<UsageCommand>,
 }
 
 impl UsagePoller {
@@ -128,16 +88,9 @@ impl UsagePoller {
         events: tokio::sync::mpsc::Sender<AppEvent>,
     ) -> std::io::Result<Self> {
         let (commands, receiver) = mpsc::channel();
-        let commands = Arc::new(commands);
-        {
-            let mut published = published();
-            published.poller = Arc::downgrade(&commands);
-            published.report = None;
-        }
-        let me = Arc::downgrade(&commands);
         std::thread::Builder::new()
             .name("herdr-usage".into())
-            .spawn(move || run(config, receiver, events, me))?;
+            .spawn(move || run(config, receiver, events))?;
         Ok(Self { commands })
     }
 
@@ -321,7 +274,6 @@ fn run(
     mut config: UsageConfig,
     commands: mpsc::Receiver<UsageCommand>,
     events: tokio::sync::mpsc::Sender<AppEvent>,
-    me: Weak<mpsc::Sender<UsageCommand>>,
 ) {
     let mut last = BTreeMap::<Provider, ProviderUsage>::new();
     let mut forced = false;
@@ -337,7 +289,7 @@ fn run(
                     .unwrap_or_else(|| ProviderUsage::pending(provider.id(), provider.label()))
             });
         }
-        if !publish(&events, &config, &last, &me) {
+        if !publish(&events, &config, &last) {
             return;
         }
         let fetched_at = Instant::now();
@@ -346,7 +298,7 @@ fn run(
                 let previous = last.remove(&provider);
                 last.insert(provider, merge_result(provider, previous, result));
             }
-            if !publish(&events, &config, &last, &me) {
+            if !publish(&events, &config, &last) {
                 return;
             }
         }
@@ -422,35 +374,7 @@ fn refresh(
                     rate_limited_message(provider, retry_in),
                 )),
                 (Plan::Fresh(usage), _) => Ok(*usage),
-                (Plan::Fetch, Some(Ok(mut usage))) => {
-                    usage.provider = provider.id().to_owned();
-                    usage.label = provider.label().to_owned();
-                    usage.status = ProviderUsageStatus::Ok;
-                    usage.observed_at = Some(now);
-                    cache.record_success(&usage);
-                    Ok(usage)
-                }
-                (Plan::Fetch, Some(Err(FetchError::RateLimited))) => {
-                    let retry_in = cache.record_rate_limit(provider.id(), now);
-                    Err(Failure::new(
-                        UsageErrorKind::RateLimited,
-                        rate_limited_message(provider, retry_in),
-                    ))
-                }
-                (Plan::Fetch, Some(Err(FetchError::Auth(message)))) => {
-                    Err(Failure::new(UsageErrorKind::Auth, message))
-                }
-                (Plan::Fetch, Some(Err(FetchError::Network(message)))) => {
-                    Err(Failure::new(UsageErrorKind::Network, message))
-                }
-                (Plan::Fetch, Some(Err(FetchError::Failed(message)))) => {
-                    Err(Failure::new(UsageErrorKind::Failed, message))
-                }
-                (Plan::Fetch, Some(Err(FetchError::Setup { message, setup }))) => Err(Failure {
-                    kind: UsageErrorKind::Setup,
-                    message,
-                    setup: Some(setup),
-                }),
+                (Plan::Fetch, Some(fetched)) => record_fetched(cache, provider, fetched, now),
                 (Plan::Fetch, None) => Err(Failure::new(
                     UsageErrorKind::Failed,
                     "usage fetch did not run".into(),
@@ -460,6 +384,60 @@ fn refresh(
         }
     });
     results
+}
+
+/// One fetch's outcome as the report shows it, recorded in the shared
+/// cache: a success as the provider's last good observation, a rate limit
+/// as its backoff.
+fn record_fetched(
+    cache: &mut UsageCache,
+    provider: Provider,
+    fetched: Result<ProviderUsage, FetchError>,
+    now: u64,
+) -> Result<ProviderUsage, Failure> {
+    match fetched {
+        Ok(mut usage) => {
+            usage.provider = provider.id().to_owned();
+            usage.label = provider.label().to_owned();
+            usage.status = ProviderUsageStatus::Ok;
+            usage.observed_at = Some(now);
+            cache.record_success(&usage);
+            Ok(usage)
+        }
+        Err(FetchError::RateLimited) => {
+            let retry_in = cache.record_rate_limit(provider.id(), now);
+            Err(Failure::new(
+                UsageErrorKind::RateLimited,
+                rate_limited_message(provider, retry_in),
+            ))
+        }
+        Err(FetchError::Auth(message)) => Err(Failure::new(UsageErrorKind::Auth, message)),
+        Err(FetchError::Network(message)) => Err(Failure::new(UsageErrorKind::Network, message)),
+        Err(FetchError::Failed(message)) => Err(Failure::new(UsageErrorKind::Failed, message)),
+        Err(FetchError::Setup { message, setup }) => Err(Failure {
+            kind: UsageErrorKind::Setup,
+            message,
+            setup: Some(setup),
+        }),
+    }
+}
+
+/// Claude's usage read from the provider now, in this call, with the
+/// poller's fetch code (`herdr todo run`'s usage gate decides on it). It
+/// never answers from the shared cache, but records the outcome there as a
+/// poller's fetch does, so the footer gets the new reading and a rate limit
+/// backs the poller off. The error is the failure in words.
+// Test builds inject the gate's answer in place of this read.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn read_claude_now() -> Result<ProviderUsage, String> {
+    let provider = Provider::Claude;
+    let fetched = provider.fetch(&UsageConfig::default());
+    let now = now_unix();
+    let mut result = Err(String::new());
+    UsageCache::update(|cache| {
+        result = record_fetched(cache, provider, fetched, now).map_err(|failure| failure.message);
+    });
+    result
 }
 
 fn rate_limited_message(provider: Provider, retry_in_secs: u64) -> String {
@@ -474,19 +452,11 @@ fn publish(
     events: &tokio::sync::mpsc::Sender<AppEvent>,
     config: &UsageConfig,
     last: &BTreeMap<Provider, ProviderUsage>,
-    me: &Weak<mpsc::Sender<UsageCommand>>,
 ) -> bool {
     let report = UsageReport {
         enabled: config.enabled,
         providers: last.values().cloned().collect(),
     };
-    {
-        // A poller replaced by a newer one must not overwrite its report.
-        let mut published = published();
-        if Weak::ptr_eq(&published.poller, me) {
-            published.report = Some((report.clone(), config.clone()));
-        }
-    }
     events.blocking_send(AppEvent::UsageUpdated(report)).is_ok()
 }
 
@@ -794,28 +764,6 @@ mod tests {
         assert!(json["providers"][0]["windows"][0]
             .get("freshness")
             .is_none());
-    }
-
-    #[test]
-    fn the_published_reading_lives_as_long_as_its_poller() {
-        let config = UsageConfig {
-            enabled: false,
-            ..UsageConfig::default()
-        };
-        let (events, mut received) = tokio::sync::mpsc::channel(4);
-        let poller = UsagePoller::spawn(config, events).unwrap();
-        // The poller's first report: published before it is sent.
-        let Some(AppEvent::UsageUpdated(report)) = received.blocking_recv() else {
-            panic!("no usage report");
-        };
-        let read = published_reading(now_unix()).expect("a reading while the poller runs");
-        assert_eq!(read, report);
-        assert!(!read.enabled);
-        request_refresh();
-        drop(poller);
-        // A poller that is gone (usage turned off) has no reading.
-        assert_eq!(published_reading(now_unix()), None);
-        request_refresh();
     }
 
     #[test]
