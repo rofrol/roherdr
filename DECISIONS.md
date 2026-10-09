@@ -740,3 +740,10 @@ Three rows priced "from memory" (Opus 4/4.1, Haiku 3.5, in none of the
 user's transcripts) were removed after the user asked about them (consult
 round 20261010-005643-3ed3): a price needs a source. Labelled "estimate,
 not the provider's bill".
+
+## Workers follow the commit rules mechanically
+
+Workers once tried a `Co-Authored-By` trailer that AGENTS.md forbids
+(2026-10-07). Done mechanically since: `herdr worker verify` requires exactly
+one commit with exactly the approved subject, no body and no trailers, and
+the driver adds its own `Herdr-Item`/`Herdr-Run` trailers only when landing.
