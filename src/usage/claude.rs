@@ -16,7 +16,7 @@
 use serde::Deserialize;
 
 use super::FetchError;
-use crate::api::schema::{ProviderUsage, UsageWindow};
+use crate::api::schema::{ProviderUsage, UsageAccount, UsageWindow};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -38,6 +38,28 @@ struct OauthCredentials {
     expires_at: Option<u64>,
     #[serde(rename = "subscriptionType")]
     subscription_type: Option<String>,
+}
+
+/// Claude Code's global config, which names the logged-in account.
+#[derive(Deserialize)]
+struct GlobalConfig {
+    #[serde(rename = "oauthAccount")]
+    oauth_account: Option<OauthAccount>,
+}
+
+#[derive(Deserialize)]
+struct OauthAccount {
+    #[serde(rename = "emailAddress")]
+    email_address: Option<String>,
+    #[serde(rename = "organizationName")]
+    organization_name: Option<String>,
+}
+
+/// The OAuth login and where it was read.
+struct Login {
+    credentials: OauthCredentials,
+    /// `file:<path>` or `keychain:<item>`.
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -94,12 +116,15 @@ struct ExtraUsage {
 }
 
 pub(super) fn fetch() -> Result<ProviderUsage, FetchError> {
-    let credentials = read_credentials()?;
+    let Login {
+        credentials,
+        source,
+    } = read_credentials().map_err(FetchError::Auth)?;
     if credentials
         .expires_at
         .is_some_and(|expires_at| expires_at / 1000 <= super::now_unix())
     {
-        return Err(FetchError::Failed(EXPIRED_LOGIN.into()));
+        return Err(FetchError::Auth(EXPIRED_LOGIN.into()));
     }
     let authorization = format!("Bearer {}", credentials.access_token);
     let response = super::http::get(
@@ -113,9 +138,10 @@ pub(super) fn fetch() -> Result<ProviderUsage, FetchError> {
         200 => {
             let mut usage = parse(&response.body)?;
             usage.plan = credentials.subscription_type.map(|plan| capitalize(&plan));
+            usage.account = Some(account(source));
             Ok(usage)
         }
-        401 | 403 => Err(FetchError::Failed(EXPIRED_LOGIN.into())),
+        401 | 403 => Err(FetchError::Auth(EXPIRED_LOGIN.into())),
         429 => Err(FetchError::RateLimited),
         status => Err(FetchError::Failed(format!(
             "Claude usage request failed ({status})"
@@ -123,31 +149,96 @@ pub(super) fn fetch() -> Result<ProviderUsage, FetchError> {
     }
 }
 
-fn read_credentials() -> Result<OauthCredentials, String> {
-    let raw = credentials_file_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+fn read_credentials() -> Result<Login, String> {
+    let (raw, source) = credentials_file_path()
+        .and_then(|path| {
+            let raw = std::fs::read_to_string(&path).ok()?;
+            Some((raw, format!("file:{}", path.display())))
+        })
         .or_else(|| {
-            keychain_service(
+            let service = keychain_service(
                 std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
                 std::env::var_os("CLAUDE_CONFIG_DIR"),
                 crate::platform::normalize_nfc,
-            )
-            .and_then(|service| crate::platform::read_keychain_generic_password(&service))
+            )?;
+            let raw = crate::platform::read_keychain_generic_password(&service)?;
+            Some((raw, format!("keychain:{service}")))
         })
         .ok_or_else(|| "Claude Code login not found".to_owned())?;
-    serde_json::from_str::<CredentialsFile>(&raw)
+    login_from(&raw, source)
+}
+
+fn login_from(raw: &str, source: String) -> Result<Login, String> {
+    serde_json::from_str::<CredentialsFile>(raw)
         .ok()
         .and_then(|file| file.oauth)
+        .map(|credentials| Login {
+            credentials,
+            source,
+        })
         .ok_or_else(|| "Claude Code login has no OAuth token".to_owned())
 }
 
-fn credentials_file_path() -> Option<std::path::PathBuf> {
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+fn config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|dir| !dir.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".claude"))
-        })?;
-    Some(config_dir.join(".credentials.json"))
+        })
+}
+
+fn credentials_file_path() -> Option<std::path::PathBuf> {
+    Some(config_dir()?.join(".credentials.json"))
+}
+
+/// Claude Code keeps its global config, which names the account, in
+/// `$CLAUDE_CONFIG_DIR/.claude.json`, or `~/.claude.json` without the variable.
+fn global_config_path() -> Option<std::path::PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => Some(std::path::PathBuf::from(dir).join(".claude.json")),
+        None => {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".claude.json"))
+        }
+    }
+}
+
+fn account(source: String) -> UsageAccount {
+    let global_config = global_config_path().and_then(|path| std::fs::read_to_string(path).ok());
+    account_from(source, config_dir(), global_config.as_deref())
+}
+
+fn account_from(
+    source: String,
+    config_dir: Option<std::path::PathBuf>,
+    global_config: Option<&str>,
+) -> UsageAccount {
+    let (email, organization) = global_config.map_or((None, None), account_names);
+    UsageAccount {
+        source,
+        config_dir: config_dir.map(|dir| dir.display().to_string()),
+        email,
+        organization,
+    }
+}
+
+/// The account's email and organization from Claude Code's global config.
+fn account_names(raw: &str) -> (Option<String>, Option<String>) {
+    let Some(account) = serde_json::from_str::<GlobalConfig>(raw)
+        .ok()
+        .and_then(|config| config.oauth_account)
+    else {
+        return (None, None);
+    };
+    let named = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    (
+        named(account.email_address),
+        named(account.organization_name),
+    )
 }
 
 /// Name of Claude Code's macOS Keychain item for the configured account.
@@ -201,14 +292,15 @@ fn parse(body: &str) -> Result<ProviderUsage, String> {
         let Some(window) = window else {
             continue;
         };
-        let Some(utilization) = window.utilization else {
+        let Some(used_percent) = window.utilization.and_then(super::clamp_percent) else {
             continue;
         };
         usage.windows.push(UsageWindow {
             id: id.into(),
             label: label.into(),
-            used_percent: super::clamp_percent(utilization),
+            used_percent,
             resets_at: window.resets_at.as_deref().and_then(parse_timestamp),
+            ..Default::default()
         });
     }
     let mut unreadable_scoped = 0usize;
@@ -227,12 +319,11 @@ fn parse(body: &str) -> Result<ProviderUsage, String> {
         let Some(name) = name else {
             continue;
         };
-        let Some(percent) = entry.percent else {
+        let Some(used_percent) = entry.percent.and_then(super::clamp_percent) else {
             // Report rather than guess when a scoped limit carries no number.
             unreadable_scoped += 1;
             continue;
         };
-        let used_percent = super::clamp_percent(percent);
         let label = format!("{name} week");
         if usage
             .windows
@@ -246,6 +337,7 @@ fn parse(body: &str) -> Result<ProviderUsage, String> {
             label,
             used_percent,
             resets_at: entry.resets_at.as_deref().and_then(parse_timestamp),
+            ..Default::default()
         });
     }
     if unreadable_scoped > 0 {
@@ -364,6 +456,52 @@ mod tests {
         assert_eq!(
             keychain_service(None, os("/nonexistent/.claude-work"), |_| None),
             None
+        );
+    }
+
+    #[test]
+    fn the_account_names_the_login_and_never_carries_a_token() {
+        let login = login_from(
+            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-SECRET-ACCESS",
+                "refreshToken":"sk-ant-ort01-SECRET-REFRESH","expiresAt":1,
+                "subscriptionType":"max"}}"#,
+            "keychain:Claude Code-credentials-25195694".into(),
+        )
+        .unwrap();
+        assert_eq!(login.credentials.access_token, "sk-ant-oat01-SECRET-ACCESS");
+        let mut usage = parse(r#"{"five_hour":{"utilization":12.0}}"#).unwrap();
+        usage.account = Some(account_from(
+            login.source,
+            Some("/nonexistent/.claude-work".into()),
+            Some(
+                r#"{"primaryApiKey":"sk-ant-api03-SECRET-KEY",
+                    "oauthAccount":{"emailAddress":" you@example.com ",
+                      "organizationName":"Example Org","accountUuid":"uuid"}}"#,
+            ),
+        ));
+        assert_eq!(
+            usage.account,
+            Some(UsageAccount {
+                source: "keychain:Claude Code-credentials-25195694".into(),
+                config_dir: Some("/nonexistent/.claude-work".into()),
+                email: Some("you@example.com".into()),
+                organization: Some("Example Org".into()),
+            })
+        );
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(!json.contains("SECRET"), "{json}");
+    }
+
+    #[test]
+    fn an_account_without_a_global_config_names_only_the_source() {
+        let account = account_from("file:/nonexistent/.credentials.json".into(), None, None);
+        assert_eq!(account.source, "file:/nonexistent/.credentials.json");
+        assert_eq!((account.email, account.organization), (None, None));
+        assert_eq!(account_names(r#"{"oauthAccount":null}"#), (None, None));
+        assert_eq!(account_names("not json"), (None, None));
+        assert_eq!(
+            account_names(r#"{"oauthAccount":{"emailAddress":"","organizationName":"  "}}"#),
+            (None, None)
         );
     }
 

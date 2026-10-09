@@ -12442,6 +12442,17 @@
         },
         "ProviderUsage": {
           "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageAccount"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which login the allowance was read with, so data of the wrong account\nis visible. Never a credential."
+            },
             "balances": {
               "default": [],
               "description": "Prepaid balances, one per currency.",
@@ -12460,6 +12471,17 @@
                 }
               ],
               "description": "Text-completion tokens over the same period as `spend`."
+            },
+            "error_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageErrorKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the latest refresh failed; set together with `status: error`."
             },
             "label": {
               "description": "Human-readable provider name.",
@@ -15030,6 +15052,40 @@
             }
           ]
         },
+        "UsageAccount": {
+          "description": "The login a provider's allowance was read with: where herdr found it and\nwhom it names, never the credential itself.",
+          "properties": {
+            "config_dir": {
+              "description": "The provider CLI's config directory that selects the login, such as\n`~/.claude` or `$CODEX_HOME`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "email": {
+              "description": "Account email, where the provider's data names one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "organization": {
+              "description": "Organization name, where the provider's data names one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "description": "Where the login came from: `file:<path>`, `keychain:<item name>`,\n`env:<variable>`, or `cli:<command>` when the provider's own CLI reads\nits login.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        },
         "UsageBalance": {
           "properties": {
             "currency": {
@@ -15097,6 +15153,64 @@
             "since"
           ],
           "type": "object"
+        },
+        "UsageErrorKind": {
+          "oneOf": [
+            {
+              "const": "rate_limited",
+              "description": "The provider rate-limited the usage endpoint; herdr backs off.",
+              "type": "string"
+            },
+            {
+              "const": "auth",
+              "description": "The login or key was missing, expired or rejected.",
+              "type": "string"
+            },
+            {
+              "const": "setup",
+              "description": "Something must be set up first; `setup` on the provider lists the steps.",
+              "type": "string"
+            },
+            {
+              "const": "network",
+              "description": "The request did not reach the provider.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Any other failure: an unexpected response or a provider CLI error.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A future kind this client does not understand.",
+              "type": "string"
+            }
+          ]
+        },
+        "UsageFreshness": {
+          "oneOf": [
+            {
+              "const": "fresh",
+              "description": "Observed by the latest refresh, recently enough, and the window has\nnot reset since.",
+              "type": "string"
+            },
+            {
+              "const": "stale",
+              "description": "Older than two refresh intervals, or the window reset after it was\nobserved.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The latest refresh failed; `error_kind` says why.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A future state this client does not understand; treat as unknown.",
+              "type": "string"
+            }
+          ]
         },
         "UsageProviderSetting": {
           "properties": {
@@ -15235,6 +15349,28 @@
         },
         "UsageWindow": {
           "properties": {
+            "error_kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageErrorKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the latest refresh failed, with `freshness: failed`."
+            },
+            "freshness": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/UsageFreshness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether `used_percent` is current. Only `fresh` is; a `stale` or\n`failed` window's `used_percent` is the last observation, and the\ncurrent value is unknown (neither 0 nor 100). Absent from older servers."
+            },
             "id": {
               "description": "Stable window id such as `five_hour` or `weekly`.",
               "type": "string"
@@ -15242,6 +15378,15 @@
             "label": {
               "description": "Short label such as `5h` or `week`.",
               "type": "string"
+            },
+            "observed_at": {
+              "description": "Unix seconds when `used_percent` was observed.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "resets_at": {
               "description": "Unix seconds when the window resets.",

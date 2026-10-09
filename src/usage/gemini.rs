@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::api::schema::{ProviderUsage, UsageWindow};
+use crate::api::schema::{ProviderUsage, UsageAccount, UsageWindow};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -97,16 +97,25 @@ fn parse(output: &str) -> Result<ProviderUsage, String> {
         .map(|data| data.groups)
         .ok_or_else(|| "agy reported no quota; is it logged in?".to_owned())?;
     let mut usage = ProviderUsage::pending("gemini", "Gemini");
+    // agy names no account in its output; it reads its own Google login.
+    usage.account = Some(UsageAccount {
+        source: "cli:agy".into(),
+        ..UsageAccount::default()
+    });
     for bucket in groups.into_iter().flat_map(|group| group.buckets) {
-        let Some(remaining) = bucket.remaining_fraction else {
+        let Some(used_percent) = bucket
+            .remaining_fraction
+            .and_then(|remaining| super::clamp_percent((1.0 - remaining) * 100.0))
+        else {
             continue;
         };
         let (id, label) = window_identity(&bucket.id, bucket.window.as_deref());
         usage.windows.push(UsageWindow {
             id,
             label,
-            used_percent: super::clamp_percent((1.0 - remaining) * 100.0),
+            used_percent,
             resets_at: bucket.reset_time.as_deref().and_then(parse_timestamp),
+            ..Default::default()
         });
     }
     if usage.windows.is_empty() {
@@ -166,6 +175,27 @@ mod tests {
             vec![("weekly", "week", 53), ("weekly_3p", "3p week", 0)]
         );
         assert_eq!(usage.windows[0].resets_at, Some(1_790_813_172));
+        let account = usage.account.unwrap();
+        assert_eq!(account.source, "cli:agy");
+        assert_eq!((account.email, account.config_dir), (None, None));
+    }
+
+    #[test]
+    fn a_bucket_without_a_number_is_skipped_not_zero() {
+        let usage = parse(
+            r#"{"status":"SUCCESS","command":{"data":{"groups":[{"buckets":[
+                {"id":"gemini-weekly","window":"weekly","remaining_fraction":null},
+                {"id":"3p-weekly","window":"weekly","remaining_fraction":0.25}]}]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            usage
+                .windows
+                .iter()
+                .map(|window| (window.id.as_str(), window.used_percent))
+                .collect::<Vec<_>>(),
+            vec![("weekly_3p", 75)]
+        );
     }
 
     #[test]

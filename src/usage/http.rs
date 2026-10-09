@@ -8,8 +8,28 @@ pub(super) struct HttpResponse {
     pub(super) body: String,
 }
 
+/// A request that did not get an HTTP answer from the provider.
+#[derive(Debug)]
+pub(super) struct HttpError(String);
+
+impl From<HttpError> for String {
+    fn from(error: HttpError) -> Self {
+        error.0
+    }
+}
+
+impl From<HttpError> for super::FetchError {
+    fn from(error: HttpError) -> Self {
+        Self::Network(error.0)
+    }
+}
+
 /// GET `url` through curl. Headers travel over stdin so secrets never appear in argv.
-pub(super) fn get(url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, String> {
+pub(super) fn get(url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+    get_raw(url, headers).map_err(HttpError)
+}
+
+fn get_raw(url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, String> {
     let mut child = crate::noninteractive_process::curl_command()
         .args([
             "--silent",

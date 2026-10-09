@@ -13,7 +13,11 @@ impl App {
         encode_success(
             id,
             ResponseResult::UsageRead {
-                usage: self.state.usage.clone(),
+                usage: crate::usage::with_freshness(
+                    &self.state.usage,
+                    &self.usage_config,
+                    crate::usage::now_unix(),
+                ),
             },
         )
     }

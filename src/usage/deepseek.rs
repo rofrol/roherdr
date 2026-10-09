@@ -22,12 +22,17 @@ struct BalanceInfo {
 }
 
 pub(super) fn fetch(config: &UsageConfig) -> Result<ProviderUsage, FetchError> {
-    let key = super::keys::api_key(config, &super::keys::KeyedProvider::DeepSeek)?;
-    let authorization = format!("Bearer {key}");
+    let key = super::keys::api_key(config, &super::keys::KeyedProvider::DeepSeek)
+        .map_err(FetchError::Auth)?;
+    let authorization = format!("Bearer {}", key.secret);
     let response = super::http::get(BALANCE_URL, &[("Authorization", &authorization)])?;
     match response.status {
-        200 => Ok(parse(&response.body)?),
-        401 | 403 => Err(FetchError::Failed("DeepSeek rejected the API key".into())),
+        200 => {
+            let mut usage = parse(&response.body)?;
+            usage.account = Some(key.account());
+            Ok(usage)
+        }
+        401 | 403 => Err(FetchError::Auth("DeepSeek rejected the API key".into())),
         429 => Err(FetchError::RateLimited),
         status => Err(FetchError::Failed(format!(
             "DeepSeek balance request failed ({status})"

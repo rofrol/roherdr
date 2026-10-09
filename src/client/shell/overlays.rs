@@ -135,15 +135,45 @@ fn usage_overlay_lines(
             ));
         }
         lines.push(Line::from(heading));
+        if let Some(account) = provider.account.as_ref() {
+            let width = usize::from(USAGE_MODAL_WIDTH).saturating_sub(17);
+            for (index, line) in
+                super::usage::wrap_words(&super::usage::account_text(account), width)
+                    .into_iter()
+                    .enumerate()
+            {
+                let label = if index == 0 { "account" } else { "" };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("   {label:<11}"), base.fg(p.overlay1)),
+                    Span::styled(line, dim),
+                ]));
+            }
+        }
         for window in &provider.windows {
             let used = window.used_percent.min(100);
-            let filled = (usize::from(used) * USAGE_BAR_WIDTH).div_ceil(100);
-            let color = super::usage::used_color(used, p);
+            // After a reset the last value describes the previous window.
+            let known = !super::usage::window_reset_passed(window, now_unix);
+            let filled = if known {
+                (usize::from(used) * USAGE_BAR_WIDTH).div_ceil(100)
+            } else {
+                0
+            };
+            let staleness = super::usage::window_staleness(window, now_unix);
+            let color = if staleness.is_some() {
+                p.overlay0
+            } else {
+                super::usage::used_color(used, p)
+            };
+            let percent = if known {
+                format!(" {used:>3}% used")
+            } else {
+                "   ?% used".to_owned()
+            };
             let mut spans = vec![
                 Span::styled(format!("   {:<11}", window.label), base.fg(p.overlay1)),
                 Span::styled("█".repeat(filled), base.fg(color)),
                 Span::styled("░".repeat(USAGE_BAR_WIDTH - filled), base.fg(p.surface1)),
-                Span::styled(format!(" {used:>3}% used"), base.fg(color)),
+                Span::styled(percent, base.fg(color)),
             ];
             if let Some(resets_at) = window.resets_at {
                 let mut reset = if resets_at < now_unix.saturating_add(60) {
@@ -158,6 +188,9 @@ fn usage_overlay_lines(
                     reset.push_str(&format!(" ({clock})"));
                 }
                 spans.push(Span::styled(reset, dim));
+            }
+            if let Some(staleness) = staleness {
+                spans.push(Span::styled(format!("  {staleness}"), base.fg(p.yellow)));
             }
             lines.push(Line::from(spans));
         }
