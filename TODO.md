@@ -1551,6 +1551,14 @@ Items agents add. Not approved until the user moves them up.
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
 
+- [ ] [t-vuk5dil4] May headless workers reach the network for cargo (crates.io and static.crates.io only), so an item that adds or updates a dependency can build in the worker?
+  Options: allow crates.io domains in the worker sandbox (Recommended) | keep no network; dependency changes are done by the coordinator's clean tree | decide per item
+  Checked: the worker sandbox has `allowedDomains: []`; every build so far used the warm slot's cache; no item has needed a new crate yet. From the item "Headless workers ask the user almost never".
+
+- [ ] [t-nxeb6lo6] Report Claude Code's shared sandbox `$TMPDIR` upstream (anthropics/claude-code)?
+  Options: I draft the issue, you file it (Recommended) | file it from your account after you read it | drop it
+  Checked: herdr works around it with a private 0700 temp dir per worker; vendored `libsystem_override.sh` calls `mktemp -d`, which ignores `$TMPDIR`. Filing is outward-facing, so it needs you.
+
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
