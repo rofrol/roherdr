@@ -17,12 +17,17 @@
 //! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
 //! `<fifo>` is written), `commit <file> <subject...>` (appends to
 //! `<file>`, commits it with that subject and ends with `WORKER-DONE <sha>`),
+//! `amend <file> <subject...>` (the same, amending `HEAD` instead),
+//! `commit2 <file> <subject...>` (`commit` twice, the second changing what
+//! the first added),
 //! `perm-commit <file> <subject...>` (`perm WebFetch`, then `commit`),
 //! `stubborn-commit <file> <subject...>` (`ignore-term`, then `commit`) and
 //! `hook <tool> <words...>` (a PreToolUse `hook_callback` for the hook an
 //! `initialize` request registered for that tool, whose command is the
 //! words; the result is its answer as JSON, or `unregistered`) and
 //! `hook-bg <tool> <words...>` (the same with `run_in_background: true`).
+//! A message with `Review of attempt N:` lines (a todo run's later attempt)
+//! is chosen by the line after the last one instead.
 #![cfg(unix)]
 
 use std::io::Read;
@@ -59,13 +64,14 @@ emit({"type": "system", "subtype": "init", "session_id": "stub-session",
 ignore_term = False
 hooks = {}
 
-def commit(path, subject):
+def commit(path, subject, amend=False):
     with open(path, "a") as f:
         f.write("change\n")
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
     subprocess.run(git + ["add", path], check=True)
-    subprocess.run(git + ["commit", "-q", "-m", subject], check=True)
+    subprocess.run(git + ["commit", "-q"] + (["--amend"] if amend else []) + ["-m", subject],
+                   check=True)
     sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                          check=True).stdout.strip()
     result(text="committed\nWORKER-DONE " + sha + " | summary")
@@ -118,8 +124,11 @@ while True:
         continue
     if message.get("type") != "user":
         continue
-    # The first line chooses: a todo run appends its contract below it.
-    words = message["message"]["content"].split("\n")[0].split()
+    # The first line chooses: a todo run appends its contract below it. A
+    # later attempt's task ends with the review, whose first line chooses.
+    lines = message["message"]["content"].split("\n")
+    reviews = [i for i, line in enumerate(lines) if line.startswith("Review of attempt ")]
+    words = (lines[reviews[-1] + 1] if reviews else lines[0]).split()
     emit({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}})
     command = words[0]
     if command == "finish":
@@ -129,6 +138,16 @@ while True:
     elif command == "done":
         result(text="work done\nWORKER-DONE " + words[1] + " | summary")
     elif command == "commit":
+        commit(words[1], " ".join(words[2:]))
+    elif command == "amend":
+        commit(words[1], " ".join(words[2:]), amend=True)
+    elif command == "commit2":
+        with open(words[1], "a") as f:
+            f.write("first\n")
+        subprocess.run(["git", "add", words[1]], check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                        "commit", "-q", "-m", "first"], check=True)
         commit(words[1], " ".join(words[2:]))
     elif command == "perm-commit":
         ask_host("WebFetch", {"url": "https://example.com"})
@@ -4128,7 +4147,7 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
         .iter()
         .any(|worker| worker.item.as_deref() == Some(ITEM)));
 
-    let (items, unassigned) = fixture
+    let (items, unassigned, _) = fixture
         .supervisor
         .runs(&WorkerRunsParams::default())
         .unwrap();
@@ -4172,21 +4191,23 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
     );
 
     // Filtered by item and repository (any directory in it names it).
-    let (items, unassigned) = fixture
+    let (items, unassigned, _) = fixture
         .supervisor
         .runs(&WorkerRunsParams {
             item: Some(ITEM.into()),
             repo: Some(fixture.root.join("other").display().to_string()),
+            commit: None,
         })
         .unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].runs[0].worker_id, elsewhere.worker_id);
     assert!(unassigned.is_empty());
-    let (items, unassigned) = fixture
+    let (items, unassigned, _) = fixture
         .supervisor
         .runs(&WorkerRunsParams {
             item: Some("t-zzzz2222".into()),
             repo: None,
+            commit: None,
         })
         .unwrap();
     assert!(items.is_empty() && unassigned.is_empty());
@@ -4196,7 +4217,7 @@ fn runs_are_grouped_by_item_and_repository_and_unassigned_ones_stay_apart() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (items, _, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(items[0].runs[0].commits, ["abc1234", "def5678"]);
     assert_eq!(items[0].runs[0].outcome, WorkerRunOutcome::Finished);
 }
@@ -4220,6 +4241,7 @@ fn an_item_that_is_not_a_todo_id_is_refused() {
         let refused = fixture.supervisor.runs(&WorkerRunsParams {
             item: Some(bad.into()),
             repo: None,
+            commit: None,
         });
         assert!(matches!(refused, Err(WorkerError::Invalid(_))), "{bad:?}");
     }
@@ -4343,7 +4365,7 @@ fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
         worker
     };
     let title = || {
-        let (items, _) = fixture
+        let (items, _, _) = fixture
             .supervisor
             .runs(&WorkerRunsParams::default())
             .unwrap();
@@ -4374,7 +4396,7 @@ fn a_run_keeps_its_items_title_from_its_start_after_the_item_leaves_the_todo() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (items, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (items, _, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(items[0].title.as_deref(), Some("Items popup"));
 }
 
@@ -4429,7 +4451,7 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
     let events = fixture.herdr_events(&id, "verification");
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["verification"]["verdict"], "verified");
-    let (_, unassigned) = fixture
+    let (_, unassigned, _) = fixture
         .supervisor
         .runs(&WorkerRunsParams::default())
         .unwrap();
@@ -4440,7 +4462,7 @@ fn herdr_verifies_a_workers_commit_and_its_run_keeps_the_verdict() {
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
     );
-    let (_, unassigned) = reopened.runs(&WorkerRunsParams::default()).unwrap();
+    let (_, unassigned, _) = reopened.runs(&WorkerRunsParams::default()).unwrap();
     assert_eq!(unassigned[0].verification.as_ref(), Some(&verified));
 
     let missing = fixture
@@ -5413,8 +5435,8 @@ fn a_handoff_keeps_a_brokered_worker_mid_turn_and_the_new_server_ends_its_turn()
 mod todo_runs {
     use super::*;
     use crate::api::schema::{
-        TodoAction, TodoEventKind, TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams,
-        TodoRunStatus, TodoStep, TodoWaitParams, WorkerCheckOutcome, WorkerVerdict,
+        TodoAction, TodoEventKind, TodoLandingSource, TodoResumeParams, TodoRunEvent, TodoRunInfo,
+        TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams, WorkerCheckOutcome, WorkerVerdict,
     };
 
     const ITEM: &str = "t-abcd2345";
@@ -5634,7 +5656,12 @@ mod todo_runs {
             assert!(message.contains(part), "{part:?} not in {message}");
         }
         // A refusal starts nothing.
-        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+        assert!(fixture
+            .supervisor
+            .todo_runs(None, None)
+            .unwrap()
+            .0
+            .is_empty());
         assert!(fixture.supervisor.list().is_empty());
 
         // Closed: 89 is not enough to reopen, after a restart too.
@@ -5683,7 +5710,12 @@ mod todo_runs {
         }
         fixture.supervisor.set_usage_for_test(None);
         assert!(usage_refusal(&fixture).contains("no usage reading"));
-        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+        assert!(fixture
+            .supervisor
+            .todo_runs(None, None)
+            .unwrap()
+            .0
+            .is_empty());
     }
 
     #[test]
@@ -5900,7 +5932,7 @@ mod todo_runs {
         let (again, _) = wait(&fixture, &run.run_id, Some(done.event_id));
         assert_eq!(again.event_id, done.event_id);
         assert_eq!(
-            fixture.supervisor.todo_runs(None).unwrap()[0].run_id,
+            fixture.supervisor.todo_runs(None, None).unwrap().0[0].run_id,
             run.run_id
         );
     }
@@ -6035,33 +6067,432 @@ mod todo_runs {
         )
         .unwrap_err();
         assert_eq!(refused.code(), "invalid_request");
+        let first_commit = failed.commits[0].clone();
 
+        // The retry's text is the review of attempt 1.
+        let review_text = format!("amend b.txt {SUBJECT}");
         let retried = resume(
             &fixture,
             &run.run_id,
             failed.event_id,
             TodoAction::Retry,
-            Some(&format!("commit b.txt {SUBJECT}")),
+            Some(&review_text),
         )
         .unwrap();
         assert_eq!(retried.step, TodoStep::Restart);
-        let (done, finished) = approve_to_done(&fixture, &run.run_id);
+        let (review, second) = wait(&fixture, &run.run_id, Some(failed.event_id));
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // The driver cherry-picked attempt 1's commit onto attempt 2's
+        // branch, which the worker amended: one commit with both changes.
+        let carried = run_events(&fixture, &run.run_id, "run_carried");
+        assert_eq!(carried.len(), 1, "{carried:#?}");
+        assert_eq!(carried[0]["from_attempt"], 1);
+        assert_eq!(carried[0]["from_commit"], first_commit.as_str());
+        assert_eq!(review.commits.len(), 1, "{review:#?}");
+        let stat = review.diff_stat.as_deref().unwrap_or_default();
+        assert!(stat.contains("a.txt") && stat.contains("b.txt"), "{stat}");
+        // Its task is attempt 1's with the review, and says where it starts.
+        let task = format!("commit a.txt {SUBJECT}\n\nReview of attempt 1:\n{review_text}");
+        assert_eq!(second.task, task);
+        let prompt = first_prompt(&fixture, second.worker_id.as_deref().unwrap());
+        assert!(prompt.starts_with(&task), "{prompt}");
+        assert!(
+            prompt.contains(&format!("attempt 1's commit {first_commit}")),
+            "{prompt}"
+        );
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
         assert_eq!(finished.attempt, 2);
         assert_eq!(
             finished.branch.as_deref(),
             Some(format!("todo/t-abcd2345-{}-2", run.run_id).as_str())
         );
-        assert_eq!(finished.task, format!("commit b.txt {SUBJECT}"));
         assert!(fixture.repo.join("b.txt").is_file());
-        assert!(!fixture.repo.join("a.txt").exists());
+        assert!(fixture.repo.join("a.txt").is_file());
         assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+
+        // One row per attempt, with the coordinator's decisions.
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        let attempts = store.attempts(&run.run_id).unwrap();
+        assert_eq!(attempts.len(), 2, "{attempts:#?}");
+        let (one, two) = (&attempts[0], &attempts[1]);
+        assert_eq!((one.number, two.number), (1, 2));
+        assert_eq!(one.task, format!("commit a.txt {SUBJECT}"));
+        assert_eq!(one.attempt.review_event, Some(failed.event_id));
+        assert_eq!(one.attempt.review_decision.as_deref(), Some("retry"));
+        assert_eq!(
+            one.attempt.review_text.as_deref(),
+            Some(review_text.as_str())
+        );
+        assert_eq!(one.attempt.commit.as_deref(), Some(first_commit.as_str()));
+        assert!(one
+            .attempt
+            .verification
+            .as_deref()
+            .unwrap_or_default()
+            .contains("\"failed\""));
+        assert_ne!(one.worker_id, two.worker_id);
+        assert_eq!(two.task, task);
+        assert_eq!(
+            (two.attempt.from_attempt, two.attempt.from_commit.as_deref()),
+            (Some(1), Some(first_commit.as_str()))
+        );
+        assert_eq!(two.attempt.review_decision.as_deref(), Some("approve"));
+        assert_eq!(two.attempt.commit, review.commits.last().cloned());
+        assert_eq!(two.attempt.base, finished.base);
+        assert!(two
+            .attempt
+            .verification
+            .as_deref()
+            .unwrap_or_default()
+            .contains("\"verified\""));
+    }
+
+    #[test]
+    fn a_landed_commit_carries_trailers_and_names_its_run() {
+        let fixture = todo_repo("todo-landing");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (done, finished) = approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let picked = finished.picked.clone().unwrap();
+        let repo = fixture.repo.display().to_string();
+        // The landed commit carries the trailers; the worker's stays
+        // subject-only, as its verify required.
+        let message = git_in(&fixture.repo, &["log", "-1", "--format=%B", &picked]);
+        assert_eq!(
+            message.trim_end(),
+            format!(
+                "{SUBJECT}\n\nHerdr-Item: {ITEM}\nHerdr-Run: {}/1",
+                run.run_id
+            )
+        );
+        let branch = finished.branch.clone().unwrap();
+        let worker_commit = git_in(&fixture.repo, &["rev-parse", &branch])
+            .trim()
+            .to_owned();
+        assert_eq!(
+            git_in(&fixture.repo, &["log", "-1", "--format=%B", &worker_commit]).trim_end(),
+            SUBJECT
+        );
+        let picked_event = &run_events(&fixture, &run.run_id, "run_picked")[0];
+        assert_eq!(picked_event["trailers"], true, "{picked_event:#}");
+        assert_eq!(picked_event["worker_commit"], worker_commit.as_str());
+
+        // The landing names the run, by the landed commit or the worker's.
+        for commit in [&picked[..10], picked.as_str(), &worker_commit[..12]] {
+            let (runs, landing) = fixture
+                .supervisor
+                .todo_runs(Some(&repo), Some(commit))
+                .unwrap();
+            assert_eq!(runs.len(), 1, "{commit}: {runs:#?}");
+            assert_eq!(runs[0].run_id, run.run_id);
+            let landing = landing.unwrap();
+            assert_eq!(landing.source, TodoLandingSource::Store);
+            assert_eq!(
+                (
+                    landing.landed_sha.as_str(),
+                    landing.attempt,
+                    landing.item.as_str(),
+                    landing.worker_commit.as_deref(),
+                    landing.worker_id.as_deref(),
+                ),
+                (
+                    picked.as_str(),
+                    1,
+                    ITEM,
+                    Some(worker_commit.as_str()),
+                    finished.worker_id.as_deref()
+                )
+            );
+        }
+        // `worker.runs` keeps the run's worker, with its transcript.
+        let (items, unassigned, landing) = fixture
+            .supervisor
+            .runs(&WorkerRunsParams {
+                item: None,
+                repo: Some(repo.clone()),
+                commit: Some(picked[..8].to_owned()),
+            })
+            .unwrap();
+        assert!(unassigned.is_empty());
+        assert_eq!(items.len(), 1, "{items:#?}");
+        assert_eq!(
+            items[0]
+                .runs
+                .iter()
+                .map(|run| run.worker_id.clone())
+                .collect::<Vec<_>>(),
+            [finished.worker_id.clone().unwrap()]
+        );
+        assert_eq!(landing.unwrap().run_id, run.run_id);
+
+        // The upstream rebase changes the sha, not the trailers: the run is
+        // found by them.
+        git_in(
+            &fixture.repo,
+            &[
+                "commit",
+                "--quiet",
+                "--amend",
+                "--no-edit",
+                "--date",
+                "2001-01-01T00:00:00",
+            ],
+        );
+        let rebased = git_in(&fixture.repo, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        assert_ne!(rebased, picked);
+        let (runs, landing) = fixture
+            .supervisor
+            .todo_runs(Some(&repo), Some(&rebased))
+            .unwrap();
+        assert_eq!(runs[0].run_id, run.run_id);
+        let landing = landing.unwrap();
+        assert_eq!(landing.source, TodoLandingSource::Trailers);
+        assert_eq!(
+            (
+                landing.landed_sha.as_str(),
+                landing.run_id.as_str(),
+                landing.attempt,
+                landing.item.as_str(),
+                landing.worker_id.as_deref()
+            ),
+            (
+                rebased.as_str(),
+                run.run_id.as_str(),
+                1,
+                ITEM,
+                finished.worker_id.as_deref()
+            )
+        );
+        // Without a repository there are no trailers to read.
+        let unknown = fixture
+            .supervisor
+            .todo_runs(None, Some(&rebased))
+            .unwrap_err();
+        assert_eq!(unknown.code(), "todo_run_not_found", "{unknown}");
+        // A commit no run landed, and a word that is no sha.
+        let init = git_in(&fixture.repo, &["rev-parse", "HEAD~1"]);
+        let unknown = fixture
+            .supervisor
+            .todo_runs(Some(&repo), Some(init.trim()))
+            .unwrap_err();
+        assert_eq!(unknown.code(), "todo_run_not_found", "{unknown}");
+        assert!(
+            unknown.to_string().contains("no Herdr-Run trailer"),
+            "{unknown}"
+        );
+        let bad = fixture
+            .supervisor
+            .todo_runs(Some(&repo), Some("master"))
+            .unwrap_err();
+        assert_eq!(bad.code(), "invalid_request", "{bad}");
+    }
+
+    #[test]
+    fn an_approval_is_bound_to_the_commit_it_saw() {
+        let fixture = todo_repo("todo-bound");
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let seen = review.commits[0].clone();
+        // The branch moves after the review: still one commit with the
+        // subject, so the verify passes, but not the one approved.
+        let slot = PathBuf::from(
+            fixture
+                .supervisor
+                .status(waiting.worker_id.as_deref().unwrap())
+                .unwrap()
+                .cwd,
+        );
+        git_in(
+            &slot,
+            &[
+                "commit",
+                "--quiet",
+                "--amend",
+                "--no-edit",
+                "--date",
+                "2001-01-01T00:00:00",
+            ],
+        );
+        let moved = git_in(&slot, &["rev-parse", "HEAD"]).trim().to_owned();
+        assert_ne!(moved, seen);
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (again, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(again.kind, TodoEventKind::Review, "{again:#?}");
+        assert_eq!(
+            again.actions,
+            [TodoAction::Approve, TodoAction::Retry, TodoAction::Abort]
+        );
+        assert_eq!(again.commits, [moved.as_str()]);
+        let why = again.error.as_deref().unwrap_or_default();
+        assert!(why.contains(&seen) && why.contains(&moved), "{why}");
+        assert_eq!(
+            (waiting.status, waiting.step, waiting.picked.as_deref()),
+            (TodoRunStatus::Waiting, TodoStep::Review, None)
+        );
+        assert_eq!(master_subjects(&fixture), ["init"]);
+        // Approved again, the commit it now names lands.
+        resume(
+            &fixture,
+            &run.run_id,
+            again.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(again.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        let attempt = &store.attempts(&run.run_id).unwrap()[0].attempt;
+        assert_eq!(
+            (
+                attempt.commit.as_deref(),
+                attempt.review_event,
+                attempt.base.as_deref()
+            ),
+            (
+                Some(moved.as_str()),
+                Some(again.event_id),
+                finished.base.as_deref()
+            )
+        );
+        let landing = store
+            .landing_of(finished.picked.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(
+            landing.unwrap().worker_commit.as_deref(),
+            Some(moved.as_str())
+        );
+    }
+
+    #[test]
+    fn a_retry_whose_commit_does_not_pick_asks_and_may_start_from_the_base() {
+        let fixture = todo_repo("todo-retry-conflict");
+        // Two commits, the second changing what the first added: the tip
+        // alone does not pick onto the base.
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit2 a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.commits.len(), 2, "{review:#?}");
+        let tip = review.commits[1].clone();
+        resume(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            TodoAction::Retry,
+            Some(&format!("commit c.txt {SUBJECT}")),
+        )
+        .unwrap();
+        let (conflict, waiting) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(conflict.kind, TodoEventKind::RetryConflict, "{conflict:#?}");
+        assert_eq!(conflict.actions, [TodoAction::Retry, TodoAction::Abort]);
+        assert_eq!(conflict.commits, [tip.as_str()]);
+        let why = conflict.error.as_deref().unwrap_or_default();
+        assert!(why.contains("a.txt") && why.contains(&tip), "{why}");
+        assert_eq!(
+            (
+                waiting.status,
+                waiting.step,
+                waiting.attempt,
+                waiting.worker_id
+            ),
+            (TodoRunStatus::Waiting, TodoStep::Start, 2, None)
+        );
+        // The retry keeps its review: no new task text.
+        let refused = resume(
+            &fixture,
+            &run.run_id,
+            conflict.event_id,
+            TodoAction::Retry,
+            Some("other"),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_request", "{refused}");
+        resume(
+            &fixture,
+            &run.run_id,
+            conflict.event_id,
+            TodoAction::Retry,
+            None,
+        )
+        .unwrap();
+        let (second, waiting) = wait(&fixture, &run.run_id, Some(conflict.event_id));
+        assert_eq!(second.kind, TodoEventKind::Review, "{second:#?}");
+        assert_eq!(second.commits.len(), 1, "{second:#?}");
+        let prompt = first_prompt(&fixture, waiting.worker_id.as_deref().unwrap());
+        assert!(prompt.contains("starts from the base"), "{prompt}");
+        assert!(run_events(&fixture, &run.run_id, "run_carried").is_empty());
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        let attempts = store.attempts(&run.run_id).unwrap();
+        assert_eq!(attempts[0].attempt.commit.as_deref(), Some(tip.as_str()));
+        assert_eq!(
+            (
+                attempts[1].attempt.from_attempt,
+                attempts[1].attempt.from_commit.as_deref()
+            ),
+            (Some(1), None)
+        );
+        resume(
+            &fixture,
+            &run.run_id,
+            second.event_id,
+            TodoAction::Approve,
+            None,
+        )
+        .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(second.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert!(fixture.repo.join("c.txt").is_file());
+        assert!(!fixture.repo.join("a.txt").exists());
+    }
+
+    /// The first user message a worker got: its task.
+    fn first_prompt(fixture: &Fixture, worker_id: &str) -> String {
+        fixture
+            .journal(worker_id)
+            .into_iter()
+            .find(|record| record["dir"] == "in" && record["event"]["type"] == "user")
+            .and_then(|record| {
+                record["event"]["message"]["content"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .unwrap()
     }
 
     #[test]
     fn attempts_are_capped_then_the_run_is_blocked() {
         let fixture = todo_repo("todo-capped");
         let task = format!("commit a.txt {SUBJECT}");
+        // Each later attempt amends the commit it starts from.
+        let review_text = format!("amend a.txt {SUBJECT}");
         let run = fixture
             .supervisor
             .todo_run(params(&fixture, &task, "never"))
@@ -6086,7 +6517,7 @@ mod todo_runs {
                 &run.run_id,
                 failed.event_id,
                 TodoAction::Retry,
-                Some(&task),
+                Some(&review_text),
             )
             .unwrap();
             after = Some(failed.event_id);
@@ -6399,7 +6830,8 @@ mod todo_runs {
         fixture
             .supervisor
             .todo_resume(TodoResumeParams {
-                task: Some(task.clone()),
+                // The review: amend the commit attempt 2 starts from.
+                task: Some(format!("amend a.txt {SUBJECT}")),
                 ..resume_from(
                     &run.run_id,
                     review.event_id,
@@ -6690,7 +7122,12 @@ mod todo_runs {
         let (code, message) = refused(params(&fixture, &task, "ok nosuch"));
         assert_eq!(code, "todo_preflight_failed");
         assert!(message.contains("nosuch"), "{message}");
-        assert!(fixture.supervisor.todo_runs(None).unwrap().is_empty());
+        assert!(fixture
+            .supervisor
+            .todo_runs(None, None)
+            .unwrap()
+            .0
+            .is_empty());
 
         // One run in progress per repository.
         let run = fixture

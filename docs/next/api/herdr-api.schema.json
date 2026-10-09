@@ -5340,12 +5340,12 @@
             },
             {
               "const": "approve",
-              "description": "The worker's turn is accepted: stop it, verify, cherry-pick.",
+              "description": "The worker's turn is accepted: stop it, verify, cherry-pick. The\napproval is bound to the commit and base the event showed: a branch\nthat moved since is reviewed again instead of landed.",
               "type": "string"
             },
             {
               "const": "retry",
-              "description": "Start the next attempt with new task text (at most 3 attempts).",
+              "description": "Start the next attempt, its task text being the review of this one\n(at most 3 attempts): the next attempt's branch starts from this\nattempt's commit, and its task is this attempt's with the review\nappended. After `retry_conflict`: start that attempt from the base\ninstead, without the previous commit (no task text).",
               "type": "string"
             },
             {
@@ -5489,7 +5489,7 @@
               "type": "string"
             },
             "task": {
-              "description": "With `retry`: the next attempt's task text.",
+              "description": "With `retry` (of a `review` or `verify_failed` event): the review of\nthe attempt, which the next attempt's task appends to this one's.\nRefused after `retry_conflict`, which keeps the review.",
               "type": [
                 "string",
                 "null"
@@ -5594,6 +5594,13 @@
         },
         "TodoRunsParams": {
           "properties": {
+            "commit": {
+              "description": "Only the run that landed this commit (a sha or a prefix of at least\n7 characters, the landed commit or the worker's): found in the\nstore's landings, else by the `Herdr-Run` trailer of the commit in\n`repo`'s history. Refused with `todo_run_not_found` when neither\nnames a run.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "repo": {
               "description": "Only the runs of this repository: a directory in it.",
               "type": [
@@ -5928,6 +5935,13 @@
         "WorkerRunsParams": {
           "description": "Lists the workers' runs grouped by the TODO item they worked on.",
           "properties": {
+            "commit": {
+              "description": "Only the runs of the `herdr todo run` that landed this commit (a sha\nor a prefix of at least 7 characters, the landed commit or the\nworker's): found in the store's landings, else by the commit's\n`Herdr-Run` trailer in `repo`'s history; the reply's `landing` names\nit. Refused with `todo_run_not_found` when neither names a run.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "item": {
               "description": "Only the runs of this item (`t-abcd2345`); then no unassigned runs.",
               "type": [
@@ -12799,6 +12813,17 @@
                   },
                   "type": "array"
                 },
+                "landing": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TodoLanding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "With `commit`: the landing that named the run."
+                },
                 "type": {
                   "const": "worker_runs",
                   "type": "string"
@@ -12853,6 +12878,17 @@
             {
               "description": "`todo.runs`' reply, oldest first.",
               "properties": {
+                "landing": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TodoLanding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "With `commit`: the landing that named the run."
+                },
                 "runs": {
                   "items": {
                     "$ref": "#/schemas/success_response/$defs/TodoRunInfo"
@@ -14640,12 +14676,12 @@
             },
             {
               "const": "approve",
-              "description": "The worker's turn is accepted: stop it, verify, cherry-pick.",
+              "description": "The worker's turn is accepted: stop it, verify, cherry-pick. The\napproval is bound to the commit and base the event showed: a branch\nthat moved since is reviewed again instead of landed.",
               "type": "string"
             },
             {
               "const": "retry",
-              "description": "Start the next attempt with new task text (at most 3 attempts).",
+              "description": "Start the next attempt, its task text being the review of this one\n(at most 3 attempts): the next attempt's branch starts from this\nattempt's commit, and its task is this attempt's with the review\nappended. After `retry_conflict`: start that attempt from the base\ninstead, without the previous commit (no task text).",
               "type": "string"
             },
             {
@@ -14712,7 +14748,7 @@
             },
             {
               "const": "review",
-              "description": "The worker's turn ended (or the worker did): review its work.",
+              "description": "The worker's turn ended (or the worker did): review its work. Also\nraised before the cherry-pick when the branch's tip is not the\ncommit the approval named (`error` says so): review it again.",
               "type": "string"
             },
             {
@@ -14749,6 +14785,86 @@
               "const": "aborted",
               "description": "The run was aborted: why, its branches and its commits.",
               "type": "string"
+            },
+            {
+              "const": "retry_conflict",
+              "description": "The previous attempt's commit does not cherry-pick onto the next\nattempt's branch (`error` names the conflict): retry starts that\nattempt from the base without it, or abort.",
+              "type": "string"
+            }
+          ]
+        },
+        "TodoLanding": {
+          "description": "A commit a run landed on `master`, with the run and attempt it came\nfrom.",
+          "properties": {
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "item": {
+              "type": "string"
+            },
+            "landed_sha": {
+              "description": "The commit on `master`, which carries the trailers.",
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/schemas/success_response/$defs/TodoLandingSource"
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds of the landing; absent when found by trailers.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "worker_commit": {
+              "description": "The worker's commit it was picked from (subject only).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "description": "The attempt's worker, whose journal is the run's transcript; absent\nwhen the store does not know the attempt.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "landed_sha",
+            "run_id",
+            "attempt",
+            "item",
+            "source"
+          ],
+          "type": "object"
+        },
+        "TodoLandingSource": {
+          "description": "Where a landing was found.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "store",
+              "description": "The worker store's record, written when the run landed the commit.",
+              "type": "string"
+            },
+            {
+              "const": "trailers",
+              "description": "The commit's `Herdr-Item` and `Herdr-Run` trailers (the store has no\nrecord of it: another machine's run, or a sha the upstream rebase\nchanged).",
+              "type": "string"
             }
           ]
         },
@@ -14776,7 +14892,7 @@
               ]
             },
             "error": {
-              "description": "With `blocked` and `aborted`: why (`aborted` also names the run's\nbranches); with `still_alive`: what is still running;\nwith `install_failed`, `todo_failed` and `push_failed`: what failed,\nwith the output's last lines.",
+              "description": "With `blocked` and `aborted`: why (`aborted` also names the run's\nbranches); with `still_alive`: what is still running; with a\n`review` raised before the cherry-pick: the approved commit and the\nbranch's tip; with `retry_conflict`: the commit and the conflict;\nwith `install_failed`, `todo_failed` and `push_failed`: what failed,\nwith the output's last lines.",
               "type": [
                 "string",
                 "null"
@@ -14911,7 +15027,7 @@
               ]
             },
             "picked": {
-              "description": "The commit the cherry-pick made on `master`.",
+              "description": "The commit the cherry-pick made on `master`, with the `Herdr-Item`\nand `Herdr-Run` trailers.",
               "type": [
                 "string",
                 "null"
@@ -14938,7 +15054,7 @@
               "$ref": "#/schemas/success_response/$defs/TodoStep"
             },
             "task": {
-              "description": "The current attempt's task text.",
+              "description": "The current attempt's task text: the first attempt's is the run's,\neach later one is the previous attempt's with its review appended.",
               "type": "string"
             },
             "todo_commit": {

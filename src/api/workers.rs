@@ -134,8 +134,12 @@ fn handle_immediate(
             supervisor.escalate(&params.worker_id, &params.request_id)?
         }
         Method::WorkerRuns(params) => {
-            let (items, unassigned) = supervisor.runs(&params)?;
-            return Ok(ResponseResult::WorkerRuns { items, unassigned });
+            let (items, unassigned, landing) = supervisor.runs(&params)?;
+            return Ok(ResponseResult::WorkerRuns {
+                items,
+                unassigned,
+                landing,
+            });
         }
         Method::WorkerVerify(params) => {
             return Ok(ResponseResult::WorkerVerification {
@@ -158,9 +162,9 @@ fn handle_immediate(
             })
         }
         Method::TodoRuns(params) => {
-            return Ok(ResponseResult::TodoRuns {
-                runs: supervisor.todo_runs(params.repo.as_deref())?,
-            })
+            let (runs, landing) =
+                supervisor.todo_runs(params.repo.as_deref(), params.commit.as_deref())?;
+            return Ok(ResponseResult::TodoRuns { runs, landing });
         }
         Method::WorkerDrain(params) => {
             return Ok(ResponseResult::WorkerDrain {

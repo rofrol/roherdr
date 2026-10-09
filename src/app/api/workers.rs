@@ -14,9 +14,14 @@ impl App {
     /// when the user opens it.
     pub(super) fn handle_worker_runs(&mut self, id: String, params: WorkerRunsParams) -> String {
         match crate::workers::supervisor().runs(&params) {
-            Ok((items, unassigned)) => {
-                encode_success(id, ResponseResult::WorkerRuns { items, unassigned })
-            }
+            Ok((items, unassigned, landing)) => encode_success(
+                id,
+                ResponseResult::WorkerRuns {
+                    items,
+                    unassigned,
+                    landing,
+                },
+            ),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }
