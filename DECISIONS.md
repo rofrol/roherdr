@@ -875,3 +875,11 @@ Every decision is schema- and state-validated, recorded before it is
 applied and reused after a crash, retried once then escalated into the
 user's `?` list; a failed decision write shows the run blocked, never
 hidden; a manual `todo resume` wins.
+
+## VM items in try-roguix until host operations
+
+try-roguix's VM items (codesign of ad-hoc QEMU, PTYs, local sockets) cannot
+run in the headless worker sandbox. Decided 2026-10-10 with the models
+(round 20261010-142705-3267, all three): pane (TUI) workers for VM items,
+headless workers for the rest, until repository-declared host operations
+land; never widen the sandbox by hand.
