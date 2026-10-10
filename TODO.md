@@ -1641,6 +1641,20 @@ user needs to decide or do.
   an idempotency key or reconciliation, and an explicit "outcome unknown"
   state; a command stuck silently is not a durable-execution feature
   anywhere (it stays herdr's own process supervision, under the delay rule).
+  Corrected 2026-10-10 (user: "Postgres doesn't bother me; where do you get
+  artificial restrictions like AGPL or Postgres?"; rounds
+  20261010-120917-b641 and 20261010-121012-4292): the exclusions were
+  wrong. The coordinator mixed "could herdr embed it" with "can we learn
+  from crashing it". AGPL binds only copying or linking code into herdr
+  (or shipping Obelisk binaries or a modified networked Obelisk), not
+  running or reading it in a throwaway VM; Postgres in a VM is trivial.
+  Test set now: Temporal (event-history replay, signals, activity retries),
+  Restate (journal, durable promises, Rust core), DBOS (effects recorded in
+  the same Postgres transaction as the state), Obelisk (Rust + SQLite +
+  WASM, persisted execution history, run it), Inngest (step memoization,
+  event-resumed waits), duroxide (Rust + SQLite event-sourced replay);
+  LangGraph only if time remains. Judge what survives, what repeats, and
+  which guarantees still need herdr's own idempotency.
 
 ### Decide
 
