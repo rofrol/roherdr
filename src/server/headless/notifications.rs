@@ -976,6 +976,26 @@ impl HeadlessServer {
     /// Notifies the client shells when pseudo-terminal usage crosses a
     /// threshold or a spawn found the pool exhausted. Cheap when nothing
     /// changed: one atomic load.
+    /// Sends the client shells the notices workers' drivers queued for the
+    /// user (a todo run's stop reason), also into `notification.list`.
+    pub(super) fn forward_worker_notices(&mut self) {
+        for notice in crate::workers::take_user_notices() {
+            self.send_to_client_shells(ServerMessage::SemanticNotification(
+                protocol::SemanticNotification {
+                    kind: protocol::SemanticNotificationKind::Custom,
+                    title: notice.title,
+                    body: sanitize_notification_text(&notice.body, 240),
+                    sound: Some(protocol::SemanticNotificationSound::Request),
+                    agent: None,
+                    workspace_id: None,
+                    tab_id: None,
+                    pane_id: None,
+                    position: None,
+                },
+            ));
+        }
+    }
+
     pub(super) fn forward_pty_usage_alerts(&mut self) {
         let Some(state) = crate::pty::usage::take_change(&mut self.pty_usage_seen) else {
             return;

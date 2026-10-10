@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoNextParams, TodoResumeParams, TodoReviewParams, TodoRunParams,
-    TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
+    Method, Request, TodoAction, TodoNextParams, TodoNextRun, TodoResumeParams, TodoReviewParams,
+    TodoRunParams, TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -42,10 +42,20 @@ const USAGE: &str = "usage:
                     --action approve|retry|answer|verify|force-stop|
                              retry-install|skip-install|retry-todo|skip-todo|
                              retry-push|abort
-                    [--task FILE [--ignore-usage]] [--note FILE | --close FILE]
+                    [--task FILE [--ignore-usage]]
+                    [--note FILE | --close FILE (--next ITEM --next-task FILE
+                       --next-message SUBJECT --next-paths GLOB...
+                       [--next-check NAME...] | --stop-reason TEXT)]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
+      --close needs --next or --stop-reason: with --next, once this run is
+      done the driver starts ITEM's run itself (as todo run with those
+      parameters, this run's checks unless --next-check names others, owned
+      by this run's owner); a refused start (preflight, usage gate) is a
+      next_refused event on this run, and todo status shows next_run_id or
+      next_refusal. With --stop-reason, TEXT goes into the item's history
+      when the run is done and to the user as a notification.
       approve stops the worker, verifies its commit with the checks,
       cherry-picks it onto master with the trailers Herdr-Item: <item-id> and
       Herdr-Run: <run-id>/<attempt> (only when the branch is still at the
@@ -322,6 +332,57 @@ fn caller_session(pane: Option<&str>) -> Option<String> {
         .filter(|session| !session.trim().is_empty())
 }
 
+/// What `resume --close` names after the close: the next item's run (`--next
+/// ITEM` with `--next-task`, `--next-message` and `--next-paths`, and
+/// optionally `--next-check`, else this run's checks) or `--stop-reason`;
+/// one of them, only with `--close`.
+fn next_run(
+    close: bool,
+    item: Option<String>,
+    task: Option<String>,
+    message: Option<String>,
+    paths: Option<Vec<String>>,
+    checks: Option<Vec<String>>,
+    stop_reason: Option<&str>,
+) -> Result<Option<TodoNextRun>, String> {
+    let any_next = item.is_some()
+        || task.is_some()
+        || message.is_some()
+        || paths.is_some()
+        || checks.is_some();
+    if !close && (any_next || stop_reason.is_some()) {
+        return Err("only --close takes --next and --stop-reason".into());
+    }
+    if any_next && stop_reason.is_some() {
+        return Err("--next and --stop-reason exclude each other".into());
+    }
+    if close && !any_next && stop_reason.is_none() {
+        return Err(
+            "--close needs --next ITEM (with --next-task, --next-message and \
+                    --next-paths: the run that starts once this one is done) or \
+                    --stop-reason TEXT (why no item starts next)"
+                .into(),
+        );
+    }
+    if !any_next {
+        return Ok(None);
+    }
+    let (Some(item), Some(task), Some(message), Some(paths)) = (item, task, message, paths) else {
+        return Err(
+            "--next takes the item id with --next-task FILE, --next-message SUBJECT \
+                    and --next-paths GLOB... (--next-check NAME... is optional)"
+                .into(),
+        );
+    };
+    Ok(Some(TodoNextRun {
+        item,
+        task: read_text("--next-task", &task)?,
+        message,
+        paths,
+        checks: checks.unwrap_or_default(),
+    }))
+}
+
 /// `Ok(None)` asks for help.
 fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -390,6 +451,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             let (message, rest) = take_string_option(&rest, "--message")?;
             let (note, rest) = take_string_option(&rest, "--note")?;
             let (close, rest) = take_string_option(&rest, "--close")?;
+            let (next_paths, rest) = take_list(&rest, "--next-paths")?;
+            let (next_checks, rest) = take_list(&rest, "--next-check")?;
+            let (next_task, rest) = take_string_option(&rest, "--next-task")?;
+            let (next_message, rest) = take_string_option(&rest, "--next-message")?;
+            let (next_item, rest) = take_string_option(&rest, "--next")?;
+            let (stop_reason, rest) = take_string_option(&rest, "--stop-reason")?;
             let event = event
                 .ok_or("resume takes --event EVENT_ID, the event it answers")?
                 .parse::<i64>()
@@ -431,6 +498,15 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if note.is_some() && close.is_some() {
                 return Err("--note and --close exclude each other".into());
             }
+            let next = next_run(
+                close.is_some(),
+                next_item,
+                next_task,
+                next_message,
+                next_paths,
+                next_checks,
+                stop_reason.as_deref(),
+            )?;
             let note = note.map(|path| read_text("--note", &path)).transpose()?;
             let close = close.map(|path| read_text("--close", &path)).transpose()?;
             let task = task.map(|path| read_task(&path)).transpose()?;
@@ -455,6 +531,8 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 env: super::worker::caller_env(),
                 note,
                 close,
+                next,
+                stop_reason,
                 caller_session_id: caller_session(pane.as_deref()),
                 caller_pane_id: pane,
                 caller_workspace_id: super::target::caller_workspace_id(),
@@ -715,6 +793,113 @@ mod tests {
         assert_eq!(wait.after, Some(7));
         assert!(parse(&args(&["wait"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
+    }
+
+    #[test]
+    fn a_close_takes_the_next_run_or_a_stop_reason() {
+        let dir = std::env::temp_dir().join(format!("herdr-cli-todo-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let close = dir.join("close.md");
+        std::fs::write(&close, "## Closed\n").unwrap();
+        let close = close.display().to_string();
+        let task = dir.join("task.md");
+        std::fs::write(&task, "Do the next thing\n").unwrap();
+        let task = task.display().to_string();
+        let resume = |extra: &[&str]| {
+            let mut words = vec![
+                "resume",
+                "r-abcd2345",
+                "--event",
+                "9",
+                "--action",
+                "approve",
+            ];
+            words.extend_from_slice(extra);
+            parse(&args(&words))
+        };
+        let Ok(Some(Method::TodoResume(params))) = resume(&[
+            "--close",
+            &close,
+            "--next",
+            "t-bcde3456",
+            "--next-task",
+            &task,
+            "--next-message",
+            "feat: y",
+            "--next-paths",
+            "src/**",
+            "docs/**",
+        ]) else {
+            panic!("--close --next did not parse");
+        };
+        assert_eq!(
+            params.next,
+            Some(TodoNextRun {
+                item: "t-bcde3456".into(),
+                task: "Do the next thing\n".into(),
+                message: "feat: y".into(),
+                paths: vec!["src/**".into(), "docs/**".into()],
+                checks: Vec::new(),
+            })
+        );
+        assert_eq!(params.stop_reason, None);
+        let Ok(Some(Method::TodoResume(params))) = resume(&[
+            "--next-check",
+            "workers",
+            "tests",
+            "--close",
+            &close,
+            "--next",
+            "t-bcde3456",
+            "--next-task",
+            &task,
+            "--next-message",
+            "feat: y",
+            "--next-paths",
+            "src/**",
+        ]) else {
+            panic!("--next-check did not parse");
+        };
+        assert_eq!(params.next.unwrap().checks, ["workers", "tests"]);
+        let Ok(Some(Method::TodoResume(params))) = resume(&[
+            "--close",
+            &close,
+            "--stop-reason",
+            "the rest waits on the user",
+        ]) else {
+            panic!("--close --stop-reason did not parse");
+        };
+        assert_eq!(
+            (params.next, params.stop_reason.as_deref()),
+            (None, Some("the rest waits on the user"))
+        );
+        for bad in [
+            // A close names what follows it.
+            &["--close", &close][..],
+            // Not both.
+            &[
+                "--close",
+                &close,
+                "--stop-reason",
+                "x",
+                "--next",
+                "t-bcde3456",
+                "--next-task",
+                &task,
+                "--next-message",
+                "feat: y",
+                "--next-paths",
+                "src/**",
+            ][..],
+            // The next run needs its task, message and paths.
+            &["--close", &close, "--next", "t-bcde3456"][..],
+            // Neither without a close.
+            &["--stop-reason", "x"][..],
+            &["--note", &close, "--stop-reason", "x"][..],
+        ] {
+            assert!(resume(bad).is_err(), "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

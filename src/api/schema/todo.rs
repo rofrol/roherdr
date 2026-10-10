@@ -93,9 +93,23 @@ pub struct TodoResumeParams {
     /// the item from `TODO.md` and adds the decision to `DECISIONS.md` as a
     /// section (its first line, when it starts with `#`, is the section's
     /// title; otherwise the item's title is), committed by path. Excludes
-    /// `note`.
+    /// `note`. A close takes `next` or `stop_reason`, never neither: the
+    /// command that closes an item also carries what comes after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close: Option<String>,
+    /// With `close`: the item whose run the driver starts as soon as this
+    /// run is `done`, in the same repository, owned by this run's owner.
+    /// Recorded as intent before the start and result after it (a server
+    /// restart in between starts it then); a refused start (its preflight,
+    /// the usage gate, a run in progress) is a `next_refused` event on this
+    /// run. Excludes `stop_reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<TodoNextRun>,
+    /// With `close`: why no next item is started. Recorded in the item's
+    /// history (`stopped`) when the run is `done`, and shown to the user as
+    /// a notification. Excludes `next`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     /// The caller's pane. A run owned by another pane that is still there
     /// is refused (`run_owned_elsewhere`); once the owner's pane or agent
     /// is gone, the caller takes the run over: its pane, agent session and
@@ -110,6 +124,23 @@ pub struct TodoResumeParams {
     /// refuses, on the user's word; recorded in the run's events.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub ignore_usage: bool,
+}
+
+/// The run a closing approval starts when its run is done: `todo.run`'s
+/// parameters for the next item, in the closed run's repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoNextRun {
+    /// The next item's id; it must be in `TODO.md` when the run starts.
+    pub item: String,
+    /// Its worker's task text.
+    pub task: String,
+    /// Its exact commit subject.
+    pub message: String,
+    /// Its git glob pathspecs.
+    pub paths: Vec<String>,
+    /// Its checks; the closed run's checks when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -297,6 +328,10 @@ pub enum TodoEventKind {
     /// attempt's branch (`error` names the conflict): retry starts that
     /// attempt from the base without it, or abort.
     RetryConflict,
+    /// After `done`: the next item the close named did not start (`error`
+    /// names the refusal: its preflight, the usage gate, a run in
+    /// progress). The run stays done; start the item by hand.
+    NextRefused,
     #[serde(other)]
     Unknown,
 }
@@ -354,6 +389,18 @@ pub struct TodoRunInfo {
     /// them once the slot moved on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept_branches: Vec<String>,
+    /// The item the close named to start next (`todo.resume`'s `next`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_item: Option<String>,
+    /// The run of `next_item` the driver started once this run was done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_id: Option<String>,
+    /// Why `next_item` did not start (also a `next_refused` event).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_refusal: Option<String>,
+    /// Why the close started no next item (`todo.resume`'s `stop_reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }

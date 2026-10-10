@@ -86,7 +86,14 @@ impl WorkerSupervisor {
         let mut summaries: Vec<HistoryItemSummary> = items
             .into_iter()
             .filter_map(|((repo, item), events)| {
-                let last = (*events.last()?).clone();
+                // A stop reason follows its close: the close stays the
+                // item's state.
+                let last = (*events
+                    .iter()
+                    .rev()
+                    .find(|event| event.kind != HistoryEventKind::Stopped)
+                    .or(events.last())?)
+                .clone();
                 Some(HistoryItemSummary {
                     repo,
                     item,

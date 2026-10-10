@@ -54,6 +54,11 @@ pub enum HistoryEventKind {
     /// That item coordinator ended; `text` is its outcome (`done`,
     /// `escalated`, `blocked`, `failed`) and what it reported.
     CoordinatorEnded,
+    /// The close named no next item: `text` is the coordinator's reason
+    /// (`todo.resume`'s `stop_reason`), written when the closing run was
+    /// done. It follows the close, and an item's summary keeps the close as
+    /// its latest record.
+    Stopped,
     #[serde(other)]
     Unknown,
 }
@@ -141,6 +146,7 @@ pub struct HistoryItemSummary {
     /// whose records hold no text, from `TODO.md` while it is still there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Its latest record other than `stopped`, which only follows a close.
     pub last: HistoryEvent,
 }
 

@@ -210,6 +210,7 @@ fn record(kind: HistoryEventKind) -> (&'static str, Option<AgentStatus>) {
         HistoryEventKind::Blocked => ("blocked", Some(AgentStatus::Blocked)),
         HistoryEventKind::CoordinatorStarted => ("coordinator started", None),
         HistoryEventKind::CoordinatorEnded => ("coordinator ended", None),
+        HistoryEventKind::Stopped => ("stopped, no next item", None),
         HistoryEventKind::Unknown => ("unknown record", None),
     }
 }

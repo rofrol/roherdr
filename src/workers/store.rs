@@ -633,6 +633,39 @@ CREATE TABLE report_occurrences (
     PRIMARY KEY (report_id, number)
 );
 "#,
+    r#"
+-- Item history gains `stopped`: the reason a close named no next item
+-- (`todo.resume`'s `stop_reason`), written with the closing run's `done`.
+-- The table is rebuilt with the same rows and ids, as above.
+CREATE TABLE item_history_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('claimed', 'noted', 'closed', 'aborted', 'blocked',
+                        'coordinator_started', 'coordinator_ended', 'stopped')),
+    run_id TEXT,
+    attempt INTEGER,
+    text TEXT,
+    item_text TEXT,
+    ids_at_claim TEXT NOT NULL DEFAULT '[]',
+    follow_ups TEXT NOT NULL DEFAULT '[]',
+    ts INTEGER NOT NULL,
+    coordinator_id TEXT
+);
+INSERT INTO item_history_new (id, repo, item, kind, run_id, attempt, text, item_text,
+    ids_at_claim, follow_ups, ts, coordinator_id)
+    SELECT id, repo, item, kind, run_id, attempt, text, item_text, ids_at_claim, follow_ups, ts,
+        coordinator_id
+    FROM item_history ORDER BY id;
+DROP TABLE item_history;
+ALTER TABLE item_history_new RENAME TO item_history;
+CREATE INDEX item_history_by_item ON item_history (repo, item, id);
+CREATE TRIGGER item_history_no_update BEFORE UPDATE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+CREATE TRIGGER item_history_no_delete BEFORE DELETE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1799,6 +1832,10 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             todo_commit: finish.todo_commit.clone(),
             pushed: finish.pushed.clone(),
             kept_branches: finish.kept_branches.clone(),
+            next_item: finish.next.as_ref().map(|next| next.item.clone()),
+            next_run_id: finish.next_run_id.clone(),
+            next_refusal: finish.next_refusal.clone(),
+            stop_reason: finish.stop_reason.clone(),
         },
         checks,
         finish,
@@ -1866,7 +1903,8 @@ pub(super) struct NewHistory {
 /// The record a run's event writes, if any: the claim with `run_created`
 /// (which carries the item's text and the ids in TODO.md), the note or close
 /// with `run_todo_committed` (a close carries the item's last text and the
-/// follow-ups), the run's `blocked` and `aborted` events.
+/// follow-ups), the run's `blocked` and `aborted` events, and its `done`
+/// event when its close gave a stop reason.
 fn history_of(run: &Run, event: &Value) -> Option<NewHistory> {
     let strings = |value: &Value| -> Vec<String> {
         serde_json::from_value(value.clone()).unwrap_or_default()
@@ -1907,6 +1945,13 @@ fn history_of(run: &Run, event: &Value) -> Option<NewHistory> {
             let kind = match event["kind"].as_str()? {
                 "blocked" => HistoryEventKind::Blocked,
                 "aborted" => HistoryEventKind::Aborted,
+                // A close that named no next item: why, with its run's end.
+                "done" => {
+                    return run.finish.stop_reason.as_ref().map(|reason| NewHistory {
+                        text: Some(reason.clone()),
+                        ..record(HistoryEventKind::Stopped)
+                    })
+                }
                 _ => return None,
             };
             Some(NewHistory {
@@ -2836,7 +2881,7 @@ mod tests {
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 17
+                MIGRATIONS.len() - 18
             ))
             .unwrap();
         drop(store);
@@ -2891,7 +2936,7 @@ mod tests {
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 6
+                MIGRATIONS.len() - 7
             ))
             .unwrap();
         drop(store);

@@ -547,6 +547,7 @@ impl HeadlessServer {
             }
 
             self.forward_pty_usage_alerts();
+            self.forward_worker_notices();
 
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {

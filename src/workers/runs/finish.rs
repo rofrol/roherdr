@@ -17,8 +17,10 @@ use super::{
     command_with, git, git_with, new_event, tail, todo_titles, Run, CHECKS_FILE, DECISIONS_FILE,
     RUN_ENV, TODO_EDIT, TODO_FILE,
 };
-use crate::api::schema::{HistoryEventKind, TodoEventKind, TodoRunStatus, TodoStep};
-use crate::workers::{lock, WorkerSupervisor};
+use crate::api::schema::{
+    HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunStatus, TodoStep,
+};
+use crate::workers::{lock, now_ms, WorkerSupervisor};
 
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
 /// blank lines.
@@ -715,7 +717,187 @@ impl WorkerSupervisor {
             .cloned()
             .collect();
         self.record_run_event(run, &event)?;
-        lock(&RUN_ENV).remove(&run.info.run_id);
+        let env = lock(&RUN_ENV).remove(&run.info.run_id);
+        self.follow_up(&run.info.run_id, env);
+        Ok(())
+    }
+
+    /// Settles what a done run's close named after it: starts the next
+    /// item's run ([`Self::start_next`]) or hands the stop reason to the
+    /// user as a notification (the item's history has it with the `done`
+    /// event). Each is recorded, so a server that starts settles only what
+    /// is left ([`WorkerSupervisor::resume_runs`]).
+    pub(super) fn follow_up(&self, run_id: &str, env: Option<HashMap<String, String>>) {
+        let Ok(run) = self.load_run(run_id) else {
+            return;
+        };
+        if !run.follow_up_pending() {
+            return;
+        }
+        if let Some(next) = run.finish.next.clone() {
+            if run.info.next_run_id.is_none() && run.info.next_refusal.is_none() {
+                if let Err(error) = self.start_next(&run, &next, env) {
+                    tracing::warn!(run_id, error, "cannot start the todo run's next item");
+                }
+            }
+        }
+        if let Some(reason) = run.finish.stop_reason.clone() {
+            if !run.finish.stop_notified {
+                crate::workers::notify_user(crate::workers::UserNotice {
+                    title: format!("{} closed; no next item started", run.info.item),
+                    body: reason.clone(),
+                });
+                let noted = self.update_run(
+                    run_id,
+                    json!({"type": "run_stop_notified", "reason": reason}),
+                    |current| current.finish.stop_notified = true,
+                );
+                if let Err(error) = noted {
+                    tracing::warn!(run_id, error, "cannot record the stop reason's notice");
+                }
+            }
+        }
+    }
+
+    /// Settles the follow-up of a run a previous server left done, in a
+    /// thread of its own: the next run's usage gate reads the provider.
+    pub(super) fn spawn_follow_up(&self, run_id: &str) {
+        let supervisor = self.clone();
+        let id = run_id.to_owned();
+        if let Err(error) = crate::thread_spawn::spawn_named("herdr-todo-next", move || {
+            // A driver of this process that holds the run settles it.
+            let Some(_claim) = super::Driving::claim(&id) else {
+                return;
+            };
+            supervisor.follow_up(&id, None);
+        }) {
+            tracing::warn!(%error, run_id, "cannot settle the todo run's follow-up");
+        }
+    }
+
+    /// Starts `next` as `todo.run` would, with the done run's repository,
+    /// owner and checks (unless `next` names its own) and the caller's
+    /// environment when this server has it: the intent first, then the
+    /// started run or the refusal (a `next_refused` event naming it). An
+    /// intent without a result is a start a crash cut off: a run of the
+    /// item created since the intent is that start, else it starts now.
+    fn start_next(
+        &self,
+        run: &Run,
+        next: &TodoNextRun,
+        env: Option<HashMap<String, String>>,
+    ) -> Result<(), String> {
+        let run_id = run.info.run_id.as_str();
+        if let Some(intent) = run.finish.next_intent_ms {
+            let started = self
+                .run_store()
+                .map_err(|error| error.to_string())?
+                .runs(Some(&run.info.repo))
+                .map_err(|error| format!("the worker store failed: {error}"))?
+                .into_iter()
+                .find(|other| {
+                    other.info.run_id != run.info.run_id
+                        && other.info.item == next.item
+                        && other.info.created_ms >= intent
+                });
+            if let Some(started) = started {
+                return self.next_started(run_id, &next.item, started.info.run_id, true);
+            }
+        } else {
+            let intent = now_ms();
+            self.update_run(
+                run_id,
+                json!({"type": "run_next_intent", "item": next.item, "at_ms": intent}),
+                |current| current.finish.next_intent_ms = Some(intent),
+            )?;
+        }
+        #[cfg(test)]
+        if super::crashes_before(&run.info.repo, TodoStep::Done) {
+            return Ok(());
+        }
+        let params = TodoRunParams {
+            cwd: run.info.repo.clone(),
+            item: next.item.clone(),
+            task: next.task.clone(),
+            message: next.message.clone(),
+            paths: next.paths.clone(),
+            checks: if next.checks.is_empty() {
+                run.info.checks.clone()
+            } else {
+                next.checks.clone()
+            },
+            owner_pane_id: run.owner_pane.clone(),
+            owner_session_id: run.owner_session.clone(),
+            workspace_id: run.workspace.clone(),
+            env,
+            ignore_usage: false,
+        };
+        match self.todo_run(params) {
+            Ok(started) => self.next_started(run_id, &next.item, started.run_id, false),
+            Err(refused) => {
+                let why = format!(
+                    "the next item {} did not start ({}): {refused}",
+                    next.item,
+                    refused.code()
+                );
+                let mut event = new_event(TodoEventKind::NextRefused);
+                event.error = Some(why.clone());
+                let body = json!({
+                    "type": "run_event",
+                    "kind": event.kind,
+                    "step": TodoStep::Done,
+                    "status": TodoRunStatus::Done,
+                    "attempt": run.info.attempt,
+                    "event": event,
+                });
+                self.update_run(run_id, body, |current| {
+                    current.info.next_refusal = Some(why);
+                })
+            }
+        }
+    }
+
+    fn next_started(
+        &self,
+        run_id: &str,
+        item: &str,
+        next_run_id: String,
+        already: bool,
+    ) -> Result<(), String> {
+        self.update_run(
+            run_id,
+            json!({
+                "type": "run_next_started",
+                "item": item,
+                "run_id": next_run_id,
+                "already": already,
+            }),
+            |current| current.info.next_run_id = Some(next_run_id.clone()),
+        )
+    }
+
+    /// Appends `event` to an ended run and writes the run as the store has
+    /// it now with `change` applied: another run's driver may write it
+    /// meanwhile (the cleanup of its kept branches), so no copy read
+    /// earlier is written back.
+    pub(super) fn update_run(
+        &self,
+        run_id: &str,
+        event: serde_json::Value,
+        change: impl FnOnce(&mut Run),
+    ) -> Result<(), String> {
+        let store = self.run_store().map_err(|error| error.to_string())?;
+        store
+            .transaction(|tx| {
+                let Some(mut current) = tx.run(run_id)? else {
+                    return Ok(());
+                };
+                change(&mut current);
+                tx.run_event(&mut current, &event, false, now_ms())?;
+                Ok(())
+            })
+            .map_err(|error| format!("the worker store failed: {error}"))?;
+        super::announce();
         Ok(())
     }
 }
@@ -835,21 +1017,27 @@ impl WorkerSupervisor {
                 }
             }
         }
-        for mut other in earlier {
-            let before = other.info.kept_branches.len();
-            other
+        let stays = |branch: &String| !deleted.contains(branch) && !gone.contains(branch);
+        for other in earlier {
+            let kept: Vec<&String> = other
                 .info
                 .kept_branches
-                .retain(|branch| !deleted.contains(branch) && !gone.contains(branch));
-            if other.info.kept_branches.len() == before {
+                .iter()
+                .filter(|b| stays(b))
+                .collect();
+            if kept.len() == other.info.kept_branches.len() {
                 continue;
             }
             let event = json!({
                 "type": "run_branches_deleted",
                 "by": run.info.run_id,
-                "kept": other.info.kept_branches,
+                "kept": kept,
             });
-            self.run_write(&mut other, event, false)?;
+            // The ended run as the store has it now: its own follow-up
+            // (the next item's start) may be writing it.
+            self.update_run(&other.info.run_id, event, |current| {
+                current.info.kept_branches.retain(stays);
+            })?;
         }
         Ok(Swept {
             deleted,
