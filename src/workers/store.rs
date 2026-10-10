@@ -521,6 +521,13 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_overrides is append-only'); END;
 CREATE TRIGGER coordinator_overrides_no_delete BEFORE DELETE ON coordinator_overrides
 BEGIN SELECT RAISE(ABORT, 'coordinator_overrides is append-only'); END;
 "#,
+    r#"
+-- The coordination tenure that owns the run (`run_created`'s
+-- `owner_coordinator`), moved with the run's owner pane and session when the
+-- tenure resumes in another pane or hands off (`run_owner_moved`). Runs
+-- recorded before, or claimed from a pane without a tenure, have none.
+ALTER TABLE runs ADD COLUMN owner_coordinator_id TEXT;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1083,6 +1090,153 @@ impl Tx<'_> {
         Ok(tenures(self.tx, ACTIVE_OF_PANE, [pane_id])?.pop())
     }
 
+    /// Records `coordinator_item` and sets tenure `id`'s current item
+    /// (none clears it); nothing when the tenure has ended or already has
+    /// that item.
+    pub(super) fn coordinator_item(
+        &self,
+        id: &str,
+        item: Option<&str>,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        let Some(tenure) = tenure_by_id(self.tx, id)? else {
+            return Ok(());
+        };
+        if tenure.ended_at.is_some() || tenure.item.as_deref() == item {
+            return Ok(());
+        }
+        let event = serde_json::json!({
+            "type": "coordinator_item",
+            "coordinator_id": id,
+            "item": item,
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE coordinators SET item = ?2 WHERE id = ?1",
+            params![id, item],
+        )?;
+        Ok(())
+    }
+
+    /// The tenure agent session `session_id` coordinated, which comes back
+    /// with it: the active one whose latest binding has that session, else
+    /// one that ended `orphaned` (its pane closed or its agent exited) with
+    /// that session last, while it is its repository's latest tenure and
+    /// the repository has no active one.
+    pub(super) fn resumable_coordinator(
+        &self,
+        session_id: &str,
+    ) -> StoreResult<Option<StoredTenure>> {
+        let candidates = tenures(
+            self.tx,
+            "b.session_id = ?1 AND (t.ended_at IS NULL OR (t.end_reason = ?2 \
+             AND t.epoch = (SELECT max(epoch) FROM coordinators WHERE repo = t.repo)))",
+            params![session_id, super::coordinators::ORPHANED],
+        )?;
+        Ok(candidates
+            .iter()
+            .find(|tenure| tenure.ended_at.is_none())
+            .or_else(|| candidates.last())
+            .cloned())
+    }
+
+    /// Records `coordinator_resumed` and moves tenure `id`'s binding to
+    /// `pane_id` and `session_id`: its open binding ends and a new one
+    /// starts, and an orphaned tenure is active again. The tenure stays
+    /// the same. The caller checks that the pane is free and, for an
+    /// orphaned tenure, that its repository has no active one.
+    pub(super) fn coordinator_resumed(
+        &self,
+        id: &str,
+        pane_id: &str,
+        session_id: Option<&str>,
+        at_ms: u64,
+    ) -> StoreResult<StoredTenure> {
+        let tenure = tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let event = serde_json::json!({
+            "type": "coordinator_resumed",
+            "coordinator_id": id,
+            "from_pane": tenure.pane_id,
+            "from_session": tenure.session_id,
+            "to_pane": pane_id,
+            "session_id": session_id,
+            "reopened": tenure.ended_at.is_some(),
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE coordinators SET ended_at = NULL, end_reason = NULL WHERE id = ?1",
+            [id],
+        )?;
+        self.rebind(id, pane_id, session_id, at_ms)?;
+        tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Ends tenure `id`'s open binding and starts one to `pane_id`.
+    fn rebind(
+        &self,
+        id: &str,
+        pane_id: &str,
+        session_id: Option<&str>,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "UPDATE coordinator_bindings SET to_at = ?2
+             WHERE coordinator_id = ?1 AND to_at IS NULL",
+            params![id, at_ms as i64],
+        )?;
+        self.tx.execute(
+            "INSERT INTO coordinator_bindings (coordinator_id, pane_id, session_id, from_at, to_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![id, pane_id, session_id, at_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Hands active tenure `from` over to a new tenure `to` of the same
+    /// repository: `from` ends `handed_off`, `to` starts with the next
+    /// epoch and `from`'s current item, and a `handoff` event (on `from`)
+    /// names both. Returns both as they are now.
+    pub(super) fn coordinator_handoff(
+        &self,
+        from: &StoredTenure,
+        to: &NewTenure<'_>,
+        at_ms: u64,
+    ) -> StoreResult<(StoredTenure, StoredTenure)> {
+        let cause = format!("handed off to {} in pane {}", to.id, to.pane_id);
+        let ended = self
+            .coordinator_ended(
+                &from.id,
+                super::coordinators::HANDED_OFF,
+                Some(&cause),
+                at_ms,
+            )?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let started = self.coordinator_started(to, at_ms)?;
+        let event = serde_json::json!({
+            "type": "handoff",
+            "coordinator_id": from.id,
+            "to_coordinator_id": started.id,
+            "repo": from.repo,
+            "from_pane": from.pane_id,
+            "from_session": from.session_id,
+            "to_pane": to.pane_id,
+            "to_session": to.session_id,
+            "from_epoch": from.epoch,
+            "epoch": started.epoch,
+            "item": from.item,
+        });
+        self.coordinator_event(&from.id, &event, at_ms)?;
+        self.coordinator_item(&started.id, from.item.as_deref(), at_ms)?;
+        let started =
+            tenure_by_id(self.tx, &started.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        Ok((ended, started))
+    }
+
+    /// Tenure `id` as this transaction sees it.
+    pub(super) fn coordinator(&self, id: &str) -> StoreResult<Option<StoredTenure>> {
+        tenure_by_id(self.tx, id)
+    }
+
     fn coordinator_event(&self, id: &str, event: &Value, at_ms: u64) -> StoreResult<i64> {
         self.event(&EventRow {
             worker_id: id,
@@ -1191,6 +1345,14 @@ impl Tx<'_> {
     }
 }
 
+/// Who a run moves to ([`Tx::move_run_owner`]).
+pub(super) struct RunOwner<'a> {
+    pub(super) pane_id: Option<&'a str>,
+    pub(super) session_id: Option<&'a str>,
+    pub(super) workspace: Option<&'a str>,
+    pub(super) coordinator_id: Option<&'a str>,
+}
+
 /// A tenure as `coordinator.start` asks for it.
 pub(super) struct NewTenure<'a> {
     pub(super) id: &'a str,
@@ -1275,7 +1437,7 @@ impl Store {
 
 const RUN_COLUMNS: &str = "id, repo, item, step, status, attempt, base, worker_id, branch, task, \
 message, paths, check_name, check_argv, owner_pane, owner_session, last_acked_seq, pending_event, \
-error, picked, created_ms, updated_ms, finish, workspace";
+error, picked, created_ms, updated_ms, finish, workspace, owner_coordinator_id";
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
     let list = |index: usize| -> StoreResult<Vec<String>> {
@@ -1327,7 +1489,8 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
         owner_pane: row.get(14)?,
         owner_session: row.get(15)?,
         workspace: row.get(23)?,
-        current: attempt_from_row(row, 24)?,
+        owner_coordinator: row.get(24)?,
+        current: attempt_from_row(row, 25)?,
     })
 }
 
@@ -1579,11 +1742,20 @@ impl Tx<'_> {
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
                  ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
-                 ?23, ?24) \
+                 ?23, ?24, ?25) \
                  ON CONFLICT (id) DO UPDATE SET {}",
                 RUN_COLUMNS
                     .split(", ")
-                    .filter(|column| *column != "id")
+                    // The owner changes only with its own event
+                    // ([`Self::move_run_owner`]): a driver's copy of the
+                    // run, read before a move, must not put it back.
+                    .filter(|column| !matches!(
+                        *column,
+                        "id" | "owner_pane"
+                            | "owner_session"
+                            | "workspace"
+                            | "owner_coordinator_id"
+                    ))
                     .map(|column| format!("{column} = excluded.{column}"))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -1613,7 +1785,20 @@ impl Tx<'_> {
                 info.updated_ms as i64,
                 serde_json::to_string(&run.finish_with_results()).ok(),
                 run.workspace,
+                run.owner_coordinator,
             ],
+        )?;
+        // The owner as stored, which a move may have changed meanwhile.
+        (
+            run.owner_pane,
+            run.owner_session,
+            run.workspace,
+            run.owner_coordinator,
+        ) = self.tx.query_row(
+            "SELECT owner_pane, owner_session, workspace, owner_coordinator_id FROM runs
+             WHERE id = ?1",
+            [&info.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         let attempt = &run.current;
         self.tx.execute(
@@ -1647,7 +1832,76 @@ impl Tx<'_> {
         if let Some(record) = history_of(run, event) {
             self.item_history(&record, at_ms)?;
         }
+        // The owning tenure works on the run's item from its claim to its
+        // end.
+        if let Some(tenure) = &run.owner_coordinator {
+            if event["type"].as_str() == Some("run_created") {
+                self.coordinator_item(tenure, Some(&run.info.item), at_ms)?;
+            } else if matches!(
+                run.info.status,
+                TodoRunStatus::Done | TodoRunStatus::Aborted
+            ) && tenure_by_id(self.tx, tenure)?
+                .and_then(|tenure| tenure.item)
+                .as_deref()
+                == Some(run.info.item.as_str())
+            {
+                self.coordinator_item(tenure, None, at_ms)?;
+            }
+        }
         Ok(seq)
+    }
+
+    /// Moves run `run_id` to another owner (pane, agent session, workspace
+    /// and tenure), recorded as `run_owner_moved` with why (`cause`). The
+    /// only write of the owner after the run's claim: [`Self::run_event`]
+    /// keeps the stored one. A `workspace` of `None` keeps the run's.
+    pub(super) fn move_run_owner(
+        &self,
+        run_id: &str,
+        owner: &RunOwner<'_>,
+        cause: &str,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        let Some(current) = self.run(run_id)? else {
+            return Ok(());
+        };
+        let workspace = owner.workspace.or(current.workspace.as_deref());
+        let event = serde_json::json!({
+            "type": "run_owner_moved",
+            "from_pane": current.owner_pane,
+            "from_session": current.owner_session,
+            "from_workspace": current.workspace,
+            "from_coordinator": current.owner_coordinator,
+            "to_pane": owner.pane_id,
+            "to_session": owner.session_id,
+            "to_workspace": workspace,
+            "to_coordinator": owner.coordinator_id,
+            "cause": cause,
+        });
+        self.run_note(run_id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE runs SET owner_pane = ?2, owner_session = ?3, workspace = ?4,
+                 owner_coordinator_id = ?5
+             WHERE id = ?1",
+            params![
+                run_id,
+                owner.pane_id,
+                owner.session_id,
+                workspace,
+                owner.coordinator_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The runs tenure `coordinator_id` owns that have not ended.
+    pub(super) fn open_runs_of_coordinator(&self, coordinator_id: &str) -> StoreResult<Vec<Run>> {
+        let mut statement = self.tx.prepare(&run_select(
+            "WHERE r.owner_coordinator_id = ?1 AND r.status IN ('running', 'waiting', 'blocked') \
+             ORDER BY r.created_ms, r.rowid",
+        ))?;
+        let runs = statement.query_map([coordinator_id], run_from_row)?;
+        runs.collect()
     }
 
     /// Appends one record of an item's life.
@@ -2250,7 +2504,7 @@ mod tests {
                  DROP TABLE item_history;
                  DROP TABLE coordinator_overrides;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 14
+                MIGRATIONS.len() - 15
             ))
             .unwrap();
         drop(store);
@@ -2297,8 +2551,9 @@ mod tests {
                  DROP TABLE landings;
                  DROP TABLE item_history;
                  DROP TABLE coordinator_overrides;
+                 ALTER TABLE runs DROP COLUMN owner_coordinator_id;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 3
+                MIGRATIONS.len() - 4
             ))
             .unwrap();
         drop(store);

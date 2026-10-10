@@ -1262,6 +1262,9 @@ impl App {
             Method::CoordinatorStatus(params) => {
                 return self.handle_coordinator_status(request.id, params);
             }
+            Method::CoordinatorHandoff(params) => {
+                return self.handle_coordinator_handoff(request.id, params);
+            }
             Method::CoordinatorRecordOverride(params) => {
                 return self.handle_coordinator_record_override(request.id, params);
             }

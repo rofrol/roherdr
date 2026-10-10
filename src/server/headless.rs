@@ -407,11 +407,15 @@ impl HeadlessServer {
     pub async fn run(&mut self) -> io::Result<()> {
         crate::logging::startup("server");
 
+        // The stop signals were routed to `server_stop` before the API socket
+        // listened ([`install_stop_signals`]); a request wakes the loop.
         let server_stop = self.server_stop.clone();
         let quit_notify = self.server_event_tx.clone();
-        crate::platform::spawn_server_signal_monitor(move |signal| {
-            server_stop.request(ShutdownReason::Signal(signal));
-            let _ = quit_notify.try_send(ServerEvent::QuitSignal);
+        tokio::spawn(async move {
+            loop {
+                server_stop.requested().await;
+                let _ = quit_notify.try_send(ServerEvent::QuitSignal);
+            }
         });
         let quit_notify = self.server_event_tx.clone();
         let _host_shutdown = crate::platform::HostShutdownMonitor::start(

@@ -8,14 +8,25 @@
 //! when its tab's coordinator role is cleared, and, as `orphaned`, on the
 //! events herdr already has about its pane (it closed, its agent exited),
 //! which a server re-evaluates when it starts. No timer ends one.
+//!
+//! The workers and `todo.run`s a coordinator starts belong to its tenure,
+//! not to its pane: when its agent session comes back in another pane
+//! (`claude --resume`), the tenure's binding moves there with them
+//! ([`WorkerSupervisor::coordinator_resume`]), and `coordinator.handoff`
+//! ends the tenure and starts the next one, with the next epoch, in the
+//! pane it names, moving them there in the same transaction.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use super::store::{NewTenure, StoredTenure};
-use super::{notify_clients, now_ms, WorkerError, WorkerSupervisor, SUPERVISOR};
+use serde_json::{json, Value};
+
+use super::store::{NewTenure, RunOwner, StoredTenure, Tx};
+use super::{
+    lock, notify_clients, now_ms, Registry, StagedMoves, WorkerError, WorkerSupervisor, SUPERVISOR,
+};
 use crate::api::schema::{CoordinatorInfo, CoordinatorOverride, CoordinatorRecordOverrideParams};
 
 /// `coordinator_ended`'s reason when its pane closed or its agent exited.
@@ -24,6 +35,9 @@ pub(crate) const ORPHANED: &str = "orphaned";
 pub(crate) const ROLE_CLEARED: &str = "role_cleared";
 /// `coordinator.end`'s reason when none is given.
 pub(crate) const ENDED: &str = "ended";
+/// `coordinator_ended`'s reason when `coordinator.handoff` passed the
+/// coordination on to the next tenure.
+pub(crate) const HANDED_OFF: &str = "handed_off";
 /// How many characters of an allowlist exception's command are kept.
 const OVERRIDE_COMMAND_CHARS: usize = 4000;
 
@@ -144,6 +158,12 @@ impl WorkerSupervisor {
         pane_id: &str,
         session_id: Option<&str>,
     ) -> Result<CoordinatorInfo, WorkerError> {
+        // An agent session that coordinated before keeps its tenure.
+        if let Some(session_id) = session_id {
+            if let Err(error) = self.coordinator_resume(pane_id, session_id, None) {
+                warn!(%error, pane_id, session_id, "cannot resume the session's coordination tenure");
+            }
+        }
         let store = self.tenure_store()?;
         let id = new_tenure_id(repo, pane_id);
         let outcome = store.transaction(|tx| {
@@ -328,6 +348,176 @@ impl WorkerSupervisor {
         self.tenure_store()?
             .overrides(repo.as_deref())
             .map_err(store_error)
+    }
+
+    /// Binds the tenure agent session `session_id` coordinated to `pane_id`,
+    /// where that session runs now (resumed there, or found there by
+    /// `coordinator.start`): the tenure stays, a new binding starts, an
+    /// orphaned tenure is active again, and the workers and runs it owns
+    /// move to the pane in the same transaction (`owner_moved`,
+    /// `run_owner_moved`). Nothing when the session coordinated nothing
+    /// that can come back, when the tenure is bound to that pane already,
+    /// when the pane is bound to another tenure, or when an orphaned
+    /// tenure's repository has another coordinator now. `workspace` is the
+    /// pane's, which lists the runs' workers. Returns the moved tenure.
+    pub(crate) fn coordinator_resume(
+        &self,
+        pane_id: &str,
+        session_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Option<CoordinatorInfo>, WorkerError> {
+        let store = self.tenure_store()?;
+        let mut registry = lock(&self.shared.registry);
+        let at = now_ms();
+        let outcome = store
+            .transaction(|tx| {
+                let Some(tenure) = tx.resumable_coordinator(session_id)? else {
+                    return Ok(None);
+                };
+                let active = tenure.ended_at.is_none();
+                if active && tenure.pane_id.as_deref() == Some(pane_id) {
+                    return Ok(None);
+                }
+                if tx
+                    .coordinator_of_pane(pane_id)?
+                    .is_some_and(|bound| bound.id != tenure.id)
+                {
+                    return Ok(None);
+                }
+                if !active && tx.active_coordinator(&tenure.repo)?.is_some() {
+                    return Ok(None);
+                }
+                let resumed = tx.coordinator_resumed(&tenure.id, pane_id, Some(session_id), at)?;
+                let cause = format!(
+                    "its coordinator {} resumed in pane {pane_id} (agent session {session_id})",
+                    tenure.id
+                );
+                let owner = RunOwner {
+                    pane_id: Some(pane_id),
+                    session_id: Some(session_id),
+                    workspace,
+                    coordinator_id: Some(&tenure.id),
+                };
+                let (moved, staged) =
+                    Self::move_owned(&registry, tx, &tenure.id, &owner, &cause, at)?;
+                Ok(Some((resumed, moved, staged)))
+            })
+            .map_err(store_error)?;
+        let Some((resumed, moved, staged)) = outcome else {
+            return Ok(None);
+        };
+        Self::settle_moves(&mut registry, staged, &moved, at);
+        drop(registry);
+        self.shared.changed.notify_all();
+        notify_clients();
+        Ok(Some(info(resumed)))
+    }
+
+    /// Hands the coordination over (`coordinator.handoff`): active tenure
+    /// `coordinator_id`, else the one bound to `from_pane`, ends
+    /// `handed_off`, and a new tenure of its repository starts bound to
+    /// `to_pane` and its agent session `to_session`, with the next epoch and
+    /// the old tenure's current item; the workers and runs the old tenure
+    /// owns move to it. All in one transaction, recorded as `handoff`.
+    /// Only this explicit call hands off, never a timer. Refused with
+    /// `coordinator_not_found` without an active tenure, with
+    /// `invalid_request` for the tenure's own pane and with
+    /// `coordinator_active` when `to_pane` coordinates already.
+    pub(crate) fn coordinator_handoff(
+        &self,
+        coordinator_id: Option<&str>,
+        from_pane: Option<&str>,
+        to_pane: &str,
+        to_session: Option<&str>,
+        to_workspace: Option<&str>,
+    ) -> Result<CoordinatorInfo, WorkerError> {
+        let store = self.tenure_store()?;
+        let mut registry = lock(&self.shared.registry);
+        let at = now_ms();
+        let outcome = store
+            .transaction(|tx| {
+                let from = match (coordinator_id, from_pane) {
+                    (Some(id), _) => tx.coordinator(id)?,
+                    (None, Some(pane)) => tx.coordinator_of_pane(pane)?,
+                    (None, None) => None,
+                };
+                let Some(from) = from.filter(|tenure| tenure.ended_at.is_none()) else {
+                    let named = coordinator_id
+                        .map(|id| format!("coordinator {id} is not active"))
+                        .or_else(|| {
+                            from_pane.map(|pane| {
+                                format!("pane {pane} is bound to no active coordinator")
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            "coordinator.handoff needs coordinator_id or pane_id".into()
+                        });
+                    return Ok(Err(WorkerError::CoordinatorNotFound(named)));
+                };
+                if from.pane_id.as_deref() == Some(to_pane) {
+                    return Ok(Err(WorkerError::Invalid(format!(
+                        "coordinator {} is bound to pane {to_pane} already",
+                        from.id
+                    ))));
+                }
+                if let Some(other) = tx.coordinator_of_pane(to_pane)? {
+                    return Ok(Err(Self::refusal(&from.repo, to_pane, other)));
+                }
+                let id = new_tenure_id(&from.repo, to_pane);
+                let next = NewTenure {
+                    id: &id,
+                    repo: &from.repo,
+                    pane_id: to_pane,
+                    session_id: to_session,
+                };
+                let (_, started) = tx.coordinator_handoff(&from, &next, at)?;
+                let cause = format!(
+                    "its coordinator {} handed off to {} in pane {to_pane}",
+                    from.id, started.id
+                );
+                let owner = RunOwner {
+                    pane_id: Some(to_pane),
+                    session_id: to_session,
+                    workspace: to_workspace,
+                    coordinator_id: Some(&started.id),
+                };
+                let (moved, staged) =
+                    Self::move_owned(&registry, tx, &from.id, &owner, &cause, at)?;
+                Ok(Ok((started, moved, staged)))
+            })
+            .map_err(store_error)?;
+        let (started, moved, staged) = outcome?;
+        Self::settle_moves(&mut registry, staged, &moved, at);
+        drop(registry);
+        self.shared.changed.notify_all();
+        notify_clients();
+        Ok(info(started))
+    }
+
+    /// Moves what tenure `from` owns to `owner` inside `tx`: its open runs,
+    /// and its workers on copies of their statuses, returned with the
+    /// `owner_moved` event for [`Self::settle_moves`].
+    fn move_owned(
+        registry: &Registry,
+        tx: &Tx<'_>,
+        from: &str,
+        owner: &RunOwner<'_>,
+        cause: &str,
+        at: u64,
+    ) -> rusqlite::Result<(Value, StagedMoves)> {
+        let moved = json!({
+            "type": "owner_moved",
+            "pane_id": owner.pane_id,
+            "session_id": owner.session_id,
+            "coordinator_id": owner.coordinator_id,
+            "from_coordinator_id": from,
+            "cause": cause,
+        });
+        let staged = Self::stage_owner_moves(registry, tx, from, &moved, at)?;
+        for run in tx.open_runs_of_coordinator(from)? {
+            tx.move_run_owner(&run.info.run_id, owner, cause, at)?;
+        }
+        Ok((moved, staged))
     }
 
     /// Ends the tenure bound to `pane_id` as orphaned: its pane closed or its

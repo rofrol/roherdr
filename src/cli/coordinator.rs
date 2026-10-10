@@ -2,7 +2,8 @@
 //! active coordinator per repository).
 
 use crate::api::schema::{
-    CoordinatorEndParams, CoordinatorStartParams, CoordinatorStatusParams, Method, Request,
+    CoordinatorEndParams, CoordinatorHandoffParams, CoordinatorStartParams,
+    CoordinatorStatusParams, Method, Request,
 };
 
 use super::worker::take_string_option;
@@ -16,7 +17,12 @@ const USAGE: &str = "usage:
   herdr coordinator end [--reason TEXT] [--id COORDINATOR_ID]
       End this pane's tenure, or the one named.
   herdr coordinator status [--repo DIR]
-      List the active tenures, of one repository with --repo.";
+      List the active tenures, of one repository with --repo, each with
+      the TODO item its run works on.
+  herdr coordinator handoff --to PANE [--id COORDINATOR_ID]
+      Hand this pane's tenure (or the one named) to PANE: it ends
+      handed_off and the next tenure, one epoch on, starts there with its
+      workers, runs and item.";
 
 pub(super) fn run_coordinator_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -81,6 +87,23 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 pane_id,
             })
         }
+        "handoff" => {
+            let (to_pane_id, rest) = take_string_option(rest, "--to")?;
+            let (coordinator_id, rest) = take_string_option(&rest, "--id")?;
+            if !rest.is_empty() {
+                return Err("handoff takes only --to and --id".into());
+            }
+            let to_pane_id = to_pane_id.ok_or("handoff needs --to PANE")?;
+            let pane_id = super::target::caller_pane_id();
+            if coordinator_id.is_none() && pane_id.is_none() {
+                return Err("handoff needs --id outside a herdr pane".into());
+            }
+            Method::CoordinatorHandoff(CoordinatorHandoffParams {
+                to_pane_id,
+                coordinator_id,
+                pane_id,
+            })
+        }
         "status" => {
             let (repo, rest) = take_string_option(rest, "--repo")?;
             if !rest.is_empty() {
@@ -117,6 +140,14 @@ mod tests {
         };
         assert_eq!(params.repo, None);
         assert!(parse(&args(&["status", "extra"])).is_err());
+        let Ok(Some(Method::CoordinatorHandoff(params))) =
+            parse(&args(&["handoff", "--to", "w1-2", "--id", "c-abcd2345"]))
+        else {
+            panic!("handoff did not parse");
+        };
+        assert_eq!(params.to_pane_id, "w1-2");
+        assert_eq!(params.coordinator_id.as_deref(), Some("c-abcd2345"));
+        assert!(parse(&args(&["handoff", "--id", "c-abcd2345"])).is_err());
         assert!(parse(&args(&["nope"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
     }

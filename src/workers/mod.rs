@@ -934,6 +934,16 @@ impl Status {
                     self.verification = serde_json::from_value(event["verification"].clone()).ok();
                     return;
                 }
+                // Its coordinator resumed in another pane or handed off:
+                // the new owner handles its events, a gone worker's end
+                // too.
+                "owner_moved" => {
+                    self.owner_pane = string_field(event, "pane_id");
+                    self.owner_session = string_field(event, "session_id");
+                    self.owner_coordinator = string_field(event, "coordinator_id");
+                    self.owner_gone = None;
+                    return;
+                }
                 // The owner handles a gone worker's end too.
                 "acked" => {
                     let seq = event["seq"].as_i64().unwrap_or(0);
@@ -1923,6 +1933,11 @@ fn output_lost(lines: u64) -> Value {
 fn input_written(id: &str, again: bool) -> Value {
     json!({"type": "input_written", "id": id, "again": again})
 }
+
+/// Workers' statuses after an `owner_moved` event written in a transaction
+/// not committed yet, each with its number and the event's `seq`
+/// ([`WorkerSupervisor::stage_owner_moves`]).
+type StagedMoves = Vec<(u64, Status, i64)>;
 
 struct Committed {
     /// What the clients show of the worker changed.
@@ -3976,6 +3991,77 @@ impl WorkerSupervisor {
         }
     }
 
+    /// Writes `moved` (an `owner_moved` event) in `tx` for every worker
+    /// tenure `from` owns that its owner still has to handle (running, or
+    /// ended and not acknowledged), on copies of their statuses: the
+    /// caller puts them in with [`Self::settle_moves`] once `tx` commits.
+    fn stage_owner_moves(
+        registry: &Registry,
+        tx: &store::Tx<'_>,
+        from: &str,
+        moved: &Value,
+        ts_ms: u64,
+    ) -> store::StoreResult<StagedMoves> {
+        let mut staged = Vec::new();
+        for (number, entry) in &registry.workers {
+            let status = &entry.status;
+            if status.owner_coordinator.as_deref() != Some(from) || !status.listed() {
+                continue;
+            }
+            let mut status = status.clone();
+            let before = status.before();
+            status.apply(Direction::Herdr, moved);
+            let record = store::Recorded::Event(moved);
+            let seq = tx.event(&store::EventRow {
+                worker_id: &status.worker_id,
+                direction: Direction::Herdr,
+                record: &record,
+                ts_ms,
+            })?;
+            status.mark_seq(
+                seq.max(status.last_seq + 1),
+                ts_ms,
+                &before,
+                Direction::Herdr,
+                &record,
+            );
+            if !entry.foreign {
+                tx.questions(seq, &before.pending, &status)?;
+                tx.worker(&status, seq)?;
+            }
+            staged.push((*number, status, seq));
+        }
+        Ok(staged)
+    }
+
+    /// Puts in the statuses [`Self::stage_owner_moves`] wrote, once their
+    /// transaction committed, and exports their events.
+    fn settle_moves(registry: &mut Registry, staged: StagedMoves, moved: &Value, ts_ms: u64) {
+        for (number, status, seq) in staged {
+            let Some(entry) = registry.workers.get_mut(&number) else {
+                continue;
+            };
+            entry.status = status;
+            let export = match &entry.export {
+                Some(journal) => Ok(Arc::clone(journal)),
+                None => Journal::open(&entry.journal_path).map(Arc::new),
+            };
+            let exported = export.and_then(|journal| {
+                entry.export = Some(Arc::clone(&journal));
+                journal.export(
+                    Some(seq),
+                    ts_ms,
+                    Direction::Herdr,
+                    store::Recorded::Event(moved),
+                )
+            });
+            if let Err(error) = exported {
+                warn!(%error, worker_id = entry.status.worker_id, "worker journal write failed");
+                entry.status.degraded = Some(format!("a worker journal write failed: {error}"));
+            }
+        }
+    }
+
     /// Hands every question of worker `number` that waits quietly for its
     /// owner to the user, as one `escalated` event naming them and `cause`.
     /// Records nothing when none waits quietly.
@@ -4356,9 +4442,15 @@ impl WorkerSupervisor {
 
     /// The owned workers with an event their owner has not acknowledged
     /// ([`Status::obligation`]), only those `owner_pane` owns when given.
-    /// Derived from the workers' state on every call: nothing to deliver,
-    /// nothing to lose.
+    /// A worker started by a coordinator is owed by its tenure, not by a
+    /// pane: it belongs to the pane its tenure is bound to now, so a
+    /// coordinator resumed elsewhere keeps it and another agent in its old
+    /// pane does not get it. Derived from the workers' state on every call:
+    /// nothing to deliver, nothing to lose.
     pub(crate) fn obligations(&self, owner_pane: Option<&str>) -> Vec<WorkerObligation> {
+        let tenure = owner_pane
+            .and_then(|pane| self.coordinator_of_pane(pane))
+            .map(|tenure| tenure.coordinator_id);
         let registry = lock(&self.shared.registry);
         registry
             .workers
@@ -4366,7 +4458,11 @@ impl WorkerSupervisor {
             .filter_map(|entry| {
                 let status = &entry.status;
                 let owner = status.owner_pane.as_deref()?;
-                if owner_pane.is_some_and(|pane| pane != owner) {
+                let owns = |pane: &str| match &status.owner_coordinator {
+                    Some(coordinator) => tenure.as_ref() == Some(coordinator),
+                    None => pane == owner,
+                };
+                if owner_pane.is_some_and(|pane| !owns(pane)) {
                     return None;
                 }
                 let (reason, questions) = status.obligation()?;

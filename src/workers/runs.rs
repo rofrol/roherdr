@@ -100,6 +100,9 @@ pub(super) struct Run {
     pub(super) owner_session: Option<String>,
     /// The owner pane's workspace, which lists the run's workers.
     pub(super) workspace: Option<String>,
+    /// The coordination tenure that owns the run: the owner pane's when
+    /// the run was claimed, moved with it on a resume or a handoff.
+    pub(super) owner_coordinator: Option<String>,
     pub(super) finish: RunFinish,
     /// The current attempt's row of `attempts`, beside what [`TodoRunInfo`]
     /// shows of it (its number, worker, branch and task).
@@ -1089,6 +1092,11 @@ impl WorkerSupervisor {
         let item_ids = todo_titles::item_ids(&todo);
         let at = now_ms();
         let run_id = new_run_id(&repo, &params.item);
+        let owner_coordinator = params
+            .owner_pane_id
+            .as_deref()
+            .and_then(|pane| self.coordinator_of_pane(pane))
+            .map(|tenure| tenure.coordinator_id);
         let mut run = Run {
             info: TodoRunInfo {
                 run_id: run_id.clone(),
@@ -1119,6 +1127,7 @@ impl WorkerSupervisor {
             owner_pane: params.owner_pane_id.clone(),
             owner_session: params.owner_session_id.clone(),
             workspace: params.workspace_id.clone(),
+            owner_coordinator: owner_coordinator.clone(),
             finish: RunFinish {
                 install: preflighted.install.clone(),
                 contract_check: preflighted.contract_check.clone(),
@@ -1143,6 +1152,7 @@ impl WorkerSupervisor {
             "owner_pane": params.owner_pane_id,
             "owner_session": params.owner_session_id,
             "workspace": params.workspace_id,
+            "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
             "item_text": item_text,
@@ -1173,10 +1183,26 @@ impl WorkerSupervisor {
     /// when it does: `None` for its owner (or anyone, for a run nobody
     /// owns resumed from outside a pane). A run owned by another pane that
     /// is still there is refused; once that pane or its agent is gone
-    /// (herdr's own events, never a timer), the caller takes it over.
-    fn run_takeover(&self, run: &Run, caller: Option<&str>) -> Result<Option<String>, WorkerError> {
+    /// (herdr's own events, never a timer), the caller takes it over. A
+    /// caller bound to the tenure that owns the run is its owner wherever
+    /// it runs now: the run moves to its pane.
+    fn run_takeover(
+        &self,
+        run: &Run,
+        caller: Option<&str>,
+        caller_coordinator: Option<&str>,
+    ) -> Result<Option<String>, WorkerError> {
         match (run.owner_pane.as_deref(), caller) {
             (Some(owner), Some(caller)) if owner == caller => Ok(None),
+            (_, Some(caller))
+                if caller_coordinator.is_some()
+                    && caller_coordinator == run.owner_coordinator.as_deref() =>
+            {
+                Ok(Some(format!(
+                    "its coordinator {} is bound to pane {caller} now",
+                    run.owner_coordinator.as_deref().unwrap_or_default()
+                )))
+            }
             (None, None) => Ok(None),
             (None, Some(_)) => Ok(Some("the run had no owner".to_owned())),
             (Some(owner), _) => match self.gone_owner(owner) {
@@ -1561,7 +1587,16 @@ impl WorkerSupervisor {
         if let Some(error) = stale(&run) {
             return Err(error);
         }
-        let takeover = self.run_takeover(&run, params.caller_pane_id.as_deref())?;
+        let caller_coordinator = params
+            .caller_pane_id
+            .as_deref()
+            .and_then(|pane| self.coordinator_of_pane(pane))
+            .map(|tenure| tenure.coordinator_id);
+        let takeover = self.run_takeover(
+            &run,
+            params.caller_pane_id.as_deref(),
+            caller_coordinator.as_deref(),
+        )?;
         let answered = latest
             .filter(|(seq, _)| *seq == params.event)
             .map(|(seq, body)| event_of(seq, &body, &run.info));
@@ -1721,9 +1756,17 @@ impl WorkerSupervisor {
                         "cause": cause,
                     });
                     tx.run_note(&current.info.run_id, &taken, now_ms())?;
+                    let owner = super::store::RunOwner {
+                        pane_id: params.caller_pane_id.as_deref(),
+                        session_id: params.caller_session_id.as_deref(),
+                        workspace: params.caller_workspace_id.as_deref(),
+                        coordinator_id: caller_coordinator.as_deref(),
+                    };
+                    tx.move_run_owner(&current.info.run_id, &owner, cause, now_ms())?;
                     current.owner_pane = params.caller_pane_id.clone();
                     current.owner_session = params.caller_session_id.clone();
                     current.workspace = params.caller_workspace_id.clone();
+                    current.owner_coordinator = caller_coordinator.clone();
                 }
                 let was_blocked = current.info.status == TodoRunStatus::Blocked;
                 current.info.status = TodoRunStatus::Running;

@@ -7,9 +7,9 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    CoordinatorEndParams, CoordinatorInfo, CoordinatorRecordOverrideParams, CoordinatorStartParams,
-    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
-    TabRole,
+    CoordinatorEndParams, CoordinatorHandoffParams, CoordinatorInfo,
+    CoordinatorRecordOverrideParams, CoordinatorStartParams, CoordinatorStatusParams,
+    NotificationShowParams, NotificationShowSound, ResponseResult, TabRole,
 };
 use crate::app::App;
 use crate::workers::{WorkerError, WorkerSupervisor};
@@ -95,6 +95,77 @@ impl App {
         match ended {
             Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// `coordinator.handoff`: the tenure named (else the one bound to
+    /// `pane_id`) hands over to `to_pane_id` and its agent session.
+    pub(super) fn handle_coordinator_handoff(
+        &mut self,
+        id: String,
+        params: CoordinatorHandoffParams,
+    ) -> String {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return unavailable(id);
+        };
+        if params.coordinator_id.is_none() && params.pane_id.is_none() {
+            return encode_error(
+                id,
+                "invalid_request",
+                "coordinator.handoff needs coordinator_id or pane_id",
+            );
+        }
+        let Some(target) = self
+            .parse_pane_id(&params.to_pane_id)
+            .and_then(|(ws_idx, pane_id)| self.pane_metadata(ws_idx, pane_id))
+        else {
+            return encode_error(
+                id,
+                "pane_not_found",
+                format!("pane not found: {}", params.to_pane_id),
+            );
+        };
+        let from_pane = params
+            .pane_id
+            .as_deref()
+            .map(|pane| self.canonical_pane_id(pane));
+        let session = target.agent_session.map(|session| session.value);
+        let handed = coordinators.coordinator_handoff(
+            params.coordinator_id.as_deref(),
+            from_pane.as_deref(),
+            &target.pane_id,
+            session.as_deref(),
+            Some(&target.workspace_id),
+        );
+        self.sync_coordinator_roles();
+        match handed {
+            Ok(coordinator) => encode_success(id, ResponseResult::Coordinator { coordinator }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// The pane's agent session came back or changed: when that session
+    /// coordinated a tenure it still can, the tenure is bound to this pane
+    /// now ([`WorkerSupervisor::coordinator_resume`]), and the tabs' roles
+    /// follow.
+    pub(super) fn resume_coordinator_in(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return;
+        };
+        let Some(pane) = self.pane_metadata(ws_idx, pane_id) else {
+            return;
+        };
+        let Some(session) = pane.agent_session.map(|session| session.value) else {
+            return;
+        };
+        match coordinators.coordinator_resume(&pane.pane_id, &session, Some(&pane.workspace_id)) {
+            Ok(Some(_)) => self.sync_coordinator_roles(),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                %error,
+                pane_id = pane.pane_id,
+                "cannot resume the agent session's coordination tenure"
+            ),
         }
     }
 

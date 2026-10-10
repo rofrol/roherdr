@@ -27,6 +27,21 @@ pub struct CoordinatorEndParams {
     pub pane_id: Option<String>,
 }
 
+/// Hands a repository's coordination to another pane: the tenure named,
+/// else the one bound to `pane_id`, ends `handed_off`, and the next tenure
+/// starts in `to_pane_id` with the next epoch, taking over the old one's
+/// current item, workers and runs, in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorHandoffParams {
+    /// The pane the next tenure is bound to, with its agent session.
+    pub to_pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_id: Option<String>,
+    /// The CLI sends its `HERDR_PANE_ID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+}
+
 /// Lists the active tenures, of one repository when given.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CoordinatorStatusParams {
@@ -44,7 +59,8 @@ pub struct CoordinatorInfo {
     pub coordinator_id: String,
     /// The repository: the parent of its git common directory.
     pub repo: String,
-    /// The TODO item it works on; not recorded yet.
+    /// The TODO item it works on: the item of the `todo.run` it claimed,
+    /// until that run ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
     /// Unix milliseconds.
@@ -54,8 +70,8 @@ pub struct CoordinatorInfo {
     pub ended_ms: Option<u64>,
     /// Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's
     /// role was cleared), `orphaned` (its pane closed or its agent exited,
-    /// also when found at server start), or the reason `coordinator.end`
-    /// was given.
+    /// also when found at server start), `handed_off`
+    /// (`coordinator.handoff`), or the reason `coordinator.end` was given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_reason: Option<String>,
     /// Grows by one with each tenure of the repository.

@@ -2127,6 +2127,32 @@
           },
           "type": "object"
         },
+        "CoordinatorHandoffParams": {
+          "description": "Hands a repository's coordination to another pane: the tenure named,\nelse the one bound to `pane_id`, ends `handed_off`, and the next tenure\nstarts in `to_pane_id` with the next epoch, taking over the old one's\ncurrent item, workers and runs, in one transaction.",
+          "properties": {
+            "coordinator_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The CLI sends its `HERDR_PANE_ID`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to_pane_id": {
+              "description": "The pane the next tenure is bound to, with its agent session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "to_pane_id"
+          ],
+          "type": "object"
+        },
         "CoordinatorRecordOverrideParams": {
           "description": "Records an exception to a coordinator tab's command allowlist: one tool\ncall that carried `# herdr-override: <reason>`. The server stores it\n(append-only, in the worker store) and notifies the user; the hook lets\nthe call run only after this succeeded.",
           "properties": {
@@ -7378,6 +7404,23 @@
           "type": "object"
         },
         {
+          "description": "Hands a repository's coordination to another pane: the next tenure,\nwhich takes over the workers and runs.",
+          "properties": {
+            "method": {
+              "const": "coordinator.handoff",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorHandoffParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Records one exception to a coordinator tab's command allowlist and\nnotifies the user.",
           "properties": {
             "method": {
@@ -10134,7 +10177,7 @@
               "type": "string"
             },
             "end_reason": {
-              "description": "Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's\nrole was cleared), `orphaned` (its pane closed or its agent exited,\nalso when found at server start), or the reason `coordinator.end`\nwas given.",
+              "description": "Why it ended: `ended` (`coordinator.end`), `role_cleared` (its tab's\nrole was cleared), `orphaned` (its pane closed or its agent exited,\nalso when found at server start), `handed_off`\n(`coordinator.handoff`), or the reason `coordinator.end` was given.",
               "type": [
                 "string",
                 "null"
@@ -10155,7 +10198,7 @@
               "type": "integer"
             },
             "item": {
-              "description": "The TODO item it works on; not recorded yet.",
+              "description": "The TODO item it works on: the item of the `todo.run` it claimed,\nuntil that run ends.",
               "type": [
                 "string",
                 "null"
@@ -13614,7 +13657,7 @@
               "type": "object"
             },
             {
-              "description": "`coordinator.start`'s and `coordinator.end`'s reply.",
+              "description": "`coordinator.start`'s, `coordinator.end`'s and\n`coordinator.handoff`'s reply.",
               "properties": {
                 "coordinator": {
                   "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
