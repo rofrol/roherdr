@@ -486,6 +486,10 @@ pub struct TodoRunInfo {
     /// approval of its own review closes the item.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub queued: bool,
+    /// The capability grants the run runs with (its `prepare`'s), none
+    /// when the repository declares no operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<TodoRunGrant>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -856,6 +860,33 @@ pub struct TodoGrantsParams {
     /// Only the grants of the repository of this directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+}
+
+/// `todo.revoke`: removes the stored grants of a repository's operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRevokeParams {
+    /// A directory in the repository.
+    pub cwd: String,
+    /// The operation (`prepare`).
+    pub operation: String,
+    /// Only the grant of this definition hash; every grant of the
+    /// operation without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+/// A grant a run runs with, as preflight read it from its base commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRunGrant {
+    pub operation: String,
+    /// SHA-256 of the canonical definition.
+    pub hash: String,
+    /// The canonical definition: protocol version, operation, argv and the
+    /// requested capabilities with their scopes.
+    pub definition: serde_json::Value,
+    pub granted_ms: u64,
+    /// The adapter that enforces it.
+    pub adapter: String,
 }
 
 /// One grant: a repository's operation, its definition and its hash.

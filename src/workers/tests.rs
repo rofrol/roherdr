@@ -8279,6 +8279,224 @@ mod todo_runs {
         abort(&fixture, &run.run_id, event.event_id);
     }
 
+    /// The grant question of `repo` in the user's `?` list, if listed.
+    fn listed_grant(fixture: &Fixture) -> Option<PendingWorkerQuestion> {
+        let repo = repository_of(&fixture.repo).unwrap();
+        fixture
+            .supervisor
+            .pending_questions()
+            .into_iter()
+            .find(|pending| {
+                pending.cwd == repo
+                    && crate::workers::grant_questions::is_grant_question(
+                        &pending.question.request_id,
+                    )
+            })
+    }
+
+    fn grant_answer(pending: &PendingWorkerQuestion, answer: &str) -> WorkerAnswerParams {
+        WorkerAnswerParams {
+            worker_id: pending.worker_id.clone(),
+            request_id: Some(pending.question.request_id.clone()),
+            decision: Some(WorkerDecision::Allow),
+            answers: vec![answer.into()],
+            message: None,
+            command_id: None,
+        }
+    }
+
+    /// The recorded grant actions of the fixture's repository, in order.
+    fn grant_log(fixture: &Fixture) -> Vec<(String, String, String)> {
+        let repo = repository_of(&fixture.repo).unwrap();
+        fixture
+            .supervisor
+            .run_store()
+            .unwrap()
+            .read(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT definition_hash, action, source FROM capability_grant_log
+                     WHERE repo = ?1 ORDER BY id",
+                )?;
+                let rows = statement
+                    .query_map([&repo], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                rows.collect()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_grant_is_the_users_question_answered_only_from_their_client_and_revocable() {
+        let fixture = todo_repo("todo-grant-question");
+        let task = format!("commit a.txt {SUBJECT}");
+        commit_operations(&fixture, OPERATIONS);
+        let refused = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err();
+        if !crate::platform::CONFINED_JOB_SUPPORTED {
+            assert_eq!(refused.code(), "capability_unsupported", "{refused}");
+            return;
+        }
+        assert_eq!(refused.code(), "grant_required", "{refused}");
+        assert!(refused.to_string().contains("`?` list"), "{refused}");
+        let hash = shown_hash(&refused.to_string());
+
+        // The refusal lists the operation, its capabilities, its hash and
+        // the repository as the user's question, once per definition.
+        let pending = listed_grant(&fixture).expect("no grant question listed");
+        assert!(!pending.quiet);
+        let repo = repository_of(&fixture.repo).unwrap();
+        for part in ["[prepare]", repo.as_str(), "env: PATH", &hash[..12]] {
+            assert!(
+                pending.question.text.contains(part),
+                "{part:?} not in {}",
+                pending.question.text
+            );
+        }
+        let _ = fixture.supervisor.todo_run(params(&fixture, &task, "ok"));
+        let repo_grants = |pending: &PendingWorkerQuestion| pending.cwd == repo;
+        assert_eq!(
+            fixture
+                .supervisor
+                .pending_questions()
+                .iter()
+                .filter(|pending| repo_grants(pending)
+                    && crate::workers::grant_questions::is_grant_question(
+                        &pending.question.request_id
+                    ))
+                .count(),
+            1
+        );
+        let detail = fixture
+            .supervisor
+            .question_detail(&pending.worker_id, &pending.question.request_id)
+            .unwrap();
+        assert!(detail.input_text.contains(&hash), "{}", detail.input_text);
+
+        // Through the API (an agent's `herdr worker answer`, `answer_as`,
+        // the dialog's stop) it is refused, and stays listed.
+        let grant = grant_answer(&pending, "1");
+        for refused in [
+            fixture.supervisor.answer(&grant).unwrap_err(),
+            fixture
+                .supervisor
+                .answer_as(&crate::api::schema::WorkerAnswerAsParams {
+                    coordinator_id: "c-anyone".into(),
+                    answer: grant.clone(),
+                })
+                .unwrap_err(),
+            fixture
+                .supervisor
+                .deny_and_stop(&crate::api::schema::WorkerDenyAndStopParams {
+                    worker_id: pending.worker_id.clone(),
+                    request_id: pending.question.request_id.clone(),
+                    message: None,
+                })
+                .unwrap_err(),
+        ] {
+            assert_eq!(refused.code(), "grant_needs_user", "{refused}");
+        }
+        assert!(listed_grant(&fixture).is_some());
+        assert!(fixture
+            .supervisor
+            .todo_grants(crate::api::schema::TodoGrantsParams::default())
+            .unwrap()
+            .iter()
+            .all(|grant| grant.repo != repo));
+
+        // The user's Not now takes it off the list, recorded, and grants
+        // nothing; the next refusal lists it again.
+        fixture
+            .supervisor
+            .answer_from_client(&grant_answer(&pending, "2"))
+            .unwrap();
+        assert!(listed_grant(&fixture).is_none());
+        let _ = fixture.supervisor.todo_run(params(&fixture, &task, "ok"));
+        let pending = listed_grant(&fixture).expect("not listed again");
+
+        // The user's click grants it.
+        fixture
+            .supervisor
+            .answer_from_client(&grant_answer(&pending, "1"))
+            .unwrap();
+        assert!(listed_grant(&fixture).is_none());
+        let grants = fixture
+            .supervisor
+            .todo_grants(crate::api::schema::TodoGrantsParams {
+                cwd: Some(fixture.repo.display().to_string()),
+            })
+            .unwrap();
+        assert_eq!(
+            grants.iter().map(|grant| &grant.hash).collect::<Vec<_>>(),
+            [&hash]
+        );
+        let base = git_in(&fixture.repo, &["rev-parse", "master"])
+            .trim()
+            .to_owned();
+        let plan = fixture
+            .supervisor
+            .plan_operations(&fixture.repo, &base)
+            .unwrap()
+            .unwrap();
+
+        // Revoked, a definition is refused again; the revoke is recorded,
+        // and a run planned before it no longer runs the operation.
+        let revoke = |hash: Option<&str>| {
+            fixture
+                .supervisor
+                .todo_revoke(crate::api::schema::TodoRevokeParams {
+                    cwd: fixture.repo.display().to_string(),
+                    operation: "prepare".into(),
+                    hash: hash.map(str::to_owned),
+                })
+        };
+        assert_eq!(revoke(Some("0000")).unwrap_err().code(), "invalid_request");
+        let revoked = revoke(None).unwrap();
+        assert_eq!(revoked.len(), 1);
+        assert!(!fixture
+            .supervisor
+            .grant_still_stored(&fixture.repo.display().to_string(), &plan));
+        assert_eq!(revoke(Some(&hash)).unwrap_err().code(), "invalid_request");
+        let again = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err();
+        assert_eq!(again.code(), "grant_required", "{again}");
+        assert_eq!(
+            grant_log(&fixture),
+            [
+                (hash.clone(), "declined".into(), "client".into()),
+                (hash.clone(), "granted".into(), "client".into()),
+                (hash.clone(), "revoked".into(), "api".into()),
+            ]
+        );
+
+        // Granted again, the refused run starts, and shows its grants.
+        let pending = listed_grant(&fixture).unwrap();
+        fixture
+            .supervisor
+            .answer_from_client(&grant_answer(&pending, "Grant"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap();
+        assert_eq!(
+            run.grants
+                .iter()
+                .map(|grant| (grant.operation.as_str(), grant.hash.as_str()))
+                .collect::<Vec<_>>(),
+            [("prepare", hash.as_str())]
+        );
+        let status = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(status.grants, run.grants);
+        assert_eq!(status.grants[0].adapter, "herdr-confined-job");
+        let (event, _) = wait(&fixture, &run.run_id, None);
+        if event.kind != TodoEventKind::Blocked {
+            abort(&fixture, &run.run_id, event.event_id);
+        }
+    }
+
     #[test]
     fn preflight_refuses_what_a_run_cannot_do() {
         let fixture = todo_repo("todo-preflight");
@@ -10724,6 +10942,43 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                 runs.iter()
                     .map(|run| (run.item.as_str(), run.status))
                     .collect()
+            }
+
+            #[test]
+            fn a_queue_waits_for_the_users_grant_then_starts_the_item() {
+                let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-grant", &[ITEM], &answers);
+                commit_operations(&fixture, OPERATIONS);
+                if !crate::platform::CONFINED_JOB_SUPPORTED {
+                    return;
+                }
+                let waiting = set(&fixture, TodoQueueMode::On);
+                assert_eq!(
+                    waiting.status,
+                    TodoQueueStatus::WaitingOnUser,
+                    "{waiting:#?}"
+                );
+                assert!(waiting.reason.contains("grant"), "{waiting:#?}");
+                assert!(runs_of(&fixture, &repo).is_empty());
+
+                // The user's click is the queue's next event.
+                let pending = listed_grant(&fixture).expect("no grant question listed");
+                fixture
+                    .supervisor
+                    .answer_from_client(&grant_answer(&pending, "1"))
+                    .unwrap();
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(items_and_states(&runs)[..1], [(ITEM, runs[0].status)]);
+                assert_eq!(runs[0].grants.len(), 1, "{:#?}", runs[0]);
+                // Paused, the queue starts nothing after this run.
+                set(&fixture, TodoQueueMode::Paused);
+                runs::wait_until("the queued run's end", HANG_GUARD, || {
+                    matches!(
+                        runs_of(&fixture, &repo)[0].status,
+                        TodoRunStatus::Done | TodoRunStatus::Blocked
+                    )
+                });
             }
 
             #[test]

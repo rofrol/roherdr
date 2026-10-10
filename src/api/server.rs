@@ -891,6 +891,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TodoRunnableState(_) => "todo.runnable_state",
         Method::TodoGrant(_) => "todo.grant",
         Method::TodoGrants(_) => "todo.grants",
+        Method::TodoRevoke(_) => "todo.revoke",
         Method::DecisionAdd(_) => "decision.add",
         Method::DecisionDecide(_) => "decision.decide",
         Method::DecisionList(_) => "decision.list",

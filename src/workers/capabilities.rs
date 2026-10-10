@@ -27,7 +27,9 @@ use sha2::{Digest, Sha256};
 
 use super::runs::git;
 use super::{now_ms, repository_of, WorkerError, WorkerSupervisor};
-use crate::api::schema::{TodoGrant, TodoGrantParams, TodoGrantsParams};
+use crate::api::schema::{
+    TodoGrant, TodoGrantParams, TodoGrantsParams, TodoRevokeParams, TodoRunGrant,
+};
 
 /// The protocol version this herdr speaks; a file naming another is refused.
 pub(crate) const PROTOCOL_VERSION: i64 = 1;
@@ -430,6 +432,17 @@ pub(crate) struct PreparePlan {
 }
 
 impl PreparePlan {
+    /// The grant as a run shows it (`TodoRunInfo.grants`).
+    pub(crate) fn run_grant(&self) -> TodoRunGrant {
+        TodoRunGrant {
+            operation: PREPARE.to_owned(),
+            hash: self.hash.clone(),
+            definition: self.definition.clone(),
+            granted_ms: self.granted_ms,
+            adapter: self.adapter.clone(),
+        }
+    }
+
     pub(crate) fn capabilities(&self) -> Result<Capabilities, String> {
         let table: toml::Table = toml::Table::try_from(
             self.definition
@@ -456,6 +469,28 @@ CREATE TABLE capability_grants (
     granted_ms INTEGER NOT NULL,
     PRIMARY KEY (repo, operation, definition_hash)
 );
+"#;
+
+/// The grant record's migration.
+pub(super) const GRANT_LOG_MIGRATION: &str = r#"
+-- Every change of the user's capability grants, append-only: `action` is
+-- `granted`, `revoked` or `declined` (the user's Not now to a grant
+-- question), `source` where it came from (`terminal`: `herdr todo grant`
+-- after its confirmation; `client`: a click in the `?` list of the user's
+-- client; `api`: `todo.revoke`). `at_ms` is Unix milliseconds.
+CREATE TABLE capability_grant_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    definition_hash TEXT NOT NULL,
+    action TEXT NOT NULL,
+    source TEXT NOT NULL,
+    at_ms INTEGER NOT NULL
+);
+CREATE TRIGGER capability_grant_log_no_update BEFORE UPDATE ON capability_grant_log
+BEGIN SELECT RAISE(ABORT, 'capability_grant_log is append-only'); END;
+CREATE TRIGGER capability_grant_log_no_delete BEFORE DELETE ON capability_grant_log
+BEGIN SELECT RAISE(ABORT, 'capability_grant_log is append-only'); END;
 "#;
 
 impl WorkerSupervisor {
@@ -493,12 +528,22 @@ impl WorkerSupervisor {
             .grant_of(&repo_text, PREPARE, &hash)
             .map_err(super::runs::store_error)?;
         let Some(granted_ms) = granted else {
-            return Err(WorkerError::GrantRequired(format!(
+            let refusal = format!(
                 "[{PREPARE}] of {repo_text} at {base} has no grant for its definition (a new or \
                  changed definition is the user's decision, never granted by the driver): \
-                 {definition}; the user grants it with `herdr todo grant --operation {PREPARE} \
-                 --hash {hash}` in the repository"
-            )));
+                 {definition}; it waits as a question in the user's `?` list, or the user grants \
+                 it with `herdr todo grant --operation {PREPARE} --hash {hash}` in the repository \
+                 from their own terminal; once granted, start the run again"
+            );
+            super::grant_questions::list(super::grant_questions::GrantQuestion {
+                repo: repo_text,
+                operation: PREPARE.to_owned(),
+                hash,
+                definition,
+                base: base.to_owned(),
+                since_ms: now_ms(),
+            });
+            return Err(WorkerError::GrantRequired(refusal));
         };
         Ok(Some(PreparePlan {
             argv: prepare.argv,
@@ -507,6 +552,13 @@ impl WorkerSupervisor {
             granted_ms,
             adapter: adapter.name.to_owned(),
         }))
+    }
+
+    /// Whether the grant a run planned with is still stored: a revoked one
+    /// refuses the operation.
+    pub(super) fn grant_still_stored(&self, repo: &str, plan: &PreparePlan) -> bool {
+        let repo_text = repository_of(Path::new(repo)).unwrap_or_else(|| repo.to_owned());
+        matches!(self.grant_of(&repo_text, PREPARE, &plan.hash), Ok(Some(_)))
     }
 
     fn grant_of(&self, repo: &str, operation: &str, hash: &str) -> rusqlite::Result<Option<u64>> {
@@ -527,19 +579,32 @@ impl WorkerSupervisor {
 
     /// The user's grant of the repository's operation as `master` defines
     /// it now, refused unless `hash` is that definition's: the user grants
-    /// exactly the definition they were shown.
+    /// exactly the definition they were shown. The CLI sends it only after
+    /// the user's confirmation on a terminal.
     pub(crate) fn todo_grant(&self, params: TodoGrantParams) -> Result<TodoGrant, WorkerError> {
         if params.operation != PREPARE {
-            return Err(WorkerError::Invalid(format!(
-                "operation `{}` is not supported: protocol version {PROTOCOL_VERSION} knows only \
-                 `{PREPARE}`",
-                params.operation
-            )));
+            return Err(unsupported_operation(&params.operation));
         }
         let repo = repository_of(Path::new(&params.cwd)).ok_or_else(|| {
             WorkerError::Invalid(format!("{} is not in a git repository", params.cwd))
         })?;
-        let file = read_operations_at(Path::new(&repo), "master")
+        let grant = self.store_grant(&repo, &params.hash, "terminal")?;
+        super::grant_questions::take(&repo, PREPARE, &grant.hash);
+        // A granted definition is one of the queue's events.
+        self.queue_event(&repo);
+        Ok(grant)
+    }
+
+    /// Stores and records the grant of `repo`'s `prepare` as `master`
+    /// defines it now, refused (`invalid_request`) unless its hash is
+    /// `hash`. Granting a stored grant again records nothing.
+    pub(super) fn store_grant(
+        &self,
+        repo: &str,
+        hash: &str,
+        source: &str,
+    ) -> Result<TodoGrant, WorkerError> {
+        let file = read_operations_at(Path::new(repo), "master")
             .map_err(WorkerError::Invalid)?
             .and_then(|file| file.prepare)
             .ok_or_else(|| {
@@ -548,39 +613,128 @@ impl WorkerSupervisor {
                 ))
             })?;
         let definition = file.definition();
-        let hash = definition_hash(&definition);
-        if hash != params.hash {
+        let defined = definition_hash(&definition);
+        if defined != hash {
             return Err(WorkerError::Invalid(format!(
-                "[{PREPARE}] of {repo} at master has hash {hash}, not {}: its definition is \
-                 {definition}",
-                params.hash
+                "[{PREPARE}] of {repo} at master has hash {defined}, not {hash}: its definition \
+                 is {definition}"
             )));
         }
-        let granted_ms = now_ms();
-        self.run_store()?
+        let at = now_ms();
+        let granted_ms = self
+            .run_store()?
             .transaction(|tx| {
-                tx.connection().execute(
+                let conn = tx.connection();
+                let inserted = conn.execute(
                     "INSERT INTO capability_grants
                      (repo, operation, definition_hash, definition, granted_ms)
                      VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT (repo, operation, definition_hash) DO NOTHING",
-                    params![
-                        repo,
-                        PREPARE,
-                        hash,
-                        definition.to_string(),
-                        granted_ms as i64
-                    ],
+                    params![repo, PREPARE, hash, definition.to_string(), at as i64],
+                )?;
+                if inserted > 0 {
+                    log_action(conn, repo, PREPARE, hash, "granted", source, at)?;
+                }
+                conn.query_row(
+                    "SELECT granted_ms FROM capability_grants
+                     WHERE repo = ?1 AND operation = ?2 AND definition_hash = ?3",
+                    params![repo, PREPARE, hash],
+                    |row| row.get::<_, i64>(0),
                 )
             })
             .map_err(super::runs::store_error)?;
         Ok(TodoGrant {
-            repo,
+            repo: repo.to_owned(),
             operation: PREPARE.to_owned(),
-            hash,
+            hash: hash.to_owned(),
             definition,
-            granted_ms,
+            granted_ms: granted_ms as u64,
         })
+    }
+
+    /// Records an action on a grant that changes no stored grant (the
+    /// user's Not now).
+    pub(super) fn record_grant_action(
+        &self,
+        repo: &str,
+        operation: &str,
+        hash: &str,
+        action: &str,
+        source: &str,
+    ) -> Result<(), WorkerError> {
+        self.run_store()?
+            .transaction(|tx| {
+                log_action(
+                    tx.connection(),
+                    repo,
+                    operation,
+                    hash,
+                    action,
+                    source,
+                    now_ms(),
+                )
+            })
+            .map_err(super::runs::store_error)
+    }
+
+    /// Removes the stored grants of the repository's operation (of one
+    /// definition hash when `hash` names it), each recorded; refused when
+    /// none matches. A run that has not run its prepare yet refuses it.
+    pub(crate) fn todo_revoke(
+        &self,
+        params: TodoRevokeParams,
+    ) -> Result<Vec<TodoGrant>, WorkerError> {
+        if params.operation != PREPARE {
+            return Err(unsupported_operation(&params.operation));
+        }
+        let repo = repository_of(Path::new(&params.cwd)).ok_or_else(|| {
+            WorkerError::Invalid(format!("{} is not in a git repository", params.cwd))
+        })?;
+        let revoked = self
+            .todo_grants(TodoGrantsParams {
+                cwd: Some(params.cwd.clone()),
+            })?
+            .into_iter()
+            .filter(|grant| {
+                grant.operation == params.operation
+                    && params.hash.as_deref().is_none_or(|hash| grant.hash == hash)
+            })
+            .collect::<Vec<_>>();
+        if revoked.is_empty() {
+            return Err(WorkerError::Invalid(format!(
+                "{repo} has no grant of [{}]{} to revoke",
+                params.operation,
+                params
+                    .hash
+                    .as_deref()
+                    .map(|hash| format!(" with hash {hash}"))
+                    .unwrap_or_default()
+            )));
+        }
+        let at = now_ms();
+        self.run_store()?
+            .transaction(|tx| {
+                let conn = tx.connection();
+                for grant in &revoked {
+                    conn.execute(
+                        "DELETE FROM capability_grants
+                         WHERE repo = ?1 AND operation = ?2 AND definition_hash = ?3",
+                        params![grant.repo, grant.operation, grant.hash],
+                    )?;
+                    log_action(
+                        conn,
+                        &grant.repo,
+                        &grant.operation,
+                        &grant.hash,
+                        "revoked",
+                        "api",
+                        at,
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(super::runs::store_error)?;
+        Ok(revoked)
     }
 
     /// The stored grants, of one repository when `cwd` names one.
@@ -615,6 +769,31 @@ impl WorkerSupervisor {
             })
             .map_err(super::runs::store_error)
     }
+}
+
+fn unsupported_operation(operation: &str) -> WorkerError {
+    WorkerError::Invalid(format!(
+        "operation `{operation}` is not supported: protocol version {PROTOCOL_VERSION} knows only \
+         `{PREPARE}`"
+    ))
+}
+
+fn log_action(
+    conn: &rusqlite::Connection,
+    repo: &str,
+    operation: &str,
+    hash: &str,
+    action: &str,
+    source: &str,
+    at: u64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO capability_grant_log
+         (repo, operation, definition_hash, action, source, at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![repo, operation, hash, action, source, at as i64],
+    )
+    .map(drop)
 }
 
 #[cfg(test)]

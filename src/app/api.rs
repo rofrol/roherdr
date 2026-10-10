@@ -1372,6 +1372,7 @@ impl App {
             | Method::TodoRunnableState(_)
             | Method::TodoGrant(_)
             | Method::TodoGrants(_)
+            | Method::TodoRevoke(_)
             | Method::DecisionAdd(_)
             | Method::DecisionDecide(_)
             | Method::DecisionList(_)
