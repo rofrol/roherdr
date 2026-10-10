@@ -1034,3 +1034,19 @@ coordinator: the Windows PowerShell hook has neither (no coordinator runs
 on Windows); a refused question followed by a stop shows in the `?` list.
 Left in TODO: point 4 (queue mode after a clean week) and point 5
 (`--note` chains the next item).
+
+## Report a tool call whose process exited while descendants hold its
+
+A worker hung 2.5 h on `ssh guest <test>` because guest background
+processes held the session's stderr (try-roguix, 2026-10-10). The worker's
+command is the fix (completion as the event); herdr adds the positive
+fact (845d4fa8, macOS only): kqueue NOTE_FORK/NOTE_EXIT on the worker's
+CLI; when a CLI child exits while processes outside its tree hold the
+write end of a pipe the CLI reads (`proc_pidfdinfo`), herdr records
+`tool_output_held` with the holders, sets `held_output`, wakes `worker
+wait --attention`, adds an inbox row and notifies the user; no kill, no
+timer. Decided by the coordinator 2026-10-11: Linux and Windows observe
+nothing (no unprivileged fork events), accepted; a todo run acks it and
+keeps waiting (the user's notice and the worker log carry it), a typed
+todo event only if a run hangs this way; a child reaped before herdr lists
+it is missed, and a handoff may report a holder twice, both accepted.
