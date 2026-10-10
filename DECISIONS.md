@@ -804,3 +804,14 @@ disabled; "1 of N". Rows, clicks and highlight use the request id, never the
 list position. New client methods `worker.question` and
 `worker.deny_and_stop`; `worker.answer` is now advertised to clients, so its
 shape is frozen. "Adopt into my pane" waits for defined ownership transfer.
+
+## One global rules file for Claude and pi
+
+The user's global agent rules were two drifting copies (~/.claude/CLAUDE.md
+and ~/.pi/agent/AGENTS.md, ~127 differing lines). On 2026-10-10 (user: "a
+link instead of a copy") they became one file: CLAUDE.md took pi's "Git
+ignores" section and two rules, kept its newer text elsewhere (pi's
+"few-line fixes" and pre-headless worker step dropped), marked
+"AskUserQuestion fields" Claude Code only, and ~/.pi/agent/AGENTS.md is a
+symlink to it (pi 1.0.4 follows symlinks; checked in its loader). Dotfiles
+f99948d; the resolved differences were shown to the user first.
