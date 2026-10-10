@@ -11,6 +11,27 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The server calls the review itself: `review_run` as a typed decision [t-qcsmxato]
+  call (first step of the architecture decided by the user 2026-10-10:
+  the item's lifecycle and the queue are server code, the LLM is called
+  only at decision points; rounds 20261010-114832-f497 and 20261010-113822-76ae,
+  sol + MiMo + DeepSeek, and an open-source survey: OpenHands, mini-swe-agent,
+  vibe-kanban, Temporal, Restate, DBOS, Inngest, LangGraph all keep
+  liveness in code; CrewAI's LLM manager is the reported failure). When a
+  run reaches `review`, the driver itself invokes a bounded, stateless
+  `claude -p` call with the task, the worker's final text, the diff, the
+  check results and the item; it must return JSON matching a schema:
+  `approve` (optional note), `retry` (review text), or `escalate`
+  (question for the user, with options); the server checks the schema and
+  that the action is legal in the run's state, binds an approval to the
+  exact commit and base, applies it at once, and records the decision with
+  its id, input digest and output. An invalid or failed call is retried
+  once, then escalated. The coordinator's manual `todo resume --action
+  approve|retry` stays as an override. The call's process exit is the
+  event; a deadline on it is only the provider's (`delay: external
+  deadline`). Tests with a stub model returning each action, an invalid
+  one, and a failure.
+
 - [ ] Closing an item starts the next or says why not (bridge; decided by [t-pvim76jl]
   the user 2026-10-10 after "a coordinator stops because it took nothing;
   what weak architecture"; round 20261010-113822-76ae). `herdr todo resume
@@ -39,6 +60,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   after consecutive failures (pause with the reason), cost bounded by the
   usage gate. The chat session talks with the user and answers
   escalations; it never drives the queue.
+  Revised 2026-10-10 with the architecture decision: the server starts the
+  next item's run itself (no per-item coordinator agent); the task text
+  comes from a `draft_task` decision call, worker questions go to an
+  `answer_question` call, the review to `review_run`; each returns a typed
+  action or escalates. Decision calls run on the server's side with
+  network to the model APIs (the worker sandbox is not involved), so the
+  consult-network capability is no longer a prerequisite here.
 
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
@@ -126,78 +154,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   sockets, the hardest to confine; if an implementation cannot confine
   them, VM items stay unavailable to headless workers there rather than
   falling back silently.
-
-- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
-  2026-10-07: "can't it be compacted or cleared now and then? ask the
-  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
-  per item, state only in files, herdr owns the waits, a thin chat session
-  stays for talking with the user). Slices, one worker each:
-  1. Verified writes: a small tool the coordinator uses for TODO.md and
-     DECISIONS.md edits that fails loudly when the anchor is missing or the
-     text did not land (the 2026-10-07 lost edits), and the rule that a
-     preference said only in chat goes to DECISIONS.md before the turn ends.
-  2. Records a new coordinator can reconcile: each delegated item in
-     TODO.md carries its worker id, worktree, branch, base SHA and the event
-     waited for; open menus listed in TODO.md.
-  3. The per-item coordinator: herdr starts a headless coordinator for the
-     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
-     `herdr worker list`, `herdr-job list`), which ends after committing the
-     item; the next starts on that event. The chat session only answers and
-     queues. The `/todo` skill and the rule change accordingly.
-  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
-  and then? ask the models"). Measured on 2026-10-07: the coordinator made
-  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
-  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
-  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
-  sol `/clear` now and a fresh process later; all three reject `/compact`
-  (a lossy summary, the session already lost track of failed TODO edits
-  after one). Needed first under any choice: TODO/DECISIONS writes read
-  back and verified (that bug), chat-only preferences written to
-  DECISIONS.md before the turn ends, worker/job records a new coordinator
-  can reconcile (worker id, worktree, branch, base SHA, the event waited
-  for), pending menus in TODO.md.
-  Slices 1 and 2 done by 2026-10-09: `scripts/todo_edit.py` and the driver's
-  records (runs, attempts, landings, item history and reconcile, tenures).
-  Slice 3 landed 2026-10-10 (run `r-wjmj7vys`): `herdr todo next [--continue]`
-  and `herdr todo stop` start a fresh headless item coordinator per item (own
-  headless tenure, the allowlist, socket access), record its outcome in the
-  item's history, and advance the chain on its exit until Next is empty, an
-  item escalates, blocks or fails, or `todo stop`. Opt-in; nothing changes
-  until it is used. Decided by the coordinator for slice 4: the chain's
-  environment travels through a live handoff like the runs' (a cold restart
-  stops the chain with an escalation); a worker question in an item
-  coordinator's run goes first to that coordinator (owned by its headless
-  tenure) and to the user only when it escalates; an `escalated` outcome
-  sends a notification. Known: `todo_edit.py` limited to the coordinator's
-  own item only by its prompt; the chat pane does not hold the repository's
-  tenure while a chain runs.
-  Decided by the user 2026-10-10 (after the coordinator ended a turn with
-  "I take the next item" and started nothing, ~1 h idle; round
-  20261010-111014-d7eb: sol (c), MiMo (b)+(a), DeepSeek (a)): `herdr todo
-  next --continue` becomes the default way to work through the queue, so
-  advancing is herdr's job, not the model's. Before that: slice 4 (the
-  chain's environment through a handoff, item coordinators answering their
-  workers' questions first, a notification on escalation), the decision on
-  network for item coordinators' consults, and the `todo` skill change.
-  Then the chat session only answers, queues and starts or stops the chain.
-  Decided by the user 2026-10-10: item coordinators get network to the
-  consult model APIs (api.openai.com, openrouter.ai, api.deepseek.com) as a
-  `net.egress` capability granted per repository through the capability
-  protocol [t-ih3cmtjf], which therefore comes before `todo next` becomes
-  the default.
-
-- [ ] The `todo` skill for `herdr todo next` (proposed by the worker of run [t-ux4n3s3o]
-  `r-wjmj7vys`, 2026-10-10): the chat coordinator does not start workers
-  itself; once approved it runs `herdr todo next --continue` and waits for
-  the chain; it only queues new requests while a chain runs and runs
-  `herdr todo stop` on the user's "stop"; after a stop it reads `herdr
-  history --item` of the last item and asks the "Needs a decision"
-  questions; its tab has no `coordinator` role. Depends on slice 4 and the
-  consult-network decision.
-  Approved by the user 2026-10-10 with the decision on t-o6hf6tr3.
-  Also one line from `herdr report` (2026-10-10): "report a herdr, wait,
-  sandbox or skill step that did not give its promised outcome or a clear
-  next step with `herdr report`, then continue with a recovery path".
 
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
