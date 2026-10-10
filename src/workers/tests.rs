@@ -3288,6 +3288,187 @@ fn workers_started_by_a_coordinators_pane_carry_its_tenure() {
     assert_eq!(stored.owner_coordinator, Some(tenure.coordinator_id));
 }
 
+/// The events recorded under `id` (a worker, run or tenure) of `kind`.
+fn events_of(fixture: &Fixture, id: &str, kind: &str) -> Vec<serde_json::Value> {
+    fixture
+        .supervisor
+        .shared
+        .store
+        .as_ref()
+        .unwrap()
+        .run_events_of(id, kind)
+        .unwrap()
+}
+
+#[test]
+fn obligations_follow_the_tenure_to_the_pane_its_session_resumed_in() {
+    let fixture = Fixture::new("owner-resume");
+    let tenure = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("p1-session"))
+        .unwrap();
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    assert!(obligation_of(&fixture, "p1", &id).is_some());
+
+    // The coordinator's session comes back in another pane: the same
+    // tenure, bound there now, with its worker.
+    let resumed = fixture
+        .supervisor
+        .coordinator_resume("p2", "p1-session", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.coordinator_id, tenure.coordinator_id);
+    assert_eq!(
+        (resumed.pane_id.as_deref(), resumed.epoch, resumed.ended_ms),
+        (Some("p2"), tenure.epoch, None)
+    );
+    let owed = obligation_of(&fixture, "p2", &id).unwrap();
+    assert_eq!(owed.owner_pane_id, "p2");
+    assert!(obligation_of(&fixture, "p1", &id).is_none());
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(
+        (
+            worker.owner_pane_id.as_deref(),
+            worker.owner_coordinator_id.as_deref()
+        ),
+        (Some("p2"), Some(tenure.coordinator_id.as_str()))
+    );
+    let moved = events_of(&fixture, &id, "owner_moved");
+    assert_eq!(moved.len(), 1, "{moved:#?}");
+    // Its bindings: p1 from its start to the resume, then p2.
+    let store = fixture.supervisor.shared.store.as_ref().unwrap();
+    let bindings: Vec<(String, Option<String>, bool)> = store
+        .connection()
+        .prepare(
+            "SELECT pane_id, session_id, to_at IS NULL FROM coordinator_bindings
+             WHERE coordinator_id = ?1 ORDER BY rowid",
+        )
+        .unwrap()
+        .query_map([&tenure.coordinator_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        bindings,
+        [
+            ("p1".to_owned(), Some("p1-session".to_owned()), false),
+            ("p2".to_owned(), Some("p1-session".to_owned()), true),
+        ]
+    );
+    assert_eq!(
+        events_of(&fixture, &tenure.coordinator_id, "coordinator_resumed").len(),
+        1
+    );
+    // Seen again in the same pane, nothing moves.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p2", "p1-session", None)
+            .unwrap(),
+        None
+    );
+
+    // Another agent session in the old pane does not inherit it: no
+    // tenure, no obligations, and its claim is refused while p2 holds it.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p1", "another-session", None)
+            .unwrap(),
+        None
+    );
+    assert!(fixture.supervisor.obligations(Some("p1")).is_empty());
+    let refused = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("another-session"))
+        .unwrap_err();
+    assert_eq!(refused.code(), "coordinator_active");
+    // A worker the old pane starts now is not the tenure's.
+    let later = start_owned(&fixture, "p1", "finish");
+    let later = fixture.wait(&later, WorkerWaitUntil::TurnEnd);
+    assert_eq!(later.owner_coordinator_id, None);
+    assert!(fixture
+        .supervisor
+        .obligations(Some("p2"))
+        .iter()
+        .all(|obligation| obligation.worker_id != later.worker_id));
+}
+
+#[test]
+fn a_session_resumed_after_its_agent_exited_gets_its_orphaned_tenure_back() {
+    let fixture = Fixture::new("owner-reopen");
+    let tenure = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("p1-session"))
+        .unwrap();
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    // `claude --resume` starts after the agent exited, here in another pane.
+    fixture
+        .supervisor
+        .owner_event("p1", OwnerEvent::AgentExited, "");
+    assert!(fixture
+        .supervisor
+        .coordinator_status(None)
+        .unwrap()
+        .is_empty());
+    // A different session finds nothing to resume.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p1", "another-session", None)
+            .unwrap(),
+        None
+    );
+    // `coordinator.start` from the resumed session resumes it.
+    let resumed = fixture
+        .supervisor
+        .coordinator_start("/repo", "p3", Some("p1-session"))
+        .unwrap();
+    assert_eq!(resumed.coordinator_id, tenure.coordinator_id);
+    assert_eq!(
+        (resumed.ended_ms, resumed.end_reason, resumed.epoch),
+        (None, None, tenure.epoch)
+    );
+    let resumed_events = events_of(&fixture, &tenure.coordinator_id, "coordinator_resumed");
+    assert_eq!(resumed_events[0]["reopened"], true);
+    let owed = obligation_of(&fixture, "p3", &id).unwrap();
+    assert_eq!(owed.owner_pane_id, "p3");
+
+    // Once the repository has another coordinator, an orphaned tenure
+    // stays ended.
+    fixture
+        .supervisor
+        .owner_event("p3", OwnerEvent::PaneClosed, "");
+    let next = fixture
+        .supervisor
+        .coordinator_start("/repo", "p4", Some("p4-session"))
+        .unwrap();
+    assert_ne!(next.coordinator_id, tenure.coordinator_id);
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p5", "p1-session", None)
+            .unwrap(),
+        None
+    );
+    // Nor after the next one ended: it is not the repository's latest.
+    fixture
+        .supervisor
+        .coordinator_end(&next.coordinator_id, "ended", None)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p5", "p1-session", None)
+            .unwrap(),
+        None
+    );
+}
+
 fn obligation_of(fixture: &Fixture, pane: &str, id: &str) -> Option<WorkerObligation> {
     fixture
         .supervisor
@@ -6828,6 +7009,192 @@ mod todo_runs {
             .supervisor
             .obligations(Some("p-coordinator"))
             .is_empty());
+        assert!(run_events(&fixture, &run.run_id, "run_owner_taken").is_empty());
+    }
+
+    #[test]
+    fn a_handoff_moves_the_tenures_item_run_and_worker_to_the_next_tenure() {
+        let fixture = todo_repo("todo-handoff");
+        let repo = fixture.repo.display().to_string();
+        let tenure = fixture
+            .supervisor
+            .coordinator_start(&repo, "p-coordinator", Some("s-coordinator"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        // The run's item is the tenure's current item.
+        let status = fixture.supervisor.coordinator_status(Some(&repo)).unwrap();
+        assert_eq!(status[0].item.as_deref(), Some(ITEM));
+        let (review, waiting) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        let worker_id = waiting.worker_id.clone().unwrap();
+        assert_eq!(
+            fixture.supervisor.obligations(Some("p-coordinator")).len(),
+            1
+        );
+
+        // A pane that coordinates already cannot take it, nor can its own.
+        fixture
+            .supervisor
+            .coordinator_start("/elsewhere", "p-busy", None)
+            .unwrap();
+        for (to, code) in [
+            ("p-busy", "coordinator_active"),
+            ("p-coordinator", "invalid_request"),
+        ] {
+            let refused = fixture
+                .supervisor
+                .coordinator_handoff(None, Some("p-coordinator"), to, None, None)
+                .unwrap_err();
+            assert_eq!(refused.code(), code, "{refused}");
+        }
+        assert_eq!(
+            fixture
+                .supervisor
+                .coordinator_handoff(None, Some("p-nobody"), "p-next", None, None)
+                .unwrap_err()
+                .code(),
+            "coordinator_not_found"
+        );
+
+        let next = fixture
+            .supervisor
+            .coordinator_handoff(
+                None,
+                Some("p-coordinator"),
+                "p-next",
+                Some("s-next"),
+                Some("ws-next"),
+            )
+            .unwrap();
+        assert_ne!(next.coordinator_id, tenure.coordinator_id);
+        assert_eq!(next.epoch, tenure.epoch + 1);
+        assert_eq!(
+            (
+                next.pane_id.as_deref(),
+                next.session_id.as_deref(),
+                next.item.as_deref()
+            ),
+            (Some("p-next"), Some("s-next"), Some(ITEM))
+        );
+        let store = fixture.supervisor.shared.store.as_ref().unwrap();
+        let old = store.coordinator(&tenure.coordinator_id).unwrap().unwrap();
+        assert_eq!(
+            old.end_reason.as_deref(),
+            Some(crate::workers::coordinators::HANDED_OFF)
+        );
+        let handoff = run_events(&fixture, &tenure.coordinator_id, "handoff");
+        assert_eq!(handoff.len(), 1, "{handoff:#?}");
+        assert_eq!(
+            handoff[0]["to_coordinator_id"],
+            next.coordinator_id.as_str()
+        );
+        assert_eq!(handoff[0]["epoch"], next.epoch);
+        // The worker and its obligation, and the run, are the next
+        // tenure's in its pane.
+        let worker = fixture.supervisor.status(&worker_id).unwrap();
+        assert_eq!(
+            (
+                worker.owner_pane_id.as_deref(),
+                worker.owner_session_id.as_deref(),
+                worker.owner_coordinator_id.as_deref()
+            ),
+            (
+                Some("p-next"),
+                Some("s-next"),
+                Some(next.coordinator_id.as_str())
+            )
+        );
+        assert!(fixture
+            .supervisor
+            .obligations(Some("p-coordinator"))
+            .is_empty());
+        assert_eq!(fixture.supervisor.obligations(Some("p-next")).len(), 1);
+        let moved = run_events(&fixture, &run.run_id, "run_owner_moved");
+        assert_eq!(moved.len(), 1, "{moved:#?}");
+        assert_eq!(moved[0]["to_workspace"], "ws-next");
+        assert_eq!(moved[0]["to_coordinator"], next.coordinator_id.as_str());
+
+        // The old pane cannot resume the run any more; the next one can,
+        // and the run's end clears the tenure's item.
+        let refused = fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+                "p-coordinator",
+                "ws-coordinator",
+            ))
+            .unwrap_err();
+        assert_eq!(refused.code(), "run_owned_elsewhere", "{refused}");
+        fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+                "p-next",
+                "ws-next",
+            ))
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let status = fixture.supervisor.coordinator_status(Some(&repo)).unwrap();
+        assert_eq!(status[0].coordinator_id, next.coordinator_id);
+        assert_eq!(status[0].item, None);
+        let items = run_events(&fixture, &next.coordinator_id, "coordinator_item");
+        assert_eq!(items.len(), 2, "{items:#?}");
+        assert_eq!(items[1]["item"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_resumed_coordinator_resumes_its_run_from_its_new_pane() {
+        let fixture = todo_repo("todo-resumed-owner");
+        let repo = fixture.repo.display().to_string();
+        fixture
+            .supervisor
+            .coordinator_start(&repo, "p-coordinator", Some("s-coordinator"))
+            .unwrap();
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        fixture
+            .supervisor
+            .coordinator_resume("p-resumed", "s-coordinator", Some("ws-resumed"))
+            .unwrap()
+            .unwrap();
+        let moved = run_events(&fixture, &run.run_id, "run_owner_moved");
+        assert_eq!(moved[0]["to_pane"], "p-resumed");
+        // The driver's own writes keep the moved owner.
+        fixture
+            .supervisor
+            .todo_resume(resume_from(
+                &run.run_id,
+                review.event_id,
+                TodoAction::Approve,
+                "p-resumed",
+                "ws-resumed",
+            ))
+            .unwrap();
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let stored = fixture
+            .supervisor
+            .shared
+            .store
+            .as_ref()
+            .unwrap()
+            .run(&run.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.owner_pane.as_deref(), Some("p-resumed"));
+        assert_eq!(stored.workspace.as_deref(), Some("ws-resumed"));
         assert!(run_events(&fixture, &run.run_id, "run_owner_taken").is_empty());
     }
 

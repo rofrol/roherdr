@@ -1636,6 +1636,9 @@ impl App {
         });
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
+        if applied && session_ref.is_some() {
+            self.resume_coordinator_in(ws_idx, pane_id);
+        }
         self.report_agent_resume(
             id,
             ws_idx,

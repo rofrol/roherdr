@@ -33,6 +33,8 @@ impl std::fmt::Display for ShutdownReason {
 pub(crate) struct ServerStop {
     flag: Arc<AtomicBool>,
     reason: Arc<Mutex<Option<ShutdownReason>>>,
+    /// Woken by every request, so the event loop runs its quit check.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl ServerStop {
@@ -49,6 +51,13 @@ impl ServerStop {
             recorded.get_or_insert(reason);
         }
         self.flag.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
+    /// Returns once a stop was requested since the last return, including
+    /// one requested before the first call.
+    pub(crate) async fn requested(&self) {
+        self.wake.notified().await;
     }
 
     pub(crate) fn take_reason(&self) -> Option<ShutdownReason> {
@@ -71,6 +80,19 @@ mod tests {
         assert!(stop.is_requested());
         assert_eq!(stop.take_reason(), Some(ShutdownReason::HostShutdown));
         assert_eq!(stop.take_reason(), None);
+    }
+
+    #[test]
+    fn a_request_before_the_wait_still_wakes_it() {
+        // The signal handlers route to the stop before the event loop
+        // waits on it: an early request must not be lost.
+        let stop = ServerStop::default();
+        stop.request(ShutdownReason::HostShutdown);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        rt.block_on(stop.requested());
+        assert!(stop.is_requested());
     }
 
     #[test]

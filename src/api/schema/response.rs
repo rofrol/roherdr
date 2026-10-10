@@ -133,7 +133,8 @@ pub enum ResponseResult {
         event: TodoRunEvent,
         run: TodoRunInfo,
     },
-    /// `coordinator.start`'s and `coordinator.end`'s reply.
+    /// `coordinator.start`'s, `coordinator.end`'s and
+    /// `coordinator.handoff`'s reply.
     Coordinator {
         coordinator: CoordinatorInfo,
     },

@@ -36,6 +36,12 @@ pub fn run_server() -> io::Result<()> {
     let event_hub = api::EventHub::default();
     let server_stop = crate::server::shutdown::ServerStop::default();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(io::Error::other)?;
+    install_stop_signals(&rt, &server_stop);
+
     // Start the JSON API socket server.
     let _api_server = match api::start_server_with_stop_control(
         api_tx.clone(),
@@ -50,11 +56,6 @@ pub fn run_server() -> io::Result<()> {
         }
         Err(err) => return Err(err),
     };
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(io::Error::other)?;
 
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
@@ -98,6 +99,19 @@ pub fn run_server() -> io::Result<()> {
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::logging::shutdown("server");
     result
+}
+
+/// Routes SIGINT and SIGTERM to `server_stop` (and logs SIGHUP) before the
+/// API socket listens. A client that finds the socket may signal the server
+/// at once, while the app is still starting; without a handler yet, the
+/// signal's default action would end the process without a shutdown or its
+/// log line. The event loop acts on the request once it runs.
+fn install_stop_signals(rt: &tokio::runtime::Runtime, server_stop: &ServerStop) {
+    let _entered = rt.enter();
+    let server_stop = server_stop.clone();
+    crate::platform::spawn_server_signal_monitor(move |signal| {
+        server_stop.request(ShutdownReason::Signal(signal));
+    });
 }
 
 fn seed_startup_workspace_if_empty(app: &mut app::App) {
@@ -177,6 +191,9 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         }
         wait_for_old_public_sockets_to_close(Duration::from_secs(5))?;
 
+        // Not earlier: a signal during the import still ends this process,
+        // and the old server keeps its panes.
+        install_stop_signals(&rt, &server_stop);
         let api_server = api::start_server_with_stop_control(
             api_tx.clone(),
             event_hub.clone(),

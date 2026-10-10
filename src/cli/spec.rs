@@ -418,6 +418,12 @@ fn coordinator_command() -> Command {
                 .about("List the active coordination tenures")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
         )
+        .subcommand(
+            Command::new("handoff")
+                .about("Hand this pane's coordination tenure to another pane")
+                .arg(option("to", "PANE"))
+                .arg(option("id", "COORDINATOR_ID")),
+        )
 }
 
 fn todo_command() -> Command {

@@ -167,6 +167,10 @@ pub enum Method {
     /// The active coordination tenures.
     #[serde(rename = "coordinator.status")]
     CoordinatorStatus(CoordinatorStatusParams),
+    /// Hands a repository's coordination to another pane: the next tenure,
+    /// which takes over the workers and runs.
+    #[serde(rename = "coordinator.handoff")]
+    CoordinatorHandoff(CoordinatorHandoffParams),
     /// Records one exception to a coordinator tab's command allowlist and
     /// notifies the user.
     #[serde(rename = "coordinator.record_override")]

@@ -694,6 +694,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::CoordinatorStart(_) => "coordinator.start",
         Method::CoordinatorEnd(_) => "coordinator.end",
         Method::CoordinatorStatus(_) => "coordinator.status",
+        Method::CoordinatorHandoff(_) => "coordinator.handoff",
         Method::CoordinatorRecordOverride(_) => "coordinator.record_override",
         Method::HistoryOverrides(_) => "history.overrides",
         Method::NotificationShow(_) => "notification.show",
