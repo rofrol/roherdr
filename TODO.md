@@ -11,6 +11,56 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
+  screenshot: "this circle is grey, it looks as if the coordinator is not
+  working"). Its only running job is `herdr agent wait <worker pane>`: no
+  output and no CPU, so after 5 minutes herdr-job reports it `--activity
+  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
+  the uncommitted idle-mark change lands), while the worker it waits on
+  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
+  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
+  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
+  state instead of its own CPU and output.
+  Seen again 2026-10-10 (user, screenshot of the roguix-vps coordinator: "why
+  does it have a green ring and look as if it is not working? ask the models").
+  Cause checked by the coordinator: it waits in a Claude background shell
+  `herdr-job wait <job>` on a job in its worker's tab; `herdr-bg-badge` skips
+  every `herdr-job wait` assuming the same tab's jobs token counts that job,
+  which is false across tabs, so the row shows nothing running. Round
+  20261010-025204-a255 (sol, MiMo, DeepSeek): derive the wait from herdr's
+  records, not from parsing commands: `herdr-job wait` records a wait edge
+  (waiting pane, job id, the job's tab and target), the sidebar shows the
+  waiting row as busy while the target lives ("waiting on <job or worker>"),
+  counted once by job id; the agent status stays idle (no new variant). Approved
+  by the user's request; moved to the top.
+
+- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
+  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
+  header-arrows` and its Bash question: "a headless worker's entry cannot
+  be clicked; ask the models").
+  Checked: the `?` row of a worker question has no pane, tab or space
+  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
+  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
+  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
+  style bound to the request id (not the worker): worker name and task, the
+  full command (monospace, newlines kept, scrollable, never truncated: an
+  approval must not rest on a preview) or the question with its options as
+  buttons; Allow once / Deny (optional deny message) / View log; no default
+  action on Enter. If the request is answered elsewhere or the worker exits
+  while it is open, the dialog shows that and disables its buttons; the
+  server rejects stale request ids. Several pending requests: "1 of 3", the
+  next opens after the answer. No "allow this pattern" for now (both: a
+  single command does not show a safe pattern). Keyboard works too.
+  Seen again 2026-10-10 (user, screenshot: worker w79 of job-seeker in the
+  `?` list, plain black, not clickable; it was escalated because its
+  coordinator's pane closed). Round 20261010-025204-a255: the request-id
+  dialog stays right; add, for an escalated question: who owns it and why it
+  was escalated, "Stop worker" (destructive, confirmed, resolving the pending
+  request), and "Open owner" when the owner pane lives; "adopt into my pane"
+  later, once ownership transfer is defined (tenure handoff exists). Until the
+  dialog lands, the row must not look dead: a click opens a read-only view
+  (command, log) at least. Moved to the top.
+
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
   coordinating at T? ask the models"). Today: no; workers store only
@@ -299,17 +349,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   cherry-pick), and to propose registering its checks for `herdr todo run`
   to the user. Left here: the pane-worker fixes 4, 5, 7, 8, 9.
 
-- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
-  screenshot: "this circle is grey, it looks as if the coordinator is not
-  working"). Its only running job is `herdr agent wait <worker pane>`: no
-  output and no CPU, so after 5 minutes herdr-job reports it `--activity
-  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
-  the uncommitted idle-mark change lands), while the worker it waits on
-  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
-  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
-  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
-  state instead of its own CPU and output.
-
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
   wait failed at once: "how is it armed? ask the models"). Round
@@ -409,24 +448,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     rules than for Rust"): how workers build (worktree or not, a shared
     cache) depends on the repository; it belongs in each repository's
     AGENTS.md, the global rule stays language-neutral.
-
-- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
-  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
-  header-arrows` and its Bash question: "a headless worker's entry cannot
-  be clicked; ask the models").
-  Checked: the `?` row of a worker question has no pane, tab or space
-  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
-  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
-  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
-  style bound to the request id (not the worker): worker name and task, the
-  full command (monospace, newlines kept, scrollable, never truncated: an
-  approval must not rest on a preview) or the question with its options as
-  buttons; Allow once / Deny (optional deny message) / View log; no default
-  action on Enter. If the request is answered elsewhere or the worker exits
-  while it is open, the dialog shows that and disables its buttons; the
-  server rejects stale request ids. Several pending requests: "1 of 3", the
-  next opens after the answer. No "allow this pattern" for now (both: a
-  single command does not show a safe pattern). Keyboard works too.
 
 - [ ] A headless worker's line shows how long it has been working and which [t-jfo7bcvb]
   TODO task it got (user, 2026-10-08: "I don't see how long a given worker
