@@ -31,6 +31,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   event; a deadline on it is only the provider's (`delay: external
   deadline`). Tests with a stub model returning each action, an invalid
   one, and a failure.
+  Slice 1 done 2026-10-10 (run `r-24ejgpas`): `herdr todo run --auto-review`
+  reviews each `review` event with a bounded `claude -p` typed decision
+  (approve, retry, escalate), validated, bound to commit and base, recorded
+  before it is applied (reused after a crash), retried once then escalated;
+  a manual resume wins. Decided by the coordinator for the next slice:
+  run `verify` (the registered checks) before the model's review, so it
+  judges real results; an escalation also enters the user's `?` list; a
+  review event stays visible to `todo wait` even when its store write
+  failed (no hidden events); the model setting can come later. Next:
+  `draft_task` and `answer_question` as decision calls.
 
 - [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
   (follows from the bridge, 2026-10-10; small, text only): herdr's
