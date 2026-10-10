@@ -1188,3 +1188,33 @@ back to `TODO.md` when it becomes next.
     such failure (one unrelated `local-online` timeout). The upstream rules
     allow an issue only for a bug reproduced on the reported version, so
     file it only after capturing the `>` screen there.
+
+- [ ] Durable-execution and agent-orchestration projects to test or study
+  later (user, 2026-10-10: "add the found projects to the TODO for later").
+  Found by a web survey (HN, GitHub; repos verified with gh on
+  2026-10-10) and deferred from the first hands-on test set because they
+  share a recovery contract with a chosen project (round
+  20261010-121933-62f8). Each joins a test only for a specific unanswered
+  question:
+  - replay of a history/journal: Restate (journal, durable promises, Rust
+    core), Obelisk (obeli-sk/obelisk, Rust + SQLite + WASM, AGPL-3.0),
+    Inngest (step memoization, event-resumed waits), microsoft/duroxide
+    (MIT, Rust + SQLite, event-sourced replay), Resonate (durable
+    promises, Rust server);
+  - checkpoints without replay: LangGraph (SQLite checkpointer,
+    `interrupt()`), Trigora (trigora-dev/trigora, continuation
+    checkpointing, its own recovery benchmark);
+  - transactional database steps: microsoft/pg_durable (step graphs inside
+    Postgres), OpenWorkflow (openworkflowdev/openworkflow, SQLite or
+    Postgres, workers coordinate through the database), durare (Rust,
+    DBOS-compatible library);
+  - agent-session tools close to herdr: mjolnir (BrokkAi/mjolnir,
+    GPL-3.0, Rust, journals and checkpoints for Claude Code and Codex),
+    coven (OpenCoven/coven, Rust, PTY sessions in SQLite), acpus
+    (kelvinschen/acpus, `runs resume` and `runs retry` for ACP agents),
+    Smithers (smithersai/smithers, SQLite agent workflows);
+  - lower priority: julep (agents on Temporal), Rivet (actors with
+    SQLite), everruns, kassette, Duron, iopsystems/durable, underway,
+    Dapr Agents, Vercel Workflow, Trigger.dev, LittleHorse, Hatchet,
+    Absurd, vibe-kanban and mini-swe-agent (dropped from the first test:
+    no durable resume).
