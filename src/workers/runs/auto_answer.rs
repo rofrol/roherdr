@@ -731,10 +731,31 @@ impl WorkerSupervisor {
                 && run.info.status == TodoRunStatus::Waiting
                 && run.info.worker_id.as_deref() == Some(worker_id)
             {
+                #[cfg(test)]
+                if settles_inline(&run.info.repo) {
+                    self.drive(&run.info.run_id);
+                    continue;
+                }
                 self.spawn_driver(&run.info.run_id);
             }
         }
     }
+}
+
+/// Test only: the repositories whose runs [`WorkerSupervisor::question_settled`]
+/// drives in the answering thread instead of a new one, so the driver it
+/// wakes always gets to the run before the answering call goes on.
+#[cfg(test)]
+static SETTLE_INLINE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(all(test, unix))]
+pub(crate) fn settle_inline(repo: &str) {
+    super::lock(&SETTLE_INLINE).push(repo.to_owned());
+}
+
+#[cfg(test)]
+fn settles_inline(repo: &str) -> bool {
+    super::lock(&SETTLE_INLINE).iter().any(|at| at == repo)
 }
 
 /// The choices an answer the model could not settle leaves the user.

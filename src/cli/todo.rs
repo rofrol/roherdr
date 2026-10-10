@@ -84,15 +84,19 @@ const USAGE: &str = "usage:
                              retry-install|skip-install|retry-todo|skip-todo|
                              retry-push|abort
                     [--task FILE [--ignore-usage]]
-                    [--note FILE | --close FILE (--next ITEM --next-task FILE
+                    [--note FILE | --keep-open |
+                     --close FILE (--next ITEM --next-task FILE
                        --next-message SUBJECT --next-paths GLOB...
                        [--next-check NAME...] | --stop-reason TEXT)]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
       --close needs --next or --stop-reason, unless queue mode is on (todo
-      queue), where it takes neither: the queue starts the next item. With
-      --next, once this run is
+      queue), where it takes neither: the queue starts the next item. In
+      queue mode (a run the queue started, or any run while the queue is on)
+      approve without --note or --close closes the item as the queue's own
+      review does (a section of DECISIONS.md), so the queue never runs it
+      again; --keep-open leaves it open. With --next, once this run is
       done the driver starts ITEM's run itself (as todo run with those
       parameters, this run's checks unless --next-check names others, owned
       by this run's owner); a refused start (preflight, usage gate) is a
@@ -168,10 +172,14 @@ const USAGE: &str = "usage:
       usage gate admits, the server starts the top item of \"Next, in
       order\" (TODO.md as master has it) that is not blocked as todo run
       --draft would, owned by this pane, its checks, install and push with
-      this shell's environment (kept in memory only). It looks again only on
-      its own events: a run ended, an escalation was answered, the server
-      started, the mode was set; never on a timer. A queue run that its own
-      review approves closes its item. An item the queue ran 2 times with the
+      this shell's environment (kept in memory only; after a cold restart the
+      queue pauses with \"environment needed\" and a notification until on is
+      run again from a shell). It looks again only on its own events: a run
+      ended, an escalation was answered, the server started, the mode was
+      set, and, while the usage gate stops it, the usage poller published a
+      new reading; never on a timer. An approval of a queue run (its own
+      review's, or todo resume's without --keep-open) closes its item. An
+      item the queue ran 2 times with the
       same text is blocked until its text changes; 3 consecutive queue runs
       that ended blocked or aborted pause the queue (the circuit breaker),
       with a notification. on also clears such a pause. pause [--reason
@@ -564,6 +572,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         }
         "resume" => {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
+            let (keep_open, rest) = take_switch(&rest, "--keep-open")?;
             let (event, rest) = take_string_option(&rest, "--event")?;
             let (action, rest) = take_string_option(&rest, "--action")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -618,6 +627,12 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
             if note.is_some() && close.is_some() {
                 return Err("--note and --close exclude each other".into());
             }
+            if keep_open && action != TodoAction::Approve {
+                return Err("only --action approve takes --keep-open".into());
+            }
+            if keep_open && close.is_some() {
+                return Err("--keep-open and --close exclude each other".into());
+            }
             let next = next_run(
                 close.is_some(),
                 next_item,
@@ -657,6 +672,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 caller_pane_id: pane,
                 caller_workspace_id: super::target::caller_workspace_id(),
                 ignore_usage,
+                keep_open,
             })
         }
         "status" => Method::TodoStatus(TodoRunTarget {
@@ -975,9 +991,24 @@ mod tests {
         };
         assert_eq!(params.note.as_deref(), Some("Done by w1.\n"));
         assert_eq!(params.close, None);
+        assert!(!params.keep_open);
+        let Ok(Some(Method::TodoResume(params))) = parse(&args(&[
+            "resume",
+            "r-abcd2345",
+            "--event",
+            "9",
+            "--action",
+            "approve",
+            "--keep-open",
+        ])) else {
+            panic!("approve --keep-open did not parse");
+        };
+        assert!(params.keep_open);
         for bad in [
             &["--action", "approve", "--note", &note, "--close", &note][..],
             &["--action", "abort", "--note", &note][..],
+            &["--action", "abort", "--keep-open"][..],
+            &["--action", "approve", "--keep-open", "--close", &note][..],
         ] {
             let mut words = vec!["resume", "r-abcd2345", "--event", "9"];
             words.extend_from_slice(bad);

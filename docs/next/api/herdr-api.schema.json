@@ -5927,6 +5927,10 @@
               "description": "With `retry`: start the next attempt even while the usage gate\nrefuses, on the user's word; recorded in the run's events.",
               "type": "boolean"
             },
+            "keep_open": {
+              "description": "With `approve` in queue mode (a run the queue started, or any run\nwhile the repository's queue is on): leave the item open. Without\nit, and without `note` or `close`, the approval closes the item as\nthe queue's own review does (a `DECISIONS.md` section), so the\nqueue never runs an approved item again. Excludes `close`.",
+              "type": "boolean"
+            },
             "message": {
               "description": "With `answer`: the message the model gets with a denial.",
               "type": [

@@ -5,14 +5,17 @@
 //! starts the top item of "Next, in order" that is not blocked as
 //! `todo.draft_run` would: the task drafted, reviewed and answered by typed
 //! decision calls ([`super::auto_draft`], [`super::auto_review`],
-//! [`super::auto_answer`]). A queue run whose own review approves it closes
-//! the item, so the queue moves on.
+//! [`super::auto_answer`]). An approval in queue mode, the run's own review's
+//! or a coordinator's `todo resume --action approve` (unless it keeps the
+//! item open), closes the item, so the queue moves on and never runs an
+//! approved item again.
 //!
 //! It looks again only on herdr's own events, never on a timer: a run of the
 //! repository ended (done, blocked or aborted), an escalation was answered,
-//! the server started, the mode was set. `TODO.md` is read from `master` at
-//! each of them (git's own state, not a watched file), and the items by
-//! their stable ids.
+//! the server started, the mode was set, and, for a queue the usage gate
+//! stopped, the usage poller published a new reading. `TODO.md` is read
+//! from `master` at each of them (git's own state, not a watched file), and
+//! the items by their stable ids.
 //!
 //! Guarantees:
 //!
@@ -31,8 +34,11 @@
 //! - the cost is bounded by the usage gate, read at every start.
 //!
 //! The checks, install and push of the queue's runs use the environment the
-//! last `queue on` sent, kept in memory only (as a run's): after a restart a
-//! run's check is `unavailable` until a `todo resume` sends one again.
+//! last `queue on` sent, kept in memory only (as a run's) and handed over in
+//! a live handoff. A server that started cold has none: the queue then
+//! pauses with [`ENV_NEEDED`] and a notification instead of starting a run
+//! whose checks would be `unavailable`; `queue on` from the user's shell
+//! sends it again.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -56,6 +62,10 @@ pub(crate) const ITEM_ATTEMPTS: usize = 2;
 /// Consecutive queue runs that ended blocked or aborted after which the
 /// queue pauses itself.
 pub(crate) const BREAKER: u32 = 3;
+/// Why a queue that is on but has no environment in this server's memory
+/// (a cold restart) pauses instead of starting runs whose checks, install
+/// and push would be unavailable.
+pub(crate) const ENV_NEEDED: &str = "environment needed: run `herdr todo queue on` from your shell";
 /// The prefix a queue's environment carries in a live handoff's payload,
 /// beside the runs' (whose keys are run ids, `r-...`).
 #[cfg(unix)]
@@ -152,6 +162,16 @@ static SKIP_EVENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[cfg(all(test, unix))]
 pub(crate) fn skip_next_event(repo: &str) {
     lock(&SKIP_EVENT).push(repo.to_owned());
+}
+
+/// Test only: this process's memory of the queue's environment, as a server
+/// that started cold (`None`) or got it from `queue on` has it.
+#[cfg(all(test, unix))]
+pub(crate) fn set_env_for_test(repo: &str, env: Option<HashMap<String, String>>) {
+    match env {
+        Some(env) => lock(&QUEUE_ENV).insert(repo.to_owned(), env),
+        None => lock(&QUEUE_ENV).remove(repo),
+    };
 }
 
 #[cfg(test)]
@@ -528,6 +548,11 @@ impl WorkerSupervisor {
             );
             return self.queue_record(repo, TodoQueueStatus::Blocked, &reason);
         };
+        // A server that started cold has no environment for the checks,
+        // install and push: a run would only fail them as unavailable.
+        let Some(env) = lock(&QUEUE_ENV).get(repo).cloned() else {
+            return self.queue_pause_for_env(repo);
+        };
         let start = QueueStart {
             token: queue.token,
             item_digest,
@@ -542,7 +567,7 @@ impl WorkerSupervisor {
             owner_pane_id: queue.owner_pane.clone(),
             owner_session_id: queue.owner_session.clone(),
             workspace_id: queue.workspace.clone(),
-            env: lock(&QUEUE_ENV).get(repo).cloned(),
+            env: Some(env),
             ignore_usage: false,
             auto_review: true,
             auto_answer: true,
@@ -559,6 +584,52 @@ impl WorkerSupervisor {
                 let reason = format!("the start of {item} was refused: {refused}");
                 self.queue_record(repo, TodoQueueStatus::Blocked, &reason)
             }
+        }
+    }
+
+    /// Pauses the queue, which is on but has no environment in this
+    /// server's memory, with [`ENV_NEEDED`] and a notification; a queue
+    /// paused meanwhile stays as it is.
+    fn queue_pause_for_env(&self, repo: &str) -> Result<QueueStep, WorkerError> {
+        let at = now_ms();
+        let paused = self
+            .run_store()?
+            .transaction(|tx| {
+                let on = tx.queue(repo)?.is_some_and(|queue| queue.mode == "on");
+                if on {
+                    tx.queue_paused(repo, ENV_NEEDED, at)?;
+                }
+                Ok(on)
+            })
+            .map_err(store_error)?;
+        if paused {
+            super::announce();
+            crate::workers::notify_user(crate::workers::UserNotice {
+                title: format!("TODO queue of {repo} paused"),
+                body: ENV_NEEDED.to_owned(),
+            });
+        }
+        Ok(QueueStep::Idle)
+    }
+
+    /// The usage poller published a new reading: each queue that is on and
+    /// whose last evaluation stopped at the usage gate looks again (its
+    /// start asks the provider itself, as every start does).
+    pub(crate) fn queues_after_usage_reading(&self) {
+        let queues = match self.run_store().map(|store| store.queues()) {
+            Ok(Ok(queues)) => queues,
+            Ok(Err(error)) => {
+                warn!(%error, "cannot read the todo queues");
+                return;
+            }
+            Err(_) => return,
+        };
+        let gated = status_name(TodoQueueStatus::UsageGate);
+        for queue in queues
+            .into_iter()
+            .filter(|queue| queue.mode == "on" && queue.status.as_deref() == Some(&gated))
+        {
+            self.queue_event(&queue.repo);
         }
     }
 
@@ -676,16 +747,16 @@ impl WorkerSupervisor {
     }
 }
 
-/// The closing decision a queue run's own approval records: the item leaves
+/// The closing decision an approval in queue mode records, `by` the one who
+/// approved (the queue's own review, or the coordinator): the item leaves
 /// "Next, in order" and `DECISIONS.md` gets what landed, titled by the item.
-pub(super) fn queue_close(run: &Run, commit: &str, note: Option<&str>) -> String {
+pub(super) fn queue_close(run: &Run, commit: Option<&str>, note: Option<&str>, by: &str) -> String {
+    let commit = commit
+        .map(|commit| format!(" ({})", &commit[..commit.len().min(12)]))
+        .unwrap_or_default();
     let mut text = format!(
-        "Landed by herdr's TODO queue: run {}, attempt {}, `{}` ({}), approved by the server's \
-         review.",
-        run.info.run_id,
-        run.info.attempt,
-        run.info.message,
-        &commit[..commit.len().min(12)]
+        "Landed by herdr's TODO queue: run {}, attempt {}, `{}`{commit}, approved by {by}.",
+        run.info.run_id, run.info.attempt, run.info.message,
     );
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
         text.push_str(&format!("\n\nReview note: {note}"));
