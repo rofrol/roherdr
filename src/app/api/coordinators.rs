@@ -170,6 +170,44 @@ impl App {
         }
     }
 
+    /// The pane's agent cleared its session (`/clear`) from `from_session`
+    /// into the one the pane has now: a tenure bound to the pane keeps
+    /// coordinating with the new session
+    /// ([`WorkerSupervisor::coordinator_session_cleared`]).
+    pub(super) fn clear_coordinator_session_in(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        from_session: Option<&str>,
+    ) {
+        let Some(coordinators) = crate::workers::coordinators() else {
+            return;
+        };
+        let Some(pane) = self.pane_metadata(ws_idx, pane_id) else {
+            return;
+        };
+        let Some(session) = pane.agent_session.map(|session| session.value) else {
+            return;
+        };
+        if from_session == Some(session.as_str()) {
+            return;
+        }
+        match coordinators.coordinator_session_cleared(
+            &pane.pane_id,
+            from_session,
+            &session,
+            Some(&pane.workspace_id),
+        ) {
+            Ok(Some(_)) => self.sync_coordinator_roles(),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                %error,
+                pane_id = pane.pane_id,
+                "cannot move the coordination tenure to the cleared agent session"
+            ),
+        }
+    }
+
     pub(super) fn handle_coordinator_status(
         &mut self,
         id: String,
@@ -544,6 +582,59 @@ mod tests {
             },
         );
         assert!(status.contains("\"end_reason\":\"orphaned\""), "{status}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn report_session(app: &mut App, pane: &str, seq: u64, session: &str, start: &str) {
+        let response = app.handle_pane_report_agent_session(
+            "req".into(),
+            crate::api::schema::PaneReportAgentSessionParams {
+                pane_id: pane.to_owned(),
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                seq: Some(seq),
+                agent_session_id: Some(session.to_owned()),
+                agent_session_path: None,
+                session_start_source: Some(start.to_owned()),
+                resume_argv: None,
+                turn_reports: false,
+            },
+        );
+        serde_json::from_str::<SuccessResponse>(&response).unwrap();
+    }
+
+    #[test]
+    fn a_cleared_coordinator_session_keeps_its_tenure() {
+        let (mut app, root) = app("clear");
+        let coordinator = pane_of(&app, 1);
+        report_session(&mut app, &coordinator, 1, "s-before", "startup");
+        set_role(&mut app, 1, Some(TabRole::Coordinator)).unwrap();
+        let tenure = active(&app).remove(0);
+        assert_eq!(tenure.session_id.as_deref(), Some("s-before"));
+
+        // `/clear` in the coordinator's pane: the same tenure, now with the
+        // new session, and the tab keeps its crown.
+        report_session(&mut app, &coordinator, 2, "s-after", "clear");
+        let cleared = active(&app);
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].coordinator_id, tenure.coordinator_id);
+        assert_eq!(
+            (
+                cleared[0].pane_id.as_deref(),
+                cleared[0].session_id.as_deref()
+            ),
+            (Some(coordinator.as_str()), Some("s-after"))
+        );
+        assert_eq!(roles(&app), [None, Some(TabRole::Coordinator)]);
+
+        // `claude --resume s-after` in the other pane finds the tenure.
+        let other = pane_of(&app, 0);
+        report_session(&mut app, &other, 1, "s-after", "resume");
+        let resumed = active(&app);
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].coordinator_id, tenure.coordinator_id);
+        assert_eq!(resumed[0].pane_id.as_deref(), Some(other.as_str()));
+        assert_eq!(roles(&app), [Some(TabRole::Coordinator), None]);
         let _ = std::fs::remove_dir_all(root);
     }
 
