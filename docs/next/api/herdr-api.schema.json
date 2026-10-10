@@ -5783,6 +5783,81 @@
           ],
           "type": "object"
         },
+        "TodoQueueMode": {
+          "description": "A repository's queue mode: whether the server starts the top runnable\nitem of \"Next, in order\" by itself.",
+          "enum": [
+            "on",
+            "paused",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "TodoQueueSetParams": {
+          "description": "`todo.queue_set`: turns a repository's queue mode on or pauses it. On,\nthe server starts the top item of \"Next, in order\" that is not blocked\nas `todo.draft_run` would whenever no run of the repository is active, no\nescalation is pending and the usage gate admits; it looks again only on\nits own events: a run ended (done, blocked or aborted), an escalation was\nanswered, the server started, the mode was set. Turning it on also clears\na pause of the circuit breaker.",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository.",
+              "type": "string"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment (`HERDR_*` dropped), which the checks, the\ninstall and the push of the queue's runs run with; kept in the\nserver's memory only.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/TodoQueueMode"
+            },
+            "owner_pane_id": {
+              "description": "The pane that owns the runs the queue starts; the CLI sends its\n`HERDR_PANE_ID`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why it pauses (`paused` only).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "cwd",
+            "mode"
+          ],
+          "type": "object"
+        },
+        "TodoQueueTarget": {
+          "description": "`todo.queue_status`: a repository's queue.",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd"
+          ],
+          "type": "object"
+        },
         "TodoResumeParams": {
           "description": "The coordinator's answer to a run's event.",
           "properties": {
@@ -7721,6 +7796,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoStopParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Turns a repository's queue mode on or pauses it: on, the server\nstarts the top runnable item of \"Next, in order\" itself.",
+          "properties": {
+            "method": {
+              "const": "todo.queue_set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoQueueSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A repository's queue mode and what its queue does now.",
+          "properties": {
+            "method": {
+              "const": "todo.queue_status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoQueueTarget"
             }
           },
           "required": [
@@ -14355,6 +14464,23 @@
               "type": "object"
             },
             {
+              "description": "`todo.queue_set`'s and `todo.queue_status`' reply.",
+              "properties": {
+                "queue": {
+                  "$ref": "#/schemas/success_response/$defs/TodoQueueInfo"
+                },
+                "type": {
+                  "const": "todo_queue",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "queue"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
               "properties": {
                 "items": {
@@ -16599,6 +16725,145 @@
             }
           ]
         },
+        "TodoQueueBlockedItem": {
+          "description": "An item the queue no longer starts.",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TodoQueueInfo": {
+          "description": "A repository's queue as `todo.queue_set` and `todo.queue_status` reply.",
+          "properties": {
+            "blocked_items": {
+              "description": "Items of \"Next, in order\" the queue skips: their attempt cap was\nreached with their current text.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoQueueBlockedItem"
+              },
+              "type": "array"
+            },
+            "failures": {
+              "description": "Consecutive queue runs that ended blocked or aborted; the circuit\nbreaker pauses the queue at 3.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "item": {
+              "description": "The item of that run.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/schemas/success_response/$defs/TodoQueueMode"
+            },
+            "owner_pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pause_reason": {
+              "description": "Why the mode is paused (the user's reason or the circuit breaker's).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why the queue is in that status.",
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "run_id": {
+              "description": "The run in progress of the repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/TodoQueueStatus"
+            },
+            "updated_ms": {
+              "description": "When the mode or the last evaluation was recorded (Unix\nmilliseconds); 0 for a repository that never had queue mode.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "repo",
+            "mode",
+            "status",
+            "reason",
+            "failures",
+            "updated_ms"
+          ],
+          "type": "object"
+        },
+        "TodoQueueMode": {
+          "description": "A repository's queue mode: whether the server starts the top runnable\nitem of \"Next, in order\" by itself.",
+          "enum": [
+            "on",
+            "paused",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "TodoQueueStatus": {
+          "description": "What a repository's queue does now.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "A run (or a headless item coordinator) of the repository is in\nprogress.",
+              "type": "string"
+            },
+            {
+              "const": "waiting_on_user",
+              "description": "The queue is paused, or the run in progress waits on an event only\nthe coordinator or the user answers (a failed install or push).",
+              "type": "string"
+            },
+            {
+              "const": "escalation_pending",
+              "description": "The run in progress waits on an escalation in the user's `?` list.",
+              "type": "string"
+            },
+            {
+              "const": "usage_gate",
+              "description": "The usage gate refused the next start.",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "description": "Every item left in \"Next, in order\" is blocked, or the next start\nwas refused (preflight).",
+              "type": "string"
+            },
+            {
+              "const": "empty",
+              "description": "\"Next, in order\" has no open item.",
+              "type": "string"
+            }
+          ]
+        },
         "TodoReview": {
           "description": "One attempt of a run in one view: the run's `attempts` row, the\nworker's journal (its transcript) and `git diff base commit` in the\nrun's repository. Nothing of it is stored apart from those.",
           "properties": {
@@ -17038,6 +17303,10 @@
                 "string",
                 "null"
               ]
+            },
+            "queued": {
+              "description": "The repository's queue started the run (`todo.queue_set`): an\napproval of its own review closes the item.",
+              "type": "boolean"
             },
             "repo": {
               "type": "string"

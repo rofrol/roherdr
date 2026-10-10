@@ -74,6 +74,7 @@ mod auto_review;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;
+pub(super) mod queue;
 mod usage_gate;
 
 /// A run's attempts: the first worker and two retries; a retry asked after
@@ -198,6 +199,10 @@ pub(super) struct RunFinish {
     /// ([`auto_draft`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) draft: bool,
+    /// The repository's queue started the run ([`queue`]): its own
+    /// review's approval closes the item.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) queued: bool,
 }
 
 /// The check the verify adds by itself to a run whose diff touches
@@ -301,7 +306,9 @@ static RUN_ENV: Mutex<BTreeMap<String, HashMap<String, String>>> = Mutex::new(BT
 /// the new server over the handoff's socket, never written anywhere.
 #[cfg(unix)]
 pub(crate) fn envs_for_handoff() -> BTreeMap<String, HashMap<String, String>> {
-    lock(&RUN_ENV).clone()
+    let mut envs = lock(&RUN_ENV).clone();
+    envs.extend(queue::envs_for_handoff());
+    envs
 }
 
 /// Takes the runs' caller environments the old server of a live handoff
@@ -310,8 +317,10 @@ pub(crate) fn envs_for_handoff() -> BTreeMap<String, HashMap<String, String>> {
 #[cfg(unix)]
 pub(crate) fn restore_handed_off_envs(envs: BTreeMap<String, HashMap<String, String>>) {
     let mut run_env = lock(&RUN_ENV);
-    for (run_id, env) in envs {
-        run_env.entry(run_id).or_insert(env);
+    for (key, env) in envs {
+        if let Some((run_id, env)) = queue::restore_handed_off_env(key, env) {
+            run_env.entry(run_id).or_insert(env);
+        }
     }
 }
 
@@ -410,6 +419,27 @@ pub(super) fn wait_undriven(run_id: &str, hang_guard: Duration) {
             .wait_timeout(generation, Duration::from_millis(100))
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .0;
+    }
+}
+
+/// Test only: blocks until `done` holds, read again at every run or queue
+/// write the store announces. `done` runs without the announcement's lock.
+#[cfg(all(test, unix))]
+pub(super) fn wait_until(what: &str, hang_guard: Duration, mut done: impl FnMut() -> bool) {
+    // delay: not a wait for the condition (each announced write wakes it),
+    // the test harness's re-check of its hang guard, as `wait_undriven`'s.
+    const HANG_CHECK: Duration = Duration::from_millis(100);
+    let started = std::time::Instant::now();
+    loop {
+        let seen = *lock(&CHANGES.generation);
+        if done() {
+            return;
+        }
+        assert!(started.elapsed() < hang_guard, "{what} did not happen");
+        let generation = lock(&CHANGES.generation);
+        if *generation == seen {
+            drop(CHANGES.changed.wait_timeout(generation, HANG_CHECK));
+        }
     }
 }
 
@@ -1162,7 +1192,7 @@ impl WorkerSupervisor {
     /// Starts a run of `params.item`: preflight, then a driver that takes it
     /// from the worker's start on. A refused preflight starts nothing.
     pub(crate) fn todo_run(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
-        self.create_run(params, false)
+        self.create_run(params, false, None)
     }
 
     /// Starts a run of `params.item` whose task, subject, paths and checks
@@ -1188,10 +1218,19 @@ impl WorkerSupervisor {
             auto_review: true,
             auto_answer: true,
         };
-        self.create_run(params, true)
+        self.create_run(params, true, None)
     }
 
-    fn create_run(&self, params: TodoRunParams, draft: bool) -> Result<TodoRunInfo, WorkerError> {
+    /// Creates the run and starts its driver. A start of the repository's
+    /// queue (`queue`) claims the queue's fencing token in the transaction
+    /// that creates the run: refused as `todo_run_active` when another start
+    /// moved it first.
+    fn create_run(
+        &self,
+        params: TodoRunParams,
+        draft: bool,
+        queue: Option<&queue::QueueStart>,
+    ) -> Result<TodoRunInfo, WorkerError> {
         let cwd = Path::new(&params.cwd);
         if !cwd.is_absolute() {
             return Err(WorkerError::Invalid(format!(
@@ -1263,6 +1302,7 @@ impl WorkerSupervisor {
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
                 drafted: draft,
+                queued: queue.is_some(),
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1275,6 +1315,7 @@ impl WorkerSupervisor {
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
                 draft,
+                queued: queue.is_some(),
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1301,12 +1342,30 @@ impl WorkerSupervisor {
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
             "draft": draft,
+            "queue_token": queue.map(|start| start.token + 1),
             "usage_gate": usage,
             "item_text": item_text,
             "item_ids": item_ids,
         });
-        match store.transaction(|tx| tx.run_event(&mut run, &event, false, at)) {
-            Ok(_) => {}
+        let claimed = store.transaction(|tx| {
+            if let Some(start) = queue {
+                let reason = format!("run {run_id} of {} started by the queue", params.item);
+                let claim = start.run(&run_id, &params.item);
+                if !tx.queue_claim(&repo, start.token, &claim, &reason, at)? {
+                    return Ok(false);
+                }
+            }
+            tx.run_event(&mut run, &event, false, at)?;
+            Ok(true)
+        });
+        match claimed {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(WorkerError::RunActive(format!(
+                    "the queue of {repo} started another run or was paused since it was read (its \
+                     fencing token moved)"
+                )))
+            }
             // Another run of the repository committed since the check.
             Err(error) if is_unique_violation(&error) => {
                 return Err(match store.active_run(&repo) {
@@ -1783,7 +1842,7 @@ impl WorkerSupervisor {
                 ));
             }
         }
-        Self::check_after_close(&run, &params)?;
+        self.check_after_close(&run, &params)?;
         let mut note = None;
         let mut usage = None;
         match params.action {
@@ -2056,6 +2115,9 @@ impl WorkerSupervisor {
             }
         }
         self.spawn_driver(&run.info.run_id);
+        // An answered event (an escalation among them) is one of the
+        // queue's events; the run in progress keeps it from starting more.
+        self.queue_event(&run.info.repo);
         Ok(run.info)
     }
 
@@ -2064,8 +2126,19 @@ impl WorkerSupervisor {
     /// both; neither comes without a close. The next run's parameters are
     /// checked here as far as they do not depend on the repository's state
     /// when it starts (its preflight checks the rest then).
-    fn check_after_close(run: &Run, params: &TodoResumeParams) -> Result<(), WorkerError> {
+    /// In queue mode a close names neither: the queue starts the next item.
+    fn check_after_close(&self, run: &Run, params: &TodoResumeParams) -> Result<(), WorkerError> {
         let invalid = |why: String| Err(WorkerError::Invalid(why));
+        if params.close.is_some() && self.queue_is_on(&run.info.repo) {
+            if params.next.is_some() || params.stop_reason.is_some() {
+                return invalid(format!(
+                    "queue mode is on for {}: the queue starts the next item, so a close takes \
+                     neither --next nor --stop-reason (`herdr todo queue pause` stops it)",
+                    run.info.repo
+                ));
+            }
+            return Ok(());
+        }
         match (&params.close, &params.next, &params.stop_reason) {
             (None, None, None) => return Ok(()),
             (None, _, _) => {
@@ -2078,7 +2151,8 @@ impl WorkerSupervisor {
             (Some(_), None, None) => {
                 return invalid(
                     "a closing decision needs --next <item-id> (the item whose run starts once \
-                     this run is done) or --stop-reason <text> (why no item starts next)"
+                     this run is done) or --stop-reason <text> (why no item starts next), unless \
+                     queue mode is on"
                         .into(),
                 )
             }
@@ -2143,6 +2217,10 @@ impl WorkerSupervisor {
                 self.spawn_follow_up(&run.info.run_id);
             }
         }
+        // The runs in progress are driven again first; then each queue
+        // settles what ended while no server looked and starts its next
+        // item when its repository has no run.
+        self.resume_queues();
     }
 
     /// Lets go of every run this server drives, after a live handoff
@@ -2296,15 +2374,21 @@ impl WorkerSupervisor {
                     }
                     None => decision::recovered(run_id),
                 }
-                if matches!(
+                let ended = matches!(
                     run.info.status,
                     TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
-                ) {
+                );
+                if ended {
                     lock(&RUN_ENV).remove(run_id);
                     // Ended: no driver needs its lock again.
                     let _ = std::fs::remove_file(self.run_lock_path(run_id));
                 }
                 if driving.release() {
+                    // The repository's queue looks again once the run let
+                    // go of its claim.
+                    if ended {
+                        self.queue_after_run(&run.info.repo);
+                    }
                     return;
                 }
                 continue;

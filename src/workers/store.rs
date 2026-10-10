@@ -666,6 +666,43 @@ BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
 CREATE TRIGGER item_history_no_delete BEFORE DELETE ON item_history
 BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
 "#,
+    r#"
+-- Queue mode (`todo.queue_set`), one row per repository: whether the server
+-- starts the top runnable item of "Next, in order" itself (`mode`), why it
+-- is paused, the fencing token every start of the queue claims and bumps in
+-- the transaction that creates the run, the consecutive queue runs that
+-- ended blocked or aborted (the circuit breaker), the last evaluation's
+-- status and reason, and the pane that set the mode, which owns the runs
+-- the queue starts. Times are Unix milliseconds.
+CREATE TABLE todo_queues (
+    repo TEXT PRIMARY KEY,
+    mode TEXT NOT NULL CHECK (mode IN ('on', 'paused')),
+    pause_reason TEXT,
+    token INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    status TEXT,
+    reason TEXT,
+    owner_pane TEXT,
+    owner_session TEXT,
+    workspace TEXT,
+    updated_ms INTEGER NOT NULL
+);
+-- Each run the queue started, with the token its start claimed and the
+-- digest of the item's text then; `outcome` (done, blocked, aborted) and
+-- `error` are set once, when the queue settles the run's end.
+CREATE TABLE todo_queue_runs (
+    run_id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    item_digest TEXT NOT NULL,
+    token INTEGER NOT NULL,
+    started_ms INTEGER NOT NULL,
+    outcome TEXT,
+    error TEXT,
+    settled_ms INTEGER
+);
+CREATE INDEX todo_queue_runs_by_item ON todo_queue_runs (repo, item);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1839,6 +1876,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             auto_review: finish.auto_review,
             auto_answer: finish.auto_answer,
             drafted: finish.draft,
+            queued: finish.queued,
         },
         checks,
         finish,
@@ -2640,6 +2678,241 @@ fn enum_text<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
+/// A repository's queue (`todo_queues`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StoredQueue {
+    pub(super) repo: String,
+    /// `on` or `paused`.
+    pub(super) mode: String,
+    pub(super) pause_reason: Option<String>,
+    /// The fencing token the next start of the queue must claim.
+    pub(super) token: i64,
+    pub(super) failures: u32,
+    pub(super) status: Option<String>,
+    pub(super) reason: Option<String>,
+    pub(super) owner_pane: Option<String>,
+    pub(super) owner_session: Option<String>,
+    pub(super) workspace: Option<String>,
+    pub(super) updated_ms: u64,
+}
+
+/// A run the queue started (`todo_queue_runs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QueueRun {
+    pub(super) run_id: String,
+    pub(super) item: String,
+    pub(super) item_digest: String,
+    pub(super) token: i64,
+    pub(super) started_ms: u64,
+    /// `done`, `blocked` or `aborted` once settled.
+    pub(super) outcome: Option<String>,
+    pub(super) error: Option<String>,
+}
+
+const QUEUE_COLUMNS: &str = "repo, mode, pause_reason, token, failures, status, reason, \
+owner_pane, owner_session, workspace, updated_ms";
+
+fn queue_from_row(row: &rusqlite::Row<'_>) -> StoreResult<StoredQueue> {
+    Ok(StoredQueue {
+        repo: row.get(0)?,
+        mode: row.get(1)?,
+        pause_reason: row.get(2)?,
+        token: row.get(3)?,
+        failures: row.get(4)?,
+        status: row.get(5)?,
+        reason: row.get(6)?,
+        owner_pane: row.get(7)?,
+        owner_session: row.get(8)?,
+        workspace: row.get(9)?,
+        updated_ms: row.get::<_, i64>(10)? as u64,
+    })
+}
+
+const QUEUE_RUN_COLUMNS: &str = "run_id, item, item_digest, token, started_ms, outcome, error";
+
+fn queue_run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<QueueRun> {
+    Ok(QueueRun {
+        run_id: row.get(0)?,
+        item: row.get(1)?,
+        item_digest: row.get(2)?,
+        token: row.get(3)?,
+        started_ms: row.get::<_, i64>(4)? as u64,
+        outcome: row.get(5)?,
+        error: row.get(6)?,
+    })
+}
+
+fn queue_of(conn: &Connection, repo: &str) -> StoreResult<Option<StoredQueue>> {
+    conn.query_row(
+        &format!("SELECT {QUEUE_COLUMNS} FROM todo_queues WHERE repo = ?1"),
+        [repo],
+        queue_from_row,
+    )
+    .optional()
+}
+
+impl Tx<'_> {
+    pub(super) fn queue(&self, repo: &str) -> StoreResult<Option<StoredQueue>> {
+        queue_of(self.tx, repo)
+    }
+
+    /// Turns `repo`'s queue on, owned by `owner`: its pause and its
+    /// circuit breaker's count are cleared.
+    pub(super) fn queue_on(&self, repo: &str, owner: &RunOwner<'_>, at_ms: u64) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO todo_queues (repo, mode, pause_reason, token, failures, status, reason,
+                 owner_pane, owner_session, workspace, updated_ms)
+             VALUES (?1, 'on', NULL, 0, 0, NULL, NULL, ?2, ?3, ?4, ?5)
+             ON CONFLICT (repo) DO UPDATE SET mode = 'on', pause_reason = NULL, failures = 0,
+                 owner_pane = excluded.owner_pane, owner_session = excluded.owner_session,
+                 workspace = excluded.workspace, updated_ms = excluded.updated_ms",
+            params![
+                repo,
+                owner.pane_id,
+                owner.session_id,
+                owner.workspace,
+                at_ms as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Pauses `repo`'s queue with `reason`; a repository without a queue
+    /// gets a paused one.
+    pub(super) fn queue_paused(&self, repo: &str, reason: &str, at_ms: u64) -> StoreResult<()> {
+        self.tx.execute(
+            "INSERT INTO todo_queues (repo, mode, pause_reason, token, failures, status, reason,
+                 owner_pane, owner_session, workspace, updated_ms)
+             VALUES (?1, 'paused', ?2, 0, 0, NULL, NULL, NULL, NULL, NULL, ?3)
+             ON CONFLICT (repo) DO UPDATE SET mode = 'paused', pause_reason = excluded.pause_reason,
+                 updated_ms = excluded.updated_ms",
+            params![repo, reason, at_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Records the queue's last evaluation.
+    pub(super) fn queue_evaluated(
+        &self,
+        repo: &str,
+        status: &str,
+        reason: &str,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "UPDATE todo_queues SET status = ?2, reason = ?3, updated_ms = ?4 WHERE repo = ?1",
+            params![repo, status, reason, at_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Claims the queue's start of `run_id` with the fencing token `token`:
+    /// only while the queue is on and its token is still `token`, which the
+    /// claim moves on; records the run as the queue's. False when another
+    /// start claimed it first or the queue was paused meanwhile.
+    pub(super) fn queue_claim(
+        &self,
+        repo: &str,
+        token: i64,
+        run: &QueueRun,
+        reason: &str,
+        at_ms: u64,
+    ) -> StoreResult<bool> {
+        let moved = self.tx.execute(
+            "UPDATE todo_queues SET token = token + 1, status = 'running', reason = ?3,
+                 updated_ms = ?4
+             WHERE repo = ?1 AND token = ?2 AND mode = 'on'",
+            params![repo, token, reason, at_ms as i64],
+        )?;
+        if moved != 1 {
+            return Ok(false);
+        }
+        self.tx.execute(
+            "INSERT INTO todo_queue_runs (run_id, repo, item, item_digest, token, started_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                run.run_id,
+                repo,
+                run.item,
+                run.item_digest,
+                token + 1,
+                at_ms as i64
+            ],
+        )?;
+        Ok(true)
+    }
+
+    /// The queue's runs of `repo` that ended and are not settled yet, oldest
+    /// first, each with the run's status and error.
+    pub(super) fn queue_unsettled(
+        &self,
+        repo: &str,
+    ) -> StoreResult<Vec<(QueueRun, String, Option<String>)>> {
+        let mut statement = self.tx.prepare(
+            "SELECT q.run_id, q.item, q.item_digest, q.token, q.started_ms, q.outcome, q.error,
+                 r.status, r.error
+             FROM todo_queue_runs q JOIN runs r ON r.id = q.run_id
+             WHERE q.repo = ?1 AND q.outcome IS NULL
+                 AND r.status IN ('done', 'blocked', 'aborted')
+             ORDER BY q.started_ms, q.rowid",
+        )?;
+        let rows = statement.query_map([repo], |row| {
+            Ok((queue_run_from_row(row)?, row.get(7)?, row.get(8)?))
+        })?;
+        rows.collect()
+    }
+
+    /// Settles the queue's run with its outcome and the circuit breaker's
+    /// count after it.
+    pub(super) fn queue_settled(
+        &self,
+        repo: &str,
+        run_id: &str,
+        outcome: &str,
+        error: Option<&str>,
+        failures: u32,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "UPDATE todo_queue_runs SET outcome = ?2, error = ?3, settled_ms = ?4
+             WHERE run_id = ?1 AND outcome IS NULL",
+            params![run_id, outcome, error, at_ms as i64],
+        )?;
+        self.tx.execute(
+            "UPDATE todo_queues SET failures = ?2 WHERE repo = ?1",
+            params![repo, failures],
+        )?;
+        Ok(())
+    }
+}
+
+impl Store {
+    pub(super) fn queue(&self, repo: &str) -> StoreResult<Option<StoredQueue>> {
+        queue_of(&lock(&self.conn), repo)
+    }
+
+    /// Every repository's queue.
+    pub(super) fn queues(&self) -> StoreResult<Vec<StoredQueue>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&format!(
+            "SELECT {QUEUE_COLUMNS} FROM todo_queues ORDER BY repo"
+        ))?;
+        let rows = statement.query_map([], queue_from_row)?;
+        rows.collect()
+    }
+
+    /// The runs the queue of `repo` started, oldest first.
+    pub(super) fn queue_runs(&self, repo: &str) -> StoreResult<Vec<QueueRun>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(&format!(
+            "SELECT {QUEUE_RUN_COLUMNS} FROM todo_queue_runs WHERE repo = ?1
+             ORDER BY started_ms, rowid"
+        ))?;
+        let rows = statement.query_map([repo], queue_run_from_row)?;
+        rows.collect()
+    }
+}
+
 /// The `questions.state` of a question that ended `how`.
 pub(super) fn question_state(how: &str) -> &'static str {
     match how {
@@ -2841,6 +3114,8 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN coordinates;
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
+                 DROP TABLE todo_queue_runs;
+                 DROP TABLE todo_queues;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2900,8 +3175,10 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN coordinates;
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
+                 DROP TABLE todo_queue_runs;
+                 DROP TABLE todo_queues;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 18
+                MIGRATIONS.len() - 19
             ))
             .unwrap();
         drop(store);
@@ -2955,8 +3232,10 @@ mod tests {
                  DROP TABLE todo_chains;
                  DROP TABLE report_occurrences;
                  DROP TABLE reports;
+                 DROP TABLE todo_queue_runs;
+                 DROP TABLE todo_queues;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 7
+                MIGRATIONS.len() - 8
             ))
             .unwrap();
         drop(store);

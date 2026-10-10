@@ -644,11 +644,20 @@ impl WorkerSupervisor {
         commit: &str,
         note: Option<String>,
     ) -> Result<Outcome, String> {
+        // A queue run's own approval closes its item, so the queue moves on.
+        let close = run
+            .finish
+            .queued
+            .then(|| super::queue::queue_close(run, commit, note.as_deref()));
         let body = json!({
             "type": APPLIED, "event": seq, "decision_id": record.decision_id,
             "action": "approve", "note": note, "commit": commit, "base": record.base,
+            "close": close,
         });
         self.apply_change(run, seq, record, &body, |current| {
+            if current.finish.queued && current.finish.note.is_none() {
+                current.finish.close = close.clone();
+            }
             current.info.step = TodoStep::Stop;
             current.current.review_event = Some(seq);
             current.current.review_decision = Some(APPROVE.to_owned());

@@ -475,6 +475,10 @@ pub struct TodoRunInfo {
     /// (`todo.draft_run`); they are empty until the draft is applied.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub drafted: bool,
+    /// The repository's queue started the run (`todo.queue_set`): an
+    /// approval of its own review closes the item.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub queued: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -717,4 +721,113 @@ pub struct TodoChainInfo {
     /// empty "Next, in order", or a next start herdr refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+}
+
+/// A repository's queue mode: whether the server starts the top runnable
+/// item of "Next, in order" by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoQueueMode {
+    On,
+    Paused,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a repository's queue does now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoQueueStatus {
+    /// A run (or a headless item coordinator) of the repository is in
+    /// progress.
+    Running,
+    /// The queue is paused, or the run in progress waits on an event only
+    /// the coordinator or the user answers (a failed install or push).
+    WaitingOnUser,
+    /// The run in progress waits on an escalation in the user's `?` list.
+    EscalationPending,
+    /// The usage gate refused the next start.
+    UsageGate,
+    /// Every item left in "Next, in order" is blocked, or the next start
+    /// was refused (preflight).
+    Blocked,
+    /// "Next, in order" has no open item.
+    Empty,
+    #[serde(other)]
+    Unknown,
+}
+
+/// `todo.queue_set`: turns a repository's queue mode on or pauses it. On,
+/// the server starts the top item of "Next, in order" that is not blocked
+/// as `todo.draft_run` would whenever no run of the repository is active, no
+/// escalation is pending and the usage gate admits; it looks again only on
+/// its own events: a run ended (done, blocked or aborted), an escalation was
+/// answered, the server started, the mode was set. Turning it on also clears
+/// a pause of the circuit breaker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoQueueSetParams {
+    /// A directory in the repository.
+    pub cwd: String,
+    pub mode: TodoQueueMode,
+    /// Why it pauses (`paused` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The pane that owns the runs the queue starts; the CLI sends its
+    /// `HERDR_PANE_ID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The caller's environment (`HERDR_*` dropped), which the checks, the
+    /// install and the push of the queue's runs run with; kept in the
+    /// server's memory only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// `todo.queue_status`: a repository's queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoQueueTarget {
+    /// A directory in the repository.
+    pub cwd: String,
+}
+
+/// An item the queue no longer starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoQueueBlockedItem {
+    pub item: String,
+    pub reason: String,
+}
+
+/// A repository's queue as `todo.queue_set` and `todo.queue_status` reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoQueueInfo {
+    pub repo: String,
+    pub mode: TodoQueueMode,
+    pub status: TodoQueueStatus,
+    /// Why the queue is in that status.
+    pub reason: String,
+    /// The run in progress of the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The item of that run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Why the mode is paused (the user's reason or the circuit breaker's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    /// Consecutive queue runs that ended blocked or aborted; the circuit
+    /// breaker pauses the queue at 3.
+    pub failures: u32,
+    /// Items of "Next, in order" the queue skips: their attempt cap was
+    /// reached with their current text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_items: Vec<TodoQueueBlockedItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    /// When the mode or the last evaluation was recorded (Unix
+    /// milliseconds); 0 for a repository that never had queue mode.
+    pub updated_ms: u64,
 }

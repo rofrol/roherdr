@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoDraftRunParams, TodoNextParams, TodoNextRun, TodoResumeParams,
-    TodoReviewParams, TodoRunParams, TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams,
-    WorkerDecision,
+    Method, Request, TodoAction, TodoDraftRunParams, TodoNextParams, TodoNextRun, TodoQueueMode,
+    TodoQueueSetParams, TodoQueueTarget, TodoResumeParams, TodoReviewParams, TodoRunParams,
+    TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -90,7 +90,9 @@ const USAGE: &str = "usage:
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
-      --close needs --next or --stop-reason: with --next, once this run is
+      --close needs --next or --stop-reason, unless queue mode is on (todo
+      queue), where it takes neither: the queue starts the next item. With
+      --next, once this run is
       done the driver starts ITEM's run itself (as todo run with those
       parameters, this run's checks unless --next-check names others, owned
       by this run's owner); a refused start (preflight, usage gate) is a
@@ -158,7 +160,24 @@ const USAGE: &str = "usage:
       environment, kept in the server's memory only.
   herdr todo stop [--repo DIR]
       Stop the repository's chain: the coordinator that runs finishes its
-      item, and no next one starts.";
+      item, and no next one starts.
+  herdr todo queue on|pause|status [--repo DIR] [--reason TEXT]
+      Queue mode: herdr's server drives the queue of DIR's (default: the
+      current directory's) repository. on (kept across restarts): whenever
+      no run of the repository is active, no escalation is pending and the
+      usage gate admits, the server starts the top item of \"Next, in
+      order\" (TODO.md as master has it) that is not blocked as todo run
+      --draft would, owned by this pane, its checks, install and push with
+      this shell's environment (kept in memory only). It looks again only on
+      its own events: a run ended, an escalation was answered, the server
+      started, the mode was set; never on a timer. A queue run that its own
+      review approves closes its item. An item the queue ran 2 times with the
+      same text is blocked until its text changes; 3 consecutive queue runs
+      that ended blocked or aborted pause the queue (the circuit breaker),
+      with a notification. on also clears such a pause. pause [--reason
+      TEXT] lets the run in progress finish and starts nothing more. status
+      prints the mode and the status with its reason: running,
+      waiting_on_user, escalation_pending, usage_gate, blocked or empty.";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -404,7 +423,8 @@ fn caller_session(pane: Option<&str>) -> Option<String> {
 /// What `resume --close` names after the close: the next item's run (`--next
 /// ITEM` with `--next-task`, `--next-message` and `--next-paths`, and
 /// optionally `--next-check`, else this run's checks) or `--stop-reason`;
-/// one of them, only with `--close`.
+/// at most one of them, only with `--close`. A close with neither is the
+/// server's to refuse unless the repository's queue mode is on.
 fn next_run(
     close: bool,
     item: Option<String>,
@@ -424,14 +444,6 @@ fn next_run(
     }
     if any_next && stop_reason.is_some() {
         return Err("--next and --stop-reason exclude each other".into());
-    }
-    if close && !any_next && stop_reason.is_none() {
-        return Err(
-            "--close needs --next ITEM (with --next-task, --next-message and \
-                    --next-paths: the run that starts once this one is done) or \
-                    --stop-reason TEXT (why no item starts next)"
-                .into(),
-        );
     }
     if !any_next {
         return Ok(None);
@@ -702,6 +714,43 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                     workspace_id: super::target::caller_workspace_id(),
                     env: super::worker::caller_env(),
                 })
+            }
+        }
+        "queue" => {
+            let (repo, rest) = take_string_option(rest, "--repo")?;
+            let (reason, rest) = take_string_option(&rest, "--reason")?;
+            let action = match rest.as_slice() {
+                [action] => action.as_str(),
+                _ => return Err("queue takes on, pause or status, and --repo".into()),
+            };
+            if reason.is_some() && action != "pause" {
+                return Err("only queue pause takes --reason".into());
+            }
+            let dir = match repo {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => std::env::current_dir().map_err(|error| error.to_string())?,
+            };
+            let cwd = std::path::absolute(&dir)
+                .map_err(|error| format!("--repo {}: {error}", dir.display()))?
+                .display()
+                .to_string();
+            let set = |mode, env, reason| {
+                let pane = super::target::caller_pane_id();
+                Method::TodoQueueSet(TodoQueueSetParams {
+                    cwd: cwd.clone(),
+                    mode,
+                    reason,
+                    owner_session_id: caller_session(pane.as_deref()),
+                    owner_pane_id: pane,
+                    workspace_id: super::target::caller_workspace_id(),
+                    env,
+                })
+            };
+            match action {
+                "on" => set(TodoQueueMode::On, super::worker::caller_env(), None),
+                "pause" => set(TodoQueueMode::Paused, None, reason),
+                "status" => Method::TodoQueueStatus(TodoQueueTarget { cwd }),
+                other => return Err(format!("queue takes on, pause or status, not {other}")),
             }
         }
         "runs" => {
@@ -1056,9 +1105,13 @@ mod tests {
             (params.next, params.stop_reason.as_deref()),
             (None, Some("the rest waits on the user"))
         );
+        // A close alone is the server's to judge: refused unless queue mode
+        // is on.
+        let Ok(Some(Method::TodoResume(params))) = resume(&["--close", &close]) else {
+            panic!("--close alone did not parse");
+        };
+        assert_eq!((params.next, params.stop_reason), (None, None));
         for bad in [
-            // A close names what follows it.
-            &["--close", &close][..],
             // Not both.
             &[
                 "--close",
@@ -1108,6 +1161,41 @@ mod tests {
         assert_eq!(stop.cwd, "/repo");
         assert!(parse(&args(&["stop", "--continue"])).is_err());
         assert!(parse(&args(&["next", "t-abcd2345"])).is_err());
+    }
+
+    #[test]
+    fn queue_takes_on_pause_or_status_and_the_repository() {
+        let Ok(Some(Method::TodoQueueSet(on))) = parse(&args(&["queue", "on", "--repo", "/repo"]))
+        else {
+            panic!("queue on did not parse");
+        };
+        assert_eq!((on.cwd.as_str(), on.mode), ("/repo", TodoQueueMode::On));
+        assert!(on
+            .env
+            .is_some_and(|env| env.keys().all(|key| !key.starts_with("HERDR_"))));
+        let Ok(Some(Method::TodoQueueSet(pause))) =
+            parse(&args(&["queue", "pause", "--reason", "lunch"]))
+        else {
+            panic!("queue pause did not parse");
+        };
+        assert_eq!(pause.mode, TodoQueueMode::Paused);
+        assert_eq!(pause.reason.as_deref(), Some("lunch"));
+        assert!(pause.env.is_none());
+        assert!(std::path::Path::new(&pause.cwd).is_absolute());
+        let Ok(Some(Method::TodoQueueStatus(status))) =
+            parse(&args(&["queue", "status", "--repo", "/repo"]))
+        else {
+            panic!("queue status did not parse");
+        };
+        assert_eq!(status.cwd, "/repo");
+        for bad in [
+            &["queue"][..],
+            &["queue", "off"],
+            &["queue", "on", "pause"],
+            &["queue", "on", "--reason", "x"],
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
