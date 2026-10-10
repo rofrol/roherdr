@@ -421,6 +421,43 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   into the plain blue dot when they end. The status legend explains it.
   Not a new agent status variant (frozen codecs).
 
+- [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
+  job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
+  states, sort buttons, the grip, footer provider codes). A status legend
+  for agent and job states exists (`DECISIONS.md`, "Status legend",
+  `src/client/shell/status_legend.rs`); the other domains are open.
+  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): a full modal,
+    never a bare `?` (it belongs to the agent's terminal); hover tooltips
+    only as a supplement; no first-run hint.
+  - Content per domain (agent, job, git, endpoint, controls, usage):
+    glyph, label, one-line meaning and a swatch in the theme's actually
+    rendered colour, never a colour name. Explain the counts by example
+    (`!2` two failed jobs, `↑4` four commits ahead); define what `±7`
+    counts (files or lines); never describe planned glyphs as current.
+  - Generated from the per-domain `status_style` mapping of the audit item,
+    with a test that every state variant has an entry. Unknown states from
+    older remote servers show as "unknown status". DeepSeek: an "on screen
+    now" filter; a warning when the theme gives two states the same colour.
+  - Order: DeepSeek after the consolidation and the shape redesign; Astra
+    together with the consolidation (my preference: a generated legend
+    follows the redesign for free).
+  Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
+  Decided by the user 2026-10-07: after the colours and symbols audit,
+  generated from its style map; waits for that audit.
+  Decided by the user 2026-10-10 (replacing "after the audit"; round
+  20261010-153255-0752, sol + MiMo + DeepSeek): extend the existing status
+  legend (global menu, src/client/shell/status_legend.rs) now, per domain
+  from the same drawing functions: role marks (♛, ⚒), job counts
+  (`!`, `⧖`, `✓`), the `bg` token and "finished, background work running",
+  worker questions and escalations in the `?` list, blocked runs, queue
+  mode status, header counters (`★`, `◓`, `?`, `✉`), git tokens; a click on
+  any of these glyphs opens the legend at its entry (where the glyph has no
+  action of its own; else its tooltip offers it); a test that every state
+  of every domain has an entry with matching text. Cut: entries for sort
+  buttons, the grip, footer usage and PTY codes (local tooltips instead).
+  After the "finished dot while background work runs" item. The colours
+  and symbols audit comes later as polish.
+
 - [ ] `herdr-job wait-text <file> <pattern>`: an event-driven match on new [t-xphl4a6t]
   bytes, partial lines included (from the guix-x86_64-iso-omguix
   coordinator's report, 2026-10-10: `tail -F serial.log | grep -m1 login:`
@@ -1718,29 +1755,5 @@ user needs to decide or do.
   folders or credentials, snapshot before each scenario, discarded after.
 
 ### Decide
-
-- [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
-  job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
-  states, sort buttons, the grip, footer provider codes). A status legend
-  for agent and job states exists (`DECISIONS.md`, "Status legend",
-  `src/client/shell/status_legend.rs`); the other domains are open.
-  - Consulted models (GPT-6 Astra, DeepSeek, 2026-09-28): a full modal,
-    never a bare `?` (it belongs to the agent's terminal); hover tooltips
-    only as a supplement; no first-run hint.
-  - Content per domain (agent, job, git, endpoint, controls, usage):
-    glyph, label, one-line meaning and a swatch in the theme's actually
-    rendered colour, never a colour name. Explain the counts by example
-    (`!2` two failed jobs, `↑4` four commits ahead); define what `±7`
-    counts (files or lines); never describe planned glyphs as current.
-  - Generated from the per-domain `status_style` mapping of the audit item,
-    with a test that every state variant has an entry. Unknown states from
-    older remote servers show as "unknown status". DeepSeek: an "on screen
-    now" filter; a warning when the theme gives two states the same colour.
-  - Order: DeepSeek after the consolidation and the shape redesign; Astra
-    together with the consolidation (my preference: a generated legend
-    follows the redesign for free).
-  Triage 2026-10-06 (depends): Generated from the per-domain `status_style` mapping of the item above (colours and symbols audit); the ordering also needs your confirmation.
-  Decided by the user 2026-10-07: after the colours and symbols audit,
-  generated from its style map; waits for that audit.
 
 ### Needs you to act or watch
