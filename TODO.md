@@ -29,6 +29,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     about 1 in 13 on the base too: `EventStale ... event 19 is stale`):
     reproduce under load, find the race, no waits or retries added.
 
+- [ ] The coordinator allowlist in shadow mode first (decided 2026-10-10 [t-svsyvp3s]
+  with the models, round 20261010-142705-3267, all three): the PreToolUse
+  check gets a mode setting (`[coordinator] allowlist = "shadow" |
+  "enforce" | "off"`, default shadow) where it only records what it would
+  have denied (in the item history or a log `herdr history overrides`
+  can show) and never denies; then the integration is installed with
+  shadow on; after a week of real coordinator use the user decides on
+  enforce from the recorded would-deny list (or drops it if the list is
+  near-empty now that the server drives the queue).
+
 - [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
   (follows from the bridge, 2026-10-10; small, text only): herdr's
   AGENTS.md driver paragraph and the item coordinator prompt name the new
@@ -1538,14 +1548,6 @@ Items agents add. Not approved until the user moves them up.
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
 
-- [ ] [t-oj2cnjt5] Until worker capabilities exist, how should the try-roguix coordinator run items that build or run the app, a VM or the builder?
-  Options: pane workers for those items, headless for docs and research (Recommended) | wait for the capabilities item before any such item | a per-repository widened worker sandbox now, by hand
-  Checked: its first headless worker (w78, 2026-10-10) blocked on codesign of the ad-hoc QEMU/app, `ps`, `herdr-job` outside a pane and `make test` (temp dir, PTYs, local sockets); the capabilities item [t-ih3cmtjf] now names these cases.
-
-- [ ] [t-ra4i7neu] Install herdr's Claude integration with the coordinator allowlist (`herdr integration install claude`)?
-  Options: install now and commit the settings.json diff in the dotfiles (Recommended) | install after one coordinator session tried it in shadow (log only) | not now
-  Checked: the allowlist (run `r-5ft5ezc4`, 2026-10-10) is in herdr's integration assets; the installer rewrites its hook script and entries in ~/.claude/settings.json, a hook change that needs the user's approval of the whole patch (AGENTS.md "Installing a fix"). Until then coordinator tabs run unrestricted. Also active for the try-roguix, rormpc and other coordinators once installed.
-
 - [ ] Hard boundaries instead of text rules (user, 2026-10-08: "constantly [t-6mbbnkor]
   baby-sitting the models through rules in AGENTS.md etc.; where are the
   hard boundaries? ask the models"). Round `20261008-133828-f6d6` (sol, MiMo, DeepSeek):
@@ -1581,6 +1583,13 @@ user needs to decide or do.
   fork sync, which rebases onto upstream and force-pushes `master`.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
+  Decided 2026-10-10 with the models (round 20261010-142705-3267, all
+  three): a GitHub ruleset on rofrol/roherdr `master` requiring CI and
+  blocking deletion, force-push allowed only to a separate credential the
+  agents do not hold (the fork-sync procedure uses it). Needs the user:
+  create that credential (a fine-grained token or a second account) and
+  approve the ruleset change on GitHub (outward-facing); CI checks to
+  require are listed by the worker that prepares it.
 
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
@@ -1707,6 +1716,9 @@ user needs to decide or do.
   retries); cancellation racing completion; a poison step exhausting its
   retries; code or schema changed under a running execution (replay
   nondeterminism); a partial model output.
+  Decided 2026-10-10 (the user: "decide with the models"; round
+  20261010-142705-3267, all three): a fresh UTM Linux VM without shared
+  folders or credentials, snapshot before each scenario, discarded after.
 
 ### Decide
 
