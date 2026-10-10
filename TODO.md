@@ -373,6 +373,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tasks or a wait edge from that pane points at a running job; it turns
   into the plain blue dot when they end. The status legend explains it.
   Not a new agent status variant (frozen codecs).
+  Violai coordinator, 2026-10-10: (1) its pane showed the green done dot
+  while its own background `herdr-job wait-agent w8B:p1` ran on a working
+  worker; the user read "nothing is happening"; the coordinator pane should
+  show it waits on that worker. (2) `herdr-job wait-agent w8B:p1` (no
+  `--request`, matching idle/done/blocked) returned "reached" with
+  `agent_status` idle while the worker kept working for minutes, twice
+  (evidence:
+  /private/tmp/claude-501/-Users-romanfrolow-personal-projects-violai/0e64470d-6ecd-46e1-9344-58e6f09129fd/tasks/b173r5ghf.output):
+  a state wait without the prompt's request id matches a transient idle;
+  the verdict wait in "Waiting for a pane worker's final report" (request
+  id, WORKER-DONE) is the fix, and `wait-agent` without `--request` should
+  refuse or warn for workers.
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
   job counts like `!2` / `⧖ 1` / `✓3`, git tokens `↑4` `±7`, endpoint
@@ -1317,6 +1329,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   user types into that pane or answers from the list), on the agent
   withdrawing it, or on the agent's session ending; several open questions
   from one pane stay separate. Server state, exposed through the API.
+  Second report (try-roguix coordinator, 2026-10-10): the `?` turned into
+  the green idle dot as soon as the user began typing the answer (before
+  Enter); he read it as a wrong state. Cause: every keystroke into the pane
+  clears the report (`clear_awaiting_reply_on_input`, also
+  `pane.send_text`). A compaction continuation kept the `?` (correct).
+  Round 20261010-225031-5b82 (sol, MiMo, DeepSeek, agreeing), decided by
+  the coordinator, added to this item:
+  - Clear on a submitted reply (the agent's `UserPromptSubmit` from the
+    user, or the client's submit), never on a keystroke, paste or
+    `send_text`; while the user types, the `?` stays (optionally a
+    "composing" glyph, not green); green means no open question.
+  - Keep the report across turns the user did not start (compaction, a
+    background wake), as today; the agent can withdraw or replace it
+    (`herdr agent awaiting-reply --withdraw`); a turn that ends with an
+    open question gets a reminder to renew or withdraw it.
+  - A submitted reply clears the pane's mark; the persistent entry closes
+    when the question is answered, withdrawn or the session ends (sol:
+    submitted is not resolved).
+  - Clicking the `?` shows the question, its age and "clears when you
+    submit a reply"; the legend says the same.
 
 ## Proposed
 
