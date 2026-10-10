@@ -15,7 +15,7 @@ use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
-                 [--ignore-usage] [--auto-review]
+                 [--ignore-usage] [--auto-review] [--auto-answer]
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
@@ -38,7 +38,24 @@ const USAGE: &str = "usage:
       notice to the user). A failed call or invalid output is retried once,
       then escalated. todo wait does not return a review event before the
       server decided it; todo resume still answers it and wins when it
-      comes first. The decisions are recorded in the run's events.
+      comes first. The decisions are recorded in the run's events. Before
+      the call the server stops the worker and runs the verify (the
+      registered checks) on the event's commit, so the model judges real
+      results; an approval of that verified commit needs no second verify,
+      and one of a commit whose verify failed is escalated.
+      With --auto-answer the server answers each question the worker policy
+      leaves the same way: one call with the task, the question (or the tool
+      call and why the policy left it) and the run's policy, which returns
+      allow, deny (a message), answer (an AskUserQuestion's answers) or
+      escalate. A request the policy leaves to the user (a classifier
+      escalation, a path outside the worker's folders, a tool herdr does not
+      know) is only escalated, without a call. Every escalation, of a review
+      or of a question, also enters the user's ? list with the run, the item
+      and the question, answerable from its dialog. Both flags pass to a run
+      a close starts with --next. While a decision cannot be recorded (the
+      worker store refuses the write), todo wait and todo status show the run
+      blocked with that error, and the server writes it again once the store
+      takes a write.
   herdr todo wait <run-id> [--after EVENT_ID]
       Blocks until the run waits on an event after EVENT_ID (a question the
       worker policy left, the worker's turn end, a failed verify), or ended
@@ -168,14 +185,24 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     Ok(code)
 }
 
-/// A server older than `--auto-review` ignores it and starts the run
-/// anyway: its reply has no `auto_review`.
+/// A server older than `--auto-review` or `--auto-answer` ignores it and
+/// starts the run anyway: its reply has no `auto_review` or `auto_answer`.
 fn auto_review_ignored(params: &TodoRunParams, response: &serde_json::Value) -> Option<String> {
     let run = &response["result"]["run"];
-    (params.auto_review && run.is_object() && run["auto_review"] != true).then(|| {
+    if !run.is_object() {
+        return None;
+    }
+    let run_id = run["run_id"].as_str().unwrap_or("?");
+    if params.auto_review && run["auto_review"] != true {
+        return Some(format!(
+            "this server ignored --auto-review (it predates it): run {run_id} waits for your \
+             review of each event"
+        ));
+    }
+    (params.auto_answer && run["auto_answer"] != true).then(|| {
         format!(
-            "this server ignored --auto-review (it predates it): run {} waits for your review              of each event",
-            run["run_id"].as_str().unwrap_or("?")
+            "this server ignored --auto-answer (it predates it): run {run_id} waits for your \
+             answer to each question"
         )
     })
 }
@@ -421,6 +448,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
         "run" => {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
+            let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
             let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -456,6 +484,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 env: super::worker::caller_env(),
                 ignore_usage,
                 auto_review,
+                auto_answer,
             })
         }
         "wait" => {
@@ -730,6 +759,28 @@ mod tests {
         assert!(auto_review_ignored(&params, &old)
             .unwrap()
             .contains("r-abcd2345"));
+        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--auto-answer",
+            "--task",
+            &task,
+            "--message",
+            "feat: x",
+            "--paths",
+            "src/**",
+            "--check",
+            "workers",
+        ])) else {
+            panic!("run --auto-answer did not parse");
+        };
+        assert!(params.auto_answer && !params.auto_review);
+        let answering = serde_json::json!({"result": {"type": "todo_run", "run": {
+            "run_id": "r-abcd2345", "auto_answer": true}}});
+        assert_eq!(auto_review_ignored(&params, &answering), None);
+        assert!(auto_review_ignored(&params, &old)
+            .unwrap()
+            .contains("--auto-answer"));
         assert!(parse(&args(&["run", "t-abcd2345", "--task", &task])).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }

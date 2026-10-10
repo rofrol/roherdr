@@ -1837,6 +1837,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             next_refusal: finish.next_refusal.clone(),
             stop_reason: finish.stop_reason.clone(),
             auto_review: finish.auto_review,
+            auto_answer: finish.auto_answer,
         },
         checks,
         finish,
@@ -2314,6 +2315,24 @@ impl Tx<'_> {
 
     /// Appends an event to a run without writing its row: all a driver
     /// that does not hold the run's lock may write.
+    /// [`Self::run_event`] for a run that keeps waiting on the event it
+    /// waits on: its row is written, its `pending_event` stays.
+    pub(super) fn run_event_keeping_pending(
+        &self,
+        run: &mut Run,
+        event: &Value,
+        at_ms: u64,
+    ) -> StoreResult<i64> {
+        let pending = run.info.pending_event;
+        let seq = self.run_event(run, event, false, at_ms)?;
+        run.info.pending_event = pending;
+        self.tx.execute(
+            "UPDATE runs SET pending_event = ?1 WHERE id = ?2",
+            params![pending, run.info.run_id],
+        )?;
+        Ok(seq)
+    }
+
     pub(super) fn run_note(&self, run_id: &str, event: &Value, at_ms: u64) -> StoreResult<i64> {
         self.event(&EventRow {
             worker_id: run_id,

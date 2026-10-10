@@ -831,8 +831,9 @@ impl WorkerSupervisor {
             workspace_id: run.workspace.clone(),
             env,
             ignore_usage: false,
-            // The next run is reviewed as the closed one was.
+            // The next run is reviewed and answered as the closed one was.
             auto_review: run.finish.auto_review,
+            auto_answer: run.finish.auto_answer,
         };
         match self.todo_run(params) {
             Ok(started) => self.next_started(run_id, &next.item, started.run_id, false),
