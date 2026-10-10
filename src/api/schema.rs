@@ -81,6 +81,10 @@ pub enum Method {
     WorkerList(EmptyParams),
     #[serde(rename = "worker.wait")]
     WorkerWait(WorkerWaitParams),
+    /// One coordinator's inbox over all of its workers: their events after a
+    /// cursor, in order, as a bounded batch; blocks while empty with `wait`.
+    #[serde(rename = "worker.events")]
+    WorkerEvents(WorkerEventsParams),
     #[serde(rename = "worker.prompt")]
     WorkerPrompt(WorkerPromptParams),
     #[serde(rename = "worker.interrupt")]

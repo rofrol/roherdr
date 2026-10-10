@@ -6490,6 +6490,50 @@
           ],
           "type": "object"
         },
+        "WorkerEventsParams": {
+          "description": "One coordinator's event inbox over all of its workers (`worker.events`).\nReading is not resolving: a question stays pending until it is answered,\nwhatever was read.",
+          "properties": {
+            "after": {
+              "description": "The `next_cursor` of the previous reply: only later events count.\nAbsent: the reply is a snapshot and the cursor it starts from.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "description": "The most events one reply carries (`more` tells there are more); 100\nwhen absent, at most 1000.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "owner": {
+              "description": "The coordination tenure (`c-...`) whose workers' events to read.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_pane_id": {
+              "description": "Without `owner`: the active tenure bound to this pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "snapshot": {
+              "description": "Also send the snapshot of the owner's workers with a valid `after`\n(a coordinator that reconnects after it lost its context).",
+              "type": "boolean"
+            },
+            "wait": {
+              "description": "Block while there is no event after `after`. A snapshot, a\n`resync_required` and an owner whose tenure has ended answer at once.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "WorkerGeneratedFile": {
           "description": "A committed file and the shell command that regenerates it.",
           "properties": {
@@ -7506,6 +7550,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One coordinator's inbox over all of its workers: their events after a\ncursor, in order, as a bounded batch; blocks while empty with `wait`.",
+          "properties": {
+            "method": {
+              "const": "worker.events",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerEventsParams"
             }
           },
           "required": [
@@ -14707,6 +14768,50 @@
               "type": "object"
             },
             {
+              "description": "`worker.events`' reply: the owner's tenure, its workers' events after\nthe cursor in order, and the cursor to pass next. `resync_required`:\nthe cursor could not be served (another store, or older than the\ninbox), so the reply carries the snapshot and starts over from it.",
+              "properties": {
+                "events": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkerEvent"
+                  },
+                  "type": "array"
+                },
+                "more": {
+                  "type": "boolean"
+                },
+                "next_cursor": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                },
+                "resync_required": {
+                  "type": "boolean"
+                },
+                "snapshot": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/WorkerEventsSnapshot"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "worker_events",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "owner",
+                "events",
+                "next_cursor"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.obligations`' reply: the owned workers with an event their\nowner has not acknowledged, oldest worker first.",
               "properties": {
                 "obligations": {
@@ -18598,6 +18703,115 @@
           "required": [
             "draining",
             "in_turn"
+          ],
+          "type": "object"
+        },
+        "WorkerEvent": {
+          "description": "One event of a coordinator's inbox.",
+          "properties": {
+            "from_coordinator_id": {
+              "description": "With `joined`: the tenure that owned it before, if any.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/WorkerEventKind"
+            },
+            "questions": {
+              "description": "With `question`: the questions the event asked.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+              },
+              "type": "array"
+            },
+            "seq": {
+              "description": "The server-wide event number; the inbox is in this order.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `turn_end` and `exit`: the worker's state then."
+            },
+            "to_coordinator_id": {
+              "description": "With `reowned`: the tenure that owns it now, if any.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "seq",
+            "worker_id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        "WorkerEventKind": {
+          "description": "What happened to one of a coordinator's workers.",
+          "oneOf": [
+            {
+              "const": "question",
+              "description": "It asked questions (`questions`), which wait for an answer.",
+              "type": "string"
+            },
+            {
+              "const": "turn_end",
+              "description": "A turn finished, failed or was interrupted (`state`).",
+              "type": "string"
+            },
+            {
+              "const": "exit",
+              "description": "The process ended (`exited` or `lost`, `state`).",
+              "type": "string"
+            },
+            {
+              "const": "joined",
+              "description": "It became this owner's: started by it, or handed to it\n(`from_coordinator_id`).",
+              "type": "string"
+            },
+            {
+              "const": "left",
+              "description": "Its owner acknowledged its end: it is no longer listed.",
+              "type": "string"
+            },
+            {
+              "const": "reowned",
+              "description": "It moved to another tenure (`to_coordinator_id`), which handles its\nevents from now on.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerEventsSnapshot": {
+          "description": "The owner's workers as they are now: the running ones and the ended ones\nwhose end it has not acknowledged, each with its pending questions,\nhowever old the events that brought them.",
+          "properties": {
+            "workers": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "workers"
           ],
           "type": "object"
         },

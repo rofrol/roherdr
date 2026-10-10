@@ -1347,6 +1347,7 @@ impl App {
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)
+            | Method::WorkerEvents(_)
             | Method::WorkerPrompt(_)
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)

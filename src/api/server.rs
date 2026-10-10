@@ -168,6 +168,7 @@ fn is_open_wait(method: &Method) -> bool {
             | Method::AgentWait(_)
             | Method::PaneWaitForOutput(_)
             | Method::WorkerWait(_)
+            | Method::WorkerEvents(_)
             | Method::WorkerTranscriptWait(_)
             | Method::WorkerWaitDrained(_)
             | Method::TodoWait(_)
@@ -855,6 +856,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerStatus(_) => "worker.status",
         Method::WorkerList(_) => "worker.list",
         Method::WorkerWait(_) => "worker.wait",
+        Method::WorkerEvents(_) => "worker.events",
         Method::WorkerPrompt(_) => "worker.prompt",
         Method::WorkerInterrupt(_) => "worker.interrupt",
         Method::WorkerStop(_) => "worker.stop",
@@ -2062,6 +2064,16 @@ mod tests {
         assert_eq!(response["error"]["message"], "pane pane_1 not found");
         drop(api_tx);
         responder.join().unwrap();
+    }
+
+    /// A coordinator's inbox wait is an open wait: a live handoff answers it
+    /// `server_handed_off`, and the CLI sends it again, with its cursor, to
+    /// the new server, which serves that cursor from the same store.
+    #[test]
+    fn worker_events_is_an_open_wait_a_handoff_answers() {
+        assert!(is_open_wait(&Method::WorkerEvents(
+            crate::api::schema::WorkerEventsParams::default()
+        )));
     }
 
     /// A live handoff ends an open wait with `server_handed_off`, not a

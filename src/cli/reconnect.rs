@@ -1,5 +1,6 @@
 //! Blocking CLI waits (`agent wait`, `agent wait-turn`, `pane wait-output`,
-//! `worker wait`, `todo wait`) that outlive a live handoff.
+//! `worker wait`, `worker events --wait`, `todo wait`) that outlive a live
+//! handoff.
 //!
 //! Before it exits, a server that handed off answers each open wait with
 //! `server_handed_off`, sent once the new server accepts on the same socket.

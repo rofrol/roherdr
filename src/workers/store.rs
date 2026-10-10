@@ -729,6 +729,7 @@ CREATE TRIGGER coordinator_would_deny_no_delete BEFORE DELETE ON coordinator_wou
 BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 "#,
     super::capabilities::GRANTS_MIGRATION,
+    super::inbox::INBOX_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3222,6 +3223,8 @@ mod tests {
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
                  DROP TABLE capability_grants;
+                 DROP TABLE inbox;
+                 DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3285,8 +3288,10 @@ mod tests {
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
                  DROP TABLE capability_grants;
+                 DROP TABLE inbox;
+                 DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 21
+                MIGRATIONS.len() - 22
             ))
             .unwrap();
         drop(store);
@@ -3344,8 +3349,10 @@ mod tests {
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
                  DROP TABLE capability_grants;
+                 DROP TABLE inbox;
+                 DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 10
+                MIGRATIONS.len() - 11
             ))
             .unwrap();
         drop(store);
