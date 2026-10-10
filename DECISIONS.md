@@ -951,3 +951,12 @@ returned. Now (5e07a18f) `todo wait` on a run with a pending next returns
 `done` with `next_run_id` only once the next started, or `next_refused`
 with the reason; a refusal notifies the user once; a disk refusal first
 runs the slot's `target_sweep.py slot` and the preflight again.
+
+## Register `maintenance` as a verify check and add it by default
+
+`verify` did not run `just maintenance-test`, so a config option missing
+from docs/next's config reference passed it and failed only the install's
+`just check` (run r-kwasqbmr, 2026-10-10). Now (0402d84f) `.herdr/checks.toml`
+registers `maintenance` and the driver adds it when the diff touches
+`src/config/`, `docs/next/`, `scripts/` or `plugins/`, like `tests` for
+`src/api/`.
