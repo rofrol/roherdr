@@ -11,15 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Register `maintenance` as a verify check and add it by default [t-up6a3zz7]
-  (follows from run `r-kwasqbmr`, 2026-10-10: it passed `verify` but
-  `just clean-install`'s `just check` failed in `maintenance-test` on a new
-  config option missing from docs/next's config reference, so a commit
-  reached local `master` and had to be fixed forward). `.herdr/checks.toml`
-  gets `maintenance = ["just", "maintenance-test"]`, and the driver adds it
-  to every run whose diff touches `src/config/`, `docs/next/`, `scripts/`
-  or `plugins/` (like `tests` for `src/api/`); `draft_task` may choose it.
-
 - [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
   `scripts/herdr_live.sh install` restarts the server, and the try-roguix
   coordinator's `herdr pane wait-output` on its worker failed with
