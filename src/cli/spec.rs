@@ -45,6 +45,7 @@ pub(super) fn command() -> Command {
         .subcommand(worker_command())
         .subcommand(coordinator_command())
         .subcommand(todo_command())
+        .subcommand(decision_command())
         .subcommand(history_command())
         .subcommand(report_command())
         .subcommand(reports_command())
@@ -486,6 +487,48 @@ fn todo_command() -> Command {
                 .about("List the runs")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
         )
+}
+
+fn decision_command() -> Command {
+    Command::new("decision")
+        .about("Record and look up the user's questions and decisions")
+        .subcommand(
+            Command::new("add")
+                .about("Record a question for the user, or a decision of theirs")
+                .arg(required("statement", "STATEMENT"))
+                .arg(option("scope", "SCOPE"))
+                .arg(option("item", "ITEM_ID"))
+                .arg(option("entry", "TITLE"))
+                .arg(option("supersedes", "ID"))
+                .arg(option("answer", "TEXT"))
+                .arg(option("source", "SOURCE").value_parser(["user", "relayed", "menu"]))
+                .arg(option("by", "NAME"))
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("global"))
+                .arg(flag("json")),
+        )
+        .subcommand(
+            id_command(
+                "decide",
+                "id",
+                "Record the user's answer to an open question",
+            )
+            .arg(option("answer", "TEXT"))
+            .arg(option("source", "SOURCE").value_parser(["user", "relayed", "menu"]))
+            .arg(option("by", "NAME"))
+            .arg(flag("json")),
+        )
+        .subcommand(
+            Command::new("list")
+                .about("List the recorded questions and decisions")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("all"))
+                .arg(flag("open"))
+                .arg(flag("decided"))
+                .arg(flag("superseded"))
+                .arg(flag("json")),
+        )
+        .subcommand(id_command("get", "id", "Show one record").arg(flag("json")))
 }
 
 fn history_command() -> Command {

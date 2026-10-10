@@ -462,6 +462,7 @@ impl WorkerSupervisor {
             && queue_mode.is_none()
             && todo.is_ok()
             && !runnable_items.is_empty();
+        let open_decisions = self.open_decisions(&repo);
         Ok(TodoRunnableState {
             repo,
             queue_mode,
@@ -469,6 +470,7 @@ impl WorkerSupervisor {
             active_run,
             active_coordinator,
             runnable_items,
+            open_decisions,
             stalled,
             reason,
         })

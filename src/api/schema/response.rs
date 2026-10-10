@@ -6,6 +6,7 @@ use super::coordinators::{
     CoordinatorAllowlistMode, CoordinatorInfo, CoordinatorOverride, CoordinatorWouldDeny,
     CoordinatorWouldDenyShape,
 };
+use super::decisions::DecisionRecord;
 use super::events::EventEnvelope;
 use super::history::{HistoryItem, HistoryItemSummary, HistoryReconcile};
 use super::integrations::{
@@ -174,6 +175,15 @@ pub enum ResponseResult {
     /// `todo.grants`' reply.
     TodoGrants {
         grants: Vec<TodoGrant>,
+    },
+    /// `decision.add`'s, `decision.decide`'s and `decision.get`'s reply: the
+    /// record.
+    Decision {
+        decision: DecisionRecord,
+    },
+    /// `decision.list`'s reply: the records, oldest first.
+    Decisions {
+        decisions: Vec<DecisionRecord>,
     },
     /// `history.list`'s reply: each recorded item with its latest record,
     /// the most recent first.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Replay coordinator turn ends through the Stop hook's shadow stall check.
+"""Replay coordinator turn ends through the Stop hook's stall check.
 
 The Claude Stop hook (src/integration/assets/claude/herdr-agent-state.sh)
-logs `stall_would_block` for a coordinator's stop that leaves its TODO
-stalled. This runs that predicate, loaded from the hook itself, over turn
+blocks, and logs as `stall_would_block`, a coordinator's stop that leaves its
+TODO stalled. This runs that predicate, loaded from the hook itself, over turn
 ends that scripts/coordinator_turn_audit.py finds in transcripts, with the
 facts the hook would have had rebuilt from the record:
 

@@ -2290,6 +2290,193 @@
           },
           "type": "object"
         },
+        "DecisionAddParams": {
+          "description": "`decision.add`: records a new question for the user, or with `answer` a\ndecision the user already made.",
+          "properties": {
+            "answer": {
+              "description": "The user's decision: the record is stored decided. Needs `source`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "A directory in the repository the record belongs to; absent for a\nrecord that holds in every repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entry": {
+              "description": "The `DECISIONS.md` section that records it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "item": {
+              "description": "The TODO item (`t-...`) whose question or decision it is.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "relayed_by": {
+              "description": "The coordinator that relayed it (source `relayed`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "description": "What it covers (an area, a command, a file); `repository` when\nabsent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/DecisionSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "statement": {
+              "description": "The question, or the decision as one sentence.",
+              "type": "string"
+            },
+            "supersedes": {
+              "description": "The record it replaces, which becomes superseded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "statement"
+          ],
+          "type": "object"
+        },
+        "DecisionDecideParams": {
+          "description": "`decision.decide`: records the user's answer to an open record.",
+          "properties": {
+            "answer": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "relayed_by": {
+              "description": "The coordinator that relayed it (source `relayed`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "$ref": "#/schemas/request/$defs/DecisionSource"
+            }
+          },
+          "required": [
+            "id",
+            "answer",
+            "source"
+          ],
+          "type": "object"
+        },
+        "DecisionGetParams": {
+          "description": "`decision.get`: one record.",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "DecisionListParams": {
+          "description": "`decision.list`: the records, oldest first.",
+          "properties": {
+            "cwd": {
+              "description": "Only the records of the repository of this directory, and those that\nhold in every repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/DecisionStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the records with this status."
+            }
+          },
+          "type": "object"
+        },
+        "DecisionSource": {
+          "description": "Where a decision came from.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "user",
+              "description": "The user said it in the conversation (or wrote it in their rules).",
+              "type": "string"
+            },
+            {
+              "const": "relayed",
+              "description": "A coordinator passed on the user's decision; `relayed_by` names it.",
+              "type": "string"
+            },
+            {
+              "const": "menu",
+              "description": "The user picked it in a question menu (`AskUserQuestion`).",
+              "type": "string"
+            }
+          ]
+        },
+        "DecisionStatus": {
+          "description": "Where a record stands.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "open",
+              "description": "The question waits on the user.",
+              "type": "string"
+            },
+            {
+              "const": "decided",
+              "description": "The user decided it; `answer` holds the decision.",
+              "type": "string"
+            },
+            {
+              "const": "superseded",
+              "description": "A later record (`superseded_by`) replaced it.",
+              "type": "string"
+            }
+          ]
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -8130,6 +8317,74 @@
           "type": "object"
         },
         {
+          "description": "Records a question for the user, or a decision of theirs, in the\ndecision ledger.",
+          "properties": {
+            "method": {
+              "const": "decision.add",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DecisionAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Records the user's answer to an open question of the ledger.",
+          "properties": {
+            "method": {
+              "const": "decision.decide",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DecisionDecideParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The ledger's records, oldest first.",
+          "properties": {
+            "method": {
+              "const": "decision.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DecisionListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One record of the ledger.",
+          "properties": {
+            "method": {
+              "const": "decision.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/DecisionGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The TODO items herdr recorded, each with its latest record.",
           "properties": {
             "method": {
@@ -11362,6 +11617,151 @@
             "reason"
           ],
           "type": "object"
+        },
+        "DecisionRecord": {
+          "description": "One record of the ledger.",
+          "properties": {
+            "answer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "decided_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "`d-` and 8 lowercase base32 characters.",
+              "type": "string"
+            },
+            "item": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "relayed_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "The repository; absent when it holds in every repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/DecisionSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "statement": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/DecisionStatus"
+            },
+            "superseded_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "supersedes": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "scope",
+            "statement",
+            "status",
+            "created_ms"
+          ],
+          "type": "object"
+        },
+        "DecisionSource": {
+          "description": "Where a decision came from.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "user",
+              "description": "The user said it in the conversation (or wrote it in their rules).",
+              "type": "string"
+            },
+            {
+              "const": "relayed",
+              "description": "A coordinator passed on the user's decision; `relayed_by` names it.",
+              "type": "string"
+            },
+            {
+              "const": "menu",
+              "description": "The user picked it in a question menu (`AskUserQuestion`).",
+              "type": "string"
+            }
+          ]
+        },
+        "DecisionStatus": {
+          "description": "Where a record stands.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "open",
+              "description": "The question waits on the user.",
+              "type": "string"
+            },
+            {
+              "const": "decided",
+              "description": "The user decided it; `answer` holds the decision.",
+              "type": "string"
+            },
+            {
+              "const": "superseded",
+              "description": "A later record (`superseded_by`) replaced it.",
+              "type": "string"
+            }
+          ]
         },
         "EventData": {
           "oneOf": [
@@ -15080,6 +15480,43 @@
               "type": "object"
             },
             {
+              "description": "`decision.add`'s, `decision.decide`'s and `decision.get`'s reply: the\nrecord.",
+              "properties": {
+                "decision": {
+                  "$ref": "#/schemas/success_response/$defs/DecisionRecord"
+                },
+                "type": {
+                  "const": "decision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "decision"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`decision.list`'s reply: the records, oldest first.",
+              "properties": {
+                "decisions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/DecisionRecord"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "decisions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "decisions"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
               "properties": {
                 "items": {
@@ -18102,6 +18539,13 @@
                 "string",
                 "null"
               ]
+            },
+            "open_decisions": {
+              "description": "The decision ledger's open records of the repository (and those that\nhold in every repository), oldest first: questions that wait on the\nuser. They leave `stalled` as it is; a caller decides what they mean.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "pause_reason": {
               "description": "Why the queue is paused (the user's reason or the circuit breaker's).",
