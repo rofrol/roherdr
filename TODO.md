@@ -1650,6 +1650,26 @@ user needs to decide or do.
   remains: do we have little time?"; no deadline exists): SQLite
   checkpointer, `interrupt()` for a human question across a restart, and
   which node code reruns before an interrupt.
+  Expanded 2026-10-10 (user: "survey HN, Reddit, GitHub trending, X"; a web
+  survey, repos verified with gh; round 20261010-121933-62f8, sol + MiMo +
+  DeepSeek), grouped by recovery contract, one or two per group:
+  - history/journal replay: Temporal (all three: the baseline) and Golem
+    (transparent WASM replay: may it silently re-run host effects?);
+  - checkpoint-continuation without replay: Orch8 (Rust single binary +
+    SQLite, dead-letter state, approval gates; closest to herdr) and Sayiir
+    (Rust, no replay);
+  - transactional DB steps: DBOS (all three);
+  - LLM-decision journaling: Chidori (replay with zero model calls);
+  - an effect whose outcome is unknown: tool-journal (all three: stops
+    `indeterminate`) and kiso (coding-agent sessions; an unknown effect
+    goes to a human).
+  Deferred as overlapping: Restate, Obelisk, Inngest, duroxide, LangGraph,
+  Trigora, pg_durable, OpenWorkflow, Resonate, and the agent-session tools
+  (mjolnir, coven, acpus, Smithers); one joins later only for a specific
+  unanswered question. Test-plan corrections: the "effect done, crash
+  before the record" scenario uses an external fake-effect service with
+  its own durable log, so an unknown outcome is real; every test counts
+  model calls and external effects (otherwise replay tests show nothing).
 
 ### Decide
 
