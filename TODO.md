@@ -201,6 +201,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `herdr todo wait`'s reconnect and `agent prompt`'s acknowledgement; close
   each one only when its check passes.
 
+- [ ] Report a tool call whose process exited while descendants hold its [t-oan63shb]
+  output open (decided 2026-10-10: the user said "decide with the models";
+  round 20261010-021633-4043, sol + MiMo + DeepSeek). The try-roguix worker
+  hung ~2.5 h on `ssh guest <test>` because background processes in the
+  guest kept the session's stderr open. All three: there is no local
+  positive event for that hang (the local ssh stays alive, blocked on the
+  remote channel); a silence threshold (B) or Claude's Bash timeout used as
+  a trigger (D) are the rejected timer workarounds. The fix is the
+  worker's command: the remote test's completion must be the event (a
+  wrapper that captures the exit status, prints a completion line and
+  exits; background processes given their own stdin/stdout/stderr, e.g.
+  `setsid cmd </dev/null >log 2>&1 &`; `ssh -n` alone fixes only stdin) —
+  sent to the try-roguix coordinator for its task texts. herdr adds only
+  the complement that is a positive fact: when a worker's tool call's own
+  process has exited but other processes still hold its stdout/stderr
+  pipe, raise an attention event naming those pids and commands (the same
+  class as the orphaned broker that held the job slot, 2026-10-09); a
+  lint-grade signal, never a kill. Test with a stub tool call that leaves a
+  detached child holding stderr.
+
 - [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
   `scripts/herdr_live.sh install` restarts the server, and the try-roguix
   coordinator's `herdr pane wait-output` on its worker failed with
@@ -1384,10 +1404,6 @@ Items agents add. Not approved until the user moves them up.
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
 user needs to decide or do.
-
-- [ ] [t-tv3r5whl] How should herdr surface a headless worker stuck mid-turn on a silent command, within the no-timer decision of 2026-10-08?
-  Options: an observable fact, not silence: herdr reports when a tool call's own process has exited but descendants still hold its output pipe open (the exact cause seen), and which processes those are (Recommended) | a silence threshold labelled as a designed timeout, raised to the coordinator, never killing anything | only the task-text rule (the worker stops a silent command itself)
-  Checked (try-roguix coordinator report, 2026-10-10, pane w6:p87): a worker's ssh command printed nothing for ~2.5 h because background processes in the guest inherited the ssh session's stderr, so the channel never reached EOF; `herdr worker wait --attention` wakes only on a question, a turn end or an exit, none of which happened. "No output for N" is a negative wait the user's rule forbids; the inherited-pipe state is a positive, checkable fact (the command's process gone, its pipe's other ends held by named pids), and the same class as the orphaned broker that held the job slot (2026-10-09). A consult round on this is still to run.
 
 - [ ] [t-oj2cnjt5] Until worker capabilities exist, how should the try-roguix coordinator run items that build or run the app, a VM or the builder?
   Options: pane workers for those items, headless for docs and research (Recommended) | wait for the capabilities item before any such item | a per-repository widened worker sandbox now, by hand
