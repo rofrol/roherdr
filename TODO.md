@@ -1702,6 +1702,24 @@ user needs to decide or do.
      lock race): fenced, or both proceed?
   H9 a step "succeeds" but a later gate fails (our commit that broke the
      v1 contract only at install): can it roll back or compensate?
+  Where each H scenario belongs (round 20261010-125427-0303, sol + MiMo +
+  DeepSeek): engines have no LLM coordinator and no "turn", so run them as
+  capability probes, not a ranking.
+  - In the eight engines: H7 (stale decision input: re-read or trust a
+    cache), H8 (two drivers: fencing or double execution), H9 (a later
+    gate fails: compensation), H4 as a durable client wait across a
+    restart, H6 as a durable signal or event sent while the asker is gone.
+  - As a generic subprocess harness in the same VM (all three: an engine
+    joins only what it spawned): H2 (work outliving its step), H3 (a pipe
+    held by orphans), H5 (an orphan holding a lock).
+  - In herdr's own deterministic tests and stress loops (all three): H1
+    (a promise with nothing scheduled), H4's transport errors
+    (EmptyResponse, exit 8), H6's pane ownership, H8's same-process race.
+  Classes added for every engine: an effect that succeeds but whose
+  acknowledgement is lost; duplicate delivery of a step (at-least-once
+  retries); cancellation racing completion; a poison step exhausting its
+  retries; code or schema changed under a running execution (replay
+  nondeterminism); a partial model output.
 
 ### Decide
 
