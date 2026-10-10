@@ -166,6 +166,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   questions; its tab has no `coordinator` role. Depends on slice 4 and the
   consult-network decision.
   Approved by the user 2026-10-10 with the decision on t-o6hf6tr3.
+  Also one line from `herdr report` (2026-10-10): "report a herdr, wait,
+  sandbox or skill step that did not give its promised outcome or a clear
+  next step with `herdr report`, then continue with a recovery path".
 
 - [ ] Coordinators report protocol problems themselves: `herdr report` [t-pulsqoxl]
   (user via the try-roguix coordinator, 2026-10-10: "work out with the
