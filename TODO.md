@@ -11,13 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
-  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
-  coordinator's `herdr pane wait-output` on its worker failed with
-  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
-  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
-  reconnect across a handoff instead of failing.
-
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
