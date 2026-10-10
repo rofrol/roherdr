@@ -1466,6 +1466,23 @@ Items agents add. Not approved until the user moves them up.
   `todo` skill (the user's agent config: a text edit that widens nothing,
   so no question needed per DECISIONS.md, but the user approves the item).
 
+- [ ] The `todo` skill's worker step reads as herdr-only (user, 2026-10-10: [t-cutymffq]
+  "why did the roguix-vps coordinator not use headless workers? ask the
+  models"; round 20261010-025447-fba3, sol + MiMo + DeepSeek agreeing).
+  Step 4 gates headless workers on "where herdr has headless workers (...;
+  the herdr fork)" and then gives a herdr-only recipe (`--folder-slot
+  worker`, `git rev-parse master`, "the repository's notes on headless
+  workers"); in roguix-vps none of these exist, so the coordinator took the
+  "Elsewhere ... TUI worker" path without stating a reason (its VM items
+  would have needed a pane worker anyway, but that was not why). Fix, text
+  only (no widening): headless in any repository when `herdr worker --help`
+  lists `verify` and the item's build and checks fit the worker sandbox
+  (`herdr worker start --cwd <worktree>`, base from the repository's
+  default branch; `--folder-slot worker` only where that slot exists);
+  otherwise, or when the item needs what the sandbox blocks (VM launches,
+  PTYs, local sockets, `ps`), a pane worker, with the reason said in the
+  reply. The global rule in ~/.claude/CLAUDE.md uses the same condition.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
