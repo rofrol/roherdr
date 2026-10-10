@@ -1836,6 +1836,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             next_run_id: finish.next_run_id.clone(),
             next_refusal: finish.next_refusal.clone(),
             stop_reason: finish.stop_reason.clone(),
+            auto_review: finish.auto_review,
         },
         checks,
         finish,
@@ -2467,7 +2468,6 @@ impl Store {
     }
 
     /// Every event of a run of `kind`, oldest first, as its body.
-    #[cfg(all(test, unix))]
     pub(super) fn run_events_of(&self, run_id: &str, kind: &str) -> StoreResult<Vec<Value>> {
         let conn = lock(&self.conn);
         let mut statement = conn

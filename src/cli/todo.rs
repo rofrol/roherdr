@@ -15,7 +15,7 @@ use super::worker::take_string_option;
 
 const USAGE: &str = "usage:
   herdr todo run <item-id> --task FILE --message SUBJECT --paths GLOB... --check NAME...
-                 [--ignore-usage]
+                 [--ignore-usage] [--auto-review]
       Preflight (the item in TODO.md, the folder slot free and clean, the disk
       above the guard threshold, SUBJECT a lowercase conventional subject, the
       paths relative git globs, each NAME registered in .herdr/checks.toml;
@@ -29,6 +29,16 @@ const USAGE: &str = "usage:
       task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
       waits for you on its events (todo wait).
+      With --auto-review the server reviews each review event itself: one
+      claude -p call (structured JSON output, no tools, no session) with
+      the item, the task, the worker's last reply, the diff and the checks,
+      whose typed decision it applies: approve (bound to the event's commit
+      and base), retry (its review as the next attempt's) or escalate (a new
+      review event whose error holds the question and its options, and a
+      notice to the user). A failed call or invalid output is retried once,
+      then escalated. todo wait does not return a review event before the
+      server decided it; todo resume still answers it and wins when it
+      comes first. The decisions are recorded in the run's events.
   herdr todo wait <run-id> [--after EVENT_ID]
       Blocks until the run waits on an event after EVENT_ID (a question the
       worker policy left, the worker's turn end, a failed verify), or ended
@@ -149,7 +159,25 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let response = super::send_request(&request)?;
     let code = super::print_response(&response)?;
     super::report::hint_reply(&response, &command);
+    if let Method::TodoRun(params) = &request.method {
+        if let Some(refusal) = auto_review_ignored(params, &response) {
+            eprintln!("{refusal}");
+            return Ok(1);
+        }
+    }
     Ok(code)
+}
+
+/// A server older than `--auto-review` ignores it and starts the run
+/// anyway: its reply has no `auto_review`.
+fn auto_review_ignored(params: &TodoRunParams, response: &serde_json::Value) -> Option<String> {
+    let run = &response["result"]["run"];
+    (params.auto_review && run.is_object() && run["auto_review"] != true).then(|| {
+        format!(
+            "this server ignored --auto-review (it predates it): run {} waits for your review              of each event",
+            run["run_id"].as_str().unwrap_or("?")
+        )
+    })
 }
 
 /// How often a `todo wait` that lost its server tries to connect again.
@@ -392,6 +420,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
     Ok(Some(match subcommand {
         "run" => {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
+            let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (paths, rest) = take_list(&rest, "--paths")?;
             let (checks, rest) = take_list(&rest, "--check")?;
             let (task, rest) = take_string_option(&rest, "--task")?;
@@ -426,6 +455,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 workspace_id: super::target::caller_workspace_id(),
                 env: super::worker::caller_env(),
                 ignore_usage,
+                auto_review,
             })
         }
         "wait" => {
@@ -674,7 +704,32 @@ mod tests {
             panic!("run --ignore-usage did not parse");
         };
         assert!(params.ignore_usage);
+        assert!(!params.auto_review);
         assert_eq!(params.paths, ["src/**"]);
+        let Ok(Some(Method::TodoRun(params))) = parse(&args(&[
+            "run",
+            "t-abcd2345",
+            "--auto-review",
+            "--task",
+            &task,
+            "--message",
+            "feat: x",
+            "--paths",
+            "src/**",
+            "--check",
+            "workers",
+        ])) else {
+            panic!("run --auto-review did not parse");
+        };
+        assert!(params.auto_review);
+        let started = serde_json::json!({"result": {"type": "todo_run", "run": {
+            "run_id": "r-abcd2345", "auto_review": true}}});
+        assert_eq!(auto_review_ignored(&params, &started), None);
+        let old = serde_json::json!({"result": {"type": "todo_run", "run": {
+            "run_id": "r-abcd2345"}}});
+        assert!(auto_review_ignored(&params, &old)
+            .unwrap()
+            .contains("r-abcd2345"));
         assert!(parse(&args(&["run", "t-abcd2345", "--task", &task])).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
