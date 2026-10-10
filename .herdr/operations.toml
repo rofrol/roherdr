@@ -1,0 +1,27 @@
+# Operations `herdr todo run` runs for this repository, and the
+# capabilities they request (the coordination protocol, version 1). The
+# driver reads this file from the run's base commit, never from the
+# worker's tree. A new or changed definition needs the user's grant
+# (`herdr todo grant`, for the hash a refused run shows); the driver never
+# grants one itself.
+
+version = 1
+
+# Before the run's first worker starts: download the locked dependencies
+# into Cargo's cache, so the offline worker builds from it. It runs in an
+# export of the base commit, confined: network only to the listed hosts
+# (through herdr's egress proxy), writes only to the cache below and its
+# own scratch directory, and only the listed environment variables.
+[prepare]
+argv = ["cargo", "fetch", "--locked"]
+
+[prepare.capabilities]
+"net.egress" = { hosts = ["crates.io", "index.crates.io", "static.crates.io"] }
+"fs.write" = { paths = [
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    "~/.cargo/.package-cache",
+    "~/.cargo/.package-cache-mutate",
+    "~/.cargo/.global-cache",
+] }
+env = { names = ["HOME", "PATH", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] }

@@ -601,6 +601,32 @@ pub(crate) fn normalize_nfc(_text: &str) -> Option<String> {
     None
 }
 
+/// A job confined to its grants: the driver's run of a repository-declared
+/// operation (`prepare`). It may read, but write only under `write_paths`
+/// (and the null and terminal devices), and its only network peer is the
+/// local egress proxy on `proxy_port`, which allows the granted hosts; none
+/// denies all network.
+// Read only where a platform can confine a job (macOS); elsewhere
+// `confined_command` refuses it unread.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct Confinement<'a> {
+    pub(crate) argv: &'a [String],
+    /// Canonical paths, so they match what the kernel resolves.
+    pub(crate) write_paths: &'a [std::path::PathBuf],
+    pub(crate) proxy_port: Option<u16>,
+}
+
+/// Whether [`confined_command`] can confine a job here.
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CONFINED_JOB_SUPPORTED: bool = false;
+
+/// The command that runs the confined job, none where the platform cannot
+/// confine it (the caller refuses the job then).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn confined_command(_confinement: &Confinement<'_>) -> Option<std::process::Command> {
+    None
+}
+
 /// Quick Look exists only on macOS.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn quick_look(_path: &std::path::Path) -> Option<std::io::Result<std::process::Child>> {

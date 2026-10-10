@@ -801,6 +801,40 @@ pub struct TodoQueueTarget {
     pub cwd: String,
 }
 
+/// `todo.grant`: the user's grant of a repository's operation, for the
+/// exact definition `master` declares now in `.herdr/operations.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoGrantParams {
+    /// A directory in the repository.
+    pub cwd: String,
+    /// The operation (`prepare`).
+    pub operation: String,
+    /// The definition's hash, as the `grant_required` refusal showed it:
+    /// refused when the definition changed since.
+    pub hash: String,
+}
+
+/// `todo.grants`: the stored capability grants.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoGrantsParams {
+    /// Only the grants of the repository of this directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// One grant: a repository's operation, its definition and its hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoGrant {
+    pub repo: String,
+    pub operation: String,
+    /// SHA-256 of the canonical definition.
+    pub hash: String,
+    /// The canonical definition: protocol version, operation, argv and the
+    /// requested capabilities with their scopes.
+    pub definition: serde_json::Value,
+    pub granted_ms: u64,
+}
+
 /// An item the queue no longer starts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoQueueBlockedItem {

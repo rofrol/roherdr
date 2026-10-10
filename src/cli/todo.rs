@@ -4,9 +4,10 @@
 //! events.
 
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoDraftRunParams, TodoNextParams, TodoNextRun, TodoQueueMode,
-    TodoQueueSetParams, TodoQueueTarget, TodoResumeParams, TodoReviewParams, TodoRunParams,
-    TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
+    Method, Request, TodoAction, TodoDraftRunParams, TodoGrantParams, TodoGrantsParams,
+    TodoNextParams, TodoNextRun, TodoQueueMode, TodoQueueSetParams, TodoQueueTarget,
+    TodoResumeParams, TodoReviewParams, TodoRunParams, TodoRunTarget, TodoRunsParams,
+    TodoStopParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -186,7 +187,17 @@ const USAGE: &str = "usage:
       with a notification. on also clears such a pause. pause [--reason
       TEXT] lets the run in progress finish and starts nothing more. status
       prints the mode and the status with its reason: running,
-      waiting_on_user, escalation_pending, usage_gate, blocked or empty.";
+      waiting_on_user, escalation_pending, usage_gate, blocked or empty.
+  herdr todo grant --operation prepare --hash HASH [--repo DIR]
+      Grant the [prepare] operation that master of DIR's (default: the
+      current directory's) repository declares in .herdr/operations.toml:
+      its argv and requested capabilities, exactly the definition whose
+      hash todo run's grant_required refusal showed (refused when it changed
+      since). The grant is the user's decision: it asks for `yes` on a
+      terminal and is refused without one. A changed definition has another
+      hash and needs its own grant.
+  herdr todo grants [--repo DIR]
+      List the stored grants (of DIR's repository with --repo).";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -203,6 +214,12 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    if let Method::TodoGrant(params) = &method {
+        if let Err(refusal) = confirm_grant(params) {
+            eprintln!("{refusal}");
+            return Ok(1);
+        }
+    }
     let request = Request {
         id: format!("cli:todo:{}", args[0]),
         method,
@@ -225,6 +242,36 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         }
     }
     Ok(code)
+}
+
+/// The user's own confirmation of a grant, on a terminal: an agent's
+/// command has none, so it cannot grant by running the command.
+fn confirm_grant(params: &TodoGrantParams) -> Result<(), String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            "a grant is the user's decision: run `herdr todo grant` in your own \
+                    terminal, where it asks for confirmation"
+                .into(),
+        );
+    }
+    print!(
+        "Grant [{}] of {} with definition hash {}? Type yes: ",
+        params.operation, params.cwd, params.hash
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|error| error.to_string())?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|error| error.to_string())?;
+    if answer.trim() == "yes" {
+        Ok(())
+    } else {
+        Err("not granted".into())
+    }
 }
 
 /// A server older than `--auto-review` or `--auto-answer` ignores it and
@@ -698,6 +745,34 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 .transpose()?;
             Method::TodoRuns(TodoRunsParams { repo, commit })
         }
+        "grant" | "grants" => {
+            let (repo, rest) = take_string_option(rest, "--repo")?;
+            let dir = match repo {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => std::env::current_dir().map_err(|error| error.to_string())?,
+            };
+            let cwd = std::path::absolute(&dir)
+                .map_err(|error| format!("--repo {}: {error}", dir.display()))?
+                .display()
+                .to_string();
+            if subcommand == "grants" {
+                if !rest.is_empty() {
+                    return Err("grants takes only --repo".into());
+                }
+                Method::TodoGrants(TodoGrantsParams { cwd: Some(cwd) })
+            } else {
+                let (operation, rest) = take_string_option(&rest, "--operation")?;
+                let (hash, rest) = take_string_option(&rest, "--hash")?;
+                let (Some(operation), Some(hash), true) = (operation, hash, rest.is_empty()) else {
+                    return Err("grant takes --operation, --hash and --repo".into());
+                };
+                Method::TodoGrant(TodoGrantParams {
+                    cwd,
+                    operation,
+                    hash,
+                })
+            }
+        }
         "help" | "--help" | "-h" => return Ok(None),
         other => return Err(format!("unknown todo command: {other}")),
     }))
@@ -709,6 +784,35 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn grant_takes_the_operation_and_its_hash() {
+        let Ok(Some(Method::TodoGrant(grant))) = parse(&args(&[
+            "grant",
+            "--operation",
+            "prepare",
+            "--hash",
+            "abc",
+            "--repo",
+            "/repo",
+        ])) else {
+            panic!("grant did not parse");
+        };
+        assert_eq!(
+            (
+                grant.cwd.as_str(),
+                grant.operation.as_str(),
+                grant.hash.as_str()
+            ),
+            ("/repo", "prepare", "abc")
+        );
+        assert!(parse(&args(&["grant", "--operation", "prepare"])).is_err());
+        let Ok(Some(Method::TodoGrants(grants))) = parse(&args(&["grants", "--repo", "/repo"]))
+        else {
+            panic!("grants did not parse");
+        };
+        assert_eq!(grants.cwd.as_deref(), Some("/repo"));
     }
 
     #[test]

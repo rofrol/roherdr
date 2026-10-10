@@ -26,6 +26,7 @@
 
 #[cfg(unix)]
 pub(crate) mod broker;
+mod capabilities;
 pub(crate) mod coordinators;
 mod history;
 #[cfg(test)]
@@ -284,6 +285,13 @@ pub(crate) enum WorkerError {
     /// `report.close` from a pane that does not hold the herdr
     /// repository's coordination tenure; the message says what it holds.
     ReportCloseRefused(String),
+    /// A run requests a capability its adapter (the worker kind, or the
+    /// confined job that runs an operation) cannot enforce; the message
+    /// names the capability and the adapter.
+    CapabilityUnsupported(String),
+    /// The repository's operation has no user grant for its definition;
+    /// the message shows the definition and its hash.
+    GrantRequired(String),
     Io(std::io::Error),
 }
 
@@ -314,6 +322,8 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "history_item_not_found",
     "report_not_found",
     "report_close_refused",
+    "capability_unsupported",
+    "grant_required",
 ];
 
 impl WorkerError {
@@ -345,6 +355,8 @@ impl WorkerError {
             Self::HistoryNotFound(_) => "history_item_not_found",
             Self::ReportNotFound(_) => "report_not_found",
             Self::ReportCloseRefused(_) => "report_close_refused",
+            Self::CapabilityUnsupported(_) => "capability_unsupported",
+            Self::GrantRequired(_) => "grant_required",
         }
     }
 
@@ -386,7 +398,9 @@ impl std::fmt::Display for WorkerError {
             | Self::UsageGate(message)
             | Self::HistoryNotFound(message)
             | Self::ReportNotFound(message)
-            | Self::ReportCloseRefused(message) => f.write_str(message),
+            | Self::ReportCloseRefused(message)
+            | Self::CapabilityUnsupported(message)
+            | Self::GrantRequired(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }

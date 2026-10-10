@@ -5774,6 +5774,42 @@
           ],
           "type": "object"
         },
+        "TodoGrantParams": {
+          "description": "`todo.grant`: the user's grant of a repository's operation, for the\nexact definition `master` declares now in `.herdr/operations.toml`.",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository.",
+              "type": "string"
+            },
+            "hash": {
+              "description": "The definition's hash, as the `grant_required` refusal showed it:\nrefused when the definition changed since.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "The operation (`prepare`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd",
+            "operation",
+            "hash"
+          ],
+          "type": "object"
+        },
+        "TodoGrantsParams": {
+          "description": "`todo.grants`: the stored capability grants.",
+          "properties": {
+            "cwd": {
+              "description": "Only the grants of the repository of this directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "TodoNextParams": {
           "description": "Starts a fresh headless item coordinator for the top item of the\nrepository's `TODO.md` \"Next, in order\": a Claude worker in the\nrepository with herdr's coordinator prompt and allowlist, under a\nheadless coordination tenure of its own, owned by the caller's pane. It\ndrives the item with `todo.run` and ends; with `chain`, each one that\nends with its item done starts the next on its exit event, until \"Next,\nin order\" is empty, an item escalates to the user or fails, or\n`todo.stop`. Refused while the repository has a run in progress, an\nactive coordinator (`coordinator_active`), or the usage gate refuses.",
           "properties": {
@@ -7973,6 +8009,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoQueueTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user's grant of a repository's operation (`prepare`) for the\nexact definition and hash `master` declares.",
+          "properties": {
+            "method": {
+              "const": "todo.grant",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoGrantParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The stored capability grants.",
+          "properties": {
+            "method": {
+              "const": "todo.grants",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoGrantsParams"
             }
           },
           "required": [
@@ -14834,6 +14904,43 @@
               "type": "object"
             },
             {
+              "description": "`todo.grant`'s reply: the stored grant.",
+              "properties": {
+                "grant": {
+                  "$ref": "#/schemas/success_response/$defs/TodoGrant"
+                },
+                "type": {
+                  "const": "todo_grant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grant"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`todo.grants`' reply.",
+              "properties": {
+                "grants": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/TodoGrant"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "todo_grants",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grants"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
               "properties": {
                 "items": {
@@ -17056,6 +17163,37 @@
               "type": "string"
             }
           ]
+        },
+        "TodoGrant": {
+          "description": "One grant: a repository's operation, its definition and its hash.",
+          "properties": {
+            "definition": {
+              "description": "The canonical definition: protocol version, operation, argv and the\nrequested capabilities with their scopes."
+            },
+            "granted_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hash": {
+              "description": "SHA-256 of the canonical definition.",
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo",
+            "operation",
+            "hash",
+            "definition",
+            "granted_ms"
+          ],
+          "type": "object"
         },
         "TodoLanding": {
           "description": "A commit a run landed on `master`, with the run and attempt it came\nfrom.",

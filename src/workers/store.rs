@@ -728,6 +728,7 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 CREATE TRIGGER coordinator_would_deny_no_delete BEFORE DELETE ON coordinator_would_deny
 BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 "#,
+    super::capabilities::GRANTS_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3195,6 +3196,7 @@ mod tests {
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
+                 DROP TABLE capability_grants;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3257,8 +3259,9 @@ mod tests {
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
+                 DROP TABLE capability_grants;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 20
+                MIGRATIONS.len() - 21
             ))
             .unwrap();
         drop(store);
@@ -3315,8 +3318,9 @@ mod tests {
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
                  DROP TABLE coordinator_would_deny;
+                 DROP TABLE capability_grants;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 9
+                MIGRATIONS.len() - 10
             ))
             .unwrap();
         drop(store);

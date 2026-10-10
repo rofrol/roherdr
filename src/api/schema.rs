@@ -183,6 +183,13 @@ pub enum Method {
     /// A repository's queue mode and what its queue does now.
     #[serde(rename = "todo.queue_status")]
     TodoQueueStatus(TodoQueueTarget),
+    /// The user's grant of a repository's operation (`prepare`) for the
+    /// exact definition and hash `master` declares.
+    #[serde(rename = "todo.grant")]
+    TodoGrant(TodoGrantParams),
+    /// The stored capability grants.
+    #[serde(rename = "todo.grants")]
+    TodoGrants(TodoGrantsParams),
     /// The TODO items herdr recorded, each with its latest record.
     #[serde(rename = "history.list")]
     HistoryList(HistoryListParams),

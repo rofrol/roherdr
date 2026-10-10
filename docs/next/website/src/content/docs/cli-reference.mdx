@@ -522,6 +522,32 @@ herdr todo queue status [--repo DIR]
 
 `queue status` prints the mode (`on`, `paused`), the status with its reason (`running`, `waiting_on_user` for a paused queue or a run that waits on `todo resume`, `escalation_pending`, `usage_gate`, `blocked`, `empty`), the run in progress and its item, the circuit breaker's count (`failures`) and the blocked items. A usage gate's refusal is looked at again at the next event, at the next reading the usage poller publishes, or with `queue on`.
 
+A repository may declare operations and capabilities for its runs in `.herdr/operations.toml` (the coordination protocol, version 1, which names no language, registry or tool). Preflight reads it from the run's base commit (`master`), never from a working tree:
+
+```toml
+version = 1
+
+[prepare]
+argv = ["cargo", "fetch", "--locked"]
+
+[prepare.capabilities]
+"net.egress" = { hosts = ["crates.io", "index.crates.io", "static.crates.io"] }
+"fs.write" = { paths = ["~/.cargo/registry", "~/.cargo/git"] }
+env = { names = ["HOME", "PATH"] }
+
+[worker.capabilities]
+# what the run's worker needs beyond its default sandbox
+```
+
+The capabilities are `net.egress` (`hosts`: exact host names), `fs.write` (`paths`: absolute or under `~/`), `env` (`names`: variables passed from the caller's environment), `exec` (`argv`: programs, arbitrary code inside the granted confinement), `pty`, `net.local`, `proc.list` and `exec.unsandboxed` (`argv`). An unknown key, operation, capability or field, or another `version`, refuses the run (`todo_preflight_failed`). A capability the adapter that would enforce it cannot enforce here refuses the run with `capability_unsupported`, naming the capability and the adapter: the headless Claude worker enforces no `[worker]` request yet, and `[prepare]` runs as a confined job only on macOS, which enforces `net.egress`, `fs.write`, `env` and `exec`. `[prepare]` also needs the user's grant for its exact definition: until then preflight refuses with `grant_required`, showing the canonical definition and its hash, and the driver never grants it. A changed definition has another hash and is asked again.
+
+```bash
+herdr todo grant --operation prepare --hash HASH [--repo DIR]
+herdr todo grants [--repo DIR]
+```
+
+`todo grant` stores the grant of the repository's `[prepare]` as `master` defines it now, refused when its hash is not HASH; it asks for `yes` on a terminal and is refused without one, because a grant is the user's decision. `todo grants` lists the stored grants. A granted prepare runs once per run before its first worker starts, in an export of the base commit (`git archive`), as a job confined to its grants: it may write only under its `fs.write` paths, the export and its own scratch directory (its `TMPDIR`), gets only its `env` variables, and reaches the network only through herdr's local egress proxy, which tunnels HTTPS (`CONNECT` to port 443) to its `net.egress` hosts and refuses every other request (no `net.egress`, no network). Its process group is killed when it exits. The run records the grant it runs with (`grants` in its `run_created` event, `run_prepare_started`) and the result (`run_prepared`: `done` or `failed`, the exit status, the hosts the proxy refused and the output's last lines; the whole output is in `prepare/<run-id>.log` next to the worker store). A failed prepare blocks the run.
+
 Herdr's server records the life of each TODO item a run works on, so you can look through finished items afterwards (see `history.*` in the socket API):
 
 ```bash
