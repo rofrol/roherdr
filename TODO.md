@@ -1588,6 +1588,10 @@ user needs to decide or do.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
 
+- [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
+  Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
+  Checked (user 2026-10-10: "maybe test these open-source projects hands-on? ask the models"; round 20261010-115231-6369, sol + MiMo + DeepSeek): all three pick vibe-kanban (Rust + SQLite + worktrees, its restart marks orphans Failed) and mini-swe-agent (cheap baseline); LangGraph or Restate optional; skip Temporal, Inngest and the OpenHands resolver (heavy infra, documented semantics). Scenarios, same toy repo and fixed prompts (a scripted fake model where supported): success; kill the orchestrator mid-task and restart; kill the agent process; an agent stuck on a silent command; an agent asking a question (restart while it waits); a failed check then retry. Record state rows before and after, resume/duplicate/mark-failed, what the user sees, leftover processes and worktrees, cost, manual steps. Safety: a VM (not a container: agents run arbitrary shell and scan the environment), no host mounts, SSH agent, credentials or real remotes (a local bare repo), egress only to the model API, a spend-capped throwaway key (needs the user), snapshots. Estimate 6-10 h for the two.
+
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
