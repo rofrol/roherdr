@@ -861,3 +861,17 @@ closed run's), and the driver starts that run when this one is done
 `next_refused` event), or `--stop-reason <text>`, recorded in the item
 history and sent as a notification (the notification may be lost if the
 server dies in between; the history keeps it).
+
+## The server calls the review itself: `review_run` as a typed decision
+
+The item's lifecycle is server code and the model is called only at typed
+decision points (user's decision 2026-10-10; rounds 20261010-114832-f497
+and 20261010-113822-76ae, an open-source survey). Built the same day:
+`--auto-review` (`review_run`: approve, retry, escalate; verify first),
+`--auto-answer` (`answer_question`: allow, deny, answer, escalate; requests
+herdr's policy reserves for the user may only escalate), `--draft`
+(`draft_task`: task, subject, paths, checks, validated) which implies both.
+Every decision is schema- and state-validated, recorded before it is
+applied and reused after a crash, retried once then escalated into the
+user's `?` list; a failed decision write shows the run blocked, never
+hidden; a manual `todo resume` wins.
