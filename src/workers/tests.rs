@@ -5825,8 +5825,9 @@ mod todo_runs {
 
     /// A repository on `master` with the item in `TODO.md` and the checks
     /// `ok` (an argv a shell would break: `$X;false` expanded and split),
-    /// `b` (b.txt exists), `never` and `tests` (src/api/a.txt exists), which
-    /// the verify adds to a diff under `src/api/`.
+    /// `b` (b.txt exists), `never`, `tests` (src/api/a.txt exists), which
+    /// the verify adds to a diff under `src/api/`, and `maintenance`
+    /// (docs/next/a.txt exists), which it adds to a diff under `docs/next/`.
     fn todo_repo(name: &str) -> Fixture {
         let fixture = Fixture::new(name);
         let repo = &fixture.repo;
@@ -5853,6 +5854,7 @@ mod todo_runs {
              b = [\"test\", \"-f\", \"b.txt\"]\n\
              never = [\"false\"]\n\
              tests = [\"test\", \"-f\", \"src/api/a.txt\"]\n\
+             maintenance = [\"test\", \"-f\", \"docs/next/a.txt\"]\n\
              [preflight]\nmin_free_gib = 0\n",
         )
         .unwrap();
@@ -6266,6 +6268,8 @@ mod todo_runs {
             "- `ok`: `[\"test\",\"$X;false\",\"=\",\"$X;false\"]`\n",
             "- `tests`: `[\"test\",\"-f\",\"src/api/a.txt\"]`, added by the verify when \
              your diff touches `src/api/` or `tests/fixtures/`",
+            "- `maintenance`: `[\"test\",\"-f\",\"docs/next/a.txt\"]`, added by the verify \
+             when your diff touches `src/config/` or `docs/next/` or `scripts/` or `plugins/`",
             "run every one of them you can in your sandbox (`windows-lint` works there) and \
              report each one's result, or the sandbox error that stopped it",
             "Advertised client methods keep their v1 shape: add a new method instead of \
@@ -6401,6 +6405,51 @@ mod todo_runs {
             .filter_map(|check| check["name"].as_str())
             .collect();
         assert!(checks.ends_with(&["ok", "tests"]), "{verification:#?}");
+    }
+
+    #[test]
+    fn a_diff_under_docs_next_adds_the_maintenance_check_to_the_verify() {
+        let fixture = todo_repo("todo-maintenance-check");
+        let docs = fixture.repo.join("docs/next");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("keep.txt"), "").unwrap();
+        git_in(&fixture.repo, &["add", "."]);
+        git_in(&fixture.repo, &["commit", "-q", "-m", "docs"]);
+        let run = fixture
+            .supervisor
+            .todo_run(TodoRunParams {
+                paths: vec!["docs/next/*.txt".into()],
+                ..params(&fixture, &format!("commit docs/next/a.txt {SUBJECT}"), "ok")
+            })
+            .unwrap();
+        assert_eq!(run.checks, ["ok"]);
+        let (done, finished) = approve_to_done(&fixture, &run.run_id);
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?} {finished:#?}");
+        // Only the check whose paths the diff touches is added.
+        assert_eq!(finished.checks, ["ok", "maintenance"]);
+        let added = run_events(&fixture, &run.run_id, "run_check_added");
+        assert_eq!(added.len(), 1, "{added:#?}");
+        assert_eq!(added[0]["check"]["name"], "maintenance");
+        assert_eq!(
+            added[0]["check"]["argv"],
+            serde_json::json!(["test", "-f", "docs/next/a.txt"])
+        );
+        assert!(
+            added[0]["reason"].as_str().unwrap().contains("docs/next/"),
+            "{added:#?}"
+        );
+        let worker_id = finished.worker_id.unwrap();
+        let verification = &fixture.herdr_events(&worker_id, "verification")[0];
+        let checks: Vec<&str> = verification["verification"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|check| check["name"].as_str())
+            .collect();
+        assert!(
+            checks.ends_with(&["ok", "maintenance"]),
+            "{verification:#?}"
+        );
     }
 
     #[test]
@@ -7759,7 +7808,7 @@ mod todo_runs {
         assert!(message.contains("TODO.md"), "{message}");
         let (code, message) = refused(params(&fixture, &task, "nosuch"));
         assert_eq!(code, "todo_preflight_failed");
-        assert!(message.contains("b, never, ok"), "{message}");
+        assert!(message.contains("b, maintenance, never, ok"), "{message}");
         let (code, _) = refused(TodoRunParams {
             paths: vec!["/abs".into()],
             ..params(&fixture, &task, "ok")

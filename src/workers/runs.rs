@@ -167,11 +167,15 @@ pub(super) struct RunFinish {
     pub(super) pushed: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) kept_branches: Vec<String>,
-    /// The registered [`CONTRACT_CHECK`] as preflight read it, when the run
-    /// does not name it: the verify adds it when the attempt's diff touches
-    /// [`CONTRACT_PATHS`].
+    /// The `tests` check a run stored by an older build added for an API
+    /// change; read only, [`RunFinish::path_checks`] holds it now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) contract_check: Option<RunCheck>,
+    /// The registered [`PATH_CHECKS`] as preflight read them, those the run
+    /// does not name: the verify adds each when the attempt's diff touches
+    /// its paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) path_checks: Vec<RunCheck>,
     /// The item a close named to start once the run is done, with its
     /// run's parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,12 +212,69 @@ pub(super) struct RunFinish {
     pub(super) queued: bool,
 }
 
-/// The check the verify adds by itself to a run whose diff touches
-/// [`CONTRACT_PATHS`]: the full suite, which holds the frozen client
-/// endpoint contract tests (AGENTS.md, "Stable client endpoint contract").
-const CONTRACT_CHECK: &str = "tests";
-/// The paths whose change makes the verify add [`CONTRACT_CHECK`].
-const CONTRACT_PATHS: [&str; 2] = ["src/api/", "tests/fixtures/"];
+/// A check the verify adds by itself, when the repository registers it, to
+/// a run that does not name it and whose diff touches one of its paths.
+struct PathCheck {
+    name: &'static str,
+    /// Path prefixes, relative to the repository.
+    paths: &'static [&'static str],
+    /// What the check verifies there, for the worker's contract.
+    why: &'static str,
+}
+
+/// The checks the verify adds by path: `tests`, the full suite, which holds
+/// the frozen client endpoint contract tests (AGENTS.md, "Stable client
+/// endpoint contract"), and `maintenance`, the maintenance script tests,
+/// which hold the config reference docs check that `just check` runs.
+const PATH_CHECKS: [PathCheck; 2] = [
+    PathCheck {
+        name: "tests",
+        paths: &["src/api/", "tests/fixtures/"],
+        why: "so an API change is verified with the frozen client contract tests",
+    },
+    PathCheck {
+        name: "maintenance",
+        paths: &["src/config/", "docs/next/", "scripts/", "plugins/"],
+        why: "so a change there is verified with the maintenance script tests, \
+              the config reference docs check among them",
+    },
+];
+
+impl PathCheck {
+    fn of(name: &str) -> Option<&'static PathCheck> {
+        PATH_CHECKS.iter().find(|check| check.name == name)
+    }
+
+    /// Whether a diff's changed paths, one per line, touch the check's paths.
+    fn touched_by(&self, changed: &str) -> bool {
+        changed
+            .lines()
+            .any(|path| self.paths.iter().any(|prefix| path.starts_with(prefix)))
+    }
+
+    /// The paths as the contract and the events name them.
+    fn paths_text(&self) -> String {
+        self.paths
+            .iter()
+            .map(|path| format!("`{path}`"))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    }
+}
+
+impl RunFinish {
+    /// The path checks the verify may add: those preflight stored, after
+    /// the `tests` check of a run an older build stored.
+    pub(super) fn path_checks(&self) -> Vec<RunCheck> {
+        let mut checks: Vec<RunCheck> = self.contract_check.iter().cloned().collect();
+        for check in &self.path_checks {
+            if !checks.iter().any(|known| known.name == check.name) {
+                checks.push(check.clone());
+            }
+        }
+        checks
+    }
+}
 
 /// `[install]` of `.herdr/checks.toml`: the program and arguments that
 /// install `master` (no shell), and optionally one whose first output line
@@ -674,18 +735,23 @@ fn registered_checks(checks: &ChecksFile, names: &[String]) -> Result<Vec<RunChe
     Ok(registered)
 }
 
-/// The check the verify adds for a diff that touches the API, when the
-/// repository registers it and the run does not name it.
-fn contract_check_of(checks: &ChecksFile, registered: &[RunCheck]) -> Option<RunCheck> {
-    checks
-        .checks
-        .get(CONTRACT_CHECK)
-        .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
-        .filter(|_| !registered.iter().any(|check| check.name == CONTRACT_CHECK))
-        .map(|argv| RunCheck {
-            name: CONTRACT_CHECK.to_owned(),
-            argv: argv.clone(),
+/// The [`PATH_CHECKS`] the verify may add to a run: those the repository
+/// registers (with a program) and the run does not name.
+fn path_checks_of(checks: &ChecksFile, registered: &[RunCheck]) -> Vec<RunCheck> {
+    PATH_CHECKS
+        .iter()
+        .filter(|path_check| !registered.iter().any(|check| check.name == path_check.name))
+        .filter_map(|path_check| {
+            checks
+                .checks
+                .get(path_check.name)
+                .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+                .map(|argv| RunCheck {
+                    name: path_check.name.to_owned(),
+                    argv: argv.clone(),
+                })
         })
+        .collect()
 }
 
 fn read_checks(repo: &Path) -> Result<ChecksFile, String> {
@@ -833,8 +899,8 @@ fn worker_task(run: &Run, carried: Option<&str>) -> String {
 }
 
 /// The contract's part about the verify's checks: each by name and argv,
-/// the [`CONTRACT_CHECK`] the verify adds for [`CONTRACT_PATHS`], and that
-/// the worker runs them before its last line and reports each result.
+/// the [`PATH_CHECKS`] the verify adds for their paths, and that the worker
+/// runs them before its last line and reports each result.
 fn checks_note(run: &Run) -> String {
     let argv = |check: &RunCheck| serde_json::to_string(&check.argv).unwrap_or_default();
     let mut note =
@@ -842,17 +908,16 @@ fn checks_note(run: &Run) -> String {
     for check in &run.checks {
         note.push_str(&format!("- `{}`: `{}`\n", check.name, argv(check)));
     }
-    if let Some(check) = &run.finish.contract_check {
+    for check in run.finish.path_checks() {
+        let Some(path_check) = PathCheck::of(&check.name) else {
+            continue;
+        };
         note.push_str(&format!(
-            "- `{}`: `{}`, added by the verify when your diff touches {}, so an API change \
-             is verified with the frozen client contract tests\n",
+            "- `{}`: `{}`, added by the verify when your diff touches {}, {}\n",
             check.name,
-            argv(check),
-            CONTRACT_PATHS
-                .iter()
-                .map(|path| format!("`{path}`"))
-                .collect::<Vec<_>>()
-                .join(" or "),
+            argv(&check),
+            path_check.paths_text(),
+            path_check.why,
         ));
     }
     note.push_str(
@@ -860,13 +925,6 @@ fn checks_note(run: &Run) -> String {
          works there) and report each one's result, or the sandbox error that stopped it.\n",
     );
     note
-}
-
-/// Whether a diff's changed paths touch [`CONTRACT_PATHS`].
-fn touches_contract(changed: &str) -> bool {
-    changed
-        .lines()
-        .any(|path| CONTRACT_PATHS.iter().any(|prefix| path.starts_with(prefix)))
 }
 
 /// The next attempt's task: the previous attempt's with its review.
@@ -1167,7 +1225,7 @@ struct Preflighted {
     base: String,
     checks: Vec<RunCheck>,
     install: Option<InstallCommand>,
-    contract_check: Option<RunCheck>,
+    path_checks: Vec<RunCheck>,
 }
 
 impl WorkerSupervisor {
@@ -1357,7 +1415,7 @@ impl WorkerSupervisor {
             owner_coordinator: owner_coordinator.clone(),
             finish: RunFinish {
                 install: preflighted.install.clone(),
-                contract_check: preflighted.contract_check.clone(),
+                path_checks: preflighted.path_checks.clone(),
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
                 draft,
@@ -1375,7 +1433,7 @@ impl WorkerSupervisor {
             "base": preflighted.base,
             "checks": preflighted.checks,
             "install": preflighted.install,
-            "contract_check": preflighted.contract_check,
+            "path_checks": preflighted.path_checks,
             "message": params.message,
             "paths": params.paths,
             "task": params.task,
@@ -1573,12 +1631,12 @@ impl WorkerSupervisor {
             .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
             .trim()
             .to_owned();
-        let contract_check = contract_check_of(&checks, &registered);
+        let path_checks = path_checks_of(&checks, &registered);
         Ok(Preflighted {
             base,
             checks: registered,
             install: checks.install,
-            contract_check,
+            path_checks,
         })
     }
 
@@ -2957,7 +3015,7 @@ impl WorkerSupervisor {
             .clone()
             .ok_or("the run has no worker to verify")?;
         let base = run.info.base.clone().ok_or("the run has no base")?;
-        if let Some((check, reason)) = self.contract_check_due(run, &worker_id, &base)? {
+        for (check, reason) in self.path_checks_due(run, &worker_id, &base)? {
             run.info.checks.push(check.name.clone());
             run.checks.push(check.clone());
             self.run_step(
@@ -3082,21 +3140,24 @@ impl WorkerSupervisor {
             .map_err(|error| format!("verifying worker {worker_id}: {error}"))
     }
 
-    /// The run's [`CONTRACT_CHECK`], with why, when the verify must add it:
-    /// the attempt's diff from the base touches [`CONTRACT_PATHS`] (or
+    /// The run's [`PATH_CHECKS`], each with why, that the verify must add:
+    /// the attempt's diff from the base touches the check's paths (or
     /// cannot be read) and the run does not have it yet. Once added (a
-    /// `run_check_added` event), it stays for the later attempts.
-    fn contract_check_due(
+    /// `run_check_added` event), a check stays for the later attempts.
+    fn path_checks_due(
         &self,
         run: &Run,
         worker_id: &str,
         base: &str,
-    ) -> Result<Option<(RunCheck, String)>, String> {
-        let Some(check) = run.finish.contract_check.clone() else {
-            return Ok(None);
-        };
-        if run.checks.iter().any(|known| known.name == check.name) {
-            return Ok(None);
+    ) -> Result<Vec<(RunCheck, String)>, String> {
+        let candidates: Vec<RunCheck> = run
+            .finish
+            .path_checks()
+            .into_iter()
+            .filter(|check| !run.checks.iter().any(|known| known.name == check.name))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
         }
         let changed = self
             .status(worker_id)
@@ -3107,14 +3168,19 @@ impl WorkerSupervisor {
                     &["diff", "--name-only", base, "HEAD"],
                 )
             });
-        let reason = match &changed {
-            Ok(changed) if touches_contract(changed) => {
-                format!("the diff touches {}", CONTRACT_PATHS.join(" or "))
-            }
-            Ok(_) => return Ok(None),
-            Err(error) => format!("the diff could not be read: {error}"),
-        };
-        Ok(Some((check, reason)))
+        Ok(candidates
+            .into_iter()
+            .filter_map(|check| {
+                let reason = match (&changed, PathCheck::of(&check.name)) {
+                    (Ok(changed), Some(path_check)) if path_check.touched_by(changed) => {
+                        format!("the diff touches {}", path_check.paths_text())
+                    }
+                    (Ok(_), _) => return None,
+                    (Err(error), _) => format!("the diff could not be read: {error}"),
+                };
+                Some((check, reason))
+            })
+            .collect())
     }
 
     /// Picks the attempt's verified commit onto `master` in the
@@ -3399,6 +3465,105 @@ pub(crate) fn usage_reading_published() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_path_check_is_due_only_for_its_own_paths() {
+        let tests = PathCheck::of("tests").unwrap();
+        let maintenance = PathCheck::of("maintenance").unwrap();
+        for changed in [
+            "src/config/mod.rs",
+            "docs/next/website/src/content/docs/configuration.mdx",
+            "scripts/todo_edit.py",
+            "plugins/job/bin/herdr-job",
+        ] {
+            assert!(maintenance.touched_by(changed), "{changed}");
+            assert!(!tests.touched_by(changed), "{changed}");
+        }
+        for changed in ["src/api/schema/todo.rs", "tests/fixtures/x.json"] {
+            assert!(tests.touched_by(changed), "{changed}");
+            assert!(!maintenance.touched_by(changed), "{changed}");
+        }
+        // A prefix matches from the start of a path only, and any line of
+        // the diff's name list is enough.
+        for changed in [
+            "src/workers/runs.rs",
+            "docs/versions/x.md",
+            "a/scripts/x.py",
+        ] {
+            assert!(!maintenance.touched_by(changed), "{changed}");
+        }
+        assert!(maintenance.touched_by("src/main.rs\nscripts/x.py\n"));
+    }
+
+    #[test]
+    fn path_checks_are_the_registered_ones_the_run_does_not_name() {
+        let checks: ChecksFile = toml::from_str(
+            "[checks]\nok = [\"true\"]\ntests = [\"cargo\", \"nextest\", \"run\"]\n\
+             maintenance = [\"just\", \"maintenance-test\"]\n",
+        )
+        .unwrap();
+        let named = |names: &[&str]| {
+            registered_checks(
+                &checks,
+                &names
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let names = |found: Vec<RunCheck>| -> Vec<String> {
+            found.into_iter().map(|check| check.name).collect()
+        };
+        assert_eq!(
+            names(path_checks_of(&checks, &named(&["ok"]))),
+            ["tests", "maintenance"]
+        );
+        assert_eq!(
+            names(path_checks_of(&checks, &named(&["ok", "maintenance"]))),
+            ["tests"]
+        );
+        let found = path_checks_of(&checks, &named(&["tests"]));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].argv, ["just", "maintenance-test"]);
+        // An unregistered path check is not added.
+        let bare: ChecksFile = toml::from_str("[checks]\nok = [\"true\"]\n").unwrap();
+        assert!(path_checks_of(&bare, &named(&["ok"])).is_empty());
+    }
+
+    #[test]
+    fn a_run_stored_by_an_older_build_keeps_its_tests_check() {
+        let check = |name: &str| RunCheck {
+            name: name.to_owned(),
+            argv: vec!["true".to_owned()],
+        };
+        let old: RunFinish =
+            serde_json::from_value(json!({"contract_check": {"name": "tests", "argv": ["true"]}}))
+                .unwrap();
+        assert_eq!(old.path_checks(), [check("tests")]);
+        let new = RunFinish {
+            path_checks: vec![check("tests"), check("maintenance")],
+            ..RunFinish::default()
+        };
+        assert_eq!(new.path_checks(), [check("tests"), check("maintenance")]);
+        let written = serde_json::to_value(&new).unwrap();
+        assert!(written.get("contract_check").is_none(), "{written}");
+    }
+
+    /// The repository's own checks file registers every check the verify
+    /// adds by path, so they are added to its runs.
+    #[test]
+    fn the_repository_registers_every_path_check() {
+        let checks = read_checks(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        for path_check in &PATH_CHECKS {
+            assert!(
+                checks.checks.contains_key(path_check.name),
+                "{} is not in {CHECKS_FILE}",
+                path_check.name
+            );
+        }
+        assert_eq!(checks.checks["maintenance"], ["just", "maintenance-test"]);
+    }
 
     #[test]
     fn run_ids_are_r_and_eight_base32_characters() {

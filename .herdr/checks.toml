@@ -13,6 +13,11 @@ tests = ["cargo", "nextest", "run"]
 # `--check` for changes under `src/`, so unix-only code that is dead on
 # Windows fails the verify instead of the coordinator's clean-install.
 windows-lint = ["python3", "scripts/windows_cross.py", "lint"]
+# The maintenance script tests (`just maintenance-test`), which hold the
+# config reference docs check that `just check` runs. The verify adds it, like
+# `tests` for `src/api/` and `tests/fixtures/`, to a run that does not name it
+# and whose diff touches `src/config/`, `docs/next/`, `scripts/` or `plugins/`.
+maintenance = ["just", "maintenance-test"]
 
 [preflight]
 # The free disk below which preflight refuses a run (`just guard`'s limit).

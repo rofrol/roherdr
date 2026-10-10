@@ -374,16 +374,16 @@ impl WorkerSupervisor {
             return Ok(Some(Some(verification)));
         }
         self.stop_for_review(run, &worker_id)?;
-        let added = self.contract_check_due(run, &worker_id, &base)?;
+        let added = self.path_checks_due(run, &worker_id, &base)?;
         let mut checked = run.clone();
-        if let Some((check, _)) = &added {
+        for (check, _) in &added {
             checked.info.checks.push(check.name.clone());
             checked.checks.push(check.clone());
         }
         let verification = self.verify_attempt(&checked, &worker_id, &base)?;
         let note = json!({
             "type": VERIFIED, "event": seq, "attempt": run.info.attempt, "commit": commit,
-            "verdict": verification.verdict, "check_added": added, "verification": verification,
+            "verdict": verification.verdict, "checks_added": added, "verification": verification,
         });
         let text = serde_json::to_string(&verification).ok();
         let written = store
@@ -396,7 +396,7 @@ impl WorkerSupervisor {
                 {
                     return Ok(None);
                 }
-                if let Some((check, _)) = &added {
+                for (check, _) in &added {
                     current.info.checks.push(check.name.clone());
                     current.checks.push(check.clone());
                 }
@@ -566,7 +566,7 @@ impl WorkerSupervisor {
             "event_note": event.error,
             "checks": {
                 "registered": run.checks,
-                "added_for_api_changes": run.finish.contract_check,
+                "added_when_the_diff_touches_their_paths": run.finish.path_checks(),
                 "verify_before_review": verification,
             },
         });

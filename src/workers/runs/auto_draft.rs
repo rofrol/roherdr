@@ -41,7 +41,7 @@ use super::auto_review::{escalation_options, nonempty, only};
 use super::decision::{self, Prompt, MAX_CALLS};
 use super::escalations;
 use super::{
-    check_message, check_paths, contract_check_of, git, new_event, read_checks, registered_checks,
+    check_message, check_paths, git, new_event, path_checks_of, read_checks, registered_checks,
     ChecksFile, Run, RunCheck, CHECKS_FILE, DECISIONS_FILE,
 };
 use crate::api::schema::{TodoDraft, TodoEventKind, TodoRunStatus, TodoStep};
@@ -610,12 +610,12 @@ impl WorkerSupervisor {
             paths,
             registered,
         } = drafted;
-        let contract_check = contract_check_of(checks, &registered);
+        let path_checks = path_checks_of(checks, &registered);
         let names: Vec<String> = registered.iter().map(|check| check.name.clone()).collect();
         let body = json!({
             "type": APPLIED, "decision_id": record.decision_id, "round": record.round,
             "model": record.model, "task": task, "message": message, "paths": paths,
-            "checks": registered, "contract_check": contract_check,
+            "checks": registered, "path_checks": path_checks,
         });
         let store = self.run_store().map_err(|error| error.to_string())?;
         let applied = store
@@ -633,7 +633,8 @@ impl WorkerSupervisor {
                 current.info.paths = paths.clone();
                 current.info.checks = names.clone();
                 current.checks = registered.clone();
-                current.finish.contract_check = contract_check.clone();
+                current.finish.contract_check = None;
+                current.finish.path_checks = path_checks.clone();
                 current.info.step = TodoStep::Start;
                 tx.run_event(&mut current, &body, false, now_ms())?;
                 Ok(Some(current))
