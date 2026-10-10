@@ -263,26 +263,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   socket tests outside the sandbox; this run's `verify` runs them, and the
   coordinator closes each item whose check passed.
 
-- [ ] Report a tool call whose process exited while descendants hold its [t-oan63shb]
-  output open (decided 2026-10-10: the user said "decide with the models";
-  round 20261010-021633-4043, sol + MiMo + DeepSeek). The try-roguix worker
-  hung ~2.5 h on `ssh guest <test>` because background processes in the
-  guest kept the session's stderr open. All three: there is no local
-  positive event for that hang (the local ssh stays alive, blocked on the
-  remote channel); a silence threshold (B) or Claude's Bash timeout used as
-  a trigger (D) are the rejected timer workarounds. The fix is the
-  worker's command: the remote test's completion must be the event (a
-  wrapper that captures the exit status, prints a completion line and
-  exits; background processes given their own stdin/stdout/stderr, e.g.
-  `setsid cmd </dev/null >log 2>&1 &`; `ssh -n` alone fixes only stdin) —
-  sent to the try-roguix coordinator for its task texts. herdr adds only
-  the complement that is a positive fact: when a worker's tool call's own
-  process has exited but other processes still hold its stdout/stderr
-  pipe, raise an attention event naming those pids and commands (the same
-  class as the orphaned broker that held the job slot, 2026-10-09); a
-  lint-grade signal, never a kill. Test with a stub tool call that leaves a
-  detached child holding stderr.
-
 - [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside [t-jnema5dg]
   herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
   after 4-5 minutes, four times, while the workers kept running (reported
