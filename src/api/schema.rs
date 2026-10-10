@@ -205,6 +205,14 @@ pub enum Method {
     /// The recorded allowlist exceptions, oldest first.
     #[serde(rename = "history.overrides")]
     HistoryOverrides(HistoryOverridesParams),
+    /// What to do with one call the coordinator allowlist refused: the
+    /// configured mode, and in shadow mode the stored would-deny.
+    #[serde(rename = "coordinator.allowlist_refusal")]
+    CoordinatorAllowlistRefusal(CoordinatorAllowlistRefusalParams),
+    /// The calls the coordinator allowlist would have denied in shadow mode,
+    /// oldest first, and their count per command shape.
+    #[serde(rename = "history.would_deny")]
+    HistoryWouldDeny(HistoryWouldDenyParams),
     /// Records one occurrence of a protocol problem; the first of its
     /// fingerprint notifies the herdr coordinator (or the user).
     #[serde(rename = "report.record")]

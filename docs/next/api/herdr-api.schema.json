@@ -2101,6 +2101,48 @@
           ],
           "type": "object"
         },
+        "CoordinatorAllowlistRefusalParams": {
+          "description": "Asks what to do with one tool call the coordinator allowlist refused in\na coordinator tab. The server answers with `[coordinator] allowlist`;\nin shadow mode it also records the call as a would-deny.",
+          "properties": {
+            "command": {
+              "default": "",
+              "description": "The call's command (Bash) or target (a file path), as the agent\nwrote it; empty for a tool without one.",
+              "type": "string"
+            },
+            "cwd": {
+              "description": "The agent's directory, which names the repository when the pane has\nno active tenure.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The coordinator's pane (the hook sends its `HERDR_PANE_ID`).",
+              "type": "string"
+            },
+            "reason": {
+              "description": "Why the allowlist refused the call; one line.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The agent session that made the call.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "description": "The tool the call used, such as `Bash`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "tool",
+            "reason"
+          ],
+          "type": "object"
+        },
         "CoordinatorEndParams": {
           "description": "Ends a tenure: the one named, else the one bound to the pane.",
           "properties": {
@@ -2685,6 +2727,19 @@
           "required": [
             "repo"
           ],
+          "type": "object"
+        },
+        "HistoryWouldDenyParams": {
+          "description": "Lists the calls the coordinator allowlist would have denied in shadow\nmode, of one repository when given.",
+          "properties": {
+            "repo": {
+              "description": "A directory in the repository.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "IntegrationInstallParams": {
@@ -7996,6 +8051,40 @@
           "type": "object"
         },
         {
+          "description": "What to do with one call the coordinator allowlist refused: the\nconfigured mode, and in shadow mode the stored would-deny.",
+          "properties": {
+            "method": {
+              "const": "coordinator.allowlist_refusal",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorAllowlistRefusalParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The calls the coordinator allowlist would have denied in shadow mode,\noldest first, and their count per command shape.",
+          "properties": {
+            "method": {
+              "const": "history.would_deny",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/HistoryWouldDenyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Records one occurrence of a protocol problem; the first of its\nfingerprint notifies the herdr coordinator (or the user).",
           "properties": {
             "method": {
@@ -10761,6 +10850,31 @@
           ],
           "type": "string"
         },
+        "CoordinatorAllowlistMode": {
+          "description": "What the coordinator allowlist does with a call it refuses\n(`[coordinator] allowlist`).",
+          "oneOf": [
+            {
+              "const": "shadow",
+              "description": "The call runs, and the refusal is recorded as a would-deny.",
+              "type": "string"
+            },
+            {
+              "const": "enforce",
+              "description": "The call is denied, unless it carries `# herdr-override: <reason>`.",
+              "type": "string"
+            },
+            {
+              "const": "off",
+              "description": "The call runs, and nothing is recorded.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A mode this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "CoordinatorInfo": {
           "description": "One coordination tenure: who coordinated a repository's TODO, from when\nto when. Its id is its own, never a pane's or an agent session's: those\nare its bindings.",
           "properties": {
@@ -10899,6 +11013,103 @@
             "pane_id",
             "tool",
             "command",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "CoordinatorWouldDeny": {
+          "description": "One call the coordinator allowlist would have denied in shadow mode.",
+          "properties": {
+            "command": {
+              "description": "The command or target, cut to its first 4000 characters.",
+              "type": "string"
+            },
+            "coordinator_id": {
+              "description": "The pane's active tenure then.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The record's number, growing in the order of writing.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "item": {
+              "description": "The TODO item that tenure worked on.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "reason": {
+              "description": "Why the allowlist refused it.",
+              "type": "string"
+            },
+            "repo": {
+              "description": "The repository: the pane's tenure's, else that of `cwd`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "ts_ms",
+            "pane_id",
+            "tool",
+            "command",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "CoordinatorWouldDenyShape": {
+          "description": "The would-denies of one command shape: the tool, and for Bash the\nprogram and its first argument that is not an option.",
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "last_ts_ms": {
+              "description": "Unix milliseconds of the latest one.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "description": "The latest one's reason.",
+              "type": "string"
+            },
+            "shape": {
+              "description": "Such as `Bash: cargo build` or `Write`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "shape",
+            "count",
+            "last_ts_ms",
             "reason"
           ],
           "type": "object"
@@ -14630,6 +14841,60 @@
               "required": [
                 "type",
                 "overrides"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`coordinator.allowlist_refusal`'s reply: the configured mode, and in\nshadow mode the stored would-deny (absent when it could not be\nstored; the call runs anyway).",
+              "properties": {
+                "mode": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorAllowlistMode"
+                },
+                "record": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/CoordinatorWouldDeny"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "coordinator_allowlist_refusal",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "mode"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`history.would_deny`'s reply: the would-denies, oldest first, and\ntheir count per command shape, the most frequent first.",
+              "properties": {
+                "shapes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/CoordinatorWouldDenyShape"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "history_would_deny",
+                  "type": "string"
+                },
+                "would_deny": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/CoordinatorWouldDeny"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "would_deny",
+                "shapes"
               ],
               "type": "object"
             },

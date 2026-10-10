@@ -144,3 +144,94 @@ pub struct CoordinatorOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
+
+/// What the coordinator allowlist does with a call it refuses
+/// (`[coordinator] allowlist`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorAllowlistMode {
+    /// The call runs, and the refusal is recorded as a would-deny.
+    #[default]
+    Shadow,
+    /// The call is denied, unless it carries `# herdr-override: <reason>`.
+    Enforce,
+    /// The call runs, and nothing is recorded.
+    Off,
+    /// A mode this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Asks what to do with one tool call the coordinator allowlist refused in
+/// a coordinator tab. The server answers with `[coordinator] allowlist`;
+/// in shadow mode it also records the call as a would-deny.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorAllowlistRefusalParams {
+    /// The coordinator's pane (the hook sends its `HERDR_PANE_ID`).
+    pub pane_id: String,
+    /// The tool the call used, such as `Bash`.
+    pub tool: String,
+    /// The call's command (Bash) or target (a file path), as the agent
+    /// wrote it; empty for a tool without one.
+    #[serde(default)]
+    pub command: String,
+    /// Why the allowlist refused the call; one line.
+    pub reason: String,
+    /// The agent's directory, which names the repository when the pane has
+    /// no active tenure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The agent session that made the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// Lists the calls the coordinator allowlist would have denied in shadow
+/// mode, of one repository when given.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct HistoryWouldDenyParams {
+    /// A directory in the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// One call the coordinator allowlist would have denied in shadow mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorWouldDeny {
+    /// The record's number, growing in the order of writing.
+    pub id: i64,
+    /// Unix milliseconds.
+    pub ts_ms: u64,
+    pub pane_id: String,
+    pub tool: String,
+    /// The command or target, cut to its first 4000 characters.
+    pub command: String,
+    /// Why the allowlist refused it.
+    pub reason: String,
+    /// The repository: the pane's tenure's, else that of `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// The pane's active tenure then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_id: Option<String>,
+    /// The TODO item that tenure worked on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// The would-denies of one command shape: the tool, and for Bash the
+/// program and its first argument that is not an option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CoordinatorWouldDenyShape {
+    /// Such as `Bash: cargo build` or `Write`.
+    pub shape: String,
+    pub count: u64,
+    /// Unix milliseconds of the latest one.
+    pub last_ts_ms: u64,
+    /// The latest one's reason.
+    pub reason: String,
+}

@@ -504,6 +504,7 @@ fn history_command() -> Command {
             Command::new("overrides")
                 .about("List the commands a coordinator ran past its allowlist")
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("would-deny"))
                 .arg(flag("json")),
         )
 }

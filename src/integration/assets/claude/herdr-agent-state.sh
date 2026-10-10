@@ -611,11 +611,15 @@ fi
 # file reads, `git commit -- TODO.md DECISIONS.md`, `scripts/todo_edit.py`, the consult helpers)
 # and writes only under its session's scratchpad; anything else is denied with the allowed path.
 # A compound command is allowed only when every part is, and one the hook cannot read for certain
-# is denied. One Bash command that carries `# herdr-override: <reason>` runs anyway, recorded
-# by herdr (`coordinator.record_override`, which notifies the user and lists it in
-# `herdr history overrides`); when herdr cannot record it, it is denied. An allowed call asks
-# herdr nothing; a refused one asks the tab's role, and outside a coordinator tab, or when herdr
-# cannot tell, the hook does nothing. Herdr also runs this branch as the first pre-tool check of a
+# is denied. An allowed call asks herdr nothing; a refused one asks the tab's role, and outside a
+# coordinator tab, or when herdr cannot tell, the hook does nothing. In a coordinator tab it then
+# asks herdr what to do (`coordinator.allowlist_refusal`, which answers `[coordinator]
+# allowlist`): "shadow" (the default) lets the call run and herdr records it as a would-deny
+# (`herdr history overrides --would-deny`), "off" lets it run unrecorded, and "enforce", or a
+# herdr that cannot say, denies it. When enforced, one Bash command that carries
+# `# herdr-override: <reason>` runs anyway, recorded by herdr (`coordinator.record_override`,
+# which notifies the user and lists it in `herdr history overrides`); when herdr cannot record
+# it, it is denied. Herdr also runs this branch as the first pre-tool check of a
 # headless item coordinator (`herdr todo next`) with HERDR_COORDINATOR_HEADLESS=1: it has no pane
 # or tab, so every refusal denies, no override runs (nobody is there to ask for one; it asks the
 # user instead), and HERDR_COORDINATOR_SCRATCH is its scratch directory.
@@ -1288,6 +1292,22 @@ overrides = OVERRIDE.findall(command) if isinstance(command, str) else []
 if HEADLESS:
     deny(reason + ". A headless item coordinator has no override: when no allowed path exists, "
          "ask the user (AskUserQuestion) or end with COORDINATOR-BLOCKED <why>.")
+if tool == "Bash":
+    target = command if isinstance(command, str) else ""
+elif tool in WRITE_TOOLS:
+    target = tool_input.get(WRITE_TOOLS[tool])
+    target = target if isinstance(target, str) else ""
+else:
+    target = json.dumps(tool_input, ensure_ascii=False)[:500]
+params = {"pane_id": os.environ["HERDR_PANE_ID"], "tool": str(tool), "command": target,
+          "reason": reason}
+if cwd:
+    params["cwd"] = cwd
+if session:
+    params["session_id"] = session
+answer = ask_server("coordinator.allowlist_refusal", params) or {}
+if answer.get("type") == "coordinator_allowlist_refusal" and answer.get("mode") in ("shadow", "off"):
+    raise SystemExit(0)
 if overrides:
     why = overrides[-1].strip()
     if not why:

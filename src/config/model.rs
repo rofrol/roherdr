@@ -334,6 +334,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
     pub workers: WorkersConfig,
+    pub coordinator: CoordinatorConfig,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
@@ -919,6 +920,26 @@ pub struct WorkersConfig {
     /// PreToolUse hook input on stdin. A check that denies refuses the call.
     /// Empty by default.
     pub pre_tool_checks: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct CoordinatorConfig {
+    /// What a coordinator tab's command allowlist does with a call it
+    /// refuses: "shadow" lets it run and records it as a would-deny
+    /// (`herdr history overrides --would-deny`), "enforce" denies it, and
+    /// "off" lets it run unrecorded. Default: "shadow". A headless item
+    /// coordinator always enforces.
+    pub allowlist: CoordinatorAllowlistConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorAllowlistConfig {
+    #[default]
+    Shadow,
+    Enforce,
+    Off,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

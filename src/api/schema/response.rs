@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::{AgentInfo, AgentPromptRequest, AgentTurnEndReason};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
-use super::coordinators::{CoordinatorInfo, CoordinatorOverride};
+use super::coordinators::{
+    CoordinatorAllowlistMode, CoordinatorInfo, CoordinatorOverride, CoordinatorWouldDeny,
+    CoordinatorWouldDenyShape,
+};
 use super::events::EventEnvelope;
 use super::history::{HistoryItem, HistoryItemSummary, HistoryReconcile};
 use super::integrations::{
@@ -174,6 +177,20 @@ pub enum ResponseResult {
     /// first.
     HistoryOverrides {
         overrides: Vec<CoordinatorOverride>,
+    },
+    /// `coordinator.allowlist_refusal`'s reply: the configured mode, and in
+    /// shadow mode the stored would-deny (absent when it could not be
+    /// stored; the call runs anyway).
+    CoordinatorAllowlistRefusal {
+        mode: CoordinatorAllowlistMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<CoordinatorWouldDeny>,
+    },
+    /// `history.would_deny`'s reply: the would-denies, oldest first, and
+    /// their count per command shape, the most frequent first.
+    HistoryWouldDeny {
+        would_deny: Vec<CoordinatorWouldDeny>,
+        shapes: Vec<CoordinatorWouldDenyShape>,
     },
     /// `report.record`'s reply: the report with this occurrence's number,
     /// and whom it notified (`coordinator <id>` or `user`; absent when it

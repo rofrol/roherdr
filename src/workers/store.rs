@@ -19,8 +19,8 @@ use serde_json::Value;
 use super::runs::{Attempt, Run, RunCheck, RunFinish};
 use super::{lock, worker_number, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
 use crate::api::schema::{
-    CoordinatorOverride, HistoryEvent, HistoryEventKind, TodoLanding, TodoLandingSource,
-    TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult,
+    CoordinatorOverride, CoordinatorWouldDeny, HistoryEvent, HistoryEventKind, TodoLanding,
+    TodoLandingSource, TodoRunInfo, TodoRunStatus, TodoStep, WorkerState, WorkerTurnResult,
 };
 
 /// The database file, inside the session's worker directory.
@@ -702,6 +702,31 @@ CREATE TABLE todo_queue_runs (
     settled_ms INTEGER
 );
 CREATE INDEX todo_queue_runs_by_item ON todo_queue_runs (repo, item);
+"#,
+    r#"
+-- Calls a coordinator tab's command allowlist refused in shadow mode
+-- (`coordinator.allowlist_refusal`), which ran anyway: what enforce mode
+-- would have denied. `reason` is the allowlist's; `repo`, `coordinator_id`
+-- and `item` are the pane's active tenure then (the repository of the
+-- agent's directory when it had none). `ts` is Unix milliseconds.
+-- Append-only: the triggers refuse every change.
+CREATE TABLE coordinator_would_deny (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    repo TEXT,
+    coordinator_id TEXT,
+    item TEXT,
+    pane_id TEXT NOT NULL,
+    session_id TEXT,
+    tool TEXT NOT NULL,
+    command TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+CREATE INDEX coordinator_would_deny_by_repo ON coordinator_would_deny (repo, id);
+CREATE TRIGGER coordinator_would_deny_no_update BEFORE UPDATE ON coordinator_would_deny
+BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
+CREATE TRIGGER coordinator_would_deny_no_delete BEFORE DELETE ON coordinator_would_deny
+BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 "#,
 ];
 
@@ -2039,6 +2064,59 @@ impl Store {
         })
     }
 
+    /// Appends one call the allowlist would have denied and returns it as
+    /// stored.
+    pub(super) fn record_would_deny(
+        &self,
+        record: &CoordinatorWouldDeny,
+    ) -> StoreResult<CoordinatorWouldDeny> {
+        let conn = lock(&self.conn);
+        conn.execute(
+            "INSERT INTO coordinator_would_deny (ts, repo, coordinator_id, item, pane_id, \
+             session_id, tool, command, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.ts_ms as i64,
+                record.repo,
+                record.coordinator_id,
+                record.item,
+                record.pane_id,
+                record.session_id,
+                record.tool,
+                record.command,
+                record.reason
+            ],
+        )?;
+        Ok(CoordinatorWouldDeny {
+            id: conn.last_insert_rowid(),
+            ..record.clone()
+        })
+    }
+
+    /// The calls the allowlist would have denied, oldest first: of `repo`
+    /// when given.
+    pub(super) fn would_deny(&self, repo: Option<&str>) -> StoreResult<Vec<CoordinatorWouldDeny>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT id, ts, repo, coordinator_id, item, pane_id, session_id, tool, command, \
+             reason FROM coordinator_would_deny WHERE (?1 IS NULL OR repo = ?1) ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![repo], |row| {
+            Ok(CoordinatorWouldDeny {
+                id: row.get(0)?,
+                ts_ms: row.get::<_, i64>(1)? as u64,
+                repo: row.get(2)?,
+                coordinator_id: row.get(3)?,
+                item: row.get(4)?,
+                pane_id: row.get(5)?,
+                session_id: row.get(6)?,
+                tool: row.get(7)?,
+                command: row.get(8)?,
+                reason: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     /// The allowlist exceptions, oldest first: of `repo` when given.
     pub(super) fn overrides(&self, repo: Option<&str>) -> StoreResult<Vec<CoordinatorOverride>> {
         let conn = lock(&self.conn);
@@ -3116,6 +3194,7 @@ mod tests {
                  DROP TABLE reports;
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
+                 DROP TABLE coordinator_would_deny;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3177,8 +3256,9 @@ mod tests {
                  DROP TABLE reports;
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
+                 DROP TABLE coordinator_would_deny;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 19
+                MIGRATIONS.len() - 20
             ))
             .unwrap();
         drop(store);
@@ -3234,8 +3314,9 @@ mod tests {
                  DROP TABLE reports;
                  DROP TABLE todo_queue_runs;
                  DROP TABLE todo_queues;
+                 DROP TABLE coordinator_would_deny;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 8
+                MIGRATIONS.len() - 9
             ))
             .unwrap();
         drop(store);

@@ -6,6 +6,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
+    "coordinator",
     "experimental",
     "keys",
     "onboarding",
@@ -376,6 +377,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.workers = section,
+    );
+    load_live_section(
+        table,
+        "coordinator",
+        "coordinator config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.coordinator = section,
     );
     load_live_section(
         table,
@@ -916,6 +925,34 @@ resume_agents_on_restore = true
         assert!(loaded.config.session.resume_agents_on_restore);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn load_live_config_reads_the_coordinator_allowlist_mode_shadow_by_default() {
+        use super::super::CoordinatorAllowlistConfig;
+        let loaded = load_live_config_from_str("").unwrap();
+        assert_eq!(
+            loaded.config.coordinator.allowlist,
+            CoordinatorAllowlistConfig::Shadow
+        );
+        for (value, mode) in [
+            ("shadow", CoordinatorAllowlistConfig::Shadow),
+            ("enforce", CoordinatorAllowlistConfig::Enforce),
+            ("off", CoordinatorAllowlistConfig::Off),
+        ] {
+            let loaded =
+                load_live_config_from_str(&format!("[coordinator]\nallowlist = \"{value}\"\n"))
+                    .unwrap();
+            assert_eq!(loaded.config.coordinator.allowlist, mode, "{value}");
+            assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        }
+        // A value herdr does not know keeps the default and says so.
+        let loaded = load_live_config_from_str("[coordinator]\nallowlist = \"deny\"\n").unwrap();
+        assert_eq!(
+            loaded.config.coordinator.allowlist,
+            CoordinatorAllowlistConfig::Shadow
+        );
+        assert_eq!(loaded.invalid_sections, vec!["coordinator".to_owned()]);
     }
 
     #[test]

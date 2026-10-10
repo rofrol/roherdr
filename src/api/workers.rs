@@ -48,6 +48,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::HistoryItem(_)
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_)
+            | Method::HistoryWouldDeny(_)
             | Method::ReportList(_)
     )
 }
@@ -238,6 +239,10 @@ fn handle_immediate(
             return Ok(ResponseResult::HistoryOverrides {
                 overrides: supervisor.overrides(params.repo.as_deref())?,
             })
+        }
+        Method::HistoryWouldDeny(params) => {
+            let (would_deny, shapes) = supervisor.would_deny(params.repo.as_deref())?;
+            return Ok(ResponseResult::HistoryWouldDeny { would_deny, shapes });
         }
         Method::ReportList(params) => {
             return Ok(ResponseResult::Reports {

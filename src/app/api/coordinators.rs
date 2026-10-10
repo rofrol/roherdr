@@ -7,9 +7,10 @@
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    CoordinatorEndParams, CoordinatorHandoffParams, CoordinatorInfo,
-    CoordinatorRecordOverrideParams, CoordinatorStartParams, CoordinatorStatusParams,
-    NotificationShowParams, NotificationShowSound, ResponseResult, TabRole,
+    CoordinatorAllowlistRefusalParams, CoordinatorEndParams, CoordinatorHandoffParams,
+    CoordinatorInfo, CoordinatorRecordOverrideParams, CoordinatorStartParams,
+    CoordinatorStatusParams, NotificationShowParams, NotificationShowSound, ResponseResult,
+    TabRole,
 };
 use crate::app::App;
 use crate::workers::{WorkerError, WorkerSupervisor};
@@ -224,6 +225,31 @@ impl App {
         }
     }
 
+    /// Tells the allowlist hook what to do with a call it refused: the
+    /// configured `[coordinator] allowlist` mode, and in shadow mode the
+    /// would-deny it stored. Shadow mode is silent: no notification.
+    pub(super) fn handle_coordinator_allowlist_refusal(
+        &mut self,
+        id: String,
+        params: CoordinatorAllowlistRefusalParams,
+    ) -> String {
+        if self.parse_pane_id(&params.pane_id).is_none() {
+            return encode_error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane_id),
+            );
+        }
+        let pane = self.canonical_pane_id(&params.pane_id);
+        let mode = crate::workers::coordinators::configured_allowlist_mode();
+        let record = crate::workers::coordinators()
+            .and_then(|coordinators| coordinators.allowlist_refusal(&pane, &params, mode));
+        encode_success(
+            id,
+            ResponseResult::CoordinatorAllowlistRefusal { mode, record },
+        )
+    }
+
     /// Starts a tenure bound to the pane: of the repository of `repo` (a
     /// directory in it), else of the pane's directory.
     pub(super) fn start_coordinator(
@@ -384,6 +410,63 @@ mod tests {
             .unwrap()
             .coordinator_status(None)
             .unwrap()
+    }
+
+    #[test]
+    fn an_allowlist_refusal_answers_the_mode_and_records_only_in_shadow() {
+        use crate::api::schema::{CoordinatorAllowlistMode, ErrorResponse, Method, Request};
+        let (mut app, root) = app("would-deny");
+        let pane_id = pane_of(&app, 1);
+        let params = CoordinatorAllowlistRefusalParams {
+            pane_id: pane_id.clone(),
+            tool: "Bash".into(),
+            command: "cargo build".into(),
+            reason: "`cargo` is not allowed".into(),
+            cwd: None,
+            session_id: None,
+        };
+        let mut ask = |params: &CoordinatorAllowlistRefusalParams| {
+            app.handle_api_request(Request {
+                id: "r".into(),
+                method: Method::CoordinatorAllowlistRefusal(params.clone()),
+            })
+        };
+        for mode in [
+            CoordinatorAllowlistMode::Enforce,
+            CoordinatorAllowlistMode::Off,
+            CoordinatorAllowlistMode::Shadow,
+        ] {
+            crate::workers::coordinators::set_test_allowlist_mode(mode);
+            let response: SuccessResponse = serde_json::from_str(&ask(&params)).unwrap();
+            let ResponseResult::CoordinatorAllowlistRefusal {
+                mode: answered,
+                record,
+            } = response.result
+            else {
+                panic!("expected the allowlist mode");
+            };
+            assert_eq!(answered, mode);
+            assert_eq!(
+                record.is_some(),
+                mode == CoordinatorAllowlistMode::Shadow,
+                "{mode:?}"
+            );
+        }
+        let (records, shapes) = crate::workers::coordinators()
+            .unwrap()
+            .would_deny(None)
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].pane_id, pane_id);
+        assert_eq!(shapes[0].shape, "Bash: cargo build");
+
+        let unknown = CoordinatorAllowlistRefusalParams {
+            pane_id: "w9:p9".into(),
+            ..params
+        };
+        let response: ErrorResponse = serde_json::from_str(&ask(&unknown)).unwrap();
+        assert_eq!(response.error.code, "pane_not_found");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
