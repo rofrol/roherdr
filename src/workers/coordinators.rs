@@ -27,7 +27,11 @@ use super::store::{NewTenure, RunOwner, StoredTenure, Tx};
 use super::{
     lock, notify_clients, now_ms, Registry, StagedMoves, WorkerError, WorkerSupervisor, SUPERVISOR,
 };
-use crate::api::schema::{CoordinatorInfo, CoordinatorOverride, CoordinatorRecordOverrideParams};
+use crate::api::schema::{
+    CoordinatorAllowlistMode, CoordinatorAllowlistRefusalParams, CoordinatorInfo,
+    CoordinatorOverride, CoordinatorRecordOverrideParams, CoordinatorWouldDeny,
+    CoordinatorWouldDenyShape,
+};
 
 /// `coordinator_ended`'s reason when its pane closed or its agent exited.
 pub(crate) const ORPHANED: &str = "orphaned";
@@ -40,6 +44,130 @@ pub(crate) const ENDED: &str = "ended";
 pub(crate) const HANDED_OFF: &str = "handed_off";
 /// How many characters of an allowlist exception's command are kept.
 const OVERRIDE_COMMAND_CHARS: usize = 4000;
+
+/// How many characters of a would-deny's reason are kept.
+const WOULD_DENY_REASON_CHARS: usize = 1000;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ALLOWLIST_MODE: std::cell::Cell<CoordinatorAllowlistMode> =
+        const { std::cell::Cell::new(CoordinatorAllowlistMode::Shadow) };
+}
+
+/// Sets the mode [`configured_allowlist_mode`] returns on this test thread.
+#[cfg(test)]
+pub(crate) fn set_test_allowlist_mode(mode: CoordinatorAllowlistMode) {
+    TEST_ALLOWLIST_MODE.with(|cell| cell.set(mode));
+}
+
+/// `[coordinator] allowlist`, read from the config file at each call, so a
+/// change applies to the next refused call. A config that cannot be read
+/// gives the default, shadow, which never denies.
+pub(crate) fn configured_allowlist_mode() -> CoordinatorAllowlistMode {
+    #[cfg(test)]
+    {
+        TEST_ALLOWLIST_MODE.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        use crate::config::CoordinatorAllowlistConfig;
+        match crate::config::load_live_config() {
+            Ok(loaded) => match loaded.config.coordinator.allowlist {
+                CoordinatorAllowlistConfig::Shadow => CoordinatorAllowlistMode::Shadow,
+                CoordinatorAllowlistConfig::Enforce => CoordinatorAllowlistMode::Enforce,
+                CoordinatorAllowlistConfig::Off => CoordinatorAllowlistMode::Off,
+            },
+            Err(diagnostics) => {
+                warn!(
+                    "the config could not be read, so the coordinator allowlist is in shadow \
+                     mode: {}",
+                    diagnostics.join("; ")
+                );
+                CoordinatorAllowlistMode::Shadow
+            }
+        }
+    }
+}
+
+/// The shape a would-deny is counted under: the tool, and for Bash the
+/// program of the first command that is not `cd` (leading `VAR=value`
+/// words and `env` skipped, the path cut to its file name) with its first
+/// argument that is not an option, such as `Bash: cargo build`.
+pub(crate) fn command_shape(tool: &str, command: &str) -> String {
+    if tool != "Bash" {
+        return tool.to_owned();
+    }
+    let segments = command.split(['\n', ';', '|', '&']);
+    for segment in segments {
+        let mut words = segment
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c| c == '\'' || c == '"'))
+            .take_while(|word| !word.starts_with('#'))
+            .skip_while(|word| {
+                *word == "env"
+                    || word.is_empty()
+                    || (word.contains('=') && !word.starts_with('-') && !word.starts_with('='))
+            });
+        let Some(program) = words.next() else {
+            continue;
+        };
+        let program = program.rsplit('/').next().unwrap_or(program);
+        if program.is_empty() || program == "cd" {
+            continue;
+        }
+        let program: String = program.chars().take(40).collect();
+        return match words.find(|word| !word.starts_with('-') && !word.is_empty()) {
+            Some(argument) => {
+                let argument: String = argument.chars().take(40).collect();
+                format!("Bash: {program} {argument}")
+            }
+            None => format!("Bash: {program}"),
+        };
+    }
+    "Bash".to_owned()
+}
+
+/// The would-denies counted per command shape: the most frequent first,
+/// then the latest.
+pub(crate) fn would_deny_shapes(
+    records: &[CoordinatorWouldDeny],
+) -> Vec<CoordinatorWouldDenyShape> {
+    let mut shapes: Vec<CoordinatorWouldDenyShape> = Vec::new();
+    for record in records {
+        let shape = command_shape(&record.tool, &record.command);
+        match shapes.iter_mut().find(|known| known.shape == shape) {
+            Some(known) => {
+                known.count += 1;
+                if record.ts_ms >= known.last_ts_ms {
+                    known.last_ts_ms = record.ts_ms;
+                    known.reason = record.reason.clone();
+                }
+            }
+            None => shapes.push(CoordinatorWouldDenyShape {
+                shape,
+                count: 1,
+                last_ts_ms: record.ts_ms,
+                reason: record.reason.clone(),
+            }),
+        }
+    }
+    shapes.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then(b.last_ts_ms.cmp(&a.last_ts_ms))
+            .then(a.shape.cmp(&b.shape))
+    });
+    shapes
+}
+
+/// `text` as one line: control characters become spaces, cut to `chars`.
+fn one_line(text: &str, chars: usize) -> String {
+    text.trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(chars)
+        .collect()
+}
 
 #[cfg(test)]
 thread_local! {
@@ -532,6 +660,73 @@ impl WorkerSupervisor {
         Ok((moved, staged))
     }
 
+    /// What to do with one call the allowlist refused in pane `pane_id`
+    /// (its public id), in `mode`: in shadow mode the call is stored as a
+    /// would-deny, with the pane's active tenure, its repository and item,
+    /// else the repository of `params.cwd`. Shadow never refuses: the input
+    /// is cut to fit, and a store that fails gives no record (logged).
+    pub(crate) fn allowlist_refusal(
+        &self,
+        pane_id: &str,
+        params: &CoordinatorAllowlistRefusalParams,
+        mode: CoordinatorAllowlistMode,
+    ) -> Option<CoordinatorWouldDeny> {
+        if mode != CoordinatorAllowlistMode::Shadow {
+            return None;
+        }
+        let tool = match one_line(&params.tool, 100) {
+            tool if tool.is_empty() => "unknown".to_owned(),
+            tool => tool,
+        };
+        let tenure = self.coordinator_of_pane(pane_id);
+        let repo = match &tenure {
+            Some(tenure) => Some(tenure.repo.clone()),
+            None => params.cwd.as_deref().and_then(super::repository_of_dir),
+        };
+        let record = CoordinatorWouldDeny {
+            id: 0,
+            ts_ms: now_ms(),
+            pane_id: pane_id.to_owned(),
+            tool,
+            command: params
+                .command
+                .chars()
+                .take(OVERRIDE_COMMAND_CHARS)
+                .collect(),
+            reason: one_line(&params.reason, WOULD_DENY_REASON_CHARS),
+            repo,
+            coordinator_id: tenure.as_ref().map(|tenure| tenure.coordinator_id.clone()),
+            item: tenure.and_then(|tenure| tenure.item),
+            session_id: params.session_id.clone(),
+        };
+        let stored = self
+            .tenure_store()
+            .and_then(|store| store.record_would_deny(&record).map_err(store_error));
+        match stored {
+            Ok(record) => Some(record),
+            Err(error) => {
+                warn!(%error, pane = pane_id, "a coordinator would-deny was not recorded");
+                None
+            }
+        }
+    }
+
+    /// The calls the allowlist would have denied, oldest first, and their
+    /// count per command shape: of the repository of `repo` (a directory
+    /// in it) when given.
+    pub(crate) fn would_deny(
+        &self,
+        repo: Option<&str>,
+    ) -> Result<(Vec<CoordinatorWouldDeny>, Vec<CoordinatorWouldDenyShape>), WorkerError> {
+        let repo = repo.map(|dir| super::repository_of_dir(dir).unwrap_or_else(|| dir.to_owned()));
+        let records = self
+            .tenure_store()?
+            .would_deny(repo.as_deref())
+            .map_err(store_error)?;
+        let shapes = would_deny_shapes(&records);
+        Ok((records, shapes))
+    }
+
     /// Ends the tenure bound to `pane_id` as orphaned: its pane closed or its
     /// agent exited (`cause`).
     pub(super) fn orphan_coordinator(&self, pane_id: &str, cause: &str) {
@@ -573,6 +768,123 @@ mod tests {
             reason: reason.into(),
             cwd: None,
             session_id: Some("s-1".into()),
+        }
+    }
+
+    fn refusal_params(
+        tool: &str,
+        command: &str,
+        reason: &str,
+    ) -> CoordinatorAllowlistRefusalParams {
+        CoordinatorAllowlistRefusalParams {
+            pane_id: "p1".into(),
+            tool: tool.into(),
+            command: command.into(),
+            reason: reason.into(),
+            cwd: None,
+            session_id: Some("s-1".into()),
+        }
+    }
+
+    #[test]
+    fn only_shadow_mode_records_a_would_deny_with_the_panes_tenure() {
+        let (root, supervisor) = scratch("would-deny");
+        let tenure = supervisor
+            .coordinator_start("/repo", "p1", Some("s-1"))
+            .unwrap();
+        for mode in [
+            CoordinatorAllowlistMode::Enforce,
+            CoordinatorAllowlistMode::Off,
+        ] {
+            let params = refusal_params("Bash", "cargo build", "`cargo` is not allowed");
+            assert_eq!(supervisor.allowlist_refusal("p1", &params, mode), None);
+        }
+        assert_eq!(
+            supervisor.would_deny(None).unwrap(),
+            (Vec::new(), Vec::new())
+        );
+
+        let shadow = CoordinatorAllowlistMode::Shadow;
+        let first = supervisor
+            .allowlist_refusal(
+                "p1",
+                &refusal_params("Bash", "cargo build --release", " `cargo`\nis not allowed "),
+                shadow,
+            )
+            .unwrap();
+        assert_eq!(first.reason, "`cargo` is not allowed");
+        assert_eq!(first.repo.as_deref(), Some("/repo"));
+        assert_eq!(
+            first.coordinator_id.as_deref(),
+            Some(tenure.coordinator_id.as_str())
+        );
+        assert_eq!(first.session_id.as_deref(), Some("s-1"));
+        // Shadow never refuses: an empty tool or reason and a long command
+        // are stored as they fit.
+        let long = format!("cargo test {}", "x".repeat(OVERRIDE_COMMAND_CHARS));
+        let mut params = refusal_params("", &long, "");
+        params.cwd = Some(root.display().to_string());
+        let second = supervisor.allowlist_refusal("p9", &params, shadow).unwrap();
+        assert_eq!(
+            (second.tool.as_str(), second.reason.as_str()),
+            ("unknown", "")
+        );
+        assert_eq!(second.coordinator_id, None);
+        assert_eq!(second.command.chars().count(), OVERRIDE_COMMAND_CHARS);
+        let third = supervisor
+            .allowlist_refusal(
+                "p1",
+                &refusal_params("Bash", "cd /repo && cargo build", "later"),
+                shadow,
+            )
+            .unwrap();
+
+        let (records, shapes) = supervisor.would_deny(None).unwrap();
+        assert_eq!(records, vec![first.clone(), second.clone(), third.clone()]);
+        let counted: Vec<(&str, u64, &str)> = shapes
+            .iter()
+            .map(|shape| (shape.shape.as_str(), shape.count, shape.reason.as_str()))
+            .collect();
+        assert_eq!(
+            counted,
+            vec![("Bash: cargo build", 2, "later"), ("unknown", 1, "")]
+        );
+        assert_eq!(
+            supervisor.would_deny(Some("/repo")).unwrap().0,
+            vec![first, third]
+        );
+        // The overrides are a list of their own.
+        assert!(supervisor.overrides(None).unwrap().is_empty());
+        let store = supervisor.tenure_store().unwrap();
+        for change in [
+            "UPDATE coordinator_would_deny SET reason = 'y'",
+            "DELETE FROM coordinator_would_deny",
+        ] {
+            assert!(store.connection().execute(change, []).is_err(), "{change}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_would_deny_is_counted_under_its_tool_program_and_first_argument() {
+        for (tool, command, shape) in [
+            ("Bash", "cargo build --release", "Bash: cargo build"),
+            ("Bash", "cargo  --locked build", "Bash: cargo build"),
+            ("Bash", "cd /repo && just check 2>&1", "Bash: just check"),
+            (
+                "Bash",
+                "FOO=1 env BAR=2 /usr/bin/git push origin",
+                "Bash: git push",
+            ),
+            ("Bash", "rm -rf target", "Bash: rm target"),
+            ("Bash", "make # herdr-override: why", "Bash: make"),
+            ("Bash", "\"scripts/x.sh\" 'a b'", "Bash: x.sh a"),
+            ("Bash", "cd /repo", "Bash"),
+            ("Bash", "", "Bash"),
+            ("Write", "/repo/src/main.rs", "Write"),
+            ("Agent", "{}", "Agent"),
+        ] {
+            assert_eq!(command_shape(tool, command), shape, "{tool} {command:?}");
         }
     }
 

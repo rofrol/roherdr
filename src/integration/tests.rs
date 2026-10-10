@@ -4907,6 +4907,12 @@ impl StopCheckServer {
 
     /// `records` decides whether `coordinator.record_override` succeeds.
     fn start_with(role: &'static str, records: bool) -> Self {
+        Self::start_in_mode(role, records, None)
+    }
+
+    /// `mode` is the `[coordinator] allowlist` mode `coordinator.allowlist_refusal` answers;
+    /// `None` answers as a server without that method.
+    fn start_in_mode(role: &'static str, records: bool, mode: Option<&'static str>) -> Self {
         use std::io::{BufRead, BufReader, Write};
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         // Short: a Unix socket path holds at most 104 bytes on macOS.
@@ -4937,6 +4943,9 @@ impl StopCheckServer {
                     }
                     "coordinator.record_override" if records => {
                         json!({"type": "coordinator_override", "record": {"id": 1}})
+                    }
+                    "coordinator.allowlist_refusal" if mode.is_some() => {
+                        json!({"type": "coordinator_allowlist_refusal", "mode": mode})
                     }
                     _ => json!({}),
                 };
@@ -5235,10 +5244,23 @@ fn run_pre_tool(
     tool: &str,
     input: Value,
 ) -> (String, Vec<Value>) {
+    run_pre_tool_in_mode(role, records, None, tool, input)
+}
+
+/// [`run_pre_tool`] with herdr answering `coordinator.allowlist_refusal` with `mode` (`None`: as
+/// a server without that method).
+#[cfg(unix)]
+fn run_pre_tool_in_mode(
+    role: Option<&'static str>,
+    records: bool,
+    mode: Option<&'static str>,
+    tool: &str,
+    input: Value,
+) -> (String, Vec<Value>) {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let server = StopCheckServer::start_with(role.unwrap_or("none"), records);
+    let server = StopCheckServer::start_in_mode(role.unwrap_or("none"), records, mode);
     let socket = if role.is_some() {
         server.path.clone()
     } else {
@@ -5589,6 +5611,127 @@ fn claude_pre_tool_records_an_override_and_never_lets_one_through_silently() {
         json!({"command": "git status # herdr-override: x"}),
     );
     assert_eq!((pre_tool_denial(&stdout), requests.len()), (None, 0));
+}
+
+/// The requests of one method.
+#[cfg(unix)]
+fn requests_of<'a>(requests: &'a [Value], method: &str) -> Vec<&'a Value> {
+    requests
+        .iter()
+        .filter(|request| request["method"] == method)
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_in_shadow_mode_lets_a_refused_call_run_and_has_it_recorded() {
+    let (stdout, requests) = run_pre_tool_in_mode(
+        Some("coordinator"),
+        true,
+        Some("shadow"),
+        "Bash",
+        json!({"command": "cargo build --release"}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    let [asked] = requests_of(&requests, "coordinator.allowlist_refusal")[..] else {
+        panic!("expected one refusal: {requests:?}");
+    };
+    let params = &asked["params"];
+    assert_eq!(params["pane_id"], "p1");
+    assert_eq!(params["tool"], "Bash");
+    assert_eq!(params["command"], "cargo build --release");
+    assert_eq!(params["cwd"], "/repo");
+    assert_eq!(params["session_id"], PRE_TOOL_SESSION);
+    assert!(
+        params["reason"]
+            .as_str()
+            .unwrap()
+            .contains("`cargo` is not allowed"),
+        "{params}"
+    );
+    assert!(requests_of(&requests, "coordinator.record_override").is_empty());
+
+    // Another tool names its target; an override marker records no override.
+    let (stdout, requests) = run_pre_tool_in_mode(
+        Some("coordinator"),
+        true,
+        Some("shadow"),
+        "Edit",
+        json!({"file_path": "/repo/src/main.rs"}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    let [asked] = requests_of(&requests, "coordinator.allowlist_refusal")[..] else {
+        panic!("expected one refusal: {requests:?}");
+    };
+    assert_eq!(asked["params"]["command"], "/repo/src/main.rs");
+    let (stdout, requests) = run_pre_tool_in_mode(
+        Some("coordinator"),
+        true,
+        Some("shadow"),
+        "Bash",
+        json!({"command": "git push # herdr-override: asked"}),
+    );
+    assert_eq!(pre_tool_denial(&stdout), None);
+    assert!(requests_of(&requests, "coordinator.record_override").is_empty());
+
+    // An allowed call asks herdr nothing.
+    let (stdout, requests) = run_pre_tool_in_mode(
+        Some("coordinator"),
+        true,
+        Some("shadow"),
+        "Bash",
+        json!({"command": "git status"}),
+    );
+    assert_eq!((pre_tool_denial(&stdout), requests.len()), (None, 0));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_with_the_allowlist_off_lets_every_call_run() {
+    for (tool, input) in [
+        ("Bash", json!({"command": "cargo build && git push"})),
+        ("Write", json!({"file_path": "/repo/TODO.md"})),
+        ("Agent", json!({"prompt": "x"})),
+    ] {
+        let (stdout, requests) =
+            run_pre_tool_in_mode(Some("coordinator"), true, Some("off"), tool, input.clone());
+        assert_eq!(pre_tool_denial(&stdout), None, "{tool} {input}");
+        assert_eq!(
+            requests_of(&requests, "coordinator.allowlist_refusal").len(),
+            1,
+            "{requests:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_in_enforce_mode_or_without_an_answer_denies_as_before() {
+    for mode in [Some("enforce"), Some("unknown"), None] {
+        let (stdout, _) = run_pre_tool_in_mode(
+            Some("coordinator"),
+            true,
+            mode,
+            "Bash",
+            json!({"command": "git push"}),
+        );
+        let reason = pre_tool_denial(&stdout).unwrap_or_else(|| panic!("{mode:?}"));
+        assert!(reason.contains("herdr-override"), "{mode:?}: {reason}");
+        // An override still runs, recorded.
+        let (stdout, requests) = run_pre_tool_in_mode(
+            Some("coordinator"),
+            true,
+            mode,
+            "Bash",
+            json!({"command": "git push # herdr-override: the user asked"}),
+        );
+        assert_eq!(pre_tool_denial(&stdout), None, "{mode:?}");
+        assert_eq!(
+            requests_of(&requests, "coordinator.record_override").len(),
+            1,
+            "{mode:?}"
+        );
+    }
 }
 
 #[cfg(unix)]

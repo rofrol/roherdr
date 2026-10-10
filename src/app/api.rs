@@ -1276,6 +1276,9 @@ impl App {
             Method::CoordinatorRecordOverride(params) => {
                 return self.handle_coordinator_record_override(request.id, params);
             }
+            Method::CoordinatorAllowlistRefusal(params) => {
+                return self.handle_coordinator_allowlist_refusal(request.id, params);
+            }
             Method::ReportRecord(params) => return self.handle_report_record(request.id, params),
             Method::ReportClose(params) => return self.handle_report_close(request.id, params),
             Method::WorkspaceBookmark(params) => {
@@ -1366,6 +1369,7 @@ impl App {
             | Method::TodoQueueStatus(_)
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_)
+            | Method::HistoryWouldDeny(_)
             | Method::ReportList(_) => {
                 return responses::encode_error(
                     request.id,

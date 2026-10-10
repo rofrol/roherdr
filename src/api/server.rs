@@ -704,6 +704,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::CoordinatorHandoff(_) => "coordinator.handoff",
         Method::CoordinatorRecordOverride(_) => "coordinator.record_override",
         Method::HistoryOverrides(_) => "history.overrides",
+        Method::CoordinatorAllowlistRefusal(_) => "coordinator.allowlist_refusal",
+        Method::HistoryWouldDeny(_) => "history.would_deny",
         Method::ReportRecord(_) => "report.record",
         Method::ReportList(_) => "report.list",
         Method::ReportClose(_) => "report.close",

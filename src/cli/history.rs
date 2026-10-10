@@ -1,11 +1,14 @@
 //! `herdr history`: the life of each TODO item as herdr's server recorded
-//! it (`history.list`, `history.item`, `history.reconcile`), printed as a
+//! it (`history.list`, `history.item`, `history.reconcile`), and the
+//! coordinator allowlist's exceptions and would-denies (`history.overrides`,
+//! `history.would_deny`), printed as a
 //! timeline or, with `--json`, as the server's reply.
 
 use crate::api::schema::{
-    CoordinatorOverride, HistoryEvent, HistoryEventKind, HistoryItem, HistoryItemParams,
-    HistoryItemSummary, HistoryListParams, HistoryOverridesParams, HistoryReconcile,
-    HistoryReconcileParams, Method, Request, TodoRunStatus, WorkerVerdict,
+    CoordinatorOverride, CoordinatorWouldDeny, CoordinatorWouldDenyShape, HistoryEvent,
+    HistoryEventKind, HistoryItem, HistoryItemParams, HistoryItemSummary, HistoryListParams,
+    HistoryOverridesParams, HistoryReconcile, HistoryReconcileParams, HistoryWouldDenyParams,
+    Method, Request, TodoRunStatus, WorkerVerdict,
 };
 
 use super::worker::take_string_option;
@@ -29,6 +32,11 @@ const USAGE: &str = "usage:
       The exceptions to a coordinator tab's command allowlist, oldest first:
       each command that carried `# herdr-override: <reason>` and ran, with
       its time, reason, pane and the coordinator's tenure and item.
+  herdr history overrides --would-deny [--repo DIR] [--json]
+      What the allowlist would have denied while `[coordinator] allowlist`
+      is \"shadow\" (the default): the count per command shape (the tool,
+      and for Bash the program and its first argument), the most frequent
+      first, then each call, oldest first, with its time, pane and reason.
 The records live in herdr's worker store on this machine, outside the
 repository; times are in local time.";
 
@@ -37,6 +45,7 @@ enum Command {
     Item(HistoryItemParams),
     Reconcile(HistoryReconcileParams),
     Overrides(HistoryOverridesParams),
+    WouldDeny(HistoryWouldDenyParams),
 }
 
 pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
@@ -57,6 +66,7 @@ pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
         Command::Item(params) => Method::HistoryItem(params),
         Command::Reconcile(params) => Method::HistoryReconcile(params),
         Command::Overrides(params) => Method::HistoryOverrides(params),
+        Command::WouldDeny(params) => Method::HistoryWouldDeny(params),
     };
     let response = super::send_request(&Request {
         id: "cli:history".into(),
@@ -75,6 +85,12 @@ pub(super) fn run_history_command(args: &[String]) -> std::io::Result<i32> {
             .map(|reconcile: HistoryReconcile| print_reconcile(&reconcile)),
         Some("history_overrides") => serde_json::from_value(result["overrides"].clone())
             .map(|overrides: Vec<CoordinatorOverride>| print_overrides(&overrides)),
+        Some("history_would_deny") => serde_json::from_value(result["would_deny"].clone())
+            .and_then(|records: Vec<CoordinatorWouldDeny>| {
+                serde_json::from_value(result["shapes"].clone()).map(
+                    |shapes: Vec<CoordinatorWouldDenyShape>| print_would_deny(&shapes, &records),
+                )
+            }),
         _ => return super::print_response(&response),
     };
     match printed {
@@ -92,9 +108,10 @@ fn parse(args: &[String]) -> Result<Option<(Command, bool)>, String> {
         return Ok(None);
     }
     let json = args.iter().any(|arg| arg == "--json");
+    let would_deny = args.iter().any(|arg| arg == "--would-deny");
     let rest: Vec<String> = args
         .iter()
-        .filter(|arg| *arg != "--json")
+        .filter(|arg| *arg != "--json" && *arg != "--would-deny")
         .cloned()
         .collect();
     let (repo, rest) = take_string_option(&rest, "--repo")?;
@@ -115,12 +132,18 @@ fn parse(args: &[String]) -> Result<Option<(Command, bool)>, String> {
             },
         }),
         ([word], Some(_)) if word == "reconcile" => return Err("reconcile takes no --item".into()),
+        ([word], None) if word == "overrides" && would_deny => {
+            Command::WouldDeny(HistoryWouldDenyParams { repo })
+        }
         ([word], None) if word == "overrides" => {
             Command::Overrides(HistoryOverridesParams { repo })
         }
         ([word], Some(_)) if word == "overrides" => return Err("overrides takes no --item".into()),
         (other, _) => return Err(format!("unexpected arguments: {}", other.join(" "))),
     };
+    if would_deny && !matches!(command, Command::WouldDeny(_)) {
+        return Err("--would-deny goes with `overrides`".into());
+    }
     Ok(Some((command, json)))
 }
 
@@ -243,6 +266,58 @@ fn overrides_text(overrides: &[CoordinatorOverride], offset: i64) -> String {
             out
         })
         .collect()
+}
+
+fn print_would_deny(shapes: &[CoordinatorWouldDenyShape], records: &[CoordinatorWouldDeny]) {
+    print!(
+        "{}",
+        would_deny_text(shapes, records, crate::usage::local_utc_offset_secs())
+    );
+}
+
+fn would_deny_text(
+    shapes: &[CoordinatorWouldDenyShape],
+    records: &[CoordinatorWouldDeny],
+    offset: i64,
+) -> String {
+    if records.is_empty() {
+        return "no recorded would-deny\n".into();
+    }
+    let mut out = String::from("per command shape:\n");
+    let width = shapes
+        .iter()
+        .map(|shape| shape.count.to_string().len())
+        .max()
+        .unwrap_or(1);
+    for shape in shapes {
+        out.push_str(&format!(
+            "{:>width$}  {}  (last {})\n",
+            shape.count,
+            shape.shape,
+            when(shape.last_ts_ms, offset)
+        ));
+        out.push_str(&indented(&shape.reason, "    "));
+    }
+    out.push_str("\ncalls:\n");
+    for record in records {
+        out.push_str(&format!(
+            "{}  pane {}",
+            when(record.ts_ms, offset),
+            record.pane_id
+        ));
+        if let Some(item) = &record.item {
+            out.push_str(&format!("  {item}"));
+        }
+        if let Some(repo) = &record.repo {
+            out.push_str(&format!("  ({repo})"));
+        }
+        out.push('\n');
+        out.push_str(&indented(
+            &format!("{}: {}", record.tool, record.command),
+            "    ",
+        ));
+    }
+    out
 }
 
 fn print_item(item: &HistoryItem) {
@@ -509,6 +584,51 @@ mod tests {
              Bash: just clean-install TODO.md # herdr-override: asked\n"
         );
         assert_eq!(overrides_text(&[], 0), "no recorded overrides\n");
+    }
+
+    #[test]
+    fn would_denies_are_counted_per_shape_then_listed() {
+        assert!(matches!(
+            parse(&args(&["overrides", "--would-deny", "--json"])),
+            Ok(Some((
+                Command::WouldDeny(HistoryWouldDenyParams { repo: None }),
+                true
+            )))
+        ));
+        assert!(parse(&args(&["--would-deny"])).is_err());
+        assert!(parse(&args(&["reconcile", "--would-deny"])).is_err());
+        let record = |id, command: &str| CoordinatorWouldDeny {
+            id,
+            ts_ms: 1_800_000_000_000,
+            pane_id: "w1:p2".into(),
+            tool: "Bash".into(),
+            command: command.into(),
+            reason: "`cargo` is not allowed".into(),
+            repo: Some("/repo".into()),
+            coordinator_id: Some("c-abcdefgh".into()),
+            item: Some("t-abcd2345".into()),
+            session_id: None,
+        };
+        let records = vec![record(1, "cargo build"), record(2, "cargo build --release")];
+        let shapes = vec![CoordinatorWouldDenyShape {
+            shape: "Bash: cargo build".into(),
+            count: 2,
+            last_ts_ms: 1_800_000_000_000,
+            reason: "`cargo` is not allowed".into(),
+        }];
+        assert_eq!(
+            would_deny_text(&shapes, &records, 0),
+            "per command shape:\n\
+             2  Bash: cargo build  (last 2027-01-15 08:00)\n    \
+             `cargo` is not allowed\n\
+             \n\
+             calls:\n\
+             2027-01-15 08:00  pane w1:p2  t-abcd2345  (/repo)\n    \
+             Bash: cargo build\n\
+             2027-01-15 08:00  pane w1:p2  t-abcd2345  (/repo)\n    \
+             Bash: cargo build --release\n"
+        );
+        assert_eq!(would_deny_text(&[], &[], 0), "no recorded would-deny\n");
     }
 
     #[test]
