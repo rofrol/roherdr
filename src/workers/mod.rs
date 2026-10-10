@@ -72,13 +72,14 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::api::schema::{
-    WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerHeldOutput,
-    WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport,
-    WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail,
-    WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams,
-    WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerToolCall, WorkerTurnResult,
-    WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
+    WorkerAnswerAsParams, WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion,
+    WorkerCommandTarget, WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction,
+    WorkerHeldOutput, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
+    WorkerKillReport, WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion,
+    WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunOutcome,
+    WorkerRunsParams, WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerToolCall,
+    WorkerTurnResult, WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams,
+    WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -294,6 +295,9 @@ pub(crate) enum WorkerError {
     /// The repository's operation has no user grant for its definition;
     /// the message shows the definition and its hash.
     GrantRequired(String),
+    /// A `worker.answer_as` from a tenure that no longer owns the worker;
+    /// the message names the owner. The answer was not applied.
+    OwnershipTransferred(String),
     Io(std::io::Error),
 }
 
@@ -326,6 +330,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "report_close_refused",
     "capability_unsupported",
     "grant_required",
+    "ownership_transferred",
 ];
 
 impl WorkerError {
@@ -359,6 +364,7 @@ impl WorkerError {
             Self::ReportCloseRefused(_) => "report_close_refused",
             Self::CapabilityUnsupported(_) => "capability_unsupported",
             Self::GrantRequired(_) => "grant_required",
+            Self::OwnershipTransferred(_) => "ownership_transferred",
         }
     }
 
@@ -402,7 +408,8 @@ impl std::fmt::Display for WorkerError {
             | Self::ReportNotFound(message)
             | Self::ReportCloseRefused(message)
             | Self::CapabilityUnsupported(message)
-            | Self::GrantRequired(message) => f.write_str(message),
+            | Self::GrantRequired(message)
+            | Self::OwnershipTransferred(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -1002,6 +1009,9 @@ impl Status {
                     self.owner_gone = None;
                     return;
                 }
+                // A former owner's answer, refused and kept for the owner
+                // ([`WorkerSupervisor::answer_as`]): it changes nothing.
+                "late_answer" => return,
                 // The owner handles a gone worker's end too.
                 "acked" => {
                     let seq = event["seq"].as_i64().unwrap_or(0);
@@ -2094,6 +2104,9 @@ struct Registry {
     /// Worker starts that passed the drain check and have not registered
     /// their worker (or failed) yet; a drain waits for them too.
     starts_admitted: u32,
+    /// The inbox rows whose store write failed, per tenure: its next
+    /// `worker.events` answers `resync_required` ([`inbox::Losses`]).
+    inbox_losses: inbox::Losses,
 }
 
 /// What drains, and since when ([`WorkerSupervisor::drain`]).
@@ -4152,6 +4165,12 @@ impl WorkerSupervisor {
                 status.degraded = Some(error);
                 // Marked again past whatever a failed commit marked.
                 status.mark_seq(status.last_seq + 1, ts_ms, &before, direction, &record);
+                if !foreign {
+                    // Its inbox rows are lost with it: their owners resync.
+                    registry
+                        .inbox_losses
+                        .record(inbox::missed_by(&before, status, direction, &record));
+                }
                 None
             }
         };
@@ -4588,6 +4607,13 @@ impl WorkerSupervisor {
     /// there returns at once. The reply's `seq` is the worker's latest
     /// event's; passed back as `after`, the same state does not wake the
     /// caller again. Returns `None` when the caller gave up.
+    ///
+    /// A shorthand over the inbox (`worker.events` filtered to one worker):
+    /// with `after`, what woke it are the worker's inbox rows after it
+    /// ([`inbox::attention`]), checked against what is still pending. A
+    /// cursor the inbox cannot serve, a worker whose store write failed and
+    /// a wait without `after` are answered from the snapshot, the worker's
+    /// status, as `worker.events` answers them.
     pub(crate) fn wait_attention(
         &self,
         worker_id: &str,
@@ -4597,7 +4623,20 @@ impl WorkerSupervisor {
     ) -> Result<Option<Attention>, WorkerError> {
         self.wait_on(worker_id, liveness_check, keep_waiting, |entry| {
             let status = &entry.status;
-            status.attention(after).map(|reason| Attention {
+            let from_inbox = match (after, &self.shared.store) {
+                (Some(after), Ok(store)) => store
+                    .read(|conn| inbox::attention(conn, status, after))
+                    .unwrap_or_else(|error| {
+                        warn!(%error, worker_id, "the worker inbox could not be read");
+                        None
+                    }),
+                _ => None,
+            };
+            let reason = match from_inbox {
+                Some(reason) => reason,
+                None => status.attention(after),
+            };
+            reason.map(|reason| Attention {
                 reason,
                 questions: status.questions.iter().map(Pending::shown).collect(),
                 seq: status.last_seq,
@@ -5264,19 +5303,72 @@ impl WorkerSupervisor {
             "worker.answer",
             params,
             |stored| Err(Self::cut_off(stored)),
-            |receipt| self.answer_once(params, receipt),
+            |receipt| self.answer_once(params, None, receipt),
         )
     }
 
+    /// [`Self::answer`] sent by tenure `params.coordinator_id`
+    /// (`worker.answer_as`): applied only while that tenure owns the worker.
+    /// A worker another tenure owns now refuses it with
+    /// `ownership_transferred`, naming that tenure, and keeps it as a
+    /// `late_answer` event, which reaches the owner's inbox; it is never
+    /// applied. The ownership check and the record (of the answer or of the
+    /// late answer) share one hold of the registry lock, as a handoff's move
+    /// does, so an answer lands either before the move or after it. A review
+    /// escalation is the user's question, not the worker's owner's: it is
+    /// answered as `worker.answer` answers it.
+    pub(crate) fn answer_as(
+        &self,
+        params: &WorkerAnswerAsParams,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let answer = &params.answer;
+        if answer
+            .request_id
+            .as_deref()
+            .is_some_and(runs::escalations::is_escalation)
+        {
+            return self.answer(answer);
+        }
+        let answered = self.command(
+            answer.command_id.as_deref(),
+            "worker.answer_as",
+            params,
+            |stored| Err(Self::cut_off(stored)),
+            |receipt| self.answer_once(answer, Some(&params.coordinator_id), receipt),
+        )?;
+        self.question_settled(&answer.worker_id);
+        Ok(answered)
+    }
+
+    /// `answering`: the tenure that sends the answer, which must own the
+    /// worker ([`Self::answer_as`]).
     fn answer_once(
         &self,
         params: &WorkerAnswerParams,
+        answering: Option<&str>,
         receipt: Option<&Receipt>,
     ) -> Result<WorkerInfo, WorkerError> {
         let worker_id = params.worker_id.as_str();
         let (number, live, request_id, response) = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
+            let entry = registry
+                .workers
+                .get_mut(&number)
+                .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))?;
+            let owner = entry.status.owner_coordinator.clone();
+            if let (Some(from), Some(owner)) = (answering, owner) {
+                if owner != from {
+                    return Err(self.refuse_late_answer(
+                        &mut registry,
+                        number,
+                        params,
+                        from,
+                        &owner,
+                        receipt,
+                    ));
+                }
+            }
             let entry = registry
                 .workers
                 .get_mut(&number)
@@ -5384,6 +5476,43 @@ impl WorkerSupervisor {
             }
         }
         self.status(worker_id)
+    }
+
+    /// Keeps the answer tenure `from` sent to worker `number`, which tenure
+    /// `owner` owns now, as a `late_answer` event (with the command's
+    /// receipt, so a repeated command id replays the refusal and keeps it
+    /// once), and returns the refusal. Under the registry lock.
+    fn refuse_late_answer(
+        &self,
+        registry: &mut Registry,
+        number: u64,
+        params: &WorkerAnswerParams,
+        from: &str,
+        owner: &str,
+        receipt: Option<&Receipt>,
+    ) -> WorkerError {
+        let late = json!({
+            "type": "late_answer",
+            "from_coordinator_id": from,
+            "to_coordinator_id": owner,
+            "request_id": params.request_id,
+            "decision": params.decision,
+            "answers": params.answers,
+            "message": params.message,
+        });
+        self.commit_command_locked(
+            registry,
+            number,
+            Direction::Herdr,
+            store::Recorded::Event(&late),
+            receipt,
+        );
+        self.shared.changed.notify_all();
+        WorkerError::OwnershipTransferred(format!(
+            "worker {} belongs to coordinator {owner} now, not to {from}: the answer was not \
+             applied; it is passed to {owner} as information",
+            params.worker_id
+        ))
     }
 
     /// Runs a client command once per `command_id` (T3 Code's command

@@ -25,8 +25,8 @@ use super::coordinators::{info, store_error};
 use super::store::{Recorded, StoreResult, Tx};
 use super::{lock, Before, Direction, Pending, Registry, Status, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
-    CoordinatorInfo, WorkerEvent, WorkerEventKind, WorkerEventsParams, WorkerEventsSnapshot,
-    WorkerQuestion, WorkerState,
+    CoordinatorInfo, WorkerAttentionReason, WorkerEvent, WorkerEventKind, WorkerEventsParams,
+    WorkerEventsSnapshot, WorkerLateAnswer, WorkerQuestion, WorkerState,
 };
 use std::sync::MutexGuard;
 use std::time::Duration;
@@ -55,6 +55,15 @@ INSERT INTO meta (key, value)
     VALUES ('inbox_from', (SELECT coalesce(max(seq), 0) FROM events));
 "#;
 
+/// From here on a worker no tenure owns has inbox rows too ([`NO_OWNER`]),
+/// so the inbox serves every worker's `worker.wait` after this `seq`.
+/// Replaced when run again: a later floor only sends more waits to the
+/// snapshot.
+pub(super) const UNOWNED_INBOX_MIGRATION: &str = r#"
+INSERT OR REPLACE INTO meta (key, value)
+    VALUES ('inbox_unowned_from', (SELECT coalesce(max(seq), 0) FROM events));
+"#;
+
 /// How many events one reply carries when the caller does not say.
 const DEFAULT_LIMIT: u32 = 100;
 /// The most events one reply carries.
@@ -69,6 +78,7 @@ fn kind_name(kind: WorkerEventKind) -> &'static str {
         WorkerEventKind::Left => "left",
         WorkerEventKind::Reowned => "reowned",
         WorkerEventKind::HeldOutput => "held_output",
+        WorkerEventKind::LateAnswer => "late_answer",
         WorkerEventKind::Unknown => "unknown",
     }
 }
@@ -77,8 +87,15 @@ fn parse_kind(name: &str) -> WorkerEventKind {
     serde_json::from_value(Value::String(name.to_owned())).unwrap_or(WorkerEventKind::Unknown)
 }
 
+/// The inbox key of a worker no tenure owns: its rows serve its own
+/// `worker.wait`, never a coordinator's `worker.events` (a tenure id starts
+/// with `c-`).
+const NO_OWNER: &str = "";
+
 /// The inbox rows the event just folded into `status` adds: who gets it,
-/// what it is and its detail. `before` is the status before the event.
+/// what it is and its detail. `before` is the status before the event. A
+/// worker without an owner gets its own rows under [`NO_OWNER`], except
+/// joined and reowned, which only a tenure gets.
 fn rows(
     before: &Before,
     status: &Status,
@@ -103,9 +120,7 @@ fn rows(
             ));
         }
     }
-    let Some(owner) = owner else {
-        return rows;
-    };
+    let owner = owner.unwrap_or(NO_OWNER);
     let state = || json!({"state": status.state});
     if status.is_gone() && (status.exited, status.lost) != before.gone {
         rows.push((owner.to_owned(), WorkerEventKind::Exit, state()));
@@ -142,10 +157,105 @@ fn rows(
             ));
         }
     }
+    if let Recorded::Event(event) = record {
+        if direction == Direction::Herdr && event["type"].as_str() == Some("late_answer") {
+            let late = WorkerLateAnswer {
+                from_coordinator_id: event["from_coordinator_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                request_id: event["request_id"].as_str().map(str::to_owned),
+                decision: serde_json::from_value(event["decision"].clone()).unwrap_or(None),
+                answers: serde_json::from_value(event["answers"].clone()).unwrap_or_default(),
+                message: event["message"].as_str().map(str::to_owned),
+            };
+            rows.push((
+                owner.to_owned(),
+                WorkerEventKind::LateAnswer,
+                json!({"late_answer": late}),
+            ));
+        }
+    }
     if before.listed && !status.listed() {
         rows.push((owner.to_owned(), WorkerEventKind::Left, json!({})));
     }
     rows
+}
+
+/// The tenures whose inbox misses the rows of an event whose store write
+/// failed: those [`rows`] would have written them for.
+pub(super) fn missed_by(
+    before: &Before,
+    status: &Status,
+    direction: Direction,
+    record: &Recorded<'_>,
+) -> Vec<String> {
+    let mut owners: Vec<String> = rows(before, status, direction, record)
+        .into_iter()
+        .map(|(owner, _, _)| owner)
+        .filter(|owner| owner != NO_OWNER)
+        .collect();
+    owners.sort();
+    owners.dedup();
+    owners
+}
+
+/// The inbox rows this server could not store ([`missed_by`]): per tenure,
+/// how many events lost them. Only this server's memory, under the
+/// registry lock: the worker statuses that held those events are this
+/// server's memory too, and the next server rebuilds them from the store,
+/// without them. A cursor carries the count its reader has seen with this
+/// server's id, so a reader learns of each loss once, as `resync_required`
+/// with a snapshot, and a cursor of another server counts as having seen
+/// none of this one's.
+pub(super) struct Losses {
+    server: String,
+    counts: std::collections::BTreeMap<String, u64>,
+}
+
+impl Default for Losses {
+    fn default() -> Self {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SERVERS: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let digest = Sha256::digest(format!(
+            "{nanos}:{}:{}",
+            std::process::id(),
+            SERVERS.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self {
+            server: digest[..6]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            counts: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl Losses {
+    /// Counts one lost event for each of `owners`.
+    pub(super) fn record(&mut self, owners: Vec<String>) {
+        for owner in owners {
+            *self.counts.entry(owner).or_default() += 1;
+        }
+    }
+
+    fn count(&self, owner: &str) -> u64 {
+        self.counts.get(owner).copied().unwrap_or(0)
+    }
+
+    /// The losses of `owner`'s inbox a reader with `cursor` has seen.
+    fn seen(&self, cursor: &Cursor) -> u64 {
+        match &cursor.losses {
+            Some((server, seen)) if *server == self.server => *seen,
+            _ => 0,
+        }
+    }
 }
 
 /// Writes the inbox rows of event `seq` in its transaction.
@@ -199,6 +309,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> StoreResult<(i64, i64, WorkerEvent
             from_coordinator_id: text("from_coordinator_id"),
             to_coordinator_id: text("to_coordinator_id"),
             held_output: serde_json::from_value(detail["held_output"].clone()).unwrap_or(None),
+            late_answer: serde_json::from_value(detail["late_answer"].clone()).unwrap_or(None),
         },
     ))
 }
@@ -240,18 +351,133 @@ fn read_after(
     Ok((rows.into_iter().map(|(_, _, event)| event).collect(), more))
 }
 
-fn cursor(incarnation: &str, seq: i64) -> String {
-    format!("{incarnation}-{seq}")
+/// `worker.wait --attention --after SEQ` over the worker's inbox rows:
+/// why the waiter should look at the worker now, from the rows after
+/// `after` and what is still so (a question asked after it that is still
+/// pending, a turn end after it while the turn has ended, a held output
+/// reported after it, the worker's end). The end counts however old, as in
+/// the snapshot. `None` when the inbox cannot serve `after`: older than the
+/// rows every worker has, past the latest stored event, or a worker whose
+/// store write failed (its rows may miss an event); then the caller answers
+/// from the snapshot, the worker's status, as `worker.events` answers
+/// `resync_required` with one.
+pub(super) fn attention(
+    conn: &Connection,
+    status: &Status,
+    after: i64,
+) -> StoreResult<Option<Option<WorkerAttentionReason>>> {
+    let floor = ["inbox_from", "inbox_unowned_from"]
+        .into_iter()
+        .map(|key| {
+            meta(conn, key).map(|value| {
+                value
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(i64::MAX)
+            })
+        })
+        .collect::<StoreResult<Vec<i64>>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(i64::MAX);
+    let latest: i64 = conn.query_row("SELECT coalesce(max(seq), 0) FROM events", [], |row| {
+        row.get(0)
+    })?;
+    if status.degraded.is_some() || after < floor || after > latest {
+        return Ok(None);
+    }
+    if status.is_gone() {
+        return Ok(Some(Some(WorkerAttentionReason::Gone)));
+    }
+    // A moved worker has the same event under two tenures (reowned and
+    // joined): every owner's rows count.
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT seq, kind, detail FROM inbox WHERE worker_id = ?1 AND seq > ?2 \
+         ORDER BY seq",
+    )?;
+    let rows = statement
+        .query_map(params![status.worker_id, after], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?
+        .collect::<StoreResult<Vec<(String, String)>>>()?;
+    let mut reasons = Vec::new();
+    for (kind, detail) in rows {
+        let reason = match parse_kind(&kind) {
+            WorkerEventKind::Exit => Some(WorkerAttentionReason::Gone),
+            WorkerEventKind::Question => {
+                let detail: Value = serde_json::from_str(&detail).unwrap_or(Value::Null);
+                let asked: Vec<WorkerQuestion> =
+                    serde_json::from_value(detail["questions"].clone()).unwrap_or_default();
+                asked
+                    .iter()
+                    .any(|question| {
+                        status
+                            .questions
+                            .iter()
+                            .any(|pending| pending.question.request_id == question.request_id)
+                    })
+                    .then_some(WorkerAttentionReason::Question)
+            }
+            WorkerEventKind::TurnEnd if status.turn_ended() => Some(WorkerAttentionReason::TurnEnd),
+            WorkerEventKind::HeldOutput => Some(WorkerAttentionReason::HeldOutput),
+            _ => None,
+        };
+        reasons.extend(reason);
+    }
+    // In the snapshot's order: the end, a question, a turn end, a held
+    // output.
+    Ok(Some(
+        [
+            WorkerAttentionReason::Gone,
+            WorkerAttentionReason::Question,
+            WorkerAttentionReason::TurnEnd,
+            WorkerAttentionReason::HeldOutput,
+        ]
+        .into_iter()
+        .find(|reason| reasons.contains(reason)),
+    ))
 }
 
-fn parse_cursor(text: &str) -> Result<(String, i64), WorkerError> {
-    text.rsplit_once('-')
-        .and_then(|(incarnation, seq)| Some((incarnation.to_owned(), seq.parse().ok()?)))
-        .filter(|(incarnation, seq)| {
-            !incarnation.is_empty()
-                && incarnation.chars().all(|c| c.is_ascii_alphanumeric())
-                && *seq >= 0
+/// A parsed `worker.events` cursor: the store's incarnation, the `seq` of
+/// the last event read and, after a lost write, the server and the count of
+/// its losses the reader has seen ([`Losses`]).
+#[derive(Debug, PartialEq, Eq)]
+struct Cursor {
+    incarnation: String,
+    seq: i64,
+    losses: Option<(String, u64)>,
+}
+
+/// `<incarnation>-<seq>`, then `.<server>.<losses>` once the reader has
+/// seen a loss of this server.
+fn cursor(incarnation: &str, seq: i64, losses: &Losses, owner: &str) -> String {
+    match losses.count(owner) {
+        0 => format!("{incarnation}-{seq}"),
+        count => format!("{incarnation}-{seq}.{}.{count}", losses.server),
+    }
+}
+
+fn parse_cursor(text: &str) -> Result<Cursor, WorkerError> {
+    let alphanumeric =
+        |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric());
+    let mut parts = text.split('.');
+    let base = parts.next().unwrap_or_default();
+    let losses = match (parts.next(), parts.next(), parts.next()) {
+        (None, _, _) => Some(None),
+        (Some(server), Some(count), None) if alphanumeric(server) => count
+            .parse()
+            .ok()
+            .map(|count| Some((server.to_owned(), count))),
+        _ => None,
+    };
+    base.rsplit_once('-')
+        .and_then(|(incarnation, seq)| {
+            Some(Cursor {
+                incarnation: incarnation.to_owned(),
+                seq: seq.parse().ok()?,
+                losses: losses?,
+            })
         })
+        .filter(|cursor| alphanumeric(&cursor.incarnation) && cursor.seq >= 0)
         .ok_or_else(|| {
             WorkerError::Invalid(format!(
                 "after {text:?} is not a worker.events cursor (`<incarnation>-<seq>`, a reply's \
@@ -341,7 +567,7 @@ impl WorkerSupervisor {
         &self,
         registry: &MutexGuard<'_, Registry>,
         owner: &str,
-        after: Option<&(String, i64)>,
+        after: Option<&Cursor>,
         limit: u32,
         params: &WorkerEventsParams,
     ) -> Result<Option<Events>, WorkerError> {
@@ -362,9 +588,19 @@ impl WorkerSupervisor {
                 conn.query_row("SELECT coalesce(max(seq), 0) FROM events", [], |row| {
                     row.get(0)
                 })?;
+            // A write lost since the reader's cursor: the inbox misses its
+            // rows, so only a snapshot shows what it changed.
+            let lost = |cursor: &Cursor| {
+                registry.inbox_losses.count(owner) > registry.inbox_losses.seen(cursor)
+            };
             let from = match after {
-                Some((of, seq)) if *of == incarnation && *seq >= floor && *seq <= latest => {
-                    Some(*seq)
+                Some(cursor)
+                    if cursor.incarnation == incarnation
+                        && cursor.seq >= floor
+                        && cursor.seq <= latest
+                        && !lost(cursor) =>
+                {
+                    Some(cursor.seq)
                 }
                 _ => None,
             };
@@ -388,7 +624,7 @@ impl WorkerSupervisor {
         Ok(Some(Events {
             owner: info(tenure),
             events,
-            next_cursor: cursor(&incarnation, next),
+            next_cursor: cursor(&incarnation, next, &registry.inbox_losses, owner),
             more,
             resync_required,
             snapshot: snapshot.then(|| snapshot_of(registry, owner)),
@@ -416,11 +652,36 @@ mod tests {
 
     #[test]
     fn a_cursor_names_the_incarnation_and_the_seq() {
+        let mut losses = Losses::default();
         assert_eq!(
-            parse_cursor(&cursor("ab12", 42)).unwrap(),
-            ("ab12".to_owned(), 42)
+            parse_cursor(&cursor("ab12", 42, &losses, "c-a")).unwrap(),
+            Cursor {
+                incarnation: "ab12".to_owned(),
+                seq: 42,
+                losses: None
+            }
         );
-        for bad in ["", "42", "-42", "ab12-", "ab12-x", "ab12--1"] {
+        // After a lost write the cursor carries this server's loss count.
+        losses.record(vec!["c-a".to_owned()]);
+        let marked = parse_cursor(&cursor("ab12", 42, &losses, "c-a")).unwrap();
+        assert_eq!(marked.seq, 42);
+        assert_eq!(losses.seen(&marked), 1);
+        assert_eq!(cursor("ab12", 42, &losses, "c-b"), "ab12-42");
+        // Another server's count is none of this one's.
+        let other = parse_cursor("ab12-42.0000ff.7").unwrap();
+        assert_eq!(losses.seen(&other), 0);
+        for bad in [
+            "",
+            "42",
+            "-42",
+            "ab12-",
+            "ab12-x",
+            "ab12--1",
+            "ab12-42.",
+            "ab12-42.ff",
+            "ab12-42.ff.x",
+            "ab12-42.ff.1.2",
+        ] {
             assert_eq!(
                 parse_cursor(bad).unwrap_err().code(),
                 "invalid_request",

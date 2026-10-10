@@ -97,6 +97,10 @@ pub enum Method {
     WorkerKill(WorkerKillParams),
     #[serde(rename = "worker.answer")]
     WorkerAnswer(WorkerAnswerParams),
+    /// `worker.answer` from a coordination tenure, refused with
+    /// `ownership_transferred` once the worker is another tenure's.
+    #[serde(rename = "worker.answer_as")]
+    WorkerAnswerAs(WorkerAnswerAsParams),
     /// The owner acknowledges the worker's events up to a `seq`.
     #[serde(rename = "worker.ack")]
     WorkerAck(WorkerAckParams),

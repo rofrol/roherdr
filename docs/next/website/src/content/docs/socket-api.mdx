@@ -109,7 +109,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
-| Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
+| Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.answer_as`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
 | Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
 | TODO runs | `todo.run`, `todo.draft_run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.review`, `todo.next`, `todo.stop`, `todo.queue_set`, `todo.queue_status`, `todo.runnable_state`, `todo.grant`, `todo.grants` |
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
@@ -1017,7 +1017,7 @@ tenure or moved to it, with `from_coordinator_id`), `left` (its end
 acknowledged with `worker.ack`), `reowned` (moved to another tenure by a
 resume elsewhere or `coordinator.handoff`, with `to_coordinator_id`) and
 `held_output` (a tool call's output held open, with the `held_output`
-report). Every
+report) and `late_answer` (a former owner's refused answer, below). Every
 row carries its event's `seq`, one server-wide sequence of the worker store,
 which a restart and a live handoff keep. The reply `worker_events` carries
 `owner` (the tenure, with its `epoch`, and `ended_ms` once it ended), `events`
@@ -1030,11 +1030,36 @@ its pending questions however old, and the cursor it starts from; `snapshot`
 adds it to a reply after a cursor. A cursor the server cannot serve (another
 store's, older than the inbox or past the latest event) answers at once with
 `resync_required`, the snapshot and a new cursor, never a silent skip; a
-malformed one is refused with `invalid_request`. With `wait` the request
+malformed one is refused with `invalid_request`. An event whose store write
+failed has no inbox row: the tenures it concerned get `resync_required` and
+the snapshot (which the server's memory still has it in) at their next read,
+whatever their cursor, once; the reply's cursor then carries the server's
+loss count (`.<server>.<count>`), and a cursor of another server counts as
+having seen none of this one's losses. With `wait` the request
 blocks while there is no event after `after`, woken by the commits that add
 rows, never by a timer; a tenure that has ended answers at once. Reading
 resolves nothing: a question stays pending, and in the snapshot, until it is
-answered. `worker.wait` with `until: attention` stays the one-worker form.
+answered. `worker.wait` with `until: attention` is the one-worker form over
+the same inbox: with `after` it answers from that worker's rows after it
+(a question still pending, a turn end while the turn has ended, a held
+output, the end), and from the worker's status, the snapshot, without
+`after`, for a cursor older than the rows every worker has, and for a worker
+whose store write failed. A worker no tenure owns has inbox rows for that
+wait too; `worker.events` never returns them.
+`worker.answer_as` (`coordinator_id`, the answering tenure, and the fields of
+`worker.answer`) answers as that tenure: applied only while it owns the
+worker. Once the worker belongs to another tenure (a handoff or a resume
+elsewhere moved it) the answer is refused with `ownership_transferred`,
+naming the owner, recorded as a `late_answer` event on the worker and passed
+to the owner's inbox as a `late_answer` row (with `late_answer`: the sending
+tenure, the `request_id`, `decision`, `answers` and `message`); it is never
+applied and the question stays pending. The ownership check and the record
+share one hold of the server's worker registry with a handoff's move, so an
+answer lands before the move (and the move carries it) or after it (and is
+refused). With `command_id` a repeat returns the same refusal and keeps the
+late answer once. A review escalation (`herdr-review-...`) is the user's
+question and is answered as `worker.answer` answers it. `worker.answer`
+itself does not fence, and stays as it was.
 `coordinator.record_override` (`pane_id`, `tool`, `command`, `reason`, optional
 `cwd` and `session_id`) records one exception to a coordinator tab's command
 allowlist: a tool call that carried `# herdr-override: <reason>` (the Claude

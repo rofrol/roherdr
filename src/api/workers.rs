@@ -25,6 +25,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
             | Method::WorkerAnswer(_)
+            | Method::WorkerAnswerAs(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
             | Method::WorkerDrain(_)
@@ -178,6 +179,7 @@ fn handle_immediate(
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
+        Method::WorkerAnswerAs(params) => supervisor.answer_as(&params)?,
         Method::WorkerTranscript(params) => {
             return Ok(ResponseResult::WorkerTranscript {
                 transcript: supervisor.transcript(&params)?,
