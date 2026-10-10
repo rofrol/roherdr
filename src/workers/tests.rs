@@ -6435,9 +6435,9 @@ mod todo_runs {
             // adds for an API change.
             "- `ok`: `[\"test\",\"$X;false\",\"=\",\"$X;false\"]`\n",
             "- `tests`: `[\"test\",\"-f\",\"src/api/a.txt\"]`, added by the verify when \
-             your diff touches `src/api/` or `tests/fixtures/`",
+             your diff touches `src/` or `tests/` or `crates/`",
             "- `maintenance`: `[\"test\",\"-f\",\"docs/next/a.txt\"]`, added by the verify \
-             when your diff touches `src/config/` or `docs/next/` or `scripts/` or `plugins/`",
+             when your diff touches `src/config/` or `src/integration/assets/` or `docs/next/`",
             "run every one of them you can in your sandbox (`windows-lint` works there) and \
              report each one's result, or the sandbox error that stopped it",
             "Advertised client methods keep their v1 shape: add a new method instead of \
@@ -6560,7 +6560,7 @@ mod todo_runs {
             serde_json::json!(["test", "-f", "src/api/a.txt"])
         );
         assert!(
-            added[0]["reason"].as_str().unwrap().contains("src/api/"),
+            added[0]["reason"].as_str().unwrap().contains("`src/`"),
             "{added:#?}"
         );
         // The verify ran it, after the named check.

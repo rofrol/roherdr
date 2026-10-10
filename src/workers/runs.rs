@@ -230,21 +230,125 @@ struct PathCheck {
     why: &'static str,
 }
 
-/// The checks the verify adds by path: `tests`, the full suite, which holds
-/// the frozen client endpoint contract tests (AGENTS.md, "Stable client
-/// endpoint contract"), and `maintenance`, the maintenance script tests,
-/// which hold the config reference docs check that `just check` runs.
-const PATH_CHECKS: [PathCheck; 2] = [
+/// The paths the Rust build reads: the verify's `lint`, `windows-lint` and
+/// `tests` cover each of them.
+#[cfg(test)]
+const RUST_PATHS: [&str; 9] = [
+    "src/",
+    "tests/",
+    "crates/",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "clippy.toml",
+    "rust-toolchain.toml",
+    ".cargo/",
+];
+
+/// The checks the verify adds by path, one for each recipe the install's
+/// `just check` runs, so a commit the verify passes does not fail there:
+/// `lint` (`cargo fmt --check` and clippy), `windows-lint`, `tests`, the
+/// full suite, which holds the frozen client endpoint contract tests
+/// (AGENTS.md, "Stable client endpoint contract"), `maintenance`, the
+/// maintenance script tests, which hold the config reference docs check,
+/// and the UI hot-path architecture, integration asset and docs contract
+/// tests. Each check's paths are the files its recipe reads from the
+/// repository. `just_check_runs_only_recipes_the_verify_adds_by_path`
+/// keeps this list and the justfile's `check` in step.
+const PATH_CHECKS: [PathCheck; 7] = [
+    PathCheck {
+        name: "lint",
+        paths: &[
+            "src/",
+            "tests/",
+            "crates/",
+            "build.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+            "clippy.toml",
+            "rust-toolchain.toml",
+            ".cargo/",
+        ],
+        why: "so a Rust change is verified with `just check`'s formatting check and clippy",
+    },
+    PathCheck {
+        name: "windows-lint",
+        paths: &[
+            "src/",
+            "tests/",
+            "crates/",
+            "build.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+            "clippy.toml",
+            "rust-toolchain.toml",
+            ".cargo/",
+            "vendor/",
+            "scripts/windows_cross.py",
+        ],
+        why: "so a Rust change is verified with clippy for Windows, like `just check`",
+    },
     PathCheck {
         name: "tests",
-        paths: &["src/api/", "tests/fixtures/"],
-        why: "so an API change is verified with the frozen client contract tests",
+        paths: &[
+            "src/",
+            "tests/",
+            "crates/",
+            "build.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+            "clippy.toml",
+            "rust-toolchain.toml",
+            ".cargo/",
+            "assets/",
+            "vendor/",
+            ".herdr/",
+            "distribution/",
+            "skills/",
+            "docs/next/api/",
+            "scripts/todo_edit.py",
+            "scripts/target_sweep.py",
+            "scripts/herdr_live.sh",
+        ],
+        why: "so a change there is verified with the full test suite, \
+              the frozen client contract tests among them",
     },
     PathCheck {
         name: "maintenance",
-        paths: &["src/config/", "docs/next/", "scripts/", "plugins/"],
+        paths: &[
+            "src/config/",
+            "src/integration/assets/",
+            "docs/next/",
+            "scripts/",
+            "plugins/",
+            "vendor/",
+            "distribution/",
+            ".github/workflows/",
+            "Cargo.toml",
+            "CHANGELOG.md",
+        ],
         why: "so a change there is verified with the maintenance script tests, \
               the config reference docs check among them",
+    },
+    PathCheck {
+        name: "ui-architecture",
+        paths: &[
+            "src/ui",
+            "src/app/",
+            "src/server/",
+            "scripts/test_ui_hot_path_architecture.py",
+        ],
+        why: "so a change there is verified with the UI hot-path architecture tests",
+    },
+    PathCheck {
+        name: "integration-assets",
+        paths: &["src/integration/assets/"],
+        why: "so a change there is verified with the integration asset tests",
+    },
+    PathCheck {
+        name: "docs-contract",
+        paths: &["scripts/docs/"],
+        why: "so a change there is verified with the docs contract tests",
     },
 ];
 
@@ -3493,21 +3597,56 @@ mod tests {
 
     #[test]
     fn each_path_check_is_due_only_for_its_own_paths() {
-        let tests = PathCheck::of("tests").unwrap();
-        let maintenance = PathCheck::of("maintenance").unwrap();
+        let due = |changed: &str| -> Vec<&str> {
+            PATH_CHECKS
+                .iter()
+                .filter(|check| check.touched_by(changed))
+                .map(|check| check.name)
+                .collect()
+        };
+        let rust = ["lint", "windows-lint", "tests"];
+        for changed in ["src/workers/runs.rs", "build.rs", "tests/fixtures/x.json"] {
+            assert_eq!(due(changed), rust, "{changed}");
+        }
+        assert_eq!(
+            due("src/config/mod.rs"),
+            ["lint", "windows-lint", "tests", "maintenance"]
+        );
+        assert_eq!(
+            due("src/ui/sidebar.rs"),
+            ["lint", "windows-lint", "tests", "ui-architecture"]
+        );
+        assert_eq!(
+            due("src/integration/assets/claude/x.ts"),
+            [
+                "lint",
+                "windows-lint",
+                "tests",
+                "maintenance",
+                "integration-assets"
+            ]
+        );
         for changed in [
-            "src/config/mod.rs",
             "docs/next/website/src/content/docs/configuration.mdx",
-            "scripts/todo_edit.py",
             "plugins/job/bin/herdr-job",
+            ".github/workflows/release.yml",
         ] {
-            assert!(maintenance.touched_by(changed), "{changed}");
-            assert!(!tests.touched_by(changed), "{changed}");
+            assert_eq!(due(changed), ["maintenance"], "{changed}");
         }
-        for changed in ["src/api/schema/todo.rs", "tests/fixtures/x.json"] {
-            assert!(tests.touched_by(changed), "{changed}");
-            assert!(!maintenance.touched_by(changed), "{changed}");
+        assert_eq!(due("scripts/todo_edit.py"), ["tests", "maintenance"]);
+        assert_eq!(
+            due("scripts/docs/versions.mjs"),
+            ["maintenance", "docs-contract"]
+        );
+        assert_eq!(
+            due("scripts/windows_cross.py"),
+            ["windows-lint", "maintenance"]
+        );
+        assert_eq!(due(".herdr/checks.toml"), ["tests"]);
+        for changed in ["TODO.md", "DECISIONS.md", "docs/versions/x.md"] {
+            assert!(due(changed).is_empty(), "{changed}");
         }
+        let maintenance = PathCheck::of("maintenance").unwrap();
         // A prefix matches from the start of a path only, and any line of
         // the diff's name list is enough.
         for changed in [
@@ -3518,6 +3657,151 @@ mod tests {
             assert!(!maintenance.touched_by(changed), "{changed}");
         }
         assert!(maintenance.touched_by("src/main.rs\nscripts/x.py\n"));
+    }
+
+    /// Every path the Rust build reads is a path of each check that builds
+    /// it, so no Rust change skips one.
+    #[test]
+    fn the_rust_checks_cover_every_rust_path() {
+        for name in ["lint", "windows-lint", "tests"] {
+            let check = PathCheck::of(name).unwrap();
+            for path in RUST_PATHS {
+                assert!(check.paths.contains(&path), "{name} lacks {path}");
+            }
+        }
+    }
+
+    /// The registered checks the install's `just check` runs, from the
+    /// justfile: a recipe a check runs as `just <recipe>`, or a command line
+    /// whose words start with a check's argv (after `{{slot}}` is dropped
+    /// and `{{python}}` read as `python3`), is that check; any other recipe
+    /// expands to its dependencies and the `just <recipe>` lines of its
+    /// body. A command line no check runs is returned as is, so it fails
+    /// the test.
+    fn just_check_leaves(justfile: &str, checks: &ChecksFile) -> Vec<String> {
+        // The Unix recipe of each name: the first definition not marked
+        // `[windows]`.
+        let mut recipes: BTreeMap<&str, (Vec<&str>, Vec<&str>)> = BTreeMap::new();
+        let mut windows = false;
+        let mut current: Option<&str> = None;
+        for line in justfile.lines() {
+            if let Some(body) = line.strip_prefix("    ") {
+                if let Some(recipe) = current.and_then(|name| recipes.get_mut(name)) {
+                    recipe.1.push(body.trim());
+                }
+                continue;
+            }
+            current = None;
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                windows |= trimmed == "[windows]";
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.contains(":=") {
+                windows = false;
+                continue;
+            }
+            let Some((head, deps)) = line.split_once(':') else {
+                continue;
+            };
+            let name = head.split_whitespace().next().unwrap_or_default();
+            if !windows && !recipes.contains_key(name) {
+                recipes.insert(name, (deps.split_whitespace().collect(), Vec::new()));
+                current = Some(name);
+            }
+            windows = false;
+        }
+        let check_of_line = |line: &str| {
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .filter(|word| *word != "{{slot}}")
+                .map(|word| {
+                    if word == "{{python}}" {
+                        "python3"
+                    } else {
+                        word
+                    }
+                })
+                .collect();
+            checks
+                .checks
+                .iter()
+                .find(|(_, argv)| {
+                    !argv.is_empty()
+                        && argv.len() <= words.len()
+                        && argv.iter().zip(&words).all(|(arg, word)| arg == word)
+                })
+                .map(|(name, _)| name.clone())
+        };
+        let mut leaves = Vec::new();
+        let mut pending = vec!["check".to_owned()];
+        let mut seen = Vec::new();
+        while let Some(name) = pending.pop() {
+            // `guard` checks the free disk, which preflight does too.
+            if name == "guard" || seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            if let Some(check) = check_of_line(&format!("just {name}")) {
+                leaves.push(check);
+                continue;
+            }
+            let (deps, body) = recipes
+                .get(name.as_str())
+                .unwrap_or_else(|| panic!("no recipe {name}"));
+            pending.extend(deps.iter().map(|dep| (*dep).to_owned()));
+            for line in body {
+                if line.starts_with('@') {
+                    continue;
+                } else if let Some(call) = line.strip_prefix("just ") {
+                    pending.push(
+                        call.split_whitespace()
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
+                } else {
+                    leaves.push(check_of_line(line).unwrap_or_else(|| (*line).to_owned()));
+                }
+            }
+        }
+        leaves.sort();
+        leaves.dedup();
+        leaves
+    }
+
+    /// The verify adds by path a registered check for every recipe of the
+    /// install's `just check`, and nothing else, so the two cannot diverge:
+    /// a recipe added to `just check` fails here until it is registered in
+    /// `.herdr/checks.toml` and given paths in [`PATH_CHECKS`].
+    #[test]
+    fn just_check_runs_only_recipes_the_verify_adds_by_path() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checks = read_checks(root).unwrap();
+        let justfile = std::fs::read_to_string(root.join("justfile")).unwrap();
+        let mut covered: Vec<&str> = PATH_CHECKS.iter().map(|check| check.name).collect();
+        covered.sort_unstable();
+        assert_eq!(just_check_leaves(&justfile, &checks), covered);
+    }
+
+    #[test]
+    fn just_check_leaves_expand_dependencies_and_just_lines() {
+        let checks: ChecksFile = toml::from_str(
+            "[checks]\nlint = [\"just\", \"lint\"]\nmaint = [\"just\", \"maint-test\"]\n\
+             tests = [\"cargo\", \"nextest\", \"run\"]\n\
+             win = [\"python3\", \"scripts/win.py\", \"lint\"]\n",
+        )
+        .unwrap();
+        let justfile = "x := \"y\"\n\n# Check.\n[unix]\ncheck: guard ci win\n    \
+                        just maint-test\n    @echo done\n\n[windows]\ncheck:\n    \
+                        windows-only\n\nci: lint\n    \
+                        {{slot}} cargo nextest run --locked\n    just other\n\n\
+                        win:\n    {{slot}} {{python}} scripts/win.py lint\n\n\
+                        other:\n    stray command\n";
+        assert_eq!(
+            just_check_leaves(justfile, &checks),
+            ["lint", "maint", "stray command", "tests", "win"]
+        );
     }
 
     #[test]
@@ -3588,6 +3872,7 @@ mod tests {
             );
         }
         assert_eq!(checks.checks["maintenance"], ["just", "maintenance-test"]);
+        assert_eq!(checks.checks["lint"], ["just", "lint"]);
     }
 
     #[test]

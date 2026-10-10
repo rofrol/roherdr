@@ -9,15 +9,23 @@
 workers = ["cargo", "nextest", "run", "-E", "test(/workers::/)"]
 api-schema = ["cargo", "nextest", "run", "-E", "test(generated_protocol_schema_artifact_is_current)"]
 tests = ["cargo", "nextest", "run"]
-# Windows clippy with the configured SDK (`just windows-lint`): pass it with
-# `--check` for changes under `src/`, so unix-only code that is dead on
-# Windows fails the verify instead of the coordinator's clean-install.
+# Windows clippy with the configured SDK (`just windows-lint`), so unix-only
+# code that is dead on Windows fails the verify instead of the coordinator's
+# clean-install.
 windows-lint = ["python3", "scripts/windows_cross.py", "lint"]
 # The maintenance script tests (`just maintenance-test`), which hold the
-# config reference docs check that `just check` runs. The verify adds it, like
-# `tests` for `src/api/` and `tests/fixtures/`, to a run that does not name it
-# and whose diff touches `src/config/`, `docs/next/`, `scripts/` or `plugins/`.
+# config reference docs check that `just check` runs.
 maintenance = ["just", "maintenance-test"]
+# The rest of `just check`'s recipes: formatting and clippy (`lint`), and the
+# UI hot-path architecture, integration asset and docs contract tests. The
+# verify adds every one of these checks, and `tests` and `windows-lint`, by
+# itself to a run whose diff touches the paths its recipe reads (`lint`,
+# `windows-lint` and `tests` for every Rust change), so a commit it passes
+# does not fail the install's `just check`.
+lint = ["just", "lint"]
+ui-architecture = ["just", "ui-hot-path-architecture-test"]
+integration-assets = ["just", "integration-assets-test"]
+docs-contract = ["just", "docs-contract-test"]
 
 [preflight]
 # The free disk below which preflight refuses a run (`just guard`'s limit).
