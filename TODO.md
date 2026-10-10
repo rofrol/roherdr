@@ -394,6 +394,33 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker ended its turn while its own background test job ran;
   `wait-agent --until done --until blocked` fired without a WORKER line
   (also 02:43 and 03:11 in the same item).
+  Fourth report (guix-x86_64-iso-omguix coordinator, 2026-10-10): a pane
+  worker ended its turn "done" while its own background herdr-job wait ran;
+  `agent wait --until done|blocked|idle` returned at once. Round
+  20261010-152938-328c (sol, MiMo, DeepSeek): do not redefine `done` from
+  the `bg:N` count (it is stale until the next Stop and can stay above
+  zero forever); the verdict wait of this item is the answer. Added here:
+  `agent status` and `wait-agent` output show the last Stop payload's
+  background tasks as information; the worker contract says "write your
+  WORKER line only after your own background jobs ended"; an optional
+  `--until background-drained` ends on a Stop payload of the same session
+  listing no running task (MiMo, DeepSeek).
+
+- [ ] `herdr-job wait-text <file> <pattern>`: an event-driven match on new [t-xphl4a6t]
+  bytes, partial lines included (from the guix-x86_64-iso-omguix
+  coordinator's report, 2026-10-10: `tail -F serial.log | grep -m1 login:`
+  hung ~4 min because the login prompt has no trailing newline; round
+  20261010-152938-328c). It follows the file with kqueue/inotify, scans a
+  buffer across chunks (no line splitting), handles `\r` redraws, rotation
+  and truncation, counts only text written after it starts unless
+  `--from-start`, and ends on the match (exit 0) or a source error, never
+  on a duration. No `wait-for-port`: all three models: a client gets no
+  event when a remote port starts listening, so it would be polling. For
+  "the VM is ready" the skill names a positive event: one blocking `ssh
+  host true` that exits 0, or a readiness line the guest writes (matched
+  with `wait-text`), never a retry loop. One line in the `todo` skill: a
+  wait names the observable fact it ends on (a verdict line, a handshake,
+  a written marker), never log text guessed to appear.
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
