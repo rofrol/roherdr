@@ -8067,14 +8067,20 @@ mod todo_runs {
             list(None),
             [open.id.clone(), decided.id.clone(), change.id.clone()]
         );
-        assert_eq!(list(Some(DecisionStatus::Open)), [change.id.clone()]);
-        assert_eq!(list(Some(DecisionStatus::Superseded)), [open.id.clone()]);
+        assert_eq!(
+            list(Some(DecisionStatus::Open)),
+            std::slice::from_ref(&change.id)
+        );
+        assert_eq!(
+            list(Some(DecisionStatus::Superseded)),
+            std::slice::from_ref(&open.id)
+        );
 
         // The runnable state names the open records: the user's turn.
         let state = ledger
             .todo_runnable_state(&fixture.repo.display().to_string())
             .unwrap();
-        assert_eq!(state.open_decisions, [change.id.clone()]);
+        assert_eq!(state.open_decisions, std::slice::from_ref(&change.id));
     }
 
     fn grant_params(fixture: &Fixture, hash: &str) -> crate::api::schema::TodoGrantParams {
