@@ -926,3 +926,19 @@ item-coordinator prompt name `--next` (with `--next-task`,
 `--next-message`, `--next-paths`) or `--stop-reason` for `--close`, and
 queue mode (where `--close` alone is enough). The `todo` skill's matching
 line is a text edit in the user's agent config (2026-10-10).
+
+## A headless worker opens like an agent tab, not a modal (user,
+
+Clicking a headless worker opened a modal that only Escape closed (user,
+2026-10-10). Now (round 20261010-155105-b036) the server exposes a worker's
+transcript as structured events (`worker.transcript`,
+`worker.transcript_wait`, pushed to clients through a new endpoint codec
+`endpoint.worker-transcript.v1`) and a shared tab identity `worker:<id>`
+(pane kind worker); the client shows it in the main pane like an agent's
+tab, read-only, with scrollback, selection, a live tail and a new-output
+mark, one renderer shared with `herdr worker log`; takeover prints the
+transcript and a mark, then resumes the session in the tab. herdr's own
+modals close on a click outside (onboarding and custom-command popups
+stay as decided). Left: an input to the coordinator; a taken-over worker's
+line still opens its transcript (redirecting it needs a protocol version
+bump); the takeover tab's two typed commands need a live check.
