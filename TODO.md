@@ -348,6 +348,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   item (start, `worker wait --attention`, answer, ack, `verify` before a
   cherry-pick), and to propose registering its checks for `herdr todo run`
   to the user. Left here: the pane-worker fixes 4, 5, 7, 8, 9.
+  Second report from the try-roguix coordinator (2026-10-10, pane w6:pAH,
+  sent at the user's request; its round 20261010-025030-401e, sol + MiMo).
+  It still needs pane (TUI) workers for VM items (the sandbox case). Seen:
+  `herdr-job wait-agent <pane> --request <id>` exited 8 after a herdr
+  restart while the worker kept working; the default wait fired on a
+  transient idle (the worker woken by its own background-shell
+  notification); `--until done|blocked` fired on a turn end while the
+  worker's own background test ran; its stopgap (wait for working, then
+  for done, re-armed per turn) can latch a stale state. Agreed there and
+  taken into this item: the positive event is "this assignment produced a
+  WORKER-DONE/WORKER-BLOCKED line, or the worker asks", not a pane state
+  or a turn end; so `herdr-job wait-agent --until verdict`, scoped to the
+  assignment (the prompt's request id), inspect-then-subscribe atomically
+  (a verdict already in the transcript ends it at once), recovering after
+  a herdr restart by re-reading the transcript instead of exiting 8; the
+  `todo` skill then names that wait for pane workers and its exits; a
+  worker-contract line "emit the WORKER line only after your own background
+  jobs end" only as a complement.
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
@@ -1439,6 +1457,14 @@ Items agents add. Not approved until the user moves them up.
   Claude's windows are at 90% (then the old 90/80 switch). All three models
   advised building it only as a reviewed backend, not a quota stopgap, and
   MiMo to measure first how often a Claude window reaches 90%.
+
+- [ ] A coordinator that hits a gap in its own protocol (proposed by the [t-aketwwun]
+  try-roguix coordinator, 2026-10-10): it uses the smallest reversible
+  stopgap the existing rules allow, says so in its reply, and records a
+  Proposed item (a tool or skill change) for the user, rather than silently
+  inventing machinery or stopping while the user is away. A line in the
+  `todo` skill (the user's agent config: a text edit that widens nothing,
+  so no question needed per DECISIONS.md, but the user approves the item).
 
 ## Needs a decision
 
