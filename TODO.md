@@ -30,6 +30,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   to every run whose diff touches `src/config/`, `docs/next/`, `scripts/`
   or `plugins/` (like `tests` for `src/api/`); `draft_task` may choose it.
 
+- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
+  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
+  coordinator's `herdr pane wait-output` on its worker failed with
+  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
+  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
+  reconnect across a handoff instead of failing.
+
 - [ ] A headless worker opens like an agent tab, not a modal (user, [t-zi5sz6kr]
   2026-10-10, next: "when I click a tab without a TUI a modal opens and
   only Escape closes it, a click outside does not; I don't want a modal: it
@@ -337,13 +344,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   class as the orphaned broker that held the job slot, 2026-10-09); a
   lint-grade signal, never a kill. Test with a stub tool call that leaves a
   detached child holding stderr.
-
-- [ ] A live handoff breaks other sessions' waits. 2026-10-07: each [t-bojbiegs]
-  `scripts/herdr_live.sh install` restarts the server, and the try-roguix
-  coordinator's `herdr pane wait-output` on its worker failed with
-  `server_unavailable` ("server is shutting down"); it then wrapped the wait in
-  a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
-  reconnect across a handoff instead of failing.
 
 - [ ] herdr: `agent start` reports ready before Claude accepts typed input, [t-gp6n6qbx]
   and `agent prompt` returns `agent_prompted` without knowing the prompt
