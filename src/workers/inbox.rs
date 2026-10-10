@@ -68,6 +68,7 @@ fn kind_name(kind: WorkerEventKind) -> &'static str {
         WorkerEventKind::Joined => "joined",
         WorkerEventKind::Left => "left",
         WorkerEventKind::Reowned => "reowned",
+        WorkerEventKind::HeldOutput => "held_output",
         WorkerEventKind::Unknown => "unknown",
     }
 }
@@ -131,6 +132,15 @@ fn rows(
         } else if !status.is_gone() && status.turn_ended() && (!before.turn_ended || result) {
             rows.push((owner.to_owned(), WorkerEventKind::TurnEnd, state()));
         }
+        let held = matches!(record, Recorded::Event(event)
+            if direction == Direction::Herdr && event["type"].as_str() == Some("tool_output_held"));
+        if held {
+            rows.push((
+                owner.to_owned(),
+                WorkerEventKind::HeldOutput,
+                json!({"held_output": status.held_output}),
+            ));
+        }
     }
     if before.listed && !status.listed() {
         rows.push((owner.to_owned(), WorkerEventKind::Left, json!({})));
@@ -188,6 +198,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> StoreResult<(i64, i64, WorkerEvent
                 .unwrap_or(None),
             from_coordinator_id: text("from_coordinator_id"),
             to_coordinator_id: text("to_coordinator_id"),
+            held_output: serde_json::from_value(detail["held_output"].clone()).unwrap_or(None),
         },
     ))
 }

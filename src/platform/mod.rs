@@ -633,6 +633,35 @@ pub(crate) fn quick_look(_path: &std::path::Path) -> Option<std::io::Result<std:
     None
 }
 
+/// A process that holds the write end of a pipe another process reads
+/// ([`outside_pipe_writers`]): its pid and its command line (its name when
+/// the arguments cannot be read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PipeWriter {
+    pub(crate) pid: u32,
+    pub(crate) command: String,
+}
+
+/// Watching a process's children's exits needs a fork event, which only
+/// macOS gives an unprivileged process (kqueue's `NOTE_FORK`); Linux has
+/// none short of ptrace or the root-only proc connector.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn watch_child_exits(
+    _root_pid: u32,
+    _on_exit: Box<dyn FnMut(u32) + Send>,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "watching a process's children's exits is supported on macOS only",
+    ))
+}
+
+/// Unsupported platform stub: only macOS watches children's exits.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn outside_pipe_writers(_root_pid: u32) -> Vec<PipeWriter> {
+    Vec::new()
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

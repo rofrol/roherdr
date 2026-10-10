@@ -19044,6 +19044,11 @@
               "type": "string"
             },
             {
+              "const": "held_output",
+              "description": "A tool call's own process exited while its descendants hold its\noutput open (`worker.held_output`); the turn goes on, waiting for\nthat output's end. Reported after `after` once, never as an\nobligation.",
+              "type": "string"
+            },
+            {
               "const": "unknown",
               "description": "A reason this client does not know.",
               "type": "string"
@@ -19160,6 +19165,17 @@
                 "null"
               ]
             },
+            "held_output": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerHeldOutput"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `held_output`: the report."
+            },
             "kind": {
               "$ref": "#/schemas/success_response/$defs/WorkerEventKind"
             },
@@ -19238,6 +19254,11 @@
               "type": "string"
             },
             {
+              "const": "held_output",
+              "description": "A tool call's output is held open by its descendants\n(`held_output`).",
+              "type": "string"
+            },
+            {
               "const": "unknown",
               "description": "A kind this client does not know.",
               "type": "string"
@@ -19256,6 +19277,43 @@
           },
           "required": [
             "workers"
+          ],
+          "type": "object"
+        },
+        "WorkerHeldOutput": {
+          "description": "A process the CLI started exited while processes outside the CLI's tree\n(its detached descendants) still hold the write end of a pipe the CLI\nreads: a tool call whose output stays open, so the CLI keeps waiting\nfor its end. A report, never a kill.",
+          "properties": {
+            "at_ms": {
+              "description": "Unix milliseconds when herdr found it.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "exited_pid": {
+              "description": "The CLI's child whose exit herdr observed.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "holders": {
+              "description": "The processes that hold the pipe open, not reported before.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerPipeHolder"
+              },
+              "type": "array"
+            },
+            "tool_calls": {
+              "description": "The tool calls the worker had started and not got a result for.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerToolCall"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "exited_pid",
+            "holders",
+            "at_ms"
           ],
           "type": "object"
         },
@@ -19299,6 +19357,17 @@
                 "integer",
                 "null"
               ]
+            },
+            "held_output": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerHeldOutput"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The latest report, in the current or last turn, of a tool call whose\noutput its descendants hold open (`held_output`); a new turn clears\nit."
             },
             "item": {
               "description": "The TODO item given at start (`worker.start`'s `item`).",
@@ -19601,6 +19670,25 @@
             "reason",
             "seq",
             "owner_pane_id"
+          ],
+          "type": "object"
+        },
+        "WorkerPipeHolder": {
+          "description": "A process that holds the write end of a pipe the worker's CLI reads.",
+          "properties": {
+            "command": {
+              "description": "Its command line, or its name when the arguments cannot be read.",
+              "type": "string"
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pid",
+            "command"
           ],
           "type": "object"
         },
@@ -19997,6 +20085,30 @@
             "pane_id",
             "pane_kind",
             "read_only"
+          ],
+          "type": "object"
+        },
+        "WorkerToolCall": {
+          "description": "A tool call the worker started (an assistant `tool_use`) without a\n`tool_result` yet.",
+          "properties": {
+            "command": {
+              "description": "A Bash call's command, cut to its first 200 characters.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The `tool_use` id.",
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "tool"
           ],
           "type": "object"
         },

@@ -131,6 +131,20 @@ pub(crate) fn record_value_entries(record: &Value) -> Vec<WorkerTranscriptEntry>
                 .unwrap_or_default(),
             event["error"].as_str().unwrap_or("unknown error")
         )],
+        ("herdr", "tool_output_held") => {
+            let mut lines = vec![format!(
+                "! a tool call's output is held open after its process {} exited",
+                event["exited_pid"].as_u64().unwrap_or(0)
+            )];
+            if let Ok(report) = serde_json::from_value(event.clone()) {
+                lines.extend(
+                    super::held_output_summary(&report)
+                        .lines()
+                        .map(|line| format!("  {}", one_line(line, DETAIL_MAX))),
+                );
+            }
+            lines
+        }
         ("herdr", "question") => {
             let question = &event["question"];
             vec![format!(

@@ -2787,6 +2787,13 @@ impl WorkerSupervisor {
         };
         run.info.last_acked_seq = Some(seq);
         let event = match reason {
+            // A report, not a turn's end: the user got its notice, the
+            // worker's log and status hold it, and the run keeps waiting.
+            WorkerAttentionReason::HeldOutput => {
+                self.run_step(run, json!({"type": "run_acked", "seq": seq}))?;
+                self.ack_quietly(&worker_id, seq);
+                return Ok(());
+            }
             WorkerAttentionReason::Question if questions.is_empty() => {
                 // Its answer is being written: nothing to ask.
                 self.run_step(run, json!({"type": "run_acked", "seq": seq}))?;
