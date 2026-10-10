@@ -113,6 +113,7 @@ Raw socket method names use dot notation:
 | Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.record_override` |
 | TODO runs | `todo.run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.review`, `todo.next`, `todo.stop` |
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides` |
+| Reports | `report.record`, `report.list`, `report.close` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -1006,6 +1007,39 @@ unknown pane is refused with `pane_not_found`, a reason that is empty, not one
 line or longer than 500 bytes with `invalid_request`; the hook then denies the
 call. `history.overrides` (optional `repo`, a directory in it) answers
 `overrides`, the recorded exceptions, oldest first.
+`report.record` (`kind`, a slug of lowercase letters, digits and `-`, at most
+40; `summary`, one line of at most 500 bytes; optional `uncertain`, `command`,
+cut to 2000 characters, `evidence` with `source`, `content` (at most 65536
+bytes of the file's text), `bytes` and `truncated`, and `pane_id`,
+`session_id` and `cwd`, which default to the pane's agent session and
+directory) records one occurrence of a protocol problem. Its fingerprint is
+16 hex characters of the SHA-256 of `kind` and the summary normalized:
+lowercase, single spaces, and paths, numbers, commit hashes and ids replaced by
+`<path>`, `<n>`, `<sha>` and `<id>`. The first occurrence of a fingerprint
+creates report `r-N`; later ones add occurrence `K` to it, and one of a closed
+report reopens it. Evidence is copied into the worker directory's `reports/`
+before the occurrence is written. The report and its occurrences are written
+with a `report_recorded` event (whose `worker_id` is `report:r-N`) in one
+transaction. A new or reopened report notifies the client shells (no rate
+limit; also into `notification.list`), pointing at the pane of the herdr
+repository's active coordination tenure (the repository whose `Cargo.toml`
+names the package `herdr`), or without a pane when none holds it. It answers
+`report_recorded` with `report`, `occurrence` and `notified` (`coordinator
+<id>` or `user`; absent for a repeat). A report carries `report_id`, `kind`,
+`summary` (the first occurrence's), `normalized`, `fingerprint`, `state`
+(`open` or `closed`), `uncertain` (every occurrence was), `first_ms`,
+`last_ms`, `count`, `reopened`, while closed `closed_ms`, `closed_by` (the
+tenure), `fix` or `not_reproducible`, and `occurrences`: `number`, `ts_ms`,
+`summary`, `uncertain`, `repo`, `pane_id`, `session_id`, `coordinator_id`,
+`command`, `evidence` (the server's copy), `evidence_source`,
+`evidence_truncated` and `reopened` (the closure it reopened). `report.list`
+(optional `all`) answers `reports`: the open ones, or all, the latest
+occurrence first. `report.close` (`report_id`; `fix`, a TODO item id or a
+commit, or `not_reproducible`; `pane_id`) closes it with a `report_closed`
+event and answers `report`. It is refused with `report_close_refused` unless
+`pane_id` is bound to the herdr repository's active tenure, with
+`report_not_found` for an unknown report and with `invalid_request` for a
+closed one or a bad `fix`.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

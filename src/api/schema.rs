@@ -9,6 +9,7 @@ pub mod history;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
+pub mod reports;
 pub mod response;
 pub mod server;
 pub mod session;
@@ -28,6 +29,7 @@ pub use history::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
+pub use reports::*;
 pub use response::*;
 pub use server::*;
 pub use session::*;
@@ -192,6 +194,17 @@ pub enum Method {
     /// The recorded allowlist exceptions, oldest first.
     #[serde(rename = "history.overrides")]
     HistoryOverrides(HistoryOverridesParams),
+    /// Records one occurrence of a protocol problem; the first of its
+    /// fingerprint notifies the herdr coordinator (or the user).
+    #[serde(rename = "report.record")]
+    ReportRecord(ReportRecordParams),
+    /// The reports, open ones or all.
+    #[serde(rename = "report.list")]
+    ReportList(ReportListParams),
+    /// Closes a report with its fix or as not reproducible; only from the
+    /// herdr repository's coordinator pane.
+    #[serde(rename = "report.close")]
+    ReportClose(ReportCloseParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

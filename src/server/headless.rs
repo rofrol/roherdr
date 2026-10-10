@@ -3042,6 +3042,11 @@ impl HeadlessServer {
             let _ = msg.respond_to.send(response);
             return true;
         }
+        if let api::schema::Method::ReportRecord(params) = &msg.request.method {
+            let response = self.handle_report_record_api(msg.request.id.clone(), params);
+            let _ = msg.respond_to.send(response);
+            return true;
+        }
         if let api::schema::Method::NotificationShowForPane(params) = &msg.request.method {
             let response = self.handle_notification_show_api(
                 msg.request.id.clone(),

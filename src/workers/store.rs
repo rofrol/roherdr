@@ -588,6 +588,51 @@ CREATE TABLE todo_chains (
     stop_reason TEXT
 );
 "#,
+    r#"
+-- Protocol problems coordinators report (`report.record`), one row per
+-- fingerprint (the kind and the summary with ids, paths, numbers and commit
+-- hashes taken out), and one row per occurrence, written with the
+-- `report_recorded` and `report_closed` events (whose `worker_id` is
+-- `report:r-<id>`) in the same transaction. `count` is the number of
+-- occurrences; a closed report's next occurrence reopens it (`reopened`
+-- counts those) and clears its closure, which the events keep. Times are
+-- Unix milliseconds. `evidence` is the server's copy of the reporter's
+-- file, in the worker directory's `reports/`.
+CREATE TABLE reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    normalized TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+    uncertain INTEGER NOT NULL DEFAULT 0,
+    first_ms INTEGER NOT NULL,
+    last_ms INTEGER NOT NULL,
+    count INTEGER NOT NULL,
+    reopened INTEGER NOT NULL DEFAULT 0,
+    closed_ms INTEGER,
+    closed_by TEXT,
+    fix TEXT,
+    not_reproducible INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE report_occurrences (
+    report_id INTEGER NOT NULL REFERENCES reports (id),
+    number INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    uncertain INTEGER NOT NULL DEFAULT 0,
+    repo TEXT,
+    pane_id TEXT,
+    session_id TEXT,
+    coordinator_id TEXT,
+    command TEXT,
+    evidence TEXT,
+    evidence_source TEXT,
+    evidence_truncated INTEGER NOT NULL DEFAULT 0,
+    reopened TEXT,
+    PRIMARY KEY (report_id, number)
+);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -848,6 +893,15 @@ impl Store {
         )
     }
 
+    /// Runs `read` on the connection, for the tables a module of its own
+    /// reads (`reports`).
+    pub(super) fn read<T>(
+        &self,
+        read: impl FnOnce(&Connection) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        read(&lock(&self.conn))
+    }
+
     #[cfg(test)]
     pub(super) fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
         lock(&self.conn)
@@ -897,6 +951,12 @@ pub(super) struct Tx<'a> {
 }
 
 impl Tx<'_> {
+    /// The transaction's connection, for the tables a module of its own
+    /// writes (`reports`).
+    pub(super) fn connection(&self) -> &Connection {
+        self.tx
+    }
+
     /// Appends one event and returns its `seq`.
     pub(super) fn event(&self, event: &EventRow<'_>) -> StoreResult<i64> {
         let (kind, body) = match event.record {
@@ -2714,6 +2774,8 @@ mod tests {
                  DROP TABLE coordinator_overrides;
                  DROP TABLE todo_chains;
                  ALTER TABLE workers DROP COLUMN coordinates;
+                 DROP TABLE report_occurrences;
+                 DROP TABLE reports;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2771,8 +2833,10 @@ mod tests {
                  DROP TABLE coordinator_overrides;
                  DROP TABLE todo_chains;
                  ALTER TABLE workers DROP COLUMN coordinates;
+                 DROP TABLE report_occurrences;
+                 DROP TABLE reports;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 16
+                MIGRATIONS.len() - 17
             ))
             .unwrap();
         drop(store);
@@ -2824,8 +2888,10 @@ mod tests {
                  ALTER TABLE coordinators DROP COLUMN worker_id;
                  ALTER TABLE coordinators DROP COLUMN headless;
                  DROP TABLE todo_chains;
+                 DROP TABLE report_occurrences;
+                 DROP TABLE reports;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 5
+                MIGRATIONS.len() - 6
             ))
             .unwrap();
         drop(store);

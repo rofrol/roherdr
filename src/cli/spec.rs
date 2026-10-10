@@ -46,6 +46,8 @@ pub(super) fn command() -> Command {
         .subcommand(coordinator_command())
         .subcommand(todo_command())
         .subcommand(history_command())
+        .subcommand(report_command())
+        .subcommand(reports_command())
         .subcommand(usage_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
@@ -504,6 +506,33 @@ fn history_command() -> Command {
                 .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
                 .arg(flag("json")),
         )
+}
+
+fn report_command() -> Command {
+    Command::new("report")
+        .about("Record a herdr protocol problem once; repeats only count")
+        .arg(option("kind", "KIND"))
+        .arg(option("summary", "TEXT"))
+        .arg(option("evidence", "PATH").value_hint(ValueHint::FilePath))
+        .arg(option("command", "TEXT"))
+        .arg(flag("uncertain"))
+        .arg(flag("json"))
+        .subcommand(
+            Command::new("close")
+                .about("Close a report with its fix; only the herdr coordinator")
+                .arg(required("report_id", "REPORT_ID"))
+                .arg(option("fix", "ITEM_OR_COMMIT"))
+                .arg(flag("not-reproducible"))
+                .arg(flag("json")),
+        )
+}
+
+fn reports_command() -> Command {
+    Command::new("reports")
+        .about("List the recorded protocol problems")
+        .arg(flag("open"))
+        .arg(flag("all"))
+        .arg(flag("json"))
 }
 
 fn usage_command() -> Command {

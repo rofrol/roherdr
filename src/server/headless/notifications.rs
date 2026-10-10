@@ -361,6 +361,65 @@ impl HeadlessServer {
         .unwrap_or_else(|_| "{}".to_string())
     }
 
+    /// `report.record`: records the occurrence, then, for a new or reopened
+    /// report, notifies the client shells (also into `notification.list`),
+    /// pointing at the herdr coordinator's pane when one holds the herdr
+    /// repository. No rate limit: a report notifies once.
+    pub(super) fn handle_report_record_api(
+        &mut self,
+        id: String,
+        params: &api::schema::ReportRecordParams,
+    ) -> String {
+        let (recorded, notice) = match self.app.record_report(params) {
+            Ok(recorded) => recorded,
+            Err(failure) => {
+                return serde_json::to_string(&api::schema::ErrorResponse {
+                    id,
+                    error: api::schema::ErrorBody {
+                        code: failure.code().into(),
+                        message: failure.to_string(),
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string())
+            }
+        };
+        let notified = notice.map(|notice| {
+            let target = notice
+                .pane_id
+                .as_deref()
+                .and_then(|pane| self.notification_target(pane));
+            let (workspace_id, tab_id, pane_id) = match target {
+                Some((workspace_id, tab_id, pane_id)) => {
+                    (Some(workspace_id), tab_id, Some(pane_id))
+                }
+                None => (None, None, None),
+            };
+            self.send_to_client_shells(ServerMessage::SemanticNotification(
+                protocol::SemanticNotification {
+                    kind: protocol::SemanticNotificationKind::Custom,
+                    title: notice.title,
+                    body: sanitize_notification_text(&notice.body, 240),
+                    sound: Some(protocol::SemanticNotificationSound::Request),
+                    agent: None,
+                    workspace_id,
+                    tab_id,
+                    pane_id,
+                    position: None,
+                },
+            ));
+            notice.notified
+        });
+        serde_json::to_string(&api::schema::SuccessResponse {
+            id,
+            result: api::schema::ResponseResult::ReportRecorded {
+                report: recorded.report,
+                occurrence: recorded.occurrence,
+                notified,
+            },
+        })
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
     /// `target_pane` (from `notification.show_for_pane`) gives the notification
     /// the pane, tab and workspace ids the client turns into its click action.
     pub(super) fn handle_notification_show_api(

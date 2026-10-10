@@ -17,6 +17,7 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
+use super::reports::ReportInfo;
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
@@ -167,6 +168,23 @@ pub enum ResponseResult {
     /// first.
     HistoryOverrides {
         overrides: Vec<CoordinatorOverride>,
+    },
+    /// `report.record`'s reply: the report with this occurrence's number,
+    /// and whom it notified (`coordinator <id>` or `user`; absent when it
+    /// was a repeat and notified no one).
+    ReportRecorded {
+        report: ReportInfo,
+        occurrence: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notified: Option<String>,
+    },
+    /// `report.list`'s reply: the reports, the latest occurrence first.
+    Reports {
+        reports: Vec<ReportInfo>,
+    },
+    /// `report.close`'s reply.
+    Report {
+        report: ReportInfo,
     },
     /// `worker.kill`'s reply: the worker and what was signalled.
     WorkerKilled {

@@ -132,10 +132,14 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         let json = args.iter().any(|arg| arg == "--json");
         return super::todo_review::print_review(&super::send_request(&request)?, json);
     }
+    let command = super::report::command_line(&["herdr", "todo"], args);
     if matches!(request.method, Method::TodoWait(_)) && !super::target::is_remote() {
-        return wait_across_handoffs(&request);
+        return wait_across_handoffs(&request, &command);
     }
-    super::print_response(&super::send_request(&request)?)
+    let response = super::send_request(&request)?;
+    let code = super::print_response(&response)?;
+    super::report::hint_reply(&response, &command);
+    Ok(code)
 }
 
 /// How often a `todo wait` that lost its server tries to connect again.
@@ -146,13 +150,31 @@ const RECONNECT_POLL: Duration = Duration::from_millis(50);
 
 /// `todo wait`, which a live handoff does not end: the old server closes
 /// the connection without an answer, and the wait goes on with the new one.
-fn wait_across_handoffs(request: &Request) -> std::io::Result<i32> {
+/// When the new server's answer is an error, the wait gave up: it prints
+/// the `herdr report` command for that, as for an event without a next step.
+fn wait_across_handoffs(request: &Request, command: &str) -> std::io::Result<i32> {
     let client = super::target::api_client()?;
     super::ensure_server_protocol_compatible(&client, &request.id)?;
+    let mut reconnected = false;
     let response = request_reconnecting(&client, request, || {
+        reconnected = true;
         super::ensure_server_protocol_compatible(&client, &request.id)
     })?;
-    super::print_response(&response)
+    let code = super::print_response(&response)?;
+    match &response["error"] {
+        serde_json::Value::Null => super::report::hint_reply(&response, command),
+        error if reconnected => super::report::print_hint(
+            "todo-wait-gave-up",
+            &format!(
+                "todo wait gave up after a server handoff: the new server answered {}: {}",
+                error["code"].as_str().unwrap_or("?"),
+                error["message"].as_str().unwrap_or_default()
+            ),
+            command,
+        ),
+        _ => {}
+    }
+    Ok(code)
 }
 
 /// Whether `error` means the server went away with the request in flight

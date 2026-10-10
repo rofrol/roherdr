@@ -8,6 +8,7 @@ mod integrations;
 mod layouts;
 mod panes;
 pub(crate) mod plugins;
+mod reports;
 pub(super) mod responses;
 mod session;
 mod tabs;
@@ -1268,6 +1269,8 @@ impl App {
             Method::CoordinatorRecordOverride(params) => {
                 return self.handle_coordinator_record_override(request.id, params);
             }
+            Method::ReportRecord(params) => return self.handle_report_record(request.id, params),
+            Method::ReportClose(params) => return self.handle_report_close(request.id, params),
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }
@@ -1352,7 +1355,8 @@ impl App {
             | Method::TodoNext(_)
             | Method::TodoStop(_)
             | Method::HistoryReconcile(_)
-            | Method::HistoryOverrides(_) => {
+            | Method::HistoryOverrides(_)
+            | Method::ReportList(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",
