@@ -1680,6 +1680,28 @@ user needs to decide or do.
   before the record" scenario uses an external fake-effect service with
   its own durable log, so an unknown outcome is real; every test counts
   model calls and external effects (otherwise replay tests show nothing).
+  Herdr's own failures as scenarios (user 2026-10-10: "can you run there
+  the scenarios that fail for us?"), added to every project's test, each
+  rebuilt in the project's terms with the fake model:
+  H1 the step owner ends its turn with a promise and starts nothing (a
+     task/agent that returns "will continue" without scheduling): does the
+     engine advance by itself?
+  H2 a step's own background job still runs when the step reports done
+     (turn end is not work end): does the engine wait for the real end?
+  H3 a step stuck on a silent command whose pipe orphaned children hold
+     (ssh with background processes keeping stderr): what does it see?
+  H4 the orchestrator restarts while a client waits on a step (our
+     EmptyResponse, exit 8): does the waiter reconnect and keep its place?
+  H5 an orphaned child holds a lock or file the next step needs (our
+     broker holding the job slot's flock): detected, cleaned, or hung?
+  H6 a human question pending while its asker's owner goes away (our
+     closed coordinator pane): where does the question go?
+  H7 a decision input that goes stale at a known instant (our usage
+     window reset): does it re-read at decision time or trust a cache?
+  H8 two drivers of one execution in one process after a resume (our run
+     lock race): fenced, or both proceed?
+  H9 a step "succeeds" but a later gate fails (our commit that broke the
+     v1 contract only at install): can it roll back or compensate?
 
 ### Decide
 
