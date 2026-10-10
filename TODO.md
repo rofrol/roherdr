@@ -1596,6 +1596,12 @@ user needs to decide or do.
   OpenRouter) put in a file the coordinator names, never pasted into chat.
   VM: OrbStack is installed here (`orb`), a fresh Linux machine without
   host mounts or SSH agent forwarding; the worker runs inside it only.
+  Decided by the user 2026-10-10: no API key. mini-swe-agent runs with a
+  scripted fake model (no key). vibe-kanban's Claude Code logs in with the
+  user's subscription inside the VM (the user runs `claude login` there
+  himself; agents never handle the login); after the test: log out and
+  delete the VM. VM still to choose (OrbStack shares the Mac's files by
+  default; a fresh UTM VM without shared folders is the safe default).
 
 ### Decide
 
