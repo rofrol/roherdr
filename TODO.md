@@ -36,33 +36,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   if he does), review rounds, machinery fixes it triggered, wall-clock time
   from start to push. After 10 items: a summary and a question to the user.
 
-- [ ] One shared file for the user's global agent rules instead of two [t-txcntd2n]
-  copies (user, 2026-10-10: "maybe a link instead of a copy?"). Today
-  ~/.claude/CLAUDE.md (204 lines) and ~/.pi/agent/AGENTS.md (159 lines)
-  differ in ~127 lines: shared rules drifted (e.g. pi lacks "Neither
-  withdraws the approval", its "Needs a decision" shape is older, its
-  worker step is pre-headless), while some parts are agent-specific
-  (Claude's AskUserQuestion fields and settings.json section; pi's
-  language, git-ignores and dotfiles-shim sections, which also apply to
-  Claude). A plain symlink would push Claude-only text into pi. Plan: a
-  worker, in a scratch copy, builds one shared file (e.g.
-  ~/.agents/AGENTS.md: every rule both agents need, the drift resolved to
-  the newer text, the differences listed for the user) plus short
-  agent-specific parts; Claude reads it through an `@~/.agents/AGENTS.md`
-  import in CLAUDE.md; pi through a symlink or its own include mechanism
-  (check what pi supports). The coordinator shows the user the merged text
-  and the resolved differences before anything under ~ changes.
-  Simpler, checked by the coordinator (the user asked "from pi to
-  claude?"): the section lists nearly match. pi's file already carries
-  "Claude settings.json"; the only Claude-only section is "AskUserQuestion
-  fields" (8 lines, harmless for pi; mark it Claude Code only); the only
-  pi-only one is "Git ignores", which applies to Claude too; pi's language
-  section is the English form of CLAUDE.md's Polish one. So: merge "Git
-  ignores" into CLAUDE.md, take CLAUDE.md's newer text wherever they drifted
-  (listing each difference for the user), then make
-  ~/.pi/agent/AGENTS.md a symlink to ~/.claude/CLAUDE.md, one file, no
-  import mechanism needed; confirm pi follows a symlinked AGENTS.md.
-
 - [ ] Coordinators report protocol problems themselves: `herdr report` [t-pulsqoxl]
   (user via the try-roguix coordinator, 2026-10-10: "work out with the
   models how coordinators report such problems without me telling them
