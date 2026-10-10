@@ -778,3 +778,15 @@ workers; review by the same model is only partly independent; parallelism
 unused; the protocol, Odin, crate and tracker plans are scope creep for one
 user. Suggested measure: the user's minutes per useful landed item.
 Decided by the user: no change; the queue goes on as it is.
+
+## A coordinator waiting on a busy worker looks idle (user, 2026-10-07,
+
+A coordinator waiting on its worker looked idle (user, 2026-10-07 and
+2026-10-10, screenshots): its only activity was a Claude background shell
+`herdr-job wait <job>` on a job in another tab, and `herdr-bg-badge` skipped
+every `herdr-job wait` assuming the same tab counted the job. Now (round
+20261010-025204-a255) `herdr-job wait`, `wait-agent` and `watch` record a
+wait edge (flocked, atomic) and the badge counts cross-tab waits from those
+records, once per job and only while the job runs, naming it
+(`1 bg ⧖ <job>`); the agent status stays idle; a waiting job is never marked
+idle by the silence rule. The badge updates at Claude's turn ends (Stop).

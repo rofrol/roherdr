@@ -36,29 +36,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   if he does), review rounds, machinery fixes it triggered, wall-clock time
   from start to push. After 10 items: a summary and a question to the user.
 
-- [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
-  screenshot: "this circle is grey, it looks as if the coordinator is not
-  working"). Its only running job is `herdr agent wait <worker pane>`: no
-  output and no CPU, so after 5 minutes herdr-job reports it `--activity
-  idle` and the coordinator's state shows the grey still ring (`◌`, `z` once
-  the uncommitted idle-mark change lands), while the worker it waits on
-  works (`◐` next to `⚒`). A wait is idle by design; its liveness is the
-  awaited target's. Options: herdr-job never marks a wait job (`agent wait`,
-  `watch --pid`, `pane wait-output`) idle, or reports the awaited agent's
-  state instead of its own CPU and output.
-  Seen again 2026-10-10 (user, screenshot of the roguix-vps coordinator: "why
-  does it have a green ring and look as if it is not working? ask the models").
-  Cause checked by the coordinator: it waits in a Claude background shell
-  `herdr-job wait <job>` on a job in its worker's tab; `herdr-bg-badge` skips
-  every `herdr-job wait` assuming the same tab's jobs token counts that job,
-  which is false across tabs, so the row shows nothing running. Round
-  20261010-025204-a255 (sol, MiMo, DeepSeek): derive the wait from herdr's
-  records, not from parsing commands: `herdr-job wait` records a wait edge
-  (waiting pane, job id, the job's tab and target), the sidebar shows the
-  waiting row as busy while the target lives ("waiting on <job or worker>"),
-  counted once by job id; the agent status stays idle (no new variant). Approved
-  by the user's request; moved to the top.
-
 - [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
   2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
   header-arrows` and its Bash question: "a headless worker's entry cannot
