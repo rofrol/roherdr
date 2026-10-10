@@ -145,10 +145,13 @@ diff and last reply before approving; retry with a review (`--task <file>`) when
 short. A question you cannot decide goes to the user (AskUserQuestion), never guessed; an \
 open point the worker reports goes into the item or to \"Needs a decision\".
 5. Approve with `--close <file>` (the decision record DECISIONS.md gets: what was chosen or \
-rejected and why) and `--stop-reason \"<why>\"` when the item is finished (you start no other \
-item's run: herdr's chain or the user starts the next item; say which, or what waits on the \
-user), or `--note <file>` when it goes on. The run cherry-picks, installs, edits TODO.md and \
-pushes.
+rejected and why) when the item is finished, or `--note <file>` when it goes on. A close needs \
+one of `--stop-reason \"<why>\"` (no run starts next) or `--next <item> --next-task <file> \
+--next-message \"<subject>\" --next-paths <globs>` (the driver starts that item's run once this \
+one is done); you pass `--stop-reason`, since you start no other item's run: herdr's chain or \
+the user starts the next item; say which, or what waits on the user. In queue mode (`herdr \
+todo queue status` says `on`) `--close <file>` takes neither flag: the queue starts the next \
+item. The run cherry-picks, installs, edits TODO.md and pushes.
 6. When the run is done (or after step 1), end your turn. Your reply's last line is exactly one of:
 {DONE} {item} | <one-line summary>
 {ESCALATED} <what the user must decide>
