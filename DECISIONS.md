@@ -1003,3 +1003,16 @@ plain "stop" from the user should pause through the hook is settled when
 enforcing, a question in "Needs a decision". The new hook text reaches
 `~/.claude` only with `herdr integration install claude`, which needs the
 user's approval of the settings diff.
+
+## herdr: agent start reports ready before Claude accepts typed input
+
+`agent start` reported ready before Claude accepted input and `agent
+prompt` returned without knowing the prompt arrived (2026-10-07, lost
+first prompts). Fixed by `feat: agent prompts confirm that the agent
+accepted them` (2026-10-08): `agent prompt` returns only after the agent
+accepted the prompt (its turn report, `UserPromptSubmit`, or `working`) and
+fails with `agent_blocked`/`agent_prompt_blocked` naming a dialog. Closed
+2026-10-10 by the coordinator after the regression check in run
+r-6com5znp (the `prompt_wait_*` tests passed in `verify` outside the
+sandbox). The dotfiles launcher's resend-once workaround (`140fc7f`) is
+now redundant.

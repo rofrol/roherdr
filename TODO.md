@@ -306,21 +306,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   lint-grade signal, never a kill. Test with a stub tool call that leaves a
   detached child holding stderr.
 
-- [ ] herdr: `agent start` reports ready before Claude accepts typed input, [t-gp6n6qbx]
-  and `agent prompt` returns `agent_prompted` without knowing the prompt
-  arrived (2026-10-07: the bussiness-ideas coordinator's first prompt was
-  lost; workers' prompts too until the coordinator resent them). A
-  structured `awaiting_user_action` state from `agent start` instead of
-  `agent_not_ready` for a startup prompt (sol, round
-  `20261007-040046-b1c7`). The launcher (dotfiles `140fc7f`) works around
-  both: it waits up to 10 minutes for the user to answer Claude's trust
-  prompt and resends the first prompt once unless the agent turns working.
-
 - [ ] `herdr agent wait <worker> --until ... --timeout 3600000` inside [t-jnema5dg]
   herdr-job failed with `Error: Custom { kind: Other, error: EmptyResponse }`
   after 4-5 minutes, four times, while the workers kept running (reported
   by the email-assistant coordinator, 2026-10-07). Long waits must survive;
   find where the socket returns an empty response (a server-side timeout?).
+  Regression check 2026-10-10 (run r-6com5znp): CLI waits now reconnect
+  across a live handoff (9c82b386) and the socket tests passed in
+  `verify`; whether the 2026-10-07 failures were handoffs is unproven
+  (installs ran that day), so this stays open until an `EmptyResponse`
+  outside a handoff is seen or ruled out from the server log.
 
 - [ ] Waiting for a pane worker's final report (reported by the try-roguix [t-audxade5]
   coordinator, pane w6:p87, 2026-10-10, at the user's request). It drives
