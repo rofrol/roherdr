@@ -37,30 +37,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   a retry loop of its own. CLI waits (`pane wait-output`, `agent wait`) could
   reconnect across a handoff instead of failing.
 
-- [ ] A headless worker opens like an agent tab, not a modal (user, [t-zi5sz6kr]
-  2026-10-10, next: "when I click a tab without a TUI a modal opens and
-  only Escape closes it, a click outside does not; I don't want a modal: it
-  should look like a TUI agent's window, only without text input, or with
-  input that goes to the coordinator; ask the models"; round
-  20261010-155105-b036, sol + MiMo + DeepSeek). Slice 1:
-  - Every remaining modal closes on a click outside; that click is
-    consumed (it does not act on what lies under it).
-  - The server exposes a worker's transcript as structured events
-    (message, tool call, result, status; each tagged with worker and run
-    id) through the public API, backfill plus a live subscription, and a
-    worker "tab" identity (a pane kind for workers) so all clients and a
-    reconnect agree (MiMo, DeepSeek; sol would start client-only). The
-    client renders them in the main pane like an agent's tab: scrollback,
-    selection, live tail that follows only while at the bottom (a "new
-    output" mark otherwise), status and a "read-only" label; one renderer
-    shared with `herdr worker log`.
-  - No input yet. Later: an input labelled "message the coordinator about
-    this worker", sent tagged to the owning coordinator; disabled with the
-    reason when there is no live coordinator; never silently sent to the
-    worker.
-  - Takeover becomes a transition of the same tab (the transcript, then a
-    mark, then the interactive PTY), no stale pane or modal left.
-
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
