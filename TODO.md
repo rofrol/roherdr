@@ -366,6 +366,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `todo` skill then names that wait for pane workers and its exits; a
   worker-contract line "emit the WORKER line only after your own background
   jobs end" only as a complement.
+  Third note from try-roguix (2026-10-10): `wait-agent --until done` exits 0
+  both on a verdict and on a bare turn end, so the exit code cannot tell them
+  apart; the verdict mode gets its own exit code.
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
@@ -1482,6 +1485,28 @@ Items agents add. Not approved until the user moves them up.
   otherwise, or when the item needs what the sandbox blocks (VM launches,
   PTYs, local sockets, `ps`), a pane worker, with the reason said in the
   reply. The global rule in ~/.claude/CLAUDE.md uses the same condition.
+
+- [ ] Smaller herdr and skill gaps reported by the try-roguix coordinator [t-3schklfu]
+  (2026-10-10, pane w6:pAH, at the user's request):
+  1. A pane worker's workspace was gone after a herdr restart while its
+     worktree and uncommitted work stayed; `herdr worktree open --path <it>`
+     failed with `not_git_worktree` until `--cwd <main checkout>`: the error
+     should say it checks the calling pane's cwd (or use `--path`'s repo).
+  2. `herdr agent list` (~37 KB) and `herdr worker list` (~390 KB, whole
+     journals) are too big to use: filters (`--repo`, `--cwd`, `--name`)
+     and a compact default.
+  3. The `todo` skill's step 5 says "exactly this message, no body or
+     trailers", but some repositories require a body or trailers: it
+     should say "the message the repository's rules require" (herdr's own
+     verify keeps subject-only for herdr).
+  4. `herdr tab role <tab> worker` is easy to forget: a `--role worker` on
+     `worktree create` or `agent start`.
+  5. The uncommitted-edits Stop hook fired mid-rebase listing conflict
+     resolutions as possibly other sessions' edits: during a rebase, merge
+     or cherry-pick it should say so instead.
+  6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
+     cannot inspect a `bash -c` script for `rm`); a script file passed:
+     document "pass a script file, not `bash -c`" with herdr-job.
 
 ## Needs a decision
 
