@@ -1617,6 +1617,17 @@ user needs to decide or do.
   policy herdr should beat. Add a seventh scenario for every project: a
   side effect done (or a decision recorded), crash before the next
   transition, restart: reused, repeated or reconciled?
+  Changed by the user 2026-10-10: drop vibe-kanban and mini-swe-agent;
+  test only projects with durable resume. Nothing had started yet. The
+  set, decided by the coordinator from the earlier rounds: Restate (single
+  binary; its durable coding-agent example), Temporal through its
+  single-binary dev server (`temporal server start-dev`, not the full
+  deployment the models objected to), LangGraph with its SQLite
+  checkpointer and `interrupt()`, DBOS with SQLite if its current version
+  supports it (else skip). Each with a scripted fake model (no
+  subscription or key needed, so no login in the VM) and the seven
+  scenarios, the crash-between-effect-and-record window first. Same VM
+  rules.
 
 ### Decide
 
