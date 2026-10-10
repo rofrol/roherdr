@@ -20,16 +20,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   to every run whose diff touches `src/config/`, `docs/next/`, `scripts/`
   or `plugins/` (like `tests` for `src/api/`); `draft_task` may choose it.
 
-- [ ] The coordinator allowlist in shadow mode first (decided 2026-10-10 [t-svsyvp3s]
-  with the models, round 20261010-142705-3267, all three): the PreToolUse
-  check gets a mode setting (`[coordinator] allowlist = "shadow" |
-  "enforce" | "off"`, default shadow) where it only records what it would
-  have denied (in the item history or a log `herdr history overrides`
-  can show) and never denies; then the integration is installed with
-  shadow on; after a week of real coordinator use the user decides on
-  enforce from the recorded would-deny list (or drops it if the list is
-  near-empty now that the server drives the queue).
-
 - [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
   (follows from the bridge, 2026-10-10; small, text only): herdr's
   AGENTS.md driver paragraph and the item coordinator prompt name the new
