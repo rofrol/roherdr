@@ -147,6 +147,8 @@ fn kind_name(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::Closed => "closed",
         HistoryEventKind::Aborted => "aborted",
         HistoryEventKind::Blocked => "blocked",
+        HistoryEventKind::CoordinatorStarted => "coordinator started",
+        HistoryEventKind::CoordinatorEnded => "coordinator ended",
         HistoryEventKind::Unknown => "unknown",
     }
 }
@@ -426,6 +428,7 @@ mod tests {
             text: None,
             item_text: None,
             follow_ups: Vec::new(),
+            coordinator_id: None,
         }
     }
 

@@ -208,6 +208,8 @@ fn record(kind: HistoryEventKind) -> (&'static str, Option<AgentStatus>) {
         HistoryEventKind::Closed => ("closed", Some(AgentStatus::Done)),
         HistoryEventKind::Aborted => ("aborted", Some(AgentStatus::Idle)),
         HistoryEventKind::Blocked => ("blocked", Some(AgentStatus::Blocked)),
+        HistoryEventKind::CoordinatorStarted => ("coordinator started", None),
+        HistoryEventKind::CoordinatorEnded => ("coordinator ended", None),
         HistoryEventKind::Unknown => ("unknown record", None),
     }
 }
@@ -1388,6 +1390,7 @@ mod tests {
             text: None,
             item_text: None,
             follow_ups: Vec::new(),
+            coordinator_id: None,
         }
     }
 

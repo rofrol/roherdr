@@ -459,6 +459,17 @@ fn todo_command() -> Command {
         )
         .subcommand(id_command("status", "run_id", "Show a run"))
         .subcommand(
+            Command::new("next")
+                .about("Start a fresh headless item coordinator for the top item of Next")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath))
+                .arg(flag("continue")),
+        )
+        .subcommand(
+            Command::new("stop")
+                .about("Stop the repository's chain of item coordinators")
+                .arg(option("repo", "DIR").value_hint(ValueHint::DirPath)),
+        )
+        .subcommand(
             id_command(
                 "review",
                 "run_id",

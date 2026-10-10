@@ -63,6 +63,42 @@ pub(super) fn item_text(text: &str, id: &str) -> Option<String> {
     Some(lines.join("\n") + "\n")
 }
 
+/// The heading of the section whose first item `todo.next` coordinates.
+pub(super) const NEXT_SECTION: &str = "Next, in order";
+
+/// The id of the first open item (`- [ ] `) of the "Next, in order"
+/// section of `text`: the items after its heading, up to the next heading
+/// of the same or a higher level (outside a code fence).
+pub(super) fn next_item(text: &str) -> Option<String> {
+    let mut in_fence = false;
+    let mut level: Option<usize> = None;
+    for line in text.lines() {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if hashes > 0 && line[hashes..].starts_with(' ') {
+            match level {
+                Some(at) if hashes <= at => return None,
+                Some(_) => {}
+                None if line[hashes..].trim() == NEXT_SECTION => level = Some(hashes),
+                None => {}
+            }
+            continue;
+        }
+        if level.is_some() && line.starts_with("- [ ] ") {
+            if let Some((id, _)) = item_title(line) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
 /// An item's title from its text's first line.
 pub(super) fn title_of_text(text: &str) -> Option<String> {
     item_title(text.lines().next()?).map(|(_, title)| title)
@@ -141,6 +177,19 @@ mod tests {
             title_of_text("- [ ] Second [t-qrst6723]\n  two\n").as_deref(),
             Some("Second")
         );
+    }
+
+    #[test]
+    fn the_next_item_is_the_first_open_one_under_next_in_order() {
+        let text = "# TODO\n\n- [ ] Before the section [t-aaaaaaaa]\n\n\
+                    ## Next, in order\n\n- [ ] No id\n- [x] Ticked [t-bbbbbbbb]\n\
+                    ```\n- [ ] In a fence [t-cccccccc]\n```\n\
+                    ### A subheading\n- [ ] First [t-dddddddd]\n- [ ] Second [t-eeeeeeee]\n\n\
+                    ## Needs a decision\n\n- [ ] Later [t-ffffffff]\n";
+        assert_eq!(next_item(text).as_deref(), Some("t-dddddddd"));
+        let empty = "## Next, in order\n\n## Needs a decision\n- [ ] Later [t-ffffffff]\n";
+        assert_eq!(next_item(empty), None);
+        assert_eq!(next_item("- [ ] No section [t-aaaaaaaa]\n"), None);
     }
 
     #[test]

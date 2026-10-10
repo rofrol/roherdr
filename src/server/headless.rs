@@ -446,6 +446,10 @@ impl HeadlessServer {
         // `herdr todo run` runs a previous server left in progress go on
         // from their step.
         crate::workers::resume_runs_at_start();
+        // Headless item coordinators (`herdr todo next`) are watched again,
+        // and a chain whose next start a previous server did not reach
+        // goes on.
+        crate::workers::resume_item_coordinators_at_start();
         // What a previous server saw of the workers' owners is gone.
         self.app.reevaluate_worker_owners_at_start();
         // The coordinator role follows the tenures still active.

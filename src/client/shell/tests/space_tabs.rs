@@ -5049,6 +5049,7 @@ fn history_event(
         text: None,
         item_text: None,
         follow_ups: Vec::new(),
+        coordinator_id: None,
     }
 }
 

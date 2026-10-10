@@ -528,6 +528,66 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_overrides is append-only'); END;
 -- recorded before, or claimed from a pane without a tenure, have none.
 ALTER TABLE runs ADD COLUMN owner_coordinator_id TEXT;
 "#,
+    r#"
+-- A headless item coordinator's tenure (`todo.next`): no pane binds it; it
+-- runs as worker `worker_id`, recorded once that worker started. Tenures of
+-- a pane have none.
+ALTER TABLE coordinators ADD COLUMN worker_id TEXT;
+ALTER TABLE coordinators ADD COLUMN headless INTEGER NOT NULL DEFAULT 0;
+-- The headless tenure a worker runs as (`started`'s `coordinator`): an item
+-- coordinator, whose questions go to the user. Other workers have none.
+ALTER TABLE workers ADD COLUMN coordinates TEXT;
+-- Item history gains the item coordinator's start and end
+-- (`coordinator_started`, `coordinator_ended`; `text` the outcome) and the
+-- tenure each record names. SQLite cannot change a CHECK constraint, so the
+-- table is rebuilt with the same rows and ids; dropping it fires no trigger.
+CREATE TABLE item_history_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    item TEXT NOT NULL,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('claimed', 'noted', 'closed', 'aborted', 'blocked',
+                        'coordinator_started', 'coordinator_ended')),
+    run_id TEXT,
+    attempt INTEGER,
+    text TEXT,
+    item_text TEXT,
+    ids_at_claim TEXT NOT NULL DEFAULT '[]',
+    follow_ups TEXT NOT NULL DEFAULT '[]',
+    ts INTEGER NOT NULL,
+    coordinator_id TEXT
+);
+INSERT INTO item_history_new (id, repo, item, kind, run_id, attempt, text, item_text,
+    ids_at_claim, follow_ups, ts)
+    SELECT id, repo, item, kind, run_id, attempt, text, item_text, ids_at_claim, follow_ups, ts
+    FROM item_history ORDER BY id;
+DROP TABLE item_history;
+ALTER TABLE item_history_new RENAME TO item_history;
+CREATE INDEX item_history_by_item ON item_history (repo, item, id);
+CREATE TRIGGER item_history_no_update BEFORE UPDATE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+CREATE TRIGGER item_history_no_delete BEFORE DELETE ON item_history
+BEGIN SELECT RAISE(ABORT, 'item_history is append-only'); END;
+-- `todo.next --continue`: a repository's chain of item coordinators, one
+-- row per repository, active while `stopped_ms` is NULL. Its owner is the
+-- pane (and agent session, workspace) that started it, which owns each
+-- coordinator it starts. `advancing` is set in the transaction that ends a
+-- coordinator whose item is done and cleared by the claim of the next one,
+-- so a server that starts in between starts the next one. `last_item` and
+-- `last_outcome` are the latest coordinator's. Times are Unix milliseconds.
+CREATE TABLE todo_chains (
+    repo TEXT PRIMARY KEY,
+    owner_pane TEXT,
+    owner_session TEXT,
+    workspace TEXT,
+    started_ms INTEGER NOT NULL,
+    advancing INTEGER NOT NULL DEFAULT 0,
+    last_item TEXT,
+    last_outcome TEXT,
+    stopped_ms INTEGER,
+    stop_reason TEXT
+);
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1029,18 +1089,29 @@ impl Tx<'_> {
             "pane_id": tenure.pane_id,
             "session_id": tenure.session_id,
             "epoch": epoch,
+            "headless": tenure.pane_id.is_none(),
         });
         self.coordinator_event(tenure.id, &event, at_ms)?;
         self.tx.execute(
-            "INSERT INTO coordinators (id, repo, item, started_at, ended_at, end_reason, epoch)
-             VALUES (?1, ?2, NULL, ?3, NULL, NULL, ?4)",
-            params![tenure.id, tenure.repo, at_ms as i64, epoch],
+            "INSERT INTO coordinators (id, repo, item, started_at, ended_at, end_reason, epoch,
+                 headless)
+             VALUES (?1, ?2, NULL, ?3, NULL, NULL, ?4, ?5)",
+            params![
+                tenure.id,
+                tenure.repo,
+                at_ms as i64,
+                epoch,
+                i64::from(tenure.pane_id.is_none())
+            ],
         )?;
-        self.tx.execute(
-            "INSERT INTO coordinator_bindings (coordinator_id, pane_id, session_id, from_at, to_at)
-             VALUES (?1, ?2, ?3, ?4, NULL)",
-            params![tenure.id, tenure.pane_id, tenure.session_id, at_ms as i64],
-        )?;
+        if let Some(pane_id) = tenure.pane_id {
+            self.tx.execute(
+                "INSERT INTO coordinator_bindings (coordinator_id, pane_id, session_id, from_at,
+                     to_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                params![tenure.id, pane_id, tenure.session_id, at_ms as i64],
+            )?;
+        }
         tenure_by_id(self.tx, tenure.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
@@ -1202,7 +1273,11 @@ impl Tx<'_> {
         to: &NewTenure<'_>,
         at_ms: u64,
     ) -> StoreResult<(StoredTenure, StoredTenure)> {
-        let cause = format!("handed off to {} in pane {}", to.id, to.pane_id);
+        let cause = format!(
+            "handed off to {} in pane {}",
+            to.id,
+            to.pane_id.unwrap_or("none")
+        );
         let ended = self
             .coordinator_ended(
                 &from.id,
@@ -1237,6 +1312,118 @@ impl Tx<'_> {
         tenure_by_id(self.tx, id)
     }
 
+    /// Records `coordinator_worker`: headless tenure `id` runs as worker
+    /// `worker_id` from now on.
+    pub(super) fn coordinator_worker(
+        &self,
+        id: &str,
+        worker_id: &str,
+        at_ms: u64,
+    ) -> StoreResult<()> {
+        let event = serde_json::json!({
+            "type": "coordinator_worker",
+            "coordinator_id": id,
+            "worker_id": worker_id,
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.tx.execute(
+            "UPDATE coordinators SET worker_id = ?2 WHERE id = ?1",
+            params![id, worker_id],
+        )?;
+        Ok(())
+    }
+
+    /// The run in progress of `repo`, if any, as this transaction sees it.
+    pub(super) fn active_run(&self, repo: &str) -> StoreResult<Option<Run>> {
+        self.tx
+            .query_row(
+                &run_select(
+                    "WHERE r.repo = ?1 AND r.status IN ('running', 'waiting') \
+                     AND r.step != 'abort'",
+                ),
+                [repo],
+                run_from_row,
+            )
+            .optional()
+    }
+
+    /// `repo`'s chain of item coordinators, active or stopped.
+    pub(super) fn chain(&self, repo: &str) -> StoreResult<Option<StoredChain>> {
+        chain_of(self.tx, repo)
+    }
+
+    /// Starts `repo`'s chain owned by `owner`, or keeps the active one with
+    /// its owner; returns it.
+    pub(super) fn chain_started(
+        &self,
+        repo: &str,
+        owner: &RunOwner<'_>,
+        at_ms: u64,
+    ) -> StoreResult<StoredChain> {
+        if chain_of(self.tx, repo)?.is_some_and(|chain| chain.stopped_ms.is_none()) {
+            return chain_of(self.tx, repo)?.ok_or(rusqlite::Error::QueryReturnedNoRows);
+        }
+        self.tx.execute(
+            "INSERT INTO todo_chains (repo, owner_pane, owner_session, workspace, started_ms,
+                 advancing, last_item, last_outcome, stopped_ms, stop_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, NULL, NULL)
+             ON CONFLICT (repo) DO UPDATE SET owner_pane = excluded.owner_pane,
+                 owner_session = excluded.owner_session, workspace = excluded.workspace,
+                 started_ms = excluded.started_ms, advancing = 0, last_item = NULL,
+                 last_outcome = NULL, stopped_ms = NULL, stop_reason = NULL",
+            params![
+                repo,
+                owner.pane_id,
+                owner.session_id,
+                owner.workspace,
+                at_ms as i64
+            ],
+        )?;
+        chain_of(self.tx, repo)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Records the latest item coordinator of `repo`'s active chain: its
+    /// item and outcome, and whether the next one is to start.
+    pub(super) fn chain_outcome(
+        &self,
+        repo: &str,
+        item: &str,
+        outcome: &str,
+        advancing: bool,
+    ) -> StoreResult<()> {
+        self.tx.execute(
+            "UPDATE todo_chains SET last_item = ?2, last_outcome = ?3, advancing = ?4
+             WHERE repo = ?1 AND stopped_ms IS NULL",
+            params![repo, item, outcome, i64::from(advancing)],
+        )?;
+        Ok(())
+    }
+
+    /// The next item coordinator of `repo`'s chain claimed its tenure.
+    pub(super) fn chain_advanced(&self, repo: &str) -> StoreResult<()> {
+        self.tx.execute(
+            "UPDATE todo_chains SET advancing = 0 WHERE repo = ?1",
+            [repo],
+        )?;
+        Ok(())
+    }
+
+    /// Stops `repo`'s active chain with `reason`; returns it as it is now,
+    /// none when the repository never had one.
+    pub(super) fn chain_stopped(
+        &self,
+        repo: &str,
+        reason: &str,
+        at_ms: u64,
+    ) -> StoreResult<Option<StoredChain>> {
+        self.tx.execute(
+            "UPDATE todo_chains SET stopped_ms = ?2, stop_reason = ?3, advancing = 0
+             WHERE repo = ?1 AND stopped_ms IS NULL",
+            params![repo, at_ms as i64, reason],
+        )?;
+        chain_of(self.tx, repo)
+    }
+
     fn coordinator_event(&self, id: &str, event: &Value, at_ms: u64) -> StoreResult<i64> {
         self.event(&EventRow {
             worker_id: id,
@@ -1264,7 +1451,8 @@ impl Tx<'_> {
                     :gone_seq, :owner_pane, :owner_session, :acked_seq, :owner_gone, :degraded,
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
                     :ended_mid_turn, :item_title, :verification, :takeover_id,
-                    :owner_coordinator_id, :broker, :broker_seq, :continuity_gap)
+                    :owner_coordinator_id, :broker, :broker_seq, :continuity_gap,
+                    :coordinates)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -1339,10 +1527,50 @@ impl Tx<'_> {
                     .and_then(|broker| serde_json::to_string(broker).ok()),
                 ":broker_seq": status.broker_seq as i64,
                 ":continuity_gap": status.continuity_gap,
+                ":coordinates": status.coordinates,
             },
         )?;
         Ok(())
     }
+}
+
+/// A repository's chain of item coordinators (`todo_chains`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StoredChain {
+    pub(super) repo: String,
+    pub(super) owner_pane: Option<String>,
+    pub(super) owner_session: Option<String>,
+    pub(super) workspace: Option<String>,
+    pub(super) started_ms: u64,
+    pub(super) advancing: bool,
+    pub(super) last_item: Option<String>,
+    pub(super) last_outcome: Option<String>,
+    pub(super) stopped_ms: Option<u64>,
+    pub(super) stop_reason: Option<String>,
+}
+
+fn chain_of(conn: &Connection, repo: &str) -> StoreResult<Option<StoredChain>> {
+    conn.query_row(
+        "SELECT repo, owner_pane, owner_session, workspace, started_ms, advancing, last_item,
+             last_outcome, stopped_ms, stop_reason
+         FROM todo_chains WHERE repo = ?1",
+        [repo],
+        |row| {
+            Ok(StoredChain {
+                repo: row.get(0)?,
+                owner_pane: row.get(1)?,
+                owner_session: row.get(2)?,
+                workspace: row.get(3)?,
+                started_ms: row.get::<_, i64>(4)? as u64,
+                advancing: row.get::<_, i64>(5)? != 0,
+                last_item: row.get(6)?,
+                last_outcome: row.get(7)?,
+                stopped_ms: row.get::<_, Option<i64>>(8)?.map(|ms| ms as u64),
+                stop_reason: row.get(9)?,
+            })
+        },
+    )
+    .optional()
 }
 
 /// Who a run moves to ([`Tx::move_run_owner`]).
@@ -1357,7 +1585,8 @@ pub(super) struct RunOwner<'a> {
 pub(super) struct NewTenure<'a> {
     pub(super) id: &'a str,
     pub(super) repo: &'a str,
-    pub(super) pane_id: &'a str,
+    /// None for a headless item coordinator's tenure, which no pane binds.
+    pub(super) pane_id: Option<&'a str>,
     pub(super) session_id: Option<&'a str>,
 }
 
@@ -1373,6 +1602,10 @@ pub(super) struct StoredTenure {
     pub(super) epoch: i64,
     pub(super) pane_id: Option<String>,
     pub(super) session_id: Option<String>,
+    /// A headless item coordinator's tenure (`todo.next`), and the worker
+    /// it runs as once that started.
+    pub(super) headless: bool,
+    pub(super) worker_id: Option<String>,
 }
 
 const ACTIVE_OF_PANE: &str = "t.ended_at IS NULL AND t.id IN (SELECT coordinator_id \
@@ -1387,7 +1620,7 @@ fn tenures(
 ) -> StoreResult<Vec<StoredTenure>> {
     let mut statement = conn.prepare(&format!(
         "SELECT t.id, t.repo, t.item, t.started_at, t.ended_at, t.end_reason, t.epoch,
-             b.pane_id, b.session_id
+             b.pane_id, b.session_id, t.headless, t.worker_id
          FROM coordinators t
          LEFT JOIN coordinator_bindings b ON b.rowid = (SELECT rowid FROM coordinator_bindings
              WHERE coordinator_id = t.id ORDER BY from_at DESC, rowid DESC LIMIT 1)
@@ -1405,6 +1638,8 @@ fn tenures(
             epoch: row.get(6)?,
             pane_id: row.get(7)?,
             session_id: row.get(8)?,
+            headless: row.get::<_, i64>(9)? != 0,
+            worker_id: row.get(10)?,
         })
     })?;
     rows.collect()
@@ -1424,9 +1659,30 @@ impl Store {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn coordinator(&self, id: &str) -> StoreResult<Option<StoredTenure>> {
         tenure_by_id(&lock(&self.conn), id)
+    }
+
+    /// The active tenure of `repo`, if any.
+    pub(super) fn active_coordinator_of(&self, repo: &str) -> StoreResult<Option<StoredTenure>> {
+        Ok(self.active_coordinators(Some(repo))?.pop())
+    }
+
+    /// The chains of item coordinators, active or stopped, of `repo` when
+    /// given.
+    pub(super) fn chains(&self, repo: Option<&str>) -> StoreResult<Vec<StoredChain>> {
+        let conn = lock(&self.conn);
+        let mut statement = conn.prepare(
+            "SELECT repo FROM todo_chains WHERE (?1 IS NULL OR repo = ?1) ORDER BY repo",
+        )?;
+        let repos: Vec<String> = statement
+            .query_map([repo], |row| row.get(0))?
+            .collect::<StoreResult<_>>()?;
+        let mut chains = Vec::new();
+        for repo in repos {
+            chains.extend(chain_of(&conn, &repo)?);
+        }
+        Ok(chains)
     }
 
     /// The active tenure bound to `pane_id`.
@@ -1542,6 +1798,9 @@ pub(super) struct NewHistory {
     pub(super) item_text: Option<String>,
     pub(super) ids_at_claim: Vec<String>,
     pub(super) follow_ups: Vec<String>,
+    /// The tenure the record names: the run's owner, or the item
+    /// coordinator that started or ended.
+    pub(super) coordinator_id: Option<String>,
 }
 
 /// The record a run's event writes, if any: the claim with `run_created`
@@ -1563,6 +1822,7 @@ fn history_of(run: &Run, event: &Value) -> Option<NewHistory> {
         item_text: None,
         ids_at_claim: Vec::new(),
         follow_ups: Vec::new(),
+        coordinator_id: run.owner_coordinator.clone(),
     };
     match event["type"].as_str()? {
         "run_created" => Some(NewHistory {
@@ -1667,7 +1927,7 @@ impl Store {
         let conn = lock(&self.conn);
         let mut statement = conn.prepare(
             "SELECT id, repo, item, kind, ts, run_id, attempt, text, item_text, ids_at_claim, \
-             follow_ups FROM item_history
+             follow_ups, coordinator_id FROM item_history
              WHERE (?1 IS NULL OR repo = ?1) AND (?2 IS NULL OR item = ?2) ORDER BY id",
         )?;
         let rows = statement.query_map(params![repo, item], |row| {
@@ -1687,6 +1947,7 @@ impl Store {
                     text: row.get(7)?,
                     item_text: row.get(8)?,
                     follow_ups: list(10)?,
+                    coordinator_id: row.get(11)?,
                 },
                 ids_at_claim: list(9)?,
             })
@@ -1905,10 +2166,11 @@ impl Tx<'_> {
     }
 
     /// Appends one record of an item's life.
-    fn item_history(&self, record: &NewHistory, at_ms: u64) -> StoreResult<()> {
+    pub(super) fn item_history(&self, record: &NewHistory, at_ms: u64) -> StoreResult<()> {
         self.tx.execute(
             "INSERT INTO item_history (repo, item, kind, run_id, attempt, text, item_text, \
-             ids_at_claim, follow_ups, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ids_at_claim, follow_ups, ts, coordinator_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 record.repo,
                 record.item,
@@ -1920,6 +2182,7 @@ impl Tx<'_> {
                 serde_json::to_string(&record.ids_at_claim).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&record.follow_ups).unwrap_or_else(|_| "[]".into()),
                 at_ms as i64,
+                record.coordinator_id,
             ],
         )?;
         Ok(())
@@ -2127,7 +2390,7 @@ stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinishe
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
 ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker, broker_seq, \
-continuity_gap";
+continuity_gap, coordinates";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -2190,6 +2453,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.broker = json(44)?.and_then(|value| serde_json::from_value(value).ok());
     status.broker_seq = row.get::<_, i64>(45)? as u64;
     status.continuity_gap = row.get(46)?;
+    status.coordinates = row.get(47)?;
     Ok(status)
 }
 
@@ -2448,6 +2712,8 @@ mod tests {
                  DROP TABLE landings;
                  DROP TABLE item_history;
                  DROP TABLE coordinator_overrides;
+                 DROP TABLE todo_chains;
+                 ALTER TABLE workers DROP COLUMN coordinates;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2503,8 +2769,10 @@ mod tests {
                  DROP TABLE landings;
                  DROP TABLE item_history;
                  DROP TABLE coordinator_overrides;
+                 DROP TABLE todo_chains;
+                 ALTER TABLE workers DROP COLUMN coordinates;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 15
+                MIGRATIONS.len() - 16
             ))
             .unwrap();
         drop(store);
@@ -2552,8 +2820,12 @@ mod tests {
                  DROP TABLE item_history;
                  DROP TABLE coordinator_overrides;
                  ALTER TABLE runs DROP COLUMN owner_coordinator_id;
+                 ALTER TABLE workers DROP COLUMN coordinates;
+                 ALTER TABLE coordinators DROP COLUMN worker_id;
+                 ALTER TABLE coordinators DROP COLUMN headless;
+                 DROP TABLE todo_chains;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 4
+                MIGRATIONS.len() - 5
             ))
             .unwrap();
         drop(store);
