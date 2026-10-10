@@ -537,6 +537,8 @@ impl ClientShellState {
                 | PendingEndpointKind::UsageRead { .. }
                 | PendingEndpointKind::NotificationList { .. }
                 | PendingEndpointKind::WorkerRuns { .. }
+                | PendingEndpointKind::WorkerQuestion { .. }
+                | PendingEndpointKind::WorkerQuestionAction { .. }
                 | PendingEndpointKind::HistoryList { .. }
                 | PendingEndpointKind::HistoryItem { .. }
                 | PendingEndpointKind::TodoReview { .. }

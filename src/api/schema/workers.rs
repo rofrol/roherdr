@@ -678,6 +678,51 @@ pub struct WorkerAnswerParams {
     pub command_id: Option<String>,
 }
 
+/// One of a worker's questions, by its request id (`worker.question`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerQuestionTarget {
+    pub worker_id: String,
+    pub request_id: String,
+}
+
+/// A pending question as an answer dialog shows it: the whole input the
+/// user decides on, never cut, and who else could answer it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerQuestionDetail {
+    pub worker_id: String,
+    /// The worker's task: the `name` given at start, else its prompt's
+    /// first line.
+    pub name: String,
+    pub cwd: String,
+    pub state: WorkerState,
+    pub question: WorkerQuestion,
+    /// The tool's whole input: a Bash command as written, newlines kept,
+    /// then its other fields; another tool's input as indented JSON.
+    pub input_text: String,
+    /// The pane that started the worker, its owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    /// The coordination tenure its owner pane was bound to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_coordinator_id: Option<String>,
+    /// It waits for its owner, not for the user: not escalated yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
+}
+
+/// Denies one of a worker's pending questions, then stops the worker
+/// (`worker.stop`): the user ends a worker whose question they will not
+/// allow. A question no longer pending is not refused here: the stop still
+/// runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerDenyAndStopParams {
+    pub worker_id: String,
+    pub request_id: String,
+    /// The message the model gets with the denial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerDecision {

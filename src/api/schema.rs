@@ -128,6 +128,13 @@ pub enum Method {
     /// frozen for clients.
     #[serde(rename = "worker.force_take_over")]
     WorkerForceTakeOver(WorkerTarget),
+    /// One pending question with the tool's whole input, for a client's
+    /// answer dialog, which asks when the user opens it.
+    #[serde(rename = "worker.question")]
+    WorkerQuestion(WorkerQuestionTarget),
+    /// Denies a pending question, then stops the worker.
+    #[serde(rename = "worker.deny_and_stop")]
+    WorkerDenyAndStop(WorkerDenyAndStopParams),
     /// Drives a TODO item from preflight to a cherry-pick onto `master`.
     #[serde(rename = "todo.run")]
     TodoRun(TodoRunParams),

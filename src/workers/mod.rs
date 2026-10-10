@@ -68,11 +68,12 @@ use tracing::{info, warn};
 
 use crate::api::schema::{
     WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerDrain, WorkerDrainAction, WorkerInfo, WorkerInterruptParams,
-    WorkerItemRuns, WorkerKillParams, WorkerKillReport, WorkerObligation, WorkerPromptParams,
-    WorkerQuestion, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunOutcome,
-    WorkerRunsParams, WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerTurnResult,
-    WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
+    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerInfo,
+    WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport, WorkerObligation,
+    WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind,
+    WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerSettledQuestion,
+    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerVerification, WorkerVerifyParams,
+    WorkerWaitDrainedParams, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -4575,6 +4576,78 @@ impl WorkerSupervisor {
         self.status(worker_id)
     }
 
+    /// One question the worker waits on, with the tool's whole input, for an
+    /// answer dialog. One whose answer is being sent or that has ended is
+    /// refused with `worker_question_gone`, saying how it ended.
+    pub(crate) fn question_detail(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+    ) -> Result<WorkerQuestionDetail, WorkerError> {
+        let registry = lock(&self.shared.registry);
+        let number = Self::entry_number(&registry, worker_id)?;
+        let status = &registry.workers[&number].status;
+        let Some(pending) = status
+            .questions
+            .iter()
+            .find(|pending| pending.question.request_id == request_id)
+        else {
+            return Err(match status.resolution(request_id) {
+                Some(how) => WorkerError::QuestionGone(format!(
+                    "question {request_id} of worker {worker_id} is no longer pending: {how}"
+                )),
+                None => WorkerError::NoQuestion(format!(
+                    "worker {worker_id} has no question {request_id}"
+                )),
+            });
+        };
+        if pending.answering {
+            return Err(WorkerError::QuestionGone(format!(
+                "question {request_id} of worker {worker_id} is no longer pending: its answer \
+                 is being sent"
+            )));
+        }
+        Ok(WorkerQuestionDetail {
+            worker_id: status.worker_id.clone(),
+            name: status.name.clone(),
+            cwd: status.cwd.clone(),
+            state: status.state,
+            question: pending.shown(),
+            input_text: full_input_text(&pending.input),
+            owner_pane_id: status.owner_pane.clone(),
+            owner_coordinator_id: status.owner_coordinator.clone(),
+            quiet: status.is_quiet(pending),
+        })
+    }
+
+    /// Denies the question `request_id` names, then stops the worker. A
+    /// question that is no longer pending (answered or ended meanwhile)
+    /// does not keep the worker running: the user asked to end it.
+    pub(crate) fn deny_and_stop(
+        &self,
+        params: &WorkerDenyAndStopParams,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let deny = WorkerAnswerParams {
+            worker_id: params.worker_id.clone(),
+            request_id: Some(params.request_id.clone()),
+            decision: Some(WorkerDecision::Deny),
+            answers: Vec::new(),
+            message: Some(
+                params
+                    .message
+                    .clone()
+                    .filter(|message| !message.trim().is_empty())
+                    .unwrap_or_else(|| "The user stopped this worker.".to_owned()),
+            ),
+            command_id: None,
+        };
+        match self.answer(&deny) {
+            Ok(_) | Err(WorkerError::QuestionGone(_) | WorkerError::NoQuestion(_)) => {}
+            Err(error) => return Err(error),
+        }
+        self.stop(&params.worker_id)
+    }
+
     /// The owner panes of the workers that have not ended and whose owner is
     /// not gone, the panes of the active coordination tenures and the
     /// owner panes of the `todo.run`s not ended whose owner is not gone:
@@ -6017,6 +6090,32 @@ fn question_from_request(request_id: &str, request: &Value, reason: &str) -> Wor
         state: WorkerQuestionState::Pending,
         escalated: None,
     }
+}
+
+/// A tool's whole input for the user to decide on: a `command` as written,
+/// newlines kept, then the input's other fields one per line (a sandbox or
+/// background flag changes what allowing means); any other input as
+/// indented JSON. Never cut: an approval must not rest on a preview.
+fn full_input_text(input: &Value) -> String {
+    let Some(command) = input["command"].as_str() else {
+        return serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
+    };
+    let mut text = command.to_owned();
+    let others: Vec<String> = input
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| key.as_str() != "command")
+        .map(|(key, value)| match value.as_str() {
+            Some(value) => format!("{key}: {value}"),
+            None => format!("{key}: {value}"),
+        })
+        .collect();
+    if !others.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&others.join("\n"));
+    }
+    text
 }
 
 /// `text` on one line, cut to `max` characters with an ellipsis.

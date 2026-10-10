@@ -131,6 +131,12 @@ pub(super) struct ShellHitMap {
     pub(super) space_tab_items: Vec<(Rect, String)>,
     /// Rows of the open Items dropdown.
     pub(super) worker_items_rows: Vec<(Rect, usize)>,
+    /// The open worker question dialog, its buttons and options, how far
+    /// its input scrolls and how many rows it shows.
+    pub(super) worker_question_popup: Rect,
+    pub(super) worker_question_buttons: Vec<(Rect, super::worker_question::WorkerQuestionButton)>,
+    pub(super) worker_question_max_scroll: usize,
+    pub(super) worker_question_body_rows: usize,
     /// Squares of nested tabs under an unfolded tab line, with their tab.
     pub(super) space_tab_squares: Vec<(Rect, String)>,
     /// Blank slots of job tabs that closed while the pointer was over the
@@ -201,6 +207,9 @@ pub(super) struct ShellHitMap {
     pub(super) space_filter_bar: Rect,
     pub(super) space_filter_close: Rect,
     pub(super) notification_log_rows: Vec<(Rect, usize)>,
+    /// What each drawn row of the list showed, by its index: a click acts
+    /// on that, even when the rows changed since the frame was drawn.
+    pub(super) notification_log_row_keys: Vec<Option<super::notification_log::RowKey>>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
@@ -567,6 +576,7 @@ pub(super) enum ClientShellOverlayKind {
     GlobalMenu,
     NotificationLog,
     WorkerItems,
+    WorkerQuestion,
     Settings,
     Usage,
     ImagePicker,
@@ -996,6 +1006,8 @@ pub(super) enum ClientShellOverlay {
     NotificationLog(super::notification_log::ClientNotificationLogOverlay),
     /// The coordinator's Items dropdown.
     WorkerItems(super::worker_items::WorkerItemsOverlay),
+    /// A headless worker's question.
+    WorkerQuestion(Box<super::worker_question::WorkerQuestionDialog>),
     Settings(ClientSettingsOverlay),
     Usage(super::usage::ClientUsageOverlay),
     ImagePicker(super::image_picker::ImagePickerOverlay),
@@ -1018,6 +1030,7 @@ impl ClientShellOverlay {
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::NotificationLog(_) => ClientShellOverlayKind::NotificationLog,
             Self::WorkerItems(_) => ClientShellOverlayKind::WorkerItems,
+            Self::WorkerQuestion(_) => ClientShellOverlayKind::WorkerQuestion,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Usage(_) => ClientShellOverlayKind::Usage,
             Self::ImagePicker(_) => ClientShellOverlayKind::ImagePicker,
@@ -1057,6 +1070,17 @@ pub(super) enum PendingEndpointKind {
     /// `worker.runs` for the Items dropdown.
     WorkerRuns {
         endpoint_id: ClientEndpointId,
+    },
+    /// `worker.question` for the question dialog that opened.
+    WorkerQuestion {
+        endpoint_id: ClientEndpointId,
+        worker_id: String,
+        request_id: String,
+    },
+    /// An answer or stop the question dialog sent.
+    WorkerQuestionAction {
+        endpoint_id: ClientEndpointId,
+        request_id: String,
     },
     /// `history.list` for the Items dropdown's finished items.
     HistoryList {

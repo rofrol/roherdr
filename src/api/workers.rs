@@ -31,6 +31,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerRuns(_)
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
+            | Method::WorkerQuestion(_)
+            | Method::WorkerDenyAndStop(_)
             | Method::TodoRun(_)
             | Method::TodoResume(_)
             | Method::TodoWait(_)
@@ -136,6 +138,12 @@ fn handle_immediate(
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
+        Method::WorkerQuestion(target) => {
+            return Ok(ResponseResult::WorkerQuestionDetail {
+                detail: supervisor.question_detail(&target.worker_id, &target.request_id)?,
+            })
+        }
+        Method::WorkerDenyAndStop(params) => supervisor.deny_and_stop(&params)?,
         Method::WorkerAck(params) => supervisor.ack(&params.worker_id, params.seq)?,
         Method::WorkerEscalate(params) => {
             supervisor.escalate(&params.worker_id, &params.request_id)?

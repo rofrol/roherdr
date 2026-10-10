@@ -11,7 +11,7 @@ pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{
     panel_area, popup_area, render_client_overlay, render_context_menu, render_global_menu,
-    render_notification_log, LogRow, OverlayRender,
+    render_notification_log, render_worker_question, LogRow, OverlayRender,
 };
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
 pub(super) use tabs::{render_child_tab_bar, render_tab_bar, tab_bar_status_width};

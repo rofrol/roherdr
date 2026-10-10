@@ -5977,6 +5977,29 @@
           ],
           "type": "string"
         },
+        "WorkerDenyAndStopParams": {
+          "description": "Denies one of a worker's pending questions, then stops the worker\n(`worker.stop`): the user ends a worker whose question they will not\nallow. A question no longer pending is not refused here: the stop still\nruns.",
+          "properties": {
+            "message": {
+              "description": "The message the model gets with the denial.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
         "WorkerDrainAction": {
           "description": "What `worker.drain` does.",
           "oneOf": [
@@ -6136,6 +6159,22 @@
           "required": [
             "worker_id",
             "text"
+          ],
+          "type": "object"
+        },
+        "WorkerQuestionTarget": {
+          "description": "One of a worker's questions, by its request id (`worker.question`).",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "request_id"
           ],
           "type": "object"
         },
@@ -7252,6 +7291,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One pending question with the tool's whole input, for a client's\nanswer dialog, which asks when the user opens it.",
+          "properties": {
+            "method": {
+              "const": "worker.question",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerQuestionTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Denies a pending question, then stops the worker.",
+          "properties": {
+            "method": {
+              "const": "worker.deny_and_stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerDenyAndStopParams"
             }
           },
           "required": [
@@ -13525,6 +13598,23 @@
               "type": "object"
             },
             {
+              "description": "`worker.question`'s reply.",
+              "properties": {
+                "detail": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerQuestionDetail"
+                },
+                "type": {
+                  "const": "worker_question_detail",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "detail"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`worker.wait`'s reply with `until: attention`: why it returned, the\nquestions pending then, the worker, and `seq`, its latest event's,\nwhich the next wait passes as `after`.",
               "properties": {
                 "questions": {
@@ -17319,6 +17409,58 @@
             "tool_name",
             "text",
             "since_ms"
+          ],
+          "type": "object"
+        },
+        "WorkerQuestionDetail": {
+          "description": "A pending question as an answer dialog shows it: the whole input the\nuser decides on, never cut, and who else could answer it.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "input_text": {
+              "description": "The tool's whole input: a Bash command as written, newlines kept,\nthen its other fields; another tool's input as indented JSON.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The worker's task: the `name` given at start, else its prompt's\nfirst line.",
+              "type": "string"
+            },
+            "owner_coordinator_id": {
+              "description": "The coordination tenure its owner pane was bound to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_pane_id": {
+              "description": "The pane that started the worker, its owner.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "question": {
+              "$ref": "#/schemas/success_response/$defs/WorkerQuestion"
+            },
+            "quiet": {
+              "description": "It waits for its owner, not for the user: not escalated yet.",
+              "type": "boolean"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/WorkerState"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "name",
+            "cwd",
+            "state",
+            "question",
+            "input_text"
           ],
           "type": "object"
         },

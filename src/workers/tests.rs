@@ -985,6 +985,83 @@ fn a_request_left_to_the_user_waits_for_the_answer() {
 }
 
 #[test]
+fn a_question_detail_carries_the_whole_input_and_a_settled_one_is_gone() {
+    let fixture = Fixture::new("detail");
+    let id = fixture.start("classifier Bash git push origin master");
+    fixture.wait_for_question(&id);
+
+    let detail = fixture.supervisor.question_detail(&id, "perm-1").unwrap();
+    assert_eq!(detail.worker_id, id);
+    assert_eq!(detail.question.request_id, "perm-1");
+    assert!(
+        detail.input_text.starts_with("git push origin master"),
+        "{}",
+        detail.input_text
+    );
+    // A worker without an owner asks the user at once.
+    assert!(!detail.quiet);
+    assert_eq!(detail.owner_pane_id, None);
+    let unknown = fixture
+        .supervisor
+        .question_detail(&id, "perm-9")
+        .unwrap_err();
+    assert_eq!(unknown.code(), "worker_no_question");
+
+    fixture
+        .answer(&id, Some(WorkerDecision::Allow), &[])
+        .unwrap();
+    let gone = fixture
+        .supervisor
+        .question_detail(&id, "perm-1")
+        .unwrap_err();
+    assert_eq!(gone.code(), "worker_question_gone");
+    assert!(gone.to_string().contains("answered"), "{gone}");
+}
+
+#[test]
+fn the_whole_input_keeps_a_commands_newlines_and_its_other_fields() {
+    let input = serde_json::json!({
+        "command": "git add -A\ngit commit -m 'x'",
+        "dangerouslyDisableSandbox": true,
+        "description": "Commit",
+    });
+    assert_eq!(
+        full_input_text(&input),
+        "git add -A\ngit commit -m 'x'\n\ndangerouslyDisableSandbox: true\ndescription: Commit"
+    );
+    let long = "x".repeat(1_000);
+    let input = serde_json::json!({"file_path": "/tmp/a", "content": long});
+    let text = full_input_text(&input);
+    assert!(text.contains(&long), "never cut");
+    assert!(text.contains("\"file_path\": \"/tmp/a\""), "{text}");
+}
+
+#[test]
+fn deny_and_stop_denies_the_question_then_stops_the_worker() {
+    let fixture = Fixture::new("deny-stop");
+    let id = fixture.start("classifier Bash git push origin master");
+    fixture.wait_for_question(&id);
+
+    fixture
+        .supervisor
+        .deny_and_stop(&WorkerDenyAndStopParams {
+            worker_id: id.clone(),
+            request_id: "perm-1".into(),
+            message: None,
+        })
+        .unwrap();
+    let worker = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(worker.state, WorkerState::Exited);
+    let answers = fixture.herdr_events(&id, "answer_intent");
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["decision"], "deny");
+    assert_eq!(
+        answers[0]["response"]["message"],
+        "The user stopped this worker."
+    );
+}
+
+#[test]
 fn an_answer_must_name_one_of_several_questions() {
     let fixture = Fixture::new("pair");
     let id = fixture.start("pair WebFetch https://example.com");

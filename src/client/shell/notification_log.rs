@@ -67,6 +67,12 @@ pub(super) enum RowKey {
     Pane(String),
     Tab(String),
     Space(String),
+    /// A headless worker's question, by its request: a list that changes
+    /// between the frame the user saw and the click still opens it.
+    WorkerQuestion {
+        worker_id: String,
+        request_id: String,
+    },
 }
 
 impl RowKey {
@@ -259,7 +265,26 @@ impl ClientShellState {
     /// of the view in the snapshot's order, as records so the same row text
     /// and jump apply.
     pub(super) fn notification_log_rows(&self) -> Vec<NotificationRecord> {
-        match self.notification_log_view() {
+        self.notification_log_keyed_rows()
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect()
+    }
+
+    /// What each of the dropdown's rows shows, in the order of
+    /// [`Self::notification_log_rows`].
+    pub(super) fn notification_log_row_keys(&self) -> Vec<Option<RowKey>> {
+        self.notification_log_keyed_rows()
+            .into_iter()
+            .map(|(_, key)| key)
+            .collect()
+    }
+
+    /// The dropdown's rows, each with what it shows: the highlight and a
+    /// click find a row by that, never by its place.
+    pub(super) fn notification_log_keyed_rows(&self) -> Vec<(NotificationRecord, Option<RowKey>)> {
+        let view = self.notification_log_view();
+        let rows = match view {
             NotificationLogView::History => {
                 let log = &self.notification_log;
                 let mut rows = log
@@ -275,8 +300,14 @@ impl ClientShellState {
                 rows
             }
             NotificationLogView::Bookmarks => self.bookmark_rows(),
-            view => self.agent_rows(view),
-        }
+            view => return self.agent_rows(view),
+        };
+        rows.into_iter()
+            .map(|row| {
+                let key = RowKey::of(view, &row);
+                (row, key)
+            })
+            .collect()
     }
 
     pub(super) fn bookmark_count(&self) -> usize {
@@ -397,7 +428,8 @@ impl ClientShellState {
         if log.view != NotificationLogView::Bookmarks {
             return;
         }
-        let Some(highlighted) = self.notification_log_highlighted(&self.notification_log_rows())
+        let Some(highlighted) =
+            self.notification_log_highlighted(&self.notification_log_row_keys())
         else {
             return;
         };
@@ -409,26 +441,34 @@ impl ClientShellState {
         }
     }
 
-    /// The highlighted row's index in `rows`, or none when no row is
-    /// highlighted or the highlighted one is gone.
-    pub(super) fn notification_log_highlighted(
-        &self,
-        rows: &[NotificationRecord],
-    ) -> Option<usize> {
-        let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_ref() else {
-            return None;
-        };
-        let key = log.highlighted.as_ref()?;
-        rows.iter()
-            .position(|row| RowKey::of(log.view, row).as_ref() == Some(key))
+    /// The highlighted row's index among the rows `keys` name, or none when
+    /// no row is highlighted or the highlighted one is gone.
+    pub(super) fn notification_log_highlighted(&self, keys: &[Option<RowKey>]) -> Option<usize> {
+        let key = self.notification_log_highlighted_key()?;
+        keys.iter()
+            .position(|candidate| candidate.as_ref() == Some(key))
+    }
+
+    /// What the highlighted row shows, whether or not it is still listed.
+    pub(super) fn notification_log_highlighted_key(&self) -> Option<&RowKey> {
+        match self.overlay.as_ref() {
+            Some(ClientShellOverlay::NotificationLog(log)) => log.highlighted.as_ref(),
+            _ => None,
+        }
     }
 
     /// Highlights the row at `index` of the open list.
     pub(super) fn highlight_notification_log_row(&mut self, index: usize) {
         let key = self
-            .notification_log_rows()
-            .get(index)
-            .and_then(|row| RowKey::of(self.notification_log_view(), row));
+            .notification_log_row_keys()
+            .into_iter()
+            .nth(index)
+            .flatten();
+        self.highlight_notification_log_key(key);
+    }
+
+    /// Highlights the row that shows `key`.
+    pub(super) fn highlight_notification_log_key(&mut self, key: Option<RowKey>) {
         if let Some(ClientShellOverlay::NotificationLog(log)) = self.overlay.as_mut() {
             log.highlighted = key;
         }
@@ -617,7 +657,7 @@ impl ClientShellState {
         (working, asking)
     }
 
-    fn agent_rows(&self, view: NotificationLogView) -> Vec<NotificationRecord> {
+    fn agent_rows(&self, view: NotificationLogView) -> Vec<(NotificationRecord, Option<RowKey>)> {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return Vec::new();
         };
@@ -634,7 +674,7 @@ impl ClientShellState {
         if view == NotificationLogView::Asking {
             agents.sort_by_key(|agent| agent.waiting_since_ms.unwrap_or(u64::MAX));
         }
-        let mut rows: Vec<NotificationRecord> = agents
+        let mut rows: Vec<(NotificationRecord, Option<RowKey>)> = agents
             .into_iter()
             .map(|agent| NotificationRecord {
                 id: 0,
@@ -675,16 +715,22 @@ impl ClientShellState {
                 request: None,
                 repeats: None,
             })
+            .map(|row| {
+                let key = RowKey::of(view, &row);
+                (row, key)
+            })
             .collect();
         if view == NotificationLogView::Asking {
-            rows.extend(
-                snapshot
-                    .worker_questions
-                    .iter()
-                    .map(Self::worker_question_row),
-            );
+            rows.extend(snapshot.worker_questions.iter().map(|question| {
+                // One from an older server names no request to open.
+                let key = (!question.request_id.is_empty()).then(|| RowKey::WorkerQuestion {
+                    worker_id: question.worker_id.clone(),
+                    request_id: question.request_id.clone(),
+                });
+                (Self::worker_question_row(question), key)
+            }));
             // Stable, so agents without a known start keep their order.
-            rows.sort_by_key(|row| {
+            rows.sort_by_key(|(row, _)| {
                 if row.unix_ms == 0 {
                     u64::MAX
                 } else {
@@ -696,10 +742,12 @@ impl ClientShellState {
         rows
     }
 
-    /// A headless worker's question: it has no pane to open, so its second
-    /// line says how to answer it. One that waits for the worker's
-    /// coordinator is a dim `quiet` row that says so, with how long ago the
-    /// coordinator last showed an event; the user may still answer it.
+    /// A headless worker's question: it has no pane to open; a click opens
+    /// its answer dialog, and its second line also says how to answer it
+    /// from a shell. One that waits for the worker's coordinator is a dim
+    /// `quiet` row that says so, with how long ago the coordinator last
+    /// showed an event; the user may still answer it. Its row is kept by
+    /// its request ([`RowKey::WorkerQuestion`]).
     fn worker_question_row(
         question: &crate::protocol::ClientShellWorkerQuestion,
     ) -> NotificationRecord {
@@ -925,12 +973,12 @@ impl ClientShellState {
     /// Moves the highlight by `delta` rows; with none, down starts at the
     /// first row and up at the last.
     pub(super) fn move_notification_log_selection(&mut self, delta: isize) {
-        let rows = self.notification_log_rows();
-        if rows.is_empty() {
+        let keys = self.notification_log_row_keys();
+        if keys.is_empty() {
             return;
         }
-        let last = rows.len() - 1;
-        let index = match self.notification_log_highlighted(&rows) {
+        let last = keys.len() - 1;
+        let index = match self.notification_log_highlighted(&keys) {
             Some(index) => (index as isize + delta).clamp(0, last as isize) as usize,
             None if delta < 0 => last,
             None => 0,
@@ -984,6 +1032,32 @@ impl ClientShellState {
         }
     }
 
+    /// Activates the row that showed `key` when the user picked it,
+    /// wherever it is now. A worker's question opens its dialog even when
+    /// it is no longer listed: the dialog then says it was answered or
+    /// withdrawn. Another row that is gone does nothing.
+    pub(super) fn activate_notification_log_key(
+        &mut self,
+        key: RowKey,
+        outcome: &mut ClientShellInput,
+    ) {
+        if let RowKey::WorkerQuestion {
+            worker_id,
+            request_id,
+        } = key
+        {
+            self.open_worker_question(worker_id, request_id, outcome);
+            return;
+        }
+        let keys = self.notification_log_row_keys();
+        if let Some(index) = keys
+            .iter()
+            .position(|candidate| candidate.as_ref() == Some(&key))
+        {
+            self.activate_notification_log_row(index, outcome);
+        }
+    }
+
     /// Opens the entry's pane, else its tab, else its space, like its
     /// toast; says so when none of them is left.
     pub(super) fn activate_notification_log_row(
@@ -991,9 +1065,13 @@ impl ClientShellState {
         index: usize,
         outcome: &mut ClientShellInput,
     ) {
-        let Some(entry) = self.notification_log_rows().into_iter().nth(index) else {
+        let Some((entry, key)) = self.notification_log_keyed_rows().into_iter().nth(index) else {
             return;
         };
+        if let Some(key @ RowKey::WorkerQuestion { .. }) = key {
+            self.activate_notification_log_key(key, outcome);
+            return;
+        }
         self.overlay = None;
         outcome.repaint = true;
         if let Some(tab_id) = entry.tab_id.as_deref() {

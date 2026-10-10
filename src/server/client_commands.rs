@@ -62,7 +62,10 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "usage.set_enabled",
     "usage.set_provider",
     "usage.settings",
+    "worker.answer",
+    "worker.deny_and_stop",
     "worker.open_log",
+    "worker.question",
     "worker.runs",
     "worker.take_over",
     "workspace.bookmark",
@@ -416,6 +419,18 @@ mod tests {
         assert_eq!(
             actual.remove("worker.take_over").as_deref(),
             Some("7488429403c59189afdbde40dc0794ed30264d89745772190209f6b07acb579a")
+        );
+        assert_eq!(
+            actual.remove("worker.answer").as_deref(),
+            Some("0a6d892bd75a2b62b621fbb1b802463385d2c2a12a5ea199e693b4df954bdee1")
+        );
+        assert_eq!(
+            actual.remove("worker.deny_and_stop").as_deref(),
+            Some("edad8a59b4fd679d4b835a696235a37b167451af9260ffda7f492ffe0d212c33")
+        );
+        assert_eq!(
+            actual.remove("worker.question").as_deref(),
+            Some("fd45f63db5926a3e40f566a206899e281f03e5230b1a6e413f288c63cfde2b08")
         );
 
         assert_eq!(

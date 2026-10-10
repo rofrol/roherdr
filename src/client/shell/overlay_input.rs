@@ -451,6 +451,9 @@ impl ClientShellState {
         if self.insert_worktree_overlay_text(text) {
             return true;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::WorkerQuestion(_))) {
+            return self.insert_worker_question_text(text);
+        }
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::Rename(rename)) => {
                 rename.input.insert(text);
@@ -577,6 +580,11 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::WorkerQuestion(_))) {
+            self.worker_question_key(key, outcome);
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::Usage(_))) {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
@@ -623,9 +631,8 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
                 KeyCode::Enter => {
-                    let rows = self.notification_log_rows();
-                    if let Some(highlighted) = self.notification_log_highlighted(&rows) {
-                        self.activate_notification_log_row(highlighted, outcome);
+                    if let Some(key) = self.notification_log_highlighted_key().cloned() {
+                        self.activate_notification_log_key(key, outcome);
                     }
                 }
                 KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('x') => {

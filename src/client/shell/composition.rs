@@ -919,7 +919,8 @@ impl ClientShellState {
             } else if let ClientShellOverlay::NotificationLog(log) = overlay {
                 let now = crate::usage::now_unix();
                 let offset = super::usage::local_utc_offset_secs();
-                let entries = self.notification_log_rows();
+                let (entries, keys): (Vec<_>, Vec<_>) =
+                    self.notification_log_keyed_rows().into_iter().unzip();
                 let icons = self.notification_row_icons(&entries);
                 let unread = self.notification_unread_rows(&entries);
                 let rows = entries
@@ -974,12 +975,13 @@ impl ClientShellState {
                 let rendered = render::render_notification_log(
                     &mut composed,
                     anchor,
-                    self.notification_log_highlighted(&entries),
+                    self.notification_log_highlighted(&keys),
                     &rows,
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.notification_log_rows = rendered.menu_rows;
+                self.hits.notification_log_row_keys = keys;
                 self.hits.list_menu_rows.clear();
                 // A row's menu is drawn over the list.
                 if let Some(menu) = self.list_row_menu() {
@@ -1005,6 +1007,16 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 self.hits.worker_items_rows = rendered.menu_rows;
                 None
+            } else if let ClientShellOverlay::WorkerQuestion(_) = overlay {
+                let view = self.worker_question_view()?;
+                let rendered =
+                    render::render_worker_question(&mut composed, &view, &self.config.palette)?;
+                occlusion.cover(rendered.popup);
+                self.hits.worker_question_popup = rendered.popup;
+                self.hits.worker_question_buttons = rendered.buttons;
+                self.hits.worker_question_max_scroll = rendered.max_scroll;
+                self.hits.worker_question_body_rows = rendered.body_rows;
+                rendered.cursor
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(
                     &mut composed,
@@ -1061,6 +1073,9 @@ impl ClientShellState {
         }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
+        }
+        if let Some(ClientShellOverlay::WorkerQuestion(dialog)) = self.overlay.as_mut() {
+            dialog.scroll = dialog.scroll.min(self.hits.worker_question_max_scroll);
         }
         if let Some(ClientShellOverlay::ProductAnnouncement(announcement)) = self.overlay.as_mut() {
             announcement.scroll = announcement
