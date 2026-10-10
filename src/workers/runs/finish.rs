@@ -20,7 +20,7 @@ use super::{
 use crate::api::schema::{
     HistoryEventKind, TodoEventKind, TodoNextRun, TodoRunParams, TodoRunStatus, TodoStep,
 };
-use crate::workers::{lock, now_ms, WorkerSupervisor};
+use crate::workers::{lock, now_ms, WorkerError, WorkerSupervisor};
 
 /// The note's lines as `todo_edit.py append-to` takes them: indented, no
 /// blank lines.
@@ -835,14 +835,34 @@ impl WorkerSupervisor {
             auto_review: run.finish.auto_review,
             auto_answer: run.finish.auto_answer,
         };
-        match self.todo_run(params) {
+        let mut started = self.todo_run(params.clone());
+        // A disk the slot's own build artifacts filled: its sweep frees
+        // them, then preflight looks once more.
+        let mut swept = String::new();
+        if matches!(started, Err(WorkerError::Preflight(_)))
+            && super::short_of_disk(Path::new(&run.info.repo))
+        {
+            swept = match super::sweep_slot(Path::new(&run.info.repo)) {
+                Ok(()) => " (after the folder slot's sweep)".to_owned(),
+                Err(error) => format!(" (after the folder slot's sweep: {error})"),
+            };
+            started = self.todo_run(params);
+        }
+        match started {
             Ok(started) => self.next_started(run_id, &next.item, started.run_id, false),
             Err(refused) => {
                 let why = format!(
-                    "the next item {} did not start ({}): {refused}",
+                    "the next item {} did not start ({}): {refused}{swept}",
                     next.item,
                     refused.code()
                 );
+                crate::workers::notify_user(crate::workers::UserNotice {
+                    title: format!(
+                        "{} done; the next item {} did not start",
+                        run.info.item, next.item
+                    ),
+                    body: why.clone(),
+                });
                 let mut event = new_event(TodoEventKind::NextRefused);
                 event.error = Some(why.clone());
                 let body = json!({

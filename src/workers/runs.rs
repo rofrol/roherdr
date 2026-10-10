@@ -375,7 +375,6 @@ impl Driving {
                 driving.remove(&self.run_id);
                 drop(driving);
                 self.released = true;
-                #[cfg(test)]
                 claim_released();
                 true
             }
@@ -390,14 +389,14 @@ impl Drop for Driving {
             self.held = None;
             driving.remove(&self.run_id);
             drop(driving);
-            #[cfg(test)]
             claim_released();
         }
     }
 }
 
-/// Test only: wakes [`wait_undriven`] when a driver lets go of its claim.
-#[cfg(test)]
+/// Wakes the waits on a driver's claim when it lets go: a `todo.wait` on
+/// a done run whose next start it cut off ([`WorkerSupervisor::starting_next`]),
+/// and a test's [`wait_undriven`].
 fn claim_released() {
     *lock(&CHANGES.generation) += 1;
     CHANGES.changed.notify_all();
@@ -696,8 +695,52 @@ fn read_checks(repo: &Path) -> Result<ChecksFile, String> {
     toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Preflight's free disk check: at least `min_free_gib` (or
+/// [`DEFAULT_MIN_FREE_GIB`]) free on the file system `repo` is on.
+fn check_free_disk(repo: &Path, preflight: &PreflightConfig) -> Result<(), String> {
+    let min_free = min_free_gib(preflight);
+    let free = free_gib(repo)?;
+    if free < min_free {
+        return Err(format!(
+            "{free:.1} GiB free on {}, less than {min_free} GiB",
+            repo.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether preflight's free disk check fails for `repo` now; a checks file
+/// or a free space it cannot read is no shortage.
+pub(super) fn short_of_disk(repo: &Path) -> bool {
+    read_checks(repo)
+        .is_ok_and(|checks| free_gib(repo).is_ok_and(|free| free < min_free_gib(&checks.preflight)))
+}
+
+fn min_free_gib(preflight: &PreflightConfig) -> f64 {
+    preflight.min_free_gib.unwrap_or(DEFAULT_MIN_FREE_GIB)
+}
+
+/// Runs the folder slot's target sweep ([`super::slot::bound_target`]),
+/// which frees the slot's build artifacts; a slot not created yet has
+/// nothing to sweep.
+pub(super) fn sweep_slot(repo: &Path) -> Result<(), String> {
+    match slot_dir(repo).filter(|slot| slot.is_dir()) {
+        Some(slot) => super::slot::bound_target(&slot).map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
 /// The free space of the file system `dir` is on, in GiB, from `df -Pk`.
+/// A test reads it from `free-gib-for-test` beside `dir` when that exists.
 fn free_gib(dir: &Path) -> Result<f64, String> {
+    #[cfg(test)]
+    if let Some(free) = dir
+        .parent()
+        .and_then(|parent| std::fs::read_to_string(parent.join("free-gib-for-test")).ok())
+        .and_then(|text| text.trim().parse::<f64>().ok())
+    {
+        return Ok(free);
+    }
     let output = Command::new("df")
         .arg("-Pk")
         .arg(dir)
@@ -1524,17 +1567,7 @@ impl WorkerSupervisor {
                 )));
             }
         }
-        let min_free = checks
-            .preflight
-            .min_free_gib
-            .unwrap_or(DEFAULT_MIN_FREE_GIB);
-        let free = free_gib(repo).map_err(refuse)?;
-        if free < min_free {
-            return Err(refuse(format!(
-                "{free:.1} GiB free on {}, less than {min_free} GiB",
-                repo.display()
-            )));
-        }
+        check_free_disk(repo, &checks.preflight).map_err(refuse)?;
         self.check_slot_free(repo).map_err(refuse)?;
         let base = git(repo, &["rev-parse", "--verify", "master^{commit}"])
             .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
@@ -1649,6 +1682,20 @@ impl WorkerSupervisor {
         Ok(current.info)
     }
 
+    /// Whether a done run's driver of this process is still starting the
+    /// next item its close named: `todo.wait` returns once that start or
+    /// its refusal (a `next_refused` event) is recorded, so a refusal is
+    /// the wait's result, not an event after it. Without a driver (a server
+    /// that ended before the start; the one that starts settles it) the
+    /// wait returns the run as it is.
+    fn starting_next(run: &Run) -> bool {
+        run.info.status == TodoRunStatus::Done
+            && run.finish.next.is_some()
+            && run.info.next_run_id.is_none()
+            && run.info.next_refusal.is_none()
+            && lock(&DRIVING).contains_key(&run.info.run_id)
+    }
+
     /// Whether the run's driver is at its stop, waiting for the worker's
     /// exit.
     fn stopping(run: &Run) -> bool {
@@ -1727,7 +1774,7 @@ impl WorkerSupervisor {
                     && !auto_review::is_due(&run, seq, &body)
                     && !auto_answer::is_due(&run, seq, &body);
                 let fresh = params.after.is_none_or(|after| seq > after);
-                if ended || (waits_on && fresh) {
+                if (ended && !Self::starting_next(&run)) || (waits_on && fresh) {
                     return Ok(Some((event_of(seq, &body, &run.info), run.info)));
                 }
             }
