@@ -52,6 +52,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   import in CLAUDE.md; pi through a symlink or its own include mechanism
   (check what pi supports). The coordinator shows the user the merged text
   and the resolved differences before anything under ~ changes.
+  Simpler, checked by the coordinator (the user asked "from pi to
+  claude?"): the section lists nearly match. pi's file already carries
+  "Claude settings.json"; the only Claude-only section is "AskUserQuestion
+  fields" (8 lines, harmless for pi; mark it Claude Code only); the only
+  pi-only one is "Git ignores", which applies to Claude too; pi's language
+  section is the English form of CLAUDE.md's Polish one. So: merge "Git
+  ignores" into CLAUDE.md, take CLAUDE.md's newer text wherever they drifted
+  (listing each difference for the user), then make
+  ~/.pi/agent/AGENTS.md a symlink to ~/.claude/CLAUDE.md, one file, no
+  import mechanism needed; confirm pi follows a symlinked AGENTS.md.
 
 - [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
   2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
