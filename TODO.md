@@ -36,6 +36,70 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   if he does), review rounds, machinery fixes it triggered, wall-clock time
   from start to push. After 10 items: a summary and a question to the user.
 
+- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
+  2026-10-07: "can't it be compacted or cleared now and then? ask the
+  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
+  per item, state only in files, herdr owns the waits, a thin chat session
+  stays for talking with the user). Slices, one worker each:
+  1. Verified writes: a small tool the coordinator uses for TODO.md and
+     DECISIONS.md edits that fails loudly when the anchor is missing or the
+     text did not land (the 2026-10-07 lost edits), and the rule that a
+     preference said only in chat goes to DECISIONS.md before the turn ends.
+  2. Records a new coordinator can reconcile: each delegated item in
+     TODO.md carries its worker id, worktree, branch, base SHA and the event
+     waited for; open menus listed in TODO.md.
+  3. The per-item coordinator: herdr starts a headless coordinator for the
+     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
+     `herdr worker list`, `herdr-job list`), which ends after committing the
+     item; the next starts on that event. The chat session only answers and
+     queues. The `/todo` skill and the rule change accordingly.
+  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
+  and then? ask the models"). Measured on 2026-10-07: the coordinator made
+  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
+  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
+  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
+  sol `/clear` now and a fresh process later; all three reject `/compact`
+  (a lossy summary, the session already lost track of failed TODO edits
+  after one). Needed first under any choice: TODO/DECISIONS writes read
+  back and verified (that bug), chat-only preferences written to
+  DECISIONS.md before the turn ends, worker/job records a new coordinator
+  can reconcile (worker id, worktree, branch, base SHA, the event waited
+  for), pending menus in TODO.md.
+  Slices 1 and 2 done by 2026-10-09: `scripts/todo_edit.py` and the driver's
+  records (runs, attempts, landings, item history and reconcile, tenures).
+  Slice 3 landed 2026-10-10 (run `r-wjmj7vys`): `herdr todo next [--continue]`
+  and `herdr todo stop` start a fresh headless item coordinator per item (own
+  headless tenure, the allowlist, socket access), record its outcome in the
+  item's history, and advance the chain on its exit until Next is empty, an
+  item escalates, blocks or fails, or `todo stop`. Opt-in; nothing changes
+  until it is used. Decided by the coordinator for slice 4: the chain's
+  environment travels through a live handoff like the runs' (a cold restart
+  stops the chain with an escalation); a worker question in an item
+  coordinator's run goes first to that coordinator (owned by its headless
+  tenure) and to the user only when it escalates; an `escalated` outcome
+  sends a notification. Known: `todo_edit.py` limited to the coordinator's
+  own item only by its prompt; the chat pane does not hold the repository's
+  tenure while a chain runs.
+  Decided by the user 2026-10-10 (after the coordinator ended a turn with
+  "I take the next item" and started nothing, ~1 h idle; round
+  20261010-111014-d7eb: sol (c), MiMo (b)+(a), DeepSeek (a)): `herdr todo
+  next --continue` becomes the default way to work through the queue, so
+  advancing is herdr's job, not the model's. Before that: slice 4 (the
+  chain's environment through a handoff, item coordinators answering their
+  workers' questions first, a notification on escalation), the decision on
+  network for item coordinators' consults, and the `todo` skill change.
+  Then the chat session only answers, queues and starts or stops the chain.
+
+- [ ] The `todo` skill for `herdr todo next` (proposed by the worker of run [t-ux4n3s3o]
+  `r-wjmj7vys`, 2026-10-10): the chat coordinator does not start workers
+  itself; once approved it runs `herdr todo next --continue` and waits for
+  the chain; it only queues new requests while a chain runs and runs
+  `herdr todo stop` on the user's "stop"; after a stop it reads `herdr
+  history --item` of the last item and asks the "Needs a decision"
+  questions; its tab has no `coordinator` role. Depends on slice 4 and the
+  consult-network decision.
+  Approved by the user 2026-10-10 with the decision on t-o6hf6tr3.
+
 - [ ] Coordinators report protocol problems themselves: `herdr report` [t-pulsqoxl]
   (user via the try-roguix coordinator, 2026-10-10: "work out with the
   models how coordinators report such problems without me telling them
@@ -113,51 +177,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   listened, so a signal right after "listening" was lost; now the signals
   route to `ServerStop` before the socket listens (in a handoff just before
   the new server's socket) and a stop request wakes the event loop.
-
-- [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
-  2026-10-07: "can't it be compacted or cleared now and then? ask the
-  models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
-  per item, state only in files, herdr owns the waits, a thin chat session
-  stays for talking with the user). Slices, one worker each:
-  1. Verified writes: a small tool the coordinator uses for TODO.md and
-     DECISIONS.md edits that fails loudly when the anchor is missing or the
-     text did not land (the 2026-10-07 lost edits), and the rule that a
-     preference said only in chat goes to DECISIONS.md before the turn ends.
-  2. Records a new coordinator can reconcile: each delegated item in
-     TODO.md carries its worker id, worktree, branch, base SHA and the event
-     waited for; open menus listed in TODO.md.
-  3. The per-item coordinator: herdr starts a headless coordinator for the
-     top item (its startup prompt rereads TODO.md, DECISIONS.md, `git log`,
-     `herdr worker list`, `herdr-job list`), which ends after committing the
-     item; the next starts on that event. The chat session only answers and
-     queues. The `/todo` skill and the rule change accordingly.
-  Background: the user asked 2026-10-07 ("can't it be compacted or cleared now
-  and then? ask the models"). Measured on 2026-10-07: the coordinator made
-  734 calls averaging ~530k tokens of context; cache reads (388M x 0.1 =
-  39M) are most of its 44M weighted cost, against 24M for all 26 workers.
-  Round `20261007-203033-73ed`: DeepSeek and MiMo a fresh process per item,
-  sol `/clear` now and a fresh process later; all three reject `/compact`
-  (a lossy summary, the session already lost track of failed TODO edits
-  after one). Needed first under any choice: TODO/DECISIONS writes read
-  back and verified (that bug), chat-only preferences written to
-  DECISIONS.md before the turn ends, worker/job records a new coordinator
-  can reconcile (worker id, worktree, branch, base SHA, the event waited
-  for), pending menus in TODO.md.
-  Slices 1 and 2 done by 2026-10-09: `scripts/todo_edit.py` and the driver's
-  records (runs, attempts, landings, item history and reconcile, tenures).
-  Slice 3 landed 2026-10-10 (run `r-wjmj7vys`): `herdr todo next [--continue]`
-  and `herdr todo stop` start a fresh headless item coordinator per item (own
-  headless tenure, the allowlist, socket access), record its outcome in the
-  item's history, and advance the chain on its exit until Next is empty, an
-  item escalates, blocks or fails, or `todo stop`. Opt-in; nothing changes
-  until it is used. Decided by the coordinator for slice 4: the chain's
-  environment travels through a live handoff like the runs' (a cold restart
-  stops the chain with an escalation); a worker question in an item
-  coordinator's run goes first to that coordinator (owned by its headless
-  tenure) and to the user only when it escalates; an `escalated` outcome
-  sends a notification. Known: `todo_edit.py` limited to the coordinator's
-  own item only by its prompt; the chat pane does not hold the repository's
-  tenure while a chain runs.
 
 - [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
   (Decided by the user 2026-10-09 after consult round
@@ -1554,15 +1573,6 @@ Items agents add. Not approved until the user moves them up.
   6. Claude Code refused `herdr-job run -- env X=Y bash -c "<script>"` (it
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
-
-- [ ] The `todo` skill for `herdr todo next` (proposed by the worker of run [t-ux4n3s3o]
-  `r-wjmj7vys`, 2026-10-10): the chat coordinator does not start workers
-  itself; once approved it runs `herdr todo next --continue` and waits for
-  the chain; it only queues new requests while a chain runs and runs
-  `herdr todo stop` on the user's "stop"; after a stop it reads `herdr
-  history --item` of the last item and asks the "Needs a decision"
-  questions; its tab has no `coordinator` role. Depends on slice 4 and the
-  consult-network decision.
 
 ## Needs a decision
 
