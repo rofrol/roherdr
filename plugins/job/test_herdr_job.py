@@ -319,6 +319,7 @@ class WaitTests(unittest.TestCase):
             "status": lambda _path, meta=None: next(states),
             "reconcile_tabs": lambda: None,
             "update_owner_token": lambda _pane: None,
+            "WAITS": base / "waits",
         }
         args = SimpleNamespace(id=self.JOB, quiet=flags.get("quiet", False), stream=flags.get("stream", False))
         out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
@@ -361,6 +362,165 @@ class WaitTests(unittest.TestCase):
         code, text = self.wait(b"", outcome=("failed", 1))
         self.assertEqual(code, 1)
         self.assertNotIn("last lines", text)
+
+
+BADGE = runpy.run_path(str(Path(__file__).with_name("herdr-bg-badge"))) if os.name == "posix" else {}
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitEdgeTests(unittest.TestCase):
+    """A wait records what it waits on; the record lives exactly as long as the wait."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name)
+        globs = JOB["live_edges"].__globals__  # `wait_edge`'s are contextlib's
+        patcher = patch.dict(globs, {"STATE": self.state, "WAITS": self.state / "waits"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def job(self, job_id, owner="p-other", tab="w:t9"):
+        path = self.state / job_id
+        path.mkdir()
+        (path / "meta.json").write_text(json.dumps({"id": job_id, "name": f"build {job_id}",
+                                                    "owner_pane": owner, "tab_id": tab}))
+
+    def test_the_record_is_published_locked_and_removed_when_the_wait_ends(self):
+        env = {"HERDR_PANE_ID": "p1", "HERDR_JOB_ID": "j-outer"}
+        with patch.dict(os.environ, env):
+            with JOB["wait_edge"]("job", job_id="j1", job_tab="w:t9"):
+                (edge,) = JOB["live_edges"]()
+                (record,) = (self.state / "waits").glob("*.json")
+                self.assertTrue(lock_is_held(record))
+                self.assertTrue(JOB["job_waits"]("j-outer"))
+                self.assertFalse(JOB["job_waits"]("j1"))
+        self.assertEqual({k: edge[k] for k in ("kind", "waiter_pane", "waiter_job", "job_id", "job_tab")},
+                         {"kind": "job", "waiter_pane": "p1", "waiter_job": "j-outer",
+                          "job_id": "j1", "job_tab": "w:t9"})
+        self.assertEqual(edge["pid"], os.getpid())
+        self.assertIsInstance(edge["started"], float)
+        self.assertEqual(JOB["live_edges"](), [])
+        self.assertEqual(list((self.state / "waits").iterdir()), [])
+
+    def test_the_record_of_a_wait_that_died_is_not_live_and_is_removed(self):
+        (self.state / "waits").mkdir()
+        dead = self.state / "waits" / "1-abc.json"
+        dead.write_text(json.dumps({"kind": "job", "waiter_pane": "p1", "job_id": "j1"}))
+        self.assertEqual(JOB["live_edges"](), [])
+        self.assertFalse(dead.exists())
+
+    def test_a_killed_wait_leaves_no_live_record(self):
+        script = ("import runpy, sys, os\n"
+                  f"job = runpy.run_path({str(Path(__file__).with_name('herdr-job'))!r})\n"
+                  "with job['wait_edge']('job', job_id='j1'):\n"
+                  "    print('ready', flush=True)\n"
+                  "    sys.stdin.read()\n")
+        env = dict(os.environ, XDG_STATE_HOME=str(self.state.parent / (self.state.name + "-x")), HERDR_PANE_ID="p1")
+        child = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, text=True, env=env)
+        waits = Path(env["XDG_STATE_HOME"]) / "herdr-job" / "waits"
+        read_until_line(child.stdout, "ready")
+        with patch.dict(JOB["live_edges"].__globals__, {"WAITS": waits}):
+            self.assertEqual([e["job_id"] for e in JOB["live_edges"]()], ["j1"])
+            child.kill()
+            child.wait()
+            child.stdin.close()
+            child.stdout.close()
+            self.assertEqual(JOB["live_edges"](), [])
+
+    def test_wait_records_the_job_while_it_waits(self):
+        self.job("j1")
+        seen = []
+
+        def status(_path, meta=None):
+            seen.append(JOB["live_edges"]())
+            return ("ok", 0) if len(seen) > 1 else ("running", None)
+
+        patches = {"status": status, "reconcile_tabs": lambda: None,
+                   "update_owner_token": lambda _pane: None}
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        with patch.dict(JOB["cmd_wait"].__globals__, patches), patch.dict(os.environ, {"HERDR_PANE_ID": "p1"}), \
+                patch.object(sys, "stdout", out), patch.object(time, "sleep", lambda _s: None):
+            with self.assertRaises(SystemExit):
+                JOB["cmd_wait"](SimpleNamespace(id="j1", quiet=True, stream=False))
+        self.assertEqual([(e["job_id"], e["job_tab"], e["waiter_pane"]) for e in seen[0]], [("j1", "w:t9", "p1")])
+        self.assertEqual(JOB["live_edges"](), [])
+
+    def pane_waits(self, states, tabs, waiter_tab="w:t1"):
+        reply = json.dumps({"result": {"pane": {"pane_id": "p1", "tab_id": waiter_tab}}})
+        patches = {"list_tabs": lambda: tabs, "herdr": lambda *_a, **_k: reply,
+                   "status": lambda path, meta=None, tabs=None: states[path.name]}
+        with patch.dict(JOB["waits_of_pane"].__globals__, patches):
+            return JOB["waits_of_pane"]("p1")
+
+    def test_a_pane_counts_running_jobs_of_other_tabs_once_and_not_its_own(self):
+        self.job("cross", tab="w:t9")
+        self.job("mine", owner="p1", tab="w:t2")
+        self.job("nested", tab="w:t3")
+        self.job("ended", tab="w:t4")
+        tabs = [{"tab_id": "w:t9"}, {"tab_id": "w:t2", "parent_tab_id": "w:t1"},
+                {"tab_id": "w:t3", "parent_tab_id": "w:t1"}, {"tab_id": "w:t4"}]
+        states = {"cross": ("running", None), "mine": ("running", None),
+                  "nested": ("pending", None), "ended": ("ok", 0)}
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "p1"}), contextlib.ExitStack() as stack:
+            for job_id in ("cross", "cross", "mine", "nested", "ended", "gone"):
+                stack.enter_context(JOB["wait_edge"]("job", job_id=job_id))
+            with patch.dict(os.environ, {"HERDR_PANE_ID": "p2"}):
+                stack.enter_context(JOB["wait_edge"]("job", job_id="cross"))
+            stack.enter_context(JOB["wait_edge"]("agent", target_pane="p7"))
+            result = self.pane_waits(states, tabs)
+        self.assertEqual(result["edges"], 6)
+        got = {w["job_id"]: (w["running"], w["local"]) for w in result["waits"]}
+        self.assertEqual(got, {"cross": (True, False), "mine": (True, True),
+                               "nested": (True, True), "ended": (False, False)})
+        self.assertEqual({w["job_id"]: w["job_name"] for w in result["waits"]}["cross"], "build cross")
+
+    def test_a_pane_without_waits_asks_herdr_nothing(self):
+        boom = Mock(side_effect=AssertionError("no herdr call"))
+        with patch.dict(JOB["waits_of_pane"].__globals__, {"list_tabs": boom, "herdr": boom}):
+            self.assertEqual(JOB["waits_of_pane"]("p1"), {"edges": 0, "waits": []})
+
+    def test_a_job_that_waits_is_never_reported_idle(self):
+        for waiting in (True, False):
+            with self.subTest(waiting=waiting):
+                proc = Mock()
+                proc.poll.side_effect = [None, None, 0]
+                calls = Mock(return_value=True)
+                globs = JOB["watch_activity"].__globals__
+                patches = {"sample_tree_cpu": lambda _pid: 1.0, "job_is_idle": lambda *_a: True,
+                           "job_waits": lambda job_id: waiting and job_id == "j1", "herdr_ok": calls}
+                with patch.dict(globs, patches), patch.object(time, "sleep", lambda _s: None):
+                    JOB["watch_activity"](proc, {"id": "j1", "tab_id": "w:t5"}, [0.0])
+                idle = [c for c in calls.call_args_list if "--activity" in c.args]
+                self.assertEqual(bool(idle), not waiting)
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-bg-badge supports Unix only")
+class BgBadgeTests(unittest.TestCase):
+    def wait(self, job_id, running=True, local=False):
+        return {"job_id": job_id, "job_name": f"Build {job_id}", "running": running, "local": local}
+
+    def test_plain_tasks_count_and_none_clears(self):
+        badge = BADGE["badge"]
+        self.assertEqual(badge(2, {"edges": 0, "waits": []}), "2 bg")
+        self.assertIsNone(badge(0, {"edges": 0, "waits": []}))
+
+    def test_a_wait_counts_only_on_another_tab_while_its_job_runs(self):
+        badge = BADGE["badge"]
+        self.assertEqual(badge(1, {"edges": 1, "waits": [self.wait("a")]}), "1 bg ⧖ Build a")
+        self.assertIsNone(badge(1, {"edges": 1, "waits": [self.wait("a", local=True)]}))
+        self.assertIsNone(badge(1, {"edges": 1, "waits": [self.wait("a", running=False)]}))
+        # A record whose job is gone still accounts for its task.
+        self.assertIsNone(badge(1, {"edges": 1, "waits": []}))
+
+    def test_waits_are_counted_once_per_job_beside_other_tasks(self):
+        badge = BADGE["badge"]
+        waits = {"edges": 3, "waits": [self.wait("a"), self.wait("a"), self.wait("b")]}
+        self.assertEqual(badge(4, waits), "3 bg ⧖ Build a +1")
+
+    def test_without_herdr_jobs_answer_every_running_task_counts(self):
+        self.assertEqual(BADGE["badge"](2, None), "2 bg")
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
