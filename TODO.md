@@ -20,12 +20,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   to every run whose diff touches `src/config/`, `docs/next/`, `scripts/`
   or `plugins/` (like `tests` for `src/api/`); `draft_task` may choose it.
 
-- [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
-  (follows from the bridge, 2026-10-10; small, text only): herdr's
-  AGENTS.md driver paragraph and the item coordinator prompt name the new
-  flags; the `todo` skill's driver step too (the user's agent config: a
-  text edit that widens nothing).
-
 - [ ] A headless worker opens like an agent tab, not a modal (user, [t-zi5sz6kr]
   2026-10-10, next: "when I click a tab without a TUI a modal opens and
   only Escape closes it, a click outside does not; I don't want a modal: it

@@ -918,3 +918,11 @@ repository, time), counted per command shape by `herdr history overrides
 --would-deny`; enforce denies as before. The integration is installed in
 shadow; after a week of real use the user decides on enforce from that
 list, or drops it if the list is near-empty.
+
+## Callers of `todo resume --close` pass `--next` or `--stop-reason`
+
+Closing an item through the driver (bc64f0e5): herdr's AGENTS.md and the
+item-coordinator prompt name `--next` (with `--next-task`,
+`--next-message`, `--next-paths`) or `--stop-reason` for `--close`, and
+queue mode (where `--close` alone is enough). The `todo` skill's matching
+line is a text edit in the user's agent config (2026-10-10).
