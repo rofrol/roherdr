@@ -1646,6 +1646,10 @@ user needs to decide or do.
   event-resumed waits), duroxide (Rust + SQLite event-sourced replay);
   LangGraph only if time remains. Judge what survives, what repeats, and
   which guarantees still need herdr's own idempotency.
+  LangGraph joins the set unconditionally (user 2026-10-10: "only if time
+  remains: do we have little time?"; no deadline exists): SQLite
+  checkpointer, `interrupt()` for a human question across a restart, and
+  which node code reruns before an interrupt.
 
 ### Decide
 
