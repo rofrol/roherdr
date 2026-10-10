@@ -268,6 +268,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   t-bojbiegs a live handoff breaking other sessions' waits) against
   `herdr todo wait`'s reconnect and `agent prompt`'s acknowledgement; close
   each one only when its check passes.
+  Points 1, 2, 3 and 5 landed 2026-10-10 (850a272a, run r-6com5znp):
+  `worker.events` / `herdr worker events --owner ... --after ... --wait`, a
+  durable per-coordinator inbox (question, turn_end, exit, joined, left,
+  reowned) on the store's sequence with an incarnation cursor,
+  `resync_required` plus a snapshot, a blocking wait woken by commits that
+  survives a live handoff. Left, decided by the coordinator 2026-10-10 as
+  the next slice of this item:
+  - fencing: `worker.answer` carries the answering coordinator's tenure;
+    an old owner's late answer is refused with `ownership_transferred`
+    naming the successor and kept as information for it, never applied;
+  - `worker.wait` reimplemented over the inbox (today only documented as
+    a shorthand);
+  - a failed store write reaches the inbox as `resync_required`, not only
+    in the next snapshot.
+  The regression checks for t-jnema5dg, t-gp6n6qbx and t-bojbiegs need the
+  socket tests outside the sandbox; this run's `verify` runs them, and the
+  coordinator closes each item whose check passed.
 
 - [ ] Report a tool call whose process exited while descendants hold its [t-oan63shb]
   output open (decided 2026-10-10: the user said "decide with the models";
