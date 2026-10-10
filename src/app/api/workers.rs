@@ -1,5 +1,7 @@
 //! The worker actions a client starts that need the app: `worker.open_log`
-//! (a popup) and `worker.take_over` (a tab), `worker.runs`,
+//! (a popup, for clients without worker tabs) and `worker.take_over` (a
+//! tab that shows the transcript, a mark, then the resumed session),
+//! `worker.runs`,
 //! `history.list`, `history.item` and `todo.review` for its Items popup, and
 //! `worker.question`, `worker.answer` and `worker.deny_and_stop` for its
 //! answer dialog.
@@ -296,6 +298,25 @@ impl App {
             crate::workers::supervisor().takeover_tab_opened(&takeover.worker_id, &tab.tab_id)
         {
             tracing::warn!(%err, worker = takeover.worker_id, "takeover tab not journaled");
+        }
+        // The same tab goes on from the worker's transcript: first the lines
+        // its read-only tab showed, then a mark, then the session resumed.
+        match std::env::current_exe() {
+            Ok(exe) => {
+                let log = [
+                    exe.display().to_string(),
+                    "worker".to_owned(),
+                    "log".to_owned(),
+                    "--takeover".to_owned(),
+                    takeover.worker_id.clone(),
+                ];
+                if let Err(err) = self.type_command(&root_pane.pane_id, &log) {
+                    tracing::warn!(err, worker = takeover.worker_id, "transcript not shown");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%err, worker = takeover.worker_id, "transcript not shown");
+            }
         }
         let args = ["--resume".to_owned(), takeover.session_id.clone()];
         if let Err(err) =

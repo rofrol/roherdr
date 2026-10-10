@@ -82,6 +82,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod worker_transcripts;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -432,6 +433,15 @@ impl HeadlessServer {
         crate::workers::set_change_notifier(Arc::new(move || {
             render_dirty.request_generic();
             render_notify.notify_one();
+        }));
+        // A worker's new journal lines go to the client shells that show
+        // its tab; the wake is dropped only when the queue is full, and the
+        // next record wakes it again.
+        let transcript_notify = self.server_event_tx.clone();
+        crate::workers::transcript::set_append_notifier(Arc::new(move || {
+            transcript_notify
+                .try_send(ServerEvent::WorkerTranscriptAppended)
+                .is_ok()
         }));
         // A new pseudo-terminal sample rebuilds the snapshots, which carry
         // it, and may raise a notification.
@@ -2713,6 +2723,12 @@ impl HeadlessServer {
                     return false;
                 };
                 client.take_deferred_render() != DeferredRender::None
+            }
+            ServerEvent::WorkerTranscriptAppended => {
+                if crate::workers::transcript::take_appended() {
+                    self.push_worker_transcripts();
+                }
+                false
             }
             ServerEvent::QuitSignal => {
                 // The quit check at the top of the loop handles this.

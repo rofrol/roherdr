@@ -55,6 +55,25 @@ impl HeadlessServer {
             );
             return changed;
         }
+        // Connection-local like the surface: it changes what this shell is
+        // sent, not the session, so it does not wait for the command lane.
+        if let api::schema::Method::ClientShellWorkerTranscriptSet(params) = &request.method {
+            let message = match self.set_client_worker_transcript(client_id, params) {
+                Ok(()) => crate::server::client_commands::success_message_with_result(
+                    boot_id,
+                    request_id,
+                    api::schema::ResponseResult::Ok {},
+                ),
+                Err(error) => crate::server::client_commands::error_message(
+                    boot_id,
+                    request_id,
+                    error.code(),
+                    error.to_string(),
+                ),
+            };
+            self.send_to_client(client_id, message);
+            return false;
+        }
         if client.shell_endpoint_command_in_flight {
             let message = crate::server::client_commands::error_message(
                 boot_id,

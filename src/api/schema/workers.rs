@@ -821,3 +821,125 @@ pub struct WorkerChoiceQuestion {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub multi_select: bool,
 }
+
+/// A worker's transcript from a journal line on (`worker.transcript`), or
+/// the lines after it once there are any (`worker.transcript_wait`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerTranscriptParams {
+    pub worker_id: String,
+    /// The `cursor` of an earlier reply: only the journal lines after it.
+    /// From the first line when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// At most this many journal lines; the reply's `more` says whether
+    /// others follow. All of them when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// What a client shows in a worker's tab: the worker's transcript as
+/// structured events and the tab's identity, the same on every client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerTranscript {
+    pub worker_id: String,
+    /// The `herdr todo run` that started the worker; absent for one started
+    /// another way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub tab: WorkerTab,
+    pub state: WorkerState,
+    /// Oldest first.
+    pub events: Vec<WorkerTranscriptEvent>,
+    /// The journal lines read so far: the next request's `after`.
+    pub cursor: u64,
+    /// More journal lines follow past `limit`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
+}
+
+/// A headless worker's tab: one identity that every client and a
+/// reconnect agree on, though the worker has no terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerTab {
+    /// `worker:<worker_id>`.
+    pub tab_id: String,
+    /// The tab's one pane, `worker:<worker_id>`, of kind `worker`.
+    pub pane_id: String,
+    pub pane_kind: PaneKind,
+    /// The space the worker belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The tab takes no input: what a worker does is decided by its
+    /// coordinator, not typed into it.
+    pub read_only: bool,
+    /// After a takeover, the tab whose terminal resumes the worker's
+    /// session: the worker's tab goes on there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_tab_id: Option<String>,
+}
+
+/// What a pane shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneKind {
+    /// A terminal.
+    Terminal,
+    /// A headless worker's transcript, read-only.
+    Worker,
+    /// A kind this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One thing a worker's transcript shows, from one record of its journal
+/// (a record may give several).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerTranscriptEvent {
+    pub worker_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The journal line it comes from, from 1.
+    pub line: u64,
+    /// The worker store's `seq` of the record, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    /// Unix milliseconds of the record.
+    pub ts_ms: u64,
+    pub entry: WorkerTranscriptEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkerTranscriptEntry {
+    /// Words of the user, the assistant, or a turn's result.
+    Message {
+        role: WorkerTranscriptRole,
+        text: String,
+    },
+    /// A tool call: the tool and its most telling input (the command, the
+    /// path, the URL), else its input as JSON.
+    ToolCall { name: String, input: String },
+    /// A tool call's result, cut to a few thousand characters.
+    ToolResult {
+        text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
+    /// What happened to the worker (its start, a decision, a question, a
+    /// turn's end, its exit), as the log shows it.
+    Status { text: String },
+    /// An entry this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerTranscriptRole {
+    User,
+    Assistant,
+    /// The text of a turn's result.
+    Result,
+    #[serde(other)]
+    Unknown,
+}

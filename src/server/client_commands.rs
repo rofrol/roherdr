@@ -16,6 +16,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.handoff",
     "agent.kind_list",
     "client_shell.surface.set",
+    "client_shell.worker_transcript.set",
     "command.invoke",
     "git.branch_list",
     "history.item",
@@ -427,6 +428,12 @@ mod tests {
         assert_eq!(
             actual.remove("worker.deny_and_stop").as_deref(),
             Some("edad8a59b4fd679d4b835a696235a37b167451af9260ffda7f492ffe0d212c33")
+        );
+        assert_eq!(
+            actual
+                .remove("client_shell.worker_transcript.set")
+                .as_deref(),
+            Some("ad3924cd7c7449bbd790705f6cb3928fdb69a796ffe37c5dc6cd16e5b6b53093")
         );
         assert_eq!(
             actual.remove("worker.question").as_deref(),

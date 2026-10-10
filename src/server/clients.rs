@@ -193,8 +193,29 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_deferred_navigation_response: Option<Vec<u8>>,
     /// Whether this shell uses the endpoint-owned keymap rather than a client-owned keymap.
     pub(crate) shell_uses_endpoint_keybindings: bool,
+    /// The worker whose transcript this shell's worker tab shows
+    /// (`client_shell.worker_transcript.set`), and how far it was sent.
+    pub(crate) shell_worker_transcript: Option<ShellWorkerTranscript>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
+}
+
+/// A client shell's worker tab: the worker and what it was sent of its
+/// transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShellWorkerTranscript {
+    pub(crate) worker_id: String,
+    pub(crate) run_id: Option<String>,
+    /// Where the next read of the journal starts.
+    pub(crate) position: crate::workers::transcript::JournalPosition,
+    /// The lines the client had when it asked; they are not sent again.
+    pub(crate) after: u64,
+    /// What the last message said of the worker and its tab, so a change
+    /// without new lines is sent too; none before the first message.
+    pub(crate) sent: Option<(
+        crate::api::schema::WorkerState,
+        crate::api::schema::WorkerTab,
+    )>,
 }
 
 impl ClientConnection {
@@ -257,6 +278,7 @@ impl ClientConnection {
             shell_deferred_navigation_request_id: None,
             shell_deferred_navigation_response: None,
             shell_uses_endpoint_keybindings: false,
+            shell_worker_transcript: None,
             writer,
         }
     }

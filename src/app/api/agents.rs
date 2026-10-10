@@ -290,6 +290,14 @@ impl App {
         kind: crate::detect::Agent,
         args: &[String],
     ) -> Result<(), String> {
+        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+        argv.extend_from_slice(args);
+        self.type_command(pane_id, &argv)
+    }
+
+    /// Types `argv` into the pane's shell, encoded for that shell, and
+    /// Enter.
+    pub(super) fn type_command(&mut self, pane_id: &str, argv: &[String]) -> Result<(), String> {
         let (ws_idx, pane) = self
             .parse_current_public_pane_id(pane_id)
             .ok_or("the new pane is gone")?;
@@ -311,9 +319,7 @@ impl App {
                 .map(|name| name.to_string_lossy().into_owned())
         });
         let shell = shell.ok_or("no shell to type the launch into")?;
-        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
-        argv.extend_from_slice(args);
-        let command = crate::platform::interactive_shell_command(&argv, &shell)
+        let command = crate::platform::interactive_shell_command(argv, &shell)
             .ok_or("the launch cannot be encoded for this shell")?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
         runtime

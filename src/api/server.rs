@@ -631,6 +631,16 @@ fn handle_request(
         );
     }
 
+    if matches!(&request.method, Method::ClientShellWorkerTranscriptSet(_)) {
+        return error_response_json(
+            request.id,
+            "connection_local_only",
+            "client_shell.worker_transcript.set is only available through a client shell \
+             endpoint; the JSON API reads it with worker.transcript and worker.transcript_wait"
+                .into(),
+        );
+    }
+
     if matches!(&request.method, Method::ServerStop(_)) {
         if let Some(server_stop) = server_stop {
             server_stop.request(ShutdownReason::ApiStop {
@@ -683,6 +693,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerTakeOver(_) => "worker.take_over",
         Method::WorkerForceTakeOver(_) => "worker.force_take_over",
         Method::WorkerQuestion(_) => "worker.question",
+        Method::WorkerTranscript(_) => "worker.transcript",
+        Method::WorkerTranscriptWait(_) => "worker.transcript_wait",
         Method::WorkerDenyAndStop(_) => "worker.deny_and_stop",
         Method::TodoRun(_) => "todo.run",
         Method::TodoDraftRun(_) => "todo.draft_run",
@@ -717,6 +729,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ClientWindowTitleSet(_) => "client.window_title.set",
         Method::ClientWindowTitleClear(_) => "client.window_title.clear",
         Method::ClientShellSurfaceSet(_) => "client_shell.surface.set",
+        Method::ClientShellWorkerTranscriptSet(_) => "client_shell.worker_transcript.set",
         Method::SessionSnapshot(_) => "session.snapshot",
         Method::WorkspaceCreate(_) => "workspace.create",
         Method::WorkspaceCreateAfter(_) => "workspace.create_after",

@@ -2049,6 +2049,26 @@
           ],
           "type": "object"
         },
+        "ClientShellWorkerTranscriptSetParams": {
+          "description": "Which worker's transcript the requesting client shell shows: the server\nsends it the lines after `after`, then each new one as the worker writes\nit, until another call names another worker or none.",
+          "properties": {
+            "after": {
+              "default": 0,
+              "description": "The lines the client already has (`cursor` of what it received).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "worker_id": {
+              "description": "None stops the transcript.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "ClientWindowTitleSetParams": {
           "properties": {
             "title": {
@@ -6680,6 +6700,36 @@
           ],
           "type": "object"
         },
+        "WorkerTranscriptParams": {
+          "description": "A worker's transcript from a journal line on (`worker.transcript`), or\nthe lines after it once there are any (`worker.transcript_wait`).",
+          "properties": {
+            "after": {
+              "description": "The `cursor` of an earlier reply: only the journal lines after it.\nFrom the first line when absent.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "limit": {
+              "description": "At most this many journal lines; the reply's `more` says whether\nothers follow. All of them when absent.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id"
+          ],
+          "type": "object"
+        },
         "WorkerVerifyParams": {
           "description": "Herdr checks a worker's commit and decides its verdict, instead of the\nworker's own word (`WORKER-DONE`). Runs in the worker's directory,\noutside its sandbox, after the worker has ended.",
           "properties": {
@@ -7679,6 +7729,40 @@
           "type": "object"
         },
         {
+          "description": "The worker's transcript as structured events, from a journal line\non: what its read-only tab shows.",
+          "properties": {
+            "method": {
+              "const": "worker.transcript",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTranscriptParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Blocks until the worker's transcript has lines after `after`, or the\nworker is gone, then answers as `worker.transcript`: a live\nsubscription by repeated calls.",
+          "properties": {
+            "method": {
+              "const": "worker.transcript_wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerTranscriptParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "One pending question with the tool's whole input, for a client's\nanswer dialog, which asks when the user opens it.",
           "properties": {
             "method": {
@@ -8255,6 +8339,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ClientShellSurfaceSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The worker whose transcript this client shell's worker tab shows;\nthe server pushes it as `endpoint.worker-transcript.v1`.",
+          "properties": {
+            "method": {
+              "const": "client_shell.worker_transcript.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ClientShellWorkerTranscriptSetParams"
             }
           },
           "required": [
@@ -12810,6 +12911,26 @@
           ],
           "type": "object"
         },
+        "PaneKind": {
+          "description": "What a pane shows.",
+          "oneOf": [
+            {
+              "const": "terminal",
+              "description": "A terminal.",
+              "type": "string"
+            },
+            {
+              "const": "worker",
+              "description": "A headless worker's transcript, read-only.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
         "PaneLayoutPane": {
           "properties": {
             "focused": {
@@ -14429,6 +14550,23 @@
               "required": [
                 "type",
                 "workers"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`worker.transcript`'s and `worker.transcript_wait`'s reply.",
+              "properties": {
+                "transcript": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerTranscript"
+                },
+                "type": {
+                  "const": "worker_transcript",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "transcript"
               ],
               "type": "object"
             },
@@ -18926,6 +19064,250 @@
             {
               "const": "unknown",
               "description": "A state this client does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerTab": {
+          "description": "A headless worker's tab: one identity that every client and a\nreconnect agree on, though the worker has no terminal.",
+          "properties": {
+            "pane_id": {
+              "description": "The tab's one pane, `worker:<worker_id>`, of kind `worker`.",
+              "type": "string"
+            },
+            "pane_kind": {
+              "$ref": "#/schemas/success_response/$defs/PaneKind"
+            },
+            "read_only": {
+              "description": "The tab takes no input: what a worker does is decided by its\ncoordinator, not typed into it.",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "description": "`worker:<worker_id>`.",
+              "type": "string"
+            },
+            "takeover_tab_id": {
+              "description": "After a takeover, the tab whose terminal resumes the worker's\nsession: the worker's tab goes on there.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "description": "The space the worker belongs to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "tab_id",
+            "pane_id",
+            "pane_kind",
+            "read_only"
+          ],
+          "type": "object"
+        },
+        "WorkerTranscript": {
+          "description": "What a client shows in a worker's tab: the worker's transcript as\nstructured events and the tab's identity, the same on every client.",
+          "properties": {
+            "cursor": {
+              "description": "The journal lines read so far: the next request's `after`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "events": {
+              "description": "Oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkerTranscriptEvent"
+              },
+              "type": "array"
+            },
+            "more": {
+              "description": "More journal lines follow past `limit`.",
+              "type": "boolean"
+            },
+            "run_id": {
+              "description": "The `herdr todo run` that started the worker; absent for one started\nanother way.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/WorkerState"
+            },
+            "tab": {
+              "$ref": "#/schemas/success_response/$defs/WorkerTab"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "tab",
+            "state",
+            "events",
+            "cursor"
+          ],
+          "type": "object"
+        },
+        "WorkerTranscriptEntry": {
+          "oneOf": [
+            {
+              "description": "Words of the user, the assistant, or a turn's result.",
+              "properties": {
+                "kind": {
+                  "const": "message",
+                  "type": "string"
+                },
+                "role": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerTranscriptRole"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "role",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A tool call: the tool and its most telling input (the command, the\npath, the URL), else its input as JSON.",
+              "properties": {
+                "input": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "tool_call",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "name",
+                "input"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A tool call's result, cut to a few thousand characters.",
+              "properties": {
+                "is_error": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "const": "tool_result",
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "What happened to the worker (its start, a decision, a question, a\nturn's end, its exit), as the log shows it.",
+              "properties": {
+                "kind": {
+                  "const": "status",
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An entry this client does not know.",
+              "properties": {
+                "kind": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "WorkerTranscriptEvent": {
+          "description": "One thing a worker's transcript shows, from one record of its journal\n(a record may give several).",
+          "properties": {
+            "entry": {
+              "$ref": "#/schemas/success_response/$defs/WorkerTranscriptEntry"
+            },
+            "line": {
+              "description": "The journal line it comes from, from 1.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seq": {
+              "description": "The worker store's `seq` of the record, when it has one.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds of the record.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "worker_id",
+            "line",
+            "ts_ms",
+            "entry"
+          ],
+          "type": "object"
+        },
+        "WorkerTranscriptRole": {
+          "oneOf": [
+            {
+              "enum": [
+                "user",
+                "assistant",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "result",
+              "description": "The text of a turn's result.",
               "type": "string"
             }
           ]

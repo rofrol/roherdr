@@ -174,17 +174,30 @@ pub(super) fn quiet_fold_workspace(id: &str) -> Option<&str> {
 
 const QUIET_FOLD_PREFIX: &str = "quiet:";
 
-/// The `tab_id` of a headless worker's line, which its line hit carries.
+/// The `tab_id` of a headless worker's line, which its line hit carries:
+/// the worker's tab id, as the server names it.
 pub(super) fn worker_line_id(worker_id: &str) -> String {
-    format!("{WORKER_LINE_PREFIX}{worker_id}")
+    crate::workers::transcript::worker_tab_id(worker_id)
 }
 
 /// The worker whose line a hit's id names.
 pub(super) fn worker_line_worker(id: &str) -> Option<&str> {
-    id.strip_prefix(WORKER_LINE_PREFIX)
+    crate::workers::transcript::worker_of_tab_id(id)
 }
 
-const WORKER_LINE_PREFIX: &str = "worker:";
+/// While a worker's tab shows, its line is the active one and the focused
+/// tab's is not.
+pub(super) fn mark_shown_worker(lines: &mut [SpaceTabLine], shown: Option<&str>) {
+    let Some(shown) = shown else {
+        return;
+    };
+    for line in lines {
+        line.active = line
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.worker_id == shown);
+    }
+}
 
 /// A worker state as its line shows it: the agent state whose glyph it
 /// takes, what it is called, and the word after the label for a worker

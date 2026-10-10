@@ -188,7 +188,7 @@ fn release_notes_reconcile_and_failed_dismiss_reopens_authoritative_snapshot() {
 }
 
 #[test]
-fn product_announcement_mouse_is_modal_and_closes_only_from_its_button() {
+fn product_announcement_mouse_is_modal_and_a_click_outside_closes_it() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let mut endpoint_snapshot = snapshot();
     endpoint_snapshot.product_announcement =
@@ -205,20 +205,6 @@ fn product_announcement_mouse_is_modal_and_closes_only_from_its_button() {
     state.set_snapshot(Box::new(endpoint_snapshot));
     state.set_pane_surface(surface_with_popup());
     state.compose(106, 30).expect("announcement frame");
-
-    let outside =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        })]);
-    assert!(outside.requests.is_empty());
-    assert!(outside.actions.is_empty());
-    assert!(matches!(
-        state.overlay,
-        Some(ClientShellOverlay::ProductAnnouncement(_))
-    ));
 
     let metrics = state
         .hits
@@ -252,15 +238,18 @@ fn product_announcement_mouse_is_modal_and_closes_only_from_its_button() {
         )) if usize::from(scroll) == state.hits.product_announcement_max_scroll
     ));
 
-    let close = state.hits.overlay_primary;
+    // A click outside the modal closes it as its button does, and acts on
+    // nothing under it (the sidebar's corner here).
+    state.compose(106, 30).expect("announcement frame");
     let closed =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: close.x,
-            row: close.y,
+            column: 0,
+            row: 0,
             modifiers: KeyModifiers::NONE,
         })]);
     assert!(state.overlay.is_none());
+    assert!(closed.requests.is_empty());
     assert!(matches!(
         &closed.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
@@ -794,18 +783,7 @@ fn update_ready_menu_opens_client_owned_release_notes_and_dismisses_by_version()
         state.config.palette.accent
     );
 
-    let outside =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        })]);
-    assert!(outside.requests.is_empty());
-    assert!(matches!(
-        state.overlay,
-        Some(ClientShellOverlay::ReleaseNotes(_))
-    ));
+    // A click outside closes it: `worker_view::worktree_dialogs_and_release_notes_close_on_a_click_outside`.
     let pane_text = state.handle_raw_events(vec![
         RawInputEvent::Text(crate::input::TextCommit::new("ime")),
         RawInputEvent::Paste("secret".into()),

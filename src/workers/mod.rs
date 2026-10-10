@@ -42,13 +42,14 @@ mod store;
 #[cfg(test)]
 mod tests;
 mod todo_titles;
+pub(crate) mod transcript;
 mod verify;
 
 pub(crate) use coordinators::coordinators;
 #[cfg(test)]
 pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use item_coordinators::resume_item_coordinators_at_start;
-pub(crate) use log::log_lines;
+pub(crate) use log::{entry_lines, log_lines};
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
 pub(crate) use runs::{resume_runs_at_start, usage_reading_published};
@@ -1446,7 +1447,9 @@ impl Journal {
         }
         let mut line = line.to_string();
         line.push('\n');
-        lock(&self.file).write_all(line.as_bytes())
+        lock(&self.file).write_all(line.as_bytes())?;
+        transcript::note_appended();
+        Ok(())
     }
 }
 
@@ -2579,8 +2582,29 @@ pub(crate) fn resume_brokered_at_start() {
     }
 }
 
+#[cfg(all(test, unix))]
+thread_local! {
+    static TEST_SERVER_SUPERVISOR: std::cell::Cell<Option<&'static WorkerSupervisor>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Makes `supervisor` the server's [`supervisor`] on this test thread only,
+/// so tests running in parallel in one process never share or replace it.
+#[cfg(all(test, unix))]
+pub(crate) fn set_test_supervisor(supervisor: WorkerSupervisor) {
+    let leaked: &'static WorkerSupervisor = Box::leak(Box::new(supervisor));
+    TEST_SERVER_SUPERVISOR.with(|cell| cell.set(Some(leaked)));
+}
+
+#[cfg(all(test, unix))]
+pub(crate) use tests::FinishedWorker;
+
 /// The server's supervisor, opened on first use ([`workers_dir`]).
 pub(crate) fn supervisor() -> &'static WorkerSupervisor {
+    #[cfg(all(test, unix))]
+    if let Some(supervisor) = TEST_SERVER_SUPERVISOR.with(std::cell::Cell::get) {
+        return supervisor;
+    }
     SUPERVISOR.get_or_init(|| {
         let dir = workers_dir();
         #[cfg(unix)]

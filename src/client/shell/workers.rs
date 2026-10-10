@@ -1,6 +1,6 @@
 //! Headless workers' lines under their space (see
-//! [`super::space_tabs::worker_lines`]): a click opens the worker's log, the
-//! right-click menu offers the log and a takeover.
+//! [`super::space_tabs::worker_lines`]): a click opens the worker's tab
+//! with its log, the right-click menu offers the log and a takeover.
 
 use super::*;
 use crate::api::schema::{Method, WorkerTarget};
@@ -19,10 +19,31 @@ impl ClientShellState {
             .map(str::to_owned)
     }
 
-    /// Asks the server for a popup that shows the worker's log and follows
-    /// it.
+    /// Opens the worker's tab, which shows its log and follows it
+    /// ([`super::worker_view`]).
     pub(super) fn open_worker_log(&mut self, worker_id: String, outcome: &mut ClientShellInput) {
-        self.push_endpoint_method(Method::WorkerOpenLog(WorkerTarget { worker_id }), outcome);
+        self.open_worker_view(worker_id, outcome);
+    }
+
+    /// Asks a server without worker tabs for a popup that shows the
+    /// worker's log and follows it; herdr opened it, so a click outside
+    /// closes it.
+    pub(super) fn open_worker_log_popup(
+        &mut self,
+        worker_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        self.popup_pending = true;
+        self.popup_pending_deadline = None;
+        self.popup_pending_dismissable = true;
+        if !self.push_endpoint_method_with_kind(
+            Method::WorkerOpenLog(WorkerTarget { worker_id }),
+            PendingEndpointKind::PopupCommand,
+            outcome,
+        ) {
+            self.popup_pending = false;
+            self.popup_pending_dismissable = false;
+        }
         outcome.repaint = true;
     }
 

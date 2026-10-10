@@ -8,6 +8,13 @@ const SPACE_DRAG_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration:
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl ClientShellState {
+    /// A click at `point` falls outside the open overlay's drawn box; false
+    /// before the box was drawn, so a click cannot close what the user has
+    /// not seen.
+    fn outside_overlay(&self, point: (u16, u16)) -> bool {
+        !self.hits.overlay_area.is_empty() && !super::contains(self.hits.overlay_area, point)
+    }
+
     /// Middle click on a sidebar workspace or a tab closes it through the same
     /// confirmation path as the context menu's Close.
     fn close_chrome_target_at(&mut self, point: (u16, u16), outcome: &mut ClientShellInput) {
@@ -1223,7 +1230,8 @@ impl ClientShellState {
         ) {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left)
-                    if super::contains(self.hits.overlay_primary, point) =>
+                    if super::contains(self.hits.overlay_primary, point)
+                        || self.outside_overlay(point) =>
                 {
                     self.dismiss_product_announcement(outcome);
                 }
@@ -1295,7 +1303,9 @@ impl ClientShellState {
                     self.hits.release_notes_scroll_metrics,
                 ));
             match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) if super::contains(close, point) => {
+                MouseEventKind::Down(MouseButton::Left)
+                    if super::contains(close, point) || self.outside_overlay(point) =>
+                {
                     self.dismiss_release_notes(outcome);
                 }
                 MouseEventKind::Down(MouseButton::Left)
@@ -2225,7 +2235,9 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if super::contains(self.hits.overlay_cancel, point) {
+                    if super::contains(self.hits.overlay_cancel, point)
+                        || self.outside_overlay(point)
+                    {
                         let busy =
                             matches!(
                                 self.overlay,
@@ -2531,6 +2543,9 @@ impl ClientShellState {
             return;
         }
 
+        if self.worker_view_mouse(mouse, point, outcome) {
+            return;
+        }
         if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             let selection_hit = self.active_selection_pane();
             if let Some(hit) = selection_hit {

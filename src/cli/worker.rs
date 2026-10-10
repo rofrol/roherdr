@@ -75,8 +75,10 @@ const USAGE: &str =
     --request names the question (its request_id in worker status or the ? list).
     A choice is an option's label or 1-based number, or free text; give one per
     question, and several options of a multi-select question separated by commas.
-  herdr worker log [--follow] <worker_id>
+  herdr worker log [--follow|--takeover] <worker_id>
     The worker's journal as text; --follow keeps printing new events until q.
+    --takeover ends it with the mark a takeover's tab shows before the
+    session it resumes.
   herdr worker take-over [--force] <worker_id>
     Interrupts and stops the worker, then resumes its session in a new tab.
     A takeover an earlier server left unfinished is adopted when its tab or a
@@ -675,12 +677,24 @@ fn run_wait_drained(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-/// `herdr worker log [--follow] <worker_id>`: the worker's journal as text
-/// (`crate::workers::log_lines`). With `--follow`, as in the sidebar's log
-/// popup, it keeps printing new events until `q`, Esc or Ctrl-C.
+/// The line a takeover's tab shows between the worker's transcript and the
+/// session it resumes.
+pub(crate) const TAKEOVER_MARK: &str =
+    "──── taken over: its session goes on here, interactively ────";
+
+/// `herdr worker log [--follow|--takeover] <worker_id>`: the worker's
+/// journal as text (`crate::workers::log_lines`, the lines its tab shows).
+/// With `--follow`, as in an older server's log popup, it keeps printing new
+/// events until `q`, Esc or Ctrl-C. With `--takeover`, a takeover's tab
+/// prints it before resuming the session: the transcript, then
+/// [`TAKEOVER_MARK`].
 fn run_log(args: &[String]) -> std::io::Result<i32> {
     let follow = args.iter().any(|arg| arg == "--follow");
-    let ids: Vec<&String> = args.iter().filter(|arg| *arg != "--follow").collect();
+    let takeover = args.iter().any(|arg| arg == "--takeover");
+    let ids: Vec<&String> = args
+        .iter()
+        .filter(|arg| *arg != "--follow" && *arg != "--takeover")
+        .collect();
     let [worker_id] = ids.as_slice() else {
         eprintln!("log takes one worker id");
         eprintln!("{USAGE}");
@@ -707,6 +721,9 @@ fn run_log(args: &[String]) -> std::io::Result<i32> {
             for shown in crate::workers::log_lines(&line?) {
                 println!("{shown}");
             }
+        }
+        if takeover {
+            println!("{TAKEOVER_MARK}");
         }
         return Ok(0);
     }

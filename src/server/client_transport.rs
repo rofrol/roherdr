@@ -550,6 +550,9 @@ pub(crate) enum ServerEvent {
     ClientDisconnected { client_id: u64 },
     /// A client writer drained its render slot and can accept another render.
     ClientWriterDrained { client_id: u64 },
+    /// A worker's journal got records: the client shells that show a
+    /// worker's tab get its new lines.
+    WorkerTranscriptAppended,
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
 }

@@ -112,6 +112,19 @@ pub struct ClientShellSurfaceSetParams {
     pub active: bool,
 }
 
+/// Which worker's transcript the requesting client shell shows: the server
+/// sends it the lines after `after`, then each new one as the worker writes
+/// it, until another call names another worker or none.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ClientShellWorkerTranscriptSetParams {
+    /// None stops the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    /// The lines the client already has (`cursor` of what it received).
+    #[serde(default)]
+    pub after: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitDirection {

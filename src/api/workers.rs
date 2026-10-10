@@ -32,6 +32,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
             | Method::WorkerQuestion(_)
+            | Method::WorkerTranscript(_)
+            | Method::WorkerTranscriptWait(_)
             | Method::WorkerDenyAndStop(_)
             | Method::TodoRun(_)
             | Method::TodoDraftRun(_)
@@ -102,6 +104,15 @@ pub(super) fn handle_worker_request(
                 Err(error) => Err(error),
             }
         }
+        Method::WorkerTranscriptWait(params) => {
+            // As above: the worker's events end the wait.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            match supervisor.transcript_wait(&params, CONNECTION_POLL_INTERVAL, keep_waiting) {
+                Ok(None) => return None,
+                Ok(Some(transcript)) => Ok(ResponseResult::WorkerTranscript { transcript }),
+                Err(error) => Err(error),
+            }
+        }
         Method::WorkerWaitDrained(params) => {
             // As above: only to notice a client that went away; the
             // workers' turn-end events end the wait.
@@ -143,6 +154,11 @@ fn handle_immediate(
             return Ok(ResponseResult::WorkerKilled { worker, killed });
         }
         Method::WorkerAnswer(params) => supervisor.answer(&params)?,
+        Method::WorkerTranscript(params) => {
+            return Ok(ResponseResult::WorkerTranscript {
+                transcript: supervisor.transcript(&params)?,
+            })
+        }
         Method::WorkerQuestion(target) => {
             return Ok(ResponseResult::WorkerQuestionDetail {
                 detail: supervisor.question_detail(&target.worker_id, &target.request_id)?,

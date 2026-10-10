@@ -11,6 +11,7 @@ pub(crate) enum EndpointControlMessage {
     JobMetadata(crate::protocol::endpoint::EndpointJobMetadata),
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
+    WorkerTranscript(Box<crate::protocol::endpoint::EndpointWorkerTranscript>),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -22,6 +23,11 @@ pub(crate) fn decode_endpoint_control(
     if kind == crate::protocol::endpoint::JOB_METADATA_KIND {
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::JobMetadata)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    if kind == crate::protocol::endpoint::WORKER_TRANSCRIPT_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(|transcript| EndpointControlMessage::WorkerTranscript(Box::new(transcript)))
             .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::HEALTH_PONG_KIND {

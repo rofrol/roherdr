@@ -296,3 +296,4 @@ mod popup_focus_projection;
 mod space_tabs;
 mod startup_overlays;
 mod worker_question;
+mod worker_view;

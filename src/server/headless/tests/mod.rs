@@ -12,6 +12,9 @@ mod surface_delta_tests;
 mod surface_interest_tests;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
+#[cfg(unix)]
+#[path = "worker_transcripts.rs"]
+mod worker_transcripts_tests;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
