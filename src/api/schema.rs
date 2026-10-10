@@ -183,6 +183,11 @@ pub enum Method {
     /// A repository's queue mode and what its queue does now.
     #[serde(rename = "todo.queue_status")]
     TodoQueueStatus(TodoQueueTarget),
+    /// Whether a repository's TODO waits on its coordinator: no run of it
+    /// is active, its queue mode is not on and not paused, and "Next, in
+    /// order" on `master` has items the driver can run.
+    #[serde(rename = "todo.runnable_state")]
+    TodoRunnableState(TodoQueueTarget),
     /// The user's grant of a repository's operation (`prepare`) for the
     /// exact definition and hash `master` declares.
     #[serde(rename = "todo.grant")]

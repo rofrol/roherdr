@@ -26,6 +26,7 @@ use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::todo::{
     TodoChainInfo, TodoGrant, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
+    TodoRunnableState,
 };
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
@@ -146,6 +147,10 @@ pub enum ResponseResult {
     /// `todo.queue_set`'s and `todo.queue_status`' reply.
     TodoQueue {
         queue: TodoQueueInfo,
+    },
+    /// `todo.runnable_state`'s reply.
+    TodoRunnableState {
+        state: TodoRunnableState,
     },
     /// `todo.grant`'s reply: the stored grant.
     TodoGrant {

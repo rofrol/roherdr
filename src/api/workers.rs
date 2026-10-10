@@ -46,6 +46,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoStop(_)
             | Method::TodoQueueSet(_)
             | Method::TodoQueueStatus(_)
+            | Method::TodoRunnableState(_)
             | Method::TodoGrant(_)
             | Method::TodoGrants(_)
             | Method::HistoryList(_)
@@ -236,6 +237,11 @@ fn handle_immediate(
         Method::TodoQueueStatus(target) => {
             return Ok(ResponseResult::TodoQueue {
                 queue: supervisor.todo_queue_status(&target.cwd)?,
+            })
+        }
+        Method::TodoRunnableState(target) => {
+            return Ok(ResponseResult::TodoRunnableState {
+                state: supervisor.todo_runnable_state(&target.cwd)?,
             })
         }
         Method::TodoGrant(params) => {
