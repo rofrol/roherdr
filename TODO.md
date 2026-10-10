@@ -569,6 +569,33 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `proc.list`, `pty`, `net.local`), and a worker kind that cannot enforce a
   grant refuses the run (fail closed) so the coordinator routes it to a
   pane worker instead of the worker blocking mid-task.
+  Host operations, 2026-10-10 (user: "a VM launcher in herdr is hardcoding
+  again, like crates.io; the protocol must be implementable in Odin"; round
+  20261010-030301-b507, sol + MiMo + DeepSeek agreeing): `[prepare]`
+  generalizes into repository-declared operations; the protocol knows only
+  operation, parameters, capabilities, grant and result, never VMs, QEMU or
+  cargo. Points every implementation must follow:
+  - An operation is a separately confined job, not a way out of
+    confinement: repository code (e.g. `make vm-test`) is untrusted; the
+    user's grant (per repository, operation and definition hash at the base
+    commit) is the trust decision; confinement only contains damage.
+  - Definitions and the scripts they run come from an immutable base-commit
+    checkout; the worker's changes reach an operation only as explicit,
+    untrusted input (otherwise a worker rewrites the Makefile the grant
+    covers).
+  - Each capability has a precise scope inherited by descendants; `exec`
+    means arbitrary code inside the granted confinement, not a narrowing.
+  - An implementation advertises what it can enforce; anything it cannot
+    enforce as specified is refused; results say denied, failed or
+    unsupported, plus exit status, bounded output and a job-scoped log.
+  - Jobs have ids, cancellation, resource budgets and descendant cleanup;
+    repeat invocations are budgeted.
+  - A conformance test per capability, including "unsupported must refuse".
+  First slice: `prepare` as the one operation (no parameters, argv only, no
+  PTY or local sockets). VM work is slice two: it needs PTYs and local
+  sockets, the hardest to confine; if an implementation cannot confine
+  them, VM items stay unavailable to headless workers there rather than
+  falling back silently.
 
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
   ends with new commits, list them as "to review" until I acknowledge them.
@@ -1556,10 +1583,6 @@ user needs to decide or do.
   fork sync, which rebases onto upstream and force-pushes `master`.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
-
-- [ ] [t-fz6fso3h] How should a headless worker do VM work, so that the riskiest work stops falling back to an unsandboxed TUI worker?
-  Options: a herdr-owned VM launcher outside the sandbox with a narrow typed API (start, test, logs, stop of one reviewed configuration from the base commit; no raw QEMU arguments, no host-side repo scripts), the worker stays sandboxed (Recommended) | narrow named sandbox grants (one verified mach service, PTYs, sockets only in its temp dir, named write paths) | keep TUI workers for VM items
-  Checked: user 2026-10-10 "the problem is why it had to use the TUI; ask the models"; round 20261010-025856-9941. All three: the real defect is a privilege fallback: headless is sandbox-or-nothing, so VM work (codesign of the ad-hoc QEMU/app, PTYs, local sockets, `ps`) goes to a TUI worker with no sandbox and Claude's auto-mode classifier, the least contained path for the riskiest work. All three reject `allowUnsandboxedCommands` with an argv allowlist (`make vm-test` runs repo-controlled code; QEMU takes `-virtfs /`, monitors, config files). sol and DeepSeek: the launcher; MiMo: narrow grants (and the trust-daemon cause is a hypothesis to verify first). MiMo also: the approved capabilities item stays decorative unless the enforcement can actually be widened; grants must bind to the base commit.
 
 ### Decide
 
