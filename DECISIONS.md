@@ -1016,3 +1016,21 @@ fails with `agent_blocked`/`agent_prompt_blocked` naming a dialog. Closed
 r-6com5znp (the `prompt_wait_*` tests passed in `verify` outside the
 sandbox). The dotfiles launcher's resend-once workaround (`140fc7f`) is
 now redundant.
+
+## Mechanisms, not rules, so a coordinator neither re-asks decided
+
+The coordinator re-asked approved things and stopped between items; notes
+in memory did not prevent it (user, 2026-10-10: "there must be a
+mechanism"). Points 1-3 landed (7f5b8e72): a decision ledger in SQLite
+(`herdr decision add|decide|list|get`, API), a PreToolUse gate on
+`AskUserQuestion` in coordinator tabs (an open decision id or an
+enumerated user-only capability; a decided id is refused with its answer;
+`HERDR_QUESTION_GATE=0` turns it off), and the stop check enforced (a
+stop with runnable items and no open decision is blocked with the exact
+`herdr todo run` command; after 3 blocks in a row the 4th goes through and
+the pane enters the `?` list once; a new user message resets the count).
+`scripts/decision_backfill.py` records the three approvals. Decided by the
+coordinator: the Windows PowerShell hook has neither (no coordinator runs
+on Windows); a refused question followed by a stop shows in the `?` list.
+Left in TODO: point 4 (queue mode after a clean week) and point 5
+(`--note` chains the next item).

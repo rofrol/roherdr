@@ -21,39 +21,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `src/` or `build.rs`; better: the verify runs the same recipes as the
   install's `just check`, so the two cannot diverge again.
 
-- [ ] Mechanisms, not rules, so a coordinator neither re-asks decided [t-pku6dsb6]
-  things nor stops (user, 2026-10-10, next: "you'll think something up
-  again and stop working; there must be a mechanism so this does not
-  happen; consult the models to fix the process"; after the coordinator
-  re-asked an approved integration install and a relayed rule; round
-  20261010-225158-0c9b, sol + MiMo + DeepSeek agreeing: memory notes and
-  rules are not controls). Ordered:
-  1. A structured decision ledger in the server's SQLite: id, statement,
-     scope, source (user in chat, relayed by a named coordinator, menu),
-     status open/decided/superseded, supersedes; `herdr decision
-     add|decide|list`; "Needs a decision" items and DECISIONS.md entries
-     map to it; backfill today's approvals (integration in shadow, the
-     host-config rule, the prepare grant).
-  2. A PreToolUse gate on `AskUserQuestion` in coordinator tabs: allowed
-     only when the call cites an open decision id (in the header or
-     question) or an enumerated user-only capability (a grant herdr refuses
-     from agent panes, a login, a trust dialog, a live test with the
-     user's accounts); a decided id is refused with the recorded answer;
-     anything else is refused naming the ledger. Questions asked in prose
-     cannot be caught; the stop check covers the turn end.
-  3. The stop check (t-pzba6fio, shadow since bb63fbe2) enforced: in
-     coordinator tabs a stop with runnable items and no open decision of
-     the user is blocked with the exact next command; after 3 blocks in a
-     row the stop goes through and herdr escalates to the user's `?` list
-     (no loop). Decided by the user's request above (answers the "Needs a
-     decision" question "Enforce the coordinator stop check").
-  4. Queue mode (`herdr todo queue on`) only after 1-3 ran clean for a
-     week (MiMo, DeepSeek; sol would go sooner).
-  5. `todo resume --note` takes `--next`/`--stop-reason` like `--close`
-     (found 2026-10-10: approving r-6com5znp with a note could not chain
-     the next item, so the coordinator had to start it by hand, the same
-     stall the bridge removed for `--close`).
-
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
