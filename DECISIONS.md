@@ -829,3 +829,14 @@ reproducible", and a later occurrence reopens it (round
 20261010-031725-f16b). `todo wait`, `worker wait` and `verify` print the
 report command for their protocol failures. The one line in the `todo`
 skill moves to the skill item [t-ux4n3s3o].
+
+## From a per-item coordinator agent to typed decision calls
+
+A fresh coordinator per item (user's decision 2026-10-07) was built up to a
+headless per-item coordinator agent driven by `herdr todo next [--continue]`
+(2026-10-10, slices 1-3). The same day the user rejected an LLM in the
+loop's liveness ("weak architecture") and chose, after consults and an
+open-source survey, a server-owned item state machine with the LLM only in
+typed decision calls (`draft_task`, `review_run`, `answer_question`) and
+server-driven queue mode. `herdr todo next` stays in the code but is not
+the path forward; the `todo` skill change for it is dropped.
