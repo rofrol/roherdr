@@ -37,6 +37,8 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
             | Method::TodoReview(_)
+            | Method::TodoNext(_)
+            | Method::TodoStop(_)
             | Method::HistoryList(_)
             | Method::HistoryItem(_)
             | Method::HistoryReconcile(_)
@@ -174,6 +176,20 @@ fn handle_immediate(
                     params.attempt,
                     params.diff,
                 )?),
+            })
+        }
+        Method::TodoNext(params) => {
+            let started = supervisor.todo_next(&params)?;
+            return Ok(ResponseResult::TodoNext {
+                item: started.item,
+                coordinator: started.coordinator,
+                worker: started.worker,
+                chain: started.chain,
+            });
+        }
+        Method::TodoStop(params) => {
+            return Ok(ResponseResult::TodoChain {
+                chain: supervisor.todo_stop(&params.cwd)?,
             })
         }
         Method::HistoryList(params) => {

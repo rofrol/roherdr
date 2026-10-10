@@ -1092,11 +1092,18 @@ impl WorkerSupervisor {
         let item_ids = todo_titles::item_ids(&todo);
         let at = now_ms();
         let run_id = new_run_id(&repo, &params.item);
-        let owner_coordinator = params
-            .owner_pane_id
-            .as_deref()
-            .and_then(|pane| self.coordinator_of_pane(pane))
-            .map(|tenure| tenure.coordinator_id);
+        let owner_coordinator = match params.owner_pane_id.as_deref() {
+            Some(pane) => self
+                .coordinator_of_pane(pane)
+                .map(|tenure| tenure.coordinator_id),
+            // Claimed outside a pane while a headless item coordinator
+            // coordinates the repository (`todo.next`): its run.
+            None => store
+                .active_coordinator_of(&repo)
+                .map_err(store_error)?
+                .filter(|tenure| tenure.headless)
+                .map(|tenure| tenure.id),
+        };
         let mut run = Run {
             info: TodoRunInfo {
                 run_id: run_id.clone(),
@@ -1171,7 +1178,13 @@ impl WorkerSupervisor {
             }
             Err(error) => return Err(store_error(error)),
         }
-        if let Some(env) = params.env {
+        // A headless item coordinator's run uses the environment of the
+        // pane that started it, not the coordinator's sandboxed one.
+        let env = match (&params.owner_pane_id, &owner_coordinator) {
+            (None, Some(_)) => super::item_coordinators::coordinator_env(&repo).or(params.env),
+            _ => params.env,
+        };
+        if let Some(env) = env {
             lock(&RUN_ENV).insert(run_id.clone(), env);
         }
         announce();
@@ -1247,7 +1260,7 @@ impl WorkerSupervisor {
             .collect()
     }
 
-    fn run_active(active: &Run) -> WorkerError {
+    pub(super) fn run_active(active: &Run) -> WorkerError {
         WorkerError::RunActive(format!(
             "repository {} already has run {} of {} in progress ({}); `herdr todo status {}` shows it",
             active.info.repo,
@@ -1710,7 +1723,19 @@ impl WorkerSupervisor {
         }
         // Before the run moves on: a driver still waiting on the worker's
         // stop may reach the verify as soon as the resume is recorded.
-        match &params.env {
+        // A headless item coordinator's resume (no pane) of its tenure's
+        // run uses the environment of the pane that started it.
+        let headless_env = match (&params.caller_pane_id, &run.owner_coordinator) {
+            (None, Some(tenure)) => self
+                .run_store()?
+                .coordinator(tenure)
+                .map_err(store_error)?
+                .filter(|tenure| tenure.headless)
+                .and_then(|_| super::item_coordinators::coordinator_env(&run.info.repo)),
+            _ => None,
+        };
+        let env = headless_env.or_else(|| params.env.clone());
+        match &env {
             Some(env) => lock(&RUN_ENV).insert(params.run_id.clone(), env.clone()),
             None => lock(&RUN_ENV).remove(&params.run_id),
         };
@@ -1720,7 +1745,7 @@ impl WorkerSupervisor {
             "action": params.action,
             "task": params.task,
             "request_id": params.request_id,
-            "env_sent": params.env.is_some(),
+            "env_sent": env.is_some(),
             "note": note,
             "todo_note": params.note,
             "close": params.close,

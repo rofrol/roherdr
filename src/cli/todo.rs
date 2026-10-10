@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoResumeParams, TodoReviewParams, TodoRunParams, TodoRunTarget,
-    TodoRunsParams, TodoWaitParams, WorkerDecision,
+    Method, Request, TodoAction, TodoNextParams, TodoResumeParams, TodoReviewParams, TodoRunParams,
+    TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -87,7 +87,27 @@ const USAGE: &str = "usage:
       The runs, of DIR's repository with --repo. --commit SHA prints only the
       run that landed SHA (the landed commit or the worker's) and that
       landing, found in the worker store or by the commit's Herdr-Run
-      trailer in the history of DIR (default: the current directory).";
+      trailer in the history of DIR (default: the current directory).
+  herdr todo next [--repo DIR] [--continue]
+      Start a fresh headless item coordinator for the top item of the
+      \"Next, in order\" section of DIR's (default: the current directory's)
+      TODO.md: a Claude worker in the repository, owned by this pane, under
+      a headless coordination tenure of its own and herdr's coordinator
+      allowlist. Its prompt, built by herdr, names the item, what to read
+      and the driver commands; it writes the worker's task, runs the item
+      with todo run, reviews and answers each event, closes the item and
+      ends with COORDINATOR-DONE, -ESCALATED or -BLOCKED. Its questions go to
+      the user's list. Herdr records its outcome in the item's history
+      (herdr history --item). Refused while the repository has a run in
+      progress or an active coordinator, when the section has no open item,
+      and when the usage gate of todo run refuses. With --continue, each
+      coordinator whose item is done starts the next one on its exit, until
+      the section is empty, an item escalates, is blocked or fails, or todo
+      stop. The checks, install and push of its runs use this shell's
+      environment, kept in the server's memory only.
+  herdr todo stop [--repo DIR]
+      Stop the repository's chain: the coordinator that runs finishes its
+      item, and no next one starts.";
 
 pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
     let method = match parse(args) {
@@ -441,6 +461,41 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 diff,
             })
         }
+        "next" | "stop" => {
+            let (repo, rest) = take_string_option(rest, "--repo")?;
+            let (chain, rest) = take_switch(&rest, "--continue")?;
+            if !rest.is_empty() || (subcommand == "stop" && chain) {
+                return Err(format!(
+                    "{subcommand} takes only --repo{}",
+                    if subcommand == "next" {
+                        " and --continue"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            let dir = match repo {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => std::env::current_dir().map_err(|error| error.to_string())?,
+            };
+            let cwd = std::path::absolute(&dir)
+                .map_err(|error| format!("--repo {}: {error}", dir.display()))?
+                .display()
+                .to_string();
+            if subcommand == "stop" {
+                Method::TodoStop(TodoStopParams { cwd })
+            } else {
+                let pane = super::target::caller_pane_id();
+                Method::TodoNext(TodoNextParams {
+                    cwd,
+                    chain,
+                    owner_session_id: caller_session(pane.as_deref()),
+                    owner_pane_id: pane,
+                    workspace_id: super::target::caller_workspace_id(),
+                    env: super::worker::caller_env(),
+                })
+            }
+        }
         "runs" => {
             let (repo, rest) = take_string_option(rest, "--repo")?;
             let (commit, rest) = take_string_option(&rest, "--commit")?;
@@ -638,6 +693,31 @@ mod tests {
         assert_eq!(wait.after, Some(7));
         assert!(parse(&args(&["wait"])).is_err());
         assert!(matches!(parse(&args(&["help"])), Ok(None)));
+    }
+
+    #[test]
+    fn next_and_stop_take_the_repository_and_next_the_chain() {
+        let Ok(Some(Method::TodoNext(next))) =
+            parse(&args(&["next", "--repo", "/repo", "--continue"]))
+        else {
+            panic!("next did not parse");
+        };
+        assert_eq!(next.cwd, "/repo");
+        assert!(next.chain);
+        assert!(next
+            .env
+            .is_some_and(|env| env.keys().all(|key| !key.starts_with("HERDR_"))));
+        let Ok(Some(Method::TodoNext(next))) = parse(&args(&["next"])) else {
+            panic!("next without options did not parse");
+        };
+        assert!(!next.chain);
+        assert!(std::path::Path::new(&next.cwd).is_absolute());
+        let Ok(Some(Method::TodoStop(stop))) = parse(&args(&["stop", "--repo", "/repo"])) else {
+            panic!("stop did not parse");
+        };
+        assert_eq!(stop.cwd, "/repo");
+        assert!(parse(&args(&["stop", "--continue"])).is_err());
+        assert!(parse(&args(&["next", "t-abcd2345"])).is_err());
     }
 
     #[test]

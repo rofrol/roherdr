@@ -30,6 +30,7 @@ pub(crate) mod coordinators;
 mod history;
 #[cfg(test)]
 mod install_script_tests;
+mod item_coordinators;
 mod log;
 mod policy;
 mod pre_tool_checks;
@@ -45,6 +46,7 @@ mod verify;
 pub(crate) use coordinators::coordinators;
 #[cfg(test)]
 pub(crate) use coordinators::set_test_coordinators;
+pub(crate) use item_coordinators::resume_item_coordinators_at_start;
 pub(crate) use log::log_lines;
 pub(crate) use runs::resume_runs_at_start;
 #[cfg(unix)]
@@ -536,6 +538,10 @@ struct Status {
     /// line the worker wrote (`continuity_gap`'s `reason`). Its state and
     /// session may then be stale, so it takes no prompt and no takeover.
     continuity_gap: Option<String>,
+    /// The headless tenure it runs as (`started`'s `coordinator`): an item
+    /// coordinator ([`item_coordinators`]), whose every question goes to
+    /// the user at once.
+    coordinates: Option<String>,
 }
 
 /// Where a worker's broker serves it, and what a server that re-attaches
@@ -637,6 +643,7 @@ impl Status {
             broker: None,
             broker_seq: 0,
             continuity_gap: None,
+            coordinates: None,
         }
     }
 
@@ -974,6 +981,9 @@ impl Status {
                 self.item = string_field(event, "item");
                 self.item_title = string_field(event, "item_title");
                 self.repo = string_field(event, "repo");
+                self.coordinates = event["coordinator"]["coordinator_id"]
+                    .as_str()
+                    .map(str::to_owned);
                 self.pid = event
                     .get("pid")
                     .and_then(Value::as_u64)
@@ -1016,7 +1026,11 @@ impl Status {
                         asked_seq: 0,
                         answering: false,
                         cleared: None,
-                        escalated: self.owner_gone.clone(),
+                        escalated: self.owner_gone.clone().or_else(|| {
+                            self.coordinates
+                                .as_ref()
+                                .map(|_| item_coordinators::QUESTION_TO_USER.to_owned())
+                        }),
                     });
                 }
             }
@@ -3053,14 +3067,19 @@ impl WorkerSupervisor {
                 Some(worker_id) => self.status(worker_id),
                 None => Err(Self::cut_off(stored)),
             },
-            |receipt| self.start_once(params, receipt),
+            |receipt| self.start_once(params, receipt, None),
         )
     }
 
+    /// Starts a worker; with `role`, as a headless item coordinator
+    /// ([`item_coordinators`]): its own contract, herdr's coordinator
+    /// allowlist as its first pre-tool check, and the server's socket
+    /// reachable from its sandbox.
     fn start_once(
         &self,
         params: &WorkerStartParams,
         receipt: Option<&Receipt>,
+        role: Option<&item_coordinators::CoordinatorRole>,
     ) -> Result<WorkerInfo, WorkerError> {
         let cwd = params.cwd.as_str();
         let prompt = params.prompt.as_str();
@@ -3131,9 +3150,22 @@ impl WorkerSupervisor {
         let journal_path = self.shared.dir.join(format!("{worker_id}.jsonl"));
         let owner_lock = own_journal(&journal_path, &worker_id)?;
         let temp_dir = self.create_temp_dir(&worker_id)?;
-        let settings = worker_settings(&cwd_real, &temp_dir, &slot_caches).to_string();
-        let contract = worker_contract(&temp_dir, slot.as_ref());
-        let (checks, check_errors) = self.configured_pre_tool_checks();
+        let mut settings = worker_settings(&cwd_real, &temp_dir, &slot_caches);
+        let (contract, checks, check_errors) = match role {
+            Some(role) => {
+                role.restrict_settings(&mut settings);
+                let (mut checks, errors) = self.configured_pre_tool_checks();
+                // Herdr's own check first: a user's check never sees a call
+                // the allowlist refuses.
+                checks.insert(0, role.allowlist_check(&temp_dir));
+                (item_coordinators::contract(&temp_dir), checks, errors)
+            }
+            None => {
+                let (checks, errors) = self.configured_pre_tool_checks();
+                (worker_contract(&temp_dir, slot.as_ref()), checks, errors)
+            }
+        };
+        let settings = settings.to_string();
 
         let mut args: Vec<String> = [
             "-p",
@@ -3184,6 +3216,10 @@ impl WorkerSupervisor {
         // The slot's caches, inside the slot, so a sandboxed build writes
         // only there instead of the user's `~/.cache/zig` or another target.
         let mut env_set = Vec::new();
+        // An item coordinator runs `herdr todo ...` against this server.
+        if let Some(role) = role {
+            env_set.push((crate::api::SOCKET_PATH_ENV_VAR, role.socket.clone()));
+        }
         if let Some(slot) = &slot {
             let zig_cache = slot.zig_cache_dir();
             env_set.push(("CARGO_TARGET_DIR", slot.target_dir()));
@@ -3244,6 +3280,7 @@ impl WorkerSupervisor {
             "item": params.item,
             "item_title": item_title,
             "repo": repo,
+            "coordinator": role.map(|role| json!({"coordinator_id": role.coordinator_id})),
             "folder_slot": slot.as_ref().map(|slot| json!({
                 "name": params.folder_slot,
                 "branch": slot.branch,

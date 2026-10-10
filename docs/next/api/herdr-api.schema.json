@@ -5518,6 +5518,52 @@
             }
           ]
         },
+        "TodoNextParams": {
+          "description": "Starts a fresh headless item coordinator for the top item of the\nrepository's `TODO.md` \"Next, in order\": a Claude worker in the\nrepository with herdr's coordinator prompt and allowlist, under a\nheadless coordination tenure of its own, owned by the caller's pane. It\ndrives the item with `todo.run` and ends; with `chain`, each one that\nends with its item done starts the next on its exit event, until \"Next,\nin order\" is empty, an item escalates to the user or fails, or\n`todo.stop`. Refused while the repository has a run in progress, an\nactive coordinator (`coordinator_active`), or the usage gate refuses.",
+          "properties": {
+            "chain": {
+              "description": "Go on with the next item when this one is done.",
+              "type": "boolean"
+            },
+            "cwd": {
+              "description": "A directory in the repository (the CLI sends `--repo` or its working\ndirectory).",
+              "type": "string"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment (`HERDR_*` dropped), which the checks, the\ninstall and the push of the coordinators' runs run with instead of\na coordinator's sandboxed one; kept in the server's memory only.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "owner_pane_id": {
+              "description": "The pane that owns the item coordinators (their questions and\nobligations); the CLI sends its `HERDR_PANE_ID`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "cwd"
+          ],
+          "type": "object"
+        },
         "TodoResumeParams": {
           "description": "The coordinator's answer to a run's event.",
           "properties": {
@@ -5757,6 +5803,19 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "TodoStopParams": {
+          "description": "Stops the repository's chain of item coordinators: the one that runs\nfinishes its item, and no next one starts.",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd"
+          ],
           "type": "object"
         },
         "TodoWaitParams": {
@@ -7293,6 +7352,40 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoReviewParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Starts a fresh headless item coordinator for the top item of\n\"Next, in order\"; with `chain`, the next starts on its exit.",
+          "properties": {
+            "method": {
+              "const": "todo.next",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoNextParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Stops the repository's chain of item coordinators.",
+          "properties": {
+            "method": {
+              "const": "todo.stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoStopParams"
             }
           },
           "required": [
@@ -10197,6 +10290,10 @@
               "format": "int64",
               "type": "integer"
             },
+            "headless": {
+              "description": "A headless item coordinator's tenure (`todo.next`): no pane binds it,\nit runs as worker `worker_id`.",
+              "type": "boolean"
+            },
             "item": {
               "description": "The TODO item it works on: the item of the `todo.run` it claimed,\nuntil that run ends.",
               "type": [
@@ -10226,6 +10323,12 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "worker_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -11137,6 +11240,13 @@
                 "null"
               ]
             },
+            "coordinator_id": {
+              "description": "The coordination tenure the record names: the run's owner, or the\nitem coordinator that started or ended.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "follow_ups": {
               "items": {
                 "type": "string"
@@ -11222,6 +11332,16 @@
             {
               "const": "blocked",
               "description": "The run was blocked; `text` is why.",
+              "type": "string"
+            },
+            {
+              "const": "coordinator_started",
+              "description": "A headless item coordinator started on the item (`todo.next`);\n`coordinator_id` is its tenure, `item_text` the item's text then.",
+              "type": "string"
+            },
+            {
+              "const": "coordinator_ended",
+              "description": "That item coordinator ended; `text` is its outcome (`done`,\n`escalated`, `blocked`, `failed`) and what it reported.",
               "type": "string"
             }
           ]
@@ -13582,6 +13702,58 @@
               "type": "object"
             },
             {
+              "description": "`todo.next`'s reply: the item, its coordinator's tenure and worker,\nand the chain when one was asked for.",
+              "properties": {
+                "chain": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TodoChainInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "coordinator": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorInfo"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "todo_next",
+                  "type": "string"
+                },
+                "worker": {
+                  "$ref": "#/schemas/success_response/$defs/WorkerInfo"
+                }
+              },
+              "required": [
+                "type",
+                "item",
+                "coordinator",
+                "worker"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`todo.stop`'s reply: the chain as it is now.",
+              "properties": {
+                "chain": {
+                  "$ref": "#/schemas/success_response/$defs/TodoChainInfo"
+                },
+                "type": {
+                  "const": "todo_chain",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "chain"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`history.list`'s reply: each recorded item with its latest record,\nthe most recent first.",
               "properties": {
                 "items": {
@@ -15510,6 +15682,65 @@
           "required": [
             "commit",
             "base"
+          ],
+          "type": "object"
+        },
+        "TodoChainInfo": {
+          "description": "A repository's chain of item coordinators (`todo.next` with `chain`).",
+          "properties": {
+            "active": {
+              "description": "Whether a coordinator that ends with its item done starts the next.",
+              "type": "boolean"
+            },
+            "last_item": {
+              "description": "The latest coordinator's item and outcome (`done`, `escalated`,\n`blocked`, `failed`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_outcome": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_pane_id": {
+              "description": "The pane that started it, which owns its coordinators.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "type": "string"
+            },
+            "started_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "stop_reason": {
+              "description": "Why it stopped: `todo.stop`, an item that escalated or failed, an\nempty \"Next, in order\", or a next start herdr refused.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stopped_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "repo",
+            "active",
+            "started_ms"
           ],
           "type": "object"
         },

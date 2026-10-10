@@ -20,7 +20,7 @@ use super::plugins::{
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::todo::{TodoLanding, TodoReview, TodoRunEvent, TodoRunInfo};
+use super::todo::{TodoChainInfo, TodoLanding, TodoReview, TodoRunEvent, TodoRunInfo};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
     WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
@@ -114,6 +114,19 @@ pub enum ResponseResult {
     /// `todo.review`'s reply: one attempt of a run in one view.
     TodoReview {
         review: Box<TodoReview>,
+    },
+    /// `todo.next`'s reply: the item, its coordinator's tenure and worker,
+    /// and the chain when one was asked for.
+    TodoNext {
+        item: String,
+        coordinator: CoordinatorInfo,
+        worker: WorkerInfo,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain: Option<TodoChainInfo>,
+    },
+    /// `todo.stop`'s reply: the chain as it is now.
+    TodoChain {
+        chain: TodoChainInfo,
     },
     /// `history.list`'s reply: each recorded item with its latest record,
     /// the most recent first.

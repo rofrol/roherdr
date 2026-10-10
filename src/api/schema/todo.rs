@@ -516,3 +516,68 @@ pub enum TodoToolFailureKind {
     #[serde(other)]
     Unknown,
 }
+
+/// Starts a fresh headless item coordinator for the top item of the
+/// repository's `TODO.md` "Next, in order": a Claude worker in the
+/// repository with herdr's coordinator prompt and allowlist, under a
+/// headless coordination tenure of its own, owned by the caller's pane. It
+/// drives the item with `todo.run` and ends; with `chain`, each one that
+/// ends with its item done starts the next on its exit event, until "Next,
+/// in order" is empty, an item escalates to the user or fails, or
+/// `todo.stop`. Refused while the repository has a run in progress, an
+/// active coordinator (`coordinator_active`), or the usage gate refuses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoNextParams {
+    /// A directory in the repository (the CLI sends `--repo` or its working
+    /// directory).
+    pub cwd: String,
+    /// Go on with the next item when this one is done.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub chain: bool,
+    /// The pane that owns the item coordinators (their questions and
+    /// obligations); the CLI sends its `HERDR_PANE_ID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The caller's environment (`HERDR_*` dropped), which the checks, the
+    /// install and the push of the coordinators' runs run with instead of
+    /// a coordinator's sandboxed one; kept in the server's memory only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// Stops the repository's chain of item coordinators: the one that runs
+/// finishes its item, and no next one starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoStopParams {
+    /// A directory in the repository.
+    pub cwd: String,
+}
+
+/// A repository's chain of item coordinators (`todo.next` with `chain`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoChainInfo {
+    pub repo: String,
+    /// Whether a coordinator that ends with its item done starts the next.
+    pub active: bool,
+    /// The pane that started it, which owns its coordinators.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    /// Unix milliseconds.
+    pub started_ms: u64,
+    /// The latest coordinator's item and outcome (`done`, `escalated`,
+    /// `blocked`, `failed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_item: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_ms: Option<u64>,
+    /// Why it stopped: `todo.stop`, an item that escalated or failed, an
+    /// empty "Next, in order", or a next start herdr refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+}

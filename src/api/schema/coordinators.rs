@@ -81,6 +81,12 @@ pub struct CoordinatorInfo {
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// A headless item coordinator's tenure (`todo.next`): no pane binds it,
+    /// it runs as worker `worker_id`.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub headless: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
 }
 
 /// Records an exception to a coordinator tab's command allowlist: one tool

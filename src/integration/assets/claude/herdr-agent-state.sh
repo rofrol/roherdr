@@ -615,12 +615,17 @@ fi
 # by herdr (`coordinator.record_override`, which notifies the user and lists it in
 # `herdr history overrides`); when herdr cannot record it, it is denied. An allowed call asks
 # herdr nothing; a refused one asks the tab's role, and outside a coordinator tab, or when herdr
-# cannot tell, the hook does nothing.
+# cannot tell, the hook does nothing. Herdr also runs this branch as the first pre-tool check of a
+# headless item coordinator (`herdr todo next`) with HERDR_COORDINATOR_HEADLESS=1: it has no pane
+# or tab, so every refusal denies, no override runs (nobody is there to ask for one; it asks the
+# user instead), and HERDR_COORDINATOR_SCRATCH is its scratch directory.
 if [ "$action" = "pre-tool" ]; then
-  [ "${HERDR_ENV:-}" = "1" ] || exit 0
-  [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
-  [ -n "${HERDR_PANE_ID:-}" ] || exit 0
-  [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  if [ "${HERDR_COORDINATOR_HEADLESS:-}" != "1" ]; then
+    [ "${HERDR_ENV:-}" = "1" ] || exit 0
+    [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
+    [ -n "${HERDR_PANE_ID:-}" ] || exit 0
+    [ -z "${CURSOR_VERSION:-}" ] || exit 0
+  fi
   command -v python3 >/dev/null 2>&1 || exit 0
   HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
 import json
@@ -631,6 +636,8 @@ import time
 
 COORDINATOR_ROLE = "coordinator"
 HOME = os.path.expanduser("~")
+HEADLESS = os.environ.get("HERDR_COORDINATOR_HEADLESS") == "1"
+SCRATCH = os.environ.get("HERDR_COORDINATOR_SCRATCH") or ""
 OVERRIDE = re.compile(r"(?:^|[ \t;])#[ \t]*herdr-override:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 INSTALL_REASON = "builds, installs and pushes happen in `herdr todo run`"
 CODE_REASON = "code goes to a worker (`herdr todo run`)"
@@ -702,8 +709,15 @@ def real(path, cwd):
 
 def in_scratchpad(path, cwd, session):
     """Whether `path` is under Claude's scratchpad of this session:
-    `<tmp>/claude[-<uid>]/<project>/<session>/scratchpad/`."""
-    if not isinstance(path, str) or not path or not session:
+    `<tmp>/claude[-<uid>]/<project>/<session>/scratchpad/`, or under a headless coordinator's
+    scratch directory."""
+    if not isinstance(path, str) or not path:
+        return False
+    if HEADLESS and SCRATCH:
+        scratch = os.path.realpath(SCRATCH)
+        if real(path, cwd).startswith(scratch + os.sep):
+            return True
+    if not session:
         return False
     parts = real(path, cwd).split(os.sep)
     for index in range(3, len(parts) - 1):
@@ -1267,10 +1281,13 @@ session = hook_input.get("session_id")
 session = session if isinstance(session, str) and session else None
 reason = check_call(str(tool), tool_input, cwd, session)
 # An allowed call needs no question to herdr; only a refusal asks whether this is a coordinator.
-if reason is None or tab_role() != COORDINATOR_ROLE:
+if reason is None or (not HEADLESS and tab_role() != COORDINATOR_ROLE):
     raise SystemExit(0)
 command = tool_input.get("command") if tool == "Bash" else None
 overrides = OVERRIDE.findall(command) if isinstance(command, str) else []
+if HEADLESS:
+    deny(reason + ". A headless item coordinator has no override: when no allowed path exists, "
+         "ask the user (AskUserQuestion) or end with COORDINATOR-BLOCKED <why>.")
 if overrides:
     why = overrides[-1].strip()
     if not why:

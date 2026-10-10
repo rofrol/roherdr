@@ -48,6 +48,12 @@ pub enum HistoryEventKind {
     Aborted,
     /// The run was blocked; `text` is why.
     Blocked,
+    /// A headless item coordinator started on the item (`todo.next`);
+    /// `coordinator_id` is its tenure, `item_text` the item's text then.
+    CoordinatorStarted,
+    /// That item coordinator ended; `text` is its outcome (`done`,
+    /// `escalated`, `blocked`, `failed`) and what it reported.
+    CoordinatorEnded,
     #[serde(other)]
     Unknown,
 }
@@ -72,6 +78,10 @@ pub struct HistoryEvent {
     pub item_text: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<String>,
+    /// The coordination tenure the record names: the run's owner, or the
+    /// item coordinator that started or ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_id: Option<String>,
 }
 
 /// One attempt of a run on the item, from the run's records.

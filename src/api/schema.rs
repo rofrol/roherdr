@@ -147,6 +147,13 @@ pub enum Method {
     /// verify and the approval.
     #[serde(rename = "todo.review")]
     TodoReview(TodoReviewParams),
+    /// Starts a fresh headless item coordinator for the top item of
+    /// "Next, in order"; with `chain`, the next starts on its exit.
+    #[serde(rename = "todo.next")]
+    TodoNext(TodoNextParams),
+    /// Stops the repository's chain of item coordinators.
+    #[serde(rename = "todo.stop")]
+    TodoStop(TodoStopParams),
     /// The TODO items herdr recorded, each with its latest record.
     #[serde(rename = "history.list")]
     HistoryList(HistoryListParams),

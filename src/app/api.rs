@@ -1350,6 +1350,8 @@ impl App {
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
             | Method::TodoRuns(_)
+            | Method::TodoNext(_)
+            | Method::TodoStop(_)
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_) => {
                 return responses::encode_error(

@@ -688,6 +688,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TodoStatus(_) => "todo.status",
         Method::TodoRuns(_) => "todo.runs",
         Method::TodoReview(_) => "todo.review",
+        Method::TodoNext(_) => "todo.next",
+        Method::TodoStop(_) => "todo.stop",
         Method::HistoryList(_) => "history.list",
         Method::HistoryItem(_) => "history.item",
         Method::HistoryReconcile(_) => "history.reconcile",

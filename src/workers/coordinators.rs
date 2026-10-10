@@ -80,7 +80,7 @@ pub(crate) fn set_test_coordinators(supervisor: WorkerSupervisor) {
 
 /// A new tenure id: `c-` and 8 lowercase base32 characters, from a hash of
 /// the time, this process, a counter and the claim.
-fn new_tenure_id(repo: &str, pane_id: &str) -> String {
+pub(super) fn new_tenure_id(repo: &str, pane_id: &str) -> String {
     static CLAIMS: AtomicU64 = AtomicU64::new(0);
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let nanos = std::time::SystemTime::now()
@@ -101,7 +101,7 @@ fn new_tenure_id(repo: &str, pane_id: &str) -> String {
     format!("c-{id}")
 }
 
-fn info(tenure: StoredTenure) -> CoordinatorInfo {
+pub(super) fn info(tenure: StoredTenure) -> CoordinatorInfo {
     CoordinatorInfo {
         coordinator_id: tenure.id,
         repo: tenure.repo,
@@ -112,16 +112,18 @@ fn info(tenure: StoredTenure) -> CoordinatorInfo {
         epoch: tenure.epoch,
         pane_id: tenure.pane_id,
         session_id: tenure.session_id,
+        headless: tenure.headless,
+        worker_id: tenure.worker_id,
     }
 }
 
-fn store_error(error: rusqlite::Error) -> WorkerError {
+pub(super) fn store_error(error: rusqlite::Error) -> WorkerError {
     WorkerError::Io(std::io::Error::other(format!(
         "the worker store failed: {error}"
     )))
 }
 
-fn is_unique_violation(error: &rusqlite::Error) -> bool {
+pub(super) fn is_unique_violation(error: &rusqlite::Error) -> bool {
     matches!(
         error,
         rusqlite::Error::SqliteFailure(failure, _)
@@ -176,7 +178,7 @@ impl WorkerSupervisor {
             let tenure = NewTenure {
                 id: &id,
                 repo,
-                pane_id,
+                pane_id: Some(pane_id),
                 session_id,
             };
             tx.coordinator_started(&tenure, now_ms()).map(Ok)
@@ -207,7 +209,17 @@ impl WorkerSupervisor {
         Err(Self::refusal(repo, pane_id, refused))
     }
 
-    fn refusal(repo: &str, pane_id: &str, other: StoredTenure) -> WorkerError {
+    pub(super) fn refusal(repo: &str, pane_id: &str, other: StoredTenure) -> WorkerError {
+        if other.headless {
+            return WorkerError::CoordinatorActive(format!(
+                "repository {} already has headless item coordinator {} (worker {}) on item {}; \
+                 it ends with its item, or stop its worker",
+                other.repo,
+                other.id,
+                other.worker_id.as_deref().unwrap_or("not started yet"),
+                other.item.as_deref().unwrap_or("none")
+            ));
+        }
         let other_pane = other.pane_id.as_deref().unwrap_or("an unknown pane");
         WorkerError::CoordinatorActive(if other.repo == repo {
             format!(
@@ -467,7 +479,7 @@ impl WorkerSupervisor {
                 let next = NewTenure {
                     id: &id,
                     repo: &from.repo,
-                    pane_id: to_pane,
+                    pane_id: Some(to_pane),
                     session_id: to_session,
                 };
                 let (_, started) = tx.coordinator_handoff(&from, &next, at)?;

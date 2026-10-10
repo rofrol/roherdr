@@ -51,6 +51,11 @@ const CLAUDE_HOOK_ASSET: &str = if cfg!(windows) {
     include_str!("assets/claude/herdr-agent-state.sh")
 };
 const CLAUDE_INTEGRATION_VERSION: u32 = 12;
+/// The Claude hook script, whose `pre-tool` branch is also the allowlist
+/// of a headless item coordinator (`crate::workers`), which herdr runs
+/// from its own copy rather than the installed one.
+#[cfg(unix)]
+pub(crate) const CLAUDE_HOOK_SCRIPT: &str = CLAUDE_HOOK_ASSET;
 const CODEX_HOOK_INSTALL_NAME: &str = if cfg!(windows) {
     "herdr-agent-state.ps1"
 } else {

@@ -5806,6 +5806,39 @@ mod todo_runs {
         ]))
     }
 
+    /// A run claimed outside a pane while a headless item coordinator
+    /// (`todo.next`) holds the repository's tenure is that tenure's.
+    #[test]
+    fn a_run_claimed_outside_a_pane_belongs_to_the_headless_coordinator() {
+        let fixture = todo_repo("todo-headless-owner");
+        let repo = repository_of(&fixture.repo).unwrap();
+        store_of(&fixture.supervisor)
+            .transaction(|tx| {
+                let tenure = store::NewTenure {
+                    id: "c-headless",
+                    repo: &repo,
+                    pane_id: None,
+                    session_id: None,
+                };
+                tx.coordinator_started(&tenure, 1)
+            })
+            .unwrap();
+        let mut claimed = params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok");
+        claimed.owner_pane_id = None;
+        claimed.workspace_id = None;
+        let run = fixture.supervisor.todo_run(claimed).unwrap();
+        let stored = fixture.supervisor.load_run(&run.run_id).unwrap();
+        assert_eq!(stored.owner_coordinator.as_deref(), Some("c-headless"));
+        assert_eq!(stored.owner_pane, None);
+        let history = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history.events[0].coordinator_id.as_deref(),
+            Some("c-headless")
+        );
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        abort(&fixture, &run.run_id, review.event_id);
+    }
+
     fn usage_refusal(fixture: &Fixture) -> String {
         let refused = fixture
             .supervisor
@@ -8478,5 +8511,368 @@ mod todo_runs {
         let leaked = files_holding(&fixture.supervisor.shared.dir, &secret);
         assert!(leaked.is_empty(), "{leaked:?}");
         abort(&fixture, &run.run_id, failed.event_id);
+    }
+}
+
+/// `herdr todo next` against a stub item coordinator. The stub reads its
+/// item's id from the prompt's first line (`Item coordinator for <id>:
+/// <title>`) and acts on the title's first word: `done` removes the item
+/// from TODO.md and ends with `COORDINATOR-DONE`, `escalate` ends with
+/// `COORDINATOR-ESCALATED`, `ask` asks the user (AskUserQuestion) and then
+/// acts as `done`, `hook` runs the PreToolUse hook (herdr's allowlist) on
+/// two Bash commands and ends with both answers and `COORDINATOR-BLOCKED`.
+mod todo_next {
+    use super::*;
+    use crate::api::schema::{HistoryEventKind, TodoChainInfo, TodoNextParams};
+
+    const COORDINATOR_STUB: &str = r#"#!/usr/bin/env python3
+import json, os, re, sys
+
+def emit(event):
+    sys.stdout.write(json.dumps(event) + "\n")
+    sys.stdout.flush()
+
+def result(text):
+    emit({"type": "result", "subtype": "success", "is_error": False,
+          "terminal_reason": "completed", "api_error_status": None, "result": text,
+          "session_id": "coordinator-session"})
+
+def read():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    return json.loads(line)
+
+emit({"type": "system", "subtype": "init", "session_id": "coordinator-session",
+      "herdr_env": sorted(k for k in os.environ if k.startswith("HERDR_"))})
+hooks = {}
+
+def hook(command):
+    for entry in hooks.get("PreToolUse", []):
+        if re.fullmatch(entry.get("matcher") or ".*", "Bash"):
+            emit({"type": "control_request", "request_id": "hook-1", "request": {
+                "subtype": "hook_callback", "callback_id": entry["hookCallbackIds"][0],
+                "tool_use_id": "toolu-1",
+                "input": {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": command}, "cwd": os.getcwd(),
+                          "session_id": "coordinator-session"}}})
+            return json.dumps(read()["response"]["response"], sort_keys=True)
+    return "unregistered"
+
+def close(item):
+    with open("TODO.md") as f:
+        lines = [line for line in f if item not in line]
+    with open("TODO.md", "w") as f:
+        f.writelines(lines)
+
+while True:
+    message = read()
+    if message.get("type") == "control_request" and \
+            message["request"].get("subtype") == "initialize":
+        hooks = message["request"].get("hooks") or {}
+        emit({"type": "control_response", "response": {
+            "subtype": "success", "request_id": message["request_id"], "response": {}}})
+        continue
+    if message.get("type") != "user":
+        continue
+    first = message["message"]["content"].split("\n")[0]
+    match = re.match(r"Item coordinator for (t-[a-z2-7]{8}): (\w+)", first)
+    item, word = match.group(1), match.group(2)
+    if word == "ask":
+        emit({"type": "control_request", "request_id": "perm-1", "request": {
+            "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [
+                {"question": "Which way?", "header": "Way", "multiSelect": False,
+                 "options": [{"label": "left", "description": "l"},
+                             {"label": "right", "description": "r"}]}]}}})
+        read()
+        word = "done"
+    if word == "done":
+        close(item)
+        result("closed it\nCOORDINATOR-DONE " + item + " | closed")
+    elif word == "escalate":
+        result("COORDINATOR-ESCALATED which option for " + item + "?")
+    elif word == "hook":
+        refused = hook("cargo build")
+        allowed = hook("herdr todo status r-abcd2345")
+        result(refused + "\n" + allowed + "\nCOORDINATOR-BLOCKED hook test")
+    else:
+        result("no marker")
+"#;
+
+    const A: &str = "t-aaaaaaaa";
+    const B: &str = "t-bbbbbbbb";
+    const CHAT: &str = "p-chat";
+
+    /// A repository whose "Next, in order" holds `items` (id, title) in
+    /// order, with a stub item coordinator as the supervisor's program.
+    fn next_repo(name: &str, items: &[(&str, &str)]) -> Fixture {
+        let fixture = Fixture::new(name);
+        std::fs::write(fixture.root.join("claude-stub"), COORDINATOR_STUB).unwrap();
+        let repo = &fixture.repo;
+        git_in(repo, &["init", "-q", "-b", "master"]);
+        let mut todo = String::from("# TODO\n\n## Next, in order\n\n");
+        for (id, title) in items {
+            todo.push_str(&format!("- [ ] {title} [{id}]\n  more about it\n"));
+        }
+        todo.push_str("\n## Needs a decision\n\n- [ ] Later [t-zzzzzzzz]\n");
+        std::fs::write(repo.join("TODO.md"), todo).unwrap();
+        fixture
+    }
+
+    fn next(fixture: &Fixture, chain: bool) -> Result<item_coordinators::NextStarted, WorkerError> {
+        fixture.supervisor.todo_next(&TodoNextParams {
+            cwd: fixture.repo.display().to_string(),
+            chain,
+            owner_pane_id: Some(CHAT.into()),
+            owner_session_id: Some("s-chat".into()),
+            workspace_id: Some("ws-chat".into()),
+            env: None,
+        })
+    }
+
+    fn repo(fixture: &Fixture) -> String {
+        repository_of(&fixture.repo).unwrap()
+    }
+
+    /// Blocks until `done` holds, checked under the registry lock and woken
+    /// by every worker event and every tenure or chain change, which are
+    /// announced under that lock; the timeout is only the hang guard.
+    fn wait_until(fixture: &Fixture, what: &str, done: impl Fn() -> bool) {
+        let started = Instant::now();
+        let mut registry = lock(&fixture.supervisor.shared.registry);
+        while !done() {
+            assert!(started.elapsed() < HANG_GUARD, "{what} hung");
+            registry = fixture
+                .supervisor
+                .shared
+                .changed
+                .wait_timeout(registry, HANG_GUARD)
+                .unwrap()
+                .0;
+        }
+    }
+
+    fn wait_ended(fixture: &Fixture, coordinator_id: &str) -> store::StoredTenure {
+        wait_until(fixture, coordinator_id, || {
+            fixture
+                .supervisor
+                .tenure_for_test(coordinator_id)
+                .is_some_and(|tenure| tenure.ended_at.is_some())
+        });
+        fixture.supervisor.tenure_for_test(coordinator_id).unwrap()
+    }
+
+    fn wait_chain_stopped(fixture: &Fixture) -> TodoChainInfo {
+        let repo = repo(fixture);
+        wait_until(fixture, "the chain", || {
+            fixture
+                .supervisor
+                .chain_for_test(&repo)
+                .is_some_and(|chain| !chain.active)
+        });
+        fixture.supervisor.chain_for_test(&repo).unwrap()
+    }
+
+    /// The item's records: (kind, text).
+    fn records(fixture: &Fixture, item: &str) -> Vec<(HistoryEventKind, Option<String>)> {
+        fixture
+            .supervisor
+            .history_item(item, Some(&repo(fixture)))
+            .unwrap()
+            .events
+            .into_iter()
+            .map(|event| (event.kind, event.text))
+            .collect()
+    }
+
+    #[test]
+    fn next_starts_one_headless_coordinator_and_refuses_a_second() {
+        let fixture = next_repo("next-one", &[(A, "ask first"), (B, "done second")]);
+        let started = next(&fixture, false).unwrap();
+        assert_eq!(started.item, A);
+        assert!(started.chain.is_none());
+        let coordinator = &started.coordinator;
+        assert!(coordinator.headless, "{coordinator:#?}");
+        assert_eq!(coordinator.pane_id, None);
+        assert_eq!(coordinator.item.as_deref(), Some(A));
+        let worker_id = started.worker.worker_id.clone();
+        assert_eq!(coordinator.worker_id.as_deref(), Some(worker_id.as_str()));
+        assert_eq!(started.worker.owner_pane_id.as_deref(), Some(CHAT));
+        assert_eq!(started.worker.item.as_deref(), Some(A));
+
+        // Its question is the user's at once, not quiet for the chat pane.
+        fixture.wait_for_question(&worker_id);
+        let pending = fixture.supervisor.pending_questions();
+        assert_eq!(pending.len(), 1, "{pending:#?}");
+        assert!(!pending[0].quiet, "{pending:#?}");
+
+        // A second one is refused while it is active, naming it.
+        let refused = next(&fixture, false).unwrap_err();
+        assert_eq!(refused.code(), "coordinator_active", "{refused}");
+        assert!(
+            refused.to_string().contains(&coordinator.coordinator_id),
+            "{refused}"
+        );
+        // So is a pane's claim of the repository.
+        let claimed = fixture
+            .supervisor
+            .coordinator_start(&repo(&fixture), "p-other", None)
+            .unwrap_err();
+        assert_eq!(claimed.code(), "coordinator_active", "{claimed}");
+
+        fixture.answer(&worker_id, None, &["1"]).unwrap();
+        let ended = wait_ended(&fixture, &coordinator.coordinator_id);
+        assert_eq!(ended.end_reason.as_deref(), Some("item_done"));
+        let worker = fixture.wait(&worker_id, WorkerWaitUntil::Exit);
+        assert_eq!(worker.state, WorkerState::Exited);
+        assert_eq!(
+            records(&fixture, A),
+            [
+                (HistoryEventKind::CoordinatorStarted, None),
+                (
+                    HistoryEventKind::CoordinatorEnded,
+                    Some(format!("done: {A} | closed"))
+                ),
+            ]
+        );
+        // Without a chain nothing follows, and its end is the chat pane's
+        // to acknowledge.
+        assert_eq!(fixture.supervisor.list().len(), 1);
+        assert_eq!(fixture.supervisor.obligations(Some(CHAT)).len(), 1);
+        assert!(fixture.supervisor.chain_for_test(&repo(&fixture)).is_none());
+    }
+
+    #[test]
+    fn the_chain_advances_on_each_exit_until_next_is_empty() {
+        let fixture = next_repo("next-chain", &[(A, "done first"), (B, "done second")]);
+        let started = next(&fixture, true).unwrap();
+        assert_eq!(started.item, A);
+        assert!(started.chain.as_ref().is_some_and(|chain| chain.active));
+        let chain = wait_chain_stopped(&fixture);
+        assert_eq!(chain.last_item.as_deref(), Some(B));
+        assert_eq!(chain.last_outcome.as_deref(), Some("done"));
+        let reason = chain.stop_reason.unwrap();
+        assert!(reason.contains("has no open item"), "{reason}");
+        for item in [A, B] {
+            let kinds: Vec<HistoryEventKind> = records(&fixture, item)
+                .into_iter()
+                .map(|(kind, _)| kind)
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    HistoryEventKind::CoordinatorStarted,
+                    HistoryEventKind::CoordinatorEnded
+                ],
+                "{item}"
+            );
+        }
+        // Each end that started the next was acknowledged.
+        assert!(fixture.supervisor.obligations(Some(CHAT)).is_empty());
+        let todo = std::fs::read_to_string(fixture.repo.join("TODO.md")).unwrap();
+        assert!(!todo.contains(A) && !todo.contains(B), "{todo}");
+    }
+
+    #[test]
+    fn the_chain_stops_when_an_item_escalates() {
+        let fixture = next_repo(
+            "next-escalate",
+            &[(A, "escalate first"), (B, "done second")],
+        );
+        let started = next(&fixture, true).unwrap();
+        let chain = wait_chain_stopped(&fixture);
+        assert_eq!(chain.last_outcome.as_deref(), Some("escalated"));
+        let reason = chain.stop_reason.unwrap();
+        assert!(
+            reason.contains(A) && reason.contains("escalated"),
+            "{reason}"
+        );
+        let ended = wait_ended(&fixture, &started.coordinator.coordinator_id);
+        assert_eq!(ended.end_reason.as_deref(), Some("item_escalated"));
+        // B never started; A's end waits for the chat pane.
+        assert!(fixture
+            .supervisor
+            .history_item(B, Some(&repo(&fixture)))
+            .is_err());
+        let obligations = fixture.supervisor.obligations(Some(CHAT));
+        assert_eq!(obligations.len(), 1, "{obligations:#?}");
+        assert_eq!(obligations[0].worker_id, started.worker.worker_id);
+    }
+
+    #[test]
+    fn todo_stop_lets_the_running_item_finish_and_starts_no_next() {
+        let fixture = next_repo("next-stop", &[(A, "ask first"), (B, "done second")]);
+        let started = next(&fixture, true).unwrap();
+        let worker_id = started.worker.worker_id.clone();
+        fixture.wait_for_question(&worker_id);
+        let stopped = fixture
+            .supervisor
+            .todo_stop(&fixture.repo.display().to_string())
+            .unwrap();
+        assert!(!stopped.active);
+        assert_eq!(
+            stopped.stop_reason.as_deref(),
+            Some(item_coordinators::STOPPED)
+        );
+        fixture.answer(&worker_id, None, &["2"]).unwrap();
+        let ended = wait_ended(&fixture, &started.coordinator.coordinator_id);
+        assert_eq!(ended.end_reason.as_deref(), Some("item_done"));
+        let chain = fixture.supervisor.chain_for_test(&repo(&fixture)).unwrap();
+        assert_eq!(
+            chain.stop_reason.as_deref(),
+            Some(item_coordinators::STOPPED)
+        );
+        assert!(fixture
+            .supervisor
+            .history_item(B, Some(&repo(&fixture)))
+            .is_err());
+        // A repository that never had a chain has nothing to stop, and with
+        // "Next, in order" empty there is nothing to start.
+        let other = next_repo("next-stop-none", &[]);
+        assert!(other
+            .supervisor
+            .todo_stop(&other.repo.display().to_string())
+            .is_err());
+        let refused = next(&other, false).unwrap_err();
+        assert_eq!(refused.code(), WorkerError::Preflight(String::new()).code());
+    }
+
+    #[test]
+    fn a_coordinator_runs_under_the_allowlist_and_reaches_the_servers_socket() {
+        let fixture = next_repo("next-hook", &[(A, "hook first")]);
+        let started = next(&fixture, false).unwrap();
+        let worker_id = started.worker.worker_id.clone();
+        let ended = wait_ended(&fixture, &started.coordinator.coordinator_id);
+        assert_eq!(ended.end_reason.as_deref(), Some("item_blocked"));
+        let worker = fixture.supervisor.status(&worker_id).unwrap();
+        let text = worker.last_result.unwrap().text.unwrap();
+        let mut lines = text.lines();
+        let refused = lines.next().unwrap();
+        assert!(
+            refused.contains("\"deny\"") && refused.contains("Herdr coordinator allowlist"),
+            "{text}"
+        );
+        assert!(refused.contains("no override"), "{text}");
+        assert_eq!(lines.next(), Some("{}"), "{text}");
+        let journal = fixture.journal(&worker_id);
+        let settings: Value = serde_json::from_str(&launch_arg(&journal, "--settings")).unwrap();
+        let socket = fixture.root.join("workers").join("api.sock");
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            serde_json::json!([socket.display().to_string()])
+        );
+        assert!(launch_arg(&journal, "--append-system-prompt").contains("item coordinator"));
+        let init = journal
+            .iter()
+            .find(|record| record["event"]["subtype"] == "init")
+            .unwrap();
+        assert_eq!(
+            init["event"]["herdr_env"],
+            serde_json::json!(["HERDR_SOCKET_PATH"])
+        );
+        assert_eq!(
+            fixture.herdr_events(&worker_id, "started")[0]["coordinator"]["coordinator_id"],
+            started.coordinator.coordinator_id.as_str()
+        );
     }
 }
