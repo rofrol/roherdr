@@ -895,3 +895,15 @@ reconciled at start, 2 attempts per item then blocked, a circuit breaker
 pausing the mode after 3 consecutive failed items; a closed item lands in
 DECISIONS.md with its run and commit. The chat session talks with the user
 and answers escalations; it no longer drives the queue.
+
+## Queue mode, slice 2 (follows from queue mode, 2026-10-10; decided by
+
+Queue mode, slice 2 (2026-10-10): a manual approve in queue mode closes the
+item (`--keep-open` keeps it) so the queue never reruns an approved item;
+a new usage reading re-evaluates a gated queue; a cold restart pauses the
+queue with "environment needed: run `herdr todo queue on`"; limits stay 2
+attempts per item and a breaker after 3 failed items. The flaky
+`an_answer_call_that_fails_twice_is_escalated` was a race: answering a
+question woke the run's driver before the resume's transaction recorded
+the move; resume now answers without waking the driver (reproduced
+deterministically with a test hook, 40/40 under load after).

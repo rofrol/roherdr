@@ -11,24 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Queue mode, slice 2 (follows from queue mode, 2026-10-10; decided by [t-o3vb2epl]
-  the coordinator from that run's open points):
-  - In queue mode a manual `todo resume --action approve` closes the item
-    like the auto-review does (a DECISIONS.md section) unless
-    `--keep-open` is given, so the queue never reruns an approved item.
-  - After a usage-gate refusal the queue re-evaluates when the usage poller
-    publishes a new reading (an event herdr already has), not only on the
-    next run event or `queue on`.
-  - After a cold restart (no environment in memory) the queue pauses with
-    the reason "environment needed: run `herdr todo queue on` from your
-    shell" and a notification, instead of runs failing their checks as
-    unavailable.
-  - Limits stay: 2 attempts per item, the breaker after 3 consecutive
-    failed items.
-  - Fix the flaky `an_answer_call_that_fails_twice_is_escalated` (fails
-    about 1 in 13 on the base too: `EventStale ... event 19 is stale`):
-    reproduce under load, find the race, no waits or retries added.
-
 - [ ] The coordinator allowlist in shadow mode first (decided 2026-10-10 [t-svsyvp3s]
   with the models, round 20261010-142705-3267, all three): the PreToolUse
   check gets a mode setting (`[coordinator] allowlist = "shadow" |
