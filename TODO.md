@@ -61,6 +61,34 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   dialog lands, the row must not look dead: a click opens a read-only view
   (command, log) at least. Moved to the top.
 
+- [ ] Coordinators report protocol problems themselves: `herdr report` [t-pulsqoxl]
+  (user via the try-roguix coordinator, 2026-10-10: "work out with the
+  models how coordinators report such problems without me telling them
+  each time"; round 20261010-031725-f16b, sol + MiMo + DeepSeek agreeing).
+  - Reportable: a herdr command, wait, sandbox or skill step that failed to
+    give its promised outcome or a clear next step (a wait ended without a
+    verdict, an unexplained exit code, a headless worker blocked by the
+    sandbox, a skill step written for one repository, an error that does
+    not say the way out), including a coordinator mistake that unclear
+    instructions caused. Test: would another coordinator in another
+    repository hit it? Not reportable: expected worker turns, a worker's
+    wrong answer, the repository's own bugs. When unsure, report it as
+    `uncertain`; the herdr coordinator adjudicates.
+  - Channel: a durable queue in herdr's event store, not prompts into a
+    session: `herdr report --kind <k> --summary <s> [--evidence <path>]`
+    records repository, session, time and command, fingerprints kind plus
+    normalized summary, and answers "report r-N, occurrence K"; a new
+    fingerprint notifies the herdr coordinator once; later hits only count
+    and list their sessions and times. `herdr reports` lists them.
+  - Only the herdr coordinator closes a report, linking the TODO item or
+    commit that fixed it (or "not reproducible"); a later occurrence
+    reopens it.
+  - herdr's own protocol errors print the report command with the
+    fingerprint's facts (e.g. `wait-agent` exiting 8); one line in the
+    `todo` skill covers what herdr cannot see (sandbox blocks, skill
+    wording). No global rule.
+  - It stays after the protocol is solid, as the regression signal.
+
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
   coordinating at T? ask the models"). Today: no; workers store only
@@ -369,6 +397,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Third note from try-roguix (2026-10-10): `wait-agent --until done` exits 0
   both on a verdict and on a bare turn end, so the exit code cannot tell them
   apart; the verdict mode gets its own exit code.
+  Third occurrence 2026-10-10 03:12 (try-roguix, pane worker w5Q:p1): the
+  worker ended its turn while its own background test job ran;
+  `wait-agent --until done --until blocked` fired without a WORKER line
+  (also 02:43 and 03:11 in the same item).
 
 - [ ] Waiting for a worker without shell state (user, 2026-10-08, after the [t-khw7lira]
   coordinator's `${SEQ:+--after $SEQ}` became one argument in zsh and the
