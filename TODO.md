@@ -1589,6 +1589,21 @@ Items agents add. Not approved until the user moves them up.
   questions; its tab has no `coordinator` role. Depends on slice 4 and the
   consult-network decision.
 
+- [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
+  advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
+  "Coordinator/worker versus a single agent"; the user kept the queue as
+  is). Conclusions to keep in view: the real value today is the
+  server-side `verify` gate, provenance trailers and worktree isolation;
+  about two thirds of the driver's items fixed the machinery itself; the
+  sandbox sends the riskiest work (VMs) to unsandboxed pane workers;
+  review by the same model is only partly independent; parallelism is
+  unused; the protocol, Odin, crate and tracker plans were called scope
+  creep for one user. Proposed measurement: for the next 10 product (not
+  machinery) items, the user's hands-on minutes per useful landed item,
+  alternating the driver and a single agent gated by the same `verify`;
+  the coordinator records per item: the user's interventions, review
+  rounds, machinery fixes it triggered, wall-clock time.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
