@@ -682,6 +682,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerOpenLog(_) => "worker.open_log",
         Method::WorkerTakeOver(_) => "worker.take_over",
         Method::WorkerForceTakeOver(_) => "worker.force_take_over",
+        Method::WorkerQuestion(_) => "worker.question",
+        Method::WorkerDenyAndStop(_) => "worker.deny_and_stop",
         Method::TodoRun(_) => "todo.run",
         Method::TodoResume(_) => "todo.resume",
         Method::TodoWait(_) => "todo.wait",

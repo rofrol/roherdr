@@ -650,6 +650,21 @@ impl ClientShellState {
         if let PendingEndpointKind::WorkerRuns { endpoint_id } = pending.kind {
             return self.complete_worker_runs(endpoint_id, result);
         }
+        if let PendingEndpointKind::WorkerQuestion {
+            endpoint_id,
+            worker_id,
+            request_id,
+        } = pending.kind
+        {
+            return self.complete_worker_question(endpoint_id, worker_id, request_id, result);
+        }
+        if let PendingEndpointKind::WorkerQuestionAction {
+            endpoint_id,
+            request_id,
+        } = pending.kind
+        {
+            return self.complete_worker_question_action(endpoint_id, request_id, result);
+        }
         if let PendingEndpointKind::HistoryList { endpoint_id } = pending.kind {
             return self.complete_history_list(endpoint_id, result);
         }

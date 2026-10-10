@@ -1338,7 +1338,6 @@ impl App {
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
-            | Method::WorkerAnswer(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
             | Method::WorkerDrain(_)
@@ -1371,6 +1370,15 @@ impl App {
             Method::TodoReview(params) => return self.handle_todo_review(request.id, params),
             Method::WorkerOpenLog(target) => {
                 return self.handle_worker_open_log(request.id, target)
+            }
+            // A client's answer dialog: the question when the user opens it,
+            // and the answer or stop the user clicks.
+            Method::WorkerQuestion(target) => {
+                return self.handle_worker_question(request.id, target)
+            }
+            Method::WorkerAnswer(params) => return self.handle_worker_answer(request.id, params),
+            Method::WorkerDenyAndStop(params) => {
+                return self.handle_worker_deny_and_stop(request.id, params)
             }
             Method::WorkerTakeOver(target) => {
                 return self.handle_worker_take_over(request.id, target, false);

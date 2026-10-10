@@ -1,13 +1,15 @@
 //! The worker actions a client starts that need the app: `worker.open_log`
-//! (a popup) and `worker.take_over` (a tab), and `worker.runs`,
-//! `history.list`, `history.item` and `todo.review` for its Items popup.
+//! (a popup) and `worker.take_over` (a tab), `worker.runs`,
+//! `history.list`, `history.item` and `todo.review` for its Items popup, and
+//! `worker.question`, `worker.answer` and `worker.deny_and_stop` for its
+//! answer dialog.
 //! The other `worker.*` methods, and those from the JSON API, run on the
 //! API connection's thread (`crate::api::workers`).
 
 use super::responses::{encode_error, encode_success};
 use crate::api::schema::{
-    HistoryItemParams, HistoryListParams, ResponseResult, TodoReviewParams, WorkerRunsParams,
-    WorkerTarget,
+    HistoryItemParams, HistoryListParams, ResponseResult, TodoReviewParams, WorkerAnswerParams,
+    WorkerDenyAndStopParams, WorkerQuestionTarget, WorkerRunsParams, WorkerTarget,
 };
 use crate::app::App;
 use crate::events::AppEvent;
@@ -21,6 +23,44 @@ impl App {
             Ok((items, unassigned)) => {
                 encode_success(id, ResponseResult::WorkerRuns { items, unassigned })
             }
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// One question with the tool's whole input, asked when the user opens
+    /// a worker's answer dialog.
+    pub(super) fn handle_worker_question(
+        &mut self,
+        id: String,
+        target: WorkerQuestionTarget,
+    ) -> String {
+        match crate::workers::supervisor().question_detail(&target.worker_id, &target.request_id) {
+            Ok(detail) => encode_success(id, ResponseResult::WorkerQuestionDetail { detail }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// The answer the user clicked in the dialog.
+    pub(super) fn handle_worker_answer(
+        &mut self,
+        id: String,
+        params: WorkerAnswerParams,
+    ) -> String {
+        match crate::workers::supervisor().answer(&params) {
+            Ok(worker) => encode_success(id, ResponseResult::WorkerInfo { worker }),
+            Err(error) => encode_error(id, error.code(), error.to_string()),
+        }
+    }
+
+    /// The dialog's confirmed Stop worker: the question is denied, then the
+    /// worker stopped.
+    pub(super) fn handle_worker_deny_and_stop(
+        &mut self,
+        id: String,
+        params: WorkerDenyAndStopParams,
+    ) -> String {
+        match crate::workers::supervisor().deny_and_stop(&params) {
+            Ok(worker) => encode_success(id, ResponseResult::WorkerInfo { worker }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
     }

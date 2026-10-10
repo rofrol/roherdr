@@ -23,7 +23,7 @@ use super::tabs::TabInfo;
 use super::todo::{TodoChainInfo, TodoLanding, TodoReview, TodoRunEvent, TodoRunInfo};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
-    WorkerObligation, WorkerQuestion, WorkerRun, WorkerVerification,
+    WorkerObligation, WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -69,6 +69,10 @@ pub enum ResponseResult {
     },
     WorkerList {
         workers: Vec<WorkerInfo>,
+    },
+    /// `worker.question`'s reply.
+    WorkerQuestionDetail {
+        detail: WorkerQuestionDetail,
     },
     /// `worker.wait`'s reply with `until: attention`: why it returned, the
     /// questions pending then, the worker, and `seq`, its latest event's,

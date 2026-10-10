@@ -1,7 +1,10 @@
 use super::*;
 
 mod settings_overlay;
+mod worker_question_overlay;
 mod worktree_overlays;
+
+pub(crate) use worker_question_overlay::render_worker_question;
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
@@ -89,7 +92,8 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ContextMenu(_)
         | ClientShellOverlay::GlobalMenu(_)
         | ClientShellOverlay::NotificationLog(_)
-        | ClientShellOverlay::WorkerItems(_) => None,
+        | ClientShellOverlay::WorkerItems(_)
+        | ClientShellOverlay::WorkerQuestion(_) => None,
     }
 }
 

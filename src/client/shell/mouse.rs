@@ -2066,6 +2066,10 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::WorkerQuestion(_))) {
+            self.worker_question_mouse(mouse.kind, point, outcome);
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::NotificationLog(_))) {
             let row_hit = self
                 .hits
@@ -2074,15 +2078,20 @@ impl ClientShellState {
                 .find(|(rect, _)| super::contains(*rect, point))
                 .copied();
             match mouse.kind {
+                // The row as it was drawn, not what is at its place now.
                 MouseEventKind::Moved => {
                     if let Some((_, index)) = row_hit {
-                        self.highlight_notification_log_row(index);
+                        let key = self.hits.notification_log_row_keys.get(index).cloned();
+                        self.highlight_notification_log_key(key.flatten());
                         outcome.repaint = true;
                     }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some((_, index)) = row_hit {
-                        self.activate_notification_log_row(index, outcome);
+                        match self.hits.notification_log_row_keys.get(index).cloned() {
+                            Some(Some(key)) => self.activate_notification_log_key(key, outcome),
+                            _ => self.activate_notification_log_row(index, outcome),
+                        }
                     } else {
                         // Also the button: it closes what it opened.
                         self.overlay = None;
@@ -3034,9 +3043,14 @@ impl ClientShellState {
                     self.toggle_worker_items(button, outcome);
                     return;
                 }
-                // A worker's line opens its log.
+                // A worker's line opens its question, else its log.
                 if let Some(worker_id) = self.worker_line_at(point) {
-                    self.open_worker_log(worker_id, outcome);
+                    match self.worker_pending_question(&worker_id) {
+                        Some(request_id) => {
+                            self.open_worker_question(worker_id, request_id, outcome)
+                        }
+                        None => self.open_worker_log(worker_id, outcome),
+                    }
                     return;
                 }
                 // A tab line waits for the release: a drag reorders it, a
