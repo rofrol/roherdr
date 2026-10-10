@@ -815,3 +815,17 @@ ignores" section and two rules, kept its newer text elsewhere (pi's
 "AskUserQuestion fields" Claude Code only, and ~/.pi/agent/AGENTS.md is a
 symlink to it (pi 1.0.4 follows symlinks; checked in its loader). Dotfiles
 f99948d; the resolved differences were shown to the user first.
+
+## Coordinators report protocol problems themselves: `herdr report`
+
+Coordinators reported protocol problems only when the user told them to,
+by pasting long messages into the herdr coordinator's pane (2026-10-10). Now
+`herdr report --kind --summary [--evidence] [--uncertain]` records them in
+the worker store, fingerprinted (kind plus a normalized summary), answers
+"report r-N, occurrence K", notifies the herdr coordinator (or the user)
+once per new fingerprint and only counts repeats; `herdr reports` lists
+them; only the herdr coordinator closes one, linking the fix or "not
+reproducible", and a later occurrence reopens it (round
+20261010-031725-f16b). `todo wait`, `worker wait` and `verify` print the
+report command for their protocol failures. The one line in the `todo`
+skill moves to the skill item [t-ux4n3s3o].
