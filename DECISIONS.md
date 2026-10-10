@@ -907,3 +907,14 @@ attempts per item and a breaker after 3 failed items. The flaky
 question woke the run's driver before the resume's transaction recorded
 the move; resume now answers without waking the driver (reproduced
 deterministically with a test hook, 40/40 under load after).
+
+## The coordinator allowlist in shadow mode first (decided 2026-10-10
+
+The coordinator allowlist (e08a6305) got a mode, decided with the models
+2026-10-10 (round 20261010-142705-3267): `[coordinator] allowlist =
+"shadow" | "enforce" | "off"`, default shadow. In shadow the check never
+denies and records each would-deny (tool, command, reason, pane,
+repository, time), counted per command shape by `herdr history overrides
+--would-deny`; enforce denies as before. The integration is installed in
+shadow; after a week of real use the user decides on enforce from that
+list, or drops it if the list is near-empty.
