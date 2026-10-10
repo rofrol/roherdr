@@ -21,7 +21,9 @@ use super::reports::ReportInfo;
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::todo::{TodoChainInfo, TodoLanding, TodoReview, TodoRunEvent, TodoRunInfo};
+use super::todo::{
+    TodoChainInfo, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
+};
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
     WorkerObligation, WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerVerification,
@@ -132,6 +134,10 @@ pub enum ResponseResult {
     /// `todo.stop`'s reply: the chain as it is now.
     TodoChain {
         chain: TodoChainInfo,
+    },
+    /// `todo.queue_set`'s and `todo.queue_status`' reply.
+    TodoQueue {
+        queue: TodoQueueInfo,
     },
     /// `history.list`'s reply: each recorded item with its latest record,
     /// the most recent first.

@@ -365,6 +365,8 @@ impl WorkerSupervisor {
         }
         super::announce();
         self.spawn_driver(&escalation.run_id);
+        // An answered escalation is one of the queue's events.
+        self.queue_event(&escalation.repo);
         Ok(())
     }
 
@@ -420,6 +422,8 @@ impl WorkerSupervisor {
         }
         super::announce();
         self.spawn_driver(&escalation.run_id);
+        // An answered escalation is one of the queue's events.
+        self.queue_event(&escalation.repo);
         Ok(())
     }
 

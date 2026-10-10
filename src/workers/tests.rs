@@ -9906,6 +9906,466 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             );
             assert_eq!(master_subjects(&fixture), [SUBJECT, "docs: rules", "init"]);
         }
+
+        /// Queue mode (`todo.queue_set`) with the review stub as the model of
+        /// every decision call (draft, review) and the worker stub.
+        mod queue {
+            use super::*;
+            use crate::api::schema::{
+                TodoQueueInfo, TodoQueueMode, TodoQueueSetParams, TodoQueueStatus,
+            };
+            use crate::workers::runs::queue::{QueueStep, BREAKER, ITEM_ATTEMPTS};
+
+            const ITEM3: &str = "t-cdef4567";
+            const APPROVE: &str = r#"{"action": "approve"}"#;
+            const ESCALATE: &str = r#"{"action": "escalate", "question": "Is the item still wanted?", "options": ["yes", "no"]}"#;
+
+            /// A draft the worker stub carries out: it commits `file`.
+            fn draft(file: &str, subject: &str) -> String {
+                serde_json::json!({
+                    "action": "draft", "task": format!("commit {file} {subject}"),
+                    "message": subject, "paths": ["*.txt"], "checks": ["ok"],
+                })
+                .to_string()
+            }
+
+            /// The draft fixture with `items` in "Next, in order" on master,
+            /// `scripts/todo_edit.py` (a queue run's approval closes its
+            /// item) and no `origin` (the push is skipped). Returns it with
+            /// the repository as the store names it.
+            fn queued(name: &str, items: &[&str], answers: &[&str]) -> (Fixture, String) {
+                let fixture = drafting(name, answers);
+                let repo = &fixture.repo;
+                std::fs::create_dir_all(repo.join("scripts")).unwrap();
+                std::fs::copy(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/todo_edit.py"),
+                    repo.join("scripts/todo_edit.py"),
+                )
+                .unwrap();
+                let mut todo = String::from("# TODO\n\n## Next, in order\n\n");
+                for (number, item) in items.iter().enumerate() {
+                    todo.push_str(&format!(
+                        "- [ ] Queued item {number} [{item}]\n  Its text.\n\n"
+                    ));
+                }
+                todo.push_str("## Needs a decision\n");
+                std::fs::write(repo.join("TODO.md"), todo).unwrap();
+                git_in(repo, &["add", "."]);
+                git_in(repo, &["commit", "-q", "-m", "docs: queue"]);
+                let id = repository_of(repo).unwrap();
+                (fixture, id)
+            }
+
+            fn set(fixture: &Fixture, mode: TodoQueueMode) -> TodoQueueInfo {
+                fixture
+                    .supervisor
+                    .todo_queue_set(TodoQueueSetParams {
+                        cwd: fixture.repo.display().to_string(),
+                        mode,
+                        reason: None,
+                        owner_pane_id: Some("p-coordinator".into()),
+                        owner_session_id: None,
+                        workspace_id: Some("ws-coordinator".into()),
+                        env: Some(caller_env()),
+                    })
+                    .unwrap()
+            }
+
+            fn status(fixture: &Fixture) -> TodoQueueInfo {
+                fixture
+                    .supervisor
+                    .todo_queue_status(&fixture.repo.display().to_string())
+                    .unwrap()
+            }
+
+            fn runs_of(fixture: &Fixture, repo: &str) -> Vec<TodoRunInfo> {
+                fixture.supervisor.todo_runs(Some(repo), None).unwrap().0
+            }
+
+            /// The queue once `done` holds for it, read again at every write.
+            fn wait_queue(
+                fixture: &Fixture,
+                what: &str,
+                done: impl Fn(&TodoQueueInfo) -> bool,
+            ) -> TodoQueueInfo {
+                let mut last = None;
+                runs::wait_until(what, HANG_GUARD, || {
+                    let queue = status(fixture);
+                    let reached = done(&queue);
+                    last = Some(queue);
+                    reached
+                });
+                last.unwrap()
+            }
+
+            fn items_and_states(runs: &[TodoRunInfo]) -> Vec<(&str, TodoRunStatus)> {
+                runs.iter()
+                    .map(|run| (run.item.as_str(), run.status))
+                    .collect()
+            }
+
+            #[test]
+            fn the_queue_advances_through_three_items() {
+                let answers = [
+                    draft("a.txt", "feat: add a"),
+                    APPROVE.into(),
+                    draft("b.txt", "feat: add b"),
+                    APPROVE.into(),
+                    draft("c.txt", "feat: add c"),
+                    APPROVE.into(),
+                ];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-three", &[ITEM, ITEM2, ITEM3], &answers);
+                let on = set(&fixture, TodoQueueMode::On);
+                assert_eq!(on.mode, TodoQueueMode::On, "{on:#?}");
+                assert_eq!(runs_of(&fixture, &repo)[0].item, ITEM);
+
+                let ended = wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert!(ended.reason.contains("no open item"), "{ended:#?}");
+                assert_eq!((ended.mode, ended.failures), (TodoQueueMode::On, 0));
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(
+                    items_and_states(&runs),
+                    [
+                        (ITEM, TodoRunStatus::Done),
+                        (ITEM2, TodoRunStatus::Done),
+                        (ITEM3, TodoRunStatus::Done)
+                    ]
+                );
+                assert!(
+                    runs.iter().all(|run| run.queued && run.drafted),
+                    "{runs:#?}"
+                );
+                // Each run landed its commit and closed its item.
+                assert_eq!(
+                    master_subjects(&fixture),
+                    [
+                        format!("docs(todo): close {ITEM3}").as_str(),
+                        "feat: add c",
+                        &format!("docs(todo): close {ITEM2}"),
+                        "feat: add b",
+                        &format!("docs(todo): close {ITEM}"),
+                        "feat: add a",
+                        "docs: queue",
+                        "docs: rules",
+                        "init"
+                    ]
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                for item in [ITEM, ITEM2, ITEM3] {
+                    assert!(!todo.contains(item), "{item} still in {todo}");
+                }
+                let decisions = git_in(&fixture.repo, &["show", "master:DECISIONS.md"]);
+                for title in ["Queued item 0", "Queued item 1", "Queued item 2"] {
+                    assert!(decisions.contains(&format!("## {title}")), "{decisions}");
+                }
+                assert_eq!(
+                    decisions.matches("Landed by herdr's TODO queue").count(),
+                    3,
+                    "{decisions}"
+                );
+                // Each start claimed the next fencing token; each end was
+                // settled once.
+                let stored = store_of(&fixture.supervisor).queue_runs(&repo).unwrap();
+                assert_eq!(
+                    stored
+                        .iter()
+                        .map(|run| (run.token, run.outcome.as_deref()))
+                        .collect::<Vec<_>>(),
+                    [(1, Some("done")), (2, Some("done")), (3, Some("done"))]
+                );
+            }
+
+            #[test]
+            fn the_queue_waits_on_an_escalation_and_goes_on_after_the_answer() {
+                let (fixture, repo) = queued("todo-queue-escalation", &[ITEM, ITEM2], &[ESCALATE]);
+                set(&fixture, TodoQueueMode::On);
+                let waiting = wait_queue(&fixture, "the escalation", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                assert_eq!(waiting.item.as_deref(), Some(ITEM), "{waiting:#?}");
+                assert!(waiting.reason.contains("draft"), "{waiting:#?}");
+                let run_id = waiting.run_id.clone().unwrap();
+                // Another event starts nothing while the run waits.
+                fixture.supervisor.queue_event(&repo);
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+
+                // The user's answer drafts again; the run lands and the queue
+                // goes on with the next item.
+                let answers = [
+                    draft("a.txt", "feat: add a"),
+                    APPROVE.into(),
+                    draft("b.txt", "feat: add b"),
+                    APPROVE.into(),
+                ];
+                set_answers(
+                    &fixture,
+                    &answers.iter().map(String::as_str).collect::<Vec<_>>(),
+                );
+                let listed = listed_escalation(&fixture, &run_id).expect("not in the ? list");
+                fixture
+                    .supervisor
+                    .answer(&WorkerAnswerParams {
+                        worker_id: listed.worker_id.clone(),
+                        request_id: Some(listed.question.request_id.clone()),
+                        decision: Some(WorkerDecision::Allow),
+                        answers: vec!["yes".into()],
+                        message: None,
+                        command_id: None,
+                    })
+                    .unwrap();
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done), (ITEM2, TodoRunStatus::Done)]
+                );
+            }
+
+            #[test]
+            fn a_server_that_starts_settles_a_done_run_and_starts_the_next_item_once() {
+                let answers = [
+                    draft("a.txt", "feat: add a"),
+                    APPROVE.into(),
+                    draft("b.txt", "feat: add b"),
+                    APPROVE.into(),
+                ];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-crash", &[ITEM, ITEM2], &answers);
+                // The server ends between the first run's end and its queue's
+                // look.
+                runs::queue::skip_next_event(&repo);
+                set(&fixture, TodoQueueMode::On);
+                let first = runs_of(&fixture, &repo)[0].run_id.clone();
+                let (done, _) = wait(&fixture, &first, None);
+                assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+                let stored = store_of(&fixture.supervisor).queue_runs(&repo).unwrap();
+                assert_eq!(stored[0].outcome, None, "{stored:#?}");
+
+                // A server that starts settles it, then starts the next item;
+                // more events start no second run.
+                fixture.supervisor.resume_runs();
+                fixture.supervisor.queue_event(&repo);
+                fixture.supervisor.queue_event(&repo);
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done), (ITEM2, TodoRunStatus::Done)]
+                );
+                let stored = store_of(&fixture.supervisor).queue_runs(&repo).unwrap();
+                assert!(
+                    stored
+                        .iter()
+                        .all(|run| run.outcome.as_deref() == Some("done")),
+                    "{stored:#?}"
+                );
+            }
+
+            #[test]
+            fn failures_block_an_item_and_trip_the_circuit_breaker() {
+                let (fixture, repo) = queued(
+                    "todo-queue-breaker",
+                    &[ITEM, ITEM2],
+                    &[ESCALATE, ESCALATE, ESCALATE],
+                );
+                let _ = crate::workers::take_user_notices();
+                set(&fixture, TodoQueueMode::On);
+                // The first item twice (its attempt cap), then the second.
+                for (number, item) in [ITEM, ITEM, ITEM2].into_iter().enumerate() {
+                    let waiting = wait_queue(&fixture, "the next escalation", |queue| {
+                        queue.status == TodoQueueStatus::EscalationPending
+                            && runs_of(&fixture, &repo).len() == number + 1
+                    });
+                    assert_eq!(waiting.item.as_deref(), Some(item), "{waiting:#?}");
+                    let run_id = waiting.run_id.unwrap();
+                    let (escalated, _) = wait(&fixture, &run_id, None);
+                    assert_eq!(escalated.kind, TodoEventKind::Draft, "{escalated:#?}");
+                    abort(&fixture, &run_id, escalated.event_id);
+                }
+                let paused = wait_queue(&fixture, "the circuit breaker", |queue| {
+                    queue.mode == TodoQueueMode::Paused
+                });
+                assert_eq!(paused.status, TodoQueueStatus::WaitingOnUser, "{paused:#?}");
+                assert_eq!(paused.failures, BREAKER);
+                for part in ["circuit breaker", "3 consecutive", "aborted"] {
+                    assert!(paused.reason.contains(part), "{part:?} not in {paused:#?}");
+                }
+                assert_eq!(paused.blocked_items.len(), 1, "{paused:#?}");
+                assert_eq!(paused.blocked_items[0].item, ITEM);
+                assert!(paused.blocked_items[0]
+                    .reason
+                    .contains(&format!("{ITEM_ATTEMPTS} times")));
+                assert_eq!(runs_of(&fixture, &repo).len(), 3);
+                let notices = crate::workers::take_user_notices();
+                assert!(
+                    notices.iter().any(|notice| notice.title.contains("paused")),
+                    "{notices:#?}"
+                );
+                assert!(
+                    notices
+                        .iter()
+                        .any(|notice| notice.title.contains("blocked")
+                            && notice.title.contains(ITEM)),
+                    "{notices:#?}"
+                );
+
+                // On again clears the breaker: the queue skips the blocked
+                // item and runs the next one.
+                let answers = [draft("b.txt", "feat: add b"), APPROVE.into()];
+                set_answers(
+                    &fixture,
+                    &answers.iter().map(String::as_str).collect::<Vec<_>>(),
+                );
+                let on = set(&fixture, TodoQueueMode::On);
+                assert_eq!(on.failures, 0, "{on:#?}");
+                let blocked = wait_queue(&fixture, "the blocked queue", |queue| {
+                    queue.status == TodoQueueStatus::Blocked
+                });
+                assert!(blocked.reason.contains("every item"), "{blocked:#?}");
+                assert!(blocked.reason.contains(ITEM), "{blocked:#?}");
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(
+                    items_and_states(&runs),
+                    [
+                        (ITEM, TodoRunStatus::Aborted),
+                        (ITEM, TodoRunStatus::Aborted),
+                        (ITEM2, TodoRunStatus::Aborted),
+                        (ITEM2, TodoRunStatus::Done)
+                    ]
+                );
+            }
+
+            #[test]
+            fn concurrent_events_start_one_run() {
+                let (fixture, repo) = queued("todo-queue-concurrent", &[ITEM, ITEM2], &[ESCALATE]);
+                // The mode is on without an evaluation of its own: the starts
+                // below race for it.
+                store_of(&fixture.supervisor)
+                    .transaction(|tx| {
+                        tx.queue_on(
+                            &repo,
+                            &store::RunOwner {
+                                pane_id: Some("p-coordinator"),
+                                session_id: None,
+                                workspace: Some("ws-coordinator"),
+                                coordinator_id: None,
+                            },
+                            now_ms(),
+                        )
+                    })
+                    .unwrap();
+                let barrier = std::sync::Barrier::new(12);
+                let steps: Vec<QueueStep> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = (0..12)
+                        .map(|number| {
+                            let (barrier, supervisor, repo) =
+                                (&barrier, &fixture.supervisor, &repo);
+                            scope.spawn(move || {
+                                barrier.wait();
+                                // Some through the event path, the others
+                                // straight to the start, past this process's
+                                // claim: only the fencing token and the
+                                // runs' unique index keep them apart.
+                                if number % 3 == 0 {
+                                    supervisor.queue_event(repo);
+                                    QueueStep::Idle
+                                } else {
+                                    supervisor.queue_step(repo).unwrap()
+                                }
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|handle| handle.join().unwrap())
+                        .collect()
+                });
+                let started = steps
+                    .iter()
+                    .filter(|step| matches!(step, QueueStep::Started(_)))
+                    .count();
+                assert!(started <= 1, "{steps:?}");
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(runs.len(), 1, "{runs:#?}");
+                let store = store_of(&fixture.supervisor);
+                assert_eq!(store.queue_runs(&repo).unwrap().len(), 1);
+                assert_eq!(store.queue(&repo).unwrap().unwrap().token, 1);
+
+                // Paused, the run's end starts nothing.
+                set(&fixture, TodoQueueMode::Paused);
+                let (escalated, _) = wait(&fixture, &runs[0].run_id, None);
+                abort(&fixture, &runs[0].run_id, escalated.event_id);
+                fixture.supervisor.queue_event(&repo);
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+                let paused = status(&fixture);
+                assert_eq!(
+                    (paused.mode, paused.status),
+                    (TodoQueueMode::Paused, TodoQueueStatus::WaitingOnUser)
+                );
+            }
+
+            #[test]
+            fn a_close_in_queue_mode_names_no_next_item() {
+                let (fixture, repo) = queued("todo-queue-close", &[ITEM, ITEM2], &[ESCALATE]);
+                set(&fixture, TodoQueueMode::Paused);
+                let run = fixture
+                    .supervisor
+                    .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+                    .unwrap();
+                let (review, _) = wait(&fixture, &run.run_id, None);
+                assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+                let close = |next: bool| TodoResumeParams {
+                    close: Some("Closed.".into()),
+                    stop_reason: next.then(|| "why".to_owned()),
+                    ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+                };
+                // Paused (queue mode not on), a close still names what follows.
+                let refused = fixture.supervisor.todo_resume(close(false)).unwrap_err();
+                assert!(
+                    refused.to_string().contains("unless queue mode is on"),
+                    "{refused}"
+                );
+                // On, it names nothing: the queue starts the next item.
+                store_of(&fixture.supervisor)
+                    .transaction(|tx| {
+                        tx.queue_on(
+                            &repo,
+                            &store::RunOwner {
+                                pane_id: Some("p-coordinator"),
+                                session_id: None,
+                                workspace: Some("ws-coordinator"),
+                                coordinator_id: None,
+                            },
+                            now_ms(),
+                        )
+                    })
+                    .unwrap();
+                let refused = fixture.supervisor.todo_resume(close(true)).unwrap_err();
+                assert!(
+                    refused.to_string().contains("queue mode is on"),
+                    "{refused}"
+                );
+                fixture.supervisor.todo_resume(close(false)).unwrap();
+                // Its end starts the queue's run of the next item, which waits
+                // on its escalated draft.
+                let waiting = wait_queue(&fixture, "the queue's start", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                assert_eq!(waiting.item.as_deref(), Some(ITEM2), "{waiting:#?}");
+                let runs = runs_of(&fixture, &repo);
+                assert_eq!(
+                    items_and_states(&runs),
+                    [(ITEM, TodoRunStatus::Done), (ITEM2, TodoRunStatus::Waiting)]
+                );
+                assert!(!runs[0].queued && runs[1].queued);
+            }
+        }
     }
 }
 

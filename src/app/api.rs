@@ -1355,6 +1355,8 @@ impl App {
             | Method::TodoRuns(_)
             | Method::TodoNext(_)
             | Method::TodoStop(_)
+            | Method::TodoQueueSet(_)
+            | Method::TodoQueueStatus(_)
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_)
             | Method::ReportList(_) => {

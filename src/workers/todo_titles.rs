@@ -70,6 +70,13 @@ pub(super) const NEXT_SECTION: &str = "Next, in order";
 /// section of `text`: the items after its heading, up to the next heading
 /// of the same or a higher level (outside a code fence).
 pub(super) fn next_item(text: &str) -> Option<String> {
+    next_items(text).into_iter().next()
+}
+
+/// The ids of the open items of the "Next, in order" section of `text`, in
+/// order ([`next_item`] is the first).
+pub(super) fn next_items(text: &str) -> Vec<String> {
+    let mut items = Vec::new();
     let mut in_fence = false;
     let mut level: Option<usize> = None;
     for line in text.lines() {
@@ -83,7 +90,7 @@ pub(super) fn next_item(text: &str) -> Option<String> {
         let hashes = line.chars().take_while(|c| *c == '#').count();
         if hashes > 0 && line[hashes..].starts_with(' ') {
             match level {
-                Some(at) if hashes <= at => return None,
+                Some(at) if hashes <= at => return items,
                 Some(_) => {}
                 None if line[hashes..].trim() == NEXT_SECTION => level = Some(hashes),
                 None => {}
@@ -92,11 +99,11 @@ pub(super) fn next_item(text: &str) -> Option<String> {
         }
         if level.is_some() && line.starts_with("- [ ] ") {
             if let Some((id, _)) = item_title(line) {
-                return Some(id);
+                items.push(id);
             }
         }
     }
-    None
+    items
 }
 
 /// An item's title from its text's first line.
@@ -187,6 +194,7 @@ mod tests {
                     ### A subheading\n- [ ] First [t-dddddddd]\n- [ ] Second [t-eeeeeeee]\n\n\
                     ## Needs a decision\n\n- [ ] Later [t-ffffffff]\n";
         assert_eq!(next_item(text).as_deref(), Some("t-dddddddd"));
+        assert_eq!(next_items(text), ["t-dddddddd", "t-eeeeeeee"]);
         let empty = "## Next, in order\n\n## Needs a decision\n- [ ] Later [t-ffffffff]\n";
         assert_eq!(next_item(empty), None);
         assert_eq!(next_item("- [ ] No section [t-aaaaaaaa]\n"), None);

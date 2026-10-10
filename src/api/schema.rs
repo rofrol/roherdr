@@ -167,6 +167,13 @@ pub enum Method {
     /// Stops the repository's chain of item coordinators.
     #[serde(rename = "todo.stop")]
     TodoStop(TodoStopParams),
+    /// Turns a repository's queue mode on or pauses it: on, the server
+    /// starts the top runnable item of "Next, in order" itself.
+    #[serde(rename = "todo.queue_set")]
+    TodoQueueSet(TodoQueueSetParams),
+    /// A repository's queue mode and what its queue does now.
+    #[serde(rename = "todo.queue_status")]
+    TodoQueueStatus(TodoQueueTarget),
     /// The TODO items herdr recorded, each with its latest record.
     #[serde(rename = "history.list")]
     HistoryList(HistoryListParams),
