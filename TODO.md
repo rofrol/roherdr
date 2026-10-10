@@ -1383,6 +1383,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `-f -`) and say it in the consult and openrouter SKILL.md files.
   Approved by the user 2026-10-09 ("zgoda jest").
 
+- [ ] An open question stays visible while its agent works on (user, [t-edrkeo3r]
+  2026-10-10, relayed by the violai coordinator w75:p2: it asked "Adres
+  Google Wioli?" with `herdr agent awaiting-reply`, a worker then finished,
+  the coordinator went on working and the `?` vanished; the user lost track
+  of the question; suggestion: the open question lives in its own place,
+  e.g. its own tab or a persistent question entry, until the user answers,
+  independent of the agent's working/idle state). Checked by the herdr
+  coordinator: the report is held but shown only while the pane is idle
+  (`TerminalState::awaiting_reply` is `reported && state == Idle`,
+  `src/terminal/state.rs:2430`); typing into the pane clears it, a later
+  blocked state (a question dialog) forgets it, and a new report replaces
+  its text. Want: an awaiting-reply report becomes a question entry in the
+  `?` list (like a headless worker's question) that stays while the agent
+  works, shows its age and the asking pane, and ends only on an answer (the
+  user types into that pane or answers from the list), on the agent
+  withdrawing it, or on the agent's session ending; several open questions
+  from one pane stay separate. Server state, exposed through the API.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
