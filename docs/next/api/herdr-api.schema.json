@@ -4628,6 +4628,136 @@
           ],
           "type": "object"
         },
+        "ReportCloseParams": {
+          "description": "Closes a report, from the pane that holds the herdr repository's\ncoordination tenure.",
+          "properties": {
+            "fix": {
+              "description": "The TODO item (`t-...`) or commit that fixed it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "not_reproducible": {
+              "description": "The problem could not be reproduced; excludes `fix`.",
+              "type": "boolean"
+            },
+            "pane_id": {
+              "description": "The closing coordinator's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "report_id": {
+              "description": "`r-` and the report's number.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "report_id"
+          ],
+          "type": "object"
+        },
+        "ReportEvidenceUpload": {
+          "description": "An evidence file as the CLI read it: at most 64 KiB of its text.",
+          "properties": {
+            "bytes": {
+              "description": "The file's size in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "content": {
+              "description": "Its text (invalid UTF-8 replaced), at most 65536 bytes.",
+              "type": "string"
+            },
+            "source": {
+              "description": "The file's path as the reporter named it.",
+              "type": "string"
+            },
+            "truncated": {
+              "description": "Only the first 65536 bytes were sent.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "source",
+            "content",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "ReportListParams": {
+          "description": "Lists the reports: the open ones, or all with `all`.",
+          "properties": {
+            "all": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ReportRecordParams": {
+          "description": "Records one occurrence of a protocol problem: a herdr command, wait,\nsandbox or skill step that did not give its promised outcome or a clear\nnext step.",
+          "properties": {
+            "command": {
+              "description": "The command the problem came from, as it was run; cut to its first\n2000 characters.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "The reporter's directory, which names the repository; the pane's\ndirectory when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/ReportEvidenceUpload"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A file's text the server keeps with the occurrence, so a temporary\nfile may go away."
+            },
+            "kind": {
+              "description": "A short slug: lowercase letters, digits and `-`, at most 40.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The reporter's pane (the CLI sends its `HERDR_PANE_ID`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "description": "The reporter's agent session; the pane's agent session when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "description": "One line of at most 500 bytes saying what failed.",
+              "type": "string"
+            },
+            "uncertain": {
+              "description": "The reporter is not sure the problem is herdr's; the herdr\ncoordinator decides.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -7612,6 +7742,57 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/HistoryOverridesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Records one occurrence of a protocol problem; the first of its\nfingerprint notifies the herdr coordinator (or the user).",
+          "properties": {
+            "method": {
+              "const": "report.record",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ReportRecordParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The reports, open ones or all.",
+          "properties": {
+            "method": {
+              "const": "report.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ReportListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Closes a report with its fix or as not reproducible; only from the\nherdr repository's coordinator pane.",
+          "properties": {
+            "method": {
+              "const": "report.close",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ReportCloseParams"
             }
           },
           "required": [
@@ -13488,6 +13669,198 @@
           ],
           "type": "string"
         },
+        "ReportInfo": {
+          "description": "One protocol problem: every occurrence of one fingerprint.",
+          "properties": {
+            "closed_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "closed_ms": {
+              "description": "While it is closed: when, by which tenure, and with what.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "count": {
+              "description": "How many occurrences it has.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fingerprint": {
+              "description": "16 hex characters of the SHA-256 of the kind and the normalized\nsummary.",
+              "type": "string"
+            },
+            "first_ms": {
+              "description": "Unix milliseconds of the first and the latest occurrence.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fix": {
+              "description": "The TODO item or commit that fixed it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "last_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "normalized": {
+              "description": "The summary as fingerprinted: ids, paths, numbers and commit hashes\nreplaced by `<id>`, `<path>`, `<n>` and `<sha>`.",
+              "type": "string"
+            },
+            "not_reproducible": {
+              "type": "boolean"
+            },
+            "occurrences": {
+              "description": "Its occurrences, oldest first.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ReportOccurrence"
+              },
+              "type": "array"
+            },
+            "reopened": {
+              "description": "How many times a later occurrence reopened it.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "report_id": {
+              "description": "`r-` and the report's number.",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/ReportState"
+            },
+            "summary": {
+              "description": "The first occurrence's summary.",
+              "type": "string"
+            },
+            "uncertain": {
+              "description": "Every occurrence was reported as uncertain.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "report_id",
+            "kind",
+            "summary",
+            "normalized",
+            "fingerprint",
+            "state",
+            "first_ms",
+            "last_ms",
+            "count"
+          ],
+          "type": "object"
+        },
+        "ReportOccurrence": {
+          "description": "One `report.record` of a report's fingerprint.",
+          "properties": {
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "coordinator_id": {
+              "description": "The tenure the reporter's pane held then.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "evidence": {
+              "description": "Where the server keeps the evidence's copy.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "evidence_source": {
+              "description": "The path the reporter named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "evidence_truncated": {
+              "type": "boolean"
+            },
+            "number": {
+              "description": "1 for the first; the `K` of \"report r-N, occurrence K\".",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reopened": {
+              "description": "The closure this occurrence reopened: `fix <item or commit>` or `not\nreproducible`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "repo": {
+              "description": "The reporter's repository: the parent of its git common directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "description": "This occurrence's own summary.",
+              "type": "string"
+            },
+            "ts_ms": {
+              "description": "Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "uncertain": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "number",
+            "ts_ms",
+            "summary"
+          ],
+          "type": "object"
+        },
+        "ReportState": {
+          "enum": [
+            "open",
+            "closed",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "ResponseResult": {
           "oneOf": [
             {
@@ -13989,6 +14362,72 @@
               "required": [
                 "type",
                 "overrides"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`report.record`'s reply: the report with this occurrence's number,\nand whom it notified (`coordinator <id>` or `user`; absent when it\nwas a repeat and notified no one).",
+              "properties": {
+                "notified": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "occurrence": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "report": {
+                  "$ref": "#/schemas/success_response/$defs/ReportInfo"
+                },
+                "type": {
+                  "const": "report_recorded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "report",
+                "occurrence"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`report.list`'s reply: the reports, the latest occurrence first.",
+              "properties": {
+                "reports": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ReportInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "reports",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reports"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`report.close`'s reply.",
+              "properties": {
+                "report": {
+                  "$ref": "#/schemas/success_response/$defs/ReportInfo"
+                },
+                "type": {
+                  "const": "report",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "report"
               ],
               "type": "object"
             },

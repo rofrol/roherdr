@@ -34,6 +34,7 @@ mod item_coordinators;
 mod log;
 mod policy;
 mod pre_tool_checks;
+pub(crate) mod reports;
 mod review;
 mod runs;
 mod slot;
@@ -277,6 +278,11 @@ pub(crate) enum WorkerError {
     UsageGate(String),
     /// `history.item` named an item without records.
     HistoryNotFound(String),
+    /// No report has that id.
+    ReportNotFound(String),
+    /// `report.close` from a pane that does not hold the herdr
+    /// repository's coordination tenure; the message says what it holds.
+    ReportCloseRefused(String),
     Io(std::io::Error),
 }
 
@@ -305,6 +311,8 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "todo_preflight_failed",
     "usage_gate",
     "history_item_not_found",
+    "report_not_found",
+    "report_close_refused",
 ];
 
 impl WorkerError {
@@ -334,6 +342,8 @@ impl WorkerError {
             Self::Preflight(_) => "todo_preflight_failed",
             Self::UsageGate(_) => "usage_gate",
             Self::HistoryNotFound(_) => "history_item_not_found",
+            Self::ReportNotFound(_) => "report_not_found",
+            Self::ReportCloseRefused(_) => "report_close_refused",
         }
     }
 
@@ -373,7 +383,9 @@ impl std::fmt::Display for WorkerError {
             | Self::RunOwnedElsewhere(message)
             | Self::Preflight(message)
             | Self::UsageGate(message)
-            | Self::HistoryNotFound(message) => f.write_str(message),
+            | Self::HistoryNotFound(message)
+            | Self::ReportNotFound(message)
+            | Self::ReportCloseRefused(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
     }

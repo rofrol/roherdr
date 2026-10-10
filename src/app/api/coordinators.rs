@@ -251,7 +251,7 @@ impl App {
     }
 
     /// The public id a tenure is bound with: the canonical form of an alias.
-    fn canonical_pane_id(&self, pane: &str) -> String {
+    pub(super) fn canonical_pane_id(&self, pane: &str) -> String {
         self.parse_pane_id(pane)
             .and_then(|(ws_idx, pane_id)| self.public_pane_id(ws_idx, pane_id))
             .unwrap_or_else(|| pane.to_owned())

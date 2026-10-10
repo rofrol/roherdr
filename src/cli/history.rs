@@ -126,7 +126,7 @@ fn parse(args: &[String]) -> Result<Option<(Command, bool)>, String> {
 
 /// Unix milliseconds as `YYYY-MM-DD HH:MM` in local time, `offset` seconds
 /// east of UTC.
-fn when(ms: u64, offset: i64) -> String {
+pub(super) fn when(ms: u64, offset: i64) -> String {
     match time::OffsetDateTime::from_unix_timestamp(((ms / 1000) as i64).saturating_add(offset)) {
         Ok(at) => format!(
             "{:04}-{:02}-{:02} {:02}:{:02}",

@@ -5325,6 +5325,8 @@ fn claude_pre_tool_lets_a_coordinator_run_each_allowed_class() {
         "herdr worker wait w12 --attention --after 4",
         "herdr history --item t-abcd2345",
         "herdr coordinator status",
+        "herdr report --kind todo-wait --summary 'todo wait gave up' --evidence /tmp/w.log",
+        "herdr reports --all",
         "herdr agent read p2 --source detection",
         "herdr agent awaiting-reply 'Install now?'",
         "herdr agent set-task 'Work through the TODO'",

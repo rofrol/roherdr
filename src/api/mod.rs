@@ -62,6 +62,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::CoordinatorEnd(_)
             | Method::CoordinatorHandoff(_)
             | Method::CoordinatorRecordOverride(_)
+            | Method::ReportRecord(_)
             | Method::TabSetJobMetadata(_)
             | Method::LayoutApply(_)
             | Method::LayoutSetSplitRatio(_)

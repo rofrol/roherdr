@@ -119,8 +119,15 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
     };
     let id = format!("cli:worker:{}", args[0]);
     let verifying = matches!(method, Method::WorkerVerify(_));
+    let hints = matches!(method, Method::WorkerVerify(_) | Method::WorkerWait(_));
     let response = super::send_request(&Request { id, method })?;
     let code = super::print_response(&response)?;
+    if hints {
+        super::report::hint_reply(
+            &response,
+            &super::report::command_line(&["herdr", "worker"], args),
+        );
+    }
     if !verifying || code != 0 {
         return Ok(code);
     }

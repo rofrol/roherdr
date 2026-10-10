@@ -644,7 +644,7 @@ CODE_REASON = "code goes to a worker (`herdr todo run`)"
 TODO_REASON = "edit TODO.md and DECISIONS.md with `python3 scripts/todo_edit.py`"
 SCRATCH_REASON = "write notes only under this session's scratchpad"
 ALLOWED = (
-    "a coordinator tab runs only `herdr todo|worker|history|coordinator`, `herdr agent "
+    "a coordinator tab runs only `herdr todo|worker|history|coordinator|report|reports`, `herdr agent "
     "read|list|get|explain|awaiting-reply|set-task`, `herdr-job run|wait|list|log|watch` (run with "
     "an allowed command), read-only git (status, log, diff, show, fetch, rev-parse, branch --list, "
     "ls-files), `git commit -- TODO.md DECISIONS.md`, `python3 scripts/todo_edit.py`, cat, head, "
@@ -662,7 +662,7 @@ FREE_TOOLS = {
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}
 READ_TOOLS = {"cat", "head", "tail", "grep", "jq", "ls", "wc", "df", "du"}
-HERDR_FREE = {"todo", "worker", "history", "coordinator"}
+HERDR_FREE = {"todo", "worker", "history", "coordinator", "report", "reports"}
 HERDR_AGENT = {"read", "list", "get", "explain", "status", "awaiting-reply", "set-task"}
 JOB_FREE = {"wait", "list", "log", "watch"}
 GIT_READ = {"status", "log", "diff", "show", "fetch", "rev-parse", "ls-files"}

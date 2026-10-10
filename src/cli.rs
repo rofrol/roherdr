@@ -33,6 +33,7 @@ mod notification;
 mod pane;
 mod plugin;
 mod protocol_guard;
+mod report;
 mod runtime;
 mod server;
 mod server_not_running;
@@ -135,6 +136,8 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
         "todo" => todo::run_todo_command(&args[2..])?,
         "history" => history::run_history_command(&args[2..])?,
+        "report" => report::run_report_command(&args[2..])?,
+        "reports" => report::run_reports_command(&args[2..])?,
         "usage" => usage::run_usage_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
