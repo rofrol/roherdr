@@ -11,43 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] The server calls the review itself: `review_run` as a typed decision [t-qcsmxato]
-  call (first step of the architecture decided by the user 2026-10-10:
-  the item's lifecycle and the queue are server code, the LLM is called
-  only at decision points; rounds 20261010-114832-f497 and 20261010-113822-76ae,
-  sol + MiMo + DeepSeek, and an open-source survey: OpenHands, mini-swe-agent,
-  vibe-kanban, Temporal, Restate, DBOS, Inngest, LangGraph all keep
-  liveness in code; CrewAI's LLM manager is the reported failure). When a
-  run reaches `review`, the driver itself invokes a bounded, stateless
-  `claude -p` call with the task, the worker's final text, the diff, the
-  check results and the item; it must return JSON matching a schema:
-  `approve` (optional note), `retry` (review text), or `escalate`
-  (question for the user, with options); the server checks the schema and
-  that the action is legal in the run's state, binds an approval to the
-  exact commit and base, applies it at once, and records the decision with
-  its id, input digest and output. An invalid or failed call is retried
-  once, then escalated. The coordinator's manual `todo resume --action
-  approve|retry` stays as an override. The call's process exit is the
-  event; a deadline on it is only the provider's (`delay: external
-  deadline`). Tests with a stub model returning each action, an invalid
-  one, and a failure.
-  Slice 1 done 2026-10-10 (run `r-24ejgpas`): `herdr todo run --auto-review`
-  reviews each `review` event with a bounded `claude -p` typed decision
-  (approve, retry, escalate), validated, bound to commit and base, recorded
-  before it is applied (reused after a crash), retried once then escalated;
-  a manual resume wins. Decided by the coordinator for the next slice:
-  run `verify` (the registered checks) before the model's review, so it
-  judges real results; an escalation also enters the user's `?` list; a
-  review event stays visible to `todo wait` even when its store write
-  failed (no hidden events); the model setting can come later. Next:
-  `draft_task` and `answer_question` as decision calls.
-  Slice 2 done 2026-10-10 (run `r-my2hnvrt`): verify before the auto-review;
-  `--auto-answer` (allow, deny, answer, escalate; out-of-policy requests
-  may only escalate); escalations in the user's `?` list, answerable from
-  the dialog, the run going on by itself after the answer; a failed decision
-  write shows the run `blocked` with the error until it lands. Left:
-  `draft_task`.
-
 - [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
   (follows from the bridge, 2026-10-10; small, text only): herdr's
   AGENTS.md driver paragraph and the item coordinator prompt name the new
