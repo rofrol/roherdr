@@ -41,6 +41,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   review event stays visible to `todo wait` even when its store write
   failed (no hidden events); the model setting can come later. Next:
   `draft_task` and `answer_question` as decision calls.
+  Slice 2 done 2026-10-10 (run `r-my2hnvrt`): verify before the auto-review;
+  `--auto-answer` (allow, deny, answer, escalate; out-of-policy requests
+  may only escalate); escalations in the user's `?` list, answerable from
+  the dialog, the run going on by itself after the answer; a failed decision
+  write shows the run `blocked` with the error until it lands. Left:
+  `draft_task`.
 
 - [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
   (follows from the bridge, 2026-10-10; small, text only): herdr's
