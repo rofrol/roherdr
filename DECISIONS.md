@@ -790,3 +790,17 @@ wait edge (flocked, atomic) and the badge counts cross-tab waits from those
 records, once per job and only while the job runs, naming it
 (`1 bg ⧖ <job>`); the agent status stays idle; a waiting job is never marked
 idle by the silence rule. The badge updates at Claude's turn ends (Stop).
+
+## A headless worker's line in the sidebar cannot be clicked (user,
+
+A headless worker's question could not be clicked in the `?` list
+(user, 2026-10-07 and 2026-10-10). Now a click on it, in the list or on the
+worker's sidebar line, opens a dialog bound to the request id (rounds
+20261007-204431-83a8 and 20261010-025204-a255): the worker and task, its
+owner and why it was escalated, the full command or question, Allow once,
+Deny, View log, Stop worker (confirmed, the request denied) and Open owner;
+no default on Enter; answered-elsewhere or worker-gone shown and buttons
+disabled; "1 of N". Rows, clicks and highlight use the request id, never the
+list position. New client methods `worker.question` and
+`worker.deny_and_stop`; `worker.answer` is now advertised to clients, so its
+shape is frozen. "Adopt into my pane" waits for defined ownership transfer.
