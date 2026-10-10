@@ -12,7 +12,9 @@
 //! <words...>` (`perm-1`, cancelled, then `perm-2`), `two <tool> <words...>`
 //! (classifier-escalated `perm-1`, its answer, then `perm-2`), `ignore-term` (SIGTERM is
 //! ignored from then on), `orphan <fifo>` (a tool process in its own
-//! session that holds `<fifo>` open until it dies) and `gate <fifo>` (a tool
+//! session that holds `<fifo>` open until it dies), `held` (a Bash call
+//! whose tool exits at once, leaving a detached child that holds the
+//! tool's stderr, and that ends once the child is gone) and `gate <fifo>` (a tool
 //! use, then, once `<fifo>` is written, three text events, a stderr line and
 //! the result) and `gate-perm <fifo> <tool> <words...>` (`perm`, once
 //! `<fifo>` is written), `commit <file> <subject...>` (appends to
@@ -248,6 +250,19 @@ while True:
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})
         while True:
             read()
+    elif command == "held":
+        # A Bash call whose tool leaves a detached child holding its
+        # stderr: the call ends only once that child is gone.
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use",
+              "id": "toolu-held", "name": "Bash", "input": {"command": "held-tool"}}]}})
+        tool = subprocess.Popen(["/bin/sh", "-c",
+            "(exec tail -f /dev/null </dev/null >/dev/null &); echo tool"],
+            start_new_session=True, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        tool.communicate()
+        emit({"type": "user", "message": {"content": [{"type": "tool_result",
+              "tool_use_id": "toolu-held", "content": "tool"}]}})
+        result()
     elif command == "gate-perm":
         with open(words[1]) as gate:
             gate.read()
@@ -1435,6 +1450,41 @@ fn kill_ends_the_worker_and_its_recorded_tool_sessions() {
     assert!(!killed[0]["pids"].as_array().unwrap().is_empty());
     let recorded = fixture.herdr_events(&id, "tool_sessions");
     assert!(recorded[0]["sessions"][0]["leader_start"].is_u64());
+}
+
+/// A tool call whose own process exited while its detached child holds
+/// its stderr is reported once, naming the child, and wakes an attention
+/// wait; herdr kills nothing, so the call ends only when the child does.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_tool_call_whose_output_a_detached_child_holds_is_reported() {
+    let fixture = Fixture::new("held");
+    let id = fixture.start("held");
+    let (attention, _) = fixture.attention(&id, None, || {});
+    assert_eq!(attention.reason, WorkerAttentionReason::HeldOutput);
+    let report = attention.worker.held_output.clone().unwrap();
+    assert_eq!(report.holders.len(), 1, "{report:?}");
+    let holder = &report.holders[0];
+    assert!(holder.command.contains("tail -f /dev/null"), "{report:?}");
+    assert_eq!(report.tool_calls.len(), 1, "{report:?}");
+    assert_eq!(report.tool_calls[0].id, "toolu-held");
+    assert_eq!(report.tool_calls[0].command.as_deref(), Some("held-tool"));
+    assert!(crate::platform::process_exists(holder.pid));
+    assert_eq!(fixture.herdr_events(&id, "tool_output_held").len(), 1);
+    assert_eq!(
+        fixture.supervisor.status(&id).unwrap().state,
+        WorkerState::Working
+    );
+
+    unsafe { libc::kill(holder.pid as libc::pid_t, libc::SIGKILL) };
+    let (attention, _) = fixture.attention(&id, Some(attention.seq), || {});
+    assert_eq!(attention.reason, WorkerAttentionReason::TurnEnd);
+    assert_eq!(attention.worker.state, WorkerState::Finished);
+    // Reported once, and kept for the turn it happened in.
+    assert_eq!(fixture.herdr_events(&id, "tool_output_held").len(), 1);
+    assert_eq!(attention.worker.held_output, Some(report));
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
 }
 
 fn write_journal(dir: &Path, worker_id: &str, lines: &[Value]) {

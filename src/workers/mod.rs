@@ -73,12 +73,12 @@ use tracing::{info, warn};
 
 use crate::api::schema::{
     WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion, WorkerCommandTarget,
-    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerInfo,
-    WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport, WorkerObligation,
-    WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind,
-    WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams, WorkerSettledQuestion,
-    WorkerStartParams, WorkerState, WorkerTurnResult, WorkerVerification, WorkerVerifyParams,
-    WorkerWaitDrainedParams, WorkerWaitUntil,
+    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerHeldOutput,
+    WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport,
+    WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail,
+    WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunOutcome, WorkerRunsParams,
+    WorkerSettledQuestion, WorkerStartParams, WorkerState, WorkerToolCall, WorkerTurnResult,
+    WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -572,6 +572,13 @@ struct Status {
     /// coordinator ([`item_coordinators`]), whose every question goes to
     /// the user at once.
     coordinates: Option<String>,
+    /// The tool calls it started (an assistant `tool_use`) without a
+    /// `tool_result` yet; a turn's end clears them.
+    open_tool_calls: Vec<WorkerToolCall>,
+    /// The latest `tool_output_held` report in the current or last turn.
+    held_output: Option<WorkerHeldOutput>,
+    /// The `seq` of the latest `tool_output_held` event.
+    held_output_seq: Option<i64>,
 }
 
 /// Where a worker's broker serves it, and what a server that re-attaches
@@ -677,6 +684,9 @@ impl Status {
             broker_seq: 0,
             continuity_gap: None,
             coordinates: None,
+            open_tool_calls: Vec::new(),
+            held_output: None,
+            held_output_seq: None,
         }
     }
 
@@ -800,6 +810,9 @@ impl Status {
         if (direction, kind) == (Direction::In, Some("user")) && !self.is_gone() {
             self.turn_seq = Some(seq);
         }
+        if (direction, kind) == (Direction::Herdr, Some("tool_output_held")) {
+            self.held_output_seq = Some(seq);
+        }
         let result = (direction, kind) == (Direction::Out, Some("result"));
         if self.turn_ended() && (!before.turn_ended || result) {
             self.turn_end_seq = seq;
@@ -817,8 +830,9 @@ impl Status {
 
     /// Why a waiter that has seen everything up to `after` should look at
     /// the worker now, if it should: a pending question asked after it, a
-    /// turn ended after it, or the worker's end, which counts however old,
-    /// since nothing can follow it.
+    /// turn ended after it, the worker's end, which counts however old,
+    /// since nothing can follow it, or a tool call's output held open by
+    /// its descendants reported after it.
     fn attention(&self, after: Option<i64>) -> Option<WorkerAttentionReason> {
         let after = after.unwrap_or(i64::MIN);
         if self.is_gone() {
@@ -831,6 +845,8 @@ impl Status {
             Some(WorkerAttentionReason::Question)
         } else if self.turn_ended() && self.turn_end_seq > after {
             Some(WorkerAttentionReason::TurnEnd)
+        } else if self.held_output_seq.is_some_and(|seq| seq > after) {
+            Some(WorkerAttentionReason::HeldOutput)
         } else {
             None
         }
@@ -1207,11 +1223,43 @@ impl Status {
                 self.settle_question(event["request_id"].as_str(), "cancelled");
             }
             (Direction::In, "user") => {
+                // A report belongs to its turn: the next one starts without.
+                if !self.mid_turn() {
+                    self.held_output = None;
+                }
                 // A refusal stays until the turn's `result` takes it: a
                 // message sent during the turn does not clear it.
                 if self.state != WorkerState::Starting {
                     self.state = WorkerState::Working;
                 }
+            }
+            (Direction::Out, "assistant") => {
+                self.open_tool_calls.extend(
+                    event["message"]["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|block| block["type"].as_str() == Some("tool_use"))
+                        .filter_map(|block| {
+                            Some(WorkerToolCall {
+                                id: string_field(block, "id")?,
+                                tool: string_field(block, "name").unwrap_or_default(),
+                                command: block["input"]["command"]
+                                    .as_str()
+                                    .map(|command| command.chars().take(200).collect()),
+                            })
+                        }),
+                );
+            }
+            (Direction::Out, "user") => {
+                for block in event["message"]["content"].as_array().into_iter().flatten() {
+                    if let Some(id) = block["tool_use_id"].as_str() {
+                        self.open_tool_calls.retain(|call| call.id != id);
+                    }
+                }
+            }
+            (Direction::Herdr, "tool_output_held") => {
+                self.held_output = serde_json::from_value(event.clone()).ok();
             }
             (Direction::Out, "rate_limit_event") => {
                 self.rate_limit = event.get("rate_limit_info").cloned();
@@ -1248,6 +1296,7 @@ impl Status {
                     }
                 }
                 self.clear_questions("its turn ended");
+                self.open_tool_calls.clear();
                 self.turns += 1;
                 self.last_result = Some(result);
             }
@@ -1299,6 +1348,7 @@ impl Status {
             item: self.item.clone(),
             repo: self.repo.clone(),
             survives_handoff: self.broker.is_some() && !self.is_gone(),
+            held_output: self.held_output.clone(),
         }
     }
 
@@ -1433,6 +1483,23 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// One line per holder of a held tool output, and the tool calls then
+/// open: the user's notice and the worker's log show it.
+pub(super) fn held_output_summary(report: &WorkerHeldOutput) -> String {
+    let mut lines: Vec<String> = report
+        .holders
+        .iter()
+        .map(|holder| format!("pid {} holds it: {}", holder.pid, holder.command))
+        .collect();
+    for call in &report.tool_calls {
+        lines.push(match &call.command {
+            Some(command) => format!("open {} call {}: {command}", call.tool, call.id),
+            None => format!("open {} call {}", call.tool, call.id),
+        });
+    }
+    lines.join("\n")
 }
 
 /// One worker's append-only JSONL journal: an export of its events for
@@ -3480,6 +3547,7 @@ impl WorkerSupervisor {
             );
             return Err(WorkerError::Io(error));
         }
+        self.watch_held_output(number, pid);
 
         // The CLI buffers input written before `system/init` (trial 1). The
         // hook is registered before the prompt, so it covers the first call;
@@ -3736,6 +3804,7 @@ impl WorkerSupervisor {
             return Some(reader.owner_lock);
         }
         self.resend_answers(number, &live);
+        self.watch_held_output(number, pid);
         None
     }
 
@@ -5929,6 +5998,79 @@ impl WorkerSupervisor {
         })?;
         require_real_dir(&path)?;
         path.canonicalize()
+    }
+
+    /// Watches the CLI's children's exits and reports a tool call whose
+    /// output its descendants hold open: when a child of the CLI exits
+    /// (the positive event, from the platform's process watch) and
+    /// processes outside the CLI's tree still hold the write end of a pipe
+    /// the CLI reads, a `tool_output_held` event names those processes.
+    /// Each holder is reported once. Herdr kills nothing and sets no timer:
+    /// the report is a signal for the worker's coordinator, whose wait
+    /// returns with `held_output`. Only macOS has the fork event this
+    /// needs; elsewhere nothing is watched.
+    fn watch_held_output(&self, number: u64, pid: u32) {
+        let supervisor = self.clone();
+        let mut reported: BTreeSet<(u32, Option<u64>)> = BTreeSet::new();
+        let watched = crate::platform::watch_child_exits(
+            pid,
+            Box::new(move |exited| {
+                let holders: Vec<WorkerPipeHolder> = crate::platform::outside_pipe_writers(pid)
+                    .into_iter()
+                    .filter(|writer| {
+                        reported
+                            .insert((writer.pid, crate::platform::process_start_token(writer.pid)))
+                    })
+                    .map(|writer| WorkerPipeHolder {
+                        pid: writer.pid,
+                        command: writer.command,
+                    })
+                    .collect();
+                if !holders.is_empty() {
+                    supervisor.report_held_output(number, exited, holders);
+                }
+            }),
+        );
+        if let Err(error) = watched {
+            if error.kind() != std::io::ErrorKind::Unsupported {
+                warn!(%error, pid, "cannot watch the worker's tool processes");
+            }
+        }
+    }
+
+    fn report_held_output(&self, number: u64, exited: u32, holders: Vec<WorkerPipeHolder>) {
+        // Only the server attached to the worker reports: one that let go
+        // of it at a live handoff leaves that to the new one.
+        let Some((name, tool_calls)) = lock(&self.shared.registry)
+            .workers
+            .get(&number)
+            .filter(|entry| entry.live.is_some())
+            .map(|entry| {
+                (
+                    entry.status.name.clone(),
+                    entry.status.open_tool_calls.clone(),
+                )
+            })
+        else {
+            return;
+        };
+        let report = WorkerHeldOutput {
+            exited_pid: exited,
+            holders,
+            tool_calls,
+            at_ms: now_ms(),
+        };
+        let mut event = json!({"type": "tool_output_held"});
+        if let (Some(event), Ok(Value::Object(fields))) =
+            (event.as_object_mut(), serde_json::to_value(&report))
+        {
+            event.extend(fields);
+        }
+        self.record(number, Direction::Herdr, &event);
+        notify_user(UserNotice {
+            title: format!("Worker {name}: a tool call's output is held open"),
+            body: held_output_summary(&report),
+        });
     }
 
     /// Records the sessions of the CLI's descendants that are new. Claude

@@ -442,6 +442,9 @@ pub enum WorkerEventKind {
     /// It moved to another tenure (`to_coordinator_id`), which handles its
     /// events from now on.
     Reowned,
+    /// A tool call's output is held open by its descendants
+    /// (`held_output`).
+    HeldOutput,
     /// A kind this client does not know.
     #[serde(other)]
     Unknown,
@@ -466,6 +469,9 @@ pub struct WorkerEvent {
     /// With `reowned`: the tenure that owns it now, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_coordinator_id: Option<String>,
+    /// With `held_output`: the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_output: Option<WorkerHeldOutput>,
 }
 
 /// The owner's workers as they are now: the running ones and the ended ones
@@ -553,6 +559,11 @@ pub enum WorkerAttentionReason {
     TurnEnd,
     /// The process ended (`exited` or `lost`); nothing more will happen.
     Gone,
+    /// A tool call's own process exited while its descendants hold its
+    /// output open (`worker.held_output`); the turn goes on, waiting for
+    /// that output's end. Reported after `after` once, never as an
+    /// obligation.
+    HeldOutput,
     /// A reason this client does not know.
     #[serde(other)]
     Unknown,
@@ -727,6 +738,48 @@ pub struct WorkerInfo {
     /// Windows), which a handoff would end.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub survives_handoff: bool,
+    /// The latest report, in the current or last turn, of a tool call whose
+    /// output its descendants hold open (`held_output`); a new turn clears
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_output: Option<WorkerHeldOutput>,
+}
+
+/// A process the CLI started exited while processes outside the CLI's tree
+/// (its detached descendants) still hold the write end of a pipe the CLI
+/// reads: a tool call whose output stays open, so the CLI keeps waiting
+/// for its end. A report, never a kill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerHeldOutput {
+    /// The CLI's child whose exit herdr observed.
+    pub exited_pid: u32,
+    /// The processes that hold the pipe open, not reported before.
+    pub holders: Vec<WorkerPipeHolder>,
+    /// The tool calls the worker had started and not got a result for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<WorkerToolCall>,
+    /// Unix milliseconds when herdr found it.
+    pub at_ms: u64,
+}
+
+/// A process that holds the write end of a pipe the worker's CLI reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerPipeHolder {
+    pub pid: u32,
+    /// Its command line, or its name when the arguments cannot be read.
+    pub command: String,
+}
+
+/// A tool call the worker started (an assistant `tool_use`) without a
+/// `tool_result` yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerToolCall {
+    /// The `tool_use` id.
+    pub id: String,
+    pub tool: String,
+    /// A Bash call's command, cut to its first 200 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// Answers a worker's pending question: a tool approval or an
