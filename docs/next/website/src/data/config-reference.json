@@ -1662,6 +1662,23 @@
       ]
     },
     {
+      "id": "coordinator",
+      "title": "Coordinator",
+      "keys": [
+        {
+          "key": "coordinator.allowlist",
+          "type": "enum",
+          "default": "shadow",
+          "description": "What a coordinator tab's command allowlist does with a call it refuses: shadow lets it run and records it as a would-deny (`herdr history overrides --would-deny`), enforce denies it, and off lets it run unrecorded. A headless item coordinator always enforces.",
+          "values": [
+            "shadow",
+            "enforce",
+            "off"
+          ]
+        }
+      ]
+    },
+    {
       "id": "remote",
       "title": "Remote",
       "keys": [
