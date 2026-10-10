@@ -25,6 +25,8 @@ pub(crate) use super::unix_common::{
 
 mod bootstrap;
 pub(crate) use bootstrap::{configure_server_daemon_context, prepare_server_process};
+mod confine;
+pub(crate) use confine::{confined_command, CONFINED_JOB_SUPPORTED};
 
 #[cfg(test)]
 mod config_file_tests;

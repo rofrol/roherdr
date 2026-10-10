@@ -7787,6 +7787,159 @@ mod todo_runs {
             .is_empty());
     }
 
+    /// Commits `.herdr/operations.toml` with `text` on `master`.
+    fn commit_operations(fixture: &Fixture, text: &str) {
+        std::fs::write(fixture.repo.join(".herdr/operations.toml"), text).unwrap();
+        git_in(&fixture.repo, &["add", ".herdr/operations.toml"]);
+        git_in(&fixture.repo, &["commit", "-q", "-m", "operations"]);
+    }
+
+    fn grant_params(fixture: &Fixture, hash: &str) -> crate::api::schema::TodoGrantParams {
+        crate::api::schema::TodoGrantParams {
+            cwd: fixture.repo.display().to_string(),
+            operation: "prepare".into(),
+            hash: hash.into(),
+        }
+    }
+
+    /// The hash a `grant_required` refusal shows.
+    fn shown_hash(message: &str) -> String {
+        let (_, rest) = message.split_once("--hash ").expect(message);
+        rest.split_whitespace()
+            .next()
+            .unwrap()
+            .trim_end_matches('`')
+            .to_owned()
+    }
+
+    const OPERATIONS: &str = "version = 1\n[prepare]\nargv = [\"true\"]\n\
+                              [prepare.capabilities]\nenv = { names = [\"PATH\"] }\n";
+
+    #[test]
+    fn a_prepare_runs_only_under_the_users_grant_of_its_base_definition() {
+        let fixture = todo_repo("todo-prepare-grant");
+        let repo = fixture.repo.clone();
+        let base = || git_in(&repo, &["rev-parse", "master"]).trim().to_owned();
+        let task = format!("commit a.txt {SUBJECT}");
+        // The worker's tree is never read: an uncommitted file asks nothing.
+        std::fs::write(repo.join(".herdr/operations.toml"), OPERATIONS).unwrap();
+        assert_eq!(
+            fixture.supervisor.plan_operations(&repo, &base()).unwrap(),
+            None
+        );
+        commit_operations(&fixture, OPERATIONS);
+        let refused = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err();
+        if !crate::platform::CONFINED_JOB_SUPPORTED {
+            assert_eq!(refused.code(), "capability_unsupported", "{refused}");
+            return;
+        }
+        assert_eq!(refused.code(), "grant_required", "{refused}");
+        assert!(fixture
+            .supervisor
+            .todo_runs(None, None)
+            .unwrap()
+            .0
+            .is_empty());
+        let hash = shown_hash(&refused.to_string());
+
+        // The grant names the exact definition; another hash is refused.
+        assert_eq!(
+            fixture
+                .supervisor
+                .todo_grant(grant_params(&fixture, "0000"))
+                .unwrap_err()
+                .code(),
+            "invalid_request"
+        );
+        let grant = fixture
+            .supervisor
+            .todo_grant(grant_params(&fixture, &hash))
+            .unwrap();
+        assert_eq!(
+            (grant.operation.as_str(), grant.hash.as_str()),
+            ("prepare", hash.as_str())
+        );
+        assert_eq!(grant.definition["argv"], serde_json::json!(["true"]));
+        let plan = fixture
+            .supervisor
+            .plan_operations(&repo, &base())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (plan.hash.as_str(), plan.granted_ms),
+            (hash.as_str(), grant.granted_ms)
+        );
+
+        // A changed request is a new question; the old grant stays.
+        commit_operations(
+            &fixture,
+            &OPERATIONS.replace("[\"PATH\"]", "[\"PATH\", \"HOME\"]"),
+        );
+        let changed = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap_err();
+        assert_eq!(changed.code(), "grant_required", "{changed}");
+        assert_ne!(shown_hash(&changed.to_string()), hash);
+        let grants = fixture
+            .supervisor
+            .todo_grants(crate::api::schema::TodoGrantsParams {
+                cwd: Some(repo.display().to_string()),
+            })
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+
+        // A request no adapter here enforces refuses the run, typed.
+        for unsupported in [
+            "version = 1\n[worker.capabilities]\npty = {}\n",
+            "version = 1\n[prepare]\nargv = [\"true\"]\n[prepare.capabilities]\n\
+             \"exec.unsandboxed\" = { argv = [\"x\"] }\n",
+        ] {
+            commit_operations(&fixture, unsupported);
+            let error = fixture
+                .supervisor
+                .todo_run(params(&fixture, &task, "ok"))
+                .unwrap_err();
+            assert_eq!(error.code(), "capability_unsupported", "{error}");
+        }
+
+        // Granted again as first defined, the run records what it runs with.
+        commit_operations(&fixture, OPERATIONS);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &task, "ok"))
+            .unwrap();
+        let created = run_events(&fixture, &run.run_id, "run_created");
+        assert_eq!(created[0]["grants"]["hash"], hash.as_str(), "{created:#?}");
+        assert_eq!(
+            fixture
+                .supervisor
+                .load_run(&run.run_id)
+                .unwrap()
+                .finish
+                .prepare
+                .map(|plan| plan.hash),
+            Some(hash.clone())
+        );
+        let (event, _) = wait(&fixture, &run.run_id, None);
+        let started = run_events(&fixture, &run.run_id, "run_prepare_started");
+        assert_eq!(started[0]["grant"]["hash"], hash.as_str(), "{started:#?}");
+        let prepared = run_events(&fixture, &run.run_id, "run_prepared");
+        if event.kind == TodoEventKind::Blocked {
+            // Inside another sandbox (an agent's), the job cannot be
+            // confined: the run blocks rather than run it unconfined.
+            assert_eq!(prepared[0]["status"], "failed", "{prepared:#?}");
+            assert!(event.error.unwrap_or_default().contains("prepare failed"));
+            return;
+        }
+        assert_eq!(prepared[0]["status"], "done", "{prepared:#?}");
+        assert_eq!(event.kind, TodoEventKind::Review, "{event:#?}");
+        abort(&fixture, &run.run_id, event.event_id);
+    }
+
     #[test]
     fn preflight_refuses_what_a_run_cannot_do() {
         let fixture = todo_repo("todo-preflight");

@@ -1367,6 +1367,8 @@ impl App {
             | Method::TodoStop(_)
             | Method::TodoQueueSet(_)
             | Method::TodoQueueStatus(_)
+            | Method::TodoGrant(_)
+            | Method::TodoGrants(_)
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_)
             | Method::HistoryWouldDeny(_)

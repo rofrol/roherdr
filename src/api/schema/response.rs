@@ -25,7 +25,7 @@ use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::todo::{
-    TodoChainInfo, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
+    TodoChainInfo, TodoGrant, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
 };
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
@@ -146,6 +146,14 @@ pub enum ResponseResult {
     /// `todo.queue_set`'s and `todo.queue_status`' reply.
     TodoQueue {
         queue: TodoQueueInfo,
+    },
+    /// `todo.grant`'s reply: the stored grant.
+    TodoGrant {
+        grant: TodoGrant,
+    },
+    /// `todo.grants`' reply.
+    TodoGrants {
+        grants: Vec<TodoGrant>,
     },
     /// `history.list`'s reply: each recorded item with its latest record,
     /// the most recent first.

@@ -74,6 +74,7 @@ mod auto_review;
 pub(super) mod decision;
 pub(super) mod escalations;
 mod finish;
+mod prepare;
 pub(super) mod queue;
 mod usage_gate;
 
@@ -210,6 +211,13 @@ pub(super) struct RunFinish {
     /// review's approval closes the item.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) queued: bool,
+    /// The repository's granted `prepare` as preflight read it from the
+    /// base commit, with its grant: the grants the run runs with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) prepare: Option<super::capabilities::PreparePlan>,
+    /// The prepare ran and succeeded ([`prepare`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) prepared: bool,
 }
 
 /// A check the verify adds by itself, when the repository registers it, to
@@ -1226,6 +1234,8 @@ struct Preflighted {
     checks: Vec<RunCheck>,
     install: Option<InstallCommand>,
     path_checks: Vec<RunCheck>,
+    /// The granted prepare of the base commit's operations file.
+    prepare: Option<super::capabilities::PreparePlan>,
 }
 
 impl WorkerSupervisor {
@@ -1420,6 +1430,7 @@ impl WorkerSupervisor {
                 auto_answer: params.auto_answer,
                 draft,
                 queued: queue.is_some(),
+                prepare: preflighted.prepare.clone(),
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1434,6 +1445,8 @@ impl WorkerSupervisor {
             "checks": preflighted.checks,
             "install": preflighted.install,
             "path_checks": preflighted.path_checks,
+            // The grants the run runs with, none without a prepare.
+            "grants": preflighted.prepare,
             "message": params.message,
             "paths": params.paths,
             "task": params.task,
@@ -1576,7 +1589,9 @@ impl WorkerSupervisor {
 
     /// Checks everything a run needs before it starts anything: the task,
     /// the message, the paths, the item in `TODO.md`, the registered check,
-    /// the free disk, a free and clean folder slot, and `master`'s commit.
+    /// the free disk, a free and clean folder slot, `master`'s commit, and
+    /// the operations file at that commit: its requests enforceable and its
+    /// prepare granted ([`super::capabilities`]).
     /// A run the server drafts has no task, message, paths or checks yet:
     /// its draft is checked when it comes ([`auto_draft`]).
     fn preflight(
@@ -1632,11 +1647,13 @@ impl WorkerSupervisor {
             .trim()
             .to_owned();
         let path_checks = path_checks_of(&checks, &registered);
+        let prepare = self.plan_operations(repo, &base)?;
         Ok(Preflighted {
             base,
             checks: registered,
             install: checks.install,
             path_checks,
+            prepare,
         })
     }
 
@@ -2647,6 +2664,7 @@ impl WorkerSupervisor {
     /// branch from the base, with a command id derived from the run: a
     /// driver after a crash gets the same worker back instead of a second.
     fn step_start(&self, run: &mut Run) -> Result<(), String> {
+        self.step_prepare(run)?;
         self.release_slot(run)?;
         // A later attempt's branch starts from the previous attempt's
         // commit, cherry-picked onto the base; a conflict asks the
