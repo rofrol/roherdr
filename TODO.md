@@ -1608,6 +1608,15 @@ user needs to decide or do.
   himself; agents never handle the login); after the test: log out and
   delete the VM. VM still to choose (OrbStack shares the Mac's files by
   default; a fresh UTM VM without shared folders is the safe default).
+  Selection revisited 2026-10-10 (user asked why only two; round
+  20261010-120404-6a53): all three models: two test agent lifecycle but not
+  herdr's hard part, durable replay. Add Restate's durable coding-agent
+  example as the third (sol, DeepSeek; MiMo preferred LangGraph): a decision
+  call recorded once and not repeated on replay, a human wait surviving a
+  restart, bounded retries. vibe-kanban's "orphan -> Failed" is the naive
+  policy herdr should beat. Add a seventh scenario for every project: a
+  side effect done (or a decision recorded), crash before the next
+  transition, restart: reused, repeated or reconciled?
 
 ### Decide
 
