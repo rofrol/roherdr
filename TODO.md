@@ -36,6 +36,68 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   if he does), review rounds, machinery fixes it triggered, wall-clock time
   from start to push. After 10 items: a summary and a question to the user.
 
+- [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
+  (user, 2026-10-09: "the coordinator-worker model is meant to become a
+  protocol with an implementation in Odin etc., not hardcoded crates.io";
+  consult round 20261009-190333-40fb, sol + MiMo + DeepSeek agreeing;
+  decided by the user: "prepare + capabilities"). The coordination layer
+  names no registry, language or tool:
+  - Protocol (language-neutral, versioned): capabilities `net.egress{hosts}`,
+    `fs.write{paths}`, `env{names}`, `exec{argv}`; a repository or item
+    requests, the user's policy grants, the worker kind's adapter enforces;
+    an unknown or unsupported capability is refused (fail closed); every
+    run records its effective grants.
+  - Repository (`.herdr/`), read by the driver from the run's base commit,
+    never from the worker's tree: `[prepare]` argv (here `cargo fetch
+    --locked`) with the capabilities it needs (here egress to crates.io and
+    static.crates.io). A repository diff that changes requested
+    capabilities is a question to the user, never self-granted.
+  - Driver: prepare runs in its own sandbox (only the granted egress, no
+    secrets, writes only the dependency cache); the worker stays offline
+    and builds from that cache.
+  - Worker kinds map grants to their own sandbox (Claude Code: its
+    `sandbox` settings); a pi or Odin worker implements the same contract.
+  Belongs with the item "Extract the coordination layer into its own crate";
+  do this slice first, in today's code, as the crate's first protocol piece.
+  Second case (try-roguix coordinator, 2026-10-10, headless worker `w78`,
+  item t-w2soppgg, WORKER-BLOCKED): the worker sandbox stops that
+  repository's real work: launching a test VM (codesign
+  CSSMERR_TP_NOT_TRUSTED for its ad-hoc or locally signed QEMU/app), `ps`,
+  `herdr-job` outside a herdr pane, and `make test` (temp-dir writes, PTYs,
+  local sockets). Only docs and research items run there today. The
+  capability vocabulary must cover these as named, user-granted requests
+  per repository (e.g. `exec.unsandboxed{argv}` for a listed launcher,
+  `proc.list`, `pty`, `net.local`), and a worker kind that cannot enforce a
+  grant refuses the run (fail closed) so the coordinator routes it to a
+  pane worker instead of the worker blocking mid-task.
+  Host operations, 2026-10-10 (user: "a VM launcher in herdr is hardcoding
+  again, like crates.io; the protocol must be implementable in Odin"; round
+  20261010-030301-b507, sol + MiMo + DeepSeek agreeing): `[prepare]`
+  generalizes into repository-declared operations; the protocol knows only
+  operation, parameters, capabilities, grant and result, never VMs, QEMU or
+  cargo. Points every implementation must follow:
+  - An operation is a separately confined job, not a way out of
+    confinement: repository code (e.g. `make vm-test`) is untrusted; the
+    user's grant (per repository, operation and definition hash at the base
+    commit) is the trust decision; confinement only contains damage.
+  - Definitions and the scripts they run come from an immutable base-commit
+    checkout; the worker's changes reach an operation only as explicit,
+    untrusted input (otherwise a worker rewrites the Makefile the grant
+    covers).
+  - Each capability has a precise scope inherited by descendants; `exec`
+    means arbitrary code inside the granted confinement, not a narrowing.
+  - An implementation advertises what it can enforce; anything it cannot
+    enforce as specified is refused; results say denied, failed or
+    unsupported, plus exit status, bounded output and a job-scoped log.
+  - Jobs have ids, cancellation, resource budgets and descendant cleanup;
+    repeat invocations are budgeted.
+  - A conformance test per capability, including "unsupported must refuse".
+  First slice: `prepare` as the one operation (no parameters, argv only, no
+  PTY or local sockets). VM work is slice two: it needs PTYs and local
+  sockets, the hardest to confine; if an implementation cannot confine
+  them, VM items stay unavailable to headless workers there rather than
+  falling back silently.
+
 - [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
   2026-10-07: "can't it be compacted or cleared now and then? ask the
   models"; decided by the user 2026-10-07 from the menu: a fresh coordinator
@@ -89,6 +151,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   workers' questions first, a notification on escalation), the decision on
   network for item coordinators' consults, and the `todo` skill change.
   Then the chat session only answers, queues and starts or stops the chain.
+  Decided by the user 2026-10-10: item coordinators get network to the
+  consult model APIs (api.openai.com, openrouter.ai, api.deepseek.com) as a
+  `net.egress` capability granted per repository through the capability
+  protocol [t-ih3cmtjf], which therefore comes before `todo next` becomes
+  the default.
 
 - [ ] The `todo` skill for `herdr todo next` (proposed by the worker of run [t-ux4n3s3o]
   `r-wjmj7vys`, 2026-10-10): the chat coordinator does not start workers
@@ -573,68 +640,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   sidebar shows for a `coordinator` tab, with the same width handling as
   the other chips (a glyph whose width differs between terminals must not
   shift the row), and keep its click and tooltip behavior.
-
-- [ ] Worker capabilities in the coordination protocol, and a prepare step [t-ih3cmtjf]
-  (user, 2026-10-09: "the coordinator-worker model is meant to become a
-  protocol with an implementation in Odin etc., not hardcoded crates.io";
-  consult round 20261009-190333-40fb, sol + MiMo + DeepSeek agreeing;
-  decided by the user: "prepare + capabilities"). The coordination layer
-  names no registry, language or tool:
-  - Protocol (language-neutral, versioned): capabilities `net.egress{hosts}`,
-    `fs.write{paths}`, `env{names}`, `exec{argv}`; a repository or item
-    requests, the user's policy grants, the worker kind's adapter enforces;
-    an unknown or unsupported capability is refused (fail closed); every
-    run records its effective grants.
-  - Repository (`.herdr/`), read by the driver from the run's base commit,
-    never from the worker's tree: `[prepare]` argv (here `cargo fetch
-    --locked`) with the capabilities it needs (here egress to crates.io and
-    static.crates.io). A repository diff that changes requested
-    capabilities is a question to the user, never self-granted.
-  - Driver: prepare runs in its own sandbox (only the granted egress, no
-    secrets, writes only the dependency cache); the worker stays offline
-    and builds from that cache.
-  - Worker kinds map grants to their own sandbox (Claude Code: its
-    `sandbox` settings); a pi or Odin worker implements the same contract.
-  Belongs with the item "Extract the coordination layer into its own crate";
-  do this slice first, in today's code, as the crate's first protocol piece.
-  Second case (try-roguix coordinator, 2026-10-10, headless worker `w78`,
-  item t-w2soppgg, WORKER-BLOCKED): the worker sandbox stops that
-  repository's real work: launching a test VM (codesign
-  CSSMERR_TP_NOT_TRUSTED for its ad-hoc or locally signed QEMU/app), `ps`,
-  `herdr-job` outside a herdr pane, and `make test` (temp-dir writes, PTYs,
-  local sockets). Only docs and research items run there today. The
-  capability vocabulary must cover these as named, user-granted requests
-  per repository (e.g. `exec.unsandboxed{argv}` for a listed launcher,
-  `proc.list`, `pty`, `net.local`), and a worker kind that cannot enforce a
-  grant refuses the run (fail closed) so the coordinator routes it to a
-  pane worker instead of the worker blocking mid-task.
-  Host operations, 2026-10-10 (user: "a VM launcher in herdr is hardcoding
-  again, like crates.io; the protocol must be implementable in Odin"; round
-  20261010-030301-b507, sol + MiMo + DeepSeek agreeing): `[prepare]`
-  generalizes into repository-declared operations; the protocol knows only
-  operation, parameters, capabilities, grant and result, never VMs, QEMU or
-  cargo. Points every implementation must follow:
-  - An operation is a separately confined job, not a way out of
-    confinement: repository code (e.g. `make vm-test`) is untrusted; the
-    user's grant (per repository, operation and definition hash at the base
-    commit) is the trust decision; confinement only contains damage.
-  - Definitions and the scripts they run come from an immutable base-commit
-    checkout; the worker's changes reach an operation only as explicit,
-    untrusted input (otherwise a worker rewrites the Makefile the grant
-    covers).
-  - Each capability has a precise scope inherited by descendants; `exec`
-    means arbitrary code inside the granted confinement, not a narrowing.
-  - An implementation advertises what it can enforce; anything it cannot
-    enforce as specified is refused; results say denied, failed or
-    unsupported, plus exit status, bounded output and a job-scoped log.
-  - Jobs have ids, cancellation, resource budgets and descendant cleanup;
-    repeat invocations are budgeted.
-  - A conformance test per capability, including "unsupported must refuse".
-  First slice: `prepare` as the one operation (no parameters, argv only, no
-  PTY or local sockets). VM work is slice two: it needs PTYs and local
-  sockets, the hardest to confine; if an implementation cannot confine
-  them, VM items stay unavailable to headless workers there rather than
-  falling back silently.
 
 - [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
   ends with new commits, list them as "to review" until I acknowledge them.
@@ -1622,10 +1627,6 @@ user needs to decide or do.
   fork sync, which rebases onto upstream and force-pushes `master`.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
-
-- [ ] [t-ktk2vg5y] May a headless item coordinator reach the consult models (OpenAI, OpenRouter, DeepSeek) so it can "ask the models" as the user expects?
-  Options: grant it `net.egress` to those API hosts through the capability protocol, per repository, user-approved (Recommended) | it never consults; it escalates to the chat session, which consults and answers | no item coordinators until decided
-  Checked: the fresh-coordinator slice (run `r-wjmj7vys`, 2026-10-10) runs item coordinators in the worker sandbox with no network, so the consult helpers fail; consulting the models is part of how the user wants decisions made.
 
 ### Decide
 
