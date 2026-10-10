@@ -39,6 +39,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      decision" question "Enforce the coordinator stop check").
   4. Queue mode (`herdr todo queue on`) only after 1-3 ran clean for a
      week (MiMo, DeepSeek; sol would go sooner).
+  5. `todo resume --note` takes `--next`/`--stop-reason` like `--close`
+     (found 2026-10-10: approving r-6com5znp with a note could not chain
+     the next item, so the coordinator had to start it by hand, the same
+     stall the bridge removed for `--close`).
 
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
