@@ -64,8 +64,9 @@ herdr-job clean           # close this pane's finished job tabs (--all: everyone
   tab statuses, not from `$jobs`; the space row keeps only jobs nested under
   a tab that is gone.
 - `herdr-bg-badge` (a Claude Code Stop hook) puts the number of Claude's own
-  background tasks in `$bg` (`2 bg`), skipping `herdr-job wait` tasks, which
-  `$jobs` already counts.
+  background tasks in `$bg` (`2 bg`). A `herdr-job wait` task counts there
+  only while its job runs in another pane's tab (`1 bg ⧖ Build b17`, naming
+  the job); one on this pane's own job is already in `$jobs`.
 - The job tab's shell gets the `_exec` line typed into it, so it is kept out of
   your history: a leading space for atuin, and `HISTORY_IGNORE` in the tab's
   environment for zsh's history file.
@@ -253,9 +254,20 @@ through `~/.claude/skills/consult-stats/in_herdr_job.sh` (in rofrol/dotfiles).
 ## Claude background tasks: `herdr-bg-badge`
 
 A Claude Code `Stop`/`SubagentStop` hook that shows Claude's own background
-tasks (from the hook payload's `background_tasks`) as a `$bg` token:
-`⏳ <description>` for one task, `⏳ N bg` for several. Payloads are logged to
+tasks (from the hook payload's `background_tasks`) as a `$bg` token, e.g.
+`2 bg`, cleared when none run. Payloads are logged to
 `~/.local/state/herdr-bg/payloads.jsonl`.
+
+Waits come from herdr-job's records, not from the task's command text: every
+`herdr-job wait`, `wait-agent` and `_watch-pid` writes a record of what it
+waits on (the waiting pane, the job it runs in, the target job and its tab,
+the start time) to `~/.local/state/herdr-job/waits/`, published atomically
+and flocked by the waiting process, so it is gone, or ignored and removed,
+as soon as the wait ends however it ends (`herdr-job _waits --pane <pane>`
+prints them). A coordinator that waits on a job in its worker's tab thus
+shows `1 bg ⧖ <job name>` while that job runs, its agent state staying idle;
+a wait on its own job is left to `$jobs`, each job counts once however many
+tasks wait on it, and a wait on a job that ended or is gone counts nothing.
 
 ```json
 "Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}],
@@ -436,4 +448,6 @@ watches its output. After 5 minutes with no output and under 2% of one core, it 
 idle (`herdr tab status <tab> running --activity idle`); the sidebar then shows the agent that
 started it with a still mauve `z` ("asleep") instead of the purple turning half circle, and the job's footer
 says `(idle)`. Output or CPU use clears it. A job can be idle and healthy (a VM waiting for a
-build); the mark says only that nothing is happening.
+build); the mark says only that nothing is happening. A job whose command is waiting through
+`herdr-job wait`, `wait-agent` or `watch` (its wait record names the job) is never marked idle:
+silence is what waiting looks like, and its liveness is its target's.

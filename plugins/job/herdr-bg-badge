@@ -3,13 +3,16 @@
 
 Reads the hook payload's `background_tasks` (Claude Code 2.1.28x), logs it to
 ~/.local/state/herdr-bg/payloads.jsonl, and reports `$bg` pane metadata:
-the number of running tasks (`2 bg`), or cleared when none run. Tasks that
-only wait for a herdr-job are skipped: its `$jobs` token already counts them.
-Never fails the hook: all errors are swallowed.
+the number of running tasks (`2 bg`), or cleared when none run.
+
+A task that is a `herdr-job wait` is known from herdr-job's own wait records
+(`herdr-job _waits`), not from its command text: it counts here unless this
+pane's own job counts (`$jobs`, the tab's job summary) already show that job,
+once per job, and only while that job runs; the token then names it
+(`1 bg ⧖ Build b17`). Never fails the hook: all errors are swallowed.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -19,7 +22,9 @@ LOG = Path.home() / ".local/state/herdr-bg/payloads.jsonl"
 LOG_MAX_BYTES = 1_000_000
 DONE = {"completed", "failed", "killed", "stopped", "cancelled", "canceled", "error"}
 TTL_MS = 12 * 60 * 60 * 1000
-JOB_WAIT = re.compile(r"(^|[\s/])herdr-job\s+wait\s")
+NAME_WIDTH = 24
+# Next to this script (the installer links it from the plugin's directory).
+HERDR_JOB = Path(__file__).resolve().with_name("herdr-job")
 HERDR = os.environ.get("HERDR_BIN_PATH", "")
 if not os.access(HERDR, os.X_OK):
     HERDR = "herdr"
@@ -34,8 +39,43 @@ def log(entry):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def waits_for_job(task):
-    return bool(JOB_WAIT.search(str(task.get("command") or "")))
+def job_waits(pane):
+    """herdr-job's records of this pane's `herdr-job wait`s: `edges` (how many
+    run) and `waits` (one per job). None when herdr-job does not answer. The
+    hook's own timeout in Claude Code's settings bounds the call."""
+    out = subprocess.run([sys.executable, str(HERDR_JOB), "_waits", "--pane", pane],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    return json.loads(out.stdout)
+
+
+def short(text, width=NAME_WIDTH):
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def badge(running, waits):
+    """The `$bg` value, or None to clear it. `running` is the number of running
+    background tasks; every `herdr-job wait` among them has a record in
+    `waits`, so those tasks count only as the jobs they wait on that run and
+    that this pane's own job counts do not show."""
+    waits = waits or {"edges": 0, "waits": []}
+    other = max(0, running - int(waits.get("edges") or 0))
+    shown = {}
+    for wait in waits.get("waits") or []:
+        if wait.get("running") and not wait.get("local"):
+            shown.setdefault(wait.get("job_id"), wait)
+    total = other + len(shown)
+    if not total:
+        return None
+    text = f"{total} bg"
+    if shown:
+        first = next(iter(shown.values()))
+        text += f" ⧖ {short(first.get('job_name') or first.get('job_id'))}"
+        if len(shown) > 1:
+            text += f" +{len(shown) - 1}"
+    return text
 
 
 def main():
@@ -53,14 +93,19 @@ def main():
     pane = os.environ.get("HERDR_PANE_ID")
     if not pane or not os.environ.get("HERDR_SOCKET_PATH") or tasks is None:
         return
-    running = [
-        t for t in tasks if str(t.get("status", "")).lower() not in DONE and not waits_for_job(t)
-    ]
+    running = [t for t in tasks if str(t.get("status", "")).lower() not in DONE]
+    waits = None
+    if running:
+        try:
+            waits = job_waits(pane)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            waits = None
+    value = badge(len(running), waits)
     cmd = [HERDR, "pane", "report-metadata", pane, "--source", "claude-bg"]
-    if not running:
+    if value is None:
         cmd += ["--clear-token", "bg"]
     else:
-        cmd += ["--token", f"bg={len(running)} bg", "--ttl-ms", str(TTL_MS)]
+        cmd += ["--token", f"bg={value}", "--ttl-ms", str(TTL_MS)]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
 
 

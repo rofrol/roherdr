@@ -1298,7 +1298,9 @@ def watch_activity(proc, meta, last_output):
             continue
         samples.append((now, cpu))
         samples[:] = [s for s in samples if now - s[0] <= IDLE_WINDOW_S + 2 * SAMPLE_INTERVAL_S]
-        idle = job_is_idle(samples, last_output[0], now)
+        # A job whose command waits on another (`herdr-job wait`, `wait-agent`,
+        # `watch`) is as alive as its target: silence is what waiting looks like.
+        idle = job_is_idle(samples, last_output[0], now) and not job_waits(meta["id"])
         since_report += 1
         if idle != reported or (idle and since_report >= IDLE_RESEND_SAMPLES):
             args = ["tab", "status", meta["tab_id"], "running"] + (["--activity", "idle"] if idle else [])
@@ -1528,6 +1530,11 @@ def wait_for_exit(pid):
 
 
 def cmd_watch_pid(args):
+    with wait_edge("pid", target_pid=args.pid):
+        watch_pid(args)
+
+
+def watch_pid(args):
     identity = process_identity(args.pid)
     if identity is None or identity[0] != args.started:
         print(f"herdr-job: pid {args.pid} is gone already (or now belongs to another process)")
@@ -1550,12 +1557,129 @@ def cmd_watch(args):
     cmd_run(args)
 
 
+# A wait records what it waits on, so the sidebar can show the waiting pane
+# busy while its target runs (`herdr-bg-badge`, `_waits`) and a job that only
+# waits is never marked idle (`watch_activity`). One file per wait under
+# `waits/`, published atomically and flocked by the waiting process for its
+# whole life: the kernel drops the lock however the wait ends, so an unlocked
+# record is a dead wait's, whatever its age.
+WAITS = STATE / "waits"
+
+
+@contextlib.contextmanager
+def wait_edge(kind, **target):
+    """Records a wait of `kind` (`job`, `agent`, `pid`) on `target` while
+    the block runs: the waiting pane (HERDR_PANE_ID), the job it runs in
+    (HERDR_JOB_ID, when the wait is itself a job's command) and the start
+    time. A record that cannot be written only loses the display."""
+    edge = {"kind": kind, "waiter_pane": os.environ.get("HERDR_PANE_ID"),
+            "waiter_job": os.environ.get("HERDR_JOB_ID"), "pid": os.getpid(),
+            "started": time.time(), **target}
+    fd = record = None
+    try:
+        WAITS.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, tmp = tempfile.mkstemp(prefix=".edge.", suffix=".tmp", dir=WAITS)
+        try:
+            os.write(fd, json.dumps(edge, ensure_ascii=False).encode())
+            # Locked before it is published: a reader never sees it unlocked.
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            record = WAITS / f"{os.getpid()}-{secrets.token_hex(3)}.json"
+            os.replace(tmp, record)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        fd = record = None
+    try:
+        yield
+    finally:
+        if record is not None:
+            with contextlib.suppress(OSError):
+                record.unlink()
+        if fd is not None:
+            os.close(fd)
+
+
+def live_edges():
+    """The records of the waits that still run; a dead wait's record is removed."""
+    if not WAITS.is_dir():
+        return []
+    edges = []
+    for record in sorted(WAITS.glob("*.json")):
+        try:
+            fd = os.open(record, os.O_RDONLY)
+        except OSError:
+            continue  # its wait just ended
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                with contextlib.suppress(ValueError, OSError):
+                    edges.append(json.loads(record.read_text()))
+                continue
+            with contextlib.suppress(OSError):
+                record.unlink()
+        finally:
+            os.close(fd)
+    return edges
+
+
+def job_waits(job_id):
+    """Whether the job's command is waiting on something now."""
+    return any(edge.get("waiter_job") == job_id for edge in live_edges())
+
+
+def waits_of_pane(pane):
+    """The `herdr-job wait`s the pane runs: `edges`, how many run, and `waits`,
+    one per job, each with whether its job still runs and whether the pane's
+    own job counts show that job already (the pane started it, or its tab is,
+    or nests under, the pane's tab)."""
+    edges = [edge for edge in live_edges() if edge.get("kind") == "job" and edge.get("waiter_pane") == pane]
+    if not edges:
+        return {"edges": 0, "waits": []}
+    try:
+        tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+    except (SystemExit, ValueError, KeyError, TypeError):
+        tabs = None
+    try:
+        waiter_tab = json.loads(herdr("pane", "get", pane, check=False) or "{}")["result"]["pane"].get("tab_id")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        waiter_tab = None
+    waits = {}
+    for edge in edges:
+        job_id = str(edge.get("job_id") or "")
+        path = STATE / job_id
+        if not job_id or job_id in waits or not (path / "meta.json").is_file():
+            continue
+        meta = read_meta(path)
+        running = active(status(path, meta, tabs)[0])
+        job_tab = meta.get("tab_id")
+        parent_tab = ((tabs or {}).get(job_tab) or {}).get("parent_tab_id")
+        local = meta.get("owner_pane") == pane or (waiter_tab is not None and waiter_tab in (job_tab, parent_tab))
+        waits[job_id] = {"job_id": job_id, "job_name": meta.get("name"), "job_tab": job_tab,
+                         "started": edge.get("started"), "running": running, "local": local}
+    return {"edges": len(edges), "waits": list(waits.values())}
+
+
+def cmd_waits(args):
+    print(json.dumps(waits_of_pane(args.pane), ensure_ascii=False))
+
+
 def cmd_wait(args):
     """Waits for a job and exits with its code. By default it prints a line
     to say what it waits for, nothing while the job runs, and the final line;
     a failure adds the tail of the log. `--stream` follows the whole log as it
     grows (the old behaviour), `--quiet` prints only the final line."""
     path = job_dir(args.id)
+    meta = read_meta(path)
+    with wait_edge("job", job_id=args.id, job_tab=meta.get("tab_id")):
+        wait_for_job(args, path)
+
+
+def wait_for_job(args, path):
     log_path = path / "log"
     offset = 0
     stream = args.stream or os.environ.get("HERDR_JOB_WAIT_STREAM") == "1"
@@ -1761,6 +1885,11 @@ def cmd_wait_agent(args):
     worker's transcript once for its verdict; otherwise until it reaches a
     state (`herdr agent wait`). Transport errors are retried here with
     backoff; an agent that is gone ends the wait."""
+    with wait_edge("agent", target_pane=args.pane, request=args.request):
+        wait_for_agent(args)
+
+
+def wait_for_agent(args):
     say = lambda text: print(f"herdr-job wait-agent {args.pane}: {text}", flush=True)
     if args.request:
         say(f"waiting for the turn of prompt request {args.request}")
@@ -1914,6 +2043,9 @@ def main():
     wait.add_argument("--quiet", action="store_true")
     wait.add_argument("--stream", action="store_true", help="follow the whole log as it grows")
     wait.set_defaults(func=cmd_wait)
+    waits = sub.add_parser("_waits", help=argparse.SUPPRESS)
+    waits.add_argument("--pane", required=True)
+    waits.set_defaults(func=cmd_waits)
     wait_agent = sub.add_parser(
         "wait-agent", help="wait for an agent in one job, reconnecting when herdr does not answer",
         description="Exit 0: the state was reached, or WORKER-DONE with a commit that exists; "
