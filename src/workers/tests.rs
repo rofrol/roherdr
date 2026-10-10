@@ -10580,6 +10580,58 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             }
 
             #[test]
+            fn the_runnable_state_counts_only_a_hand_driven_idle_repository_as_stalled() {
+                let runnable = |fixture: &Fixture| {
+                    fixture
+                        .supervisor
+                        .todo_runnable_state(&fixture.repo.display().to_string())
+                        .unwrap()
+                };
+                let (fixture, _) = queued("todo-runnable-state", &[ITEM, ITEM2], &[ESCALATE]);
+                let idle = runnable(&fixture);
+                assert!(idle.stalled, "{idle:#?}");
+                assert_eq!(idle.runnable_items, [ITEM, ITEM2]);
+                assert_eq!(idle.queue_mode, None);
+
+                // A pause (`herdr todo queue pause`) is the user's stop.
+                fixture
+                    .supervisor
+                    .todo_queue_set(TodoQueueSetParams {
+                        cwd: fixture.repo.display().to_string(),
+                        mode: TodoQueueMode::Paused,
+                        reason: Some("lunch".into()),
+                        owner_pane_id: None,
+                        owner_session_id: None,
+                        workspace_id: None,
+                        env: None,
+                    })
+                    .unwrap();
+                let paused = runnable(&fixture);
+                assert!(!paused.stalled, "{paused:#?}");
+                assert_eq!(paused.queue_mode, Some(TodoQueueMode::Paused));
+                assert!(paused.reason.contains("lunch"), "{paused:#?}");
+
+                // In queue mode the server starts runs: never stalled, and
+                // the run in progress is named.
+                set(&fixture, TodoQueueMode::On);
+                wait_queue(&fixture, "the escalation", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                let in_queue = runnable(&fixture);
+                assert!(!in_queue.stalled, "{in_queue:#?}");
+                assert!(in_queue.active_run.is_some(), "{in_queue:#?}");
+
+                // A repository whose "Next, in order" is empty is not stalled.
+                let (empty, _) = queued("todo-runnable-empty", &[], &[]);
+                let state = runnable(&empty);
+                assert!(
+                    !state.stalled && state.runnable_items.is_empty(),
+                    "{state:#?}"
+                );
+                assert!(state.reason.contains("no item"), "{state:#?}");
+            }
+
+            #[test]
             fn the_queue_waits_on_an_escalation_and_goes_on_after_the_answer() {
                 let (fixture, repo) = queued("todo-queue-escalation", &[ITEM, ITEM2], &[ESCALATE]);
                 set(&fixture, TodoQueueMode::On);

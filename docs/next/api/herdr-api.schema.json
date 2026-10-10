@@ -8018,6 +8018,23 @@
           "type": "object"
         },
         {
+          "description": "Whether a repository's TODO waits on its coordinator: no run of it\nis active, its queue mode is not on and not paused, and \"Next, in\norder\" on `master` has items the driver can run.",
+          "properties": {
+            "method": {
+              "const": "todo.runnable_state",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoQueueTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The user's grant of a repository's operation (`prepare`) for the\nexact definition and hash `master` declares.",
           "properties": {
             "method": {
@@ -14904,6 +14921,23 @@
               "type": "object"
             },
             {
+              "description": "`todo.runnable_state`'s reply.",
+              "properties": {
+                "state": {
+                  "$ref": "#/schemas/success_response/$defs/TodoRunnableState"
+                },
+                "type": {
+                  "const": "todo_runnable_state",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "state"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`todo.grant`'s reply: the stored grant.",
               "properties": {
                 "grant": {
@@ -17946,6 +17980,67 @@
               "type": "string"
             }
           ]
+        },
+        "TodoRunnableState": {
+          "description": "`todo.runnable_state`'s reply: whether a repository's TODO waits on its\ncoordinator, from the driver's and the queue's state (`TODO.md` on\n`master`, never the checkout's file).",
+          "properties": {
+            "active_coordinator": {
+              "description": "The repository's active headless item coordinator.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "active_run": {
+              "description": "The repository's run in progress.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pause_reason": {
+              "description": "Why the queue is paused (the user's reason or the circuit breaker's).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "queue_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoQueueMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The queue's mode; absent when queue mode was never turned on for the\nrepository."
+            },
+            "reason": {
+              "description": "Why `stalled` is what it is.",
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "runnable_items": {
+              "description": "The items of \"Next, in order\" the driver can run, in order: open,\nwith an id, and not blocked by the queue's attempt cap.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "stalled": {
+              "description": "True when nothing of the repository runs, its queue mode is not on\n(then the server starts runs itself) and not paused, and\n`runnable_items` is not empty: the next start is the coordinator's.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "repo",
+            "stalled",
+            "reason"
+          ],
+          "type": "object"
         },
         "TodoStep": {
           "description": "Where a run is.",

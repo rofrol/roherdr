@@ -105,6 +105,12 @@ fi
 # event it has not acknowledged (a question, a turn end, the worker's end); the server derives that
 # list, so it ends once the coordinator answers or acknowledges (`herdr worker ack`). When herdr
 # cannot be asked, the stop goes through and the reason goes to stderr.
+# A coordinator's stop that leaves its TODO stalled is only logged, never blocked (shadow phase):
+# `stall_would_block` in the log is true when the Stop input's `background_tasks` is present and
+# empty, the turn reported or asked nothing, the user's last message is no plain stop, and herdr's
+# `todo.runnable_state` says no run is active while the driver could run approved items (a repo in
+# queue mode, or paused with `herdr todo queue pause`, never is), at most three times in a row per
+# session. `scripts/coordinator_stall_replay.py` replays audited turn ends through it.
 # A stop the check blocks does not end the turn; any other stop reports the turn finished.
 stop_check() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -163,6 +169,17 @@ ABANDON = re.compile(
 ASK_TOOL = "AskUserQuestion"
 NOTIFICATION_ID = re.compile(r"<tool-use-id>([^<\s]+)</tool-use-id>")
 COORDINATOR_ROLE = "coordinator"
+# A user message that is only an order to stop or pause the work.
+PLAIN_STOP = re.compile(
+    r"^\s*(?:please\s+|proszę\s+)?(?:"
+    r"stop|pause|halt|hold(?: on)?|wait|enough|that'?s (?:it|enough)|"
+    r"stój|zatrzymaj(?: się)?|przerwij|wstrzymaj|pauza|poczekaj|czekaj|"
+    r"dość|starczy|koniec|wystarczy"
+    r")(?:\s+(?:now|here|teraz|tu|tutaj|na razie|for now))?[\s.!]*$",
+    re.IGNORECASE,
+)
+STALL_STREAK = 3
+STALL_CAPPED = "three would-blocks in a row"
 
 
 def strip_code(text):
@@ -212,6 +229,50 @@ def text_of(content):
         for block in content or []
         if isinstance(block, dict) and block.get("type") == "text"
     )
+
+
+def is_plain_stop(text):
+    """True when the user's message only orders the work to stop or pause."""
+    return isinstance(text, str) and len(text) <= 60 and bool(PLAIN_STOP.match(text))
+
+
+def stall_local_reason(facts):
+    """Why the stall check passes on facts of the stop itself, or None when herdr's state decides.
+    `background_tasks` absent is unknown, so the stop passes."""
+    if facts.get("stop_hook_active"):
+        return "second stop of the turn"
+    tasks = facts.get("background_tasks")
+    if not isinstance(tasks, list):
+        return "background tasks unknown"
+    if tasks:
+        return "background tasks running"
+    if facts.get("reported") or facts.get("asked_tool") or facts.get("question"):
+        return "asked the user"
+    if facts.get("blocked_calls"):
+        return "blocked tool calls"
+    if facts.get("obligations"):
+        return "workers need the coordinator"
+    if facts.get("user_stop"):
+        return "the user said stop"
+    return None
+
+
+def stall_decision(facts):
+    """(would_block, reason) of the shadow stall check: a coordinator's stop with nothing running,
+    nothing asked and approved runnable items in herdr's state (`todo.runnable_state`)."""
+    why = stall_local_reason(facts)
+    if why:
+        return False, why
+    if facts.get("role") != COORDINATOR_ROLE:
+        return False, "not a coordinator tab"
+    state = facts.get("state")
+    if not isinstance(state, dict):
+        return False, "repository state unknown"
+    if not state.get("stalled"):
+        return False, str(state.get("reason") or "not stalled")
+    if facts.get("streak", 0) >= STALL_STREAK:
+        return False, STALL_CAPPED
+    return True, str(state.get("reason") or "stalled")
 
 
 def is_abandon_text(text):
@@ -401,6 +462,8 @@ final_text = final_text if isinstance(final_text, str) else ""
 reported = False
 last_text = ""
 last_tool = ""
+# The user's last message (task notifications are no message of the user).
+last_prompt = ""
 # Outcomes (True: failed or denied) of the turn's last batch of tool calls: the calls the agent
 # made together before their results came back. A call after a result starts a new batch.
 last_batch = []
@@ -431,6 +494,8 @@ if isinstance(transcript, str) and transcript:
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             )
             if not tool_result and text_of(content).strip():
+                if not text_of(content).lstrip().startswith("<task-notification>"):
+                    last_prompt = text_of(content).strip()
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
@@ -517,10 +582,57 @@ if (
         if not role_known:
             role = tab_role()
         coordinator_block = role == COORDINATOR_ROLE
+# The shadow stall check: logged only, never blocks.
+background_tasks = hook_input.get("background_tasks")
+stall_facts = {
+    "stop_hook_active": stop_hook_active,
+    "background_tasks": background_tasks,
+    "reported": reported or marked,
+    "asked_tool": last_tool == ASK_TOOL,
+    "question": question,
+    "blocked_calls": blocked_calls,
+    "obligations": bool(obligations),
+    "user_stop": is_plain_stop(last_prompt),
+}
+state_dir = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
+)
+streak_path = os.path.join(state_dir, "coordinator-stall-shadow.json")
+session = str(hook_input.get("session_id") or "")
+streaks = {}
 try:
-    state_dir = os.path.join(
-        os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
-    )
+    with open(streak_path, encoding="utf-8") as handle:
+        streaks = json.load(handle)
+except (OSError, ValueError):
+    pass
+streaks = streaks if isinstance(streaks, dict) else {}
+if stall_local_reason(stall_facts) is None:
+    if not role_known:
+        role = tab_role()
+        role_known = True
+    stall_facts["role"] = role
+    cwd = hook_input.get("cwd") or os.getcwd()
+    if role == COORDINATOR_ROLE and os.environ.get("HERDR_SOCKET_PATH"):
+        reply = ask_server("todo.runnable_state", {"cwd": cwd}) or {}
+        stall_facts["state"] = reply.get("state")
+    count = streaks.get(session)
+    stall_facts["streak"] = count if isinstance(count, int) else 0
+stall_would_block, stall_reason = stall_decision(stall_facts)
+if session and (stall_would_block or (session in streaks and stall_reason != STALL_CAPPED)):
+    if stall_would_block:
+        streaks.pop(session, None)
+        streaks[session] = stall_facts.get("streak", 0) + 1
+    else:
+        streaks.pop(session, None)
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        kept = dict(list(streaks.items())[-100:])
+        with open(streak_path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(kept, handle)
+        os.replace(streak_path + ".tmp", streak_path)
+    except OSError:
+        pass
+try:
     os.makedirs(state_dir, exist_ok=True)
     with open(os.path.join(state_dir, "awaiting-reply-stop.jsonl"), "a", encoding="utf-8") as log:
         log.write(
@@ -539,6 +651,11 @@ try:
                     "pending": pending,
                     "role": role,
                     "coordinator_blocked": coordinator_block and mode != "shadow",
+                    "stall_would_block": stall_would_block,
+                    "stall_reason": stall_reason,
+                    "background_tasks": (
+                        len(background_tasks) if isinstance(background_tasks, list) else None
+                    ),
                     "tail": last_paragraph(final_text)[-200:],
                 },
                 ensure_ascii=False,

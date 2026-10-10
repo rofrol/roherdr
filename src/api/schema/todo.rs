@@ -801,6 +801,37 @@ pub struct TodoQueueTarget {
     pub cwd: String,
 }
 
+/// `todo.runnable_state`'s reply: whether a repository's TODO waits on its
+/// coordinator, from the driver's and the queue's state (`TODO.md` on
+/// `master`, never the checkout's file).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRunnableState {
+    pub repo: String,
+    /// The queue's mode; absent when queue mode was never turned on for the
+    /// repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_mode: Option<TodoQueueMode>,
+    /// Why the queue is paused (the user's reason or the circuit breaker's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    /// The repository's run in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<String>,
+    /// The repository's active headless item coordinator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_coordinator: Option<String>,
+    /// The items of "Next, in order" the driver can run, in order: open,
+    /// with an id, and not blocked by the queue's attempt cap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runnable_items: Vec<String>,
+    /// True when nothing of the repository runs, its queue mode is not on
+    /// (then the server starts runs itself) and not paused, and
+    /// `runnable_items` is not empty: the next start is the coordinator's.
+    pub stalled: bool,
+    /// Why `stalled` is what it is.
+    pub reason: String,
+}
+
 /// `todo.grant`: the user's grant of a repository's operation, for the
 /// exact definition `master` declares now in `.herdr/operations.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

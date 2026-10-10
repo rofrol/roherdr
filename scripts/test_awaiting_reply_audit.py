@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import awaiting_reply_audit as audit  # noqa: E402
+import coordinator_stall_replay as replay  # noqa: E402
 import coordinator_turn_audit as coordinator  # noqa: E402
 from test_coordinator_turn_audit import ORDER, Lines  # noqa: E402
 from test_coordinator_turn_audit import ask as coordinator_ask  # noqa: E402
@@ -143,6 +144,11 @@ HOOK = os.path.join(
     "assets",
     "claude",
     "herdr-agent-state.sh",
+)
+
+
+FIXTURES = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "coordinator_stall_2026-10-09.json"
 )
 
 
@@ -371,14 +377,16 @@ class StopHook(unittest.TestCase):
 
 
 class FakeServer:
-    """A herdr socket that answers `pane.get` and `tab.get` with the given tab role."""
+    """A herdr socket that answers `pane.get` and `tab.get` with the given tab role, and
+    `todo.runnable_state` with `runnable`."""
 
-    def __init__(self, directory, role):
+    def __init__(self, directory, role, runnable=None):
         import socket
         import threading
 
         self.path = os.path.join(directory, "s.sock")
         self.role = role
+        self.runnable = runnable
         self.requests = []
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(self.path)
@@ -409,6 +417,8 @@ class FakeServer:
                     if self.role:
                         tab["role"] = self.role
                     result = {"type": "tab_info", "tab": tab}
+                elif request["method"] == "todo.runnable_state" and self.runnable is not None:
+                    result = {"type": "todo_runnable_state", "state": self.runnable}
                 else:
                     result = {}
                 reply = {"id": request["id"], "result": result}
@@ -430,7 +440,8 @@ class CoordinatorStop(unittest.TestCase):
 
     GO_AHEAD = "Następna w kolejce jest „Hand a session over”. Zlecę ją pracownikowi, gdy powiesz „dalej”."
 
-    def run_hook(self, lines, role="coordinator", socket=True, stop_mode=None, **fields):
+    def run_hook(self, lines, role="coordinator", socket=True, stop_mode=None, runnable=None,
+                 **fields):
         """The hook's output (parsed, or None when it lets the stop pass) on a transcript."""
         import subprocess
 
@@ -453,7 +464,8 @@ class CoordinatorStop(unittest.TestCase):
                 env["HERDR_AWAITING_REPLY_STOP"] = stop_mode
             server = None
             if socket:
-                server = FakeServer(directory, role)
+                server = FakeServer(directory, role, runnable)
+                self.server = server
                 env["HERDR_SOCKET_PATH"] = server.path
             elif socket is None:
                 # A socket path nobody listens on.
@@ -596,6 +608,102 @@ class CoordinatorStop(unittest.TestCase):
                     checked["other"] += 1
         self.assertGreaterEqual(checked["abandoned"], 4)
         self.assertGreaterEqual(checked["other"], 6)
+
+    STALLED = {"repo": "/repo", "stalled": True, "runnable_items": ["t-aaaaaaaa"],
+               "reason": "nothing runs while 1 item(s) of \"Next, in order\" can run"}
+
+    def runnable_requests(self):
+        return [r for r in self.server.requests if r["method"] == "todo.runnable_state"]
+
+    def test_a_stalled_coordinator_is_logged_but_never_blocked(self):
+        report = Lines().user(ORDER).tools(coordinator_bash("t1", "git log")).say(
+            "Landed item 3 and installed it. Next in the queue is item 4.").lines
+        output = self.run_hook(report, runnable=self.STALLED, background_tasks=[],
+                               session_id="s1", cwd="/repo/sub")
+        self.assertIsNone(output)
+        self.assertTrue(self.last_log["stall_would_block"])
+        self.assertIn("1 item(s)", self.last_log["stall_reason"])
+        self.assertEqual(self.last_log["background_tasks"], 0)
+        self.assertEqual(self.runnable_requests()[0]["params"], {"cwd": "/repo/sub"})
+        # Block mode and shadow mode alike: the stall check only logs.
+        self.assertIsNone(self.run_hook(report, runnable=self.STALLED, background_tasks=[],
+                                        stop_mode="shadow"))
+        self.assertTrue(self.last_log["stall_would_block"])
+
+    def test_the_stall_check_passes_without_evidence_of_a_stall(self):
+        report = Lines().user(ORDER).say("Landed item 3.").lines
+        # `background_tasks` absent is unknown: herdr is not even asked.
+        self.run_hook(report, runnable=self.STALLED)
+        self.assertFalse(self.last_log["stall_would_block"])
+        self.assertEqual(self.last_log["stall_reason"], "background tasks unknown")
+        self.assertIsNone(self.last_log["background_tasks"])
+        self.assertEqual(self.runnable_requests(), [])
+        self.run_hook(report, runnable=self.STALLED, background_tasks=[{"id": "b1"}])
+        self.assertEqual(self.last_log["stall_reason"], "background tasks running")
+        # Queue mode, a pause or a run in progress: herdr's state says no stall.
+        queued = {"stalled": False, "reason": "queue mode is on: the server starts the next run"}
+        self.run_hook(report, runnable=queued, background_tasks=[])
+        self.assertFalse(self.last_log["stall_would_block"])
+        self.assertEqual(self.last_log["stall_reason"], queued["reason"])
+        # herdr cannot tell, or the tab is no coordinator's.
+        self.run_hook(report, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "repository state unknown")
+        self.run_hook(report, role="worker", runnable=self.STALLED, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "not a coordinator tab")
+        self.assertEqual(self.runnable_requests(), [])
+
+    def test_a_question_or_the_users_stop_is_no_stall(self):
+        question = Lines().user(ORDER).say("Which variant do you prefer, A or B?").lines
+        self.run_hook(question, runnable=self.STALLED, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "asked the user")
+        asked = Lines().user(ORDER).tools(coordinator_ask("t1")).say("Two decisions.").lines
+        self.run_hook(asked, runnable=self.STALLED, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "asked the user")
+        stopped = Lines().user(ORDER).say("Working.").user("stop").say("Stopped.").lines
+        self.run_hook(stopped, runnable=self.STALLED, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "the user said stop")
+        # A task notification after the stop is no new message of the user.
+        stopped = Lines().user(ORDER).tools(
+            coordinator_bash("t1", "herdr-job wait 1", background=True)
+        ).say("Waiting.").user("Zatrzymaj się.").say("Ok.").notify("t1").say("Landed.").lines
+        self.run_hook(stopped, runnable=self.STALLED, background_tasks=[])
+        self.assertEqual(self.last_log["stall_reason"], "the user said stop")
+
+    def test_plain_stop_messages(self):
+        namespace = replay.hook_namespace()
+        for message in ["stop", "Stop.", "pause for now", "zatrzymaj się", "wstrzymaj!", "dość"]:
+            self.assertTrue(namespace["is_plain_stop"](message), message)
+        for message in ["stop the server and go on", "rób TODO po kolei", "dalej", "",
+                        "please stop " + "x" * 80]:
+            self.assertFalse(namespace["is_plain_stop"](message), message)
+
+    def test_the_streak_allows_three_would_blocks_in_a_row(self):
+        stalled = {"background_tasks": [], "role": "coordinator",
+                   "state": {"stalled": True, "reason": "stalled"}}
+        waiting = dict(stalled, background_tasks=[None])
+        fixtures = [{"session": "s1", "ended": str(n), "label": "other", "silent_stop": False,
+                     "tail": "", "facts": facts}
+                    for n, facts in enumerate([stalled] * 5 + [waiting, stalled])]
+        decided = replay.replay(fixtures)
+        self.assertEqual([d["would_block"] for d in decided],
+                         [True, True, True, False, False, False, True])
+        self.assertEqual(decided[3]["reason"], "three would-blocks in a row")
+
+    def test_the_audited_turn_ends_meet_the_shadow_targets(self):
+        """The 244 turn ends of docs/coordinator-audit-2026-10-09.md, as fixtures: 3 of 3 silent
+        stops caught, at most 1 false per 100 (kill criterion: more than 1 per 20)."""
+        with open(FIXTURES, encoding="utf-8") as handle:
+            fixtures = json.load(handle)["turn_ends"]
+        report = replay.summary(replay.replay(fixtures))
+        self.assertEqual(report["turn_ends"], 244)
+        self.assertEqual((report["caught"], report["silent_stops"]), (3, 3), report["missed"])
+        self.assertLessEqual(report["false_per_100"], 1.0, report["false"])
+
+    def test_next_items_are_the_open_items_with_an_id(self):
+        todo = ("# TODO\n\n## Next, in order\n\n- [ ] A [t-aaaaaaaa]\n  text\n"
+                "- [ ] No id\n```\n- [ ] B [t-cccccccc]\n```\n### Sub\n- [ ] C [t-dddddddd]\n"
+                "## Proposed\n- [ ] D [t-bbbbbbbb]\n")
+        self.assertEqual(replay.next_items(todo), ["t-aaaaaaaa", "t-dddddddd"])
 
 
 def starts_turn(entry):

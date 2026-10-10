@@ -113,8 +113,9 @@ def is_abandon_text(text):
 
 
 class TurnEnd:
-    def __init__(self, started):
+    def __init__(self, started, prompt=""):
         self.started = started
+        self.prompt = prompt  # the user's last message (task notifications are none)
         self.ended = started  # the last assistant entry's time
         self.final_text = ""
         self.last_tool = ""
@@ -128,6 +129,7 @@ class Session:
         self.path = path
         self.session_id = os.path.splitext(os.path.basename(path))[0]
         self.ordered_at = ""
+        self.cwd = ""  # the session's first working directory
         self.turns = []
 
     def since(self, moment):
@@ -192,6 +194,7 @@ def parse_session(path, lines):
     launcher = False
     current = None
     seen = set()
+    last_prompt = ""
 
     def close():
         if current is not None and ordered and (current.final_text or current.last_tool):
@@ -206,6 +209,8 @@ def parse_session(path, lines):
             continue
         if entry.get("isSidechain"):
             continue
+        if not session.cwd and isinstance(entry.get("cwd"), str):
+            session.cwd = entry["cwd"]
         uuid = entry.get("uuid")
         if uuid:
             if uuid in seen:
@@ -230,7 +235,9 @@ def parse_session(path, lines):
             if not notification and TODO_ORDER.search(text) and not ordered:
                 ordered = True
                 session.ordered_at = str(entry.get("timestamp") or "")
-            current = TurnEnd(str(entry.get("timestamp") or ""))
+            if not notification:
+                last_prompt = text
+            current = TurnEnd(str(entry.get("timestamp") or ""), last_prompt)
         elif kind == "assistant" and current is not None:
             if message.get("model") == "<synthetic>":
                 continue

@@ -51,7 +51,7 @@ use tracing::warn;
 use super::{git, lock, step_name, store_error, todo_titles, Run, TODO_FILE};
 use crate::api::schema::{
     TodoQueueBlockedItem, TodoQueueInfo, TodoQueueMode, TodoQueueSetParams, TodoQueueStatus,
-    TodoRunParams, TodoRunStatus,
+    TodoRunParams, TodoRunStatus, TodoRunnableState,
 };
 use crate::workers::store::{QueueRun, RunOwner, StoredQueue};
 use crate::workers::{now_ms, repository_of, WorkerError, WorkerSupervisor};
@@ -387,6 +387,90 @@ impl WorkerSupervisor {
             blocked_items: blocked,
             owner_pane_id: queue.as_ref().and_then(|queue| queue.owner_pane.clone()),
             updated_ms: queue.as_ref().map_or(0, |queue| queue.updated_ms),
+        })
+    }
+
+    /// `todo.runnable_state`: whether the repository's next start is its
+    /// coordinator's. A repository in queue mode never is (the server starts
+    /// its runs), nor a paused one (`herdr todo queue pause`), nor one with a
+    /// run or a headless item coordinator in progress.
+    pub(crate) fn todo_runnable_state(&self, cwd: &str) -> Result<TodoRunnableState, WorkerError> {
+        let repo = self.queue_repo(cwd)?;
+        let store = self.run_store()?;
+        let queue = store.queue(&repo).map_err(store_error)?;
+        let active_run = match store.active_run(&repo).map_err(store_error)? {
+            Some(run) => Some(run.info.run_id),
+            None => store
+                .runs(Some(&repo))
+                .map_err(store_error)?
+                .into_iter()
+                .find(|run| {
+                    matches!(
+                        run.info.status,
+                        TodoRunStatus::Running | TodoRunStatus::Waiting
+                    )
+                })
+                .map(|run| run.info.run_id),
+        };
+        let active_coordinator = store
+            .active_coordinator_of(&repo)
+            .map_err(store_error)?
+            .filter(|tenure| tenure.headless)
+            .map(|tenure| tenure.id);
+        let runs = store.queue_runs(&repo).map_err(store_error)?;
+        let todo = todo_on_master(&repo);
+        let runnable_items: Vec<String> = match &todo {
+            Ok(todo) => todo_titles::next_items(todo)
+                .into_iter()
+                .filter(|item| {
+                    let text = todo_titles::item_text(todo, item).unwrap_or_default();
+                    blocked_reason(item, &item_digest(&text), &runs).is_none()
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let queue_mode = queue.as_ref().map(|queue| mode_of(Some(queue)));
+        let pause_reason = queue.as_ref().and_then(|queue| queue.pause_reason.clone());
+        let reason = if let Some(run) = &active_run {
+            format!("run {run} is in progress")
+        } else if let Some(tenure) = &active_coordinator {
+            format!("headless item coordinator {tenure} is active")
+        } else if queue_mode == Some(TodoQueueMode::On) {
+            "queue mode is on: the server starts the next run itself".to_owned()
+        } else if queue_mode.is_some() {
+            format!(
+                "the queue is paused: {}",
+                pause_reason.as_deref().unwrap_or("no reason recorded")
+            )
+        } else if let Err(why) = &todo {
+            why.clone()
+        } else if runnable_items.is_empty() {
+            format!(
+                "\"{}\" in {TODO_FILE} on master has no item the driver can run",
+                todo_titles::NEXT_SECTION
+            )
+        } else {
+            format!(
+                "nothing runs while {} item(s) of \"{}\" can run, the first {}",
+                runnable_items.len(),
+                todo_titles::NEXT_SECTION,
+                runnable_items[0]
+            )
+        };
+        let stalled = active_run.is_none()
+            && active_coordinator.is_none()
+            && queue_mode.is_none()
+            && todo.is_ok()
+            && !runnable_items.is_empty();
+        Ok(TodoRunnableState {
+            repo,
+            queue_mode,
+            pause_reason,
+            active_run,
+            active_coordinator,
+            runnable_items,
+            stalled,
+            reason,
         })
     }
 
