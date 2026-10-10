@@ -11,6 +11,35 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Closing an item starts the next or says why not (bridge; decided by [t-pvim76jl]
+  the user 2026-10-10 after "a coordinator stops because it took nothing;
+  what weak architecture"; round 20261010-113822-76ae). `herdr todo resume
+  --action approve --close` (and `--note` on a run's last step) refuses
+  unless it is given `--next <item-id>` (the driver starts that item's run
+  as soon as this run is done, from the same command, recorded as intent
+  then result) or `--stop-reason <text>` (recorded in the item history and
+  shown to the user). No timer; the command itself carries the next step.
+
+- [ ] Queue mode: herdr's server drives the TODO queue (decided by the user [t-5s7xgogm]
+  2026-10-10, replacing "`todo next --continue` as the default"; round
+  20261010-113822-76ae, sol + MiMo + DeepSeek agreeing that liveness must be
+  owned by the server, not a model). Per repository: a mode (on, paused)
+  the user sets once, surviving restarts, and a status (running, waiting on
+  the user, escalation pending, usage gate, blocked, empty) with its reason.
+  The server starts the top approved runnable item (through the per-item
+  coordinator of `todo next`) when the mode is on, no run or item
+  coordinator is active, no escalation is pending and the usage gate
+  admits; re-evaluated on herdr's own events only: a run ended, an
+  escalation answered, a TODO.md commit, server start, the mode toggled
+  (no timers; the models' periodic sweep and idle watchdog were dismissed
+  under the delay rule). Guarantees: one active run per repository (unique
+  index plus a fencing token), reconcile an interrupted run at start before
+  launching another, items by stable id and TODO.md re-read at each start,
+  an attempt cap per item (then blocked, shown) and a circuit breaker
+  after consecutive failures (pause with the reason), cost bounded by the
+  usage gate. The chat session talks with the user and answers
+  escalations; it never drives the queue.
+
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
