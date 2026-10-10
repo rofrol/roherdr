@@ -441,6 +441,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   sessions' waits"); `herdr todo wait` reconnects since 8eaec1f2, but
   `agent wait`, `pane wait-output` and `wait-agent` do not: they must
   reconnect to the new server and continue waiting on the same target.
+  Addendum 2 (2026-10-10): again, herdr-job 20261010-171947-6460 (`agent
+  wait w7E:p1 ... --global`, the pane working) ended at 17:27:56 with
+  `EmptyResponse` after 8 min of waiting, the second the live handoff of the
+  install of run `r-fle3tkul` completed (server log: "live handoff
+  completed; old server exiting" at 17:27:56). Every install of this queue
+  kills other sessions' `agent wait`; raises the priority of this fix.
 
 - [ ] A "finished" dot on an agent whose own background work still runs [t-i5ez4yft]
   (user, 2026-10-10, about the guix-x86_64-iso-omguix pane worker: "the
