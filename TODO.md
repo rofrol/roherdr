@@ -1591,6 +1591,11 @@ user needs to decide or do.
 - [ ] [t-urqxwnnr] Run vibe-kanban and mini-swe-agent hands-on under failure, before building queue mode?
   Options: vibe-kanban and mini-swe-agent in a throwaway Linux VM with a capped throwaway API key, six scenarios each (Recommended) | read their failure-path code only (~4-8 h, no keys) | skip, build herdr's own semantics
   Checked (user 2026-10-10: "maybe test these open-source projects hands-on? ask the models"; round 20261010-115231-6369, sol + MiMo + DeepSeek): all three pick vibe-kanban (Rust + SQLite + worktrees, its restart marks orphans Failed) and mini-swe-agent (cheap baseline); LangGraph or Restate optional; skip Temporal, Inngest and the OpenHands resolver (heavy infra, documented semantics). Scenarios, same toy repo and fixed prompts (a scripted fake model where supported): success; kill the orchestrator mid-task and restart; kill the agent process; an agent stuck on a silent command; an agent asking a question (restart while it waits); a failed check then retry. Record state rows before and after, resume/duplicate/mark-failed, what the user sees, leftover processes and worktrees, cost, manual steps. Safety: a VM (not a container: agents run arbitrary shell and scan the environment), no host mounts, SSH agent, credentials or real remotes (a local bare repo), egress only to the model API, a spend-capped throwaway key (needs the user), snapshots. Estimate 6-10 h for the two.
+  Decided by the user 2026-10-10: VM plus the two projects. Needs from the
+  user: a throwaway, spend-capped API key for the agents (Anthropic or
+  OpenRouter) put in a file the coordinator names, never pasted into chat.
+  VM: OrbStack is installed here (`orb`), a fresh Linux machine without
+  host mounts or SSH agent forwarding; the worker runs inside it only.
 
 ### Decide
 
