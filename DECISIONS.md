@@ -840,3 +840,12 @@ open-source survey, a server-owned item state machine with the LLM only in
 typed decision calls (`draft_task`, `review_run`, `answer_question`) and
 server-driven queue mode. `herdr todo next` stays in the code but is not
 the path forward; the `todo` skill change for it is dropped.
+
+## Selecting projects to learn from
+
+Choosing projects to test or study (2026-10-10, user and rounds
+20261010-120917-b641, 20261010-121012-4292): select for what testing them
+teaches, not for whether herdr could embed them. Licence (AGPL included)
+and dependencies (Postgres) matter only when code would be copied, linked
+or shipped; running and reading them in a throwaway VM carries no
+obligation.
