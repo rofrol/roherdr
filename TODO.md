@@ -11,16 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] A refused `--next` start stalls silently (follows from the bridge, [t-n5f7ihtm]
-  2026-10-10: run `r-emmea55z` reached done and its `--next` was refused by
-  the preflight at 14.8 GiB free; the refusal was only a `next_refused`
-  event after `done`, which `todo wait` had already returned for, so
-  nothing started until the coordinator looked). Fix: `todo wait` on a run
-  with a pending next returns only after the next started or was refused
-  (the refusal is its result, with the reason), a refusal also sends a
-  notification, and a disk refusal first runs the worker slot's sweep
-  (`target_sweep.py slot`) and the preflight once more before refusing.
-
 - [ ] Register `maintenance` as a verify check and add it by default [t-up6a3zz7]
   (follows from run `r-kwasqbmr`, 2026-10-10: it passed `verify` but
   `just clean-install`'s `just check` failed in `maintenance-test` on a new
