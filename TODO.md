@@ -406,6 +406,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `--until background-drained` ends on a Stop payload of the same session
   listing no running task (MiMo, DeepSeek).
 
+- [ ] A "finished" dot on an agent whose own background work still runs [t-i5ez4yft]
+  (user, 2026-10-10, about the guix-x86_64-iso-omguix pane worker: "the
+  worker had a blue ring as if it only waited for me to read its output").
+  The blue dot means "finished, not looked at yet" (status legend), but the
+  worker's turn ended while its own background shell (a herdr-job wait on
+  its build) ran and would wake it again. Decided by the coordinator from
+  round 20261010-152938-328c (do not redefine `done` from the stale `bg:N`
+  count): keep the status `done`, but draw it as "finished, background work
+  running" (a distinct shape or mark next to the dot, and the `bg` token
+  naming the job, from the Stop payload's background tasks and the wait
+  edges of e3228f41) while the last Stop of that session lists running
+  tasks or a wait edge from that pane points at a running job; it turns
+  into the plain blue dot when they end. The status legend explains it.
+  Not a new agent status variant (frozen codecs).
+
 - [ ] `herdr-job wait-text <file> <pattern>`: an event-driven match on new [t-xphl4a6t]
   bytes, partial lines included (from the guix-x86_64-iso-omguix
   coordinator's report, 2026-10-10: `tail -F serial.log | grep -m1 login:`
