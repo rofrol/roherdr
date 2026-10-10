@@ -5819,6 +5819,7 @@ mod todo_runs {
             message: None,
             env: Some(caller_env()),
             ignore_usage: false,
+            keep_open: false,
             note: None,
             close: None,
             next: None,
@@ -6317,6 +6318,7 @@ mod todo_runs {
                 message: None,
                 env: Some(caller_env()),
                 ignore_usage: false,
+                keep_open: false,
                 note: None,
                 close: None,
                 next: None,
@@ -7426,6 +7428,7 @@ mod todo_runs {
             message: None,
             env: Some(caller_env()),
             ignore_usage: false,
+            keep_open: false,
             note: None,
             close: None,
             next: None,
@@ -9582,6 +9585,10 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     r#"{"action": "allow", "message": "allow takes none"}"#,
                 ],
             );
+            // A driver the answer below wakes runs before the answer
+            // returns: the coordinator's resume must not race it (it once
+            // made this event stale about 1 in 13 runs).
+            runs::settle_inline(&repository_of(&fixture.repo).unwrap());
             let run = start_answering(&fixture, "perm WebFetch https://example.com", false);
             let (escalated, _) = wait(&fixture, &run.run_id, None);
             assert_eq!(escalated.kind, TodoEventKind::Question, "{escalated:#?}");
@@ -10244,6 +10251,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             #[test]
             fn concurrent_events_start_one_run() {
                 let (fixture, repo) = queued("todo-queue-concurrent", &[ITEM, ITEM2], &[ESCALATE]);
+                runs::queue::set_env_for_test(&repo, Some(caller_env()));
                 // The mode is on without an evaluation of its own: the starts
                 // below race for it.
                 store_of(&fixture.supervisor)
@@ -10332,6 +10340,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     "{refused}"
                 );
                 // On, it names nothing: the queue starts the next item.
+                runs::queue::set_env_for_test(&repo, Some(caller_env()));
                 store_of(&fixture.supervisor)
                     .transaction(|tx| {
                         tx.queue_on(
@@ -10364,6 +10373,183 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     [(ITEM, TodoRunStatus::Done), (ITEM2, TodoRunStatus::Waiting)]
                 );
                 assert!(!runs[0].queued && runs[1].queued);
+            }
+
+            /// The queue's run of `ITEM` waiting on its review, which the
+            /// review's model escalated to the coordinator.
+            fn review_escalated(fixture: &Fixture) -> (String, TodoRunEvent) {
+                let waiting = wait_queue(fixture, "the escalated review", |queue| {
+                    queue.status == TodoQueueStatus::EscalationPending
+                });
+                assert_eq!(waiting.item.as_deref(), Some(ITEM), "{waiting:#?}");
+                let run_id = waiting.run_id.unwrap();
+                let (review, _) = wait(fixture, &run_id, None);
+                assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+                (run_id, review)
+            }
+
+            #[test]
+            fn a_coordinators_approval_in_queue_mode_closes_the_item() {
+                let answers = [draft("a.txt", "feat: add a"), ESCALATE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-manual-close", &[ITEM, ITEM2], &answers);
+                set(&fixture, TodoQueueMode::On);
+                let (run_id, review) = review_escalated(&fixture);
+                let answers = [draft("b.txt", "feat: add b"), APPROVE.into()];
+                set_answers(
+                    &fixture,
+                    &answers.iter().map(String::as_str).collect::<Vec<_>>(),
+                );
+                // Neither a note nor a close: it closes like the queue's own
+                // review would, and the queue goes on with the next item.
+                fixture
+                    .supervisor
+                    .todo_resume(resume_params(&run_id, review.event_id, TodoAction::Approve))
+                    .unwrap();
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done), (ITEM2, TodoRunStatus::Done)]
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                assert!(!todo.contains(ITEM), "{todo}");
+                let decisions = git_in(&fixture.repo, &["show", "master:DECISIONS.md"]);
+                assert!(decisions.contains("## Queued item 0"), "{decisions}");
+                assert!(
+                    decisions.contains(&format!("run {run_id}"))
+                        && decisions.contains("approved by the coordinator"),
+                    "{decisions}"
+                );
+                let resumed = run_events(&fixture, &run_id, "run_resumed");
+                assert_eq!(resumed[0]["queue_close"], true, "{resumed:#?}");
+            }
+
+            #[test]
+            fn keep_open_leaves_an_approved_queue_item_open() {
+                let answers = [draft("a.txt", "feat: add a"), ESCALATE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-keep-open", &[ITEM, ITEM2], &answers);
+                set(&fixture, TodoQueueMode::On);
+                let (run_id, review) = review_escalated(&fixture);
+                // Paused, so the item left open is not started again here; a
+                // queue run still closes its item by default while paused.
+                set(&fixture, TodoQueueMode::Paused);
+                let approve = |keep_open: bool, close: Option<&str>, action| TodoResumeParams {
+                    keep_open,
+                    close: close.map(str::to_owned),
+                    ..resume_params(&run_id, review.event_id, action)
+                };
+                for (refused, why) in [
+                    (
+                        approve(true, Some("Closed."), TodoAction::Approve),
+                        "exclude",
+                    ),
+                    (approve(true, None, TodoAction::Abort), "only approve"),
+                ] {
+                    let error = fixture.supervisor.todo_resume(refused).unwrap_err();
+                    assert!(error.to_string().contains(why), "{error}");
+                }
+                fixture
+                    .supervisor
+                    .todo_resume(approve(true, None, TodoAction::Approve))
+                    .unwrap();
+                let (done, _) = wait(&fixture, &run_id, Some(review.event_id));
+                assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+                assert_eq!(
+                    master_subjects(&fixture)[0],
+                    "feat: add a",
+                    "nothing closed the item"
+                );
+                let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+                assert!(todo.contains(ITEM), "{todo}");
+                assert_eq!(runs_of(&fixture, &repo).len(), 1);
+                let resumed = run_events(&fixture, &run_id, "run_resumed");
+                assert_eq!(
+                    (&resumed[0]["queue_close"], &resumed[0]["keep_open"]),
+                    (&serde_json::json!(false), &serde_json::json!(true))
+                );
+            }
+
+            #[test]
+            fn a_usage_reading_wakes_a_queue_the_usage_gate_stopped() {
+                let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-usage", &[ITEM], &answers);
+                fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
+                let gated = set(&fixture, TodoQueueMode::On);
+                assert_eq!(gated.status, TodoQueueStatus::UsageGate, "{gated:#?}");
+                assert!(runs_of(&fixture, &repo).is_empty());
+                // A reading while the gate still refuses starts nothing.
+                fixture.supervisor.queues_after_usage_reading();
+                assert_eq!(status(&fixture).status, TodoQueueStatus::UsageGate);
+                assert!(runs_of(&fixture, &repo).is_empty());
+
+                // Below the reopening threshold, the next reading the poller
+                // publishes (the server's event) starts the item.
+                fixture.supervisor.set_usage_for_test(fresh_usage(10, 10));
+                crate::workers::set_test_coordinators(fixture.supervisor.clone());
+                crate::workers::usage_reading_published();
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done)]
+                );
+            }
+
+            #[test]
+            fn a_cold_restart_pauses_the_queue_until_on_sends_the_environment() {
+                let answers = [draft("a.txt", "feat: add a"), APPROVE.into()];
+                let answers: Vec<&str> = answers.iter().map(String::as_str).collect();
+                let (fixture, repo) = queued("todo-queue-cold", &[ITEM], &answers);
+                // On, kept in the store; the server that starts next has no
+                // environment in its memory.
+                store_of(&fixture.supervisor)
+                    .transaction(|tx| {
+                        tx.queue_on(
+                            &repo,
+                            &store::RunOwner {
+                                pane_id: Some("p-coordinator"),
+                                session_id: None,
+                                workspace: Some("ws-coordinator"),
+                                coordinator_id: None,
+                            },
+                            now_ms(),
+                        )
+                    })
+                    .unwrap();
+                runs::queue::set_env_for_test(&repo, None);
+                let _ = crate::workers::take_user_notices();
+                fixture.supervisor.resume_runs();
+                let paused = status(&fixture);
+                assert_eq!(
+                    (paused.mode, paused.status),
+                    (TodoQueueMode::Paused, TodoQueueStatus::WaitingOnUser),
+                    "{paused:#?}"
+                );
+                assert_eq!(
+                    paused.pause_reason.as_deref(),
+                    Some(runs::queue::ENV_NEEDED)
+                );
+                assert!(runs_of(&fixture, &repo).is_empty());
+                let notices = crate::workers::take_user_notices();
+                assert!(
+                    notices.iter().any(|notice| notice.title.contains("paused")
+                        && notice.body == runs::queue::ENV_NEEDED),
+                    "{notices:#?}"
+                );
+                // `queue on` from a shell sends it: the queue runs again.
+                set(&fixture, TodoQueueMode::On);
+                wait_queue(&fixture, "the queue's end", |queue| {
+                    queue.status == TodoQueueStatus::Empty
+                });
+                assert_eq!(
+                    items_and_states(&runs_of(&fixture, &repo)),
+                    [(ITEM, TodoRunStatus::Done)]
+                );
             }
         }
     }

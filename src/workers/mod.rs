@@ -49,9 +49,9 @@ pub(crate) use coordinators::coordinators;
 pub(crate) use coordinators::set_test_coordinators;
 pub(crate) use item_coordinators::resume_item_coordinators_at_start;
 pub(crate) use log::log_lines;
-pub(crate) use runs::resume_runs_at_start;
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
+pub(crate) use runs::{resume_runs_at_start, usage_reading_published};
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -5109,6 +5109,26 @@ impl WorkerSupervisor {
     /// the question as answered. A failed write records `answer_failed` and
     /// makes the question pending again, so it can be answered again.
     pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
+        let answered = self.answer_for_run(params)?;
+        // A todo run that answers its worker's questions itself goes on
+        // once the user answered one it escalated (a run's own escalation
+        // wakes its driver as it is answered).
+        if !params
+            .request_id
+            .as_deref()
+            .is_some_and(runs::escalations::is_escalation)
+        {
+            self.question_settled(&params.worker_id);
+        }
+        Ok(answered)
+    }
+
+    /// [`Self::answer`] without waking the todo run of the worker: for the
+    /// run's own `todo.resume`, which records the run going on itself.
+    pub(crate) fn answer_for_run(
+        &self,
+        params: &WorkerAnswerParams,
+    ) -> Result<WorkerInfo, WorkerError> {
         if let Some(request_id) = params
             .request_id
             .as_deref()
@@ -5123,17 +5143,13 @@ impl WorkerSupervisor {
             )?;
             return self.escalation_reply(&params.worker_id);
         }
-        let answered = self.command(
+        self.command(
             params.command_id.as_deref(),
             "worker.answer",
             params,
             |stored| Err(Self::cut_off(stored)),
             |receipt| self.answer_once(params, receipt),
-        )?;
-        // A todo run that answers its worker's questions itself goes on
-        // once the user answered one it escalated.
-        self.question_settled(&params.worker_id);
-        Ok(answered)
+        )
     }
 
     fn answer_once(

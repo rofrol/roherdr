@@ -164,6 +164,13 @@ pub struct TodoResumeParams {
     /// a notification. Excludes `next`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// With `approve` in queue mode (a run the queue started, or any run
+    /// while the repository's queue is on): leave the item open. Without
+    /// it, and without `note` or `close`, the approval closes the item as
+    /// the queue's own review does (a `DECISIONS.md` section), so the
+    /// queue never runs an approved item again. Excludes `close`.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub keep_open: bool,
     /// The caller's pane. A run owned by another pane that is still there
     /// is refused (`run_owned_elsewhere`); once the owner's pane or agent
     /// is gone, the caller takes the run over: its pane, agent session and

@@ -54,6 +54,13 @@ impl App {
                 self.handle_internal_event(ev);
                 false
             }
+            ev @ AppEvent::UsageUpdated(_) => {
+                self.handle_internal_event(ev);
+                // A new reading is one of the todo queues' events: a queue
+                // the usage gate stopped looks again.
+                crate::workers::usage_reading_published();
+                true
+            }
             ev => {
                 self.handle_internal_event(ev);
                 true

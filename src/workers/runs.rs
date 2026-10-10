@@ -77,6 +77,9 @@ mod finish;
 pub(super) mod queue;
 mod usage_gate;
 
+#[cfg(all(test, unix))]
+pub(crate) use auto_answer::settle_inline;
+
 /// A run's attempts: the first worker and two retries; a retry asked after
 /// the third blocks the run.
 const MAX_ATTEMPTS: u32 = 3;
@@ -1842,7 +1845,33 @@ impl WorkerSupervisor {
                 ));
             }
         }
+        if params.keep_open {
+            if params.action != TodoAction::Approve {
+                return Err(WorkerError::Invalid("only approve takes keep_open".into()));
+            }
+            if params.close.is_some() {
+                return Err(WorkerError::Invalid(
+                    "keep_open and a closing decision exclude each other".into(),
+                ));
+            }
+        }
         self.check_after_close(&run, &params)?;
+        // In queue mode an approval closes the item as the queue's own
+        // review does, unless it keeps it open (a note, or keep_open): the
+        // queue then never runs an approved item again.
+        let queue_close = (params.action == TodoAction::Approve
+            && params.note.is_none()
+            && params.close.is_none()
+            && !params.keep_open
+            && (run.finish.queued || self.queue_is_on(&run.info.repo)))
+        .then(|| {
+            queue::queue_close(
+                &run,
+                reviewed.as_deref(),
+                None,
+                "the coordinator (`herdr todo resume --action approve`)",
+            )
+        });
         let mut note = None;
         let mut usage = None;
         match params.action {
@@ -1860,7 +1889,10 @@ impl WorkerSupervisor {
                     message: params.message.clone(),
                     command_id: Some(format!("{}:{}:answer", run.info.run_id, params.event)),
                 };
-                match self.answer(&answer) {
+                // Without waking the run's driver: this resume moves the run
+                // on itself below. A driver woken here would apply the
+                // answered question first and make this event stale.
+                match self.answer_for_run(&answer) {
                     Ok(_) => {}
                     // Answered elsewhere (the user's `?` list) or withdrawn:
                     // nothing left to answer, so the run goes on.
@@ -1958,7 +1990,9 @@ impl WorkerSupervisor {
             "env_sent": env.is_some(),
             "note": note,
             "todo_note": params.note,
-            "close": params.close,
+            "close": params.close.as_ref().or(queue_close.as_ref()),
+            "queue_close": queue_close.is_some(),
+            "keep_open": params.keep_open,
             "next": params.next,
             "stop_reason": params.stop_reason,
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
@@ -2012,7 +2046,7 @@ impl WorkerSupervisor {
                     TodoAction::Approve => {
                         current.info.step = TodoStep::Stop;
                         current.finish.note = params.note.clone();
-                        current.finish.close = params.close.clone();
+                        current.finish.close = params.close.clone().or_else(|| queue_close.clone());
                         current.finish.next = params.next.clone();
                         current.finish.stop_reason = params.stop_reason.clone();
                         current.info.next_item = params.next.as_ref().map(|next| next.item.clone());
@@ -3296,6 +3330,22 @@ pub(crate) fn resume_runs_at_start() {
     });
     if let Err(error) = spawned {
         warn!(%error, "cannot resume the todo runs");
+    }
+}
+
+/// The usage poller published a new reading: the queues the usage gate
+/// stopped look again ([`WorkerSupervisor::queues_after_usage_reading`]),
+/// from a thread so the server's loop does not wait for the store, git or
+/// the provider. Nothing without an open supervisor.
+pub(crate) fn usage_reading_published() {
+    let Some(supervisor) = super::coordinators::installed() else {
+        return;
+    };
+    let spawned = crate::thread_spawn::spawn_named("herdr-todo-queue-usage", move || {
+        supervisor.queues_after_usage_reading();
+    });
+    if let Err(error) = spawned {
+        warn!(%error, "cannot re-evaluate the todo queues after a usage reading");
     }
 }
 

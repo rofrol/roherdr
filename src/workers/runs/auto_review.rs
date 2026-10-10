@@ -645,10 +645,9 @@ impl WorkerSupervisor {
         note: Option<String>,
     ) -> Result<Outcome, String> {
         // A queue run's own approval closes its item, so the queue moves on.
-        let close = run
-            .finish
-            .queued
-            .then(|| super::queue::queue_close(run, commit, note.as_deref()));
+        let close = run.finish.queued.then(|| {
+            super::queue::queue_close(run, Some(commit), note.as_deref(), "the server's review")
+        });
         let body = json!({
             "type": APPLIED, "event": seq, "decision_id": record.decision_id,
             "action": "approve", "note": note, "commit": commit, "base": record.base,
