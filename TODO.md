@@ -125,6 +125,14 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   8. Extracting the layer into its own crate (its own item).
   9. A conformance test per capability, incl. "unsupported must refuse"
      for every adapter.
+  Remaining slices 1 and 7 landed 2026-10-11 (bb6e2a93): a run refused with
+  `grant_required` lists a grant question in the user's `?` list,
+  answerable only from the user's client (Grant records it if `master`
+  still has that definition; Not now drops it until the next refusal);
+  queue mode waits as `waiting_on_user` and starts the item on the grant;
+  `herdr todo grant --revoke` / `todo.revoke` with an append-only
+  `capability_grant_log`; a run not yet past its prepare is blocked after a
+  revoke; grants show in `todo status` / `todo runs`. Left: slices 2-6, 8, 9.
 
 - [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
   about 30 minutes? too much? why any asynchronous workaround at all? make
