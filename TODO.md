@@ -63,33 +63,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ~/.pi/agent/AGENTS.md a symlink to ~/.claude/CLAUDE.md, one file, no
   import mechanism needed; confirm pi follows a symlinked AGENTS.md.
 
-- [ ] A headless worker's line in the sidebar cannot be clicked (user, [t-3bsem3en]
-  2026-10-07, with a screenshot of the `?` list showing `worker w1 ·
-  header-arrows` and its Bash question: "a headless worker's entry cannot
-  be clicked; ask the models").
-  Checked: the `?` row of a worker question has no pane, tab or space
-  (`worker_question_row` in `src/client/shell/notification_log.rs`), so a
-  click only closes the list. Round `20261007-204431-83a8` (sol, DeepSeek; MiMo
-  gave an empty answer), agreeing: a click opens a dialog in herdr's modal
-  style bound to the request id (not the worker): worker name and task, the
-  full command (monospace, newlines kept, scrollable, never truncated: an
-  approval must not rest on a preview) or the question with its options as
-  buttons; Allow once / Deny (optional deny message) / View log; no default
-  action on Enter. If the request is answered elsewhere or the worker exits
-  while it is open, the dialog shows that and disables its buttons; the
-  server rejects stale request ids. Several pending requests: "1 of 3", the
-  next opens after the answer. No "allow this pattern" for now (both: a
-  single command does not show a safe pattern). Keyboard works too.
-  Seen again 2026-10-10 (user, screenshot: worker w79 of job-seeker in the
-  `?` list, plain black, not clickable; it was escalated because its
-  coordinator's pane closed). Round 20261010-025204-a255: the request-id
-  dialog stays right; add, for an escalated question: who owns it and why it
-  was escalated, "Stop worker" (destructive, confirmed, resolving the pending
-  request), and "Open owner" when the owner pane lives; "adopt into my pane"
-  later, once ownership transfer is defined (tenure handoff exists). Until the
-  dialog lands, the row must not look dead: a click opens a read-only view
-  (command, log) at least. Moved to the top.
-
 - [ ] Coordinators report protocol problems themselves: `herdr report` [t-pulsqoxl]
   (user via the try-roguix coordinator, 2026-10-10: "work out with the
   models how coordinators report such problems without me telling them
