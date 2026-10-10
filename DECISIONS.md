@@ -849,3 +849,15 @@ teaches, not for whether herdr could embed them. Licence (AGPL included)
 and dependencies (Postgres) matter only when code would be copied, linked
 or shipped; running and reading them in a throwaway VM carries no
 obligation.
+
+## Closing an item starts the next or says why not (bridge; decided by
+
+A coordinator closed an item, wrote "I take the next item" and started
+nothing (2026-10-10). Bridge until queue mode: `herdr todo resume --action
+approve --close <file>` now requires `--next <item>` with the next run's
+`--next-task`, `--next-message` and `--next-paths` (checks default to the
+closed run's), and the driver starts that run when this one is done
+(intent and result recorded, restart-safe; a preflight refusal becomes a
+`next_refused` event), or `--stop-reason <text>`, recorded in the item
+history and sent as a notification (the notification may be lost if the
+server dies in between; the history keeps it).

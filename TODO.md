@@ -38,15 +38,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   flags; the `todo` skill's driver step too (the user's agent config: a
   text edit that widens nothing).
 
-- [ ] Closing an item starts the next or says why not (bridge; decided by [t-pvim76jl]
-  the user 2026-10-10 after "a coordinator stops because it took nothing;
-  what weak architecture"; round 20261010-113822-76ae). `herdr todo resume
-  --action approve --close` (and `--note` on a run's last step) refuses
-  unless it is given `--next <item-id>` (the driver starts that item's run
-  as soon as this run is done, from the same command, recorded as intent
-  then result) or `--stop-reason <text>` (recorded in the item history and
-  shown to the user). No timer; the command itself carries the next step.
-
 - [ ] Queue mode: herdr's server drives the TODO queue (decided by the user [t-5s7xgogm]
   2026-10-10, replacing "`todo next --continue` as the default"; round
   20261010-113822-76ae, sol + MiMo + DeepSeek agreeing that liveness must be
