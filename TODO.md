@@ -170,6 +170,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   for), pending menus in TODO.md.
   Slices 1 and 2 done by 2026-10-09: `scripts/todo_edit.py` and the driver's
   records (runs, attempts, landings, item history and reconcile, tenures).
+  Slice 3 landed 2026-10-10 (run `r-wjmj7vys`): `herdr todo next [--continue]`
+  and `herdr todo stop` start a fresh headless item coordinator per item (own
+  headless tenure, the allowlist, socket access), record its outcome in the
+  item's history, and advance the chain on its exit until Next is empty, an
+  item escalates, blocks or fails, or `todo stop`. Opt-in; nothing changes
+  until it is used. Decided by the coordinator for slice 4: the chain's
+  environment travels through a live handoff like the runs' (a cold restart
+  stops the chain with an escalation); a worker question in an item
+  coordinator's run goes first to that coordinator (owned by its headless
+  tenure) and to the user only when it escalates; an `escalated` outcome
+  sends a notification. Known: `todo_edit.py` limited to the coordinator's
+  own item only by its prompt; the chat pane does not hold the repository's
+  tenure while a chain runs.
 
 - [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
   (Decided by the user 2026-10-09 after consult round
