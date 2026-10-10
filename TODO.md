@@ -1742,6 +1742,13 @@ user needs to decide or do.
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
 
+- [ ] [t-wapsagi4] Enforce the coordinator stop check after its shadow phase?
+  Options: after a week of shadow logs with at most 1 false per 100, block, and a plain "stop" from the user also runs `herdr todo queue pause` (Recommended) | keep it shadow-only | drop it
+  Checked by the coordinator 2026-10-10: shadow landed in 704290af, replay
+  3/3 caught and 0 false; the live log is
+  `~/.local/state/herdr/awaiting-reply-stop.jsonl` (`stall_would_block`);
+  it needs the integration installed first.
+
 ### Decide
 
 ### Needs you to act or watch
