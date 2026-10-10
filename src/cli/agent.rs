@@ -753,15 +753,18 @@ fn agent_wait(args: &[String], scope: NameScope) -> std::io::Result<i32> {
             }
         }
     }
-    super::print_response(&super::send_request(&Request {
+    let what = format!("agent {target}");
+    let reply = super::reconnect::wait("agent wait", &what, |elapsed| Request {
         id: "cli:agent:wait".into(),
         method: Method::AgentWait(AgentWaitParams {
             target: target.clone(),
-            prefer_workspace_id: scope.prefer_workspace_id,
-            until,
-            timeout_ms,
+            prefer_workspace_id: scope.prefer_workspace_id.clone(),
+            until: until.clone(),
+            timeout_ms: super::reconnect::remaining_ms(timeout_ms, elapsed),
         }),
-    })?)
+    })?;
+    super::reconnect::report_gave_up("agent wait", &what, &reply);
+    super::print_response(&reply.response)
 }
 
 fn wait_for_named_agent(
@@ -1149,12 +1152,15 @@ fn agent_wait_turn(args: &[String]) -> std::io::Result<i32> {
 
 /// Waits with `agent.wait_turn` and prints how the turn ended. Exit 0 only for `finished`.
 fn wait_for_turn(request_id: &str) -> std::io::Result<i32> {
-    let response = super::send_request(&Request {
+    let what = format!("the turn of prompt request {request_id}");
+    let reply = super::reconnect::wait("agent wait-turn", &what, |_| Request {
         id: "cli:agent:wait_turn".into(),
         method: Method::AgentWaitTurn(AgentWaitTurnParams {
             request_id: request_id.to_string(),
         }),
     })?;
+    super::reconnect::report_gave_up("agent wait-turn", &what, &reply);
+    let response = reply.response;
     let exit_code = super::print_response(&response)?;
     if exit_code == 0 && response["result"]["reason"] != "finished" {
         return Ok(1);

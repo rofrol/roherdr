@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
@@ -42,6 +42,7 @@ pub struct ServerHandle {
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
+    open_waits: Arc<OpenWaits>,
 }
 
 impl Drop for ServerHandle {
@@ -53,6 +54,10 @@ impl Drop for ServerHandle {
                 warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
             }
         }
+        // After a live handoff, the process exits only once every open wait
+        // got its `server_handed_off` answer, so no client sees a connection
+        // closed without one.
+        self.open_waits.wait_until_answered();
     }
 }
 
@@ -60,6 +65,113 @@ impl ServerHandle {
     pub(crate) fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
         remove_socket_file_if_owned(&self.path, &self.identity)
     }
+
+    /// Called once the server a live handoff started accepts on the API
+    /// socket: from now on, each wait this server ends (its stop, or an
+    /// app that no longer answers) answers `server_handed_off`, telling
+    /// its client to send the same wait to the new server.
+    pub(crate) fn mark_handed_off(&self) {
+        self.open_waits.mark_handed_off();
+    }
+}
+
+/// The code of the answer that ends a wait because its server handed off
+/// to a new one, which already accepts on the same socket.
+pub(crate) const SERVER_HANDED_OFF: &str = "server_handed_off";
+
+/// The waits open on a server's connections, and whether it handed off.
+#[derive(Default)]
+pub(crate) struct OpenWaits {
+    state: Mutex<OpenWaitsState>,
+    answered: Condvar,
+}
+
+#[derive(Default)]
+struct OpenWaitsState {
+    open: usize,
+    handed_off: bool,
+}
+
+impl OpenWaits {
+    fn state(&self) -> std::sync::MutexGuard<'_, OpenWaitsState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn enter(self: &Arc<Self>) -> OpenWait {
+        self.state().open += 1;
+        OpenWait(Arc::clone(self))
+    }
+
+    fn mark_handed_off(&self) {
+        self.state().handed_off = true;
+    }
+
+    /// After a handoff, blocks until every open wait wrote its answer (each
+    /// one's end, which the server's stop brings, wakes it).
+    fn wait_until_answered(&self) {
+        let mut state = self.state();
+        while state.handed_off && state.open > 0 {
+            state = self
+                .answered
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// One open wait; its end (after its answer is written) is counted.
+struct OpenWait(Arc<OpenWaits>);
+
+impl OpenWait {
+    /// The answer to write for a wait that ended with `response`: after a
+    /// handoff, a wait the server's stop ended (`None`) or one an app that
+    /// no longer answers ended (`server_unavailable`) answers
+    /// `server_handed_off` instead.
+    fn answer(&self, request_id: &str, response: Option<String>) -> Option<String> {
+        if !self.0.state().handed_off {
+            return response;
+        }
+        let ended_by_the_stop = response.as_deref().is_none_or(|response| {
+            serde_json::from_str::<serde_json::Value>(response)
+                .is_ok_and(|value| value["error"]["code"] == "server_unavailable")
+        });
+        if !ended_by_the_stop {
+            return response;
+        }
+        Some(error_response_json(
+            request_id.to_owned(),
+            SERVER_HANDED_OFF,
+            "the server handed off to a new server, which accepts on the same socket; send \
+             the request again"
+                .into(),
+        ))
+    }
+}
+
+impl Drop for OpenWait {
+    fn drop(&mut self) {
+        self.0.state().open -= 1;
+        self.0.answered.notify_all();
+    }
+}
+
+/// The methods whose connection stays open while they wait, and which a
+/// handoff ends with `server_handed_off`.
+fn is_open_wait(method: &Method) -> bool {
+    matches!(
+        method,
+        Method::EventsWait(_)
+            | Method::AgentPrompt(_)
+            | Method::AgentPromptTurn(_)
+            | Method::AgentPromptConfirmed(_)
+            | Method::AgentWaitTurn(_)
+            | Method::AgentWait(_)
+            | Method::PaneWaitForOutput(_)
+            | Method::WorkerWait(_)
+            | Method::WorkerTranscriptWait(_)
+            | Method::WorkerWaitDrained(_)
+            | Method::TodoWait(_)
+    )
 }
 
 pub(crate) fn start_server_with_stop_control(
@@ -125,6 +237,8 @@ fn start_server_inner(
 
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
+    let open_waits = Arc::new(OpenWaits::default());
+    let listener_open_waits = Arc::clone(&open_waits);
     let spawned = crate::thread_spawn::spawn_named("herdr-api-accept", move || {
         run_accept_loop(
             listener.incoming(),
@@ -136,6 +250,7 @@ fn start_server_inner(
                 let capabilities = capabilities.clone();
                 let server_stop = server_stop.clone();
                 let connection_running = Arc::clone(&listener_running);
+                let open_waits = Arc::clone(&listener_open_waits);
                 #[cfg(unix)]
                 let ssh_agents = ssh_agents.clone();
                 spawn_connection_handler(move || {
@@ -146,6 +261,7 @@ fn start_server_inner(
                         &connection_running,
                         capabilities,
                         server_stop.as_ref(),
+                        &open_waits,
                         #[cfg(unix)]
                         ssh_agents.as_ref(),
                     ) {
@@ -170,6 +286,7 @@ fn start_server_inner(
         path,
         identity,
         running,
+        open_waits,
     })
 }
 
@@ -326,6 +443,7 @@ fn handle_connection(
         running,
         capabilities,
         None,
+        &Arc::default(),
         #[cfg(unix)]
         None,
     )
@@ -338,6 +456,7 @@ fn handle_connection_with_stop(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&ServerStop>,
+    open_waits: &Arc<OpenWaits>,
     #[cfg(unix)] ssh_agents: Option<&crate::platform::ssh_agent::SshAgentRegistry>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
@@ -386,6 +505,11 @@ fn handle_connection_with_stop(
     let method = api_method_name(&request.method);
     let changes_ui = request_changes_ui(&request);
     crate::logging::api_request_started(&request_id, method, changes_ui);
+    let open_wait = is_open_wait(&request.method).then(|| open_waits.enter());
+    let answer = |response: Option<String>| match &open_wait {
+        Some(open_wait) => open_wait.answer(&request_id, response),
+        None => response,
+    };
 
     match request.method {
         #[cfg(unix)]
@@ -462,7 +586,13 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentPrompt(params) => {
             let response = prompt_agent(
@@ -473,7 +603,13 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentPromptTurn(params) => {
             let response = prompt_agent_turn(
@@ -484,11 +620,23 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentPromptTracked(params) => {
             let response = prompt_agent_tracked(request_id.clone(), params, api_tx);
-            finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(Some(response)),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentPromptConfirmed(params) => {
             let response = prompt_agent_confirmed(
@@ -499,7 +647,13 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentWaitTurn(params) => {
             let response = wait_agent_turn(
@@ -510,7 +664,13 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::AgentWait(params) => {
             let response = wait_for_agent(
@@ -521,12 +681,24 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         Method::PaneWaitForOutput(params) => {
             let response =
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         method_body if crate::api::workers::is_worker_method(&method_body) => {
             let response = crate::api::workers::handle_worker_request(
@@ -535,7 +707,13 @@ fn handle_connection_with_stop(
                 &mut stream,
                 running,
             );
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
         }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
@@ -1354,6 +1532,7 @@ mod tests {
                 &Arc::new(AtomicBool::new(true)),
                 None,
                 None,
+                &Arc::default(),
                 Some(&worker_registry),
             )
             .unwrap();
@@ -1880,6 +2059,99 @@ mod tests {
         assert_eq!(response["error"]["message"], "pane pane_1 not found");
         drop(api_tx);
         responder.join().unwrap();
+    }
+
+    /// A live handoff ends an open wait with `server_handed_off`, not a
+    /// connection closed without an answer, and the old server's exit waits
+    /// for that answer to be written. A wait that ends otherwise keeps its
+    /// own answer.
+    #[test]
+    fn a_handoff_answers_open_waits_before_the_server_exits() {
+        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (first_read_tx, first_read_rx) = std::sync::mpsc::channel();
+        let responder = std::thread::spawn(move || {
+            let mut first_read_tx = Some(first_read_tx);
+            while let Some(msg) = api_rx.blocking_recv() {
+                if let Some(first_read_tx) = first_read_tx.take() {
+                    first_read_tx.send(()).unwrap();
+                }
+                let response = serde_json::to_string(&SuccessResponse {
+                    id: msg.request.id,
+                    result: ResponseResult::PaneRead {
+                        read: crate::api::schema::PaneReadResult {
+                            pane_id: "pane_1".into(),
+                            workspace_id: "ws_1".into(),
+                            tab_id: "tab_1".into(),
+                            source: crate::api::schema::ReadSource::RecentUnwrapped,
+                            format: crate::api::schema::ReadFormat::Text,
+                            text: String::new(),
+                            revision: 0,
+                            truncated: false,
+                        },
+                    },
+                })
+                .unwrap();
+                let _ = msg.respond_to.send(response);
+            }
+        });
+
+        let (mut client, server, _path) = local_stream_pair("api-wait-handoff");
+        client
+            .write_all(br#"{"id":"req_wait","method":"pane.wait_for_output","params":{"pane_id":"pane_1","source":"recent","match":{"type":"substring","value":"never"}}}"#)
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let open_waits = Arc::new(OpenWaits::default());
+        let server_running = Arc::clone(&running);
+        let server_open_waits = Arc::clone(&open_waits);
+        let server_thread = std::thread::spawn(move || {
+            handle_connection_with_stop(
+                server,
+                &api_tx,
+                &EventHub::default(),
+                &server_running,
+                None,
+                None,
+                &server_open_waits,
+                None,
+            )
+        });
+
+        first_read_rx.recv().unwrap();
+        // As `finish_live_handoff_shutdown`, then `ServerHandle`'s drop.
+        open_waits.mark_handed_off();
+        running.store(false, Ordering::Relaxed);
+        open_waits.wait_until_answered();
+
+        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
+        assert_eq!(response["id"], "req_wait");
+        assert_eq!(response["error"]["code"], SERVER_HANDED_OFF);
+        server_thread.join().unwrap().unwrap();
+        responder.join().unwrap();
+
+        // After the handoff, an app that no longer answers is the handoff
+        // too, while a wait's own answer stays as it is.
+        let open_wait = open_waits.enter();
+        let unavailable = error_response_json(
+            "req".into(),
+            "server_unavailable",
+            "server is shutting down".into(),
+        );
+        let answered = open_wait.answer("req", Some(unavailable)).unwrap();
+        assert!(answered.contains(SERVER_HANDED_OFF), "{answered}");
+        let timeout = error_response_json("req".into(), "timeout", "timed out".into());
+        assert_eq!(
+            open_wait.answer("req", Some(timeout.clone())),
+            Some(timeout)
+        );
+        drop(open_wait);
+        open_waits.wait_until_answered();
+
+        // Without a handoff, nothing changes.
+        let before = Arc::new(OpenWaits::default());
+        assert_eq!(before.enter().answer("req", None), None);
     }
 
     #[test]

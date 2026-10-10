@@ -1085,10 +1085,16 @@ fn pane_wait_output(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
-    super::print_response(&super::send_request(&Request {
+    let what = format!("the output of pane {}", params.pane_id);
+    let reply = super::reconnect::wait("pane wait-output", &what, |elapsed| Request {
         id: "cli:pane:wait-output".into(),
-        method: Method::PaneWaitForOutput(params),
-    })?)
+        method: Method::PaneWaitForOutput(PaneWaitForOutputParams {
+            timeout_ms: super::reconnect::remaining_ms(params.timeout_ms, elapsed),
+            ..params.clone()
+        }),
+    })?;
+    super::reconnect::report_gave_up("pane wait-output", &what, &reply);
+    super::print_response(&reply.response)
 }
 
 fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParams, String> {

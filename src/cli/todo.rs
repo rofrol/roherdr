@@ -3,9 +3,6 @@
 //! (`todo.run`), and lets the coordinator wait on and answer the run's
 //! events.
 
-use std::time::Duration;
-
-use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     Method, Request, TodoAction, TodoDraftRunParams, TodoNextParams, TodoNextRun, TodoQueueMode,
     TodoQueueSetParams, TodoQueueTarget, TodoResumeParams, TodoReviewParams, TodoRunParams,
@@ -76,9 +73,10 @@ const USAGE: &str = "usage:
       (done, blocked or aborted), or a still_alive event todo status raised.
       Prints the event with its event_id, the actions it takes and its
       evidence (questions, diff stat, commits, the verify). When the server
-      goes away meanwhile (a live handoff), it waits for the server socket to
-      accept again and goes on waiting on the same run after EVENT_ID; it
-      gives up only when the new server does not know the run.
+      hands off meanwhile (a live handoff), it answers server_handed_off once
+      the new server accepts, and the wait goes on with the new server on the
+      same run after EVENT_ID; it gives up when the new server does not know
+      the run. A server that stops or restarts ends the wait.
   herdr todo resume <run-id> --event EVENT_ID
                     --action approve|retry|answer|verify|force-stop|
                              retry-install|skip-install|retry-todo|skip-todo|
@@ -214,7 +212,7 @@ pub(super) fn run_todo_command(args: &[String]) -> std::io::Result<i32> {
         return super::todo_review::print_review(&super::send_request(&request)?, json);
     }
     let command = super::report::command_line(&["herdr", "todo"], args);
-    if matches!(request.method, Method::TodoWait(_)) && !super::target::is_remote() {
+    if matches!(request.method, Method::TodoWait(_)) {
         return wait_across_handoffs(&request, &command);
     }
     let response = super::send_request(&request)?;
@@ -251,28 +249,21 @@ fn auto_review_ignored(params: &TodoRunParams, response: &serde_json::Value) -> 
     })
 }
 
-/// How often a `todo wait` that lost its server tries to connect again.
-/// External polling: nothing notifies a client when the new server of a
-/// live handoff binds the socket. No deadline: only the connection that
-/// the socket accepts ends the wait for it.
-const RECONNECT_POLL: Duration = Duration::from_millis(50);
-
-/// `todo wait`, which a live handoff does not end: the old server closes
-/// the connection without an answer, and the wait goes on with the new one.
+/// `todo wait`, which a live handoff does not end: the handed-off server
+/// tells the wait so, and it goes on with the new one ([`super::reconnect`]).
 /// When the new server's answer is an error, the wait gave up: it prints
 /// the `herdr report` command for that, as for an event without a next step.
 fn wait_across_handoffs(request: &Request, command: &str) -> std::io::Result<i32> {
-    let client = super::target::api_client()?;
-    super::ensure_server_protocol_compatible(&client, &request.id)?;
-    let mut reconnected = false;
-    let response = request_reconnecting(&client, request, || {
-        reconnected = true;
-        super::ensure_server_protocol_compatible(&client, &request.id)
-    })?;
+    let target = match &request.method {
+        Method::TodoWait(params) => format!("run {}", params.run_id),
+        _ => "the run".into(),
+    };
+    let reply = super::reconnect::wait("todo wait", &target, |_| request.clone())?;
+    let response = reply.response;
     let code = super::print_response(&response)?;
     match &response["error"] {
         serde_json::Value::Null => super::report::hint_reply(&response, command),
-        error if reconnected => super::report::print_hint(
+        error if reply.reconnected => super::report::print_hint(
             "todo-wait-gave-up",
             &format!(
                 "todo wait gave up after a server handoff: the new server answered {}: {}",
@@ -284,92 +275,6 @@ fn wait_across_handoffs(request: &Request, command: &str) -> std::io::Result<i32
         _ => {}
     }
     Ok(code)
-}
-
-/// Whether `error` means the server went away with the request in flight
-/// (it closed the connection without an answer), or, once it did, that its
-/// replacement does not accept yet.
-fn connection_lost(error: &ApiClientError, lost_before: bool) -> bool {
-    use std::io::ErrorKind;
-    match error {
-        ApiClientError::EmptyResponse => true,
-        ApiClientError::Io(error) => match error.kind() {
-            ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::BrokenPipe
-            | ErrorKind::UnexpectedEof => true,
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused => lost_before,
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-/// Blocks until the socket accepts a connection.
-fn wait_until_accepting(client: &ApiClient) -> std::io::Result<()> {
-    loop {
-        match crate::ipc::connect_local_stream(&client.socket_path()) {
-            Ok(_) => return Ok(()),
-            Err(error) if super::server_not_running_error(&error) => {
-                std::thread::sleep(RECONNECT_POLL);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Sends `request` and returns the server's answer, across lost
-/// connections ([`send_reconnecting`]).
-fn request_reconnecting(
-    client: &ApiClient,
-    request: &Request,
-    reconnected: impl FnMut() -> std::io::Result<()>,
-) -> std::io::Result<serde_json::Value> {
-    send_reconnecting(
-        || client.request_value(request),
-        || wait_until_accepting(client),
-        reconnected,
-    )?
-    .map_err(|error| super::map_server_not_running_or_io(error, &request.id, client))
-}
-
-/// Sends a request with `send` and returns the server's answer. When the
-/// connection is lost before the answer, it waits until the socket accepts
-/// again (`accepting`), runs `reconnected` (the protocol check of the new
-/// server) and sends the same request again: `todo.wait` only reads, so
-/// sending it twice is safe. Any answer ends it, an error answer too
-/// (`todo_run_not_found` from a server that does not know the run); the
-/// inner error is a failure that is not a lost connection.
-fn send_reconnecting(
-    mut send: impl FnMut() -> Result<serde_json::Value, ApiClientError>,
-    mut accepting: impl FnMut() -> std::io::Result<()>,
-    mut reconnected: impl FnMut() -> std::io::Result<()>,
-) -> std::io::Result<Result<serde_json::Value, ApiClientError>> {
-    let mut lost = false;
-    loop {
-        if lost {
-            accepting()?;
-            match reconnected() {
-                Ok(()) => {}
-                // It went away again before it answered the check.
-                Err(error) if super::server_not_running_was_reported(&error) => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        match send() {
-            Ok(response) => return Ok(Ok(response)),
-            Err(error) if connection_lost(&error, lost) => {
-                if !lost {
-                    eprintln!(
-                        "herdr todo wait: lost the server connection ({error}); waiting for the \
-                         server to accept again to go on waiting on the same run"
-                    );
-                }
-                lost = true;
-            }
-            Err(error) => return Ok(Err(error)),
-        }
-    }
 }
 
 fn read_task(path: &str) -> Result<String, String> {
@@ -1248,186 +1153,5 @@ mod tests {
         };
         assert_eq!(params.action, TodoAction::Abort);
         assert_eq!(params.message.as_deref(), Some("superseded"));
-    }
-
-    /// A simulated server replacement: the old server closes the wait's
-    /// connection without an answer, the socket is gone for one try, then
-    /// the new server answers the same request.
-    #[test]
-    fn a_lost_connection_is_waited_out_and_the_same_request_sent_again() {
-        use std::io::{Error, ErrorKind};
-        let mut replies = vec![
-            Err(ApiClientError::EmptyResponse),
-            Err(ApiClientError::Io(Error::from(ErrorKind::NotFound))),
-            Err(ApiClientError::Io(Error::from(ErrorKind::ConnectionReset))),
-            Ok(serde_json::json!({"id": "cli:todo:wait", "result": {}})),
-        ]
-        .into_iter();
-        let (mut sent, mut accepted, mut checked) = (0, 0, 0);
-        let response = send_reconnecting(
-            || {
-                sent += 1;
-                replies.next().unwrap()
-            },
-            || {
-                accepted += 1;
-                Ok(())
-            },
-            || {
-                checked += 1;
-                Ok(())
-            },
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(response["result"], serde_json::json!({}));
-        assert_eq!((sent, accepted, checked), (4, 3, 3));
-
-        // An error answer (the new server does not know the run) ends it.
-        let unknown = serde_json::json!({"error": {"code": "todo_run_not_found"}});
-        let mut replies = vec![Err(ApiClientError::EmptyResponse), Ok(unknown.clone())].into_iter();
-        let response = send_reconnecting(|| replies.next().unwrap(), || Ok(()), || Ok(()));
-        assert_eq!(response.unwrap().unwrap(), unknown);
-
-        // No server at the first try is not a lost connection: no wait.
-        let mut accepted = 0;
-        let response = send_reconnecting(
-            || Err(ApiClientError::Io(Error::from(ErrorKind::NotFound))),
-            || {
-                accepted += 1;
-                Ok(())
-            },
-            || Ok(()),
-        );
-        assert!(matches!(response, Ok(Err(ApiClientError::Io(_)))));
-        assert_eq!(accepted, 0);
-
-        // A server that refuses the check (another protocol) ends it.
-        let mut replies = vec![Err(ApiClientError::EmptyResponse)].into_iter();
-        let response = send_reconnecting(
-            || replies.next().unwrap(),
-            || Ok(()),
-            || Err(Error::other("protocol mismatch")),
-        );
-        assert!(response.is_err());
-    }
-
-    /// Simulated server replacements over a real local socket.
-    #[cfg(unix)]
-    mod reconnect {
-        use super::*;
-
-        fn wait_request() -> Request {
-            Request {
-                id: "cli:todo:wait".into(),
-                method: Method::TodoWait(TodoWaitParams {
-                    run_id: "r-abcd2345".into(),
-                    after: Some(7),
-                }),
-            }
-        }
-
-        /// Accepts connections on `listener` until one sends a request line,
-        /// and returns it with its stream; connections that only probe the
-        /// socket send nothing.
-        fn next_request(
-            listener: &crate::ipc::LocalListener,
-        ) -> (
-            serde_json::Value,
-            std::io::BufReader<crate::ipc::LocalStream>,
-        ) {
-            use interprocess::local_socket::traits::Listener as _;
-            use std::io::BufRead as _;
-            loop {
-                let mut reader = std::io::BufReader::new(listener.accept().unwrap());
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap() > 0 {
-                    return (serde_json::from_str(&line).unwrap(), reader);
-                }
-            }
-        }
-
-        fn reply(
-            reader: std::io::BufReader<crate::ipc::LocalStream>,
-            response: &serde_json::Value,
-        ) {
-            use std::io::Write as _;
-            let mut stream = reader.into_inner();
-            writeln!(stream, "{response}").unwrap();
-            stream.flush().unwrap();
-        }
-
-        fn socket(name: &str) -> std::path::PathBuf {
-            let path = std::env::temp_dir().join(format!("htw-{name}-{}.sock", std::process::id()));
-            let _ = std::fs::remove_file(&path);
-            path
-        }
-
-        /// A live handoff: the old server takes the wait and goes away without
-        /// an answer (its socket removed first, as `perform_live_handoff`
-        /// does), and a new server binds the same path. The wait reconnects,
-        /// checks the new server and sends the same wait again.
-        #[test]
-        fn a_wait_goes_on_with_the_server_that_replaced_the_lost_one() {
-            let path = socket("handoff");
-            let old = crate::ipc::bind_private_local_listener(&path).unwrap();
-            let server_path = path.clone();
-            let servers = std::thread::spawn(move || {
-                let (first, reader) = next_request(&old);
-                std::fs::remove_file(&server_path).unwrap();
-                drop(old);
-                drop(reader);
-                let new = crate::ipc::bind_private_local_listener(&server_path).unwrap();
-                let (second, reader) = next_request(&new);
-                let answer =
-                    serde_json::json!({"id": "cli:todo:wait", "result": {"type": "todo_event"}});
-                reply(reader, &answer);
-                (first, second, answer)
-            });
-            let client = ApiClient::for_target(crate::api::client::ConnectionTarget::SocketPath(
-                path.clone(),
-            ));
-            let mut checks = 0;
-            let response = request_reconnecting(&client, &wait_request(), || {
-                checks += 1;
-                Ok(())
-            })
-            .unwrap();
-            let (first, second, answer) = servers.join().unwrap();
-            assert_eq!(response, answer);
-            assert_eq!(first, second, "the same wait, after the same event");
-            assert_eq!(first["method"], "todo.wait");
-            assert_eq!(first["params"]["after"], 7);
-            assert_eq!(checks, 1, "the new server's protocol is checked once");
-            let _ = std::fs::remove_file(path);
-        }
-
-        /// The new server does not know the run: its error answer ends the wait.
-        #[test]
-        fn a_wait_gives_up_when_the_new_server_does_not_know_the_run() {
-            let path = socket("unknown");
-            let old = crate::ipc::bind_private_local_listener(&path).unwrap();
-            let server_path = path.clone();
-            let servers = std::thread::spawn(move || {
-                let (_, reader) = next_request(&old);
-                std::fs::remove_file(&server_path).unwrap();
-                drop(old);
-                drop(reader);
-                let new = crate::ipc::bind_private_local_listener(&server_path).unwrap();
-                let (_, reader) = next_request(&new);
-                let answer = serde_json::json!({
-                    "id": "cli:todo:wait",
-                    "error": {"code": "todo_run_not_found", "message": "run r-abcd2345 not found"},
-                });
-                reply(reader, &answer);
-                answer
-            });
-            let client = ApiClient::for_target(crate::api::client::ConnectionTarget::SocketPath(
-                path.clone(),
-            ));
-            let response = request_reconnecting(&client, &wait_request(), || Ok(())).unwrap();
-            assert_eq!(response, servers.join().unwrap());
-            let _ = std::fs::remove_file(path);
-        }
     }
 }

@@ -240,6 +240,12 @@ impl HeadlessServer {
     }
 
     pub(super) fn finish_live_handoff_shutdown(&mut self) {
+        // The new server accepts on the API socket since before it reported
+        // ready: each open wait this server ends from now on tells its
+        // client to go on with it.
+        if let Some(api_server) = &self.api_server {
+            api_server.mark_handed_off();
+        }
         self.shutting_down = true;
         self.app.state.should_quit = true;
         self.app.policy.persist_session = false;

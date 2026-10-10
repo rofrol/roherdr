@@ -33,6 +33,7 @@ mod notification;
 mod pane;
 mod plugin;
 mod protocol_guard;
+mod reconnect;
 mod report;
 mod runtime;
 mod server;
