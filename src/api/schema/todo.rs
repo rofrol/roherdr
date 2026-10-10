@@ -56,6 +56,16 @@ pub struct TodoRunParams {
     /// `auto_review` says whether the server took it.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub auto_review: bool,
+    /// The server answers each question the worker policy leaves (a
+    /// `question` event) itself with a bounded, stateless model call that
+    /// returns `allow`, `deny` (with a message), `answer` (an
+    /// `AskUserQuestion`'s answers) or `escalate` (a question for the user,
+    /// which also enters the user's `?` list). A request herdr's policy
+    /// leaves to the user (a classifier escalation, a path outside the
+    /// worker's folders, a tool it does not know) is only escalated. The
+    /// reply's `auto_answer` says whether the server took it.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub auto_answer: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -415,6 +425,10 @@ pub struct TodoRunInfo {
     /// (`todo.run`'s `auto_review`).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub auto_review: bool,
+    /// The server answers the questions of the run's worker itself
+    /// (`todo.run`'s `auto_answer`).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub auto_answer: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
 }

@@ -5750,6 +5750,7 @@ mod todo_runs {
             env: Some(caller_env()),
             ignore_usage: false,
             auto_review: false,
+            auto_answer: false,
         }
     }
 
@@ -5766,6 +5767,21 @@ mod todo_runs {
     /// one driver. A `still_alive` event is raised beside the driver, which
     /// goes on waiting for the worker's exit.
     fn wait(fixture: &Fixture, run_id: &str, after: Option<i64>) -> (TodoRunEvent, TodoRunInfo) {
+        let (event, run) = next_event(fixture, run_id, after);
+        if run.status != TodoRunStatus::Running && event.kind != TodoEventKind::StillAlive {
+            runs::wait_undriven(run_id, HANG_GUARD);
+        }
+        (event, run)
+    }
+
+    /// The run's next event as `todo.wait` returns it, without waiting for
+    /// its driver to let go (one waiting for the store to take a write
+    /// holds on to the run).
+    fn next_event(
+        fixture: &Fixture,
+        run_id: &str,
+        after: Option<i64>,
+    ) -> (TodoRunEvent, TodoRunInfo) {
         let started = Instant::now();
         let (event, run) = fixture
             .supervisor
@@ -5782,9 +5798,6 @@ mod todo_runs {
             )
             .unwrap()
             .unwrap();
-        if run.status != TodoRunStatus::Running && event.kind != TodoEventKind::StillAlive {
-            runs::wait_undriven(run_id, HANG_GUARD);
-        }
         (event, run)
     }
 
@@ -9179,6 +9192,434 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             assert_eq!(superseded.len(), 1, "{superseded:#?}");
             assert_eq!(superseded[0]["event"], reviewed);
             assert!(run_events(&fixture, &run.run_id, "run_auto_reviewed").is_empty());
+        }
+
+        #[test]
+        fn the_review_judges_the_verify_and_its_approval_is_not_verified_again() {
+            let fixture = reviewed("todo-auto-verify-first", &[r#"{"action": "approve"}"#]);
+            let run = start(&fixture);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            // The verify ran once, before the review, with the worker
+            // stopped first.
+            let verified = run_events(&fixture, &run.run_id, "run_review_verified");
+            assert_eq!(verified.len(), 1, "{verified:#?}");
+            assert_eq!(verified[0]["verdict"], "verified");
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_review_stop_intent").len(),
+                1
+            );
+            let input = calls(&fixture)[0]["stdin"].as_str().unwrap().to_owned();
+            for part in [
+                "verify_before_review",
+                "\"verdict\": \"verified\"",
+                "\"name\": \"ok\"",
+            ] {
+                assert!(input.contains(part), "{part:?} not in {input}");
+            }
+            let decision = &run_events(&fixture, &run.run_id, "run_review_decision")[0];
+            assert_eq!(decision["verdict"], "verified");
+            // The approval took that verdict: no second verify.
+            assert!(run_events(&fixture, &run.run_id, "run_verify_intent").is_empty());
+            let landed = run_events(&fixture, &run.run_id, "run_verified");
+            assert_eq!(landed[0]["reused"], true, "{landed:#?}");
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        }
+
+        #[test]
+        fn an_approval_of_a_commit_whose_verify_failed_is_escalated() {
+            let fixture = reviewed("todo-auto-verify-failed", &[r#"{"action": "approve"}"#]);
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: true,
+                    ..params(&fixture, &format!("commit a.txt {SUBJECT}"), "never")
+                })
+                .unwrap();
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(error.contains("its verify failed"), "{error}");
+            assert!(error.contains("never"), "{error}");
+            let input = calls(&fixture)[0]["stdin"].as_str().unwrap().to_owned();
+            assert!(input.contains("\"verdict\": \"failed\""), "{input}");
+            assert_eq!(master_subjects(&fixture), ["init"]);
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        /// The escalation's entry in the user's `?` list.
+        fn listed_escalation(fixture: &Fixture, run_id: &str) -> Option<PendingWorkerQuestion> {
+            fixture
+                .supervisor
+                .pending_questions()
+                .into_iter()
+                .find(|pending| pending.question.text.contains(run_id))
+        }
+
+        #[test]
+        fn a_review_escalation_enters_the_users_list_and_their_answer_is_reviewed_again() {
+            let fixture = reviewed(
+                "todo-auto-escalate-list",
+                &[
+                    r#"{"action": "escalate", "question": "Keep b.txt?", "options": ["keep", "drop it"]}"#,
+                    r#"{"action": "approve", "note": "the user chose"}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            let listed = listed_escalation(&fixture, &run.run_id).expect("not in the ? list");
+            assert!(!listed.quiet);
+            assert_eq!(
+                Some(listed.worker_id.as_str()),
+                waiting.worker_id.as_deref()
+            );
+            assert_eq!(listed.question.kind, WorkerQuestionKind::Choice);
+            assert!(listed.question.text.contains(ITEM), "{:?}", listed.question);
+            assert_eq!(listed.question.questions[0].question, "Keep b.txt?");
+            assert_eq!(listed.question.questions[0].options, ["keep", "drop it"]);
+            // The answer dialog shows it with its run and item.
+            let detail = fixture
+                .supervisor
+                .question_detail(&listed.worker_id, &listed.question.request_id)
+                .unwrap();
+            assert!(
+                detail.input_text.contains("Keep b.txt?"),
+                "{}",
+                detail.input_text
+            );
+            assert!(detail.name.contains(&run.run_id), "{}", detail.name);
+            // The dialog answers with the option's number.
+            fixture
+                .supervisor
+                .answer(&WorkerAnswerParams {
+                    worker_id: listed.worker_id.clone(),
+                    request_id: Some(listed.question.request_id.clone()),
+                    decision: Some(WorkerDecision::Allow),
+                    answers: vec!["2".into()],
+                    message: None,
+                    command_id: None,
+                })
+                .unwrap();
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+            let (done, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let calls = calls(&fixture);
+            assert_eq!(calls.len(), 2, "{calls:#?}");
+            let again = calls[1]["stdin"].as_str().unwrap();
+            for part in ["user_answer", "drop it", "Keep b.txt?"] {
+                assert!(again.contains(part), "{part:?} not in {again}");
+            }
+            // The verify is not run again for the same commit.
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_review_verified").len(),
+                1
+            );
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        }
+
+        #[test]
+        fn a_denied_escalation_leaves_the_review_to_the_coordinator() {
+            let fixture = reviewed(
+                "todo-auto-escalate-deny",
+                &[
+                    r#"{"action": "escalate", "question": "Keep b.txt?", "options": ["keep", "drop"]}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            let listed = listed_escalation(&fixture, &run.run_id).expect("not in the ? list");
+            fixture
+                .supervisor
+                .deny_and_stop(&WorkerDenyAndStopParams {
+                    worker_id: listed.worker_id.clone(),
+                    request_id: listed.question.request_id.clone(),
+                    message: Some("the coordinator decides".into()),
+                })
+                .unwrap();
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+            let declined = run_events(&fixture, &run.run_id, "run_escalation_declined");
+            assert_eq!(declined[0]["event"], escalated.event_id);
+            // Still the coordinator's event.
+            let waiting = fixture.supervisor.todo_status(&run.run_id).unwrap();
+            assert_eq!(waiting.pending_event, Some(escalated.event_id));
+            let gone = fixture
+                .supervisor
+                .question_detail(&listed.worker_id, &listed.question.request_id)
+                .unwrap_err();
+            assert_eq!(gone.code(), "worker_question_gone", "{gone}");
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn a_coordinators_answer_takes_the_escalation_off_the_list() {
+            let fixture = reviewed(
+                "todo-auto-escalate-resume",
+                &[
+                    r#"{"action": "escalate", "question": "Keep b.txt?", "options": ["keep", "drop"]}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert!(listed_escalation(&fixture, &run.run_id).is_some());
+            abort(&fixture, &run.run_id, escalated.event_id);
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+        }
+
+        #[test]
+        fn an_escalation_is_listed_again_after_a_restart() {
+            let fixture = reviewed(
+                "todo-auto-escalate-restart",
+                &[
+                    r#"{"action": "escalate", "question": "Keep b.txt?", "options": ["keep", "drop"]}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            let listed = listed_escalation(&fixture, &run.run_id).unwrap();
+            // A server that starts has an empty list until it reads the runs.
+            runs::escalations::forget_all_for_test();
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+            fixture.supervisor.resume_runs();
+            let again = listed_escalation(&fixture, &run.run_id).unwrap();
+            assert_eq!(again.question.request_id, listed.question.request_id);
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn a_decision_whose_write_fails_shows_the_run_blocked_until_it_lands() {
+            let fixture = reviewed("todo-auto-write-fails", &[r#"{"action": "approve"}"#]);
+            let repo = repository_of(&fixture.repo).unwrap();
+            runs::decision::fail_next_write(&repo, "run_review_decision");
+            let run = start(&fixture);
+            // The review event the server could not record a decision for
+            // is not hidden: the run shows blocked with the error.
+            let (blocked, shown) = next_event(&fixture, &run.run_id, None);
+            assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+            let error = blocked.error.clone().unwrap_or_default();
+            assert!(error.contains("injected failure"), "{error}");
+            assert_eq!(shown.status, TodoRunStatus::Blocked);
+            let status = fixture.supervisor.todo_status(&run.run_id).unwrap();
+            assert_eq!(status.status, TodoRunStatus::Blocked);
+            assert!(status.error.unwrap().contains("injected failure"));
+            // The store takes a write again: the decision lands, without a
+            // second call.
+            runs::decision::announce_for_test();
+            let (done, _) = wait(&fixture, &run.run_id, Some(blocked.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(calls(&fixture).len(), 1);
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_review_decision").len(),
+                1
+            );
+        }
+
+        #[test]
+        fn a_coordinator_still_answers_a_run_whose_decision_write_failed() {
+            let fixture = reviewed("todo-auto-write-fails-abort", &[r#"{"action": "approve"}"#]);
+            let repo = repository_of(&fixture.repo).unwrap();
+            runs::decision::fail_next_write(&repo, "run_review_decision");
+            let run = start(&fixture);
+            let (blocked, _) = next_event(&fixture, &run.run_id, None);
+            assert_eq!(blocked.kind, TodoEventKind::Blocked, "{blocked:#?}");
+            let (_, ended) = abort(&fixture, &run.run_id, blocked.event_id);
+            assert!(!ended.error.unwrap_or_default().contains("injected"));
+            assert_eq!(
+                fixture.supervisor.todo_status(&run.run_id).unwrap().status,
+                TodoRunStatus::Aborted
+            );
+        }
+
+        fn start_answering(fixture: &Fixture, task: &str, review: bool) -> TodoRunInfo {
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: review,
+                    auto_answer: true,
+                    ..params(fixture, task, "ok")
+                })
+                .unwrap();
+            assert!(run.auto_answer, "{run:?}");
+            run
+        }
+
+        #[test]
+        fn an_allowed_request_lets_the_worker_go_on_to_its_commit() {
+            let fixture = reviewed(
+                "todo-answer-allow",
+                &[r#"{"action": "allow"}"#, r#"{"action": "approve"}"#],
+            );
+            let run = start_answering(&fixture, &format!("perm-commit a.txt {SUBJECT}"), true);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let decisions = run_events(&fixture, &run.run_id, "run_answer_decision");
+            assert_eq!(decisions.len(), 1, "{decisions:#?}");
+            assert_eq!(
+                decisions[0]["output"],
+                serde_json::json!({"action": "allow"})
+            );
+            assert_eq!(decisions[0]["model"], "stub-review-model");
+            let applied = run_events(&fixture, &run.run_id, "run_auto_answered");
+            assert_eq!(applied[0]["questions"][0]["answered"], "answered");
+            // The call got the task, the request and the policy, and a
+            // schema that names the actions this request takes.
+            let call = &calls(&fixture)[0];
+            let input = call["stdin"].as_str().unwrap();
+            for part in [
+                "WebFetch",
+                "https://example.com",
+                "perm-commit",
+                "\"policy\"",
+            ] {
+                assert!(input.contains(part), "{part:?} not in {input}");
+            }
+            let argv: Vec<&str> = call["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|arg| arg.as_str().unwrap())
+                .collect();
+            let schema = argv.iter().position(|arg| *arg == "--json-schema").unwrap();
+            let schema: serde_json::Value = serde_json::from_str(argv[schema + 1]).unwrap();
+            assert_eq!(
+                schema["properties"]["action"]["enum"],
+                serde_json::json!(["allow", "deny", "escalate"])
+            );
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        }
+
+        #[test]
+        fn a_denial_reaches_the_worker_with_its_message() {
+            let fixture = reviewed(
+                "todo-answer-deny",
+                &[r#"{"action": "deny", "message": "not needed for the task"}"#],
+            );
+            let run = start_answering(&fixture, "perm WebFetch https://example.com", false);
+            let (review, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+            assert_eq!(
+                review.result_text.as_deref(),
+                Some("deny: not needed for the task")
+            );
+            abort(&fixture, &run.run_id, review.event_id);
+        }
+
+        #[test]
+        fn a_question_is_answered_with_one_answer_per_question() {
+            let fixture = reviewed(
+                "todo-answer-choice",
+                &[r#"{"action": "answer", "answers": ["alpha.txt", "green"]}"#],
+            );
+            let run = start_answering(&fixture, "ask", false);
+            let (review, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+            let text = review.result_text.clone().unwrap_or_default();
+            assert!(
+                text.contains("alpha.txt") && text.contains("green"),
+                "{text}"
+            );
+            let argv = calls(&fixture)[0]["argv"].to_string();
+            assert!(
+                argv.contains(r#"[\"answer\",\"deny\",\"escalate\"]"#),
+                "{argv}"
+            );
+            abort(&fixture, &run.run_id, review.event_id);
+        }
+
+        #[test]
+        fn a_request_the_policy_leaves_to_the_user_is_escalated_without_a_call() {
+            let fixture = reviewed("todo-answer-needs-user", &[]);
+            let _ = crate::workers::take_user_notices();
+            let run = start_answering(&fixture, "classifier WebFetch https://example.com", false);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Question, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(error.contains("leaves this to you"), "{error}");
+            assert!(calls(&fixture).is_empty());
+            let decision = &run_events(&fixture, &run.run_id, "run_answer_decision")[0];
+            assert!(decision["model"].is_null(), "{decision:#?}");
+            assert_eq!(decision["output"]["action"], "escalate");
+            // The worker's own question is in the user's list, not quiet,
+            // with the run, the item and the question.
+            let worker_id = waiting.worker_id.clone().unwrap();
+            let listed = fixture
+                .supervisor
+                .pending_questions()
+                .into_iter()
+                .find(|pending| pending.worker_id == worker_id)
+                .expect("not in the ? list");
+            assert!(!listed.quiet);
+            let cause = listed.question.escalated.clone().unwrap_or_default();
+            for part in [run.run_id.as_str(), ITEM, "leaves this to you"] {
+                assert!(cause.contains(part), "{part:?} not in {cause}");
+            }
+            let notices = crate::workers::take_user_notices();
+            assert_eq!(notices.len(), 1, "{notices:?}");
+            // The user allows it from the list: the run goes on by itself.
+            fixture
+                .supervisor
+                .answer(&WorkerAnswerParams {
+                    worker_id: worker_id.clone(),
+                    request_id: Some(listed.question.request_id.clone()),
+                    decision: Some(WorkerDecision::Allow),
+                    answers: Vec::new(),
+                    message: None,
+                    command_id: None,
+                })
+                .unwrap();
+            let (review, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+            assert_eq!(review.result_text.as_deref(), Some("allow"));
+            abort(&fixture, &run.run_id, review.event_id);
+        }
+
+        #[test]
+        fn an_answer_call_that_fails_twice_is_escalated() {
+            let fixture = reviewed(
+                "todo-answer-fails",
+                &[
+                    "exit 1",
+                    r#"{"action": "allow", "message": "allow takes none"}"#,
+                ],
+            );
+            let run = start_answering(&fixture, "perm WebFetch https://example.com", false);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Question, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(error.contains("failed 2 times"), "{error}");
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_answer_call").len(),
+                2
+            );
+            // The coordinator still answers it.
+            fixture
+                .supervisor
+                .todo_resume(TodoResumeParams {
+                    decision: Some(WorkerDecision::Deny),
+                    message: Some("no".into()),
+                    ..resume_params(&run.run_id, escalated.event_id, TodoAction::Answer)
+                })
+                .unwrap();
+            let (review, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(review.result_text.as_deref(), Some("deny: no"));
+            abort(&fixture, &run.run_id, review.event_id);
+        }
+
+        #[test]
+        fn an_answer_recorded_before_a_crash_is_sent_without_asking_again() {
+            let fixture = reviewed("todo-answer-crash", &[r#"{"action": "allow"}"#]);
+            let repo = repository_of(&fixture.repo).unwrap();
+            runs::crash_after(&repo, TodoStep::Attention);
+            let run = start_answering(&fixture, "perm WebFetch https://example.com", false);
+            runs::wait_crashed(&repo, HANG_GUARD);
+            assert!(run_events(&fixture, &run.run_id, "run_auto_answered").is_empty());
+            // A model asked again would fail: no answer is left.
+            fixture.supervisor.resume_runs();
+            let (review, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+            assert_eq!(review.result_text.as_deref(), Some("allow"));
+            assert_eq!(calls(&fixture).len(), 1);
+            abort(&fixture, &run.run_id, review.event_id);
         }
     }
 }

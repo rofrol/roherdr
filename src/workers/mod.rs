@@ -4237,7 +4237,7 @@ impl WorkerSupervisor {
 
     fn pending_questions(&self) -> Vec<PendingWorkerQuestion> {
         let registry = lock(&self.shared.registry);
-        registry
+        let mut pending: Vec<PendingWorkerQuestion> = registry
             .workers
             .values()
             .flat_map(|entry| {
@@ -4259,7 +4259,10 @@ impl WorkerSupervisor {
                             .copied(),
                     })
             })
-            .collect()
+            .collect();
+        // A todo run's review escalations, listed as its worker's.
+        pending.extend(runs::escalations::pending_questions());
+        pending
     }
 
     fn entry_number(registry: &Registry, worker_id: &str) -> Result<u64, WorkerError> {
@@ -4573,6 +4576,22 @@ impl WorkerSupervisor {
         worker_id: &str,
         request_id: &str,
     ) -> Result<WorkerInfo, WorkerError> {
+        if runs::escalations::is_escalation(request_id) {
+            // A review escalation is the user's already.
+            return self.status(worker_id);
+        }
+        self.escalate_because(worker_id, request_id, "its coordinator escalated it")
+    }
+
+    /// [`Self::escalate`] with the cause the user's `?` list shows: a todo
+    /// run's automatic answer names its run, its item and the model's
+    /// question with its options.
+    pub(crate) fn escalate_because(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+        cause: &str,
+    ) -> Result<WorkerInfo, WorkerError> {
         let committed = {
             let mut registry = lock(&self.shared.registry);
             let number = Self::entry_number(&registry, worker_id)?;
@@ -4603,7 +4622,7 @@ impl WorkerSupervisor {
                 let escalated = json!({
                     "type": "escalated",
                     "request_ids": [request_id],
-                    "cause": "its coordinator escalated it",
+                    "cause": cause,
                 });
                 Some(self.commit_locked(
                     &mut registry,
@@ -4632,6 +4651,9 @@ impl WorkerSupervisor {
         worker_id: &str,
         request_id: &str,
     ) -> Result<WorkerQuestionDetail, WorkerError> {
+        if runs::escalations::is_escalation(request_id) {
+            return self.escalation_detail(worker_id, request_id);
+        }
         let registry = lock(&self.shared.registry);
         let number = Self::entry_number(&registry, worker_id)?;
         let status = &registry.workers[&number].status;
@@ -4675,6 +4697,18 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerDenyAndStopParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        // A review escalation's worker has already exited: the denial
+        // leaves the review to the coordinator.
+        if runs::escalations::is_escalation(&params.request_id) {
+            self.answer_escalation(
+                &params.worker_id,
+                &params.request_id,
+                Some(WorkerDecision::Deny),
+                &[],
+                params.message.as_deref(),
+            )?;
+            return self.status(&params.worker_id);
+        }
         let deny = WorkerAnswerParams {
             worker_id: params.worker_id.clone(),
             request_id: Some(params.request_id.clone()),
@@ -5075,13 +5109,31 @@ impl WorkerSupervisor {
     /// the question as answered. A failed write records `answer_failed` and
     /// makes the question pending again, so it can be answered again.
     pub(crate) fn answer(&self, params: &WorkerAnswerParams) -> Result<WorkerInfo, WorkerError> {
-        self.command(
+        if let Some(request_id) = params
+            .request_id
+            .as_deref()
+            .filter(|request_id| runs::escalations::is_escalation(request_id))
+        {
+            self.answer_escalation(
+                &params.worker_id,
+                request_id,
+                params.decision,
+                &params.answers,
+                params.message.as_deref(),
+            )?;
+            return self.status(&params.worker_id);
+        }
+        let answered = self.command(
             params.command_id.as_deref(),
             "worker.answer",
             params,
             |stored| Err(Self::cut_off(stored)),
             |receipt| self.answer_once(params, receipt),
-        )
+        )?;
+        // A todo run that answers its worker's questions itself goes on
+        // once the user answered one it escalated.
+        self.question_settled(&params.worker_id);
+        Ok(answered)
     }
 
     fn answer_once(

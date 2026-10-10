@@ -64,6 +64,32 @@ pub(super) fn background_wait_denial(tool_name: &str, input: &Value) -> Option<&
     background.then_some(BACKGROUND_WAIT_DENIAL)
 }
 
+/// Why the policy asks about a request the CLI's auto mode classifier
+/// escalated.
+pub(super) const CLASSIFIER_ASK: &str =
+    "the auto mode classifier blocked repeated actions and asks for a review";
+
+/// The tools whose requests a todo run's `answer_question` decision call
+/// may allow: they only read (the web included) and write nothing.
+pub(super) const MODEL_DECIDABLE_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
+
+/// Whether a question the policy left needs the user: a request the
+/// classifier escalated, a Bash command naming a path outside the worker's
+/// folders, and every tool not in [`MODEL_DECIDABLE_TOOLS`] (a tool herdr
+/// does not know may write or send anything). A decision call may only
+/// escalate it; an `AskUserQuestion` it may answer.
+pub(super) fn needs_the_user(question: &crate::api::schema::WorkerQuestion) -> bool {
+    use crate::api::schema::WorkerQuestionKind;
+    match question.kind {
+        WorkerQuestionKind::Choice => false,
+        WorkerQuestionKind::Approval => {
+            question.reason.as_deref() == Some(CLASSIFIER_ASK)
+                || !MODEL_DECIDABLE_TOOLS.contains(&question.tool_name.as_str())
+        }
+        WorkerQuestionKind::Unknown => true,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Decision {
     Allow,
@@ -111,9 +137,7 @@ impl Policy {
             return Decision::Deny(reason.to_owned());
         }
         if reason_type == Some("classifier") {
-            return Decision::Ask(
-                "the auto mode classifier blocked repeated actions and asks for a review".into(),
-            );
+            return Decision::Ask(CLASSIFIER_ASK.into());
         }
         if tool_name == "AskUserQuestion" {
             return Decision::Ask("a question for the user".into());

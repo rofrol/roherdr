@@ -65,10 +65,13 @@ use crate::api::schema::{
     TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams,
     WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams,
     WorkerQuestion, WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict,
-    WorkerVerifyParams, WorkerWaitUntil,
+    WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
 };
 
+mod auto_answer;
 mod auto_review;
+pub(super) mod decision;
+pub(super) mod escalations;
 mod finish;
 mod usage_gate;
 
@@ -186,6 +189,10 @@ pub(super) struct RunFinish {
     /// ([`auto_review`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) auto_review: bool,
+    /// The server answers the questions of the run's worker itself
+    /// ([`auto_answer`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) auto_answer: bool,
 }
 
 /// The check the verify adds by itself to a run whose diff touches
@@ -1169,6 +1176,7 @@ impl WorkerSupervisor {
                 next_refusal: None,
                 stop_reason: None,
                 auto_review: params.auto_review,
+                auto_answer: params.auto_answer,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1179,6 +1187,7 @@ impl WorkerSupervisor {
                 install: preflighted.install.clone(),
                 contract_check: preflighted.contract_check.clone(),
                 auto_review: params.auto_review,
+                auto_answer: params.auto_answer,
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1203,6 +1212,7 @@ impl WorkerSupervisor {
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
             "auto_review": params.auto_review,
+            "auto_answer": params.auto_answer,
             "usage_gate": usage,
             "item_text": item_text,
             "item_ids": item_ids,
@@ -1462,6 +1472,10 @@ impl WorkerSupervisor {
     /// observable fact, no clock is. `todo.wait` does not raise it, so a
     /// wait right after `approve` does not report a stop still in flight.
     pub(crate) fn todo_status(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
+        self.todo_status_raw(run_id).map(decision::shown)
+    }
+
+    fn todo_status_raw(&self, run_id: &str) -> Result<TodoRunInfo, WorkerError> {
         let run = self.load_run(run_id)?;
         if !Self::stopping(&run) {
             return Ok(run.info);
@@ -1545,7 +1559,7 @@ impl WorkerSupervisor {
             .runs(repo.as_deref())
             .map_err(store_error)?
             .into_iter()
-            .map(|run| run.info)
+            .map(|run| decision::shown(run.info))
             .collect();
         Ok((runs, None))
     }
@@ -1564,10 +1578,19 @@ impl WorkerSupervisor {
         let mut generation = lock(&CHANGES.generation);
         loop {
             let run = self.load_run(&params.run_id)?;
-            if let Some((seq, body)) = store
+            let latest = store
                 .latest_run_event(&params.run_id)
-                .map_err(store_error)?
+                .map_err(store_error)?;
+            // A decision step that fails shows as a blocked event, named by
+            // the event the run waits on: a wait after it waits for the run
+            // to go on.
+            if let Some(event) =
+                decision::failure_event(&run.info, latest.as_ref().map(|(seq, _)| *seq))
+                    .filter(|event| params.after.is_none_or(|after| event.event_id > after))
             {
+                return Ok(Some((event, decision::shown(run.info))));
+            }
+            if let Some((seq, body)) = latest {
                 let ended = matches!(
                     run.info.status,
                     TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
@@ -1576,7 +1599,8 @@ impl WorkerSupervisor {
                 // until it escalates.
                 let waits_on = run.info.status == TodoRunStatus::Waiting
                     && run.info.pending_event == Some(seq)
-                    && !auto_review::is_due(&run, seq, &body);
+                    && !auto_review::is_due(&run, seq, &body)
+                    && !auto_answer::is_due(&run, seq, &body);
                 let fresh = params.after.is_none_or(|after| seq > after);
                 if ended || (waits_on && fresh) {
                     return Ok(Some((event_of(seq, &body, &run.info), run.info)));
@@ -2010,6 +2034,7 @@ impl WorkerSupervisor {
             }
             Err(_) => return,
         };
+        self.restore_escalations(&runs);
         for run in runs {
             if run.info.status == TodoRunStatus::Running {
                 if let (Some(worker_id), Some(seq)) = (&run.info.worker_id, run.info.last_acked_seq)
@@ -2017,8 +2042,9 @@ impl WorkerSupervisor {
                     self.ack_quietly(worker_id, seq);
                 }
                 self.spawn_driver(&run.info.run_id);
-            } else if self.auto_review_due(&run).is_some() {
-                // Its review was in flight, or decided and not applied.
+            } else if self.auto_review_due(&run).is_some() || self.auto_answer_due(&run).is_some() {
+                // Its review or answer was in flight, or decided and not
+                // applied.
                 self.spawn_driver(&run.info.run_id);
             } else if run.follow_up_pending() {
                 // Done before a server ended, its next start or stop notice
@@ -2130,8 +2156,6 @@ impl WorkerSupervisor {
                 return;
             }
         };
-        // The review event whose automatic review failed in this driver.
-        let mut review_failed = None;
         loop {
             if self.handed_off() {
                 self.run_note(
@@ -2147,29 +2171,39 @@ impl WorkerSupervisor {
                     return;
                 }
             };
+            escalations::settle(&run);
             if run.info.status != TodoRunStatus::Running {
-                // A review the server makes itself: decided (or the recorded
-                // decision taken) and applied, then the run read again.
-                let due = self
-                    .auto_review_due(&run)
-                    .filter(|(seq, _)| review_failed != Some(*seq));
-                if let Some((seq, event)) = due {
-                    match self.step_auto_review(&mut run, seq, event) {
-                        Ok(()) => continue,
-                        Err(why) => {
-                            #[cfg(test)]
-                            if why == CRASHED_HERE {
-                                drop(driving);
-                                lock(&CRASHED).push(run.info.repo.clone());
-                                announce();
-                                return;
-                            }
-                            // The event stays the coordinator's to answer;
-                            // this driver does not try it again.
-                            warn!(run_id, why, "the todo run's automatic review failed");
-                            review_failed = Some(seq);
-                        }
+                // A decision the server makes itself (a review, an answer):
+                // decided (or the recorded decision taken) and applied, then
+                // the run read again.
+                let stepped = if let Some((seq, body)) = self.auto_review_due(&run) {
+                    Some(self.step_auto_review(&mut run, seq, &body))
+                } else {
+                    self.auto_answer_due(&run)
+                        .map(|(seq, body)| self.step_auto_answer(&mut run, seq, &body))
+                };
+                match stepped {
+                    Some(Ok(())) => {
+                        decision::recovered(run_id);
+                        continue;
                     }
+                    Some(Err(why)) => {
+                        #[cfg(test)]
+                        if why == CRASHED_HERE {
+                            drop(driving);
+                            lock(&CRASHED).push(run.info.repo.clone());
+                            announce();
+                            return;
+                        }
+                        // Shown blocked with why, never hidden, until the
+                        // step goes through: taken again at the next write
+                        // the store announces.
+                        warn!(run_id, why, "a todo run's decision step failed");
+                        let seen = decision::failed(run_id, &why);
+                        decision::wait_for_write(seen, || self.handed_off());
+                        continue;
+                    }
+                    None => decision::recovered(run_id),
                 }
                 if matches!(
                     run.info.status,
@@ -2184,6 +2218,9 @@ impl WorkerSupervisor {
                 }
                 continue;
             }
+            // Running again (a resume answered the event a failed decision
+            // step was on): nothing of it is left to show.
+            decision::recovered(run_id);
             #[cfg(test)]
             if crashes_before(&run.info.repo, run.info.step) {
                 drop(driving);
@@ -2652,7 +2689,10 @@ impl WorkerSupervisor {
 
     /// Verifies the attempt's commit with the registered check, run as its
     /// argv. Verified goes on to the cherry-pick; anything else is a
-    /// `verify_failed` event asking for the next attempt's task.
+    /// `verify_failed` event asking for the next attempt's task. An
+    /// approval of the commit a verify already passed (the one the
+    /// automatic review ran before it reviewed) takes that verdict instead
+    /// of running the checks again; a commit that changed is verified anew.
     fn step_verify(&self, run: &mut Run) -> Result<(), String> {
         let worker_id = run
             .info
@@ -2660,39 +2700,39 @@ impl WorkerSupervisor {
             .clone()
             .ok_or("the run has no worker to verify")?;
         let base = run.info.base.clone().ok_or("the run has no base")?;
-        self.add_contract_check(run, &worker_id, &base)?;
+        if let Some((check, reason)) = self.contract_check_due(run, &worker_id, &base)? {
+            run.info.checks.push(check.name.clone());
+            run.checks.push(check.clone());
+            self.run_step(
+                run,
+                json!({
+                    "type": "run_check_added",
+                    "check": check,
+                    "reason": reason,
+                    "checks": run.info.checks,
+                }),
+            )?;
+        }
+        if let Some(verified) = self.verified_already(run, &worker_id) {
+            run.info.step = TodoStep::CherryPick;
+            self.run_step(
+                run,
+                json!({
+                    "type": "run_verified",
+                    "head": verified.head,
+                    "commits": verified.commits,
+                    "reused": true,
+                    "verified_ms": verified.verified_ms,
+                    "step": run.info.step,
+                }),
+            )?;
+            return Ok(());
+        }
         self.run_step(
             run,
             json!({"type": "run_verify_intent", "worker_id": worker_id, "checks": run.info.checks}),
         )?;
-        let env = lock(&RUN_ENV).get(&run.info.run_id).cloned();
-        let no_env = "this server has not got the caller's environment for the check (a \
-                      restart, or a `herdr todo resume` that sent none); `herdr todo resume \
-                      --action verify` from the coordinator's shell sends it and verifies again";
-        let params = WorkerVerifyParams {
-            worker_id: worker_id.clone(),
-            base,
-            expected_message: run.info.message.clone(),
-            allowed_paths: run.info.paths.clone(),
-            command: None,
-            generated: Vec::new(),
-            env,
-        };
-        let checks = run.checks.clone();
-        let commands = checks
-            .iter()
-            .map(|check| {
-                let command = if params.env.is_some() {
-                    CheckCommand::Argv(&check.argv)
-                } else {
-                    CheckCommand::Unavailable(no_env)
-                };
-                (Some(check.name.as_str()), command)
-            })
-            .collect();
-        let verification = self
-            .verify_with(&params, commands)
-            .map_err(|error| format!("verifying worker {worker_id}: {error}"))?;
+        let verification = self.verify_attempt(run, &worker_id, &base)?;
         run.current.verification = serde_json::to_string(&verification).ok();
         if verification.verdict == WorkerVerdict::Verified {
             run.info.step = TodoStep::CherryPick;
@@ -2718,16 +2758,88 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// Adds the run's [`CONTRACT_CHECK`] to its checks when the attempt's
-    /// diff from the base touches [`CONTRACT_PATHS`] (or cannot be read),
-    /// recorded as a `run_check_added` event; once added, it stays for the
-    /// later attempts.
-    fn add_contract_check(&self, run: &mut Run, worker_id: &str, base: &str) -> Result<(), String> {
+    /// The attempt's verdict when it still holds for an approval: it is
+    /// `verified`, of the commit the approval names, which the worker's
+    /// branch is still at, with every check the run has now.
+    fn verified_already(&self, run: &Run, worker_id: &str) -> Option<WorkerVerification> {
+        if run.current.review_decision.as_deref() != Some(APPROVE) {
+            return None;
+        }
+        let verification: WorkerVerification =
+            serde_json::from_str(run.current.verification.as_deref()?).ok()?;
+        let head = verification.head.as_deref()?;
+        if verification.verdict != WorkerVerdict::Verified
+            || run.current.commit.as_deref() != Some(head)
+            || Some(verification.base.as_str()) != run.info.base.as_deref()
+        {
+            return None;
+        }
+        let checked = |name: &str| {
+            verification
+                .checks
+                .iter()
+                .any(|check| check.name.as_deref() == Some(name))
+        };
+        if !run.checks.iter().all(|check| checked(&check.name)) {
+            return None;
+        }
+        let worker = self.status(worker_id).ok()?;
+        let now = git(Path::new(&worker.cwd), &["rev-parse", "HEAD"]).ok()?;
+        (now.trim() == head).then_some(verification)
+    }
+
+    /// Runs the verify of the attempt's worker with the run's checks, each
+    /// with the caller's environment, or `unavailable` without it.
+    fn verify_attempt(
+        &self,
+        run: &Run,
+        worker_id: &str,
+        base: &str,
+    ) -> Result<WorkerVerification, String> {
+        let env = lock(&RUN_ENV).get(&run.info.run_id).cloned();
+        let no_env = "this server has not got the caller's environment for the check (a \
+                      restart, or a `herdr todo resume` that sent none); `herdr todo resume \
+                      --action verify` from the coordinator's shell sends it and verifies again";
+        let params = WorkerVerifyParams {
+            worker_id: worker_id.to_owned(),
+            base: base.to_owned(),
+            expected_message: run.info.message.clone(),
+            allowed_paths: run.info.paths.clone(),
+            command: None,
+            generated: Vec::new(),
+            env,
+        };
+        let commands = run
+            .checks
+            .iter()
+            .map(|check| {
+                let command = if params.env.is_some() {
+                    CheckCommand::Argv(&check.argv)
+                } else {
+                    CheckCommand::Unavailable(no_env)
+                };
+                (Some(check.name.as_str()), command)
+            })
+            .collect();
+        self.verify_with(&params, commands)
+            .map_err(|error| format!("verifying worker {worker_id}: {error}"))
+    }
+
+    /// The run's [`CONTRACT_CHECK`], with why, when the verify must add it:
+    /// the attempt's diff from the base touches [`CONTRACT_PATHS`] (or
+    /// cannot be read) and the run does not have it yet. Once added (a
+    /// `run_check_added` event), it stays for the later attempts.
+    fn contract_check_due(
+        &self,
+        run: &Run,
+        worker_id: &str,
+        base: &str,
+    ) -> Result<Option<(RunCheck, String)>, String> {
         let Some(check) = run.finish.contract_check.clone() else {
-            return Ok(());
+            return Ok(None);
         };
         if run.checks.iter().any(|known| known.name == check.name) {
-            return Ok(());
+            return Ok(None);
         }
         let changed = self
             .status(worker_id)
@@ -2742,21 +2854,10 @@ impl WorkerSupervisor {
             Ok(changed) if touches_contract(changed) => {
                 format!("the diff touches {}", CONTRACT_PATHS.join(" or "))
             }
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(None),
             Err(error) => format!("the diff could not be read: {error}"),
         };
-        run.info.checks.push(check.name.clone());
-        run.checks.push(check.clone());
-        self.run_step(
-            run,
-            json!({
-                "type": "run_check_added",
-                "check": check,
-                "reason": reason,
-                "checks": run.info.checks,
-            }),
-        )?;
-        Ok(())
+        Ok(Some((check, reason)))
     }
 
     /// Picks the attempt's verified commit onto `master` in the

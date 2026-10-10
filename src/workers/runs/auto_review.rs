@@ -1,16 +1,21 @@
 //! A run's automatic review (`todo run --auto-review`): when the run waits
-//! on a `review` event, its driver asks a model itself, in one bounded,
-//! stateless call (`claude -p` with structured JSON output, no tools, no
-//! session kept, the user's normal Claude login, run by the server outside
-//! any worker sandbox), and applies the typed decision it returns:
+//! on a `review` event, its driver stops the attempt's worker, runs the
+//! verify (the registered checks, read-only) on the event's commit, and
+//! asks a model in one bounded, stateless call ([`super::decision`]) with
+//! the real results, then applies the typed decision it returns:
 //!
 //! - `approve` (an optional note): the approval `todo.resume --action
-//!   approve` makes, bound to the event's commit and the run's base;
+//!   approve` makes, bound to the event's commit and the run's base; the
+//!   verify that passed before the review is not run again unless the
+//!   commit changed, and an approval of a commit whose verify failed is
+//!   escalated;
 //! - `retry` (the review text): the next attempt, as `--action retry`
 //!   starts it, behind the same usage gate;
 //! - `escalate` (a question for the user with options): a new `review`
-//!   event the run waits on, carrying the question, and a notice to the
-//!   user; the coordinator answers it as any review.
+//!   event the run waits on, carrying the question, a notice to the user,
+//!   and an entry in the user's `?` list ([`super::escalations`]); the
+//!   coordinator answers it as any review, and the user's answer there
+//!   raises a `review` event the server reviews again with that answer.
 //!
 //! The server checks the output against the schema and the action against
 //! the run's state (an approval needs a commit, a retry an attempt left and
@@ -18,45 +23,44 @@
 //! with the reason. A call that fails or returns invalid output is made
 //! once more; a second failure is escalated.
 //!
-//! Each call is recorded (`run_review_call`), and the decision with its id,
-//! input digest, output and model (`run_review_decision`) before it is
-//! applied, so a server that ends between the two applies the recorded
-//! decision when it starts instead of asking again. The application is one
-//! transaction that first checks the run still waits on the reviewed event:
-//! a coordinator's `todo.resume` that came first wins, and the decision is
-//! recorded as superseded (`run_review_superseded`).
+//! The verify is recorded (`run_review_verified`), each call
+//! (`run_review_call`), and the decision with its id, input digest, output
+//! and model (`run_review_decision`) before it is applied, so a server that
+//! ends between them takes what was recorded when it starts instead of
+//! verifying or asking again. The application is one transaction that
+//! first checks the run still waits on the reviewed event: a coordinator's
+//! `todo.resume` that came first wins, and the decision is recorded as
+//! superseded (`run_review_superseded`).
 //!
 //! The call's process exit is the event the driver waits for. It has no
 //! deadline: the provider imposes none on a `claude -p` call.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
-use super::{event_of, git, new_event, Run, APPROVE, MAX_ATTEMPTS, RETRY};
-use crate::api::schema::{TodoEventKind, TodoRunEvent, TodoRunStatus, TodoStep};
-#[cfg(test)]
-use crate::workers::lock;
-use crate::workers::{now_ms, WorkerSupervisor};
+use super::decision::{self, Prompt, MAX_CALLS};
+use super::escalations;
+use super::{event_of, git, is_gone, new_event, Run, APPROVE, MAX_ATTEMPTS, NO_DEADLINE, RETRY};
+use crate::api::schema::{
+    TodoEventKind, TodoRunEvent, TodoRunStatus, TodoStep, WorkerCheckOutcome, WorkerCommandTarget,
+    WorkerVerdict, WorkerVerification, WorkerWaitUntil,
+};
+use crate::workers::{now_ms, WorkerError, WorkerSupervisor};
 
-/// Calls per review event: the first and one more after a failure.
-const MAX_CALLS: usize = 2;
 /// The diff the model gets is cut at this many bytes.
 const DIFF_MAX: usize = 200_000;
-/// A failed call's output kept in its record, in characters.
-const ERROR_MAX: usize = 2_000;
 /// The run events this module writes.
 const CALL: &str = "run_review_call";
 const DECISION: &str = "run_review_decision";
 const SUPERSEDED: &str = "run_review_superseded";
 const APPLIED: &str = "run_auto_reviewed";
+const VERIFIED: &str = "run_review_verified";
+const STOP_INTENT: &str = "run_review_stop_intent";
 /// The key a `review` event raised by an escalation carries: the decision
 /// that raised it. The server does not review such an event again.
-const ESCALATES: &str = "escalates";
+pub(super) const ESCALATES: &str = "escalates";
 
 /// The output's JSON schema, which `claude -p --json-schema` enforces and
 /// [`parse_decision`] checks again.
@@ -65,17 +69,24 @@ const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"re
 const SYSTEM_PROMPT: &str = "You review one attempt of a headless coding worker that herdr's \
 TODO driver ran for a TODO item. The input is JSON: the item's text, the worker's task, the \
 exact commit subject and the paths it had to keep to, the worker's final reply, the diff of its \
-commit against the run's base, and the registered checks (the verify runs them, the exact \
-subject and the paths after an approval, and a failing verify does not land the commit). \
-Decide one action and answer only with JSON matching the schema:\n\
-- approve (optional note) when the diff does what the item and the task ask, within the paths, \
-and nothing in the worker's reply contradicts it;\n\
-- retry (review) when something is missing or wrong that the worker can fix: the review says \
-concretely what to change, and the next attempt's worker gets it;\n\
+commit against the run's base, and the verify the server ran on that commit before asking you \
+(the exact subject, the paths, a clean tree, and every registered check with its outcome and \
+evidence). Decide one action and answer only with JSON matching the schema:\n\
+- approve (optional note) when the verify passed and the diff does what the item and the task \
+ask, within the paths, and nothing in the worker's reply contradicts it;\n\
+- retry (review) when something is missing or wrong that the worker can fix, a failed check \
+included: the review says concretely what to change, and the next attempt's worker gets it;\n\
 - escalate (question, 2 to 4 options, the recommended first) when the attempt needs the user's \
-decision (scope, a product choice, a permission, a contradiction in the item) or you cannot \
-judge it.\n\
-Never approve an attempt without a commit.";
+decision (scope, a product choice, a permission, a contradiction in the item), a check could \
+not run, or you cannot judge it.\n\
+When the input has `user_answer`, the user answered your earlier question: decide by it.\n\
+Never approve an attempt without a commit or one whose verify failed.";
+
+const PROMPT: Prompt<'static> = Prompt {
+    schema: OUTPUT_SCHEMA,
+    system: SYSTEM_PROMPT,
+    intro: "Review this attempt and answer with the JSON decision only.",
+};
 
 /// The model's decision, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,27 +118,50 @@ struct RawDecision {
     options: Option<Vec<String>>,
 }
 
+/// The text of a field an action needs, trimmed, refused when empty.
+pub(super) fn nonempty(action: &str, text: Option<String>, field: &str) -> Result<String, String> {
+    text.map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| format!("{action} needs a nonempty {field}"))
+}
+
+/// Refuses the first field present that the action does not take.
+pub(super) fn only(action: &str, fields: &[(&str, bool)]) -> Result<(), String> {
+    match fields.iter().find(|(_, present)| *present) {
+        Some((field, _)) => Err(format!("{action} takes no {field}")),
+        None => Ok(()),
+    }
+}
+
+/// An escalation's options: 2 to 4, each nonempty once trimmed.
+pub(super) fn escalation_options(options: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    let options: Vec<String> = options
+        .unwrap_or_default()
+        .into_iter()
+        .map(|option| option.trim().to_owned())
+        .collect();
+    if !(2..=4).contains(&options.len()) || options.iter().any(String::is_empty) {
+        return Err("escalate needs 2 to 4 nonempty options".into());
+    }
+    Ok(options)
+}
+
 /// Checks the model's output: the schema, then that each action has its
 /// own fields and only those.
 pub(super) fn parse_decision(output: &Value) -> Result<Decision, String> {
     let raw: RawDecision = serde_json::from_value(output.clone())
         .map_err(|error| format!("the output does not match the schema: {error}"))?;
-    let nonempty = |text: Option<String>, field: &str| {
-        text.map(|text| text.trim().to_owned())
-            .filter(|text| !text.is_empty())
-            .ok_or_else(|| format!("{} needs a nonempty {field}", raw.action))
-    };
-    let only = |fields: &[(&str, bool)]| match fields.iter().find(|(_, present)| *present) {
-        Some((field, _)) => Err(format!("{} takes no {field}", raw.action)),
-        None => Ok(()),
-    };
-    match raw.action.as_str() {
+    let action = raw.action.as_str();
+    match action {
         "approve" => {
-            only(&[
-                ("review", raw.review.is_some()),
-                ("question", raw.question.is_some()),
-                ("options", raw.options.is_some()),
-            ])?;
+            only(
+                action,
+                &[
+                    ("review", raw.review.is_some()),
+                    ("question", raw.question.is_some()),
+                    ("options", raw.options.is_some()),
+                ],
+            )?;
             let note = raw
                 .note
                 .clone()
@@ -136,31 +170,28 @@ pub(super) fn parse_decision(output: &Value) -> Result<Decision, String> {
             Ok(Decision::Approve { note })
         }
         "retry" => {
-            only(&[
-                ("note", raw.note.is_some()),
-                ("question", raw.question.is_some()),
-                ("options", raw.options.is_some()),
-            ])?;
+            only(
+                action,
+                &[
+                    ("note", raw.note.is_some()),
+                    ("question", raw.question.is_some()),
+                    ("options", raw.options.is_some()),
+                ],
+            )?;
             Ok(Decision::Retry {
-                review: nonempty(raw.review.clone(), "review")?,
+                review: nonempty(action, raw.review.clone(), "review")?,
             })
         }
         "escalate" => {
-            only(&[
-                ("note", raw.note.is_some()),
-                ("review", raw.review.is_some()),
-            ])?;
-            let question = nonempty(raw.question.clone(), "question")?;
-            let options: Vec<String> = raw
-                .options
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|option| option.trim().to_owned())
-                .collect();
-            if !(2..=4).contains(&options.len()) || options.iter().any(String::is_empty) {
-                return Err("escalate needs 2 to 4 nonempty options".into());
-            }
+            only(
+                action,
+                &[
+                    ("note", raw.note.is_some()),
+                    ("review", raw.review.is_some()),
+                ],
+            )?;
+            let question = nonempty(action, raw.question.clone(), "question")?;
+            let options = escalation_options(raw.options.clone())?;
             Ok(Decision::Escalate { question, options })
         }
         other => Err(format!(
@@ -179,44 +210,6 @@ impl Decision {
                 json!({"action": "escalate", "question": question, "options": options})
             }
         }
-    }
-}
-
-/// What `claude -p --output-format json` printed: the structured output and
-/// the model that answered.
-pub(super) fn parse_cli_output(stdout: &str) -> Result<(Value, Option<String>), String> {
-    let reply: Value = serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("the reply is not JSON ({error}): {}", cut(stdout)))?;
-    if reply["is_error"].as_bool() == Some(true) {
-        return Err(format!(
-            "the call failed ({}): {}",
-            reply["subtype"].as_str().unwrap_or("error"),
-            cut(reply["result"].as_str().unwrap_or_default())
-        ));
-    }
-    let model = reply["modelUsage"]
-        .as_object()
-        .and_then(|models| models.keys().next().cloned());
-    let output = match &reply["structured_output"] {
-        Value::Object(_) => reply["structured_output"].clone(),
-        _ => {
-            let text = reply["result"].as_str().unwrap_or_default();
-            serde_json::from_str(text.trim()).map_err(|error| {
-                format!(
-                    "the reply has no structured output and its result is not JSON ({error}): {}",
-                    cut(text)
-                )
-            })?
-        }
-    };
-    Ok((output, model))
-}
-
-fn cut(text: &str) -> String {
-    let text = text.trim();
-    match text.char_indices().nth(ERROR_MAX) {
-        Some((at, _)) => format!("{}...", &text[..at]),
-        None => text.to_owned(),
     }
 }
 
@@ -262,24 +255,12 @@ struct DecisionRecord {
     /// Each failed call's error.
     #[serde(default)]
     errors: Vec<String>,
-}
-
-/// A decision's id: `d-` and 8 base32 characters of a hash of the run, the
-/// event and the input, so the same review gets the same id.
-fn decision_id(run_id: &str, event: i64, digest: &str) -> String {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let hash = Sha256::digest(format!("{run_id}:{event}:{digest}"));
-    let bits = hash[..5]
-        .iter()
-        .fold(0u64, |bits, byte| (bits << 8) | u64::from(*byte));
-    let id: String = (0..8)
-        .map(|index| ALPHABET[((bits >> (35 - 5 * index)) & 31) as usize] as char)
-        .collect();
-    format!("d-{id}")
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    /// The verdict of the verify run before the review, of `commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verdict: Option<WorkerVerdict>,
+    /// Its checks that failed, with their evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    failed_checks: Vec<String>,
 }
 
 /// How a checked decision is applied to the run.
@@ -290,23 +271,26 @@ enum Outcome {
     Escalate(String, Vec<String>),
 }
 
+/// The checks of a verification that failed, each with its evidence.
+fn failed_checks(verification: &WorkerVerification) -> Vec<String> {
+    verification
+        .checks
+        .iter()
+        .filter(|check| check.outcome == WorkerCheckOutcome::Failed)
+        .map(|check| {
+            let name = check.name.as_deref().unwrap_or(&check.check);
+            match check.detail.trim() {
+                "" => name.to_owned(),
+                detail => format!("{name}: {}", decision::cut(detail)),
+            }
+        })
+        .collect()
+}
+
 impl WorkerSupervisor {
-    /// The program the review calls: the server's `claude`.
-    fn review_program(&self) -> PathBuf {
-        #[cfg(test)]
-        if let Some(program) = lock(&self.shared.review_program).clone() {
-            return program;
-        }
-        self.shared.program.clone()
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::workers) fn set_review_program_for_test(&self, program: PathBuf) {
-        *lock(&self.shared.review_program) = Some(program);
-    }
-
-    /// The run's pending `review` event when the server reviews it itself.
-    pub(super) fn auto_review_due(&self, run: &Run) -> Option<(i64, TodoRunEvent)> {
+    /// The run's pending `review` event, with its body, when the server
+    /// reviews it itself.
+    pub(super) fn auto_review_due(&self, run: &Run) -> Option<(i64, Value)> {
         if !run.finish.auto_review || run.info.status != TodoRunStatus::Waiting {
             return None;
         }
@@ -315,17 +299,19 @@ impl WorkerSupervisor {
             .ok()?
             .latest_run_event(&run.info.run_id)
             .ok()??;
-        is_due(run, seq, &body).then(|| (seq, event_of(seq, &body, &run.info)))
+        is_due(run, seq, &body).then_some((seq, body))
     }
 
     /// Reviews the run's pending `review` event `seq`: the decision recorded
-    /// for it, else the model's, recorded first; then applies it.
+    /// for it, else the model's after the verify, recorded first; then
+    /// applies it.
     pub(super) fn step_auto_review(
         &self,
         run: &mut Run,
         seq: i64,
-        event: TodoRunEvent,
+        body: &Value,
     ) -> Result<(), String> {
+        let event = event_of(seq, body, &run.info);
         let store = self.run_store().map_err(|error| error.to_string())?;
         let records = store
             .run_events_of(&run.info.run_id, DECISION)
@@ -338,7 +324,14 @@ impl WorkerSupervisor {
             // Decided before this driver: applied now, never asked again.
             Some(record) => record,
             None => {
-                let record = self.decide(run, seq, &event)?;
+                let Some(verification) = self.verify_before_review(run, seq, &event)? else {
+                    // The coordinator answered the event meanwhile.
+                    return Ok(());
+                };
+                if self.handed_off() {
+                    return Ok(());
+                }
+                let record = self.decide(run, seq, &event, body, verification.as_ref())?;
                 #[cfg(test)]
                 super::crashes_after(&run.info.repo, TodoStep::Review)?;
                 record
@@ -351,26 +344,143 @@ impl WorkerSupervisor {
         self.apply(run, seq, &event, &record)
     }
 
-    /// Asks the model about the event (at most [`MAX_CALLS`] calls per
-    /// event, counting those a previous server made) and records each call
-    /// and the decision.
-    fn decide(&self, run: &Run, seq: i64, event: &TodoRunEvent) -> Result<DecisionRecord, String> {
-        let input = self.review_input(run, event);
-        let text = serde_json::to_string_pretty(&input).map_err(|error| error.to_string())?;
-        let digest = hex(&Sha256::digest(text.as_bytes()));
+    /// Stops the attempt's worker and runs the verify on the event's
+    /// commit, recorded with the run's verdict while the run still waits on
+    /// `seq` (the run keeps waiting on it). `None` when the coordinator
+    /// answered the event meanwhile; `Some(None)` for an event without a
+    /// commit, which nothing verifies. A verify already recorded for the
+    /// attempt's commit is taken again.
+    fn verify_before_review(
+        &self,
+        run: &mut Run,
+        seq: i64,
+        event: &TodoRunEvent,
+    ) -> Result<Option<Option<WorkerVerification>>, String> {
+        let (Some(commit), Some(worker_id), Some(base)) = (
+            event.commits.last().cloned(),
+            run.info.worker_id.clone(),
+            run.info.base.clone(),
+        ) else {
+            return Ok(Some(None));
+        };
         let store = self.run_store().map_err(|error| error.to_string())?;
-        let mut errors: Vec<String> = store
-            .run_events_of(&run.info.run_id, CALL)
+        let earlier = store
+            .run_events_of(&run.info.run_id, VERIFIED)
             .map_err(|error| format!("the worker store failed: {error}"))?
             .into_iter()
-            .filter(|call| call["event"] == json!(seq) && call["error"].is_string())
-            .filter_map(|call| call["error"].as_str().map(str::to_owned))
-            .collect();
-        let mut decided = None;
+            .find(|note| note["attempt"] == json!(run.info.attempt) && note["commit"] == commit)
+            .and_then(|note| serde_json::from_value(note["verification"].clone()).ok());
+        if let Some(verification) = earlier {
+            return Ok(Some(Some(verification)));
+        }
+        self.stop_for_review(run, &worker_id)?;
+        let added = self.contract_check_due(run, &worker_id, &base)?;
+        let mut checked = run.clone();
+        if let Some((check, _)) = &added {
+            checked.info.checks.push(check.name.clone());
+            checked.checks.push(check.clone());
+        }
+        let verification = self.verify_attempt(&checked, &worker_id, &base)?;
+        let note = json!({
+            "type": VERIFIED, "event": seq, "attempt": run.info.attempt, "commit": commit,
+            "verdict": verification.verdict, "check_added": added, "verification": verification,
+        });
+        let text = serde_json::to_string(&verification).ok();
+        let written = store
+            .transaction(|tx| {
+                let Some(mut current) = tx.run(&run.info.run_id)? else {
+                    return Ok(None);
+                };
+                if current.info.status != TodoRunStatus::Waiting
+                    || current.info.pending_event != Some(seq)
+                {
+                    return Ok(None);
+                }
+                if let Some((check, _)) = &added {
+                    current.info.checks.push(check.name.clone());
+                    current.checks.push(check.clone());
+                }
+                current.current.verification = text.clone();
+                tx.run_event_keeping_pending(&mut current, &note, now_ms())?;
+                Ok(Some(current))
+            })
+            .map_err(|error| format!("the worker store failed: {error}"))?;
+        let Some(current) = written else {
+            return Ok(None);
+        };
+        *run = current;
+        super::announce();
+        Ok(Some(Some(verification)))
+    }
+
+    /// Stops the attempt's worker, when it still runs, and waits for its
+    /// exit (its own exit event), without writing the run, which keeps
+    /// waiting on its event. The stop carries the command id the driver's
+    /// own stop uses, so a later stop step finds the worker gone.
+    fn stop_for_review(&self, run: &Run, worker_id: &str) -> Result<(), String> {
+        let worker = self.status(worker_id).map_err(|error| error.to_string())?;
+        if is_gone(&worker) {
+            return Ok(());
+        }
+        self.write_note(
+            &run.info.run_id,
+            &json!({"type": STOP_INTENT, "worker_id": worker_id}),
+        )?;
+        let target = WorkerCommandTarget {
+            worker_id: worker_id.to_owned(),
+            caller_pane_id: run.owner_pane.clone(),
+            command_id: Some(format!("{}:{}:stop", run.info.run_id, run.info.attempt)),
+        };
+        let stopped = match self.stop_command(&target) {
+            // A stop a crash cut off: send it again without the id.
+            Err(WorkerError::CommandInterrupted(_)) => self.stop_command(&WorkerCommandTarget {
+                command_id: None,
+                ..target
+            }),
+            other => other,
+        };
+        match stopped {
+            Ok(_) | Err(WorkerError::NotRunning(_)) => {}
+            Err(error) => return Err(format!("stopping worker {worker_id}: {error}")),
+        }
+        self.wait(worker_id, WorkerWaitUntil::Exit, NO_DEADLINE, || {
+            !self.handed_off()
+        })
+        .map_err(|error| error.to_string())?
+        .ok_or("this server handed the run off")?;
+        Ok(())
+    }
+
+    /// Asks the model about the event (at most [`MAX_CALLS`] calls per
+    /// event, counting those a previous server made, and taking a recorded
+    /// answer to the same input without asking again) and records each
+    /// call and the decision.
+    fn decide(
+        &self,
+        run: &Run,
+        seq: i64,
+        event: &TodoRunEvent,
+        body: &Value,
+        verification: Option<&WorkerVerification>,
+    ) -> Result<DecisionRecord, String> {
+        let input = self.review_input(run, event, body);
+        let text = serde_json::to_string_pretty(&input).map_err(|error| error.to_string())?;
+        let digest = decision::digest(&text);
+        let store = self.run_store().map_err(|error| error.to_string())?;
+        let calls = store
+            .run_events_of(&run.info.run_id, CALL)
+            .map_err(|error| format!("the worker store failed: {error}"))?;
+        let (mut errors, answered) =
+            decision::recorded_calls(&calls, ("event", &json!(seq)), &digest);
+        let mut decided = answered.and_then(|(output, model)| {
+            parse_decision(&output)
+                .ok()
+                .map(|decision| (decision, model))
+        });
         while decided.is_none() && errors.len() < MAX_CALLS {
             let call = errors.len() + 1;
             let answered = self
-                .call_model(&text)
+                .call_model(&PROMPT, &text)
                 .and_then(|(output, model)| Ok((parse_decision(&output)?, model)));
             let note = match &answered {
                 Ok((decision, model)) => json!({
@@ -393,7 +503,7 @@ impl WorkerSupervisor {
             None => (None, None),
         };
         let record = DecisionRecord {
-            decision_id: decision_id(&run.info.run_id, seq, &digest),
+            decision_id: decision::decision_id(&run.info.run_id, &seq.to_string(), &digest),
             event: seq,
             attempt: run.info.attempt,
             commit: event.commits.last().cloned(),
@@ -402,6 +512,8 @@ impl WorkerSupervisor {
             model,
             output,
             errors,
+            verdict: verification.map(|verification| verification.verdict),
+            failed_checks: verification.map(failed_checks).unwrap_or_default(),
         };
         let mut body = serde_json::to_value(&record).map_err(|error| error.to_string())?;
         body["type"] = json!(DECISION);
@@ -409,21 +521,11 @@ impl WorkerSupervisor {
         Ok(record)
     }
 
-    /// Appends a note to the run, failing when the store does.
-    fn write_note(&self, run_id: &str, note: &Value) -> Result<(), String> {
-        self.run_store()
-            .map_err(|error| error.to_string())?
-            .transaction(|tx| tx.run_note(run_id, note, now_ms()))
-            .map_err(|error| format!("the worker store failed: {error}"))?;
-        super::announce();
-        Ok(())
-    }
-
     /// What the model reviews: the item, the task, the contract, the
     /// worker's final reply, the diff of the event's commit against the
-    /// base and the checks with the attempt's latest verdict (the verify
-    /// runs after an approval, so the first review has none yet).
-    fn review_input(&self, run: &Run, event: &TodoRunEvent) -> Value {
+    /// base, the checks with the verify run before the review, and the
+    /// user's answer when the event carries one.
+    fn review_input(&self, run: &Run, event: &TodoRunEvent, body: &Value) -> Value {
         let repo = Path::new(&run.info.repo);
         let commit = event.commits.last().cloned();
         let (diff, cut) = match (&run.info.base, &commit) {
@@ -448,7 +550,7 @@ impl WorkerSupervisor {
             .verification
             .as_deref()
             .and_then(|verification| serde_json::from_str::<Value>(verification).ok());
-        json!({
+        let mut input = json!({
             "item": {"id": run.info.item, "text": item_text},
             "task": run.info.task,
             "attempt": run.info.attempt,
@@ -465,70 +567,13 @@ impl WorkerSupervisor {
             "checks": {
                 "registered": run.checks,
                 "added_for_api_changes": run.finish.contract_check,
-                "latest_verification": verification,
+                "verify_before_review": verification,
             },
-        })
-    }
-
-    /// One `claude -p` call with `input` on its standard input; its exit is
-    /// the event waited for (no deadline: the provider imposes none). The
-    /// call runs in the worker store's directory with the server's
-    /// environment (the user's login) without `HERDR_*`, and without tools,
-    /// session, MCP servers, hooks or project instructions.
-    fn call_model(&self, input: &str) -> Result<(Value, Option<String>), String> {
-        let program = self.review_program();
-        let mut command = Command::new(&program);
-        command
-            .args([
-                "-p",
-                "--output-format",
-                "json",
-                "--json-schema",
-                OUTPUT_SCHEMA,
-                "--tools",
-                "",
-                "--no-session-persistence",
-                "--strict-mcp-config",
-                "--safe-mode",
-                "--system-prompt",
-                SYSTEM_PROMPT,
-            ])
-            .current_dir(&self.shared.dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("HERDR_") {
-                command.env_remove(key);
-            }
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot run {}: {error}", program.display()))?;
-        // Written from a thread: a child that answers before it read all
-        // of its input must not block on a full pipe while this one writes.
-        let writer = child.stdin.take().map(|mut stdin| {
-            let input =
-                format!("Review this attempt and answer with the JSON decision only.\n\n{input}\n");
-            std::thread::spawn(move || stdin.write_all(input.as_bytes()))
         });
-        let output = child
-            .wait_with_output()
-            .map_err(|error| format!("waiting for {}: {error}", program.display()))?;
-        if let Some(writer) = writer {
-            // A child that exited without reading all of it broke the pipe;
-            // its exit status says what happened.
-            let _ = writer.join();
+        if body["user_answer"].is_object() {
+            input["user_answer"] = body["user_answer"].clone();
         }
-        if !output.status.success() {
-            return Err(format!(
-                "{} exited with {}: {}",
-                program.display(),
-                output.status,
-                cut(&String::from_utf8_lossy(&output.stderr))
-            ));
-        }
-        parse_cli_output(&String::from_utf8_lossy(&output.stdout))
+        input
     }
 
     /// Applies the recorded decision, checked against the run's state; an
@@ -560,6 +605,17 @@ impl WorkerSupervisor {
             ),
             Ok(Some(Decision::Escalate { question, options })) => {
                 Outcome::Escalate(question, options)
+            }
+            Ok(Some(Decision::Approve { .. })) if record.verdict == Some(WorkerVerdict::Failed) => {
+                Outcome::Escalate(
+                    format!(
+                        "The automatic review approved commit {}, but its verify failed ({}); \
+                         review it.",
+                        record.commit.as_deref().unwrap_or("none"),
+                        record.failed_checks.join("; ")
+                    ),
+                    review_options(),
+                )
             }
             Ok(Some(Decision::Approve { note })) => match &record.commit {
                 None => Outcome::Escalate(
@@ -692,7 +748,8 @@ impl WorkerSupervisor {
     }
 
     /// A new `review` event with the reviewed one's evidence and the
-    /// question, which the run waits on, and a notice to the user.
+    /// question, which the run waits on, a notice to the user and an entry
+    /// in the user's `?` list.
     fn escalate_review(
         &self,
         run: &mut Run,
@@ -722,7 +779,7 @@ impl WorkerSupervisor {
                 {
                     return Ok(None);
                 }
-                let body = json!({
+                let mut body = json!({
                     "type": "run_event",
                     "kind": event.kind,
                     "step": current.info.step,
@@ -733,17 +790,19 @@ impl WorkerSupervisor {
                     "question": question,
                     "options": options,
                 });
-                let mut body = body;
                 body[ESCALATES] = json!(record.decision_id);
-                tx.run_event(&mut current, &body, true, now_ms())?;
-                Ok(Some(current))
+                let raised = tx.run_event(&mut current, &body, true, now_ms())?;
+                Ok(Some((current, raised, body)))
             })
             .map_err(|error| format!("the worker store failed: {error}"))?;
-        let Some(current) = escalated else {
+        let Some((current, raised, body)) = escalated else {
             return self.superseded(&run.info.run_id, seq, record);
         };
         *run = current;
         super::announce();
+        if let Some(escalation) = escalations::escalation_of(run, raised, &body) {
+            escalations::list(escalation);
+        }
         crate::workers::notify_user(crate::workers::UserNotice {
             title: format!(
                 "{}: the automatic review asks you (run {})",
@@ -812,32 +871,6 @@ mod tests {
     }
 
     #[test]
-    fn the_cli_reply_gives_the_structured_output_and_the_model() {
-        let reply = json!({
-            "type": "result", "subtype": "success", "is_error": false, "result": "",
-            "structured_output": {"action": "approve"},
-            "modelUsage": {"claude-opus-5-5": {"inputTokens": 1}},
-        });
-        assert_eq!(
-            parse_cli_output(&reply.to_string()),
-            Ok((json!({"action": "approve"}), Some("claude-opus-5-5".into())))
-        );
-        let text =
-            json!({"is_error": false, "result": "{\"action\": \"retry\", \"review\": \"x\"}"});
-        assert_eq!(
-            parse_cli_output(&text.to_string()).unwrap().0["action"],
-            "retry"
-        );
-        assert!(parse_cli_output("not json").is_err());
-        assert!(
-            parse_cli_output(&json!({"is_error": true, "result": "limit"}).to_string())
-                .unwrap_err()
-                .contains("limit")
-        );
-        assert!(parse_cli_output(&json!({"result": "prose"}).to_string()).is_err());
-    }
-
-    #[test]
     fn the_output_schema_is_json_and_names_the_three_actions() {
         let schema: Value = serde_json::from_str(OUTPUT_SCHEMA).unwrap();
         assert_eq!(
@@ -853,13 +886,5 @@ mod tests {
         let long = "é".repeat(DIFF_MAX);
         let (diff, cut) = cut_diff(long);
         assert!(cut && diff.len() <= DIFF_MAX && diff.chars().all(|c| c == 'é'));
-    }
-
-    #[test]
-    fn a_decision_id_is_stable_for_the_same_review() {
-        let id = decision_id("r-abcdefgh", 7, "digest");
-        assert_eq!(id, decision_id("r-abcdefgh", 7, "digest"));
-        assert_ne!(id, decision_id("r-abcdefgh", 8, "digest"));
-        assert!(id.starts_with("d-") && id.len() == 10, "{id}");
     }
 }
