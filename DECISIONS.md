@@ -960,3 +960,22 @@ from docs/next's config reference passed it and failed only the install's
 registers `maintenance` and the driver adds it when the diff touches
 `src/config/`, `docs/next/`, `scripts/` or `plugins/`, like `tests` for
 `src/api/`.
+
+## A live handoff breaks other sessions' waits. 2026-10-07: each
+
+Every install's live handoff killed other sessions' CLI waits
+(`server_unavailable`, `EmptyResponse`; 2026-10-07 and twice on
+2026-10-10). Now (3766875e) the old server ends each open wait with
+`server_handed_off` once the new server accepts and exits only after
+writing those answers; `agent wait`, `agent wait-turn`, `pane
+wait-output`, `worker wait` and `todo wait` re-send the same wait once per
+such answer. No poll (todo wait's 50 ms poll removed; the coordinator
+refused it with the server log as evidence: the new server listens before
+the old one drops connections). Open points, decided by the coordinator
+2026-10-10: the first install after this still kills waits (the old build
+sends no answer), accepted; a plain stop or restart without a handoff ends
+waits with an error, by design; a wait started in the short window between
+the old listener closing and the new one binding gets a refusal, reported,
+not polled; to revisit only if observed; prompts that type text are not
+re-sent (no double delivery); `worker wait-drained` does not reconnect
+(the drain lives in the old server).
