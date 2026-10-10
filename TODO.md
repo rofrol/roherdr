@@ -97,6 +97,34 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   sockets, the hardest to confine; if an implementation cannot confine
   them, VM items stay unavailable to headless workers there rather than
   falling back silently.
+  Slice 1 landed 2026-10-10 (1b132ad4, run r-gyihgb6q): capability
+  vocabulary v1; `.herdr/operations.toml` (`[prepare]` = `cargo fetch
+  --locked`, egress to the crates.io hosts, writes to Cargo's cache) read
+  from the base commit; server-side grants per repository, operation and
+  definition hash (`herdr todo grant` / `todo.grants`); fail-closed
+  `capability_unsupported` / `grant_required` refusals; prepare confined on
+  macOS (`sandbox-exec`, egress through a CONNECT proxy allowing only the
+  granted hosts on 443); grants recorded in the run's events. Since it
+  landed, every `herdr todo run` here is refused with `grant_required` until
+  the user runs `herdr todo grant --operation prepare --hash <hash>` in his
+  own terminal; agents never run it. Remaining slices, ordered by the
+  coordinator 2026-10-10 (the worker's list):
+  1. The grant as a question in the user's `?` list instead of a preflight
+     refusal, real protection so an agent cannot grant (e.g. the grant
+     needs the user's client or a confirmation outside agent panes), and
+     revoking a grant.
+  2. Map `[worker]` grants to Claude's sandbox settings, so a headless
+     worker enforces `net.egress` and `fs.write`.
+  3. Restrict reads in a confined operation (today prepare can read secret
+     files; environment variables are already filtered).
+  4. Operation job ids, interruption, resource budgets, retry limits.
+  5. Linux confinement (bwrap or landlock); refused today.
+  6. Operations with parameters and untrusted input from the worker's
+     tree; `pty` and `net.local` (the VM slice for try-roguix).
+  7. Grants in `TodoRunInfo` so `todo status` shows them.
+  8. Extracting the layer into its own crate (its own item).
+  9. A conformance test per capability, incl. "unsupported must refuse"
+     for every adapter.
 
 - [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
   written to SQL that there is now a coordinator with id X that started
