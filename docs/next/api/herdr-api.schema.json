@@ -6515,6 +6515,62 @@
           ],
           "type": "object"
         },
+        "WorkerAnswerAsParams": {
+          "description": "`worker.answer` sent by a coordination tenure (`worker.answer_as`):\napplied only while that tenure owns the worker. Once the worker has moved\nto another tenure the answer is refused with `ownership_transferred`,\nnaming the owner, and kept in the owner's inbox as a `late_answer`; it is\nnever applied. The check and the answer's record share one hold of the\nregistry, as a handoff's move does: an answer lands before the move (and\nthe move carries it) or after it (and is refused).",
+          "properties": {
+            "answers": {
+              "description": "`AskUserQuestion` only: one answer per question, in order. Each is an\noption's label, its 1-based number, or free text; a multi-select\nquestion takes several labels or numbers separated by commas.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command_id": {
+              "description": "A client's id for this command, unique per command it means\n(`worker_command_conflict` when reused with other parameters). A\nrepeated id returns the stored outcome without doing it again: the\nsame reply, or the same refusal.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "coordinator_id": {
+              "description": "The answering tenure (`c-...`), as `coordinator.start` or\n`worker.events` named it.",
+              "type": "string"
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/WorkerDecision"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`allow` or `deny` for an approval. For an `AskUserQuestion`, `deny`\ndeclines to answer and `allow` (or absent) sends `answers`."
+            },
+            "message": {
+              "description": "The message the model gets with a denial.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "description": "The question to answer. When absent, the only pending question; an\nanswer without it is refused while several are pending. A question\nthat is no longer pending is refused with `worker_question_gone`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "coordinator_id",
+            "worker_id"
+          ],
+          "type": "object"
+        },
         "WorkerAnswerParams": {
           "description": "Answers a worker's pending question: a tool approval or an\n`AskUserQuestion`. The worker waits for it without a time limit.",
           "properties": {
@@ -7834,6 +7890,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkerAnswerParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`worker.answer` from a coordination tenure, refused with\n`ownership_transferred` once the worker is another tenure's.",
+          "properties": {
+            "method": {
+              "const": "worker.answer_as",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkerAnswerAsParams"
             }
           },
           "required": [
@@ -19105,6 +19178,13 @@
           ],
           "type": "object"
         },
+        "WorkerDecision": {
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "type": "string"
+        },
         "WorkerDrain": {
           "description": "The server's drain and the workers it waits for.",
           "properties": {
@@ -19178,6 +19258,17 @@
             },
             "kind": {
               "$ref": "#/schemas/success_response/$defs/WorkerEventKind"
+            },
+            "late_answer": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerLateAnswer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `late_answer`: the refused answer."
             },
             "questions": {
               "description": "With `question`: the questions the event asked.",
@@ -19256,6 +19347,11 @@
             {
               "const": "held_output",
               "description": "A tool call's output is held open by its descendants\n(`held_output`).",
+              "type": "string"
+            },
+            {
+              "const": "late_answer",
+              "description": "A coordinator that no longer owns it answered one of its questions\n(`late_answer`): refused with `ownership_transferred` and never\napplied, passed to the owner as information.",
               "type": "string"
             },
             {
@@ -19627,6 +19723,47 @@
           },
           "required": [
             "pids"
+          ],
+          "type": "object"
+        },
+        "WorkerLateAnswer": {
+          "description": "An answer a former owner sent after the worker moved to another tenure\n(`worker.answer_as`): refused, never applied, kept for the new owner.",
+          "properties": {
+            "answers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkerDecision"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "from_coordinator_id": {
+              "description": "The tenure that sent it.",
+              "type": "string"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "from_coordinator_id"
           ],
           "type": "object"
         },

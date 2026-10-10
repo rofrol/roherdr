@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
 use crate::api::schema::{
-    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
-    WorkerDecision, WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
-    WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
-    WorkerPromptParams, WorkerRunsParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
-    WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
+    EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerAsParams, WorkerAnswerParams,
+    WorkerCommandTarget, WorkerDecision, WorkerDrainAction, WorkerDrainParams,
+    WorkerEscalateParams, WorkerEventsParams, WorkerGeneratedFile, WorkerInterruptParams,
+    WorkerKillParams, WorkerObligationsParams, WorkerPromptParams, WorkerRunsParams,
+    WorkerStartParams, WorkerTarget, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitParams,
+    WorkerWaitUntil,
 };
 
 const USAGE: &str =
@@ -82,10 +83,15 @@ const USAGE: &str =
   herdr worker kill <worker_id> [--force]
     SIGKILL to the worker and to its recorded tool sessions whose leader is
     still the recorded process; an exited or lost worker needs --force.
-  herdr worker answer <worker_id> --request REQUEST_ID [--message TEXT] allow|deny|<choice>...
+  herdr worker answer <worker_id> --request REQUEST_ID [--message TEXT] [--coordinator ID]
+                      allow|deny|<choice>...
     --request names the question (its request_id in worker status or the ? list).
     A choice is an option's label or 1-based number, or free text; give one per
     question, and several options of a multi-select question separated by commas.
+    --coordinator ID answers as that coordination tenure (c-..., as coordinator
+    start or worker events named it): once the worker belongs to another tenure
+    the answer is refused (ownership_transferred, naming it), never applied, and
+    passed to that tenure's inbox as a late_answer.
   herdr worker log [--follow|--takeover] <worker_id>
     The worker's journal as text; --follow keeps printing new events until q.
     --takeover ends it with the mark a takeover's tab shows before the
@@ -279,10 +285,20 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
                 command_id,
             })
         }
-        "answer" => Method::WorkerAnswer(WorkerAnswerParams {
-            command_id,
-            ..parse_answer(rest)?
-        }),
+        "answer" => {
+            let (coordinator, rest) = take_string_option(rest, "--coordinator")?;
+            let answer = WorkerAnswerParams {
+                command_id,
+                ..parse_answer(&rest)?
+            };
+            match coordinator {
+                Some(coordinator_id) => Method::WorkerAnswerAs(WorkerAnswerAsParams {
+                    coordinator_id,
+                    answer,
+                }),
+                None => Method::WorkerAnswer(answer),
+            }
+        }
         "take-over" => {
             let (force, ids): (Vec<String>, Vec<String>) =
                 rest.iter().cloned().partition(|arg| arg == "--force");
@@ -1094,6 +1110,32 @@ mod tests {
         };
         assert_eq!(params.command_id.as_deref(), Some("item-3:answer:r1"));
         assert_eq!(params.decision, Some(WorkerDecision::Allow));
+
+        // As a tenure: worker.answer_as, so a server that does not fence
+        // refuses the method instead of applying the answer.
+        let Ok(Some(Method::WorkerAnswerAs(params))) = parse_worker_args(&args(&[
+            "answer",
+            "w1",
+            "--coordinator",
+            "c-abcd2345",
+            "--request",
+            "r1",
+            "allow",
+        ])) else {
+            panic!("answer as a tenure must parse");
+        };
+        assert_eq!(params.coordinator_id, "c-abcd2345");
+        assert_eq!(params.answer.request_id.as_deref(), Some("r1"));
+        assert_eq!(params.answer.decision, Some(WorkerDecision::Allow));
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            serde_json::json!({
+                "coordinator_id": "c-abcd2345",
+                "worker_id": "w1",
+                "request_id": "r1",
+                "decision": "allow",
+            })
+        );
         assert!(matches!(
             parse_worker_args(&args(&["stop", "--command-id", "c1", "w1"])),
             Ok(Some(Method::WorkerStop(WorkerCommandTarget { command_id: Some(id), .. })))

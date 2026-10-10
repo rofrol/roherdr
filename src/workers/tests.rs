@@ -12087,4 +12087,171 @@ mod inbox_events {
         assert_eq!(workers[0].questions[0].request_id, "perm-1");
         supervisor.kill(&a, false).unwrap();
     }
+
+    fn answer_as(
+        supervisor: &WorkerSupervisor,
+        coordinator_id: &str,
+        worker_id: &str,
+        request_id: &str,
+        command_id: Option<&str>,
+    ) -> Result<WorkerInfo, WorkerError> {
+        supervisor.answer_as(&WorkerAnswerAsParams {
+            coordinator_id: coordinator_id.into(),
+            answer: WorkerAnswerParams {
+                worker_id: worker_id.into(),
+                request_id: Some(request_id.into()),
+                decision: Some(WorkerDecision::Allow),
+                answers: Vec::new(),
+                message: Some("go".into()),
+                command_id: command_id.map(str::to_owned),
+            },
+        })
+    }
+
+    #[test]
+    fn a_former_owners_late_answer_is_refused_kept_for_the_successor_and_never_applied() {
+        let (fixture, owner) = coordinated("inbox-fence");
+        let supervisor = &fixture.supervisor;
+        let a = start_owned(&fixture, supervisor, "pair WebFetch https://example.com");
+        fixture.wait_for(&a, |worker| worker.questions.len() == 2);
+
+        // Its owner's answer is applied.
+        answer_as(supervisor, &owner, &a, "perm-1", None).unwrap();
+        let pending = supervisor.status(&a).unwrap().questions;
+        assert_eq!(
+            pending
+                .iter()
+                .map(|question| question.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["perm-2"]
+        );
+
+        let next = supervisor
+            .coordinator_handoff(None, Some(PANE), "p-next", Some("s-next"), None)
+            .unwrap();
+        let cursor = read(supervisor, &params(&next.coordinator_id, None)).next_cursor;
+
+        // The former owner's late answer: refused, naming the successor.
+        let refused = answer_as(supervisor, &owner, &a, "perm-2", Some("late:perm-2"))
+            .err()
+            .unwrap();
+        assert_eq!(refused.code(), "ownership_transferred", "{refused}");
+        assert!(
+            refused.to_string().contains(&next.coordinator_id),
+            "{refused}"
+        );
+        // Never applied: the question still waits, not even answering.
+        let worker = supervisor.status(&a).unwrap();
+        assert_eq!(worker.questions.len(), 1);
+        assert_eq!(worker.questions[0].request_id, "perm-2");
+        assert_eq!(supervisor.obligations(Some("p-next")).len(), 1);
+
+        // Kept for the successor, as information in its inbox.
+        let (late, _) = wait(supervisor, &next.coordinator_id, &cursor, || {});
+        assert_eq!(
+            kinds(&late.events),
+            [(a.clone(), WorkerEventKind::LateAnswer)]
+        );
+        let answer = late.events[0].late_answer.clone().unwrap();
+        assert_eq!(answer.from_coordinator_id, owner);
+        assert_eq!(answer.request_id.as_deref(), Some("perm-2"));
+        assert_eq!(answer.decision, Some(WorkerDecision::Allow));
+        assert_eq!(answer.message.as_deref(), Some("go"));
+        // The former owner's inbox does not get it.
+        let old = read(supervisor, &params(&owner, Some(&cursor)));
+        assert!(!has(&old.events, &a, WorkerEventKind::LateAnswer));
+
+        // Sent again with its command id: the same refusal, kept once.
+        let again = answer_as(supervisor, &owner, &a, "perm-2", Some("late:perm-2"))
+            .err()
+            .unwrap();
+        assert_eq!(again.code(), "ownership_transferred");
+        let kept = read(supervisor, &params(&next.coordinator_id, Some(&cursor)));
+        assert_eq!(kinds(&kept.events).len(), 1, "{:#?}", kept.events);
+
+        // The successor answers it.
+        answer_as(supervisor, &next.coordinator_id, &a, "perm-2", None).unwrap();
+        fixture.wait(&a, WorkerWaitUntil::TurnEnd);
+        supervisor.kill(&a, false).unwrap();
+    }
+
+    #[test]
+    fn a_failed_store_write_reaches_the_inbox_as_resync_required() {
+        let (fixture, owner) = coordinated("inbox-lost-write");
+        let supervisor = &fixture.supervisor;
+        let a = start_owned(&fixture, supervisor, "block");
+        let cursor = read(supervisor, &params(&owner, None)).next_cursor;
+
+        // Its exit is not stored: the inbox misses the row.
+        force_store_failure(supervisor, true);
+        supervisor.stop(&a).unwrap();
+        fixture.wait(&a, WorkerWaitUntil::Exit);
+        let (resync, blocked) = wait(supervisor, &owner, &cursor, || {});
+        assert_eq!(blocked, 0, "the loss answers at once");
+        assert!(resync.resync_required);
+        assert!(resync.events.is_empty());
+        let workers = resync.snapshot.unwrap().workers;
+        assert_eq!(ids(&workers), [a.as_str()]);
+        assert_eq!(workers[0].state, WorkerState::Exited);
+        assert!(resync.next_cursor.contains('.'), "{}", resync.next_cursor);
+
+        // Seen once: from the resync's cursor the wait blocks again, until
+        // the next event.
+        force_store_failure(supervisor, false);
+        let mut b = None;
+        let (joined, blocked) = wait(supervisor, &owner, &resync.next_cursor, || {
+            b = Some(start_owned(&fixture, supervisor, "finish"));
+        });
+        let b = b.unwrap();
+        assert_eq!(blocked, 1);
+        assert!(!joined.resync_required);
+        assert_eq!(
+            kinds(&joined.events)[0],
+            (b.clone(), WorkerEventKind::Joined)
+        );
+        supervisor.kill(&b, false).unwrap();
+    }
+
+    #[test]
+    fn worker_wait_attention_is_served_by_the_inbox() {
+        // A worker no tenure owns: its rows serve its own wait.
+        let fixture = Fixture::new("inbox-worker-wait");
+        let supervisor = &fixture.supervisor;
+        let id = fixture.start("perm WebFetch https://example.com");
+        fixture.wait_for_question(&id);
+        let (asked, _) = fixture.attention(&id, None, || {});
+        assert_eq!(asked.reason, WorkerAttentionReason::Question);
+        fixture
+            .answer_request(&id, "perm-1", WorkerDecision::Allow)
+            .unwrap();
+        let (ended, _) = fixture.attention(&id, Some(asked.seq), || {});
+        assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
+        let rows: i64 = store_of(supervisor)
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM inbox WHERE owner = '' AND worker_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(rows >= 2, "{rows}");
+
+        // Without the inbox rows after the cursor nothing has happened,
+        // though the status has ended its turn: the inbox decides.
+        store_of(supervisor)
+            .connection()
+            .execute(
+                "DELETE FROM inbox WHERE worker_id = ?1 AND seq > ?2",
+                rusqlite::params![id, asked.seq],
+            )
+            .unwrap();
+        let waited = supervisor
+            .wait_attention(&id, Some(asked.seq), HANG_GUARD, || false)
+            .unwrap();
+        assert!(waited.is_none(), "answered without an inbox row");
+        // A wait without a cursor is answered from the snapshot.
+        let (snapshot, _) = fixture.attention(&id, None, || {});
+        assert_eq!(snapshot.reason, WorkerAttentionReason::TurnEnd);
+        supervisor.kill(&id, false).unwrap();
+    }
 }

@@ -445,6 +445,10 @@ pub enum WorkerEventKind {
     /// A tool call's output is held open by its descendants
     /// (`held_output`).
     HeldOutput,
+    /// A coordinator that no longer owns it answered one of its questions
+    /// (`late_answer`): refused with `ownership_transferred` and never
+    /// applied, passed to the owner as information.
+    LateAnswer,
     /// A kind this client does not know.
     #[serde(other)]
     Unknown,
@@ -472,6 +476,25 @@ pub struct WorkerEvent {
     /// With `held_output`: the report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_output: Option<WorkerHeldOutput>,
+    /// With `late_answer`: the refused answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_answer: Option<WorkerLateAnswer>,
+}
+
+/// An answer a former owner sent after the worker moved to another tenure
+/// (`worker.answer_as`): refused, never applied, kept for the new owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerLateAnswer {
+    /// The tenure that sent it.
+    pub from_coordinator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<WorkerDecision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// The owner's workers as they are now: the running ones and the ended ones
@@ -810,6 +833,22 @@ pub struct WorkerAnswerParams {
     /// same reply, or the same refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+}
+
+/// `worker.answer` sent by a coordination tenure (`worker.answer_as`):
+/// applied only while that tenure owns the worker. Once the worker has moved
+/// to another tenure the answer is refused with `ownership_transferred`,
+/// naming the owner, and kept in the owner's inbox as a `late_answer`; it is
+/// never applied. The check and the answer's record share one hold of the
+/// registry, as a handoff's move does: an answer lands before the move (and
+/// the move carries it) or after it (and is refused).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerAnswerAsParams {
+    /// The answering tenure (`c-...`), as `coordinator.start` or
+    /// `worker.events` named it.
+    pub coordinator_id: String,
+    #[serde(flatten)]
+    pub answer: WorkerAnswerParams,
 }
 
 /// One of a worker's questions, by its request id (`worker.question`).

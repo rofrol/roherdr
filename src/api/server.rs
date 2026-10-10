@@ -862,6 +862,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerStop(_) => "worker.stop",
         Method::WorkerKill(_) => "worker.kill",
         Method::WorkerAnswer(_) => "worker.answer",
+        Method::WorkerAnswerAs(_) => "worker.answer_as",
         Method::WorkerAck(_) => "worker.ack",
         Method::WorkerObligations(_) => "worker.obligations",
         Method::WorkerDrain(_) => "worker.drain",

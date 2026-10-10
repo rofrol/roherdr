@@ -1352,6 +1352,7 @@ impl App {
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)
             | Method::WorkerKill(_)
+            | Method::WorkerAnswerAs(_)
             | Method::WorkerAck(_)
             | Method::WorkerObligations(_)
             | Method::WorkerDrain(_)
