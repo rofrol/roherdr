@@ -90,6 +90,8 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   DECISIONS.md before the turn ends, worker/job records a new coordinator
   can reconcile (worker id, worktree, branch, base SHA, the event waited
   for), pending menus in TODO.md.
+  Slices 1 and 2 done by 2026-10-09: `scripts/todo_edit.py` and the driver's
+  records (runs, attempts, landings, item history and reconcile, tenures).
 
 - [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
   (Decided by the user 2026-10-09 after consult round
