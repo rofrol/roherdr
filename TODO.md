@@ -1628,6 +1628,19 @@ user needs to decide or do.
   subscription or key needed, so no login in the VM) and the seven
   scenarios, the crash-between-effect-and-record window first. Same VM
   rules.
+  Set revised with the models (round 20261010-120557-d572; licences checked
+  with gh): Restate (journaled side effects, durable waits; scenario 7
+  first) and Temporal's dev server (activity heartbeats, cancellation,
+  bounded retry policy; scenarios 3, 4, 6), all three agreeing; LangGraph
+  with SQLite only for the human-question wait across a restart (scenario
+  5); one Rust + SQLite engine to study as the closest model for herdr:
+  microsoft/duroxide (MIT, Rust, SQLite provider, event-sourced replay,
+  active) preferred over Obelisk (AGPL-3.0: concepts only). DBOS dropped
+  (Postgres-first). Lessons to carry, all three: durable execution does not
+  make external effects exactly-once; a step done before its record needs
+  an idempotency key or reconciliation, and an explicit "outcome unknown"
+  state; a command stuck silently is not a durable-execution feature
+  anywhere (it stays herdr's own process supervision, under the delay rule).
 
 ### Decide
 
