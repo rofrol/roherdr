@@ -101,7 +101,10 @@ const USAGE: &str = "usage:
       parameters, this run's checks unless --next-check names others, owned
       by this run's owner); a refused start (preflight, usage gate) is a
       next_refused event on this run, and todo status shows next_run_id or
-      next_refusal. With --stop-reason, TEXT goes into the item's history
+      next_refusal. todo wait on the run returns only once the next run
+      started or was refused (then next_refused is its result); a refusal
+      also notifies the user, and one for a short disk first runs the
+      folder slot's target sweep and preflight once more. With --stop-reason, TEXT goes into the item's history
       when the run is done and to the user as a notification.
       approve stops the worker, verifies its commit with the checks,
       cherry-picks it onto master with the trailers Herdr-Item: <item-id> and

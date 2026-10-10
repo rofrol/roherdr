@@ -8009,6 +8009,8 @@ mod todo_runs {
         assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
         assert_eq!(master_subjects(&fixture)[0], "docs(todo): close t-abcd2345");
         assert_eq!(finished.next_item.as_deref(), Some(ITEM2));
+        // The wait returned once the next run started.
+        assert!(finished.next_run_id.is_some(), "{finished:#?}");
         // The driver settled the next start before it let go of the run.
         let closed = fixture.supervisor.todo_status(&run.run_id).unwrap();
         let next_id = closed.next_run_id.clone().expect("the next run started");
@@ -8054,10 +8056,11 @@ mod todo_runs {
         // Claude's usage rises while the run finishes: the gate refuses the
         // next start.
         fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
+        crate::workers::take_user_notices();
         close_with_next(&fixture, &run.run_id, review.event_id);
-        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
-        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
-        let (refused, ended) = wait(&fixture, &run.run_id, Some(done.event_id));
+        // The wait on the run returns the refusal as its result, not the
+        // `done` event before it.
+        let (refused, ended) = wait(&fixture, &run.run_id, Some(review.event_id));
         assert_eq!(refused.kind, TodoEventKind::NextRefused, "{refused:#?}");
         assert!(refused.actions.is_empty(), "{refused:#?}");
         let why = refused.error.clone().unwrap_or_default();
@@ -8073,13 +8076,59 @@ mod todo_runs {
             ),
             (TodoRunStatus::Done, Some(why.as_str()), None)
         );
+        // The user is told, once.
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].title.contains(ITEM2), "{notices:?}");
+        assert_eq!(notices[0].body, why);
         // Settled: a restart does not try again.
         fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
         assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
         assert_eq!(
             run_events(&fixture, &run.run_id, "run_next_intent").len(),
             1
         );
+    }
+
+    /// The next start's preflight finds the disk short; the folder slot's
+    /// sweep (a stand-in that frees the space) runs, and preflight looks
+    /// once more and starts the next run.
+    #[test]
+    fn a_next_start_short_of_disk_sweeps_the_slot_and_starts() {
+        let fixture = todo_repo("todo-close-next-disk");
+        let free = fixture.repo.parent().unwrap().join("free-gib-for-test");
+        std::fs::create_dir_all(fixture.repo.join("scripts")).unwrap();
+        std::fs::write(
+            fixture.repo.join("scripts/target_sweep.py"),
+            format!(
+                "import pathlib, sys\n\
+                 free = pathlib.Path({:?})\n\
+                 if sys.argv[1] == 'slot' and free.exists():\n\
+                 \x20   free.write_text('100')\n",
+                free.display().to_string()
+            ),
+        )
+        .unwrap();
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The disk fills while the run finishes.
+        std::fs::write(&free, "-1").unwrap();
+        crate::workers::take_user_notices();
+        close_with_next(&fixture, &run.run_id, review.event_id);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.next_refusal, None, "{finished:#?}");
+        let next_id = finished.next_run_id.clone().expect("the next run started");
+        assert_eq!(std::fs::read_to_string(&free).unwrap(), "100");
+        assert!(crate::workers::take_user_notices().is_empty());
+        let (review, _) = wait(&fixture, &next_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        abort(&fixture, &next_id, review.event_id);
     }
 
     #[test]
