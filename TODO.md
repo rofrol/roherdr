@@ -11,6 +11,35 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Mechanisms, not rules, so a coordinator neither re-asks decided [t-pku6dsb6]
+  things nor stops (user, 2026-10-10, next: "you'll think something up
+  again and stop working; there must be a mechanism so this does not
+  happen; consult the models to fix the process"; after the coordinator
+  re-asked an approved integration install and a relayed rule; round
+  20261010-225158-0c9b, sol + MiMo + DeepSeek agreeing: memory notes and
+  rules are not controls). Ordered:
+  1. A structured decision ledger in the server's SQLite: id, statement,
+     scope, source (user in chat, relayed by a named coordinator, menu),
+     status open/decided/superseded, supersedes; `herdr decision
+     add|decide|list`; "Needs a decision" items and DECISIONS.md entries
+     map to it; backfill today's approvals (integration in shadow, the
+     host-config rule, the prepare grant).
+  2. A PreToolUse gate on `AskUserQuestion` in coordinator tabs: allowed
+     only when the call cites an open decision id (in the header or
+     question) or an enumerated user-only capability (a grant herdr refuses
+     from agent panes, a login, a trust dialog, a live test with the
+     user's accounts); a decided id is refused with the recorded answer;
+     anything else is refused naming the ledger. Questions asked in prose
+     cannot be caught; the stop check covers the turn end.
+  3. The stop check (t-pzba6fio, shadow since bb63fbe2) enforced: in
+     coordinator tabs a stop with runnable items and no open decision of
+     the user is blocked with the exact next command; after 3 blocks in a
+     row the stop goes through and herdr escalates to the user's `?` list
+     (no loop). Decided by the user's request above (answers the "Needs a
+     decision" question "Enforce the coordinator stop check").
+  4. Queue mode (`herdr todo queue on`) only after 1-3 ran clean for a
+     week (MiMo, DeepSeek; sol would go sooner).
+
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
@@ -1756,13 +1785,6 @@ user needs to decide or do.
   Decided 2026-10-10 (the user: "decide with the models"; round
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
-
-- [ ] [t-wapsagi4] Enforce the coordinator stop check after its shadow phase?
-  Options: after a week of shadow logs with at most 1 false per 100, block, and a plain "stop" from the user also runs `herdr todo queue pause` (Recommended) | keep it shadow-only | drop it
-  Checked by the coordinator 2026-10-10: shadow landed in 704290af, replay
-  3/3 caught and 0 false; the live log is
-  `~/.local/state/herdr/awaiting-reply-stop.jsonl` (`stall_would_block`);
-  it needs the integration installed first.
 
 ### Decide
 
