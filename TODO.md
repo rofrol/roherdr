@@ -43,6 +43,23 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repository`, verified, installed); the first tenure is `c-6xve3ubo`
   (the herdr coordinator's tab). Left: obligations keyed on the tenure,
   the current item, handoff epochs, resume keeping the tenure.
+  Slice 2 done 2026-10-10 (run `r-yp27jex3`): obligations keyed on the tenure;
+  a resume of the same session moves the binding (and reopens an orphaned
+  latest tenure) with its workers and runs; `todo run` sets and clears the
+  current item; `herdr coordinator handoff --to <pane>` (epoch + 1, one
+  transaction, a `handoff` event); the driver no longer overwrites a run's
+  owner columns. Decided by the coordinator for a later slice: a `/clear`
+  gives the pane's agent a new session id, so a later `claude --resume` with
+  it does not find the tenure; Claude's `SessionStart` hook reports
+  `source: clear` with both ids (an observable event), so herdr can move the
+  binding to the new session there. After an explicit `coordinator end`
+  its workers leave `worker obligations --pane` (intended).
+  The same commit also fixes a pre-existing shutdown race found by `verify`
+  (`server_survives_hangup_and_logs_why_it_stops`, 19/20 under load): the
+  server installed its SIGINT/SIGTERM handling only after the API socket
+  listened, so a signal right after "listening" was lost; now the signals
+  route to `ServerStop` before the socket listens (in a handoff just before
+  the new server's socket) and a stop request wakes the event loop.
 
 - [ ] A fresh coordinator per item instead of one long-lived session (user, [t-o6hf6tr3]
   2026-10-07: "can't it be compacted or cleared now and then? ask the
