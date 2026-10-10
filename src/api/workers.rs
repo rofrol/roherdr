@@ -51,6 +51,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoRunnableState(_)
             | Method::TodoGrant(_)
             | Method::TodoGrants(_)
+            | Method::TodoRevoke(_)
             | Method::DecisionAdd(_)
             | Method::DecisionDecide(_)
             | Method::DecisionList(_)
@@ -275,6 +276,11 @@ fn handle_immediate(
         Method::TodoGrants(params) => {
             return Ok(ResponseResult::TodoGrants {
                 grants: supervisor.todo_grants(params)?,
+            })
+        }
+        Method::TodoRevoke(params) => {
+            return Ok(ResponseResult::TodoGrants {
+                grants: supervisor.todo_revoke(params)?,
             })
         }
         Method::HistoryList(params) => {

@@ -732,6 +732,7 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
     super::inbox::INBOX_MIGRATION,
     super::decisions::DECISIONS_MIGRATION,
     super::inbox::UNOWNED_INBOX_MIGRATION,
+    super::capabilities::GRANT_LOG_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1931,6 +1932,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             auto_answer: finish.auto_answer,
             drafted: finish.draft,
             queued: finish.queued,
+            grants: finish.run_grants(),
         },
         checks,
         finish,
@@ -3228,6 +3230,7 @@ mod tests {
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
+                 DROP TABLE capability_grant_log;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3294,8 +3297,9 @@ mod tests {
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
+                 DROP TABLE capability_grant_log;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 24
+                MIGRATIONS.len() - 25
             ))
             .unwrap();
         drop(store);
@@ -3356,8 +3360,9 @@ mod tests {
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
+                 DROP TABLE capability_grant_log;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 13
+                MIGRATIONS.len() - 14
             ))
             .unwrap();
         drop(store);

@@ -6,8 +6,8 @@
 use crate::api::schema::{
     Method, Request, TodoAction, TodoDraftRunParams, TodoGrantParams, TodoGrantsParams,
     TodoNextParams, TodoNextRun, TodoQueueMode, TodoQueueSetParams, TodoQueueTarget,
-    TodoResumeParams, TodoReviewParams, TodoRunParams, TodoRunTarget, TodoRunsParams,
-    TodoStopParams, TodoWaitParams, WorkerDecision,
+    TodoResumeParams, TodoReviewParams, TodoRevokeParams, TodoRunParams, TodoRunTarget,
+    TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -195,7 +195,15 @@ const USAGE: &str = "usage:
       hash todo run's grant_required refusal showed (refused when it changed
       since). The grant is the user's decision: it asks for `yes` on a
       terminal and is refused without one. A changed definition has another
-      hash and needs its own grant.
+      hash and needs its own grant. A refused run also lists the definition
+      as a question in the user's ? list (the operation, its capabilities,
+      its hash and the repository), answered only with a click in the
+      user's own client, never from an agent pane; once granted, the
+      coordinator starts the run again (in queue mode the queue does).
+  herdr todo grant --revoke --operation prepare [--hash HASH] [--repo DIR]
+      Remove the stored grant of that definition hash (every grant of the
+      operation without --hash), recorded in the worker store; a run that
+      has not run its prepare yet refuses it.
   herdr todo grants [--repo DIR]
       List the stored grants (of DIR's repository with --repo).";
 
@@ -761,16 +769,29 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 }
                 Method::TodoGrants(TodoGrantsParams { cwd: Some(cwd) })
             } else {
+                let (revoke, rest) = take_switch(&rest, "--revoke")?;
                 let (operation, rest) = take_string_option(&rest, "--operation")?;
                 let (hash, rest) = take_string_option(&rest, "--hash")?;
-                let (Some(operation), Some(hash), true) = (operation, hash, rest.is_empty()) else {
-                    return Err("grant takes --operation, --hash and --repo".into());
-                };
-                Method::TodoGrant(TodoGrantParams {
-                    cwd,
-                    operation,
-                    hash,
-                })
+                if revoke {
+                    let (Some(operation), true) = (operation, rest.is_empty()) else {
+                        return Err("grant --revoke takes --operation, --hash and --repo".into());
+                    };
+                    Method::TodoRevoke(TodoRevokeParams {
+                        cwd,
+                        operation,
+                        hash,
+                    })
+                } else {
+                    let (Some(operation), Some(hash), true) = (operation, hash, rest.is_empty())
+                    else {
+                        return Err("grant takes --operation, --hash and --repo".into());
+                    };
+                    Method::TodoGrant(TodoGrantParams {
+                        cwd,
+                        operation,
+                        hash,
+                    })
+                }
             }
         }
         "help" | "--help" | "-h" => return Ok(None),
@@ -813,6 +834,38 @@ mod tests {
             panic!("grants did not parse");
         };
         assert_eq!(grants.cwd.as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn grant_revoke_takes_the_operation_and_an_optional_hash() {
+        let Ok(Some(Method::TodoRevoke(revoke))) = parse(&args(&[
+            "grant",
+            "--revoke",
+            "--operation",
+            "prepare",
+            "--repo",
+            "/repo",
+        ])) else {
+            panic!("grant --revoke did not parse");
+        };
+        assert_eq!(
+            (revoke.cwd.as_str(), revoke.operation.as_str(), revoke.hash),
+            ("/repo", "prepare", None)
+        );
+        let Ok(Some(Method::TodoRevoke(revoke))) = parse(&args(&[
+            "grant",
+            "--operation",
+            "prepare",
+            "--hash",
+            "abc",
+            "--revoke",
+            "--repo",
+            "/repo",
+        ])) else {
+            panic!("grant --revoke --hash did not parse");
+        };
+        assert_eq!(revoke.hash.as_deref(), Some("abc"));
+        assert!(parse(&args(&["grant", "--revoke", "--repo", "/repo"])).is_err());
     }
 
     #[test]

@@ -29,6 +29,7 @@ pub(crate) mod broker;
 mod capabilities;
 pub(crate) mod coordinators;
 mod decisions;
+mod grant_questions;
 mod history;
 mod inbox;
 #[cfg(test)]
@@ -295,6 +296,9 @@ pub(crate) enum WorkerError {
     /// The repository's operation has no user grant for its definition;
     /// the message shows the definition and its hash.
     GrantRequired(String),
+    /// A grant question answered other than from the user's own client
+    /// (a click in the `?` list): the API refuses it, so no agent grants.
+    GrantNeedsUser(String),
     /// A `worker.answer_as` from a tenure that no longer owns the worker;
     /// the message names the owner. The answer was not applied.
     OwnershipTransferred(String),
@@ -330,6 +334,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "report_close_refused",
     "capability_unsupported",
     "grant_required",
+    "grant_needs_user",
     "ownership_transferred",
 ];
 
@@ -364,6 +369,7 @@ impl WorkerError {
             Self::ReportCloseRefused(_) => "report_close_refused",
             Self::CapabilityUnsupported(_) => "capability_unsupported",
             Self::GrantRequired(_) => "grant_required",
+            Self::GrantNeedsUser(_) => "grant_needs_user",
             Self::OwnershipTransferred(_) => "ownership_transferred",
         }
     }
@@ -409,6 +415,7 @@ impl std::fmt::Display for WorkerError {
             | Self::ReportCloseRefused(message)
             | Self::CapabilityUnsupported(message)
             | Self::GrantRequired(message)
+            | Self::GrantNeedsUser(message)
             | Self::OwnershipTransferred(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -4397,6 +4404,8 @@ impl WorkerSupervisor {
             .collect();
         // A todo run's review escalations, listed as its worker's.
         pending.extend(runs::escalations::pending_questions());
+        // The definitions waiting for the user's grant.
+        pending.extend(grant_questions::pending_questions());
         pending
     }
 
@@ -4735,6 +4744,10 @@ impl WorkerSupervisor {
             // A review escalation is the user's already.
             return self.escalation_reply(worker_id);
         }
+        if grant_questions::is_grant_question(request_id) {
+            // So is a grant question.
+            return self.grant_reply_of(worker_id);
+        }
         self.escalate_because(worker_id, request_id, "its coordinator escalated it")
     }
 
@@ -4809,6 +4822,9 @@ impl WorkerSupervisor {
         if runs::escalations::is_escalation(request_id) {
             return self.escalation_detail(worker_id, request_id);
         }
+        if grant_questions::is_grant_question(request_id) {
+            return self.grant_question_detail(worker_id, request_id);
+        }
         let registry = lock(&self.shared.registry);
         let number = Self::entry_number(&registry, worker_id)?;
         let status = &registry.workers[&number].status;
@@ -4852,6 +4868,11 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerDenyAndStopParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        // A grant question is answered only from the user's client
+        // ([`Self::deny_and_stop_from_client`]).
+        if grant_questions::is_grant_question(&params.request_id) {
+            return Err(grant_questions::needs_user(&params.request_id));
+        }
         // A review escalation's worker has already exited: the denial
         // leaves the review to the coordinator.
         if runs::escalations::is_escalation(&params.request_id) {
@@ -5284,6 +5305,15 @@ impl WorkerSupervisor {
         &self,
         params: &WorkerAnswerParams,
     ) -> Result<WorkerInfo, WorkerError> {
+        // A grant question is answered only from the user's client
+        // ([`Self::answer_from_client`]), never through the API.
+        if let Some(request_id) = params
+            .request_id
+            .as_deref()
+            .filter(|request_id| grant_questions::is_grant_question(request_id))
+        {
+            return Err(grant_questions::needs_user(request_id));
+        }
         if let Some(request_id) = params
             .request_id
             .as_deref()
@@ -5322,11 +5352,10 @@ impl WorkerSupervisor {
         params: &WorkerAnswerAsParams,
     ) -> Result<WorkerInfo, WorkerError> {
         let answer = &params.answer;
-        if answer
-            .request_id
-            .as_deref()
-            .is_some_and(runs::escalations::is_escalation)
-        {
+        if answer.request_id.as_deref().is_some_and(|request_id| {
+            runs::escalations::is_escalation(request_id)
+                || grant_questions::is_grant_question(request_id)
+        }) {
             return self.answer(answer);
         }
         let answered = self.command(

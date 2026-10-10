@@ -48,7 +48,8 @@ impl App {
         id: String,
         params: WorkerAnswerParams,
     ) -> String {
-        match crate::workers::supervisor().answer(&params) {
+        // The user's own client: the one way a grant question is answered.
+        match crate::workers::supervisor().answer_from_client(&params) {
             Ok(worker) => encode_success(id, ResponseResult::WorkerInfo { worker }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }
@@ -61,7 +62,7 @@ impl App {
         id: String,
         params: WorkerDenyAndStopParams,
     ) -> String {
-        match crate::workers::supervisor().deny_and_stop(&params) {
+        match crate::workers::supervisor().deny_and_stop_from_client(&params) {
             Ok(worker) => encode_success(id, ResponseResult::WorkerInfo { worker }),
             Err(error) => encode_error(id, error.code(), error.to_string()),
         }

@@ -375,6 +375,14 @@ impl PathCheck {
 }
 
 impl RunFinish {
+    /// The grants the run runs with, as clients see them.
+    pub(super) fn run_grants(&self) -> Vec<crate::api::schema::TodoRunGrant> {
+        self.prepare
+            .iter()
+            .map(super::capabilities::PreparePlan::run_grant)
+            .collect()
+    }
+
     /// The path checks the verify may add: those preflight stored, after
     /// the `tests` check of a run an older build stored.
     pub(super) fn path_checks(&self) -> Vec<RunCheck> {
@@ -1521,6 +1529,11 @@ impl WorkerSupervisor {
                 auto_answer: params.auto_answer,
                 drafted: draft,
                 queued: queue.is_some(),
+                grants: preflighted
+                    .prepare
+                    .iter()
+                    .map(super::capabilities::PreparePlan::run_grant)
+                    .collect(),
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),

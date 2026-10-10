@@ -666,6 +666,12 @@ impl WorkerSupervisor {
             Err(WorkerError::UsageGate(why)) => {
                 self.queue_record(repo, TodoQueueStatus::UsageGate, &why)
             }
+            // The user's grant question is listed; the grant is the next
+            // event.
+            Err(WorkerError::GrantRequired(why)) => {
+                let reason = format!("the start of {item} waits for the user's grant: {why}");
+                self.queue_record(repo, TodoQueueStatus::WaitingOnUser, &reason)
+            }
             Err(refused) => {
                 let reason = format!("the start of {item} was refused: {refused}");
                 self.queue_record(repo, TodoQueueStatus::Blocked, &reason)

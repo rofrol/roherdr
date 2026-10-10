@@ -205,6 +205,9 @@ pub enum Method {
     /// The stored capability grants.
     #[serde(rename = "todo.grants")]
     TodoGrants(TodoGrantsParams),
+    /// Removes stored grants of a repository's operation, recorded.
+    #[serde(rename = "todo.revoke")]
+    TodoRevoke(TodoRevokeParams),
     /// Records a question for the user, or a decision of theirs, in the
     /// decision ledger.
     #[serde(rename = "decision.add")]

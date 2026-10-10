@@ -6311,6 +6311,31 @@
           ],
           "type": "object"
         },
+        "TodoRevokeParams": {
+          "description": "`todo.revoke`: removes the stored grants of a repository's operation.",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository.",
+              "type": "string"
+            },
+            "hash": {
+              "description": "Only the grant of this definition hash; every grant of the\noperation without it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "operation": {
+              "description": "The operation (`prepare`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cwd",
+            "operation"
+          ],
+          "type": "object"
+        },
         "TodoRunParams": {
           "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
@@ -8381,6 +8406,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoGrantsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Removes stored grants of a repository's operation, recorded.",
+          "properties": {
+            "method": {
+              "const": "todo.revoke",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoRevokeParams"
             }
           },
           "required": [
@@ -18369,6 +18411,38 @@
           ],
           "type": "object"
         },
+        "TodoRunGrant": {
+          "description": "A grant a run runs with, as preflight read it from its base commit.",
+          "properties": {
+            "adapter": {
+              "description": "The adapter that enforces it.",
+              "type": "string"
+            },
+            "definition": {
+              "description": "The canonical definition: protocol version, operation, argv and the\nrequested capabilities with their scopes."
+            },
+            "granted_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hash": {
+              "description": "SHA-256 of the canonical definition.",
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "hash",
+            "definition",
+            "granted_ms",
+            "adapter"
+          ],
+          "type": "object"
+        },
         "TodoRunInfo": {
           "properties": {
             "attempt": {
@@ -18420,6 +18494,13 @@
                 "string",
                 "null"
               ]
+            },
+            "grants": {
+              "description": "The capability grants the run runs with (its `prepare`'s), none\nwhen the repository declares no operation.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TodoRunGrant"
+              },
+              "type": "array"
             },
             "installed_build": {
               "description": "The build the install reported (the registered `build_id` command's\nfirst line), or `installed` when none is registered.",

@@ -226,6 +226,14 @@ impl WorkerSupervisor {
         if run.finish.prepared {
             return Ok(());
         }
+        // A grant the user revoked since preflight no longer covers it.
+        if !self.grant_still_stored(&run.info.repo, &plan) {
+            return Err(format!(
+                "prepare refused: the grant of [prepare] with hash {} was revoked since the run \
+                 started; the user grants it again from the `?` list or `herdr todo grant`",
+                plan.hash
+            ));
+        }
         let capabilities = plan.capabilities()?;
         check_enforceable(confined_job(), "[prepare]", &capabilities)
             .map_err(|error| format!("prepare unsupported: {error}"))?;
