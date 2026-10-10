@@ -5886,6 +5886,10 @@
         "TodoRunParams": {
           "description": "Drives one TODO item from preflight to a cherry-pick onto the\nrepository's `master` and on through the registered install, the TODO\nupdate, a fast-forward push to `origin` and the cleanup of its merged\nbranches: a persisted, resumable run that starts a headless worker in the\nrepository's folder slot, turns what needs the coordinator (a question\noutside the worker policy, the turn's end, a failed verify, install, TODO\nedit or push) into run events, and verifies the worker's commit with a\nregistered check before picking it.",
           "properties": {
+            "auto_review": {
+              "description": "The server reviews each `review` event itself with a bounded,\nstateless model call (`claude -p`, structured output, no tools) and\napplies its typed decision: `approve` (bound to the event's commit\nand base), `retry` (its review text) or `escalate` (a question for\nthe user, a new `review` event). A call that fails or returns\ninvalid output is retried once, then escalated. `todo.resume` still\nanswers the event and wins when it comes first. The reply's\n`auto_review` says whether the server took it.",
+              "type": "boolean"
+            },
             "checks": {
               "description": "The names of checks in the repository's `.herdr/checks.toml`, run\nin this order; every one must pass.",
               "items": {
@@ -16784,6 +16788,10 @@
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "auto_review": {
+              "description": "The server reviews the run's `review` events itself\n(`todo.run`'s `auto_review`).",
+              "type": "boolean"
             },
             "base": {
               "description": "`master`'s commit when the run started, which each attempt's branch\nstarts from.",

@@ -2106,6 +2106,10 @@ struct Shared {
     /// Claude's provider, which the server asks.
     #[cfg(test)]
     claude_usage: Mutex<Result<crate::api::schema::ProviderUsage, String>>,
+    /// The program a test sets for a run's automatic review in place of
+    /// `program`, which the server calls.
+    #[cfg(test)]
+    review_program: Mutex<Option<PathBuf>>,
 }
 
 /// Starts, tracks and stops headless workers.
@@ -2716,6 +2720,8 @@ impl WorkerSupervisor {
                 pre_tool_checks: Mutex::new(Vec::new()),
                 #[cfg(test)]
                 claude_usage: Mutex::new(Ok(runs::low_usage_for_test())),
+                #[cfg(test)]
+                review_program: Mutex::new(None),
             }),
         };
         for (number, held) in unowned {

@@ -5749,6 +5749,7 @@ mod todo_runs {
             workspace_id: Some("ws-coordinator".into()),
             env: Some(caller_env()),
             ignore_usage: false,
+            auto_review: false,
         }
     }
 
@@ -8872,6 +8873,313 @@ mod todo_runs {
         let leaked = files_holding(&fixture.supervisor.shared.dir, &secret);
         assert!(leaked.is_empty(), "{leaked:?}");
         abort(&fixture, &run.run_id, failed.event_id);
+    }
+
+    /// `todo run --auto-review` against a stub model: `review-stub` in the
+    /// fixture's root logs each call (its argv and input) to
+    /// `review-calls.jsonl` and answers with the first line of
+    /// `review-answers`, which it removes: a JSON decision (sent as the
+    /// structured output, from the model `stub-review-model`), `raw <text>`
+    /// (printed as it is), `exit <code>` (a failed call), or `gate <entered>
+    /// <gate> <decision>` (opens the FIFO `entered` for writing, then waits
+    /// for a line on the FIFO `gate`, then answers with the decision).
+    mod auto_review {
+        use super::*;
+
+        const REVIEW_STUB: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+answers = os.path.join(here, "review-answers")
+prompt = sys.stdin.read()
+with open(os.path.join(here, "review-calls.jsonl"), "a") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "stdin": prompt}) + "\n")
+lines = open(answers).read().splitlines() if os.path.exists(answers) else []
+if not lines:
+    sys.stderr.write("no answer left\n")
+    sys.exit(3)
+with open(answers + ".tmp", "w") as rest:
+    rest.write("".join(line + "\n" for line in lines[1:]))
+os.replace(answers + ".tmp", answers)
+answer = lines[0]
+if answer.startswith("exit "):
+    sys.stderr.write("stub failure\n")
+    sys.exit(int(answer[5:]))
+if answer.startswith("raw "):
+    print(answer[4:])
+    sys.exit(0)
+if answer.startswith("gate "):
+    _, entered, gate, answer = answer.split(" ", 3)
+    with open(entered, "w") as signal:
+        signal.write("in")
+    with open(gate) as wait:
+        wait.read()
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "",
+                  "structured_output": json.loads(answer),
+                  "modelUsage": {"stub-review-model": {}}}))
+"#;
+
+        /// The fixture with the review stub and its answers.
+        fn reviewed(name: &str, answers: &[&str]) -> Fixture {
+            use std::os::unix::fs::PermissionsExt;
+            let fixture = todo_repo(name);
+            let stub = fixture.root.join("review-stub");
+            std::fs::write(&stub, REVIEW_STUB).unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            set_answers(&fixture, answers);
+            fixture.supervisor.set_review_program_for_test(stub);
+            fixture
+        }
+
+        fn set_answers(fixture: &Fixture, answers: &[&str]) {
+            let text: String = answers.iter().map(|line| format!("{line}\n")).collect();
+            std::fs::write(fixture.root.join("review-answers"), text).unwrap();
+        }
+
+        fn calls(fixture: &Fixture) -> Vec<serde_json::Value> {
+            std::fs::read_to_string(fixture.root.join("review-calls.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+
+        fn start(fixture: &Fixture) -> TodoRunInfo {
+            let run = fixture
+                .supervisor
+                .todo_run(TodoRunParams {
+                    auto_review: true,
+                    ..params(fixture, &format!("commit a.txt {SUBJECT}"), "ok")
+                })
+                .unwrap();
+            assert!(run.auto_review, "{run:?}");
+            run
+        }
+
+        /// The `review` event the attention step recorded, which the
+        /// server reviews itself and `todo.wait` does not return.
+        fn reviewed_event(fixture: &Fixture, run_id: &str) -> i64 {
+            let created = run_events(fixture, run_id, "run_review_decision");
+            created[0]["event"].as_i64().unwrap()
+        }
+
+        #[test]
+        fn an_approval_is_bound_to_the_commit_and_lands_it() {
+            let fixture = reviewed(
+                "todo-auto-approve",
+                &[r#"{"action": "approve", "note": "does what the item asks"}"#],
+            );
+            let run = start(&fixture);
+            let (done, finished) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+            assert!(finished.auto_review);
+
+            let decisions = run_events(&fixture, &run.run_id, "run_review_decision");
+            assert_eq!(decisions.len(), 1, "{decisions:#?}");
+            let decision = &decisions[0];
+            assert!(decision["decision_id"].as_str().unwrap().starts_with("d-"));
+            assert_eq!(decision["model"], "stub-review-model");
+            assert_eq!(decision["input_digest"].as_str().unwrap().len(), 64);
+            assert_eq!(
+                decision["output"],
+                serde_json::json!({"action": "approve", "note": "does what the item asks"})
+            );
+            let applied = run_events(&fixture, &run.run_id, "run_auto_reviewed");
+            assert_eq!(applied[0]["action"], "approve");
+            assert_eq!(applied[0]["commit"], decision["commit"]);
+            assert_eq!(applied[0]["base"].as_str(), finished.base.as_deref());
+
+            // One stateless call without tools, with the item, the task,
+            // the worker's reply and the diff on its input.
+            let calls = calls(&fixture);
+            assert_eq!(calls.len(), 1, "{calls:#?}");
+            let argv: Vec<&str> = calls[0]["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|arg| arg.as_str().unwrap())
+                .collect();
+            for flag in ["-p", "--json-schema", "--no-session-persistence"] {
+                assert!(argv.contains(&flag), "{flag} not in {argv:?}");
+            }
+            let tools = argv.iter().position(|arg| *arg == "--tools").unwrap();
+            assert_eq!(argv[tools + 1], "");
+            let input = calls[0]["stdin"].as_str().unwrap();
+            for part in [
+                "The driven item",
+                "commit a.txt",
+                "WORKER-DONE",
+                "+++ b/a.txt",
+            ] {
+                assert!(input.contains(part), "{part:?} not in {input}");
+            }
+        }
+
+        #[test]
+        fn a_retry_starts_the_next_attempt_with_its_review() {
+            let fixture = reviewed(
+                "todo-auto-retry",
+                &[
+                    // The stub worker's next command.
+                    r#"{"action": "retry", "review": "amend a.txt feat: add a"}"#,
+                    r#"{"action": "escalate", "question": "Keep both files?", "options": ["keep", "drop b.txt"]}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            assert_eq!(waiting.attempt, 2);
+            assert!(
+                waiting
+                    .task
+                    .ends_with("Review of attempt 1:\namend a.txt feat: add a"),
+                "{}",
+                waiting.task
+            );
+            let applied = run_events(&fixture, &run.run_id, "run_auto_reviewed");
+            assert_eq!(applied[0]["action"], "retry");
+            assert_eq!(applied[0]["task"], "amend a.txt feat: add a");
+            assert_eq!(calls(&fixture).len(), 2);
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn an_escalation_is_a_new_review_event_for_the_user() {
+            let fixture = reviewed(
+                "todo-auto-escalate",
+                &[
+                    r#"{"action": "escalate", "question": "Is a.txt the right file?", "options": ["yes", "no, use b.txt"]}"#,
+                ],
+            );
+            let _ = crate::workers::take_user_notices();
+            let run = start(&fixture);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            let reviewed = reviewed_event(&fixture, &run.run_id);
+            assert_ne!(escalated.event_id, reviewed);
+            assert_eq!(waiting.pending_event, Some(escalated.event_id));
+            let error = escalated.error.clone().unwrap_or_default();
+            for part in ["Is a.txt the right file?", "Options: yes | no, use b.txt"] {
+                assert!(error.contains(part), "{part:?} not in {error}");
+            }
+            assert_eq!(escalated.commits.len(), 1, "{escalated:#?}");
+            let notices = crate::workers::take_user_notices();
+            assert_eq!(notices.len(), 1, "{notices:?}");
+            assert!(notices[0].body.contains("Is a.txt the right file?"));
+            // The reviewed event is stale; the escalated one is the
+            // coordinator's, and it is not reviewed again.
+            let stale =
+                resume(&fixture, &run.run_id, reviewed, TodoAction::Approve, None).unwrap_err();
+            assert_eq!(stale.code(), "todo_event_stale", "{stale}");
+            resume(
+                &fixture,
+                &run.run_id,
+                escalated.event_id,
+                TodoAction::Approve,
+                None,
+            )
+            .unwrap();
+            let (done, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(calls(&fixture).len(), 1);
+        }
+
+        #[test]
+        fn an_invalid_output_is_asked_again_once_then_escalated() {
+            let fixture = reviewed(
+                "todo-auto-invalid",
+                &[
+                    "raw this is not json",
+                    r#"{"action": "approve", "review": "approve takes no review"}"#,
+                ],
+            );
+            let run = start(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Review, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(error.contains("failed 2 times"), "{error}");
+            let calls_made = run_events(&fixture, &run.run_id, "run_review_call");
+            assert_eq!(calls_made.len(), 2, "{calls_made:#?}");
+            assert!(calls_made.iter().all(|call| call["error"].is_string()));
+            let decision = &run_events(&fixture, &run.run_id, "run_review_decision")[0];
+            assert!(decision["output"].is_null(), "{decision:#?}");
+            assert_eq!(decision["errors"].as_array().unwrap().len(), 2);
+            abort(&fixture, &run.run_id, escalated.event_id);
+        }
+
+        #[test]
+        fn a_failed_call_is_made_once_more() {
+            let fixture = reviewed("todo-auto-failed", &["exit 1", r#"{"action": "approve"}"#]);
+            let run = start(&fixture);
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let calls_made = run_events(&fixture, &run.run_id, "run_review_call");
+            assert_eq!(calls_made.len(), 2, "{calls_made:#?}");
+            assert!(calls_made[0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("stub failure"));
+            assert_eq!(calls_made[1]["output"]["action"], "approve");
+        }
+
+        #[test]
+        fn a_decision_recorded_before_a_crash_is_applied_without_asking_again() {
+            let fixture = reviewed("todo-auto-crash", &[r#"{"action": "approve"}"#]);
+            let repo = repository_of(&fixture.repo).unwrap();
+            runs::crash_after(&repo, TodoStep::Review);
+            let run = start(&fixture);
+            runs::wait_crashed(&repo, HANG_GUARD);
+            let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+            let reviewed = reviewed_event(&fixture, &run.run_id);
+            assert_eq!(
+                (cut.status, cut.step, cut.pending_event),
+                (TodoRunStatus::Waiting, TodoStep::Review, Some(reviewed))
+            );
+            assert!(run_events(&fixture, &run.run_id, "run_auto_reviewed").is_empty());
+            // A model asked again would fail: no answer is left.
+            fixture.supervisor.resume_runs();
+            let (done, _) = wait(&fixture, &run.run_id, Some(reviewed));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(calls(&fixture).len(), 1);
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_review_decision").len(),
+                1
+            );
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "init"]);
+        }
+
+        #[test]
+        fn a_coordinators_answer_that_comes_first_wins() {
+            let fixture = reviewed("todo-auto-override", &[]);
+            let entered = fixture.root.join("entered.fifo");
+            let gate = fixture.root.join("gate.fifo");
+            fifo(&entered);
+            fifo(&gate);
+            set_answers(
+                &fixture,
+                &[&format!(
+                    "gate {} {} {}",
+                    entered.display(),
+                    gate.display(),
+                    r#"{"action": "retry", "review": "too late"}"#
+                )],
+            );
+            let run = start(&fixture);
+            // The stub is in its call once it opened `entered`.
+            assert_eq!(std::fs::read_to_string(&entered).unwrap(), "in");
+            let waiting = fixture.supervisor.todo_status(&run.run_id).unwrap();
+            let reviewed = waiting.pending_event.unwrap();
+            assert_eq!(waiting.step, TodoStep::Review);
+            resume(&fixture, &run.run_id, reviewed, TodoAction::Approve, None).unwrap();
+            std::fs::write(&gate, "go\n").unwrap();
+            let (done, finished) = wait(&fixture, &run.run_id, Some(reviewed));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(finished.attempt, 1);
+            let superseded = run_events(&fixture, &run.run_id, "run_review_superseded");
+            assert_eq!(superseded.len(), 1, "{superseded:#?}");
+            assert_eq!(superseded[0]["event"], reviewed);
+            assert!(run_events(&fixture, &run.run_id, "run_auto_reviewed").is_empty());
+        }
     }
 }
 

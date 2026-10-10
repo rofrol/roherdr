@@ -46,6 +46,16 @@ pub struct TodoRunParams {
     /// unknown), on the user's word; recorded in the run's events.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub ignore_usage: bool,
+    /// The server reviews each `review` event itself with a bounded,
+    /// stateless model call (`claude -p`, structured output, no tools) and
+    /// applies its typed decision: `approve` (bound to the event's commit
+    /// and base), `retry` (its review text) or `escalate` (a question for
+    /// the user, a new `review` event). A call that fails or returns
+    /// invalid output is retried once, then escalated. `todo.resume` still
+    /// answers the event and wins when it comes first. The reply's
+    /// `auto_review` says whether the server took it.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub auto_review: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -401,6 +411,10 @@ pub struct TodoRunInfo {
     /// Why the close started no next item (`todo.resume`'s `stop_reason`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// The server reviews the run's `review` events itself
+    /// (`todo.run`'s `auto_review`).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub auto_review: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
 }

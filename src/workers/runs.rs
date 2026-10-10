@@ -68,6 +68,7 @@ use crate::api::schema::{
     WorkerVerifyParams, WorkerWaitUntil,
 };
 
+mod auto_review;
 mod finish;
 mod usage_gate;
 
@@ -181,6 +182,10 @@ pub(super) struct RunFinish {
     /// The stop reason was handed to the server's notifications.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) stop_notified: bool,
+    /// The server reviews the run's `review` events itself
+    /// ([`auto_review`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) auto_review: bool,
 }
 
 /// The check the verify adds by itself to a run whose diff touches
@@ -1163,6 +1168,7 @@ impl WorkerSupervisor {
                 next_run_id: None,
                 next_refusal: None,
                 stop_reason: None,
+                auto_review: params.auto_review,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1172,6 +1178,7 @@ impl WorkerSupervisor {
             finish: RunFinish {
                 install: preflighted.install.clone(),
                 contract_check: preflighted.contract_check.clone(),
+                auto_review: params.auto_review,
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1195,6 +1202,7 @@ impl WorkerSupervisor {
             "workspace": params.workspace_id,
             "owner_coordinator": owner_coordinator,
             "ignore_usage": params.ignore_usage,
+            "auto_review": params.auto_review,
             "usage_gate": usage,
             "item_text": item_text,
             "item_ids": item_ids,
@@ -1564,8 +1572,11 @@ impl WorkerSupervisor {
                     run.info.status,
                     TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
                 );
+                // A review the server makes itself is not the coordinator's
+                // until it escalates.
                 let waits_on = run.info.status == TodoRunStatus::Waiting
-                    && run.info.pending_event == Some(seq);
+                    && run.info.pending_event == Some(seq)
+                    && !auto_review::is_due(&run, seq, &body);
                 let fresh = params.after.is_none_or(|after| seq > after);
                 if ended || (waits_on && fresh) {
                     return Ok(Some((event_of(seq, &body, &run.info), run.info)));
@@ -2006,6 +2017,9 @@ impl WorkerSupervisor {
                     self.ack_quietly(worker_id, seq);
                 }
                 self.spawn_driver(&run.info.run_id);
+            } else if self.auto_review_due(&run).is_some() {
+                // Its review was in flight, or decided and not applied.
+                self.spawn_driver(&run.info.run_id);
             } else if run.follow_up_pending() {
                 // Done before a server ended, its next start or stop notice
                 // not settled yet.
@@ -2116,6 +2130,8 @@ impl WorkerSupervisor {
                 return;
             }
         };
+        // The review event whose automatic review failed in this driver.
+        let mut review_failed = None;
         loop {
             if self.handed_off() {
                 self.run_note(
@@ -2132,6 +2148,29 @@ impl WorkerSupervisor {
                 }
             };
             if run.info.status != TodoRunStatus::Running {
+                // A review the server makes itself: decided (or the recorded
+                // decision taken) and applied, then the run read again.
+                let due = self
+                    .auto_review_due(&run)
+                    .filter(|(seq, _)| review_failed != Some(*seq));
+                if let Some((seq, event)) = due {
+                    match self.step_auto_review(&mut run, seq, event) {
+                        Ok(()) => continue,
+                        Err(why) => {
+                            #[cfg(test)]
+                            if why == CRASHED_HERE {
+                                drop(driving);
+                                lock(&CRASHED).push(run.info.repo.clone());
+                                announce();
+                                return;
+                            }
+                            // The event stays the coordinator's to answer;
+                            // this driver does not try it again.
+                            warn!(run_id, why, "the todo run's automatic review failed");
+                            review_failed = Some(seq);
+                        }
+                    }
+                }
                 if matches!(
                     run.info.status,
                     TodoRunStatus::Done | TodoRunStatus::Blocked | TodoRunStatus::Aborted
