@@ -883,3 +883,15 @@ run in the headless worker sandbox. Decided 2026-10-10 with the models
 (round 20261010-142705-3267, all three): pane (TUI) workers for VM items,
 headless workers for the rest, until repository-declared host operations
 land; never widen the sandbox by hand.
+
+## Queue mode: herdr's server drives the TODO queue (decided by the user
+
+herdr's server drives the TODO queue (user's decision 2026-10-10): `herdr
+todo queue on|pause|status`; with the mode on, the server starts `todo run
+--draft` for the top approved item on its own events (a run ended, an
+escalation answered, server start, the mode toggled), one active run per
+repository (unique index plus a fencing token), an interrupted run
+reconciled at start, 2 attempts per item then blocked, a circuit breaker
+pausing the mode after 3 consecutive failed items; a closed item lands in
+DECISIONS.md with its run and commit. The chat session talks with the user
+and answers escalations; it no longer drives the queue.

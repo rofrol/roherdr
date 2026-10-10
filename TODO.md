@@ -45,33 +45,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   flags; the `todo` skill's driver step too (the user's agent config: a
   text edit that widens nothing).
 
-- [ ] Queue mode: herdr's server drives the TODO queue (decided by the user [t-5s7xgogm]
-  2026-10-10, replacing "`todo next --continue` as the default"; round
-  20261010-113822-76ae, sol + MiMo + DeepSeek agreeing that liveness must be
-  owned by the server, not a model). Per repository: a mode (on, paused)
-  the user sets once, surviving restarts, and a status (running, waiting on
-  the user, escalation pending, usage gate, blocked, empty) with its reason.
-  The server starts the top approved runnable item (through the per-item
-  coordinator of `todo next`) when the mode is on, no run or item
-  coordinator is active, no escalation is pending and the usage gate
-  admits; re-evaluated on herdr's own events only: a run ended, an
-  escalation answered, a TODO.md commit, server start, the mode toggled
-  (no timers; the models' periodic sweep and idle watchdog were dismissed
-  under the delay rule). Guarantees: one active run per repository (unique
-  index plus a fencing token), reconcile an interrupted run at start before
-  launching another, items by stable id and TODO.md re-read at each start,
-  an attempt cap per item (then blocked, shown) and a circuit breaker
-  after consecutive failures (pause with the reason), cost bounded by the
-  usage gate. The chat session talks with the user and answers
-  escalations; it never drives the queue.
-  Revised 2026-10-10 with the architecture decision: the server starts the
-  next item's run itself (no per-item coordinator agent); the task text
-  comes from a `draft_task` decision call, worker questions go to an
-  `answer_question` call, the review to `review_run`; each returns a typed
-  action or escalates. Decision calls run on the server's side with
-  network to the model APIs (the worker sandbox is not involved), so the
-  consult-network capability is no longer a prerequisite here.
-
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as
