@@ -1060,3 +1060,15 @@ tests, maintenance, ui-architecture, integration-assets, docs-contract),
 and a test parses the justfile so the two stay in step. Cost accepted by
 the coordinator: every `src/` change now runs the full nextest, clippy and
 the Windows lint in verify.
+
+## One wait over all of a coordinator's workers (user, 2026-10-07:
+
+A coordinator waited on its workers one at a time with races (user,
+2026-10-07). Now: `worker.events` is a durable per-coordinator inbox
+(864e36cb) and slice 2 (cb623960) adds `worker.answer_as`, which refuses an
+old owner's late answer with `ownership_transferred` and passes it to the
+successor as `late_answer`; `worker.wait --attention` counted from the
+inbox; a failed store write gives `resync_required` once (a cursor suffix
+counts losses). Accepted limitation: a loss not read before a handoff or
+restart is not reported (the counter lives in memory; the new server
+rebuilds from the store).
