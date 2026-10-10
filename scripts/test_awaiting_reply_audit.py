@@ -152,12 +152,21 @@ FIXTURES = os.path.join(
 )
 
 
-def hook_source():
+def hook_source(marker="stop_check() {"):
     with open(HOOK, encoding="utf-8") as handle:
         text = handle.read()
-    start = text.index("stop_check() {")
+    start = text.index(marker)
     start = text.index("<<'PY'\n", start) + len("<<'PY'\n")
     return text[start : text.index("\nPY\n", start)]
+
+
+def pre_tool_namespace():
+    """The pre-tool hook's definitions (everything before it reads its input)."""
+    source = hook_source('if [ "$action" = "pre-tool" ]; then')
+    main = source.index("try:\n    with open(os.environ[")
+    namespace = {}
+    exec(source[:main], namespace)  # noqa: S102 - the repository's own script
+    return namespace
 
 
 @unittest.skipIf(os.name == "nt", "the hook script runs under a POSIX shell")
@@ -377,8 +386,8 @@ class StopHook(unittest.TestCase):
 
 
 class FakeServer:
-    """A herdr socket that answers `pane.get` and `tab.get` with the given tab role, and
-    `todo.runnable_state` with `runnable`."""
+    """A herdr socket that answers `pane.get` and `tab.get` with the given tab role,
+    `todo.runnable_state` with `runnable` and `pane.report_awaiting_reply` with success."""
 
     def __init__(self, directory, role, runnable=None):
         import socket
@@ -419,6 +428,8 @@ class FakeServer:
                     result = {"type": "tab_info", "tab": tab}
                 elif request["method"] == "todo.runnable_state" and self.runnable is not None:
                     result = {"type": "todo_runnable_state", "state": self.runnable}
+                elif request["method"] == "pane.report_awaiting_reply":
+                    result = {"type": "ok"}
                 else:
                     result = {}
                 reply = {"id": request["id"], "result": result}
@@ -441,11 +452,13 @@ class CoordinatorStop(unittest.TestCase):
     GO_AHEAD = "Następna w kolejce jest „Hand a session over”. Zlecę ją pracownikowi, gdy powiesz „dalej”."
 
     def run_hook(self, lines, role="coordinator", socket=True, stop_mode=None, runnable=None,
-                 **fields):
-        """The hook's output (parsed, or None when it lets the stop pass) on a transcript."""
+                 state_home=None, **fields):
+        """The hook's output (parsed, or None when it lets the stop pass) on a transcript.
+        `state_home` keeps the hook's state (its streaks) across runs."""
         import subprocess
 
         with tempfile.TemporaryDirectory() as directory:
+            state_home = state_home or os.path.join(directory, "state")
             transcript = os.path.join(directory, "t.jsonl")
             with open(transcript, "w", encoding="utf-8") as handle:
                 handle.write("\n".join(lines) + "\n")
@@ -455,7 +468,7 @@ class CoordinatorStop(unittest.TestCase):
                 os.environ,
                 HERDR_ENV="1",
                 HERDR_PANE_ID="p1",
-                XDG_STATE_HOME=os.path.join(directory, "state"),
+                XDG_STATE_HOME=state_home,
             )
             for name in ("CURSOR_VERSION", "HERDR_SOCKET_PATH", "HERDR_AWAITING_REPLY_STOP",
                          "HERDR_AWAITING_REPLY_INSTRUCTIONS"):
@@ -482,7 +495,7 @@ class CoordinatorStop(unittest.TestCase):
             finally:
                 server and server.close()
             self.last_log = None
-            log_path = os.path.join(directory, "state", "herdr", "awaiting-reply-stop.jsonl")
+            log_path = os.path.join(state_home, "herdr", "awaiting-reply-stop.jsonl")
             if os.path.exists(log_path):
                 with open(log_path, encoding="utf-8") as log:
                     self.last_log = json.loads(log.read().splitlines()[-1])
@@ -615,20 +628,65 @@ class CoordinatorStop(unittest.TestCase):
     def runnable_requests(self):
         return [r for r in self.server.requests if r["method"] == "todo.runnable_state"]
 
-    def test_a_stalled_coordinator_is_logged_but_never_blocked(self):
-        report = Lines().user(ORDER).tools(coordinator_bash("t1", "git log")).say(
-            "Landed item 3 and installed it. Next in the queue is item 4.").lines
+    REPORT = "Landed item 3 and installed it. Next in the queue is item 4."
+
+    def requests_of(self, method):
+        return [r for r in self.server.requests if r["method"] == method]
+
+    def test_a_stalled_coordinator_is_blocked_with_the_next_command(self):
+        report = Lines().user(ORDER).tools(coordinator_bash("t1", "git log")).say(self.REPORT).lines
         output = self.run_hook(report, runnable=self.STALLED, background_tasks=[],
                                session_id="s1", cwd="/repo/sub")
-        self.assertIsNone(output)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("herdr todo run t-aaaaaaaa --task", output["reason"])
+        self.assertIn("herdr decision add", output["reason"])
+        self.assertIn("Block 1 of 3", output["reason"])
         self.assertTrue(self.last_log["stall_would_block"])
+        self.assertTrue(self.last_log["stall_blocked"])
         self.assertIn("1 item(s)", self.last_log["stall_reason"])
         self.assertEqual(self.last_log["background_tasks"], 0)
         self.assertEqual(self.runnable_requests()[0]["params"], {"cwd": "/repo/sub"})
-        # Block mode and shadow mode alike: the stall check only logs.
+        # Shadow mode only logs.
         self.assertIsNone(self.run_hook(report, runnable=self.STALLED, background_tasks=[],
                                         stop_mode="shadow"))
         self.assertTrue(self.last_log["stall_would_block"])
+        self.assertFalse(self.last_log["stall_blocked"])
+
+    def test_an_open_decision_is_the_users_turn(self):
+        report = Lines().user(ORDER).say(self.REPORT).lines
+        waiting = dict(self.STALLED, open_decisions=["d-aaaaaaaa"])
+        self.assertIsNone(self.run_hook(report, runnable=waiting, background_tasks=[]))
+        self.assertFalse(self.last_log["stall_would_block"])
+        self.assertEqual(self.last_log["stall_reason"], "decision d-aaaaaaaa waits on the user")
+
+    def test_three_blocks_in_a_row_then_the_stop_goes_through_and_the_user_is_asked(self):
+        with tempfile.TemporaryDirectory() as state:
+            lines = Lines().user(ORDER).say(self.REPORT)
+
+            def stop(**fields):
+                fields.setdefault("stop_hook_active", True)
+                return self.run_hook(lines.lines, runnable=self.STALLED, background_tasks=[],
+                                     session_id="s1", state_home=state, **fields)
+
+            for n in (1, 2, 3):
+                output = stop(stop_hook_active=n > 1)
+                self.assertEqual(output["decision"], "block", n)
+                self.assertIn("Block %d of 3" % n, output["reason"])
+                self.assertEqual(self.requests_of("pane.report_awaiting_reply"), [])
+                # Claude Code feeds the block back as a user message: not the user's.
+                lines.user("Stop hook feedback:\n" + output["reason"]).say(self.REPORT)
+            # The fourth stop goes through, and the pane enters the user's `?` list, once.
+            self.assertIsNone(stop())
+            self.assertEqual(self.last_log["stall_reason"], "three would-blocks in a row")
+            self.assertTrue(self.last_log["stall_escalated"])
+            [escalation] = self.requests_of("pane.report_awaiting_reply")
+            self.assertEqual(escalation["params"]["pane_id"], "p1")
+            self.assertIn("t-aaaaaaaa", escalation["params"]["question"])
+            self.assertIsNone(stop())
+            self.assertEqual(self.requests_of("pane.report_awaiting_reply"), [])
+            # A new message of the user starts the count again.
+            lines.user("go on").say(self.REPORT)
+            self.assertEqual(stop(stop_hook_active=False)["decision"], "block")
 
     def test_the_stall_check_passes_without_evidence_of_a_stall(self):
         report = Lines().user(ORDER).say("Landed item 3.").lines
@@ -699,11 +757,91 @@ class CoordinatorStop(unittest.TestCase):
         self.assertEqual((report["caught"], report["silent_stops"]), (3, 3), report["missed"])
         self.assertLessEqual(report["false_per_100"], 1.0, report["false"])
 
+    def test_a_stop_after_a_block_is_checked_again(self):
+        namespace = replay.hook_namespace()
+        facts = {"background_tasks": [], "stop_hook_active": True, "role": "coordinator",
+                 "state": {"stalled": True, "reason": "stalled"}}
+        self.assertEqual(namespace["stall_decision"](facts), (True, "stalled"))
+        waiting = dict(facts, state={"stalled": True, "open_decisions": ["d-a", "d-b"]})
+        self.assertEqual(namespace["stall_decision"](waiting),
+                         (False, "decision d-a, d-b waits on the user"))
+        reason = namespace["stall_block_reason"](
+            {"reason": "nothing runs", "runnable_items": ["t-aaaaaaaa"]}, 2)
+        self.assertIn("`herdr todo run t-aaaaaaaa --task <file>", reason)
+        self.assertIn("herdr todo queue pause", reason)
+        self.assertIn("Block 2 of 3", reason)
+
     def test_next_items_are_the_open_items_with_an_id(self):
         todo = ("# TODO\n\n## Next, in order\n\n- [ ] A [t-aaaaaaaa]\n  text\n"
                 "- [ ] No id\n```\n- [ ] B [t-cccccccc]\n```\n### Sub\n- [ ] C [t-dddddddd]\n"
                 "## Proposed\n- [ ] D [t-bbbbbbbb]\n")
         self.assertEqual(replay.next_items(todo), ["t-aaaaaaaa", "t-dddddddd"])
+
+
+class QuestionGate(unittest.TestCase):
+    """The pre-tool hook's question gate, on its own definitions (no socket)."""
+
+    RECORDS = {
+        "d-aaaaaaaa": {"id": "d-aaaaaaaa", "status": "open"},
+        "d-bbbbbbbb": {"id": "d-bbbbbbbb", "status": "decided", "answer": "yes, in shadow mode",
+                       "source": "relayed", "relayed_by": "todo-herdr"},
+        "d-cccccccc": {"id": "d-cccccccc", "status": "superseded", "superseded_by": "d-aaaaaaaa"},
+    }
+
+    def setUp(self):
+        self.namespace = pre_tool_namespace()
+        self.looked_up = []
+
+    def lookup(self, decision_id):
+        self.looked_up.append(decision_id)
+        if decision_id == "d-ffffffff":
+            return "failed", "timed out"
+        record = self.RECORDS.get(decision_id)
+        return ("found", record) if record else ("missing", "not found")
+
+    def refusal(self, *questions):
+        return self.namespace["ask_refusal"]({"questions": list(questions)}, self.lookup)
+
+    def test_an_open_record_or_a_user_only_capability_is_asked(self):
+        for question in [
+            {"header": "d-aaaaaaaa", "question": "Enforce the stop check?"},
+            {"header": "Stop check", "question": "Enforce it (d-aaaaaaaa)?"},
+            {"header": "Grant", "question": "Grant prepare?"},
+            {"header": "login", "question": "Log in to the provider?"},
+            {"header": "Trust", "question": "Trust the folder?"},
+            {"header": "Live test", "question": "Run it with your account?"},
+        ]:
+            self.assertIsNone(self.refusal(question), question)
+        self.assertIsNone(self.refusal({"header": "Grant", "question": "Grant?"},
+                                       {"header": "d-aaaaaaaa", "question": "Enforce?"}))
+
+    def test_anything_else_is_refused_with_why(self):
+        for question, named in [
+            ({"header": "Install", "question": "Install the integration?"},
+             "herdr decision add"),
+            ({"header": "d-bbbbbbbb", "question": "Install?"},
+             "decided already (relayed by todo-herdr): yes, in shadow mode"),
+            ({"header": "Old", "question": "As in d-cccccccc?"}, "superseded by d-aaaaaaaa"),
+            ({"header": "d-dddddddd", "question": "?"}, "not in the decision ledger"),
+            ({"header": "d-ffffffff", "question": "?"}, "could not look up d-ffffffff"),
+            ({"header": "x-d-aaaaaaaa", "question": "d-aaaaaaaab?"}, "cites no open decision"),
+        ]:
+            refusal = self.refusal(question)
+            self.assertIsNotNone(refusal, question)
+            self.assertIn(named, refusal)
+        # A decided record among open ones refuses the question.
+        self.assertIn("decided already", self.refusal(
+            {"header": "d-aaaaaaaa", "question": "And d-bbbbbbbb?"}))
+        # One question without a citation refuses the call.
+        self.assertIn("cites no open decision", self.refusal(
+            {"header": "Grant", "question": "Grant?"}, {"header": "Next", "question": "Go on?"}))
+        for empty in [{}, {"questions": []}, {"questions": "x"}]:
+            self.assertIsNotNone(self.namespace["ask_refusal"](empty, self.lookup))
+
+    def test_the_decision_command_is_allowed_to_a_coordinator(self):
+        check = self.namespace["check_bash"]
+        self.assertIsNone(check('herdr decision add "Enforce it?" --item t-aaaaaaaa', "/r", "s"))
+        self.assertIsNone(check("herdr decision list --open", "/r", "s"))
 
 
 def starts_turn(entry):

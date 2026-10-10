@@ -7912,6 +7912,171 @@ mod todo_runs {
         git_in(&fixture.repo, &["commit", "-q", "-m", "operations"]);
     }
 
+    #[test]
+    fn the_decision_ledger_records_questions_decisions_and_supersessions() {
+        use crate::api::schema::{
+            DecisionAddParams, DecisionDecideParams, DecisionListParams, DecisionSource,
+            DecisionStatus,
+        };
+        let fixture = todo_repo("decision-ledger");
+        let cwd = Some(fixture.repo.display().to_string());
+        let ledger = &fixture.supervisor;
+        let open = ledger
+            .decision_add(DecisionAddParams {
+                cwd: cwd.clone(),
+                statement: " Install the integration now? ".into(),
+                item: Some(ITEM.into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(open.status, DecisionStatus::Open);
+        assert_eq!(open.statement, "Install the integration now?");
+        assert_eq!(open.scope, "repository");
+        assert!(open.repo.is_some() && open.answer.is_none(), "{open:#?}");
+        let decided = ledger
+            .decision_add(DecisionAddParams {
+                cwd: None,
+                statement: "Host configuration is the coordinator's".into(),
+                answer: Some("yes".into()),
+                source: Some(DecisionSource::Relayed),
+                relayed_by: Some("todo-herdr".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(decided.status, DecisionStatus::Decided);
+        assert_eq!(decided.repo, None);
+        assert_eq!(decided.relayed_by.as_deref(), Some("todo-herdr"));
+        assert!(decided.decided_ms.is_some());
+
+        // Refused: an empty statement, a source without an answer, a relayed
+        // decision without its coordinator, a malformed or unknown id.
+        for bad in [
+            DecisionAddParams {
+                statement: " ".into(),
+                ..Default::default()
+            },
+            DecisionAddParams {
+                statement: "x".into(),
+                source: Some(DecisionSource::User),
+                ..Default::default()
+            },
+            DecisionAddParams {
+                statement: "x".into(),
+                answer: Some("y".into()),
+                source: Some(DecisionSource::Relayed),
+                ..Default::default()
+            },
+            DecisionAddParams {
+                statement: "x".into(),
+                supersedes: Some("nope".into()),
+                ..Default::default()
+            },
+            DecisionAddParams {
+                statement: "x".into(),
+                item: Some("t-1".into()),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                ledger.decision_add(bad.clone()).unwrap_err().code(),
+                "invalid_request",
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            ledger
+                .decision_add(DecisionAddParams {
+                    statement: "x".into(),
+                    supersedes: Some("d-aaaaaaaa".into()),
+                    ..Default::default()
+                })
+                .unwrap_err()
+                .code(),
+            "worker_not_found"
+        );
+
+        // Only an open record is decided, once.
+        let decide = |id: &str, answer: &str| {
+            ledger.decision_decide(DecisionDecideParams {
+                id: id.into(),
+                answer: answer.into(),
+                source: DecisionSource::Menu,
+                relayed_by: None,
+            })
+        };
+        let answered = decide(&open.id, "shadow first").unwrap();
+        assert_eq!(answered.status, DecisionStatus::Decided);
+        assert_eq!(answered.answer.as_deref(), Some("shadow first"));
+        assert_eq!(answered.source, Some(DecisionSource::Menu));
+        let again = decide(&open.id, "enforce").unwrap_err();
+        assert!(again.to_string().contains("shadow first"), "{again}");
+        assert!(again.to_string().contains("--supersedes"), "{again}");
+        assert_eq!(
+            decide("d-aaaaaaaa", "x").unwrap_err().code(),
+            "worker_not_found"
+        );
+
+        // A change supersedes the decision; the old record names its successor.
+        let change = ledger
+            .decision_add(DecisionAddParams {
+                cwd: cwd.clone(),
+                statement: "Enforce the stop check?".into(),
+                supersedes: Some(open.id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let old = ledger.decision_get(&open.id).unwrap();
+        assert_eq!(old.status, DecisionStatus::Superseded);
+        assert_eq!(old.superseded_by.as_deref(), Some(change.id.as_str()));
+        assert_eq!(change.supersedes.as_deref(), Some(open.id.as_str()));
+        assert!(decide(&open.id, "x")
+            .unwrap_err()
+            .to_string()
+            .contains(&change.id));
+        assert!(ledger
+            .decision_add(DecisionAddParams {
+                statement: "again".into(),
+                supersedes: Some(open.id.clone()),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("superseded already"));
+        // Records are never deleted.
+        assert!(fixture
+            .supervisor
+            .run_store()
+            .unwrap()
+            .read(|conn| conn.execute("DELETE FROM decisions", []))
+            .is_err());
+
+        // The list: the repository's records and the global ones, oldest
+        // first, by status when asked.
+        let list = |status| {
+            ledger
+                .decision_list(DecisionListParams {
+                    cwd: cwd.clone(),
+                    status,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            list(None),
+            [open.id.clone(), decided.id.clone(), change.id.clone()]
+        );
+        assert_eq!(list(Some(DecisionStatus::Open)), [change.id.clone()]);
+        assert_eq!(list(Some(DecisionStatus::Superseded)), [open.id.clone()]);
+
+        // The runnable state names the open records: the user's turn.
+        let state = ledger
+            .todo_runnable_state(&fixture.repo.display().to_string())
+            .unwrap();
+        assert_eq!(state.open_decisions, [change.id.clone()]);
+    }
+
     fn grant_params(fixture: &Fixture, hash: &str) -> crate::api::schema::TodoGrantParams {
         crate::api::schema::TodoGrantParams {
             cwd: fixture.repo.display().to_string(),

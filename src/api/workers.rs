@@ -50,6 +50,10 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::TodoRunnableState(_)
             | Method::TodoGrant(_)
             | Method::TodoGrants(_)
+            | Method::DecisionAdd(_)
+            | Method::DecisionDecide(_)
+            | Method::DecisionList(_)
+            | Method::DecisionGet(_)
             | Method::HistoryList(_)
             | Method::HistoryItem(_)
             | Method::HistoryReconcile(_)
@@ -284,6 +288,26 @@ fn handle_immediate(
         Method::HistoryReconcile(params) => {
             return Ok(ResponseResult::HistoryReconcile {
                 reconcile: supervisor.history_reconcile(&params.repo)?,
+            })
+        }
+        Method::DecisionAdd(params) => {
+            return Ok(ResponseResult::Decision {
+                decision: supervisor.decision_add(params)?,
+            })
+        }
+        Method::DecisionDecide(params) => {
+            return Ok(ResponseResult::Decision {
+                decision: supervisor.decision_decide(params)?,
+            })
+        }
+        Method::DecisionList(params) => {
+            return Ok(ResponseResult::Decisions {
+                decisions: supervisor.decision_list(params)?,
+            })
+        }
+        Method::DecisionGet(params) => {
+            return Ok(ResponseResult::Decision {
+                decision: supervisor.decision_get(&params.id)?,
             })
         }
         Method::HistoryOverrides(params) => {

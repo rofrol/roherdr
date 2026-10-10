@@ -824,6 +824,11 @@ pub struct TodoRunnableState {
     /// with an id, and not blocked by the queue's attempt cap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runnable_items: Vec<String>,
+    /// The decision ledger's open records of the repository (and those that
+    /// hold in every repository), oldest first: questions that wait on the
+    /// user. They leave `stalled` as it is; a caller decides what they mean.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_decisions: Vec<String>,
     /// True when nothing of the repository runs, its queue mode is not on
     /// (then the server starts runs itself) and not paused, and
     /// `runnable_items` is not empty: the next start is the coordinator's.

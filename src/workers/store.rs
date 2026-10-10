@@ -730,6 +730,7 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 "#,
     super::capabilities::GRANTS_MIGRATION,
     super::inbox::INBOX_MIGRATION,
+    super::decisions::DECISIONS_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3225,6 +3226,7 @@ mod tests {
                  DROP TABLE capability_grants;
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
+                 DROP TABLE decisions;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3290,8 +3292,9 @@ mod tests {
                  DROP TABLE capability_grants;
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
+                 DROP TABLE decisions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 22
+                MIGRATIONS.len() - 23
             ))
             .unwrap();
         drop(store);
@@ -3351,8 +3354,9 @@ mod tests {
                  DROP TABLE capability_grants;
                  DROP TABLE inbox;
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
+                 DROP TABLE decisions;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 11
+                MIGRATIONS.len() - 12
             ))
             .unwrap();
         drop(store);

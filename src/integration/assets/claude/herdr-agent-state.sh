@@ -105,12 +105,15 @@ fi
 # event it has not acknowledged (a question, a turn end, the worker's end); the server derives that
 # list, so it ends once the coordinator answers or acknowledges (`herdr worker ack`). When herdr
 # cannot be asked, the stop goes through and the reason goes to stderr.
-# A coordinator's stop that leaves its TODO stalled is only logged, never blocked (shadow phase):
-# `stall_would_block` in the log is true when the Stop input's `background_tasks` is present and
-# empty, the turn reported or asked nothing, the user's last message is no plain stop, and herdr's
+# A coordinator's stop that leaves its TODO stalled is blocked with the next command to run
+# (`stall_would_block` in the log): when the Stop input's `background_tasks` is present and empty,
+# the turn reported or asked nothing, the user's last message is no plain stop, and herdr's
 # `todo.runnable_state` says no run is active while the driver could run approved items (a repo in
-# queue mode, or paused with `herdr todo queue pause`, never is), at most three times in a row per
-# session. `scripts/coordinator_stall_replay.py` replays audited turn ends through it.
+# queue mode, or paused with `herdr todo queue pause`, never is) and no record of the decision
+# ledger is open (an open one waits on the user). At most three stops in a row after the same
+# message of the user are blocked; the next one goes through and herdr lists the pane in the
+# user's `?` list (`pane.report_awaiting_reply`), once. Shadow mode only logs.
+# `scripts/coordinator_stall_replay.py` replays audited turn ends through it.
 # A stop the check blocks does not end the turn; any other stop reports the turn finished.
 stop_check() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -180,6 +183,8 @@ PLAIN_STOP = re.compile(
 )
 STALL_STREAK = 3
 STALL_CAPPED = "three would-blocks in a row"
+# What Claude Code writes as a user message when a Stop hook blocks: not the user's.
+HOOK_FEEDBACK = "Stop hook feedback:"
 
 
 def strip_code(text):
@@ -238,9 +243,8 @@ def is_plain_stop(text):
 
 def stall_local_reason(facts):
     """Why the stall check passes on facts of the stop itself, or None when herdr's state decides.
-    `background_tasks` absent is unknown, so the stop passes."""
-    if facts.get("stop_hook_active"):
-        return "second stop of the turn"
+    `background_tasks` absent is unknown, so the stop passes. A stop after a block is checked
+    again: the streak bounds the blocks."""
     tasks = facts.get("background_tasks")
     if not isinstance(tasks, list):
         return "background tasks unknown"
@@ -270,9 +274,29 @@ def stall_decision(facts):
         return False, "repository state unknown"
     if not state.get("stalled"):
         return False, str(state.get("reason") or "not stalled")
+    waiting = state.get("open_decisions")
+    if isinstance(waiting, list) and waiting:
+        return False, "decision %s waits on the user" % ", ".join(str(i) for i in waiting[:3])
     if facts.get("streak", 0) >= STALL_STREAK:
         return False, STALL_CAPPED
     return True, str(state.get("reason") or "stalled")
+
+
+def stall_block_reason(state, streak):
+    """What a blocked stall stop tells the coordinator: the exact next command."""
+    items = state.get("runnable_items") if isinstance(state, dict) else None
+    item = str(items[0]) if isinstance(items, list) and items else "<item-id>"
+    return (
+        "Herdr: this tab is a TODO coordinator, nothing runs and no question waits on the user, "
+        "but approved items do (" + str(state.get("reason") or "stalled") + "). Start the next "
+        "one now: `herdr todo run " + item + " --task <file> --message \"<approved subject>\" "
+        "--paths <globs> --check <name>...` (or `herdr todo run " + item + " --draft`). If it "
+        "needs the user's decision first, record the question with `herdr decision add "
+        "\"<question>\" --item " + item + "` and ask it with AskUserQuestion citing the printed "
+        "id (d-...). If the user told you to stop, run `herdr todo queue pause --reason "
+        "\"<their words>\"`. Block %d of %d; after that the stop goes through and the user is "
+        "asked." % (streak, STALL_STREAK)
+    )
 
 
 def is_abandon_text(text):
@@ -462,8 +486,10 @@ final_text = final_text if isinstance(final_text, str) else ""
 reported = False
 last_text = ""
 last_tool = ""
-# The user's last message (task notifications are no message of the user).
+# The user's last message (task notifications and Stop hook feedback are no message of the user)
+# and what tells it apart from an equal later one (its uuid).
 last_prompt = ""
+last_prompt_key = ""
 # Outcomes (True: failed or denied) of the turn's last batch of tool calls: the calls the agent
 # made together before their results came back. A call after a result starts a new batch.
 last_batch = []
@@ -494,8 +520,9 @@ if isinstance(transcript, str) and transcript:
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             )
             if not tool_result and text_of(content).strip():
-                if not text_of(content).lstrip().startswith("<task-notification>"):
+                if not text_of(content).lstrip().startswith(("<task-notification>", HOOK_FEEDBACK)):
                     last_prompt = text_of(content).strip()
+                    last_prompt_key = str(entry.get("uuid") or entry.get("promptId") or last_prompt)
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
@@ -530,8 +557,8 @@ if not final_text.strip():
 printed = printed_command(final_text)
 question = looks_like_question(final_text) or printed
 blocked_calls = bool(last_batch) and all(last_batch)
-if stop_hook_active and not blocked_calls:
-    raise SystemExit(0)
+# The second stop of a turn the hook blocked is not blocked again for a question or a go-ahead;
+# only the stall check, bounded by its streak, looks at it again.
 marked = False
 if blocked_calls and mode != "shadow" and os.environ.get("HERDR_SOCKET_PATH"):
     request = {
@@ -582,10 +609,10 @@ if (
         if not role_known:
             role = tab_role()
         coordinator_block = role == COORDINATOR_ROLE
-# The shadow stall check: logged only, never blocks.
+# The stall check: blocks with the next command at most STALL_STREAK times in a row after the
+# same message of the user, then lets the stop through and lists the pane in the user's `?` list.
 background_tasks = hook_input.get("background_tasks")
 stall_facts = {
-    "stop_hook_active": stop_hook_active,
     "background_tasks": background_tasks,
     "reported": reported or marked,
     "asked_tool": last_tool == ASK_TOOL,
@@ -606,6 +633,10 @@ try:
 except (OSError, ValueError):
     pass
 streaks = streaks if isinstance(streaks, dict) else {}
+streak_entry = streaks.get(session)
+# A streak counts the stops after one message of the user; a new message starts it again.
+if not isinstance(streak_entry, dict) or streak_entry.get("prompt") != last_prompt_key:
+    streak_entry = {}
 if stall_local_reason(stall_facts) is None:
     if not role_known:
         role = tab_role()
@@ -615,13 +646,32 @@ if stall_local_reason(stall_facts) is None:
     if role == COORDINATOR_ROLE and os.environ.get("HERDR_SOCKET_PATH"):
         reply = ask_server("todo.runnable_state", {"cwd": cwd}) or {}
         stall_facts["state"] = reply.get("state")
-    count = streaks.get(session)
+    count = streak_entry.get("streak")
     stall_facts["streak"] = count if isinstance(count, int) else 0
 stall_would_block, stall_reason = stall_decision(stall_facts)
-if session and (stall_would_block or (session in streaks and stall_reason != STALL_CAPPED)):
+stall_blocked = stall_would_block and mode != "shadow"
+stall_escalated = False
+if (
+    stall_reason == STALL_CAPPED
+    and mode != "shadow"
+    and not streak_entry.get("escalated")
+    and os.environ.get("HERDR_SOCKET_PATH")
+):
+    state = stall_facts.get("state") or {}
+    items = state.get("runnable_items") if isinstance(state, dict) else None
+    first = str(items[0]) if isinstance(items, list) and items else "approved items"
+    escalation = ask_server(
+        "pane.report_awaiting_reply",
+        {"pane_id": os.environ["HERDR_PANE_ID"], "question": "Coordinator stalled, " + first + " waits"},
+    )
+    stall_escalated = escalation is not None
+if session and (stall_would_block or stall_escalated or (session in streaks and stall_reason != STALL_CAPPED)):
     if stall_would_block:
         streaks.pop(session, None)
-        streaks[session] = stall_facts.get("streak", 0) + 1
+        streaks[session] = {"streak": stall_facts.get("streak", 0) + 1, "prompt": last_prompt_key}
+    elif stall_escalated:
+        streaks.pop(session, None)
+        streaks[session] = dict(streak_entry, escalated=True)
     else:
         streaks.pop(session, None)
     try:
@@ -653,6 +703,8 @@ try:
                     "coordinator_blocked": coordinator_block and mode != "shadow",
                     "stall_would_block": stall_would_block,
                     "stall_reason": stall_reason,
+                    "stall_blocked": stall_blocked,
+                    "stall_escalated": stall_escalated,
                     "background_tasks": (
                         len(background_tasks) if isinstance(background_tasks, list) else None
                     ),
@@ -676,6 +728,17 @@ if coordinator_block and mode != "shadow":
                     "the next one to a worker now. If every remaining item waits on the user, "
                     "ask the open questions (AskUserQuestion, or `herdr agent awaiting-reply`). "
                     "If the user told you to stop, or the queue is empty, just stop."
+                ),
+            }
+        )
+    )
+elif stall_blocked:
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": stall_block_reason(
+                    stall_facts.get("state") or {}, stall_facts.get("streak", 0) + 1
                 ),
             }
         )
@@ -740,6 +803,14 @@ fi
 # headless item coordinator (`herdr todo next`) with HERDR_COORDINATOR_HEADLESS=1: it has no pane
 # or tab, so every refusal denies, no override runs (nobody is there to ask for one; it asks the
 # user instead), and HERDR_COORDINATOR_SCRATCH is its scratch directory.
+# The question gate: in a coordinator tab, AskUserQuestion runs only when each of its questions
+# cites an open record of herdr's decision ledger (`d-` and 8 characters, in its header or text,
+# looked up with `decision.get`) or names in its header a capability only the user has (Grant,
+# Login, Trust, Live test). A question that cites a decided record is denied with the recorded
+# answer, a superseded one with its successor, and any other with how to record it (`herdr
+# decision add`); a lookup herdr cannot answer denies too. Whatever `[coordinator] allowlist`
+# says, the gate enforces; HERDR_QUESTION_GATE=0 turns it off. Questions asked in prose are not
+# seen here; the Stop hook's stall check covers the turn's end.
 if [ "$action" = "pre-tool" ]; then
   if [ "${HERDR_COORDINATOR_HEADLESS:-}" != "1" ]; then
     [ "${HERDR_ENV:-}" = "1" ] || exit 0
@@ -765,7 +836,8 @@ CODE_REASON = "code goes to a worker (`herdr todo run`)"
 TODO_REASON = "edit TODO.md and DECISIONS.md with `python3 scripts/todo_edit.py`"
 SCRATCH_REASON = "write notes only under this session's scratchpad"
 ALLOWED = (
-    "a coordinator tab runs only `herdr todo|worker|history|coordinator|report|reports`, `herdr agent "
+    "a coordinator tab runs only `herdr todo|worker|history|coordinator|report|reports|decision`, "
+    "`herdr agent "
     "read|list|get|explain|awaiting-reply|set-task`, `herdr-job run|wait|list|log|watch` (run with "
     "an allowed command), read-only git (status, log, diff, show, fetch, rev-parse, branch --list, "
     "ls-files), `git commit -- TODO.md DECISIONS.md`, `python3 scripts/todo_edit.py`, cat, head, "
@@ -783,7 +855,7 @@ FREE_TOOLS = {
 WRITE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}
 READ_TOOLS = {"cat", "head", "tail", "grep", "jq", "ls", "wc", "df", "du"}
-HERDR_FREE = {"todo", "worker", "history", "coordinator", "report", "reports"}
+HERDR_FREE = {"todo", "worker", "history", "coordinator", "report", "reports", "decision"}
 HERDR_AGENT = {"read", "list", "get", "explain", "status", "awaiting-reply", "set-task"}
 JOB_FREE = {"wait", "list", "log", "watch"}
 GIT_READ = {"status", "log", "diff", "show", "fetch", "rev-parse", "ls-files"}
@@ -803,6 +875,65 @@ HELPER = re.compile(
     r"^(?:" + re.escape(HOME) + r"/\.claude|(?:\./)?plugins/consult)/skills/[\w.-]+/"
     r"(?:scripts/)?(?:ask_[\w.-]+|consult\.py)$"
 )
+
+
+ASK_TOOL = "AskUserQuestion"
+DECISION_ID = re.compile(r"(?<![\w-])d-[a-z2-7]{8}(?![\w-])")
+# Headers that name what only the user can do: a grant herdr refuses from agent panes, a login, a
+# trust dialog, a live test with the user's accounts.
+USER_ONLY = {"grant", "login", "trust", "live test"}
+LEDGER_HINT = (
+    "record the question first with `herdr decision add \"<question>\"` (it prints the id, d-...) "
+    "and cite that id in the question's header or text; a question only the user can settle may "
+    "instead name its kind as the header: Grant, Login, Trust or Live test"
+)
+
+
+def question_refusal(question, lookup):
+    """None when one AskUserQuestion question may be asked, else why not. `lookup(id)` returns
+    ("found", record), ("missing", message) or ("failed", message)."""
+    if not isinstance(question, dict):
+        return "a question without its fields"
+    header = str(question.get("header") or "")
+    text = str(question.get("question") or "")
+    if header.strip().lower() in USER_ONLY:
+        return None
+    ids = list(dict.fromkeys(DECISION_ID.findall(header + "\n" + text)))
+    shown = (text or header)[:80]
+    if not ids:
+        return f"\"{shown}\" cites no open decision: {LEDGER_HINT}"
+    for decision_id in ids:
+        outcome, record = lookup(decision_id)
+        if outcome == "failed":
+            return f"herdr could not look up {decision_id} ({record}), so the question is not asked"
+        if outcome != "found" or not isinstance(record, dict):
+            return f"{decision_id} is not in the decision ledger: {LEDGER_HINT}"
+        status = record.get("status")
+        if status == "decided":
+            source = record.get("source") or "the user"
+            if source == "relayed" and record.get("relayed_by"):
+                source = "relayed by " + str(record["relayed_by"])
+            return (f"{decision_id} is decided already ({source}): {record.get('answer')}. Act on "
+                    "that answer; to change it the user's new decision is recorded with `herdr "
+                    f"decision add --supersedes {decision_id}`")
+        if status == "superseded":
+            return (f"{decision_id} is superseded by {record.get('superseded_by') or '?'}: look "
+                    "that record up (`herdr decision get <id>`) and cite it if it is open")
+        if status != "open":
+            return f"{decision_id} has status {status!r}, not open"
+    return None
+
+
+def ask_refusal(tool_input, lookup):
+    """None when every question of an AskUserQuestion call may be asked, else why not."""
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not isinstance(questions, list) or not questions:
+        return "an AskUserQuestion call without questions"
+    for question in questions:
+        why = question_refusal(question, lookup)
+        if why:
+            return why
+    return None
 
 
 class Denied(Exception):
@@ -1378,13 +1509,43 @@ def tab_role():
     return role if isinstance(role, str) else None
 
 
-def deny(reason):
+def deny(reason, gate="Herdr coordinator allowlist: "):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": "Herdr coordinator allowlist: " + reason,
+        "permissionDecisionReason": gate + reason,
     }}))
     raise SystemExit(0)
+
+
+def lookup_decision(decision_id):
+    """`decision.get` of one record: ("found", record), ("missing", message) or ("failed", why)."""
+    request = {"id": f"herdr:claude:decision.get:{int(time.time() * 1000)}",
+               "method": "decision.get", "params": {"id": decision_id}}
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(os.environ["HERDR_SOCKET_PATH"])
+        client.sendall((json.dumps(request) + "\n").encode())
+        reply = b""
+        while not reply.endswith(b"\n") and len(reply) < 1_000_000:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+        client.close()
+        reply = json.loads(reply.decode("utf-8", "replace"))
+    except Exception as error:
+        return "failed", str(error) or type(error).__name__
+    result = reply.get("result") if isinstance(reply, dict) else None
+    if isinstance(result, dict) and isinstance(result.get("decision"), dict):
+        return "found", result["decision"]
+    error = reply.get("error") if isinstance(reply, dict) else None
+    if isinstance(error, dict) and error.get("code") == "worker_not_found":
+        return "missing", str(error.get("message") or "")
+    if isinstance(error, dict):
+        return "failed", str(error.get("message") or error.get("code") or "an error")
+    return "failed", "no reply"
 
 
 try:
@@ -1400,6 +1561,12 @@ tool_input = tool_input if isinstance(tool_input, dict) else {}
 cwd = hook_input.get("cwd") if isinstance(hook_input.get("cwd"), str) else None
 session = hook_input.get("session_id")
 session = session if isinstance(session, str) and session else None
+if (tool == ASK_TOOL and not HEADLESS and os.environ.get("HERDR_QUESTION_GATE", "1") != "0"
+        and tab_role() == COORDINATOR_ROLE):
+    refusal = ask_refusal(tool_input, lookup_decision)
+    if refusal:
+        deny(refusal, "Herdr question gate: ")
+    raise SystemExit(0)
 reason = check_call(str(tool), tool_input, cwd, session)
 # An allowed call needs no question to herdr; only a refusal asks whether this is a coordinator.
 if reason is None or (not HEADLESS and tab_role() != COORDINATOR_ROLE):

@@ -4952,6 +4952,13 @@ impl StopCheckServer {
                 let reply = if method == "coordinator.record_override" && !records {
                     json!({"id": request["id"], "error": {"code": "worker_io_error",
                                                           "message": "store failed"}})
+                } else if method == "decision.get" {
+                    match ledger_record(request["params"]["id"].as_str().unwrap_or_default()) {
+                        Some(record) => json!({"id": request["id"],
+                            "result": {"type": "decision", "decision": record}}),
+                        None => json!({"id": request["id"], "error": {"code": "worker_not_found",
+                            "message": "decision is not in the ledger"}}),
+                    }
                 } else {
                     json!({"id": request["id"], "result": result})
                 };
@@ -4979,6 +4986,24 @@ impl StopCheckServer {
             .iter()
             .map(|request| request["method"].as_str().unwrap_or_default().to_owned())
             .collect()
+    }
+}
+
+/// The decision ledger [`StopCheckServer`] answers `decision.get` from: one open, one decided
+/// and one superseded record.
+#[cfg(unix)]
+fn ledger_record(id: &str) -> Option<Value> {
+    match id {
+        "d-aaaaaaaa" => Some(json!({"id": id, "scope": "repository", "status": "open",
+            "statement": "Enforce the stop check?", "created_ms": 1})),
+        "d-bbbbbbbb" => Some(json!({"id": id, "scope": "repository", "status": "decided",
+            "statement": "Install the integration?", "answer": "yes, in shadow mode",
+            "source": "user", "created_ms": 1, "decided_ms": 2})),
+        "d-cccccccc" => Some(
+            json!({"id": id, "scope": "repository", "status": "superseded",
+            "statement": "Old question", "superseded_by": "d-aaaaaaaa", "created_ms": 1}),
+        ),
+        _ => None,
     }
 }
 
@@ -5511,7 +5536,11 @@ fn claude_pre_tool_checks_every_part_of_a_compound_command() {
 fn claude_pre_tool_limits_a_coordinators_other_tools() {
     let scratchpad = pre_tool_scratchpad();
     let cases = [
-        ("AskUserQuestion", json!({"questions": []}), None),
+        (
+            "AskUserQuestion",
+            json!({"questions": [{"header": "d-aaaaaaaa", "question": "Enforce it?"}]}),
+            None,
+        ),
         ("Read", json!({"file_path": "/repo/src/main.rs"}), None),
         ("Grep", json!({"pattern": "x"}), None),
         (
@@ -5562,6 +5591,70 @@ fn claude_pre_tool_limits_a_coordinators_other_tools() {
             (Some(reason), Some(named)) => assert!(reason.contains(named), "{tool}: {reason}"),
             (outcome, _) => panic!("{tool} {input}: {outcome:?}"),
         }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_pre_tool_gates_a_coordinators_questions_on_the_decision_ledger() {
+    let ask = |role, questions: Value| {
+        let (stdout, requests) = run_pre_tool(
+            role,
+            true,
+            "AskUserQuestion",
+            json!({"questions": questions}),
+        );
+        let lookups: Vec<String> = requests
+            .iter()
+            .filter(|request| request["method"] == "decision.get")
+            .map(|request| {
+                request["params"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        (pre_tool_denial(&stdout), lookups)
+    };
+    let one = |header: &str, question: &str| json!([{"header": header, "question": question}]);
+    // Allowed: an open record cited in the header or the text, a user-only capability.
+    for questions in [
+        one("d-aaaaaaaa", "Enforce the stop check?"),
+        one("Stop check", "Enforce it (d-aaaaaaaa)?"),
+        one("Grant", "Grant the prepare operation?"),
+        one("Live test", "Run the live smoke test with your account?"),
+    ] {
+        let (denial, _) = ask(Some("coordinator"), questions.clone());
+        assert_eq!(denial, None, "{questions}");
+    }
+    let (_, lookups) = ask(Some("coordinator"), one("d-aaaaaaaa", "x"));
+    assert_eq!(lookups, ["d-aaaaaaaa"]);
+    // Refused: no citation, a decided record (with its answer), a superseded one (with its
+    // successor), one the ledger does not hold; one bad question refuses the call.
+    for (questions, named) in [
+        (
+            one("Install", "Install the integration?"),
+            "herdr decision add",
+        ),
+        (one("d-bbbbbbbb", "Install?"), "yes, in shadow mode"),
+        (one("d-cccccccc", "Old?"), "superseded by d-aaaaaaaa"),
+        (one("d-dddddddd", "Unknown?"), "not in the decision ledger"),
+        (
+            json!([{"header": "Grant", "question": "Grant?"},
+                   {"header": "Next", "question": "Go on with the next item?"}]),
+            "cites no open decision",
+        ),
+        (json!([]), "without questions"),
+    ] {
+        let (denial, _) = ask(Some("coordinator"), questions.clone());
+        let denial = denial.unwrap_or_else(|| panic!("{questions} was allowed"));
+        assert!(denial.starts_with("Herdr question gate: "), "{denial}");
+        assert!(denial.contains(named), "{questions}: {denial}");
+    }
+    // Outside a coordinator tab, or when herdr cannot say whose tab it is, nothing is gated.
+    for role in [Some("worker"), None] {
+        let (denial, lookups) = ask(role, one("Install", "Install the integration?"));
+        assert_eq!((denial, lookups.len()), (None, 0), "{role:?}");
     }
 }
 

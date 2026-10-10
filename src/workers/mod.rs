@@ -28,6 +28,7 @@
 pub(crate) mod broker;
 mod capabilities;
 pub(crate) mod coordinators;
+mod decisions;
 mod history;
 mod inbox;
 #[cfg(test)]

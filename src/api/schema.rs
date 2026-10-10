@@ -4,6 +4,7 @@ pub mod agents;
 pub mod commands;
 pub mod common;
 pub mod coordinators;
+pub mod decisions;
 pub mod events;
 pub mod history;
 pub mod integrations;
@@ -24,6 +25,7 @@ pub use agents::*;
 pub use commands::*;
 pub use common::*;
 pub use coordinators::*;
+pub use decisions::*;
 pub use events::*;
 pub use history::*;
 pub use integrations::*;
@@ -199,6 +201,19 @@ pub enum Method {
     /// The stored capability grants.
     #[serde(rename = "todo.grants")]
     TodoGrants(TodoGrantsParams),
+    /// Records a question for the user, or a decision of theirs, in the
+    /// decision ledger.
+    #[serde(rename = "decision.add")]
+    DecisionAdd(DecisionAddParams),
+    /// Records the user's answer to an open question of the ledger.
+    #[serde(rename = "decision.decide")]
+    DecisionDecide(DecisionDecideParams),
+    /// The ledger's records, oldest first.
+    #[serde(rename = "decision.list")]
+    DecisionList(DecisionListParams),
+    /// One record of the ledger.
+    #[serde(rename = "decision.get")]
+    DecisionGet(DecisionGetParams),
     /// The TODO items herdr recorded, each with its latest record.
     #[serde(rename = "history.list")]
     HistoryList(HistoryListParams),
