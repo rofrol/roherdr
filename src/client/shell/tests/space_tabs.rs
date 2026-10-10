@@ -5189,6 +5189,7 @@ fn todo_review_reply() -> crate::api::schema::ResponseResult {
                 base: "0123456789abcdef".into(),
             }),
             landed_sha: Some("aaaabbbbccccdddd".into()),
+            draft: None,
         }),
     }
 }

@@ -106,6 +106,23 @@ pub(super) fn review_text(review: &TodoReview) -> String {
 
     out.push_str("\nTask\n");
     out.push_str(&indented(&review.task));
+    if let Some(draft) = &review.draft {
+        out.push_str(&format!(
+            "\nDrafted by the server ({}{})\n",
+            draft.decision_id,
+            draft
+                .model
+                .as_deref()
+                .map(|model| format!(", {model}"))
+                .unwrap_or_default()
+        ));
+        out.push_str(&format!("  subject: {}\n", draft.message));
+        out.push_str(&format!("  paths: {}\n", draft.paths.join(" ")));
+        out.push_str(&format!("  checks: {}\n", draft.checks.join(" ")));
+        if review.attempt > 1 {
+            out.push_str("  (the first attempt's task; later ones append their review)\n");
+        }
+    }
 
     out.push_str("\nFinal message\n");
     out.push_str(&match &review.final_message {
@@ -280,7 +297,33 @@ mod tests {
                 base: "b0".into(),
             }),
             landed_sha: Some("l9".into()),
+            draft: None,
         }
+    }
+
+    #[test]
+    fn a_drafted_run_shows_its_draft_after_the_task() {
+        let review = TodoReview {
+            attempt: 1,
+            draft: Some(crate::api::schema::TodoDraft {
+                decision_id: "d-abcdefgh".into(),
+                model: Some("m".into()),
+                task: "Do it".into(),
+                message: "feat: add a".into(),
+                paths: vec!["src/**".into(), "docs/**".into()],
+                checks: vec!["workers".into()],
+            }),
+            ..stub()
+        };
+        let text = review_text(&review);
+        assert!(
+            text.contains(
+                "\nDrafted by the server (d-abcdefgh, m)\n  subject: feat: add a\n  paths: \
+                 src/** docs/**\n  checks: workers\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("later ones"), "{text}");
     }
 
     #[test]

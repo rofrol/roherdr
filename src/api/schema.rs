@@ -140,6 +140,10 @@ pub enum Method {
     /// Drives a TODO item from preflight to a cherry-pick onto `master`.
     #[serde(rename = "todo.run")]
     TodoRun(TodoRunParams),
+    /// `todo.run` whose task, subject, paths and checks the server drafts
+    /// itself with a typed model call.
+    #[serde(rename = "todo.draft_run")]
+    TodoDraftRun(TodoDraftRunParams),
     /// Answers a run's pending event: approve, retry or answer.
     #[serde(rename = "todo.resume")]
     TodoResume(TodoResumeParams),

@@ -5648,6 +5648,57 @@
             }
           ]
         },
+        "TodoDraftRunParams": {
+          "description": "`todo.run` whose worker's task the server drafts itself: a bounded,\nstateless model call (`draft_task`) with the item's text, the\n`DECISIONS.md` sections it names, the repository's code and test rules\n(`AGENTS.md`), its registered checks, `git log -20` and the item's\nhistory returns the task text, the exact commit subject, the path globs\nand the check names, or a question for the user. The server checks the\ndraft (a lowercase conventional subject, relative globs inside the\nrepository, registered checks), records it and starts the run with it as\n`todo.run` with those parameters would; an invalid draft or a failed call\nis asked once more, then escalated. The run is reviewed and its worker's\nquestions answered by the server too (`auto_review`, `auto_answer`).",
+          "properties": {
+            "cwd": {
+              "description": "A directory in the repository (the CLI sends its working directory).",
+              "type": "string"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The caller's environment, which the checks run with (`HERDR_*`\ndropped); kept in the server's memory only, never stored.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "ignore_usage": {
+              "description": "Start even while the usage gate refuses, on the user's word.",
+              "type": "boolean"
+            },
+            "item": {
+              "description": "The TODO item's id (`t-abcd2345`); it must be in the repository's\n`TODO.md`.",
+              "type": "string"
+            },
+            "owner_pane_id": {
+              "description": "The coordinator's pane, which owns the run (as `todo.run`'s).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "cwd",
+            "item"
+          ],
+          "type": "object"
+        },
         "TodoNextParams": {
           "description": "Starts a fresh headless item coordinator for the top item of the\nrepository's `TODO.md` \"Next, in order\": a Claude worker in the\nrepository with herdr's coordinator prompt and allowlist, under a\nheadless coordination tenure of its own, owned by the caller's pane. It\ndrives the item with `todo.run` and ends; with `chain`, each one that\nends with its item done starts the next on its exit event, until \"Next,\nin order\" is empty, an item escalates to the user or fails, or\n`todo.stop`. Refused while the repository has a run in progress, an\nactive coordinator (`coordinator_active`), or the usage gate refuses.",
           "properties": {
@@ -7536,6 +7587,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TodoRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`todo.run` whose task, subject, paths and checks the server drafts\nitself with a typed model call.",
+          "properties": {
+            "method": {
+              "const": "todo.draft_run",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TodoDraftRunParams"
             }
           },
           "required": [
@@ -16343,6 +16411,47 @@
           ],
           "type": "object"
         },
+        "TodoDraft": {
+          "description": "A run's task as the server drafted it.",
+          "properties": {
+            "checks": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decision_id": {
+              "description": "The decision's id (`d-...`).",
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision_id",
+            "task",
+            "message",
+            "paths",
+            "checks"
+          ],
+          "type": "object"
+        },
         "TodoEventKind": {
           "description": "A run's event that needs the coordinator or ends the run.",
           "oneOf": [
@@ -16406,6 +16515,11 @@
             {
               "const": "next_refused",
               "description": "After `done`: the next item the close named did not start (`error`\nnames the refusal: its preflight, the usage gate, a run in\nprogress). The run stays done; start the item by hand.",
+              "type": "string"
+            },
+            {
+              "const": "draft",
+              "description": "The server's draft of the worker's task needs an answer (`error`\nholds the question and its options, or why no valid draft came):\n`retry` with the answer as task text drafts again with it, or abort.\nThe user can answer it from the `?` list too.",
               "type": "string"
             }
           ]
@@ -16557,6 +16671,17 @@
                 "string",
                 "null"
               ]
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TodoDraft"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The server's draft the run started with (`todo.draft_run`)."
             },
             "final_message": {
               "description": "The worker's last reply (its last turn's result).",
@@ -16826,6 +16951,10 @@
               "minimum": 0,
               "type": "integer"
             },
+            "drafted": {
+              "description": "The server drafts the run's task, subject, paths and checks itself\n(`todo.draft_run`); they are empty until the draft is applied.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Why it is blocked or was aborted.",
               "type": [
@@ -17019,6 +17148,11 @@
                 "done",
                 "unknown"
               ],
+              "type": "string"
+            },
+            {
+              "const": "draft",
+              "description": "The server drafts the worker's task (`todo.draft_run`), then\nstarts it.",
               "type": "string"
             },
             {

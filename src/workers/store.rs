@@ -1838,6 +1838,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Run> {
             stop_reason: finish.stop_reason.clone(),
             auto_review: finish.auto_review,
             auto_answer: finish.auto_answer,
+            drafted: finish.draft,
         },
         checks,
         finish,

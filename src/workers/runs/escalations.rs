@@ -11,7 +11,9 @@
 //! The user's answer raises a new `review` event carrying it, which the
 //! server reviews again with the answer in the model's input; a denial
 //! takes the escalation off the list and leaves the event to the
-//! coordinator. Either is taken only while the run still waits on the
+//! coordinator. A task draft's escalation ([`super::auto_draft`]) is listed
+//! the same way, under the run's id while the run has no worker yet; its
+//! answer takes the run back to its draft step with the answer recorded. Either is taken only while the run still waits on the
 //! escalated event; `todo.resume` answering it first takes it off the list.
 //!
 //! The list is kept in memory, read for every client snapshot without
@@ -24,8 +26,8 @@ use serde_json::{json, Value};
 
 use super::{event_of, lock, new_event, Run};
 use crate::api::schema::{
-    TodoEventKind, TodoRunStatus, WorkerChoiceQuestion, WorkerDecision, WorkerQuestion,
-    WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerState,
+    TodoEventKind, TodoRunStatus, TodoStep, WorkerChoiceQuestion, WorkerDecision, WorkerInfo,
+    WorkerQuestion, WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerState,
 };
 use crate::workers::{now_ms, PendingWorkerQuestion, WorkerError, WorkerSupervisor};
 
@@ -58,9 +60,20 @@ pub(super) struct Escalation {
     pub(super) question: String,
     pub(super) options: Vec<String>,
     pub(super) since_ms: u64,
+    /// It asks about the task draft, not about a review.
+    pub(super) drafting: bool,
 }
 
 impl Escalation {
+    /// What asks: the automatic review or the task draft.
+    fn asker(&self) -> &'static str {
+        if self.drafting {
+            "task draft"
+        } else {
+            "automatic review"
+        }
+    }
+
     fn request_id(&self) -> String {
         format!("{REQUEST_PREFIX}{}-{}", self.run_id, self.event)
     }
@@ -69,25 +82,44 @@ impl Escalation {
         WorkerQuestion {
             request_id: self.request_id(),
             kind: WorkerQuestionKind::Choice,
-            tool_name: "herdr review".into(),
+            tool_name: if self.drafting {
+                "herdr draft".into()
+            } else {
+                "herdr review".into()
+            },
             text: format!("run {} · {}: {}", self.run_id, self.item, self.question),
             reason: Some(format!(
-                "the automatic review {} of run {} (item {}) asks you",
-                self.decision_id, self.run_id, self.item
+                "the {} {} of run {} (item {}) asks you",
+                self.asker(),
+                self.decision_id,
+                self.run_id,
+                self.item
             )),
             questions: vec![WorkerChoiceQuestion {
                 question: self.question.clone(),
-                header: Some(format!("Review of {}", self.item)),
+                header: Some(format!(
+                    "{} of {}",
+                    if self.drafting { "Draft" } else { "Review" },
+                    self.item
+                )),
                 options: self.options.clone(),
                 multi_select: false,
             }],
             since_ms: self.since_ms,
             state: WorkerQuestionState::Pending,
-            escalated: Some(format!(
-                "the automatic review {} of run {} (item {}) asks you; your answer goes back to \
-                 the review, Deny leaves the attempt to the coordinator",
-                self.decision_id, self.run_id, self.item
-            )),
+            escalated: Some(if self.drafting {
+                format!(
+                    "the task draft {} of run {} (item {}) asks you; your answer goes back to the \
+                     draft, Deny leaves the draft to the coordinator",
+                    self.decision_id, self.run_id, self.item
+                )
+            } else {
+                format!(
+                    "the automatic review {} of run {} (item {}) asks you; your answer goes back \
+                     to the review, Deny leaves the attempt to the coordinator",
+                    self.decision_id, self.run_id, self.item
+                )
+            }),
         }
     }
 }
@@ -194,8 +226,11 @@ impl WorkerSupervisor {
             .unwrap_or(WorkerState::Exited);
         let mut input = vec![
             format!(
-                "Run {} of item {} asks you, through its automatic review ({}):",
-                escalation.run_id, escalation.item, escalation.decision_id
+                "Run {} of item {} asks you, through its {} ({}):",
+                escalation.run_id,
+                escalation.item,
+                escalation.asker(),
+                escalation.decision_id
             ),
             String::new(),
             escalation.question.clone(),
@@ -264,6 +299,9 @@ impl WorkerSupervisor {
             return Ok(());
         }
         let answer = chosen(&escalation, answers)?;
+        if escalation.drafting {
+            return self.answer_draft_escalation(&escalation, &answer, worker_id, request_id);
+        }
         let latest = store
             .latest_run_event(&escalation.run_id)
             .map_err(super::store_error)?;
@@ -330,6 +368,83 @@ impl WorkerSupervisor {
         Ok(())
     }
 
+    /// The user's answer to a task draft's escalation: recorded, and the run
+    /// goes back to its draft step, which drafts again with it.
+    fn answer_draft_escalation(
+        &self,
+        escalation: &Escalation,
+        answer: &str,
+        worker_id: &str,
+        request_id: &str,
+    ) -> Result<(), WorkerError> {
+        let store = self.run_store()?;
+        let latest = store
+            .latest_run_event(&escalation.run_id)
+            .map_err(super::store_error)?
+            .filter(|(seq, _)| *seq == escalation.event);
+        let resumed = store
+            .transaction(|tx| {
+                let Some(mut current) = tx.run(&escalation.run_id)? else {
+                    return Ok(false);
+                };
+                let Some((seq, body)) = latest.as_ref() else {
+                    return Ok(false);
+                };
+                if current.info.status != TodoRunStatus::Waiting
+                    || current.info.pending_event != Some(*seq)
+                {
+                    return Ok(false);
+                }
+                let note = super::auto_draft::answer_note(*seq, Some(body), answer, "user");
+                tx.run_note(&current.info.run_id, &note, now_ms())?;
+                current.info.status = TodoRunStatus::Running;
+                current.info.step = TodoStep::Draft;
+                tx.run_event(
+                    &mut current,
+                    &json!({
+                        "type": ANSWERED, "event": seq, "decision_id": escalation.decision_id,
+                        "answer": answer,
+                    }),
+                    false,
+                    now_ms(),
+                )?;
+                Ok(true)
+            })
+            .map_err(super::store_error)?;
+        take(&escalation.run_id, escalation.event);
+        if !resumed {
+            return Err(WorkerError::QuestionGone(format!(
+                "question {request_id} of worker {worker_id} is no longer pending: the run no \
+                 longer waits on that draft"
+            )));
+        }
+        super::announce();
+        self.spawn_driver(&escalation.run_id);
+        Ok(())
+    }
+
+    /// What answering an escalation of `worker_id` replies: the worker, or,
+    /// for a task draft's escalation listed under its run (no worker yet),
+    /// a stand-in that names the run.
+    pub(crate) fn escalation_reply(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {
+        match self.status(worker_id) {
+            Err(WorkerError::NotFound(_)) if worker_id.starts_with("r-") => {
+                let run = self.load_run(worker_id)?;
+                serde_json::from_value(json!({
+                    "worker_id": worker_id,
+                    "state": WorkerState::Exited,
+                    "cwd": run.info.repo,
+                    "name": format!("run {} · {} (no worker yet)", run.info.run_id, run.info.item),
+                    "turns": 0,
+                    "journal_path": "",
+                    "item": run.info.item,
+                }))
+                .map_err(|error| WorkerError::Invalid(error.to_string()))
+            }
+            other => other,
+        }
+    }
+
     /// Lists again, as a server that starts does, each run's escalation it
     /// still waits on that the user has not declined.
     pub(super) fn restore_escalations(&self, runs: &[Run]) {
@@ -360,10 +475,12 @@ impl WorkerSupervisor {
     }
 }
 
-/// The escalation a run's `review` event raised, when it is one with a
-/// worker to list it under.
+/// The escalation a run's `review` event (or task draft's `draft` event)
+/// raised, listed under the run's worker, or under the run itself before it
+/// has one.
 pub(super) fn escalation_of(run: &Run, seq: i64, body: &Value) -> Option<Escalation> {
-    if body["kind"] != json!(TodoEventKind::Review) {
+    let drafting = body["kind"] == json!(TodoEventKind::Draft);
+    if body["kind"] != json!(TodoEventKind::Review) && !drafting {
         return None;
     }
     let decision_id = body[super::auto_review::ESCALATES].as_str()?.to_owned();
@@ -377,7 +494,11 @@ pub(super) fn escalation_of(run: &Run, seq: i64, body: &Value) -> Option<Escalat
         run_id: run.info.run_id.clone(),
         item: run.info.item.clone(),
         repo: run.info.repo.clone(),
-        worker_id: run.info.worker_id.clone()?,
+        worker_id: run
+            .info
+            .worker_id
+            .clone()
+            .unwrap_or_else(|| run.info.run_id.clone()),
         owner_pane: run.owner_pane.clone(),
         owner_coordinator: run.owner_coordinator.clone(),
         event: seq,
@@ -385,6 +506,7 @@ pub(super) fn escalation_of(run: &Run, seq: i64, body: &Value) -> Option<Escalat
         question,
         options,
         since_ms: run.info.updated_ms,
+        drafting,
     })
 }
 
@@ -405,6 +527,7 @@ mod tests {
             question: "Keep b.txt?".into(),
             options: vec!["keep".into(), "drop".into()],
             since_ms: 1,
+            drafting: false,
         }
     }
 

@@ -1348,6 +1348,7 @@ impl App {
             | Method::WorkerEscalate(_)
             | Method::WorkerVerify(_)
             | Method::TodoRun(_)
+            | Method::TodoDraftRun(_)
             | Method::TodoResume(_)
             | Method::TodoWait(_)
             | Method::TodoStatus(_)

@@ -34,6 +34,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerQuestion(_)
             | Method::WorkerDenyAndStop(_)
             | Method::TodoRun(_)
+            | Method::TodoDraftRun(_)
             | Method::TodoResume(_)
             | Method::TodoWait(_)
             | Method::TodoStatus(_)
@@ -161,6 +162,11 @@ fn handle_immediate(
         Method::TodoRun(params) => {
             return Ok(ResponseResult::TodoRun {
                 run: supervisor.todo_run(params)?,
+            })
+        }
+        Method::TodoDraftRun(params) => {
+            return Ok(ResponseResult::TodoRun {
+                run: supervisor.todo_draft_run(params)?,
             })
         }
         Method::TodoResume(params) => {

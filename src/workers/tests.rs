@@ -9621,6 +9621,291 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             assert_eq!(calls(&fixture).len(), 1);
             abort(&fixture, &run.run_id, review.event_id);
         }
+
+        /// A draft the stub worker carries out: it commits a.txt with the
+        /// run's subject.
+        fn valid_draft() -> String {
+            serde_json::json!({
+                "action": "draft", "task": format!("commit a.txt {SUBJECT}"),
+                "message": SUBJECT, "paths": ["*.txt"], "checks": ["ok"],
+            })
+            .to_string()
+        }
+
+        /// The review fixture with a `DECISIONS.md` section that names the
+        /// item and `AGENTS.md`'s rules on `master`.
+        fn drafting(name: &str, answers: &[&str]) -> Fixture {
+            let fixture = reviewed(name, answers);
+            std::fs::write(
+                fixture.repo.join("DECISIONS.md"),
+                format!(
+                    "# Decisions\n\n## Driving items\n\nDecided for [{ITEM}]: keep it small.\n\n\
+                     ## Unrelated\n\nNot for this item.\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.repo.join("AGENTS.md"),
+                "# Rules\n\n## Testing\n\nRun the stub checks.\n\n## Docs\n\nElsewhere.\n",
+            )
+            .unwrap();
+            git_in(&fixture.repo, &["add", "."]);
+            git_in(&fixture.repo, &["commit", "-q", "-m", "docs: rules"]);
+            fixture
+        }
+
+        fn start_draft(fixture: &Fixture) -> TodoRunInfo {
+            let run = fixture
+                .supervisor
+                .todo_draft_run(crate::api::schema::TodoDraftRunParams {
+                    cwd: fixture.repo.display().to_string(),
+                    item: ITEM.into(),
+                    owner_pane_id: Some("p-coordinator".into()),
+                    owner_session_id: None,
+                    workspace_id: Some("ws-coordinator".into()),
+                    env: Some(caller_env()),
+                    ignore_usage: false,
+                })
+                .unwrap();
+            assert!(run.drafted && run.auto_review && run.auto_answer, "{run:?}");
+            assert_eq!(run.step, TodoStep::Draft);
+            assert!(run.task.is_empty() && run.checks.is_empty(), "{run:?}");
+            run
+        }
+
+        #[test]
+        fn a_valid_draft_starts_the_run_as_its_flags_would() {
+            let draft = valid_draft();
+            let fixture = drafting("todo-draft-valid", &[&draft, r#"{"action": "approve"}"#]);
+            let run = start_draft(&fixture);
+            let (done, finished) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "docs: rules", "init"]);
+            assert_eq!(finished.task, format!("commit a.txt {SUBJECT}"));
+            assert_eq!(finished.message, SUBJECT);
+            assert_eq!(finished.paths, ["*.txt"]);
+            assert_eq!(finished.checks, ["ok"]);
+            assert!(finished.drafted);
+
+            let decisions = run_events(&fixture, &run.run_id, "run_draft_decision");
+            assert_eq!(decisions.len(), 1, "{decisions:#?}");
+            assert!(decisions[0]["decision_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("d-"));
+            assert_eq!(decisions[0]["model"], "stub-review-model");
+            let applied = run_events(&fixture, &run.run_id, "run_drafted");
+            assert_eq!(applied[0]["decision_id"], decisions[0]["decision_id"]);
+            assert_eq!(applied[0]["message"], SUBJECT);
+
+            // One stateless call with the item, the decision it names, the
+            // rules, the checks and the log; the review is the second.
+            let calls = calls(&fixture);
+            assert_eq!(calls.len(), 2, "{calls:#?}");
+            let input = calls[0]["stdin"].as_str().unwrap();
+            for part in [
+                "The driven item",
+                "Driving items",
+                "keep it small",
+                "Run the stub checks.",
+                "registered_checks",
+                "\"never\"",
+                "docs: rules",
+            ] {
+                assert!(input.contains(part), "{part:?} not in {input}");
+            }
+            for absent in ["Not for this item.", "Elsewhere."] {
+                assert!(!input.contains(absent), "{absent:?} in {input}");
+            }
+            let schema = calls[0]["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .skip_while(|arg| *arg != "--json-schema")
+                .nth(1)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(schema.contains("\"draft\""), "{schema}");
+
+            // `todo review` shows the drafted task.
+            let review = fixture
+                .supervisor
+                .todo_review(&run.run_id, None, false)
+                .unwrap();
+            let shown = review.draft.expect("no draft in the review");
+            assert_eq!(shown.decision_id, decisions[0]["decision_id"]);
+            assert_eq!(shown.message, SUBJECT);
+            assert_eq!(shown.checks, ["ok"]);
+            assert!(review.task.starts_with(&format!("commit a.txt {SUBJECT}")));
+        }
+
+        #[test]
+        fn an_invalid_draft_is_asked_again_once_then_escalated_to_the_users_list() {
+            let fixture = drafting(
+                "todo-draft-invalid",
+                &[
+                    r#"{"action": "draft", "task": "t", "message": "Add a", "paths": ["*.txt"], "checks": ["ok"]}"#,
+                    r#"{"action": "draft", "task": "t", "message": "feat: add a", "paths": ["../out"], "checks": ["ok"]}"#,
+                ],
+            );
+            let _ = crate::workers::take_user_notices();
+            let run = start_draft(&fixture);
+            let (escalated, waiting) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Draft, "{escalated:#?}");
+            assert_eq!(
+                escalated.actions,
+                [TodoAction::Retry, TodoAction::Abort],
+                "{escalated:#?}"
+            );
+            assert_eq!(waiting.status, TodoRunStatus::Waiting);
+            assert!(waiting.worker_id.is_none());
+            let error = escalated.error.clone().unwrap_or_default();
+            assert!(error.contains("failed 2 times"), "{error}");
+            let made = run_events(&fixture, &run.run_id, "run_draft_call");
+            assert_eq!(made.len(), 2, "{made:#?}");
+            assert!(made.iter().all(|call| call["error"].is_string()));
+            // The second call learns why the first was refused.
+            let second = calls(&fixture)[1]["stdin"].as_str().unwrap().to_owned();
+            assert!(second.contains("rejected_drafts"), "{second}");
+            assert!(second.contains("type: description"), "{second}");
+            assert_eq!(crate::workers::take_user_notices().len(), 1);
+
+            // Listed under the run, which has no worker yet; the user's
+            // answer drafts again with it.
+            let listed = listed_escalation(&fixture, &run.run_id).expect("not in the ? list");
+            assert_eq!(listed.worker_id, run.run_id);
+            assert_eq!(listed.question.tool_name, "herdr draft");
+            let detail = fixture
+                .supervisor
+                .question_detail(&listed.worker_id, &listed.question.request_id)
+                .unwrap();
+            assert!(
+                detail.input_text.contains("task draft"),
+                "{}",
+                detail.input_text
+            );
+            let draft = valid_draft();
+            set_answers(&fixture, &[&draft, r#"{"action": "approve"}"#]);
+            let replied = fixture
+                .supervisor
+                .answer(&WorkerAnswerParams {
+                    worker_id: listed.worker_id.clone(),
+                    request_id: Some(listed.question.request_id.clone()),
+                    decision: Some(WorkerDecision::Allow),
+                    answers: vec!["use a.txt".into()],
+                    message: None,
+                    command_id: None,
+                })
+                .unwrap();
+            assert_eq!(replied.worker_id, run.run_id);
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+            let (done, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            let answers = run_events(&fixture, &run.run_id, "run_draft_answer");
+            assert_eq!(answers.len(), 1, "{answers:#?}");
+            assert_eq!(
+                (answers[0]["answer"].as_str(), answers[0]["by"].as_str()),
+                (Some("use a.txt"), Some("user"))
+            );
+            let again = calls(&fixture)[2]["stdin"].as_str().unwrap().to_owned();
+            assert!(again.contains("use a.txt"), "{again}");
+            assert!(!again.contains("rejected_drafts"), "{again}");
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "docs: rules", "init"]);
+        }
+
+        #[test]
+        fn a_drafts_question_is_the_coordinators_too_and_its_retry_drafts_again() {
+            let fixture = drafting(
+                "todo-draft-escalate",
+                &[
+                    r#"{"action": "escalate", "question": "Is the item still wanted?", "options": ["yes", "no, drop it"]}"#,
+                ],
+            );
+            let run = start_draft(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(escalated.kind, TodoEventKind::Draft, "{escalated:#?}");
+            let error = escalated.error.clone().unwrap_or_default();
+            for part in ["Is the item still wanted?", "Options: yes | no, drop it"] {
+                assert!(error.contains(part), "{part:?} not in {error}");
+            }
+            assert!(listed_escalation(&fixture, &run.run_id).is_some());
+            // A retry needs the answer.
+            let refused = resume(
+                &fixture,
+                &run.run_id,
+                escalated.event_id,
+                TodoAction::Retry,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(refused.code(), "invalid_request", "{refused}");
+            let draft = valid_draft();
+            set_answers(&fixture, &[&draft, r#"{"action": "approve"}"#]);
+            resume(
+                &fixture,
+                &run.run_id,
+                escalated.event_id,
+                TodoAction::Retry,
+                Some("yes, as written"),
+            )
+            .unwrap();
+            let (done, _) = wait(&fixture, &run.run_id, Some(escalated.event_id));
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+            let answers = run_events(&fixture, &run.run_id, "run_draft_answer");
+            assert_eq!(answers[0]["by"], "coordinator");
+            assert_eq!(answers[0]["question"], "Is the item still wanted?");
+            let again = calls(&fixture)[1]["stdin"].as_str().unwrap().to_owned();
+            for part in ["yes, as written", "Is the item still wanted?"] {
+                assert!(again.contains(part), "{part:?} not in {again}");
+            }
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_draft_decision").len(),
+                2
+            );
+        }
+
+        #[test]
+        fn a_draft_escalation_can_be_aborted() {
+            let fixture = drafting(
+                "todo-draft-abort",
+                &[r#"{"action": "escalate", "question": "Wanted?", "options": ["yes", "no"]}"#],
+            );
+            let run = start_draft(&fixture);
+            let (escalated, _) = wait(&fixture, &run.run_id, None);
+            abort(&fixture, &run.run_id, escalated.event_id);
+            assert!(listed_escalation(&fixture, &run.run_id).is_none());
+        }
+
+        #[test]
+        fn a_draft_recorded_before_a_crash_is_applied_without_asking_again() {
+            let draft = valid_draft();
+            let fixture = drafting("todo-draft-crash", &[&draft]);
+            let repo = repository_of(&fixture.repo).unwrap();
+            runs::crash_after(&repo, TodoStep::Draft);
+            let run = start_draft(&fixture);
+            runs::wait_crashed(&repo, HANG_GUARD);
+            let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+            assert_eq!(
+                (cut.status, cut.step),
+                (TodoRunStatus::Running, TodoStep::Draft)
+            );
+            assert!(run_events(&fixture, &run.run_id, "run_drafted").is_empty());
+            // A draft asked again would get the review's answer, which is
+            // no draft.
+            set_answers(&fixture, &[r#"{"action": "approve"}"#]);
+            fixture.supervisor.resume_runs();
+            let (done, _) = wait(&fixture, &run.run_id, None);
+            assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+            assert_eq!(calls(&fixture).len(), 2);
+            assert_eq!(
+                run_events(&fixture, &run.run_id, "run_draft_decision").len(),
+                1
+            );
+            assert_eq!(master_subjects(&fixture), [SUBJECT, "docs: rules", "init"]);
+        }
     }
 }
 

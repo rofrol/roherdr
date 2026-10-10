@@ -685,6 +685,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorkerQuestion(_) => "worker.question",
         Method::WorkerDenyAndStop(_) => "worker.deny_and_stop",
         Method::TodoRun(_) => "todo.run",
+        Method::TodoDraftRun(_) => "todo.draft_run",
         Method::TodoResume(_) => "todo.resume",
         Method::TodoWait(_) => "todo.wait",
         Method::TodoStatus(_) => "todo.status",

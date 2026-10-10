@@ -303,6 +303,7 @@ impl WorkerSupervisor {
             review_text: row.attempt.review_text,
             approved,
             landed_sha,
+            draft: self.applied_draft(run_id),
         })
     }
 }

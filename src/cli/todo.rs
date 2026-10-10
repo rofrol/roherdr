@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    Method, Request, TodoAction, TodoNextParams, TodoNextRun, TodoResumeParams, TodoReviewParams,
-    TodoRunParams, TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams, WorkerDecision,
+    Method, Request, TodoAction, TodoDraftRunParams, TodoNextParams, TodoNextRun, TodoResumeParams,
+    TodoReviewParams, TodoRunParams, TodoRunTarget, TodoRunsParams, TodoStopParams, TodoWaitParams,
+    WorkerDecision,
 };
 
 use super::worker::take_string_option;
@@ -56,6 +57,19 @@ const USAGE: &str = "usage:
       worker store refuses the write), todo wait and todo status show the run
       blocked with that error, and the server writes it again once the store
       takes a write.
+  herdr todo run <item-id> --draft [--ignore-usage]
+      The server drafts the task, SUBJECT, the GLOBs and the check NAMEs
+      itself (todo.draft_run): one claude -p call (structured JSON output, no
+      tools, no session) with the item's text, the DECISIONS.md sections it
+      names, AGENTS.md's code, test and commit rules, .herdr/checks.toml, git
+      log -20 of master and the item's history. The server checks the draft
+      as todo run checks those flags (only registered checks), records it and
+      starts the run with it; an invalid draft or a failed call is asked once
+      more, then escalated: a draft event whose error holds the question,
+      also in the user's ? list. The user's answer there, or todo resume
+      --action retry --task FILE with the answer, drafts again with it.
+      Implies --auto-review and --auto-answer. Preflight checks the rest
+      before the call. todo review shows the draft.
   herdr todo wait <run-id> [--after EVENT_ID]
       Blocks until the run waits on an event after EVENT_ID (a question the
       worker policy left, the worker's turn end, a failed verify), or ended
@@ -438,6 +452,37 @@ fn next_run(
     }))
 }
 
+/// `todo run <item> --draft`: the item only (`--auto-review` and
+/// `--auto-answer` are implied, and allowed); the server drafts the rest.
+fn parse_draft_run(rest: &[String], ignore_usage: bool) -> Result<Method, String> {
+    let (_, rest) = take_switch(rest, "--auto-review")?;
+    let (_, rest) = take_switch(&rest, "--auto-answer")?;
+    let item = match rest.as_slice() {
+        [item] if !item.starts_with("--") => item.clone(),
+        _ => {
+            return Err(
+                "run --draft takes one item id and no --task, --message, --paths or --check: \
+                 the server drafts them"
+                    .into(),
+            )
+        }
+    };
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let pane = super::target::caller_pane_id();
+    Ok(Method::TodoDraftRun(TodoDraftRunParams {
+        cwd: std::path::absolute(&cwd)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string(),
+        item,
+        owner_session_id: caller_session(pane.as_deref()),
+        owner_pane_id: pane,
+        workspace_id: super::target::caller_workspace_id(),
+        env: super::worker::caller_env(),
+        ignore_usage,
+    }))
+}
+
 /// `Ok(None)` asks for help.
 fn parse(args: &[String]) -> Result<Option<Method>, String> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -447,6 +492,10 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
     Ok(Some(match subcommand {
         "run" => {
             let (ignore_usage, rest) = take_switch(rest, "--ignore-usage")?;
+            let (draft, rest) = take_switch(&rest, "--draft")?;
+            if draft {
+                return parse_draft_run(&rest, ignore_usage).map(Some);
+            }
             let (auto_review, rest) = take_switch(&rest, "--auto-review")?;
             let (auto_answer, rest) = take_switch(&rest, "--auto-answer")?;
             let (paths, rest) = take_list(&rest, "--paths")?;
@@ -687,6 +736,34 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn run_draft_takes_the_item_only() {
+        let Ok(Some(Method::TodoDraftRun(params))) =
+            parse(&args(&["run", "t-abcd2345", "--draft", "--auto-review"]))
+        else {
+            panic!("run --draft did not parse");
+        };
+        assert_eq!(params.item, "t-abcd2345");
+        assert!(!params.ignore_usage);
+        let Ok(Some(Method::TodoDraftRun(params))) =
+            parse(&args(&["run", "--draft", "--ignore-usage", "t-abcd2345"]))
+        else {
+            panic!("run --draft --ignore-usage did not parse");
+        };
+        assert!(params.ignore_usage);
+        for extra in [
+            &["--message", "feat: x"][..],
+            &["--paths", "src/**"],
+            &["--check", "workers"],
+            &["--task", "task.md"],
+        ] {
+            let mut words = vec!["run", "t-abcd2345", "--draft"];
+            words.extend_from_slice(extra);
+            let refused = parse(&args(&words)).unwrap_err();
+            assert!(refused.contains("the server drafts them"), "{refused}");
+        }
     }
 
     #[test]
