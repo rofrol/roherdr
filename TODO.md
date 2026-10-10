@@ -1535,6 +1535,15 @@ Items agents add. Not approved until the user moves them up.
      cannot inspect a `bash -c` script for `rm`); a script file passed:
      document "pass a script file, not `bash -c`" with herdr-job.
 
+- [ ] The `todo` skill for `herdr todo next` (proposed by the worker of run [t-ux4n3s3o]
+  `r-wjmj7vys`, 2026-10-10): the chat coordinator does not start workers
+  itself; once approved it runs `herdr todo next --continue` and waits for
+  the chain; it only queues new requests while a chain runs and runs
+  `herdr todo stop` on the user's "stop"; after a stop it reads `herdr
+  history --item` of the last item and asks the "Needs a decision"
+  questions; its tab has no `coordinator` role. Depends on slice 4 and the
+  consult-network decision.
+
 ## Needs a decision
 
 Moved here in the 2026-10-06 triage: each item's last line states what the
@@ -1583,6 +1592,10 @@ user needs to decide or do.
   fork sync, which rebases onto upstream and force-pushes `master`.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
+
+- [ ] [t-ktk2vg5y] May a headless item coordinator reach the consult models (OpenAI, OpenRouter, DeepSeek) so it can "ask the models" as the user expects?
+  Options: grant it `net.egress` to those API hosts through the capability protocol, per repository, user-approved (Recommended) | it never consults; it escalates to the chat session, which consults and answers | no item coordinators until decided
+  Checked: the fresh-coordinator slice (run `r-wjmj7vys`, 2026-10-10) runs item coordinators in the worker sandbox with no network, so the consult helpers fail; consulting the models is part of how the user wants decisions made.
 
 ### Decide
 
