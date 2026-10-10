@@ -11,6 +11,31 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
+  advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
+  "Coordinator/worker versus a single agent"; the user kept the queue as
+  is). Conclusions to keep in view: the real value today is the
+  server-side `verify` gate, provenance trailers and worktree isolation;
+  about two thirds of the driver's items fixed the machinery itself; the
+  sandbox sends the riskiest work (VMs) to unsandboxed pane workers;
+  review by the same model is only partly independent; parallelism is
+  unused; the protocol, Odin, crate and tracker plans were called scope
+  creep for one user. Proposed measurement: for the next 10 product (not
+  machinery) items, the user's hands-on minutes per useful landed item,
+  alternating the driver and a single agent gated by the same `verify`;
+  the coordinator records per item: the user's interventions, review
+  rounds, machinery fixes it triggered, wall-clock time.
+  Approved by the user 2026-10-10 ("zgoda"). How it runs, decided by the
+  coordinator: it applies to the next 10 product items (not coordination
+  machinery) in "Next"; odd ones through `herdr todo run`, even ones done by
+  one Claude agent working the item directly in a worktree (the
+  coordinator itself, which this approval allows for those items only),
+  landed only after the same `herdr worker verify`-style checks (one
+  commit, subject, paths, `just check`). Per item the coordinator appends
+  to this item: the user's interventions (count, minutes the user reports
+  if he does), review rounds, machinery fixes it triggered, wall-clock time
+  from start to push. After 10 items: a summary and a question to the user.
+
 - [ ] A coordinator waiting on a busy worker looks idle (user, 2026-10-07, [t-tmgddenp]
   screenshot: "this circle is grey, it looks as if the coordinator is not
   working"). Its only running job is `herdr agent wait <worker pane>`: no
@@ -1588,21 +1613,6 @@ Items agents add. Not approved until the user moves them up.
   history --item` of the last item and asks the "Needs a decision"
   questions; its tab has no `coordinator` role. Depends on slice 4 and the
   consult-network decision.
-
-- [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
-  advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
-  "Coordinator/worker versus a single agent"; the user kept the queue as
-  is). Conclusions to keep in view: the real value today is the
-  server-side `verify` gate, provenance trailers and worktree isolation;
-  about two thirds of the driver's items fixed the machinery itself; the
-  sandbox sends the riskiest work (VMs) to unsandboxed pane workers;
-  review by the same model is only partly independent; parallelism is
-  unused; the protocol, Odin, crate and tracker plans were called scope
-  creep for one user. Proposed measurement: for the next 10 product (not
-  machinery) items, the user's hands-on minutes per useful landed item,
-  alternating the driver and a single agent gated by the same `verify`;
-  the coordinator records per item: the user's interventions, review
-  rounds, machinery fixes it triggered, wall-clock time.
 
 ## Needs a decision
 
