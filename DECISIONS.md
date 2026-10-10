@@ -764,3 +764,17 @@ commit, landings, item history and `herdr todo review` sit on it. The last
 slice (2026-10-10, e08a6305) is a PreToolUse allowlist for coordinator tabs
 with recorded `# herdr-override:` exceptions; it is active once the
 integration is installed (a decision of the user).
+
+## Coordinator/worker versus a single agent
+
+Devil's advocate round on coordinator/worker versus a single agent
+(user, 2026-10-10; round 20261010-032145-a9e1, sol + MiMo + DeepSeek). Facts
+then: ~30.7k lines in src/workers; 71 of 289 non-TODO commits since
+2026-10-07 on the coordination machinery; about two thirds of the 30
+driver items fixed the machinery itself. All three: simplify; real value
+today is the server-side `verify` gate, provenance trailers and worktree
+isolation; the sandbox pushes the riskiest work to unsandboxed pane
+workers; review by the same model is only partly independent; parallelism
+unused; the protocol, Odin, crate and tracker plans are scope creep for one
+user. Suggested measure: the user's minutes per useful landed item.
+Decided by the user: no change; the queue goes on as it is.
