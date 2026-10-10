@@ -942,3 +942,12 @@ modals close on a click outside (onboarding and custom-command popups
 stay as decided). Left: an input to the coordinator; a taken-over worker's
 line still opens its transcript (redirecting it needs a protocol version
 bump); the takeover tab's two typed commands need a live check.
+
+## A refused `--next` start stalls silently (follows from the bridge,
+
+A `--next` refused by the preflight (14.8 GiB free) stalled silently on
+2026-10-10: the refusal came after `done`, which `todo wait` had already
+returned. Now (5e07a18f) `todo wait` on a run with a pending next returns
+`done` with `next_run_id` only once the next started, or `next_refused`
+with the reason; a refusal notifies the user once; a disk refusal first
+runs the slot's `target_sweep.py slot` and the preflight again.
