@@ -3503,6 +3503,124 @@ fn events_of(fixture: &Fixture, id: &str, kind: &str) -> Vec<serde_json::Value> 
 }
 
 #[test]
+fn a_cleared_coordinator_session_keeps_the_tenure_and_its_workers() {
+    let fixture = Fixture::new("owner-clear");
+    let tenure = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("before-clear"))
+        .unwrap();
+    let id = start_owned(&fixture, "p1", "finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+
+    // A clear from a session the binding does not have moves nothing.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_session_cleared("p1", Some("stranger"), "after-clear", None)
+            .unwrap(),
+        None
+    );
+    // Nor does one in a pane bound to no tenure.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_session_cleared("p2", Some("before-clear"), "after-clear", None)
+            .unwrap(),
+        None
+    );
+
+    let cleared = fixture
+        .supervisor
+        .coordinator_session_cleared("p1", Some("before-clear"), "after-clear", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleared.coordinator_id, tenure.coordinator_id);
+    assert_eq!(
+        (cleared.pane_id.as_deref(), cleared.epoch, cleared.ended_ms),
+        (Some("p1"), tenure.epoch, None)
+    );
+    // Seen again, nothing moves.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_session_cleared("p1", Some("before-clear"), "after-clear", None)
+            .unwrap(),
+        None
+    );
+    let store = fixture.supervisor.shared.store.as_ref().unwrap();
+    let bindings: Vec<(String, Option<String>, bool)> = store
+        .connection()
+        .prepare(
+            "SELECT pane_id, session_id, to_at IS NULL FROM coordinator_bindings
+             WHERE coordinator_id = ?1 ORDER BY rowid",
+        )
+        .unwrap()
+        .query_map([&tenure.coordinator_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        bindings,
+        [
+            ("p1".to_owned(), Some("before-clear".to_owned()), false),
+            ("p1".to_owned(), Some("after-clear".to_owned()), true),
+        ]
+    );
+    assert_eq!(
+        events_of(
+            &fixture,
+            &tenure.coordinator_id,
+            "coordinator_session_cleared"
+        )
+        .len(),
+        1
+    );
+    // The worker stays the tenure's, with the new session.
+    let worker = fixture.supervisor.status(&id).unwrap();
+    assert_eq!(
+        (
+            worker.owner_pane_id.as_deref(),
+            worker.owner_session_id.as_deref(),
+            worker.owner_coordinator_id.as_deref()
+        ),
+        (
+            Some("p1"),
+            Some("after-clear"),
+            Some(tenure.coordinator_id.as_str())
+        )
+    );
+    assert!(obligation_of(&fixture, "p1", &id).is_some());
+
+    // The new session resumed in another pane finds the tenure; the old one
+    // no longer does.
+    assert_eq!(
+        fixture
+            .supervisor
+            .coordinator_resume("p3", "before-clear", None)
+            .unwrap(),
+        None
+    );
+    let resumed = fixture
+        .supervisor
+        .coordinator_resume("p2", "after-clear", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.coordinator_id, tenure.coordinator_id);
+    assert_eq!(resumed.pane_id.as_deref(), Some("p2"));
+    assert_eq!(
+        fixture
+            .supervisor
+            .status(&id)
+            .unwrap()
+            .owner_pane_id
+            .as_deref(),
+        Some("p2")
+    );
+}
+
+#[test]
 fn obligations_follow_the_tenure_to_the_pane_its_session_resumed_in() {
     let fixture = Fixture::new("owner-resume");
     let tenure = fixture

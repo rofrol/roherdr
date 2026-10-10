@@ -553,6 +553,61 @@ impl WorkerSupervisor {
         Ok(Some(info(resumed)))
     }
 
+    /// The agent in pane `pane_id` cleared its session (`/clear`): from
+    /// `from_session`, the one the pane had, into `to_session`. The active
+    /// tenure bound to the pane with `from_session` (or with no session yet)
+    /// moves its binding to `to_session` in one transaction, so a later
+    /// resume of `to_session` finds it; the workers and runs it owns stay
+    /// its own and follow the new session (`owner_moved`,
+    /// `run_owner_moved`). Nothing when the pane is bound to no tenure or
+    /// the binding has another session. Returns the moved tenure.
+    pub(crate) fn coordinator_session_cleared(
+        &self,
+        pane_id: &str,
+        from_session: Option<&str>,
+        to_session: &str,
+        workspace: Option<&str>,
+    ) -> Result<Option<CoordinatorInfo>, WorkerError> {
+        let store = self.tenure_store()?;
+        let mut registry = lock(&self.shared.registry);
+        let at = now_ms();
+        let outcome = store
+            .transaction(|tx| {
+                let Some(tenure) = tx.coordinator_of_pane(pane_id)? else {
+                    return Ok(None);
+                };
+                let bound = tenure.session_id.as_deref();
+                if bound == Some(to_session) || bound.is_some_and(|bound| Some(bound) != from_session)
+                {
+                    return Ok(None);
+                }
+                let cleared =
+                    tx.coordinator_session_cleared(&tenure.id, pane_id, bound, to_session, at)?;
+                let cause = format!(
+                    "its coordinator {} cleared its agent session into {to_session} in pane {pane_id}",
+                    tenure.id
+                );
+                let owner = RunOwner {
+                    pane_id: Some(pane_id),
+                    session_id: Some(to_session),
+                    workspace,
+                    coordinator_id: Some(&tenure.id),
+                };
+                let (moved, staged) =
+                    Self::move_owned(&registry, tx, &tenure.id, &owner, &cause, at)?;
+                Ok(Some((cleared, moved, staged)))
+            })
+            .map_err(store_error)?;
+        let Some((cleared, moved, staged)) = outcome else {
+            return Ok(None);
+        };
+        Self::settle_moves(&mut registry, staged, &moved, at);
+        drop(registry);
+        self.shared.changed.notify_all();
+        notify_clients();
+        Ok(Some(info(cleared)))
+    }
+
     /// Hands the coordination over (`coordinator.handoff`): active tenure
     /// `coordinator_id`, else the one bound to `from_pane`, ends
     /// `handed_off`, and a new tenure of its repository starts bound to

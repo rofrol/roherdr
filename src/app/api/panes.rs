@@ -1624,19 +1624,28 @@ impl App {
             params.agent_session_id,
             params.agent_session_path,
         );
+        let session_start_source =
+            crate::agent_resume::normalize_session_start_source(params.session_start_source);
+        // The session a `/clear` leaves, which a coordination tenure may be bound to.
+        let cleared_session = (session_start_source.as_deref() == Some("clear"))
+            .then(|| self.pane_metadata(ws_idx, pane_id))
+            .flatten()
+            .and_then(|pane| pane.agent_session)
+            .map(|session| session.value);
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref: session_ref.clone(),
             source: params.source.clone(),
             agent_label: agent_label.clone(),
             seq: params.seq,
-            session_start_source: crate::agent_resume::normalize_session_start_source(
-                params.session_start_source,
-            ),
+            session_start_source: session_start_source.clone(),
         });
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         if applied && session_ref.is_some() {
+            if session_start_source.as_deref() == Some("clear") {
+                self.clear_coordinator_session_in(ws_idx, pane_id, cleared_session.as_deref());
+            }
             self.resume_coordinator_in(ws_idx, pane_id);
         }
         self.report_agent_resume(

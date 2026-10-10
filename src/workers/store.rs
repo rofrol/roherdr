@@ -1398,6 +1398,31 @@ impl Tx<'_> {
         tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
+    /// Records `coordinator_session_cleared` and moves tenure `id`'s binding
+    /// in its pane `pane_id` from agent session `from_session` to
+    /// `to_session`, the one the agent cleared it into (`/clear`): its open
+    /// binding ends and a new one starts. The caller checks that the tenure
+    /// is active and bound to that pane and session.
+    pub(super) fn coordinator_session_cleared(
+        &self,
+        id: &str,
+        pane_id: &str,
+        from_session: Option<&str>,
+        to_session: &str,
+        at_ms: u64,
+    ) -> StoreResult<StoredTenure> {
+        let event = serde_json::json!({
+            "type": "coordinator_session_cleared",
+            "coordinator_id": id,
+            "pane_id": pane_id,
+            "from_session": from_session,
+            "session_id": to_session,
+        });
+        self.coordinator_event(id, &event, at_ms)?;
+        self.rebind(id, pane_id, Some(to_session), at_ms)?;
+        tenure_by_id(self.tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
     /// Ends tenure `id`'s open binding and starts one to `pane_id`.
     fn rebind(
         &self,
