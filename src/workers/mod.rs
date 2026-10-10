@@ -29,6 +29,7 @@ pub(crate) mod broker;
 mod capabilities;
 pub(crate) mod coordinators;
 mod history;
+mod inbox;
 #[cfg(test)]
 mod install_script_tests;
 mod item_coordinators;
@@ -616,6 +617,9 @@ struct Before {
     pending: Vec<(String, bool)>,
     turn_ended: bool,
     gone: (bool, bool),
+    /// The tenure that owned it ([`inbox`]).
+    owner: Option<String>,
+    listed: bool,
 }
 
 impl Status {
@@ -759,6 +763,8 @@ impl Status {
             pending: self.open_questions(),
             turn_ended: self.turn_ended(),
             gone: (self.exited, self.lost),
+            owner: self.owner_coordinator.clone(),
+            listed: self.listed(),
         }
     }
 
@@ -4054,6 +4060,7 @@ impl WorkerSupervisor {
                     if !foreign {
                         tx.questions(seq, &before.pending, status)?;
                         tx.worker(status, seq)?;
+                        inbox::write(tx, seq, &before, status, direction, &record)?;
                     }
                     if let Some(receipt) = receipt {
                         tx.reserve_receipt(&receipt.row(), &status.worker_id, ts_ms)?;
@@ -4152,6 +4159,7 @@ impl WorkerSupervisor {
             if !entry.foreign {
                 tx.questions(seq, &before.pending, &status)?;
                 tx.worker(&status, seq)?;
+                inbox::write(tx, seq, &before, &status, Direction::Herdr, &record)?;
             }
             staged.push((*number, status, seq));
         }

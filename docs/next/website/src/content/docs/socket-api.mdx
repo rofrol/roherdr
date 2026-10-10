@@ -109,7 +109,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.prompt_turn`, `agent.prompt_tracked`, `agent.prompt_confirmed`, `agent.prompt_status`, `agent.wait_turn`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.handoff`, `agent.kind_list`, `agent.view.set`, `agent.view.clear` |
-| Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
+| Worker | `worker.start`, `worker.status`, `worker.list`, `worker.wait`, `worker.events`, `worker.prompt`, `worker.interrupt`, `worker.stop`, `worker.kill`, `worker.answer`, `worker.ack`, `worker.obligations`, `worker.drain`, `worker.wait_drained`, `worker.runs`, `worker.escalate`, `worker.verify`, `worker.open_log`, `worker.take_over`, `worker.force_take_over`, `worker.question`, `worker.deny_and_stop` |
 | Coordinator | `coordinator.start`, `coordinator.end`, `coordinator.status`, `coordinator.handoff`, `coordinator.record_override`, `coordinator.allowlist_refusal` |
 | TODO runs | `todo.run`, `todo.draft_run`, `todo.wait`, `todo.resume`, `todo.status`, `todo.runs`, `todo.review`, `todo.next`, `todo.stop`, `todo.queue_set`, `todo.queue_status`, `todo.runnable_state`, `todo.grant`, `todo.grants` |
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
@@ -120,7 +120,7 @@ Raw socket method names use dot notation:
 
 `todo.run`, and `todo.resume` with `action: "retry"`, are refused with the error code `usage_gate` while Claude's usage is high or unknown: the server reads Claude's usage from the provider in that call (not `usage.read`'s cached report) and refuses when a Claude window is 90% or more used or the read fails. The message names each such window with its `used_percent`, or the read's failure. After a refusal the repository's gate stays closed, across server restarts, until such a read shows every Claude window below 80%. `ignore_usage: true`, on the user's word, starts anyway and is recorded in the run's events (see `herdr todo` in the CLI reference).
 
-A live handoff ends every wait still open on the old server (`events.wait`, `agent.wait`, `agent.wait_turn`, `agent.prompt` with `wait`, `agent.prompt_turn`, `agent.prompt_confirmed`, `pane.wait_for_output`, `worker.wait`, `worker.transcript_wait`, `worker.wait_drained`, `todo.wait`) with the error code `server_handed_off`, sent once the new server accepts on the same socket and before the old server exits. A client may send the same request again to the new server; a server that stops or restarts without a handoff answers no such code.
+A live handoff ends every wait still open on the old server (`events.wait`, `agent.wait`, `agent.wait_turn`, `agent.prompt` with `wait`, `agent.prompt_turn`, `agent.prompt_confirmed`, `pane.wait_for_output`, `worker.wait`, `worker.events` with `wait`, `worker.transcript_wait`, `worker.wait_drained`, `todo.wait`) with the error code `server_handed_off`, sent once the new server accepts on the same socket and before the old server exits. A client may send the same request again to the new server; a server that stops or restarts without a handoff answers no such code.
 
 `todo.run` with `auto_review: true` has the server review each of the run's `review` events itself: it stops the worker, runs the verify (the registered checks) on the event's commit and then makes a bounded `claude -p` call returning a typed decision (`approve`, `retry` or `escalate`), which it checks and applies, recording each verify, call and decision in the run's events; an approval of the verified commit is not verified again. `auto_answer: true` has it answer the worker's questions the policy left the same way (`allow`, `deny`, `answer` or `escalate`; a request the policy leaves to the user is only escalated). An escalation is a new `review` or `question` event for the coordinator and also enters the user's `?` list: a review's as a question of the run's worker whose `request_id` starts with `herdr-review-`, which `worker.question` shows and `worker.answer` answers (an option's label or number, or free text, sent back to the review; `deny` leaves the event to the coordinator), an answer's as the worker's own question handed to the user. The reply's run carries `auto_review: true` and `auto_answer: true` only when the server took them, so a client can tell an older server that ignored the field. While a decision step fails, `todo.wait`, `todo.status` and `todo.runs` show the run `blocked` with the error until it goes through (see `herdr todo` in the CLI reference).
 
@@ -1004,6 +1004,32 @@ tenure. It is refused with `coordinator_not_found` without an active tenure,
 with `invalid_request` for the tenure's own pane, with `coordinator_active`
 when `to_pane_id` coordinates already, and with `pane_not_found` for an
 unknown pane. Only this explicit call hands off; no timer does.
+`worker.events` (`owner`, a tenure id, else `owner_pane_id`, the tenure bound
+to that pane; optional `after`, `wait`, `limit` and `snapshot`) is one
+coordinator's inbox over all of its workers, so it waits once, not once per
+worker. Each worker event that concerns a tenure adds an inbox row for it in
+the event's own transaction: `question` (with the `questions` it asked),
+`turn_end` and `exit` (with the worker's `state`), `joined` (started by the
+tenure or moved to it, with `from_coordinator_id`), `left` (its end
+acknowledged with `worker.ack`) and `reowned` (moved to another tenure by a
+resume elsewhere or `coordinator.handoff`, with `to_coordinator_id`). Every
+row carries its event's `seq`, one server-wide sequence of the worker store,
+which a restart and a live handoff keep. The reply `worker_events` carries
+`owner` (the tenure, with its `epoch`, and `ended_ms` once it ended), `events`
+after the cursor `after` in `seq` order, at most `limit` (100, at most 1000;
+never a part of one `seq`'s rows), `more` when more follow, and `next_cursor`
+(`<store incarnation>-<seq>`) to pass as `after` next. Without `after` it
+answers at once with `snapshot`: the owner's workers as they are now (the
+running ones and the ended ones whose end it has not acknowledged), each with
+its pending questions however old, and the cursor it starts from; `snapshot`
+adds it to a reply after a cursor. A cursor the server cannot serve (another
+store's, older than the inbox or past the latest event) answers at once with
+`resync_required`, the snapshot and a new cursor, never a silent skip; a
+malformed one is refused with `invalid_request`. With `wait` the request
+blocks while there is no event after `after`, woken by the commits that add
+rows, never by a timer; a tenure that has ended answers at once. Reading
+resolves nothing: a question stays pending, and in the snapshot, until it is
+answered. `worker.wait` with `until: attention` stays the one-worker form.
 `coordinator.record_override` (`pane_id`, `tool`, `command`, `reason`, optional
 `cwd` and `session_id`) records one exception to a coordinator tab's command
 allowlist: a tool call that carried `# herdr-override: <reason>` (the Claude

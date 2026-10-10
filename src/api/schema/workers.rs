@@ -395,6 +395,87 @@ pub struct WorkerWaitParams {
     pub after: Option<i64>,
 }
 
+/// One coordinator's event inbox over all of its workers (`worker.events`).
+/// Reading is not resolving: a question stays pending until it is answered,
+/// whatever was read.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerEventsParams {
+    /// The coordination tenure (`c-...`) whose workers' events to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Without `owner`: the active tenure bound to this pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    /// The `next_cursor` of the previous reply: only later events count.
+    /// Absent: the reply is a snapshot and the cursor it starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Block while there is no event after `after`. A snapshot, a
+    /// `resync_required` and an owner whose tenure has ended answer at once.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub wait: bool,
+    /// The most events one reply carries (`more` tells there are more); 100
+    /// when absent, at most 1000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Also send the snapshot of the owner's workers with a valid `after`
+    /// (a coordinator that reconnects after it lost its context).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub snapshot: bool,
+}
+
+/// What happened to one of a coordinator's workers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerEventKind {
+    /// It asked questions (`questions`), which wait for an answer.
+    Question,
+    /// A turn finished, failed or was interrupted (`state`).
+    TurnEnd,
+    /// The process ended (`exited` or `lost`, `state`).
+    Exit,
+    /// It became this owner's: started by it, or handed to it
+    /// (`from_coordinator_id`).
+    Joined,
+    /// Its owner acknowledged its end: it is no longer listed.
+    Left,
+    /// It moved to another tenure (`to_coordinator_id`), which handles its
+    /// events from now on.
+    Reowned,
+    /// A kind this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One event of a coordinator's inbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerEvent {
+    /// The server-wide event number; the inbox is in this order.
+    pub seq: i64,
+    pub worker_id: String,
+    pub kind: WorkerEventKind,
+    /// With `question`: the questions the event asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<WorkerQuestion>,
+    /// With `turn_end` and `exit`: the worker's state then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<WorkerState>,
+    /// With `joined`: the tenure that owned it before, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_coordinator_id: Option<String>,
+    /// With `reowned`: the tenure that owns it now, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_coordinator_id: Option<String>,
+}
+
+/// The owner's workers as they are now: the running ones and the ended ones
+/// whose end it has not acknowledged, each with its pending questions,
+/// however old the events that brought them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkerEventsSnapshot {
+    pub workers: Vec<WorkerInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkerInterruptParams {
     pub worker_id: String,

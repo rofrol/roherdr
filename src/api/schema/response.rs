@@ -29,9 +29,9 @@ use super::todo::{
     TodoRunnableState,
 };
 use super::workers::{
-    WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
-    WorkerObligation, WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerTranscript,
-    WorkerVerification,
+    WorkerAttentionReason, WorkerDrain, WorkerEvent, WorkerEventsSnapshot, WorkerInfo,
+    WorkerItemRuns, WorkerKillReport, WorkerObligation, WorkerQuestion, WorkerQuestionDetail,
+    WorkerRun, WorkerTranscript, WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -95,6 +95,21 @@ pub enum ResponseResult {
         questions: Vec<WorkerQuestion>,
         seq: i64,
         worker: WorkerInfo,
+    },
+    /// `worker.events`' reply: the owner's tenure, its workers' events after
+    /// the cursor in order, and the cursor to pass next. `resync_required`:
+    /// the cursor could not be served (another store, or older than the
+    /// inbox), so the reply carries the snapshot and starts over from it.
+    WorkerEvents {
+        owner: CoordinatorInfo,
+        events: Vec<WorkerEvent>,
+        next_cursor: String,
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        more: bool,
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        resync_required: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<WorkerEventsSnapshot>,
     },
     /// `worker.obligations`' reply: the owned workers with an event their
     /// owner has not acknowledged, oldest worker first.

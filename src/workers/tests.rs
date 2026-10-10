@@ -11463,3 +11463,407 @@ while True:
         );
     }
 }
+
+/// `worker.events`: one coordinator's inbox over all of its workers.
+mod inbox_events {
+    use super::*;
+    use crate::api::schema::{WorkerEvent, WorkerEventKind, WorkerEventsParams};
+    use crate::workers::inbox::Events;
+
+    const PANE: &str = "p-coordinator";
+
+    /// A fixture with an active tenure bound to [`PANE`], and its id.
+    fn coordinated(name: &str) -> (Fixture, String) {
+        let fixture = Fixture::new(name);
+        let repo = fixture.repo.display().to_string();
+        let tenure = fixture
+            .supervisor
+            .coordinator_start(&repo, PANE, Some("s-coordinator"))
+            .unwrap();
+        (fixture, tenure.coordinator_id)
+    }
+
+    /// Starts a worker owned by [`PANE`]'s tenure, on `supervisor`.
+    fn start_owned(fixture: &Fixture, supervisor: &WorkerSupervisor, prompt: &str) -> String {
+        let mut params = start_params(&fixture.repo, prompt, Some("stub-model"));
+        params.owner_pane_id = Some(PANE.into());
+        supervisor.start(&params).unwrap().worker_id
+    }
+
+    fn params(owner: &str, after: Option<&str>) -> WorkerEventsParams {
+        WorkerEventsParams {
+            owner: Some(owner.into()),
+            after: after.map(str::to_owned),
+            ..WorkerEventsParams::default()
+        }
+    }
+
+    /// One read that does not wait.
+    fn read(supervisor: &WorkerSupervisor, params: &WorkerEventsParams) -> Events {
+        supervisor
+            .events(params, HANG_GUARD, || panic!("a read without wait blocked"))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// `worker.events --wait` with the liveness re-check as long as the hang
+    /// guard, so a missed wake fails the test. `on_block` runs at the first
+    /// point the wait would block, in the window between its look and its
+    /// block. Returns the reply and how many times the wait got that far.
+    fn wait(
+        supervisor: &WorkerSupervisor,
+        owner: &str,
+        after: &str,
+        mut on_block: impl FnMut(),
+    ) -> (Events, usize) {
+        let started = Instant::now();
+        let mut blocked = 0;
+        let params = WorkerEventsParams {
+            wait: true,
+            ..params(owner, Some(after))
+        };
+        let events = supervisor
+            .events(&params, HANG_GUARD, || {
+                assert!(started.elapsed() < HANG_GUARD, "the events wait hung");
+                blocked += 1;
+                if blocked == 1 {
+                    on_block();
+                }
+                true
+            })
+            .unwrap()
+            .unwrap();
+        (events, blocked)
+    }
+
+    /// Waits from `after`, re-arming from each reply's cursor, until the
+    /// events gathered satisfy `done`; `on_block` runs at the first block.
+    /// Returns them and the last cursor.
+    fn gather(
+        supervisor: &WorkerSupervisor,
+        owner: &str,
+        after: &str,
+        on_block: impl FnOnce(),
+        done: impl Fn(&[WorkerEvent]) -> bool,
+    ) -> (Vec<WorkerEvent>, String) {
+        let mut cursor = after.to_owned();
+        let mut gathered = Vec::new();
+        let mut on_block = Some(on_block);
+        while !done(&gathered) {
+            let (events, _) = wait(supervisor, owner, &cursor, || {
+                if let Some(on_block) = on_block.take() {
+                    on_block();
+                }
+            });
+            assert!(!events.events.is_empty(), "a wait answered with nothing");
+            gathered.extend(events.events);
+            cursor = events.next_cursor;
+        }
+        (gathered, cursor)
+    }
+
+    fn kinds(events: &[WorkerEvent]) -> Vec<(String, WorkerEventKind)> {
+        events
+            .iter()
+            .map(|event| (event.worker_id.clone(), event.kind))
+            .collect()
+    }
+
+    fn has(events: &[WorkerEvent], worker_id: &str, kind: WorkerEventKind) -> bool {
+        events
+            .iter()
+            .any(|event| event.worker_id == worker_id && event.kind == kind)
+    }
+
+    fn asked(events: &[WorkerEvent]) -> Vec<String> {
+        events
+            .iter()
+            .flat_map(|event| &event.questions)
+            .map(|question| question.request_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn two_questions_asked_together_arrive_in_one_batch_and_stay_pending() {
+        let (fixture, owner) = coordinated("inbox-pair");
+        let supervisor = &fixture.supervisor;
+        let first = read(supervisor, &params(&owner, None));
+        assert!(first.events.is_empty());
+        assert!(!first.resync_required);
+        assert!(first.snapshot.unwrap().workers.is_empty());
+
+        let id = start_owned(&fixture, supervisor, "pair WebFetch https://example.com");
+        fixture.wait_for(&id, |worker| worker.questions.len() == 2);
+        let (batch, blocked) = wait(supervisor, &owner, &first.next_cursor, || {});
+        assert_eq!(blocked, 0, "both were there already");
+        assert_eq!(batch.events[0].kind, WorkerEventKind::Joined);
+        assert_eq!(
+            asked(&batch.events),
+            ["perm-1", "perm-2"],
+            "{:#?}",
+            batch.events
+        );
+        assert!(batch
+            .events
+            .windows(2)
+            .all(|pair| pair[0].seq <= pair[1].seq));
+        assert!(!batch.more);
+        assert!(batch.snapshot.is_none());
+        assert!(batch
+            .next_cursor
+            .ends_with(&format!("-{}", batch.events.last().unwrap().seq)));
+
+        // A bounded batch says more follow, and the next one goes on from it.
+        let one = read(
+            supervisor,
+            &WorkerEventsParams {
+                limit: Some(1),
+                ..params(&owner, Some(&first.next_cursor))
+            },
+        );
+        assert_eq!(kinds(&one.events), [(id.clone(), WorkerEventKind::Joined)]);
+        assert!(one.more);
+        let rest = read(supervisor, &params(&owner, Some(&one.next_cursor)));
+        assert_eq!(asked(&rest.events), ["perm-1", "perm-2"]);
+
+        // Reading answered nothing: both still wait, and the owner owes them.
+        assert_eq!(supervisor.status(&id).unwrap().questions.len(), 2);
+        assert_eq!(supervisor.obligations(Some(PANE)).len(), 1);
+        let again = read(
+            supervisor,
+            &WorkerEventsParams {
+                snapshot: true,
+                ..params(&owner, Some(&batch.next_cursor))
+            },
+        );
+        assert!(again.events.is_empty());
+        assert_eq!(again.next_cursor, batch.next_cursor);
+        assert_eq!(again.snapshot.unwrap().workers[0].questions.len(), 2);
+
+        fixture
+            .answer_request(&id, "perm-1", WorkerDecision::Allow)
+            .unwrap();
+        fixture
+            .answer_request(&id, "perm-2", WorkerDecision::Deny)
+            .unwrap();
+        let (ended, _) = gather(
+            supervisor,
+            &owner,
+            &batch.next_cursor,
+            || {},
+            |events| has(events, &id, WorkerEventKind::TurnEnd),
+        );
+        assert!(asked(&ended).is_empty(), "{ended:#?}");
+        assert_eq!(
+            ended.last().unwrap().state,
+            Some(WorkerState::Finished),
+            "{ended:#?}"
+        );
+    }
+
+    #[test]
+    fn events_while_the_coordinator_is_busy_wait_for_its_next_wait() {
+        let (fixture, owner) = coordinated("inbox-busy");
+        let supervisor = &fixture.supervisor;
+        let start = read(supervisor, &params(&owner, None)).next_cursor;
+        let a = start_owned(&fixture, supervisor, "finish");
+        fixture.wait(&a, WorkerWaitUntil::TurnEnd);
+        let (drained, _) = wait(supervisor, &owner, &start, || {});
+        assert_eq!(
+            kinds(&drained.events),
+            [
+                (a.clone(), WorkerEventKind::Joined),
+                (a.clone(), WorkerEventKind::TurnEnd)
+            ]
+        );
+
+        // Between the drain and the re-arm, and while the coordinator's
+        // turn is busy: a turn ends and another worker joins and asks.
+        supervisor.prompt(&a, "finish").unwrap();
+        fixture.wait(&a, WorkerWaitUntil::TurnEnd);
+        let b = start_owned(&fixture, supervisor, "perm WebFetch https://example.com");
+        fixture.wait_for_question(&b);
+
+        let (rearmed, blocked) = wait(supervisor, &owner, &drained.next_cursor, || {});
+        assert_eq!(blocked, 0, "the waiting events answer at once");
+        assert_eq!(
+            kinds(&rearmed.events),
+            [
+                (a.clone(), WorkerEventKind::TurnEnd),
+                (b.clone(), WorkerEventKind::Joined),
+                (b.clone(), WorkerEventKind::Question)
+            ]
+        );
+        assert!(rearmed
+            .events
+            .windows(2)
+            .all(|pair| pair[0].seq < pair[1].seq));
+    }
+
+    #[test]
+    fn a_worker_started_and_one_exiting_during_a_wait_wake_it() {
+        let (fixture, owner) = coordinated("inbox-membership");
+        let supervisor = &fixture.supervisor;
+        let a = start_owned(&fixture, supervisor, "finish");
+        fixture.wait(&a, WorkerWaitUntil::TurnEnd);
+        let first = read(supervisor, &params(&owner, None));
+        assert_eq!(ids(&first.snapshot.unwrap().workers), [a.as_str()]);
+
+        // Started during the wait: it joins.
+        let mut b = None;
+        let (events, blocked) = wait(supervisor, &owner, &first.next_cursor, || {
+            b = Some(start_owned(&fixture, supervisor, "block"));
+        });
+        let b = b.unwrap();
+        assert_eq!(blocked, 1);
+        assert_eq!(
+            kinds(&events.events)[0],
+            (b.clone(), WorkerEventKind::Joined)
+        );
+
+        // Exiting during the wait: its exit wakes it.
+        let (exited, cursor) = gather(
+            supervisor,
+            &owner,
+            &events.next_cursor,
+            || {
+                supervisor.stop(&a).unwrap();
+            },
+            |events| has(events, &a, WorkerEventKind::Exit),
+        );
+        let exit = exited
+            .iter()
+            .find(|event| event.kind == WorkerEventKind::Exit)
+            .unwrap();
+        assert_eq!(exit.state, Some(WorkerState::Exited));
+
+        // Its owner acknowledges its end: it leaves.
+        let seq = supervisor.status(&a).unwrap().seq.unwrap();
+        supervisor.ack(&a, seq).unwrap();
+        let (left, _) = wait(supervisor, &owner, &cursor, || {});
+        assert_eq!(kinds(&left.events), [(a.clone(), WorkerEventKind::Left)]);
+        supervisor.kill(&b, false).unwrap();
+    }
+
+    #[test]
+    fn a_restart_or_handoff_keeps_the_sequence_and_an_unservable_cursor_resyncs() {
+        let (fixture, owner) = coordinated("inbox-restart");
+        let a = start_owned(&fixture, &fixture.supervisor, "finish");
+        fixture.wait(&a, WorkerWaitUntil::TurnEnd);
+        fixture.supervisor.stop(&a).unwrap();
+        fixture.wait(&a, WorkerWaitUntil::Exit);
+        let cursor = read(&fixture.supervisor, &params(&owner, None)).next_cursor;
+
+        // The next server opens the same store: the cursor is served.
+        let next = WorkerSupervisor::open_with(
+            fixture.root.join("workers"),
+            fixture.root.join("claude-stub"),
+            None,
+        );
+        let served = read(&next, &params(&owner, Some(&cursor)));
+        assert!(!served.resync_required);
+        assert!(served.events.is_empty());
+        assert_eq!(served.next_cursor, cursor);
+        let b = start_owned(&fixture, &next, "finish");
+        let (joined, _) = wait(&next, &owner, &cursor, || {});
+        assert_eq!(joined.events[0].kind, WorkerEventKind::Joined);
+        assert_eq!(joined.events[0].worker_id, b);
+        let (incarnation, seq) = cursor.rsplit_once('-').unwrap();
+        assert!(joined.events[0].seq > seq.parse::<i64>().unwrap());
+        next.stop(&b).ok();
+        let started = Instant::now();
+        next.wait(&b, WorkerWaitUntil::Exit, HANG_GUARD, || {
+            assert!(started.elapsed() < HANG_GUARD, "worker {b} hung");
+            true
+        })
+        .unwrap();
+
+        // Another store's cursor, or one past the latest event, is not
+        // served: resync, with the snapshot and a cursor to go on from.
+        for unservable in ["ffff0000-1".to_owned(), format!("{incarnation}-999999999")] {
+            let resync = read(&next, &params(&owner, Some(&unservable)));
+            assert!(resync.resync_required, "{unservable}");
+            assert!(resync.events.is_empty());
+            let workers = resync.snapshot.unwrap().workers;
+            assert_eq!(ids(&workers), [a.clone(), b.clone()], "{unservable}");
+            assert!(resync.next_cursor.starts_with(&format!("{incarnation}-")));
+            // A resync answers a wait at once.
+            let (waited, blocked) = wait(&next, &owner, &unservable, || {});
+            assert!(waited.resync_required);
+            assert_eq!(blocked, 0);
+        }
+        // Nor is one older than the inbox.
+        store_of(&next)
+            .connection()
+            .execute(
+                "UPDATE meta SET value = '999999998' WHERE key = 'inbox_from'",
+                [],
+            )
+            .unwrap();
+        assert!(read(&next, &params(&owner, Some(&cursor))).resync_required);
+        // A malformed cursor is the caller's error.
+        let malformed = next
+            .events(&params(&owner, Some("not a cursor")), HANG_GUARD, || true)
+            .err()
+            .unwrap();
+        assert_eq!(malformed.code(), "invalid_request");
+    }
+
+    #[test]
+    fn re_owning_during_a_wait_tells_the_old_owner_and_the_new_one_gets_the_question() {
+        let (fixture, owner) = coordinated("inbox-reown");
+        let supervisor = &fixture.supervisor;
+        let a = start_owned(&fixture, supervisor, "perm WebFetch https://example.com");
+        fixture.wait_for_question(&a);
+        let cursor = read(supervisor, &params(&owner, None)).next_cursor;
+
+        let mut next = None;
+        let (moved, blocked) = wait(supervisor, &owner, &cursor, || {
+            next = Some(
+                supervisor
+                    .coordinator_handoff(None, Some(PANE), "p-next", Some("s-next"), None)
+                    .unwrap(),
+            );
+        });
+        let next = next.unwrap();
+        assert_eq!(blocked, 1);
+        assert_eq!(
+            kinds(&moved.events),
+            [(a.clone(), WorkerEventKind::Reowned)]
+        );
+        assert_eq!(
+            moved.events[0].to_coordinator_id.as_deref(),
+            Some(next.coordinator_id.as_str())
+        );
+        assert!(moved.owner.ended_ms.is_some());
+
+        // The old tenure has ended: its wait answers at once, with nothing.
+        let (after, blocked) = wait(supervisor, &owner, &moved.next_cursor, || {});
+        assert!(after.events.is_empty());
+        assert_eq!(blocked, 0);
+
+        // The new owner: the worker joined it, and its snapshot carries the
+        // question asked before it existed, still pending.
+        let joined = read(supervisor, &params(&next.coordinator_id, Some(&cursor)));
+        assert_eq!(
+            kinds(&joined.events),
+            [(a.clone(), WorkerEventKind::Joined)]
+        );
+        assert_eq!(
+            joined.events[0].from_coordinator_id.as_deref(),
+            Some(owner.as_str())
+        );
+        let fresh = read(
+            supervisor,
+            &WorkerEventsParams {
+                owner_pane_id: Some("p-next".into()),
+                ..WorkerEventsParams::default()
+            },
+        );
+        assert_eq!(fresh.owner.coordinator_id, next.coordinator_id);
+        let workers = fresh.snapshot.unwrap().workers;
+        assert_eq!(ids(&workers), [a.as_str()]);
+        assert_eq!(workers[0].questions[0].request_id, "perm-1");
+        supervisor.kill(&a, false).unwrap();
+    }
+}

@@ -271,7 +271,7 @@ pub(crate) fn override_notice(record: &CoordinatorOverride) -> (String, String) 
 }
 
 impl WorkerSupervisor {
-    fn tenure_store(&self) -> Result<&super::store::Store, WorkerError> {
+    pub(super) fn tenure_store(&self) -> Result<&super::store::Store, WorkerError> {
         self.shared
             .store
             .as_ref()
@@ -385,6 +385,11 @@ impl WorkerSupervisor {
         let tenure = ended.ok_or_else(|| {
             WorkerError::CoordinatorNotFound(format!("coordinator {id} not found"))
         })?;
+        // Wakes a `worker.events` wait on the tenure, which answers once it
+        // has ended: through the registry lock, which that wait holds from
+        // its check to its block, so the wake cannot fall in between.
+        drop(lock(&self.shared.registry));
+        self.shared.changed.notify_all();
         notify_clients();
         Ok(info(tenure))
     }

@@ -19,6 +19,7 @@ pub(super) fn is_worker_method(method: &Method) -> bool {
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)
             | Method::WorkerWait(_)
+            | Method::WorkerEvents(_)
             | Method::WorkerPrompt(_)
             | Method::WorkerInterrupt(_)
             | Method::WorkerStop(_)
@@ -104,6 +105,22 @@ pub(super) fn handle_worker_request(
             match waited {
                 Ok(None) => return None,
                 Ok(Some(result)) => Ok(result),
+                Err(error) => Err(error),
+            }
+        }
+        Method::WorkerEvents(params) => {
+            // As above: the owner's workers' events end the wait.
+            let keep_waiting = || !should_stop_connection(stream, running).unwrap_or(true);
+            match supervisor.events(&params, CONNECTION_POLL_INTERVAL, keep_waiting) {
+                Ok(None) => return None,
+                Ok(Some(events)) => Ok(ResponseResult::WorkerEvents {
+                    owner: events.owner,
+                    events: events.events,
+                    next_cursor: events.next_cursor,
+                    more: events.more,
+                    resync_required: events.resync_required,
+                    snapshot: events.snapshot,
+                }),
                 Err(error) => Err(error),
             }
         }

@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use crate::api::schema::{
     EmptyParams, Method, Request, WorkerAckParams, WorkerAnswerParams, WorkerCommandTarget,
-    WorkerDecision, WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams,
+    WorkerDecision, WorkerDrainAction, WorkerDrainParams, WorkerEscalateParams, WorkerEventsParams,
     WorkerGeneratedFile, WorkerInterruptParams, WorkerKillParams, WorkerObligationsParams,
     WorkerPromptParams, WorkerRunsParams, WorkerStartParams, WorkerTarget, WorkerVerifyParams,
     WorkerWaitDrainedParams, WorkerWaitParams, WorkerWaitUntil,
 };
 
 const USAGE: &str =
-    "usage: herdr worker <start|status|list|runs|wait|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
+    "usage: herdr worker <start|status|list|runs|wait|events|ack|obligations|escalate|verify|prompt|interrupt|stop|kill|answer|log|take-over|drain|wait-drained> ...
   herdr worker start [--name TASK] [--cwd DIR] [--model MODEL] [--workspace ID] [--item ID]
                      [--folder-slot NAME --branch BRANCH [--base REF] [--fresh-build]]
                      (--prompt TEXT | <prompt>)
@@ -36,6 +36,17 @@ const USAGE: &str =
     --attention returns at once or at the first of a pending question, a
     turn's end or the worker's end, with the reason, the questions and seq;
     --after SEQ (the seq it returned) skips the state that seq already showed.
+  herdr worker events [--owner COORDINATOR_ID] [--after CURSOR] [--wait] [--limit N] [--snapshot]
+    One coordinator's inbox over all of its workers (default owner: the
+    tenure bound to the caller's pane): every question, turn end, exit,
+    joined, left and reowned after CURSOR, in order, at most N (100) per
+    reply, with next_cursor to pass as --after next and more when more
+    follow. --wait blocks while there is none. Without --after, or with a
+    cursor the server cannot serve (resync_required), the reply is a
+    snapshot of the owner's workers and their pending questions instead;
+    --snapshot adds it to a reply after CURSOR. Reading answers nothing: a
+    question stays pending until it is answered. One wait per coordinator:
+    drain the batch, handle it, then wait again from its next_cursor.
   herdr worker ack <worker_id> <seq>
     The owner handled the worker's events up to SEQ (the seq a wait or
     obligations returned); acknowledge after handling, not before.
@@ -123,6 +134,18 @@ pub(super) fn run_worker_command(args: &[String]) -> std::io::Result<i32> {
     let verifying = matches!(method, Method::WorkerVerify(_));
     let hints = matches!(method, Method::WorkerVerify(_) | Method::WorkerWait(_));
     let response = match &method {
+        Method::WorkerEvents(params) if params.wait => {
+            let what = match &params.owner {
+                Some(owner) => format!("coordinator {owner}'s events"),
+                None => "the caller's coordinator's events".to_owned(),
+            };
+            let reply = super::reconnect::wait("worker events", &what, |_| Request {
+                id: id.clone(),
+                method: method.clone(),
+            })?;
+            super::reconnect::report_gave_up("worker events", &what, &reply);
+            reply.response
+        }
         Method::WorkerWait(params) => {
             let what = format!("worker {}", params.worker_id);
             let reply = super::reconnect::wait("worker wait", &what, |_| Request {
@@ -185,6 +208,7 @@ fn parse_worker_args(args: &[String]) -> Result<Option<Method>, String> {
         "status" => Method::WorkerStatus(target(rest)?),
         "list" if rest.is_empty() => Method::WorkerList(EmptyParams::default()),
         "wait" => Method::WorkerWait(parse_wait(rest)?),
+        "events" => Method::WorkerEvents(parse_events(rest)?),
         "ack" => match rest {
             [worker_id, seq] => Method::WorkerAck(WorkerAckParams {
                 worker_id: worker_id.clone(),
@@ -330,6 +354,42 @@ fn parse_wait(args: &[String]) -> Result<WorkerWaitParams, String> {
         until: Some(until),
         after,
     })
+}
+
+fn parse_events(args: &[String]) -> Result<WorkerEventsParams, String> {
+    let (owner, rest) = take_string_option(args, "--owner")?;
+    let (after, rest) = take_string_option(&rest, "--after")?;
+    let (limit, rest) = take_string_option(&rest, "--limit")?;
+    let limit = limit
+        .map(|limit| {
+            limit
+                .parse()
+                .ok()
+                .filter(|limit| *limit > 0)
+                .ok_or_else(|| format!("--limit takes a positive number, not {limit}"))
+        })
+        .transpose()?;
+    let mut params = WorkerEventsParams {
+        owner_pane_id: owner
+            .is_none()
+            .then(super::target::caller_pane_id)
+            .flatten(),
+        owner,
+        after,
+        limit,
+        ..WorkerEventsParams::default()
+    };
+    for arg in rest {
+        match arg.as_str() {
+            "--wait" => params.wait = true,
+            "--snapshot" => params.snapshot = true,
+            _ => return Err(format!("events does not take {arg}")),
+        }
+    }
+    if params.owner.is_none() && params.owner_pane_id.is_none() {
+        return Err("events needs --owner outside a coordinator's pane".into());
+    }
+    Ok(params)
 }
 
 /// Takes `flag SEQ` out of `args`; returns the seq and the other arguments.
@@ -874,6 +934,41 @@ mod tests {
             &["start", "--branch", "w/fix", "do it"],
             &["start", "--fresh-build", "do it"],
             &["start", "--base", "main", "do it"],
+        ] {
+            assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parses_events_of_an_owner_after_a_cursor() {
+        let Ok(Some(Method::WorkerEvents(params))) = parse_worker_args(&args(&[
+            "events",
+            "--owner",
+            "c-abcd2345",
+            "--after",
+            "ab12-7",
+            "--wait",
+            "--limit",
+            "5",
+            "--snapshot",
+        ])) else {
+            panic!("events must parse");
+        };
+        assert_eq!(
+            params,
+            WorkerEventsParams {
+                owner: Some("c-abcd2345".into()),
+                owner_pane_id: None,
+                after: Some("ab12-7".into()),
+                wait: true,
+                limit: Some(5),
+                snapshot: true,
+            }
+        );
+        for bad in [
+            &["events", "--owner", "c-abcd2345", "--limit", "0"][..],
+            &["events", "--owner", "c-abcd2345", "--after"],
+            &["events", "--owner", "c-abcd2345", "w1"],
         ] {
             assert!(parse_worker_args(&args(bad)).is_err(), "{bad:?}");
         }
