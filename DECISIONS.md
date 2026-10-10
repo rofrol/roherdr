@@ -979,3 +979,11 @@ the old listener closing and the new one binding gets a refusal, reported,
 not polled; to revisit only if observed; prompts that type text are not
 re-sent (no double delivery); `worker wait-drained` does not reconnect
 (the drain lives in the old server).
+
+## Record coordinators in the server's SQLite (user, 2026-10-08: "is it
+
+Coordinator tenures are complete for now (2026-10-10, a429668c): a
+`/clear` moves the tenure's binding to the new session in one transaction
+(a `coordinator_session_cleared` event; owned workers and runs follow),
+the server takes the old session id from the pane's previous session, so
+the SessionStart hook and the integration version stay unchanged.

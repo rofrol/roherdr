@@ -126,56 +126,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   9. A conformance test per capability, incl. "unsupported must refuse"
      for every adapter.
 
-- [ ] Record coordinators in the server's SQLite (user, 2026-10-08: "is it [t-ikxxc5ca]
-  written to SQL that there is now a coordinator with id X that started
-  coordinating at T? ask the models"). Today: no; workers store only
-  `owner_pane`/`owner_session`; being a coordinator is a tab role flag.
-  Round `20261008-104011-d7f1` (sol, MiMo, DeepSeek), agreeing, chosen by the
-  coordinator:
-  - a coordination tenure with its own id (`c-...`), never the pane or
-    Claude session id: those are bindings that change on resume or a move
-    to another pane (a `coordinator_bindings` table: pane, session, from,
-    to); a resume keeps the tenure, a handoff starts a new one;
-  - events `coordinator_started` / `coordinator_ended` (with the reason) /
-    later `handoff` in the same events log, the `coordinators` table their
-    projection in the same transaction (repo, current item, started_at,
-    ended_at, end reason, epoch);
-  - one active coordinator per repository (the TODO rule), enforced by a
-    partial unique index on the repo where `ended_at IS NULL`;
-  - the server is the source of truth: setting the tab role coordinator
-    calls `coordinator.start`, the crown is drawn from the table, ending it
-    calls `coordinator.end`; `workers.owner_coordinator_id` points at the
-    tenure, the pane/session stay for routing and escalation; obligations
-    key on the tenure;
-  - a crashed coordinator: closed on the owner events herdr already has
-    (pane closed, agent exited) and re-evaluated at server start
-    (`end_reason = orphaned`), no heartbeat reaper (DeepSeek's, dismissed
-    under the user's events-only decision of 2026-10-08);
-  - first slice: the table, the bindings, the two events, start/end calls
-    wired to the tab role, the unique index, `owner_coordinator_id`;
-    handoff epochs with the handoff item, item history later.
-  First slice done 2026-10-08 by `w31` (`feat: coordinator tenures, one per
-  repository`, verified, installed); the first tenure is `c-6xve3ubo`
-  (the herdr coordinator's tab). Left: obligations keyed on the tenure,
-  the current item, handoff epochs, resume keeping the tenure.
-  Slice 2 done 2026-10-10 (run `r-yp27jex3`): obligations keyed on the tenure;
-  a resume of the same session moves the binding (and reopens an orphaned
-  latest tenure) with its workers and runs; `todo run` sets and clears the
-  current item; `herdr coordinator handoff --to <pane>` (epoch + 1, one
-  transaction, a `handoff` event); the driver no longer overwrites a run's
-  owner columns. Decided by the coordinator for a later slice: a `/clear`
-  gives the pane's agent a new session id, so a later `claude --resume` with
-  it does not find the tenure; Claude's `SessionStart` hook reports
-  `source: clear` with both ids (an observable event), so herdr can move the
-  binding to the new session there. After an explicit `coordinator end`
-  its workers leave `worker obligations --pane` (intended).
-  The same commit also fixes a pre-existing shutdown race found by `verify`
-  (`server_survives_hangup_and_logs_why_it_stops`, 19/20 under load): the
-  server installed its SIGINT/SIGTERM handling only after the API socket
-  listened, so a signal right after "listening" was lost; now the signals
-  route to `ServerStop` before the socket listens (in a handoff just before
-  the new server's socket) and a stop request wakes the event loop.
-
 - [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
   (Decided by the user 2026-10-09 after consult round
   20261009-141652-8a76, sol + MiMo + DeepSeek: "shadow, then block").
