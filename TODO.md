@@ -32,6 +32,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   deadline`). Tests with a stub model returning each action, an invalid
   one, and a failure.
 
+- [ ] Callers of `todo resume --close` pass `--next` or `--stop-reason` [t-75isp7kf]
+  (follows from the bridge, 2026-10-10; small, text only): herdr's
+  AGENTS.md driver paragraph and the item coordinator prompt name the new
+  flags; the `todo` skill's driver step too (the user's agent config: a
+  text edit that widens nothing).
+
 - [ ] Closing an item starts the next or says why not (bridge; decided by [t-pvim76jl]
   the user 2026-10-10 after "a coordinator stops because it took nothing;
   what weak architecture"; round 20261010-113822-76ae). `herdr todo resume
