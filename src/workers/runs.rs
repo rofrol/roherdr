@@ -61,11 +61,11 @@ use tracing::warn;
 use super::verify::{tail, CheckCommand};
 use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
-    TodoAction, TodoEventKind, TodoLanding, TodoLandingSource, TodoResumeParams, TodoRunEvent,
-    TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams, WorkerAnswerParams,
-    WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams, WorkerQuestion,
-    WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict, WorkerVerifyParams,
-    WorkerWaitUntil,
+    TodoAction, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun, TodoResumeParams,
+    TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams,
+    WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams,
+    WorkerQuestion, WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict,
+    WorkerVerifyParams, WorkerWaitUntil,
 };
 
 mod finish;
@@ -163,6 +163,24 @@ pub(super) struct RunFinish {
     /// [`CONTRACT_PATHS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) contract_check: Option<RunCheck>,
+    /// The item a close named to start once the run is done, with its
+    /// run's parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next: Option<TodoNextRun>,
+    /// Why a close named no next item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) stop_reason: Option<String>,
+    /// When the driver recorded its intent to start `next`: a run of that
+    /// item created since then is the start a crash cut off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next_intent_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) next_refusal: Option<String>,
+    /// The stop reason was handed to the server's notifications.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) stop_notified: bool,
 }
 
 /// The check the verify adds by itself to a run whose diff touches
@@ -192,8 +210,20 @@ impl Run {
             todo_commit: self.info.todo_commit.clone(),
             pushed: self.info.pushed.clone(),
             kept_branches: self.info.kept_branches.clone(),
+            next_run_id: self.info.next_run_id.clone(),
+            next_refusal: self.info.next_refusal.clone(),
             ..self.finish.clone()
         }
+    }
+
+    /// Whether the run is done and what its close named after it is not
+    /// settled yet: the next item's start, or the stop reason's notice.
+    pub(super) fn follow_up_pending(&self) -> bool {
+        self.info.status == TodoRunStatus::Done
+            && ((self.finish.next.is_some()
+                && self.info.next_run_id.is_none()
+                && self.info.next_refusal.is_none())
+                || (self.finish.stop_reason.is_some() && !self.finish.stop_notified))
     }
 }
 
@@ -1129,6 +1159,10 @@ impl WorkerSupervisor {
                 todo_commit: None,
                 pushed: None,
                 kept_branches: Vec::new(),
+                next_item: None,
+                next_run_id: None,
+                next_refusal: None,
+                stop_reason: None,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1648,6 +1682,7 @@ impl WorkerSupervisor {
                 ));
             }
         }
+        Self::check_after_close(&run, &params)?;
         let mut note = None;
         let mut usage = None;
         match params.action {
@@ -1749,6 +1784,8 @@ impl WorkerSupervisor {
             "note": note,
             "todo_note": params.note,
             "close": params.close,
+            "next": params.next,
+            "stop_reason": params.stop_reason,
             "message": (params.action == TodoAction::Abort).then_some(&params.message),
             "ignore_usage": params.ignore_usage,
             "usage_gate": usage,
@@ -1801,6 +1838,10 @@ impl WorkerSupervisor {
                         current.info.step = TodoStep::Stop;
                         current.finish.note = params.note.clone();
                         current.finish.close = params.close.clone();
+                        current.finish.next = params.next.clone();
+                        current.finish.stop_reason = params.stop_reason.clone();
+                        current.info.next_item = params.next.as_ref().map(|next| next.item.clone());
+                        current.info.stop_reason = params.stop_reason.clone();
                         current.current.review_event = Some(params.event);
                         current.current.review_decision = Some(APPROVE.to_owned());
                         current.current.review_text = None;
@@ -1892,10 +1933,63 @@ impl WorkerSupervisor {
         Ok(run.info)
     }
 
+    /// What follows a close: a closing decision names the next item to
+    /// start (`next`) or why none (`stop_reason`), never neither, never
+    /// both; neither comes without a close. The next run's parameters are
+    /// checked here as far as they do not depend on the repository's state
+    /// when it starts (its preflight checks the rest then).
+    fn check_after_close(run: &Run, params: &TodoResumeParams) -> Result<(), WorkerError> {
+        let invalid = |why: String| Err(WorkerError::Invalid(why));
+        match (&params.close, &params.next, &params.stop_reason) {
+            (None, None, None) => return Ok(()),
+            (None, _, _) => {
+                return invalid(
+                    "only an approval with a closing decision (--close) takes --next or \
+                     --stop-reason"
+                        .into(),
+                )
+            }
+            (Some(_), None, None) => {
+                return invalid(
+                    "a closing decision needs --next <item-id> (the item whose run starts once \
+                     this run is done) or --stop-reason <text> (why no item starts next)"
+                        .into(),
+                )
+            }
+            (Some(_), Some(_), Some(_)) => {
+                return invalid("--next and --stop-reason exclude each other".into())
+            }
+            (Some(_), None, Some(reason)) => {
+                if reason.trim().is_empty() {
+                    return invalid("the stop reason is empty".into());
+                }
+                return Ok(());
+            }
+            (Some(_), Some(_), None) => {}
+        }
+        let Some(next) = &params.next else {
+            return Ok(());
+        };
+        super::check_item_id(&next.item)?;
+        if next.item == run.info.item {
+            return invalid(format!(
+                "--next names the item this run closes ({})",
+                next.item
+            ));
+        }
+        if next.task.trim().is_empty() {
+            return invalid("the next run's task text is empty".into());
+        }
+        check_message(&next.message).map_err(|why| WorkerError::Invalid(format!("next: {why}")))?;
+        check_paths(&next.paths).map_err(|why| WorkerError::Invalid(format!("next: {why}")))?;
+        Ok(())
+    }
+
     /// Drives every run in progress again, as a server that starts does,
     /// from its step, after acknowledging its worker's events the
-    /// coordinator handled (an ack lost to a crash). A waiting run's events
-    /// stay its owner's obligation.
+    /// coordinator handled (an ack lost to a crash), and settles what a
+    /// done run's close named after it ([`Self::follow_up`]). A waiting
+    /// run's events stay its owner's obligation.
     pub(crate) fn resume_runs(&self) {
         let runs = match self.run_store().map(|store| store.runs(None)) {
             Ok(Ok(runs)) => runs,
@@ -1912,6 +2006,10 @@ impl WorkerSupervisor {
                     self.ack_quietly(worker_id, seq);
                 }
                 self.spawn_driver(&run.info.run_id);
+            } else if run.follow_up_pending() {
+                // Done before a server ended, its next start or stop notice
+                // not settled yet.
+                self.spawn_follow_up(&run.info.run_id);
             }
         }
     }

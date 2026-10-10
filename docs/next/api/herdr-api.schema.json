@@ -5694,6 +5694,44 @@
           ],
           "type": "object"
         },
+        "TodoNextRun": {
+          "description": "The run a closing approval starts when its run is done: `todo.run`'s\nparameters for the next item, in the closed run's repository.",
+          "properties": {
+            "checks": {
+              "description": "Its checks; the closed run's checks when empty.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "item": {
+              "description": "The next item's id; it must be in `TODO.md` when the run starts.",
+              "type": "string"
+            },
+            "message": {
+              "description": "Its exact commit subject.",
+              "type": "string"
+            },
+            "paths": {
+              "description": "Its git glob pathspecs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "task": {
+              "description": "Its worker's task text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "item",
+            "task",
+            "message",
+            "paths"
+          ],
+          "type": "object"
+        },
         "TodoResumeParams": {
           "description": "The coordinator's answer to a run's event.",
           "properties": {
@@ -5727,7 +5765,7 @@
               ]
             },
             "close": {
-              "description": "With `approve`: the decision that closes the item. The run removes\nthe item from `TODO.md` and adds the decision to `DECISIONS.md` as a\nsection (its first line, when it starts with `#`, is the section's\ntitle; otherwise the item's title is), committed by path. Excludes\n`note`.",
+              "description": "With `approve`: the decision that closes the item. The run removes\nthe item from `TODO.md` and adds the decision to `DECISIONS.md` as a\nsection (its first line, when it starts with `#`, is the section's\ntitle; otherwise the item's title is), committed by path. Excludes\n`note`. A close takes `next` or `stop_reason`, never neither: the\ncommand that closes an item also carries what comes after it.",
               "type": [
                 "string",
                 "null"
@@ -5770,6 +5808,17 @@
                 "null"
               ]
             },
+            "next": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TodoNextRun"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `close`: the item whose run the driver starts as soon as this\nrun is `done`, in the same repository, owned by this run's owner.\nRecorded as intent before the start and result after it (a server\nrestart in between starts it then); a refused start (its preflight,\nthe usage gate, a run in progress) is a `next_refused` event on this\nrun. Excludes `stop_reason`."
+            },
             "note": {
               "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (`scripts/todo_edit.py append-to`), committed by path.",
               "type": [
@@ -5786,6 +5835,13 @@
             },
             "run_id": {
               "type": "string"
+            },
+            "stop_reason": {
+              "description": "With `close`: why no next item is started. Recorded in the item's\nhistory (`stopped`) when the run is `done`, and shown to the user as\na notification. Excludes `next`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "task": {
               "description": "With `retry` (of a `review` or `verify_failed` event): the review of\nthe attempt, which the next attempt's task appends to this one's.\nRefused after `retry_conflict`, which keeps the review.",
@@ -11597,6 +11653,11 @@
               "const": "coordinator_ended",
               "description": "That item coordinator ended; `text` is its outcome (`done`,\n`escalated`, `blocked`, `failed`) and what it reported.",
               "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "The close named no next item: `text` is the coordinator's reason\n(`todo.resume`'s `stop_reason`), written when the closing run was\ndone. It follows the close, and an item's summary keeps the close as\nits latest record.",
+              "type": "string"
             }
           ]
         },
@@ -11642,7 +11703,8 @@
               "type": "string"
             },
             "last": {
-              "$ref": "#/schemas/success_response/$defs/HistoryEvent"
+              "$ref": "#/schemas/success_response/$defs/HistoryEvent",
+              "description": "Its latest record other than `stopped`, which only follows a close."
             },
             "repo": {
               "type": "string"
@@ -16332,6 +16394,11 @@
               "const": "retry_conflict",
               "description": "The previous attempt's commit does not cherry-pick onto the next\nattempt's branch (`error` names the conflict): retry starts that\nattempt from the base without it, or abort.",
               "type": "string"
+            },
+            {
+              "const": "next_refused",
+              "description": "After `done`: the next item the close named did not start (`error`\nnames the refusal: its preflight, the usage gate, a run in\nprogress). The run stays done; start the item by hand.",
+              "type": "string"
             }
           ]
         },
@@ -16778,6 +16845,27 @@
             "message": {
               "type": "string"
             },
+            "next_item": {
+              "description": "The item the close named to start next (`todo.resume`'s `next`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_refusal": {
+              "description": "Why `next_item` did not start (also a `next_refused` event).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_run_id": {
+              "description": "The run of `next_item` the driver started once this run was done.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "paths": {
               "items": {
                 "type": "string"
@@ -16818,6 +16906,13 @@
             },
             "step": {
               "$ref": "#/schemas/success_response/$defs/TodoStep"
+            },
+            "stop_reason": {
+              "description": "Why the close started no next item (`todo.resume`'s `stop_reason`).",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "task": {
               "description": "The current attempt's task text: the first attempt's is the run's,\neach later one is the previous attempt's with its review appended.",

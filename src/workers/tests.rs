@@ -5807,6 +5807,8 @@ mod todo_runs {
             ignore_usage: false,
             note: None,
             close: None,
+            next: None,
+            stop_reason: None,
             caller_pane_id: Some("p-coordinator".into()),
             caller_session_id: None,
             caller_workspace_id: Some("ws-coordinator".into()),
@@ -6303,6 +6305,8 @@ mod todo_runs {
                 ignore_usage: false,
                 note: None,
                 close: None,
+                next: None,
+                stop_reason: None,
                 caller_pane_id: Some("p-coordinator".into()),
                 caller_session_id: None,
                 caller_workspace_id: Some("ws-coordinator".into()),
@@ -7410,6 +7414,8 @@ mod todo_runs {
             ignore_usage: false,
             note: None,
             close: None,
+            next: None,
+            stop_reason: None,
             caller_pane_id: Some("p-coordinator".into()),
             caller_session_id: None,
             caller_workspace_id: Some("ws-coordinator".into()),
@@ -7708,9 +7714,283 @@ mod todo_runs {
             .todo_resume(TodoResumeParams {
                 note: note.map(str::to_owned),
                 close: close.map(str::to_owned),
+                stop_reason: close.map(|_| STOP_REASON.to_owned()),
                 ..resume_params(run_id, event, TodoAction::Approve)
             })
             .unwrap();
+    }
+
+    /// The stop reason [`approve_with`] closes an item with.
+    const STOP_REASON: &str = "the next item waits on the user";
+
+    /// `todo.resume`'s next run of [`ITEM2`]: `b.txt` with the run's checks.
+    fn next_of_item2() -> crate::api::schema::TodoNextRun {
+        crate::api::schema::TodoNextRun {
+            item: ITEM2.into(),
+            task: "commit b.txt feat: add b".into(),
+            message: "feat: add b".into(),
+            paths: vec!["*.txt".into()],
+            checks: Vec::new(),
+        }
+    }
+
+    fn close_with_next(fixture: &Fixture, run_id: &str, event: i64) {
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                close: Some("## Closed\n\n- Chosen.\n".into()),
+                next: Some(next_of_item2()),
+                ..resume_params(run_id, event, TodoAction::Approve)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_close_needs_a_next_item_or_a_stop_reason_which_the_history_and_a_notice_get() {
+        let fixture = todo_repo("todo-close-stop");
+        with_finish(&fixture);
+        let repo = repo_of(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        let refused = |params: TodoResumeParams| {
+            let error = fixture.supervisor.todo_resume(params).unwrap_err();
+            assert_eq!(error.code(), "invalid_request", "{error}");
+            error.to_string()
+        };
+        let approve = || resume_params(&run.run_id, review.event_id, TodoAction::Approve);
+        let close = Some("## Closed\n".to_owned());
+        // A close names what comes after it.
+        let message = refused(TodoResumeParams {
+            close: close.clone(),
+            ..approve()
+        });
+        assert!(
+            message.contains("--next") && message.contains("--stop-reason"),
+            "{message}"
+        );
+        // Not both, not without a close, not blank, not the closed item.
+        refused(TodoResumeParams {
+            close: close.clone(),
+            next: Some(next_of_item2()),
+            stop_reason: Some("why".into()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            note: Some("a note".into()),
+            stop_reason: Some("why".into()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            next: Some(next_of_item2()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            close: close.clone(),
+            stop_reason: Some("  ".into()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            close: close.clone(),
+            next: Some(crate::api::schema::TodoNextRun {
+                item: ITEM.into(),
+                ..next_of_item2()
+            }),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            close: close.clone(),
+            next: Some(crate::api::schema::TodoNextRun {
+                message: "Add b".into(),
+                ..next_of_item2()
+            }),
+            ..approve()
+        });
+        // The refusals left the run waiting on its review.
+        let waiting = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!(waiting.pending_event, Some(review.event_id));
+
+        approve_with(
+            &fixture,
+            &run.run_id,
+            review.event_id,
+            None,
+            close.as_deref(),
+        );
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.stop_reason.as_deref(), Some(STOP_REASON));
+        assert_eq!((finished.next_item, finished.next_run_id), (None, None));
+        // The item's history has the reason after its close; the close
+        // stays the item's latest record.
+        let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history_kinds(&item),
+            [
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Closed,
+                HistoryEventKind::Stopped
+            ]
+        );
+        assert_eq!(item.events[2].text.as_deref(), Some(STOP_REASON));
+        assert_eq!(item.events[2].run_id.as_deref(), Some(run.run_id.as_str()));
+        let list = fixture.supervisor.history_list(Some(&repo)).unwrap();
+        assert_eq!(list[0].last.kind, HistoryEventKind::Closed);
+        // The user is notified once; a restart does not notify again.
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].title.contains(ITEM), "{notices:?}");
+        assert_eq!(notices[0].body, STOP_REASON);
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_stop_notified").len(),
+            1
+        );
+        fixture.supervisor.resume_runs();
+        assert!(crate::workers::take_user_notices().is_empty());
+        // No next run started.
+        assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn a_close_with_a_next_item_starts_its_run_once_the_run_is_done() {
+        let fixture = todo_repo("todo-close-next");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        close_with_next(&fixture, &run.run_id, review.event_id);
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(master_subjects(&fixture)[0], "docs(todo): close t-abcd2345");
+        assert_eq!(finished.next_item.as_deref(), Some(ITEM2));
+        // The driver settled the next start before it let go of the run.
+        let closed = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        let next_id = closed.next_run_id.clone().expect("the next run started");
+        assert_eq!(closed.next_refusal, None);
+        let types = event_types(&fixture, &run.run_id);
+        let at = |kind: &str| types.iter().position(|seen| seen == kind).unwrap();
+        assert!(at("run_cleaned") < at("run_next_intent"), "{types:?}");
+        assert!(at("run_next_intent") < at("run_next_started"), "{types:?}");
+        let started = run_events(&fixture, &run.run_id, "run_next_started");
+        assert_eq!(started[0]["run_id"], serde_json::json!(next_id));
+        assert_eq!(started[0]["already"], false);
+        // The next run is the item's, with this run's owner and checks.
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(
+            (next.info.item.as_str(), next.info.message.as_str()),
+            (ITEM2, "feat: add b")
+        );
+        assert_eq!(next.info.checks, ["ok"]);
+        assert_eq!(next.owner_pane.as_deref(), Some("p-coordinator"));
+        assert_eq!(next.workspace.as_deref(), Some("ws-coordinator"));
+        let (review, _) = wait(&fixture, &next_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        assert!(
+            review
+                .diff_stat
+                .as_deref()
+                .unwrap_or_default()
+                .contains("b.txt"),
+            "{review:#?}"
+        );
+        abort(&fixture, &next_id, review.event_id);
+    }
+
+    #[test]
+    fn a_refused_next_start_is_an_event_on_the_done_run() {
+        let fixture = todo_repo("todo-close-next-refused");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // Claude's usage rises while the run finishes: the gate refuses the
+        // next start.
+        fixture.supervisor.set_usage_for_test(fresh_usage(95, 10));
+        close_with_next(&fixture, &run.run_id, review.event_id);
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let (refused, ended) = wait(&fixture, &run.run_id, Some(done.event_id));
+        assert_eq!(refused.kind, TodoEventKind::NextRefused, "{refused:#?}");
+        assert!(refused.actions.is_empty(), "{refused:#?}");
+        let why = refused.error.clone().unwrap_or_default();
+        assert!(
+            why.contains(ITEM2) && why.contains("usage_gate") && why.contains("95% used"),
+            "{why}"
+        );
+        assert_eq!(
+            (
+                ended.status,
+                ended.next_refusal.as_deref(),
+                ended.next_run_id
+            ),
+            (TodoRunStatus::Done, Some(why.as_str()), None)
+        );
+        // Settled: a restart does not try again.
+        fixture.supervisor.resume_runs();
+        assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_next_intent").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_restart_between_done_and_the_next_start_starts_it() {
+        let fixture = todo_repo("todo-close-next-restart");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        // The server ends after the intent, before the start.
+        runs::crash_before(&run.repo, TodoStep::Done);
+        close_with_next(&fixture, &run.run_id, review.event_id);
+        let (done, _) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        let cut = fixture.supervisor.todo_status(&run.run_id).unwrap();
+        assert_eq!((cut.next_run_id, cut.next_refusal), (None, None));
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_next_intent").len(),
+            1
+        );
+        assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
+
+        // The server that starts settles it from the recorded intent.
+        fixture.supervisor.resume_runs();
+        wait_until("the next run's start", || {
+            fixture
+                .supervisor
+                .todo_status(&run.run_id)
+                .unwrap()
+                .next_run_id
+                .is_some()
+        });
+        let next_id = fixture
+            .supervisor
+            .todo_status(&run.run_id)
+            .unwrap()
+            .next_run_id
+            .unwrap();
+        assert_eq!(
+            run_events(&fixture, &run.run_id, "run_next_intent").len(),
+            1
+        );
+        // Started once: another start finds nothing left to settle.
+        fixture.supervisor.resume_runs();
+        let runs = fixture.supervisor.todo_runs(None, None).unwrap().0;
+        assert_eq!(
+            runs.iter().map(|run| run.item.as_str()).collect::<Vec<_>>(),
+            [ITEM, ITEM2]
+        );
+        let (review, _) = wait(&fixture, &next_id, None);
+        abort(&fixture, &next_id, review.event_id);
     }
 
     fn run_events(fixture: &Fixture, run_id: &str, kind: &str) -> Vec<serde_json::Value> {
@@ -8206,7 +8486,11 @@ mod todo_runs {
         let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
         assert_eq!(
             history_kinds(&item),
-            [HistoryEventKind::Claimed, HistoryEventKind::Closed]
+            [
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Closed,
+                HistoryEventKind::Stopped
+            ]
         );
         assert_eq!(item.title.as_deref(), Some("The driven item"));
         let item_text = format!("- [ ] The driven item [{ITEM}]\n  Its text.\n");

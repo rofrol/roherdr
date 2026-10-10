@@ -2152,6 +2152,36 @@ fn notify_clients() {
     }
 }
 
+/// A notification a driver raised for the user (a todo run's stop reason),
+/// which the server sends to its client shells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UserNotice {
+    pub(crate) title: String,
+    pub(crate) body: String,
+}
+
+/// The notices no server took yet, and whether there are any, which the
+/// server's loop reads without the lock.
+static USER_NOTICES: Mutex<Vec<UserNotice>> = Mutex::new(Vec::new());
+static USER_NOTICES_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Queues a notice for the user and wakes the server, which sends it
+/// ([`take_user_notices`]).
+fn notify_user(notice: UserNotice) {
+    lock(&USER_NOTICES).push(notice);
+    USER_NOTICES_PENDING.store(true, std::sync::atomic::Ordering::Release);
+    notify_clients();
+}
+
+/// The notices queued since the last call, oldest first.
+pub(crate) fn take_user_notices() -> Vec<UserNotice> {
+    if !USER_NOTICES_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        return Vec::new();
+    }
+    std::mem::take(&mut *lock(&USER_NOTICES))
+}
+
 /// A question some worker waits on, with the worker it belongs to.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingWorkerQuestion {

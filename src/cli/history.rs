@@ -149,6 +149,7 @@ fn kind_name(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::Blocked => "blocked",
         HistoryEventKind::CoordinatorStarted => "coordinator started",
         HistoryEventKind::CoordinatorEnded => "coordinator ended",
+        HistoryEventKind::Stopped => "stopped",
         HistoryEventKind::Unknown => "unknown",
     }
 }
