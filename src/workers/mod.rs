@@ -4578,7 +4578,7 @@ impl WorkerSupervisor {
     ) -> Result<WorkerInfo, WorkerError> {
         if runs::escalations::is_escalation(request_id) {
             // A review escalation is the user's already.
-            return self.status(worker_id);
+            return self.escalation_reply(worker_id);
         }
         self.escalate_because(worker_id, request_id, "its coordinator escalated it")
     }
@@ -4707,7 +4707,7 @@ impl WorkerSupervisor {
                 &[],
                 params.message.as_deref(),
             )?;
-            return self.status(&params.worker_id);
+            return self.escalation_reply(&params.worker_id);
         }
         let deny = WorkerAnswerParams {
             worker_id: params.worker_id.clone(),
@@ -5121,7 +5121,7 @@ impl WorkerSupervisor {
                 &params.answers,
                 params.message.as_deref(),
             )?;
-            return self.status(&params.worker_id);
+            return self.escalation_reply(&params.worker_id);
         }
         let answered = self.command(
             params.command_id.as_deref(),

@@ -68,6 +68,40 @@ pub struct TodoRunParams {
     pub auto_answer: bool,
 }
 
+/// `todo.run` whose worker's task the server drafts itself: a bounded,
+/// stateless model call (`draft_task`) with the item's text, the
+/// `DECISIONS.md` sections it names, the repository's code and test rules
+/// (`AGENTS.md`), its registered checks, `git log -20` and the item's
+/// history returns the task text, the exact commit subject, the path globs
+/// and the check names, or a question for the user. The server checks the
+/// draft (a lowercase conventional subject, relative globs inside the
+/// repository, registered checks), records it and starts the run with it as
+/// `todo.run` with those parameters would; an invalid draft or a failed call
+/// is asked once more, then escalated. The run is reviewed and its worker's
+/// questions answered by the server too (`auto_review`, `auto_answer`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDraftRunParams {
+    /// A directory in the repository (the CLI sends its working directory).
+    pub cwd: String,
+    /// The TODO item's id (`t-abcd2345`); it must be in the repository's
+    /// `TODO.md`.
+    pub item: String,
+    /// The coordinator's pane, which owns the run (as `todo.run`'s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The caller's environment, which the checks run with (`HERDR_*`
+    /// dropped); kept in the server's memory only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    /// Start even while the usage gate refuses, on the user's word.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub ignore_usage: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoRunTarget {
     pub run_id: String,
@@ -268,6 +302,9 @@ pub enum TodoAction {
 #[serde(rename_all = "snake_case")]
 pub enum TodoStep {
     Preflight,
+    /// The server drafts the worker's task (`todo.draft_run`), then
+    /// starts it.
+    Draft,
     Start,
     Attention,
     Review,
@@ -352,6 +389,11 @@ pub enum TodoEventKind {
     /// names the refusal: its preflight, the usage gate, a run in
     /// progress). The run stays done; start the item by hand.
     NextRefused,
+    /// The server's draft of the worker's task needs an answer (`error`
+    /// holds the question and its options, or why no valid draft came):
+    /// `retry` with the answer as task text drafts again with it, or abort.
+    /// The user can answer it from the `?` list too.
+    Draft,
     #[serde(other)]
     Unknown,
 }
@@ -429,6 +471,10 @@ pub struct TodoRunInfo {
     /// (`todo.run`'s `auto_answer`).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub auto_answer: bool,
+    /// The server drafts the run's task, subject, paths and checks itself
+    /// (`todo.draft_run`); they are empty until the draft is applied.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub drafted: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -545,6 +591,22 @@ pub struct TodoReview {
     /// The commit on `master` the attempt landed as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed_sha: Option<String>,
+    /// The server's draft the run started with (`todo.draft_run`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<TodoDraft>,
+}
+
+/// A run's task as the server drafted it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDraft {
+    /// The decision's id (`d-...`).
+    pub decision_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub task: String,
+    pub message: String,
+    pub paths: Vec<String>,
+    pub checks: Vec<String>,
 }
 
 /// The `(commit, base)` an approval is bound to.

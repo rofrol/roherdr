@@ -61,14 +61,15 @@ use tracing::warn;
 use super::verify::{tail, CheckCommand};
 use super::{lock, now_ms, repository_of, todo_titles, WorkerError, WorkerSupervisor};
 use crate::api::schema::{
-    TodoAction, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun, TodoResumeParams,
-    TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep, TodoWaitParams,
-    WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerInfo, WorkerKillParams,
-    WorkerQuestion, WorkerQuestionState, WorkerStartParams, WorkerState, WorkerVerdict,
-    WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
+    TodoAction, TodoDraftRunParams, TodoEventKind, TodoLanding, TodoLandingSource, TodoNextRun,
+    TodoResumeParams, TodoRunEvent, TodoRunInfo, TodoRunParams, TodoRunStatus, TodoStep,
+    TodoWaitParams, WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerInfo,
+    WorkerKillParams, WorkerQuestion, WorkerQuestionState, WorkerStartParams, WorkerState,
+    WorkerVerdict, WorkerVerification, WorkerVerifyParams, WorkerWaitUntil,
 };
 
 mod auto_answer;
+mod auto_draft;
 mod auto_review;
 pub(super) mod decision;
 pub(super) mod escalations;
@@ -193,6 +194,10 @@ pub(super) struct RunFinish {
     /// ([`auto_answer`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) auto_answer: bool,
+    /// The server drafts the run's task, subject, paths and checks itself
+    /// ([`auto_draft`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) draft: bool,
 }
 
 /// The check the verify adds by itself to a run whose diff touches
@@ -606,6 +611,51 @@ fn check_paths(paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The checks `names` names, in order, with their argv: each registered in
+/// the checks file, with a program, and named once.
+fn registered_checks(checks: &ChecksFile, names: &[String]) -> Result<Vec<RunCheck>, String> {
+    if names.is_empty() {
+        return Err(format!("the run needs at least one check of {CHECKS_FILE}"));
+    }
+    let mut registered = Vec::new();
+    for name in names {
+        if registered
+            .iter()
+            .any(|check: &RunCheck| &check.name == name)
+        {
+            return Err(format!("check {name:?} is named twice"));
+        }
+        let argv = checks.checks.get(name).cloned().ok_or_else(|| {
+            format!(
+                "no check {name:?} in {CHECKS_FILE}; it has: {}",
+                checks.checks.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        if argv.first().is_none_or(|program| program.is_empty()) {
+            return Err(format!("check {name:?} in {CHECKS_FILE} has no program"));
+        }
+        registered.push(RunCheck {
+            name: name.clone(),
+            argv,
+        });
+    }
+    Ok(registered)
+}
+
+/// The check the verify adds for a diff that touches the API, when the
+/// repository registers it and the run does not name it.
+fn contract_check_of(checks: &ChecksFile, registered: &[RunCheck]) -> Option<RunCheck> {
+    checks
+        .checks
+        .get(CONTRACT_CHECK)
+        .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+        .filter(|_| !registered.iter().any(|check| check.name == CONTRACT_CHECK))
+        .map(|argv| RunCheck {
+            name: CONTRACT_CHECK.to_owned(),
+            argv: argv.clone(),
+        })
+}
+
 fn read_checks(repo: &Path) -> Result<ChecksFile, String> {
     let path = repo.join(CHECKS_FILE);
     let text = std::fs::read_to_string(&path)
@@ -965,6 +1015,7 @@ fn actions_for(kind: TodoEventKind) -> Vec<TodoAction> {
         TodoEventKind::PushFailed => vec![TodoAction::RetryPush, TodoAction::Abort],
         TodoEventKind::Blocked => vec![TodoAction::Abort],
         TodoEventKind::RetryConflict => vec![TodoAction::Retry, TodoAction::Abort],
+        TodoEventKind::Draft => vec![TodoAction::Retry, TodoAction::Abort],
         _ => Vec::new(),
     }
 }
@@ -1111,6 +1162,36 @@ impl WorkerSupervisor {
     /// Starts a run of `params.item`: preflight, then a driver that takes it
     /// from the worker's start on. A refused preflight starts nothing.
     pub(crate) fn todo_run(&self, params: TodoRunParams) -> Result<TodoRunInfo, WorkerError> {
+        self.create_run(params, false)
+    }
+
+    /// Starts a run of `params.item` whose task, subject, paths and checks
+    /// the server drafts itself ([`auto_draft`]): preflight of what does not
+    /// depend on them, then a driver that drafts them and starts the worker
+    /// as [`Self::todo_run`] would. It reviews and answers by itself too.
+    pub(crate) fn todo_draft_run(
+        &self,
+        params: TodoDraftRunParams,
+    ) -> Result<TodoRunInfo, WorkerError> {
+        let params = TodoRunParams {
+            cwd: params.cwd,
+            item: params.item,
+            task: String::new(),
+            message: String::new(),
+            paths: Vec::new(),
+            checks: Vec::new(),
+            owner_pane_id: params.owner_pane_id,
+            owner_session_id: params.owner_session_id,
+            workspace_id: params.workspace_id,
+            env: params.env,
+            ignore_usage: params.ignore_usage,
+            auto_review: true,
+            auto_answer: true,
+        };
+        self.create_run(params, true)
+    }
+
+    fn create_run(&self, params: TodoRunParams, draft: bool) -> Result<TodoRunInfo, WorkerError> {
         let cwd = Path::new(&params.cwd);
         if !cwd.is_absolute() {
             return Err(WorkerError::Invalid(format!(
@@ -1125,7 +1206,7 @@ impl WorkerSupervisor {
         if let Some(active) = store.active_run(&repo).map_err(store_error)? {
             return Err(Self::run_active(&active));
         }
-        let preflighted = self.preflight(&params, Path::new(&repo))?;
+        let preflighted = self.preflight(&params, Path::new(&repo), draft)?;
         let usage = self.usage_gate(&repo, params.ignore_usage)?;
         // The item as the claim records it: its text and every id in TODO.md
         // now, which the close compares with to name the follow-ups.
@@ -1151,7 +1232,11 @@ impl WorkerSupervisor {
                 run_id: run_id.clone(),
                 repo: repo.clone(),
                 item: params.item.clone(),
-                step: TodoStep::Start,
+                step: if draft {
+                    TodoStep::Draft
+                } else {
+                    TodoStep::Start
+                },
                 status: TodoRunStatus::Running,
                 attempt: 1,
                 base: Some(preflighted.base.clone()),
@@ -1177,6 +1262,7 @@ impl WorkerSupervisor {
                 stop_reason: None,
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
+                drafted: draft,
             },
             checks: preflighted.checks.clone(),
             owner_pane: params.owner_pane_id.clone(),
@@ -1188,6 +1274,7 @@ impl WorkerSupervisor {
                 contract_check: preflighted.contract_check.clone(),
                 auto_review: params.auto_review,
                 auto_answer: params.auto_answer,
+                draft,
                 ..RunFinish::default()
             },
             current: Attempt {
@@ -1213,6 +1300,7 @@ impl WorkerSupervisor {
             "ignore_usage": params.ignore_usage,
             "auto_review": params.auto_review,
             "auto_answer": params.auto_answer,
+            "draft": draft,
             "usage_gate": usage,
             "item_text": item_text,
             "item_ids": item_ids,
@@ -1326,14 +1414,23 @@ impl WorkerSupervisor {
     /// Checks everything a run needs before it starts anything: the task,
     /// the message, the paths, the item in `TODO.md`, the registered check,
     /// the free disk, a free and clean folder slot, and `master`'s commit.
-    fn preflight(&self, params: &TodoRunParams, repo: &Path) -> Result<Preflighted, WorkerError> {
+    /// A run the server drafts has no task, message, paths or checks yet:
+    /// its draft is checked when it comes ([`auto_draft`]).
+    fn preflight(
+        &self,
+        params: &TodoRunParams,
+        repo: &Path,
+        draft: bool,
+    ) -> Result<Preflighted, WorkerError> {
         let refuse = |why: String| WorkerError::Preflight(format!("preflight: {why}"));
         super::check_item_id(&params.item)?;
-        if params.task.trim().is_empty() {
-            return Err(refuse("the task text is empty".into()));
+        if !draft {
+            if params.task.trim().is_empty() {
+                return Err(refuse("the task text is empty".into()));
+            }
+            check_message(&params.message).map_err(refuse)?;
+            check_paths(&params.paths).map_err(refuse)?;
         }
-        check_message(&params.message).map_err(refuse)?;
-        check_paths(&params.paths).map_err(refuse)?;
         if !todo_titles::read_titles(repo).contains_key(&params.item) {
             return Err(refuse(format!(
                 "item {} is not in {}",
@@ -1342,35 +1439,11 @@ impl WorkerSupervisor {
             )));
         }
         let checks = read_checks(repo).map_err(refuse)?;
-        if params.checks.is_empty() {
-            return Err(refuse(format!(
-                "the run needs at least one check of {CHECKS_FILE}"
-            )));
-        }
-        let mut registered = Vec::new();
-        for name in &params.checks {
-            if registered
-                .iter()
-                .any(|check: &RunCheck| &check.name == name)
-            {
-                return Err(refuse(format!("check {name:?} is named twice")));
-            }
-            let argv = checks.checks.get(name).cloned().ok_or_else(|| {
-                refuse(format!(
-                    "no check {name:?} in {CHECKS_FILE}; it has: {}",
-                    checks.checks.keys().cloned().collect::<Vec<_>>().join(", ")
-                ))
-            })?;
-            if argv.first().is_none_or(|program| program.is_empty()) {
-                return Err(refuse(format!(
-                    "check {name:?} in {CHECKS_FILE} has no program"
-                )));
-            }
-            registered.push(RunCheck {
-                name: name.clone(),
-                argv,
-            });
-        }
+        let registered = if draft {
+            Vec::new()
+        } else {
+            registered_checks(&checks, &params.checks).map_err(refuse)?
+        };
         if let Some(install) = &checks.install {
             if install
                 .command
@@ -1405,17 +1478,7 @@ impl WorkerSupervisor {
             .map_err(|error| refuse(format!("the repository has no master commit: {error}")))?
             .trim()
             .to_owned();
-        // The check the verify adds for a diff that touches the API, when
-        // the repository registers it and the run does not name it.
-        let contract_check = checks
-            .checks
-            .get(CONTRACT_CHECK)
-            .filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
-            .filter(|_| !registered.iter().any(|check| check.name == CONTRACT_CHECK))
-            .map(|argv| RunCheck {
-                name: CONTRACT_CHECK.to_owned(),
-                argv: argv.clone(),
-            });
+        let contract_check = contract_check_of(&checks, &registered);
         Ok(Preflighted {
             base,
             checks: registered,
@@ -1679,9 +1742,12 @@ impl WorkerSupervisor {
             params.caller_pane_id.as_deref(),
             caller_coordinator.as_deref(),
         )?;
-        let answered = latest
+        let answered_body = latest
             .filter(|(seq, _)| *seq == params.event)
-            .map(|(seq, body)| event_of(seq, &body, &run.info));
+            .map(|(_, body)| body);
+        let answered = answered_body
+            .as_ref()
+            .map(|body| event_of(params.event, body, &run.info));
         let kind = answered
             .as_ref()
             .map_or(TodoEventKind::Unknown, |event| event.kind);
@@ -1743,6 +1809,21 @@ impl WorkerSupervisor {
                         note = Some(error.to_string());
                     }
                     Err(error) => return Err(error),
+                }
+            }
+            // The draft's question answered: the server drafts again with
+            // the answer. No worker starts yet, so no usage gate.
+            TodoAction::Retry if kind == TodoEventKind::Draft => {
+                if params
+                    .task
+                    .as_deref()
+                    .is_none_or(|task| task.trim().is_empty())
+                {
+                    return Err(WorkerError::Invalid(
+                        "retry of a draft event needs the answer to its question as task text, \
+                         which the server drafts again with"
+                            .into(),
+                    ));
                 }
             }
             // The attempt whose commit did not cherry-pick starts from the
@@ -1894,6 +1975,16 @@ impl WorkerSupervisor {
                     // A retry after the last attempt only stops the worker
                     // (a retry asked at a review: it still runs in the
                     // slot); the restart then blocks the run.
+                    TodoAction::Retry if kind == TodoEventKind::Draft => {
+                        current.info.step = TodoStep::Draft;
+                        let answer = auto_draft::answer_note(
+                            params.event,
+                            answered_body.as_ref(),
+                            params.task.as_deref().unwrap_or_default().trim(),
+                            "coordinator",
+                        );
+                        tx.run_note(&current.info.run_id, &answer, now_ms())?;
+                    }
                     TodoAction::Retry if kind == TodoEventKind::RetryConflict => {
                         current.info.step = TodoStep::Start;
                         current.current.from_commit = None;
@@ -2229,6 +2320,7 @@ impl WorkerSupervisor {
                 return;
             }
             let stepped = match run.info.step {
+                TodoStep::Draft => self.step_draft(&mut run),
                 TodoStep::Preflight | TodoStep::Start => self.step_start(&mut run),
                 TodoStep::Attention => self.step_attention(&mut run),
                 TodoStep::Stop => self.step_stop(&mut run),
