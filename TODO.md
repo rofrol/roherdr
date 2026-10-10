@@ -428,6 +428,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   WORKER line only after your own background jobs ended"; an optional
   `--until background-drained` ends on a Stop payload of the same session
   listing no running task (MiMo, DeepSeek).
+  Addendum from guix-x86_64-iso-omguix (2026-10-10): `herdr agent wait w6S:p1
+  --until done --until blocked --until idle --global` inside herdr-job
+  20261010-155722-59b1 failed at once with `EmptyResponse` (exit 1) while
+  the agent was working. Checked by the coordinator: it coincides with the
+  herdr coordinator's own install (run `r-6fotwqpt`, live handoff complete
+  at 15:57:50). Same class as t-bojbiegs ("a live handoff breaks other
+  sessions' waits"); `herdr todo wait` reconnects since 8eaec1f2, but
+  `agent wait`, `pane wait-output` and `wait-agent` do not: they must
+  reconnect to the new server and continue waiting on the same target.
 
 - [ ] A "finished" dot on an agent whose own background work still runs [t-i5ez4yft]
   (user, 2026-10-10, about the guix-x86_64-iso-omguix pane worker: "the
