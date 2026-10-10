@@ -1557,6 +1557,10 @@ user needs to decide or do.
   Question: protect the fork's master on GitHub, and how does the fork sync push then?
   Options: a ruleset requiring CI checks and blocking deletion, force-push allowed only to a separate credential the agents do not have (Recommended) | CI checks only, no ruleset (visible, not enforced) | nothing on GitHub; the local allowlist and verify are enough
 
+- [ ] [t-fz6fso3h] How should a headless worker do VM work, so that the riskiest work stops falling back to an unsandboxed TUI worker?
+  Options: a herdr-owned VM launcher outside the sandbox with a narrow typed API (start, test, logs, stop of one reviewed configuration from the base commit; no raw QEMU arguments, no host-side repo scripts), the worker stays sandboxed (Recommended) | narrow named sandbox grants (one verified mach service, PTYs, sockets only in its temp dir, named write paths) | keep TUI workers for VM items
+  Checked: user 2026-10-10 "the problem is why it had to use the TUI; ask the models"; round 20261010-025856-9941. All three: the real defect is a privilege fallback: headless is sandbox-or-nothing, so VM work (codesign of the ad-hoc QEMU/app, PTYs, local sockets, `ps`) goes to a TUI worker with no sandbox and Claude's auto-mode classifier, the least contained path for the riskiest work. All three reject `allowUnsandboxedCommands` with an argv allowlist (`make vm-test` runs repo-controlled code; QEMU takes `-virtfs /`, monitors, config files). sol and DeepSeek: the launcher; MiMo: narrow grants (and the trust-daemon cause is a hypothesis to verify first). MiMo also: the approved capabilities item stays decorative unless the enforcement can actually be widened; grants must bind to the base commit.
+
 ### Decide
 
 - [ ] A legend explaining the UI's dots and symbols (agent state dots, [t-m2eyheg2]
