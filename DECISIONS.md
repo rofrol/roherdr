@@ -987,3 +987,19 @@ Coordinator tenures are complete for now (2026-10-10, a429668c): a
 (a `coordinator_session_cleared` event; owned workers and runs follow),
 the server takes the old session id from the pane's previous session, so
 the SessionStart hook and the integration version stay unchanged.
+
+## A state-based coordinator stop check, in shadow mode first
+
+Shadow stop check landed 2026-10-10 (704290af): in coordinator tabs the
+Claude Stop hook logs `stall_would_block` with its reason when no run is
+active, the queue is not on or paused, runnable items exist
+(`todo.runnable_state`), `background_tasks` is present and empty, no
+question was asked and no worker waits; at most 3 in a row per session;
+it never blocks. Replay of the 244 audited turn ends: 3/3 silent stops
+caught, 0 false. Open points, decided by the coordinator: Claude's Stop
+payload does carry `background_tasks` (checked in
+`~/.local/state/herdr-bg/payloads.jsonl`); whether a paused queue and a
+plain "stop" from the user should pause through the hook is settled when
+enforcing, a question in "Needs a decision". The new hook text reaches
+`~/.claude` only with `herdr integration install claude`, which needs the
+user's approval of the settings diff.

@@ -126,23 +126,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   9. A conformance test per capability, incl. "unsupported must refuse"
      for every adapter.
 
-- [ ] A state-based coordinator stop check, in shadow mode first [t-pzba6fio]
-  (Decided by the user 2026-10-09 after consult round
-  20261009-141652-8a76, sol + MiMo + DeepSeek: "shadow, then block").
-  The 2026-10-09 audit found 3 silent coordinator stops the ABANDON
-  wording missed. In the herdr Claude Stop check (coordinator tabs), log a
-  would-block decision when all hold: no active `todo run` for the repo
-  and approved runnable items exist (the driver's state, not TODO text);
-  the Stop input's `background_tasks` is present and empty (absent =
-  unknown = pass); no `awaiting-reply` marked and no question pending;
-  the repo is not paused (new `herdr todo pause|resume <repo>`; a plain
-  stop/pause message from the user sets it); at most one block per turn
-  and three in a row per session. Shadow phase only logs; replay the 244
-  audited turn ends (`scripts/coordinator_turn_audit.py`) as fixtures:
-  target 3/3 silent stops caught and at most 1 false per 100; kill
-  criterion more than 1 false per 20. Enforcing the block is a later
-  decision of the user. Keep the worker-obligation block as it is.
-
 - [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
   about 30 minutes? too much? why any asynchronous workaround at all? make
   a TODO with the models to fix this and do it next"). Supersedes the
