@@ -11,16 +11,6 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
-- [ ] Register `lint` as a verify check and add it for `src/` (follows [t-uz4t2iwm]
-  from run `r-xvu3pv7s`, 2026-10-10: `verify` passed, but
-  `just clean-install`'s `just lint` (`cargo clippy --all-targets -D
-  warnings`) failed on three `cloned_ref_to_slice_refs` in test code, so
-  the commit reached local `master` unpushed and needed a fix-forward run,
-  like r-kwasqbmr with `maintenance`). `.herdr/checks.toml` gets `lint =
-  ["just", "lint"]` and the driver adds it to every run whose diff touches
-  `src/` or `build.rs`; better: the verify runs the same recipes as the
-  install's `just check`, so the two cannot diverge again.
-
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
   "Coordinator/worker versus a single agent"; the user kept the queue as

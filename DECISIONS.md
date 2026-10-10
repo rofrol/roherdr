@@ -1050,3 +1050,13 @@ nothing (no unprivileged fork events), accepted; a todo run acks it and
 keeps waiting (the user's notice and the worker log carry it), a typed
 todo event only if a run hangs this way; a child reaped before herdr lists
 it is missed, and a handoff may report a holder twice, both accepted.
+
+## Register `lint` as a verify check and add it for `src/` (follows
+
+`verify` and the install's `just check` diverged twice (r-kwasqbmr
+maintenance, r-xvu3pv7s clippy, 2026-10-10). Now (7db070cc) the driver
+adds one check per `just check` recipe by path (lint, windows-lint,
+tests, maintenance, ui-architecture, integration-assets, docs-contract),
+and a test parses the justfile so the two stay in step. Cost accepted by
+the coordinator: every `src/` change now runs the full nextest, clippy and
+the Windows lint in verify.
