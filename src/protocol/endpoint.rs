@@ -39,6 +39,28 @@ pub struct EndpointAgentCompletions {
     pub completions: std::collections::BTreeMap<String, u64>,
 }
 
+/// A worker's transcript for the client shell's worker tab, pushed after
+/// `client_shell.worker_transcript.set`: what it had not received, then each
+/// new journal line. Optional: a client that does not know it ignores it.
+pub const WORKER_TRANSCRIPT_KIND: &str = "endpoint.worker-transcript.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointWorkerTranscript {
+    pub boot_id: String,
+    /// The events of the journal lines after the client's `after`; `cursor`
+    /// is where the next message goes on.
+    pub transcript: crate::api::schema::WorkerTranscript,
+}
+
+pub fn worker_transcript_message(
+    projection: &EndpointWorkerTranscript,
+) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: WORKER_TRANSCRIPT_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
+}
+
 /// Optional JSON companion; never added to the frozen snapshot codec.
 pub const JOB_METADATA_KIND: &str = "endpoint.job-metadata.v1";
 

@@ -702,6 +702,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
+                // A worker's tab takes no input: its keys scroll it.
+                if self.worker_view_shown() {
+                    self.worker_view_key(key, outcome);
+                    return None;
+                }
                 self.focused_pane_id().map(ClientInputTarget::Pane)
             }
             ClientShellMode::Prefix => {
@@ -715,6 +720,9 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
+                    if self.worker_view_shown() {
+                        return None;
+                    }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
@@ -1135,7 +1143,11 @@ impl ClientShellState {
                 terminal_id,
             ));
         }
-        if self.popup_pending || self.overlay.is_some() || self.mode != ClientShellMode::Terminal {
+        if self.popup_pending
+            || self.overlay.is_some()
+            || self.mode != ClientShellMode::Terminal
+            || self.worker_view_shown()
+        {
             return None;
         }
         self.focused_pane_id()
@@ -1205,6 +1217,10 @@ impl ClientShellState {
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
+        // Typed or pasted text never reaches the panes under a worker's tab.
+        if self.worker_view_shown() {
+            return;
+        }
         if let Some(pane_id) = self.focused_pane_id() {
             super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }

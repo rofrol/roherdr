@@ -211,7 +211,13 @@ pub(super) struct ShellHitMap {
     /// on that, even when the rows changed since the frame was drawn.
     pub(super) notification_log_row_keys: Vec<Option<super::notification_log::RowKey>>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
+    /// The shown worker tab (see [`super::worker_view`]) and its rows
+    /// under the header.
+    pub(super) worker_view: Rect,
+    pub(super) worker_view_body: Rect,
     pub(super) overlay_primary: Rect,
+    /// The drawn box of the open overlay: a click outside it closes it.
+    pub(super) overlay_area: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
     pub(super) navigator_popup: Rect,
@@ -1464,6 +1470,9 @@ pub(crate) struct ClientShellState {
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
+    /// A headless worker's tab shown in the main pane instead of the
+    /// focused tab's panes.
+    pub(super) worker_view: Option<super::worker_view::ClientWorkerView>,
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) link_hover: Option<super::link_hover::LinkHover>,
@@ -1689,6 +1698,7 @@ impl ClientShellState {
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
             overlay,
+            worker_view: None,
             previous_pane_id: None,
             pane_mouse_gesture: None,
             link_hover: None,
@@ -2032,6 +2042,7 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.graphics.set_scope(&graphics_scope);
+        self.close_worker_view_on_focus_change(snapshot.focused_tab_id.as_deref());
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()
                 || current

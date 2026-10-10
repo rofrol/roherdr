@@ -2106,6 +2106,14 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::WorkerTranscript(transcript)) => {
+                                if state.shell.as_mut().is_some_and(|shell| {
+                                    shell.receive_worker_transcript(&endpoint_id, *transcript)
+                                }) {
+                                    state.request_repaint();
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2156,6 +2164,24 @@ async fn run_client_loop(
                             &mut write_stream,
                             &mut prefix_input_source,
                         )?;
+                        // A worker's tab open across a reconnect asks the
+                        // new connection for its transcript.
+                        let resubscription = state
+                            .shell
+                            .as_mut()
+                            .map(|shell| shell.worker_view_resubscription())
+                            .unwrap_or_default();
+                        if !resubscription.is_empty() {
+                            dispatch_client_shell_actions(
+                                resubscription,
+                                &mut endpoint_commands,
+                                &mut write_stream,
+                                state.shell.as_mut(),
+                                &mut state.detached_process_children,
+                                state.event_tx.as_ref(),
+                                &mut scheduled_activation,
+                            )?;
+                        }
                         if matches!(
                             activation_progress,
                             Some(endpoint::SurfaceActivationProgress::Ready)

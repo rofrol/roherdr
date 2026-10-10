@@ -1370,7 +1370,9 @@ impl App {
             | Method::HistoryReconcile(_)
             | Method::HistoryOverrides(_)
             | Method::HistoryWouldDeny(_)
-            | Method::ReportList(_) => {
+            | Method::ReportList(_)
+            | Method::WorkerTranscript(_)
+            | Method::WorkerTranscriptWait(_) => {
                 return responses::encode_error(
                     request.id,
                     "connection_local_only",

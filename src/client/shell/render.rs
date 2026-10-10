@@ -303,6 +303,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) quiet_fold_would_fold: bool,
     /// The header button whose list is open, to draw it filled.
     pub(super) open_list: Option<super::notification_log::NotificationLogView>,
+    /// The worker whose tab the main pane shows: its line is the active
+    /// one, not the focused tab's.
+    pub(super) shown_worker: Option<&'a str>,
 }
 
 pub(super) fn render_shell(

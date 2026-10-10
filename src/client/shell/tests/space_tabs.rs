@@ -4783,7 +4783,7 @@ fn a_worker_shows_as_a_line_under_its_space_with_its_task_and_state() {
 }
 
 #[test]
-fn clicking_a_worker_line_opens_its_log() {
+fn clicking_a_worker_line_opens_its_tab() {
     let mut state = state_with_tabs(true);
     with_worker(&mut state, "w1", "fix login", "working");
     state.compose(106, 30).unwrap();
@@ -4791,8 +4791,9 @@ fn clicking_a_worker_line_opens_its_log() {
     let outcome = left_click(&mut state, (line.x + 6, line.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
-                if target.worker_id == "w1"))));
+            if matches!(&request.method,
+                crate::api::schema::Method::ClientShellWorkerTranscriptSet(params)
+                if params.worker_id.as_deref() == Some("w1")))));
     assert!(!outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::TabFocus(_)))));
@@ -5356,13 +5357,14 @@ fn the_items_popup_lists_items_and_unassigned_runs_and_a_run_opens_its_log() {
         "{rows:#?}"
     );
 
-    // A run opens its log in the worker log popup, and the list closes.
+    // A run opens its log in the worker's tab, and the list closes.
     let run = state.hits.worker_items_rows[2].0;
     let outcome = left_click(&mut state, (run.x + 3, run.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
-                if target.worker_id == "w1"))));
+            if matches!(&request.method,
+                crate::api::schema::Method::ClientShellWorkerTranscriptSet(params)
+                if params.worker_id.as_deref() == Some("w1")))));
     assert!(state.overlay.is_none());
 }
 
@@ -5596,8 +5598,9 @@ fn the_items_popup_lists_finished_items_and_an_item_opens_its_history() {
     let outcome = left_click(&mut state, (log.x + 3, log.y));
     assert!(outcome.actions.iter().any(|action| matches!(action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::WorkerOpenLog(target)
-                if target.worker_id == "w3"))));
+            if matches!(&request.method,
+                crate::api::schema::Method::ClientShellWorkerTranscriptSet(params)
+                if params.worker_id.as_deref() == Some("w3")))));
 }
 
 #[test]

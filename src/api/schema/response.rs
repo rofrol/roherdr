@@ -29,7 +29,8 @@ use super::todo::{
 };
 use super::workers::{
     WorkerAttentionReason, WorkerDrain, WorkerInfo, WorkerItemRuns, WorkerKillReport,
-    WorkerObligation, WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerVerification,
+    WorkerObligation, WorkerQuestion, WorkerQuestionDetail, WorkerRun, WorkerTranscript,
+    WorkerVerification,
 };
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{GitBranchInfo, WorktreeInfo, WorktreeSourceInfo};
@@ -75,6 +76,10 @@ pub enum ResponseResult {
     },
     WorkerList {
         workers: Vec<WorkerInfo>,
+    },
+    /// `worker.transcript`'s and `worker.transcript_wait`'s reply.
+    WorkerTranscript {
+        transcript: WorkerTranscript,
     },
     /// `worker.question`'s reply.
     WorkerQuestionDetail {

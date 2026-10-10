@@ -781,7 +781,7 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let tab_lines = super::space_tabs::space_tab_lines_filtered(
+        let mut tab_lines = super::space_tabs::space_tab_lines_filtered(
             snapshot,
             workspace,
             state.collapsed_groups,
@@ -795,6 +795,7 @@ pub(crate) fn render_sidebar(
                 .and_then(|filter| filter.view.as_ref()),
             config,
         );
+        super::space_tabs::mark_shown_worker(&mut tab_lines, state.shown_worker);
         let tab_jobs = super::space_tabs::space_row_tab_jobs(
             snapshot,
             workspace,

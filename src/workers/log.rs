@@ -1,31 +1,87 @@
-//! A worker's journal as text for its log view: the assistant's words, its
-//! tool calls and their results, the policy's, the pre-tool checks' and the
-//! user's decisions, and each turn's result. Anything else (rate limits, control replies, the
-//! CLI's own bookkeeping) is left out.
+//! A worker's journal as its transcript: the assistant's words, its tool
+//! calls and their results, the policy's, the pre-tool checks' and the
+//! user's decisions, and each turn's result, as structured entries
+//! ([`record_entries`]) and as the text lines both `herdr worker log` and a
+//! client's worker tab show ([`entry_lines`]). Anything else (rate limits,
+//! control replies, the CLI's own bookkeeping) is left out.
 
 use serde_json::Value;
 
 use super::one_line;
+use crate::api::schema::{WorkerTranscriptEntry, WorkerTranscriptRole};
 
 /// Tool results and inputs are cut to this many characters per line.
 const DETAIL_MAX: usize = 200;
 
+/// A structured entry's text is cut to this many characters: a tool's
+/// result can be a whole file.
+const ENTRY_TEXT_MAX: usize = 4000;
+
 /// The lines one journal record shows as, none for a record the log leaves
 /// out. Broken records show as they are, so nothing is silently lost.
 pub(crate) fn log_lines(record: &str) -> Vec<String> {
+    record_entries(record)
+        .iter()
+        .flat_map(entry_lines)
+        .collect()
+}
+
+/// The lines an entry shows as: the one renderer of `herdr worker log` and
+/// a client's worker tab.
+pub(crate) fn entry_lines(entry: &WorkerTranscriptEntry) -> Vec<String> {
+    match entry {
+        WorkerTranscriptEntry::Message { role, text } => match role {
+            WorkerTranscriptRole::User => prefixed("› you: ", text),
+            WorkerTranscriptRole::Result => prefixed("  ", text),
+            WorkerTranscriptRole::Assistant | WorkerTranscriptRole::Unknown => prefixed("", text),
+        },
+        WorkerTranscriptEntry::ToolCall { name, input } => {
+            vec![format!("→ {name}: {}", one_line(input, DETAIL_MAX))]
+        }
+        WorkerTranscriptEntry::ToolResult { text, is_error } => vec![format!(
+            "  {} {}",
+            if *is_error { "✗" } else { "←" },
+            one_line(text, DETAIL_MAX)
+        )],
+        WorkerTranscriptEntry::Status { text } => text.lines().map(str::to_owned).collect(),
+        WorkerTranscriptEntry::Unknown => Vec::new(),
+    }
+}
+
+fn status(text: String) -> WorkerTranscriptEntry {
+    WorkerTranscriptEntry::Status { text }
+}
+
+/// `text` cut to [`ENTRY_TEXT_MAX`] characters, its lines kept.
+fn capped(text: &str) -> String {
+    if text.chars().count() <= ENTRY_TEXT_MAX {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(ENTRY_TEXT_MAX - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// What one journal record shows as, none for a record the log leaves out.
+pub(crate) fn record_entries(record: &str) -> Vec<WorkerTranscriptEntry> {
     let Ok(record) = serde_json::from_str::<Value>(record) else {
-        return vec![format!("? {}", one_line(record, DETAIL_MAX))];
+        return vec![status(format!("? {}", one_line(record, DETAIL_MAX)))];
     };
+    record_value_entries(&record)
+}
+
+/// [`record_entries`] of a parsed record.
+pub(crate) fn record_value_entries(record: &Value) -> Vec<WorkerTranscriptEntry> {
     let dir = record["dir"].as_str().unwrap_or("");
     if let Some(raw) = record["raw"].as_str() {
-        return match dir {
-            "err" => vec![format!("stderr: {}", one_line(raw, DETAIL_MAX))],
-            _ => vec![format!("? {}", one_line(raw, DETAIL_MAX))],
-        };
+        return vec![status(match dir {
+            "err" => format!("stderr: {}", one_line(raw, DETAIL_MAX)),
+            _ => format!("? {}", one_line(raw, DETAIL_MAX)),
+        })];
     }
     let event = &record["event"];
     let kind = event["type"].as_str().unwrap_or("");
-    match (dir, kind) {
+    let lines: Vec<String> = match (dir, kind) {
         ("herdr", "started") => vec![format!(
             "▶ started{} in {}",
             event["name"]
@@ -136,9 +192,15 @@ pub(crate) fn log_lines(record: &str) -> Vec<String> {
             "■ lost: {}",
             event["reason"].as_str().unwrap_or("the server ended first")
         )],
-        ("in", "user") => user_text(event)
-            .map(|text| prefixed("› you: ", &text))
-            .unwrap_or_default(),
+        ("in", "user") => {
+            return user_text(event)
+                .map(|text| WorkerTranscriptEntry::Message {
+                    role: WorkerTranscriptRole::User,
+                    text: capped(&text),
+                })
+                .into_iter()
+                .collect();
+        }
         ("in", "control_request") if event["request"]["subtype"] == "interrupt" => {
             vec!["■ interrupt sent".into()]
         }
@@ -146,56 +208,63 @@ pub(crate) fn log_lines(record: &str) -> Vec<String> {
             "  session {}",
             event["session_id"].as_str().unwrap_or("?")
         )],
-        ("out", "assistant") => event["message"]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|block| match block["type"].as_str() {
-                Some("text") => block["text"]
-                    .as_str()
-                    .map(|text| prefixed("", text))
-                    .unwrap_or_default(),
-                Some("tool_use") => vec![format!(
-                    "→ {}: {}",
-                    block["name"].as_str().unwrap_or("tool"),
-                    tool_input(&block["input"])
-                )],
-                _ => Vec::new(),
-            })
-            .collect(),
+        ("out", "assistant") => {
+            return event["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|block| match block["type"].as_str() {
+                    Some("text") => {
+                        block["text"]
+                            .as_str()
+                            .map(|text| WorkerTranscriptEntry::Message {
+                                role: WorkerTranscriptRole::Assistant,
+                                text: capped(text),
+                            })
+                    }
+                    Some("tool_use") => Some(WorkerTranscriptEntry::ToolCall {
+                        name: block["name"].as_str().unwrap_or("tool").to_owned(),
+                        input: capped(&tool_input_text(&block["input"])),
+                    }),
+                    _ => None,
+                })
+                .collect();
+        }
         // The CLI echoes the prompt (`--replay-user-messages`), already shown
         // from the `in` side; tool results come back as user messages too.
-        ("out", "user") => event["message"]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|block| block["type"] == "tool_result")
-            .map(|block| {
-                let error = block["is_error"].as_bool().unwrap_or(false);
-                format!(
-                    "  {} {}",
-                    if error { "✗" } else { "←" },
-                    one_line(&tool_result_text(&block["content"]), DETAIL_MAX)
-                )
-            })
-            .collect(),
+        ("out", "user") => {
+            return event["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|block| block["type"] == "tool_result")
+                .map(|block| WorkerTranscriptEntry::ToolResult {
+                    text: capped(&tool_result_text(&block["content"])),
+                    is_error: block["is_error"].as_bool().unwrap_or(false),
+                })
+                .collect();
+        }
         ("out", "result") => {
             let text = event["result"].as_str().unwrap_or("");
-            let mut lines = vec![format!(
+            let mut entries = vec![status(format!(
                 "■ turn {}{}",
                 event["subtype"].as_str().unwrap_or("ended"),
                 event["terminal_reason"]
                     .as_str()
                     .map(|reason| format!(" ({reason})"))
                     .unwrap_or_default()
-            )];
+            ))];
             if !text.is_empty() {
-                lines.extend(prefixed("  ", text));
+                entries.push(WorkerTranscriptEntry::Message {
+                    role: WorkerTranscriptRole::Result,
+                    text: capped(text),
+                });
             }
-            lines
+            return entries;
         }
         _ => Vec::new(),
-    }
+    };
+    lines.into_iter().map(status).collect()
 }
 
 /// `text` split into lines, the first one after `prefix`.
@@ -227,8 +296,13 @@ pub(super) fn user_text(event: &Value) -> Option<String> {
 }
 
 /// A tool call's input as its most telling field: the command, the path or
-/// the URL, else the input itself.
+/// the URL, else the input itself; on one line, cut.
 pub(super) fn tool_input(input: &Value) -> String {
+    one_line(&tool_input_text(input), DETAIL_MAX)
+}
+
+/// [`tool_input`] as written, its lines kept.
+fn tool_input_text(input: &Value) -> String {
     [
         "command",
         "file_path",
@@ -239,8 +313,8 @@ pub(super) fn tool_input(input: &Value) -> String {
     ]
     .iter()
     .find_map(|key| input[*key].as_str())
-    .map(|text| one_line(text, DETAIL_MAX))
-    .unwrap_or_else(|| one_line(&input.to_string(), DETAIL_MAX))
+    .map(str::to_owned)
+    .unwrap_or_else(|| input.to_string())
 }
 
 pub(super) fn tool_result_text(content: &Value) -> String {

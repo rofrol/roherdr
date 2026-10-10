@@ -72,6 +72,7 @@ impl ClientShellState {
         let bookmark_count = self.bookmark_count();
         let space_to_top_undo = self.space_to_top_undo().map(str::to_owned);
         let open_list = self.open_notification_list();
+        let shown_worker = self.shown_worker_id().map(str::to_owned);
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -137,6 +138,7 @@ impl ClientShellState {
             agent_counts,
             bookmark_count,
             open_list,
+            shown_worker: shown_worker.as_deref(),
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -323,6 +325,7 @@ impl ClientShellState {
         let bookmark_count = self.bookmark_count();
         let space_to_top_undo = self.space_to_top_undo().map(str::to_owned);
         let open_list = self.open_notification_list();
+        let shown_worker = self.shown_worker_id().map(str::to_owned);
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
             .space_filter
@@ -421,6 +424,7 @@ impl ClientShellState {
                 agent_counts,
                 bookmark_count,
                 open_list,
+                shown_worker: shown_worker.as_deref(),
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -502,6 +506,30 @@ impl ClientShellState {
         if !layout.job_footer.is_empty() {
             super::job_footer::render(self, &mut buffer, layout.job_footer);
         }
+        // A worker's tab takes the main pane's place: the focused tab's
+        // panes are neither drawn nor hit.
+        let worker_view = self
+            .worker_view
+            .as_mut()
+            .filter(|view| view.endpoint_id == self.active_endpoint_id);
+        let worker_view_shown = worker_view.is_some();
+        if let Some(view) = worker_view {
+            let worker = snapshot
+                .workers
+                .iter()
+                .find(|worker| worker.worker_id == view.worker_id);
+            let (area, body) = super::worker_view::render_worker_view(
+                view,
+                worker,
+                &self.config.palette,
+                &mut buffer,
+                layout.pane_surface,
+            );
+            self.hits.worker_view = area;
+            self.hits.worker_view_body = body;
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
+        }
         let mode_bar_area = if layout.mobile_header.is_empty()
             && self.config.tab_bar_position == TabBarPositionConfig::Bottom
             && !layout.tab_bar.is_empty()
@@ -539,7 +567,9 @@ impl ClientShellState {
             let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        if !worker_view_shown {
+            blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self
@@ -1040,6 +1070,7 @@ impl ClientShellState {
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
+                self.hits.overlay_area = rendered.area;
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.image_picker_rows = rendered.menu_rows;
                 self.hits.image_preview = rendered.image_preview;

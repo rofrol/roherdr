@@ -485,6 +485,39 @@ fn start_params(repo: &Path, prompt: &str, model: Option<&str>) -> WorkerStartPa
     }
 }
 
+/// A supervisor whose worker ran one `finish` turn, for tests outside this
+/// module (the server's worker tab); its directory goes when dropped.
+pub(crate) struct FinishedWorker {
+    fixture: Fixture,
+    pub(crate) worker_id: String,
+}
+
+impl FinishedWorker {
+    pub(crate) fn new(name: &str) -> Self {
+        let fixture = Fixture::new(name);
+        let worker_id = fixture.start("finish");
+        fixture.wait(&worker_id, WorkerWaitUntil::TurnEnd);
+        Self { fixture, worker_id }
+    }
+
+    pub(crate) fn supervisor(&self) -> &WorkerSupervisor {
+        &self.fixture.supervisor
+    }
+
+    /// Another `finish` turn, returned once it ended.
+    pub(crate) fn run_another_turn(&self) {
+        self.fixture
+            .supervisor
+            .prompt(&self.worker_id, "finish")
+            .unwrap();
+        self.fixture.wait(&self.worker_id, WorkerWaitUntil::TurnEnd);
+    }
+
+    pub(crate) fn journal_lines(&self) -> u64 {
+        self.fixture.journal(&self.worker_id).len() as u64
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         // A failed test (a hang guard fired) may have left the supervisor
@@ -542,6 +575,98 @@ fn a_turn_finishes_and_the_next_prompt_runs_another() {
         .unwrap();
     assert_eq!(init["event"]["herdr_env"], serde_json::json!([]));
     assert!(journal.iter().any(|record| record["dir"] == "in"));
+}
+
+/// How often a transcript wait in these tests looks whether its caller
+/// gave up; the worker's events end the wait.
+// delay: not a wait, the caller-liveness check interval, as in Fixture::wait.
+const TRANSCRIPT_LIVENESS: Duration = Duration::from_millis(100);
+
+#[test]
+fn the_transcript_backfills_structured_events_and_waits_for_new_lines() {
+    use crate::api::schema::{
+        PaneKind, WorkerTranscriptEntry, WorkerTranscriptParams, WorkerTranscriptRole,
+    };
+    let fixture = Fixture::new("transcript");
+    let id = fixture.start("finish");
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+
+    let params = |after: Option<u64>| WorkerTranscriptParams {
+        worker_id: id.clone(),
+        after,
+        limit: None,
+    };
+    let transcript = fixture.supervisor.transcript(&params(None)).unwrap();
+    assert_eq!(transcript.tab.tab_id, format!("worker:{id}"));
+    assert_eq!(transcript.tab.pane_id, format!("worker:{id}"));
+    assert_eq!(transcript.tab.pane_kind, PaneKind::Worker);
+    assert!(transcript.tab.read_only);
+    assert_eq!(transcript.state, WorkerState::Finished);
+    assert_eq!(transcript.cursor, fixture.journal(&id).len() as u64);
+    assert!(transcript.events.iter().all(|event| event.worker_id == id));
+    assert!(transcript.events.iter().any(|event| event.entry
+        == WorkerTranscriptEntry::Message {
+            role: WorkerTranscriptRole::User,
+            text: "finish".into(),
+        }));
+    // The same lines `herdr worker log` prints.
+    let rendered: Vec<String> = transcript
+        .events
+        .iter()
+        .flat_map(|event| log::entry_lines(&event.entry))
+        .collect();
+    let logged: Vec<String> = fixture
+        .journal(&id)
+        .iter()
+        .flat_map(|record| log::log_lines(&record.to_string()))
+        .collect();
+    assert_eq!(rendered, logged);
+
+    // Paged: the first line only, then the rest from its cursor.
+    let first = fixture
+        .supervisor
+        .transcript(&WorkerTranscriptParams {
+            limit: Some(1),
+            ..params(None)
+        })
+        .unwrap();
+    assert!(first.more);
+    assert_eq!(first.cursor, 1);
+    let rest = fixture.supervisor.transcript(&params(Some(1))).unwrap();
+    assert_eq!(
+        first.events.len() + rest.events.len(),
+        transcript.events.len()
+    );
+
+    // Lines already there return at once; none past the cursor waits for
+    // the next turn's.
+    let started = Instant::now();
+    let at_once = fixture
+        .supervisor
+        .transcript_wait(&params(Some(0)), TRANSCRIPT_LIVENESS, || {
+            assert!(started.elapsed() < HANG_GUARD, "transcript wait hung");
+            true
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(at_once.cursor, transcript.cursor);
+    let cursor = transcript.cursor;
+    let waiter = {
+        let supervisor = fixture.supervisor.clone();
+        let params = params(Some(cursor));
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            supervisor
+                .transcript_wait(&params, TRANSCRIPT_LIVENESS, || {
+                    started.elapsed() < HANG_GUARD
+                })
+                .unwrap()
+        })
+    };
+    fixture.supervisor.prompt(&id, "finish").unwrap();
+    let waited = waiter.join().unwrap().expect("new lines");
+    assert!(waited.cursor > cursor);
+    assert!(waited.events.iter().all(|event| event.line > cursor));
 }
 
 /// The value after `flag` in the worker's launch arguments.

@@ -130,6 +130,15 @@ pub enum Method {
     /// frozen for clients.
     #[serde(rename = "worker.force_take_over")]
     WorkerForceTakeOver(WorkerTarget),
+    /// The worker's transcript as structured events, from a journal line
+    /// on: what its read-only tab shows.
+    #[serde(rename = "worker.transcript")]
+    WorkerTranscript(WorkerTranscriptParams),
+    /// Blocks until the worker's transcript has lines after `after`, or the
+    /// worker is gone, then answers as `worker.transcript`: a live
+    /// subscription by repeated calls.
+    #[serde(rename = "worker.transcript_wait")]
+    WorkerTranscriptWait(WorkerTranscriptParams),
     /// One pending question with the tool's whole input, for a client's
     /// answer dialog, which asks when the user opens it.
     #[serde(rename = "worker.question")]
@@ -240,6 +249,10 @@ pub enum Method {
     ClientWindowTitleClear(EmptyParams),
     #[serde(rename = "client_shell.surface.set")]
     ClientShellSurfaceSet(ClientShellSurfaceSetParams),
+    /// The worker whose transcript this client shell's worker tab shows;
+    /// the server pushes it as `endpoint.worker-transcript.v1`.
+    #[serde(rename = "client_shell.worker_transcript.set")]
+    ClientShellWorkerTranscriptSet(ClientShellWorkerTranscriptSetParams),
     #[serde(rename = "session.snapshot")]
     SessionSnapshot(EmptyParams),
     #[serde(rename = "workspace.create")]
