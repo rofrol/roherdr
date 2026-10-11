@@ -11,6 +11,18 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The coordinator allowlist denies in shadow mode when the server [t-5sazb4ty]
+  answers slowly (found 2026-10-11: a plain `VAR=...; cmd` was denied in
+  the herdr coordinator's tab although the mode is shadow). The Claude
+  hook's `ask_server` uses a 0.5 s socket timeout and treats any failure
+  as "herdr cannot say", which denies; under load (verify runs) the
+  answer can take longer. Fix: the hook knows the mode without a round
+  trip that can time out (the server writes the mode into the integration
+  state when it changes, or the hook reads the config), shadow and off never
+  deny, and the refusal request waits for the server's answer (a timeout is
+  a fixed delay deciding an outcome: Rule 10); `enforce` with herdr down
+  still denies, as decided. Follows from t-svsyvp3s.
+
 - [ ] A supervision report over all coordinators and their workers (user, [t-7zfjbcrf]
   2026-10-11, next: "add a process that every so often checks all
   coordinators, whether they work and whether their workers work, reports
