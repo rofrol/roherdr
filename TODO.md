@@ -1701,6 +1701,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   false-positive memory for consult rounds and baseline-plus-novel-only
   rounds.
 
+- [ ] The server publishes its socket only once it listens (follows from [t-fyxvckg7]
+  [t-3ifvwy3l]: herdr-job's `wait` wakes on socket-directory events, and a
+  connect landing between the server's `bind` and `listen` is refused and
+  retried only on the next directory change). Bind on a temporary name,
+  `listen`, then rename it into place, so the directory event means
+  connectable; a test that connects on the event.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
