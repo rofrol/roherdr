@@ -4156,15 +4156,15 @@ fn an_exit_the_owner_asked_for_creates_no_obligation() {
         fixture.wait(id, WorkerWaitUntil::Exit)
     };
 
-    // The owner stops it, with its turn end not acknowledged yet: the exit
-    // acknowledges everything up to itself.
+    // The owner stops it, with its turn end not acknowledged yet: nothing
+    // is owed after the end it asked for, though it acknowledged nothing.
     let id = start_owned(&fixture, "p1", "finish");
     fixture.wait(&id, WorkerWaitUntil::TurnEnd);
     assert!(obligation_of(&fixture, "p1", &id).is_some());
     let worker = stop(&id, Some("p1"));
     assert!(obligation_of(&fixture, "p1", &id).is_none());
-    assert_eq!(worker.acked_seq, worker.seq);
-    // Acknowledged as it was recorded, so it survives a restart.
+    assert_eq!(worker.acked_seq, None);
+    // Recorded with the exit, so it survives a restart.
     let reopened = WorkerSupervisor::open(
         fixture.root.join("workers"),
         fixture.root.join("claude-stub"),
@@ -4230,7 +4230,11 @@ fn an_ack_is_idempotent_and_monotonic() {
 
     let acked = fixture.supervisor.ack(&id, seq).unwrap();
     assert_eq!(acked.acked_seq, Some(seq));
-    let after = acked.seq.unwrap();
+    // The ack stops the handled worker; the exit its owner so asked for is
+    // not acknowledged on the owner's behalf.
+    let exited = fixture.wait(&id, WorkerWaitUntil::Exit);
+    assert_eq!(exited.acked_seq, Some(seq));
+    let after = exited.seq.unwrap();
     // The same ack, and an older one, record nothing and lower nothing.
     for again in [seq, seq - 1] {
         let worker = fixture.supervisor.ack(&id, again).unwrap();

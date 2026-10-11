@@ -733,6 +733,12 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
     super::decisions::DECISIONS_MIGRATION,
     super::inbox::UNOWNED_INBOX_MIGRATION,
     super::capabilities::GRANT_LOG_MIGRATION,
+    r#"
+-- The worker ended by the exit its owner asked for (a stop or kill sent as
+-- the owner): its owner owes no ack for that end. Workers recorded before
+-- had such an exit acknowledged on their owner's behalf (`acked_seq`).
+ALTER TABLE workers ADD COLUMN end_by_owner INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -1639,7 +1645,7 @@ impl Tx<'_> {
                     :item, :repo, :started_ms, :ended_ms, :done_commits, :questions_asked,
                     :ended_mid_turn, :item_title, :verification, :takeover_id,
                     :owner_coordinator_id, :broker, :broker_seq, :continuity_gap,
-                    :coordinates)
+                    :coordinates, :end_by_owner)
                  ON CONFLICT (id) DO UPDATE SET {}",
                 WORKER_COLUMNS
                     .split(", ")
@@ -1715,6 +1721,7 @@ impl Tx<'_> {
                 ":broker_seq": status.broker_seq as i64,
                 ":continuity_gap": status.continuity_gap,
                 ":coordinates": status.coordinates,
+                ":end_by_owner": status.end_by_owner,
             },
         )?;
         Ok(())
@@ -2664,7 +2671,7 @@ stop_requested_ms, takeover_ms, takeover_tab, takeover_error, takeover_unfinishe
 exited, lost, end_note, last_seq, turn_seq, turn_end_seq, gone_seq, owner_pane, owner_session, \
 acked_seq, owner_gone, degraded, item, repo, started_ms, ended_ms, done_commits, questions_asked, \
 ended_mid_turn, item_title, verification, takeover_id, owner_coordinator_id, broker, broker_seq, \
-continuity_gap, coordinates";
+continuity_gap, coordinates, end_by_owner";
 
 fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     let json = |index: usize| -> StoreResult<Option<Value>> {
@@ -2728,6 +2735,7 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     status.broker_seq = row.get::<_, i64>(45)? as u64;
     status.continuity_gap = row.get(46)?;
     status.coordinates = row.get(47)?;
+    status.end_by_owner = row.get(48)?;
     Ok(status)
 }
 
@@ -3321,6 +3329,7 @@ mod tests {
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
+                 ALTER TABLE workers DROP COLUMN end_by_owner;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -3388,8 +3397,9 @@ mod tests {
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
+                 ALTER TABLE workers DROP COLUMN end_by_owner;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 25
+                MIGRATIONS.len() - 26
             ))
             .unwrap();
         drop(store);
@@ -3451,8 +3461,9 @@ mod tests {
                  DELETE FROM meta WHERE key IN ('incarnation', 'inbox_from');
                  DROP TABLE decisions;
                  DROP TABLE capability_grant_log;
+                 ALTER TABLE workers DROP COLUMN end_by_owner;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 14
+                MIGRATIONS.len() - 15
             ))
             .unwrap();
         drop(store);

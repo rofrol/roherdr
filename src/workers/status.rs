@@ -78,11 +78,15 @@ pub(super) struct Status {
     pub(super) resolved: VecDeque<(String, String)>,
     pub(super) stop_requested_ms: Option<u64>,
     /// Its owner sent a stop or kill (a `signal` with `by_owner`): the exit
-    /// that follows is acknowledged as it is recorded ([`Self::mark_seq`]),
-    /// so the owner owes nothing for an end it asked for. Not stored: after
-    /// a restart in between, the exit is an obligation, as one nobody asked
-    /// for.
+    /// that follows is an end the owner asked for ([`Self::end_by_owner`]).
+    /// Not stored: after a restart in between, the exit is an obligation,
+    /// as one nobody asked for.
     pub(super) stop_by_owner: bool,
+    /// It ended by the exit its owner asked for ([`Self::stop_by_owner`],
+    /// set by [`Self::mark_seq`]): the owner owes nothing for that end,
+    /// though it never acknowledged it, so `acked_seq` stays what the owner
+    /// acknowledged.
+    pub(super) end_by_owner: bool,
     /// The takeover claim: set by `takeover`, cleared by `takeover_failed`.
     /// Kept in every state, an exited worker's too.
     pub(super) takeover_ms: Option<u64>,
@@ -264,6 +268,7 @@ impl Status {
             resolved: VecDeque::new(),
             stop_requested_ms: None,
             stop_by_owner: false,
+            end_by_owner: false,
             takeover_ms: None,
             takeover_id: None,
             takeover_tab: None,
@@ -438,11 +443,9 @@ impl Status {
         if self.is_gone() && (self.exited, self.lost) != before.gone {
             self.gone_seq = seq;
             self.ended_ms = Some(ts_ms);
-            // The exit its owner asked for is handled already, with all
-            // that came before it.
-            if self.exited && self.stop_by_owner {
-                self.acked_seq = self.acked_seq.max(seq);
-            }
+            // The exit its owner asked for needs no ack; what came before
+            // it stays as acknowledged as it was.
+            self.end_by_owner = self.exited && self.stop_by_owner;
         }
     }
 
@@ -478,7 +481,9 @@ impl Status {
     pub(super) fn obligation(&self) -> Option<(WorkerAttentionReason, Vec<WorkerQuestion>)> {
         let acked = self.acked_seq;
         if self.is_gone() {
-            return (self.gone_seq > acked).then(|| (WorkerAttentionReason::Gone, Vec::new()));
+            return self
+                .end_owed()
+                .then(|| (WorkerAttentionReason::Gone, Vec::new()));
         }
         let questions: Vec<WorkerQuestion> = self
             .questions
@@ -524,7 +529,13 @@ impl Status {
     /// An ended worker whose owner has not acknowledged its end yet: its
     /// handoff is open, so its result still waits for review.
     pub(super) fn end_unacked(&self) -> bool {
-        self.is_gone() && self.owner_pane.is_some() && self.gone_seq > self.acked_seq
+        self.is_gone() && self.owner_pane.is_some() && self.end_owed()
+    }
+
+    /// Whether its end waits for its owner's ack: it came after what the
+    /// owner acknowledged, and the owner did not ask for it.
+    fn end_owed(&self) -> bool {
+        self.gone_seq > self.acked_seq && !self.end_by_owner
     }
 
     /// Whether the sidebar lists the worker: while it runs, and after its
