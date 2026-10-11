@@ -382,6 +382,10 @@ impl App {
             return None;
         }
         let pane = self.pane_metadata(ws_idx, pane_id)?;
+        let background_tasks = pane
+            .tokens
+            .get(crate::api::schema::agents::BACKGROUND_TASKS_TOKEN)
+            .and_then(|value| crate::api::schema::agents::background_task_count(value));
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
@@ -429,6 +433,7 @@ impl App {
                     message: report.message.clone(),
                 }),
             task: terminal.reported_task().map(str::to_owned),
+            background_tasks,
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,

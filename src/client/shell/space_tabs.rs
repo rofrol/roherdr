@@ -77,6 +77,10 @@ pub(super) struct SpaceTabLine {
     /// `super::background_work_detail`), named on hover; set only with that
     /// mark.
     pub(super) background: Option<String>,
+    /// How many background tasks its agents had running when their turns
+    /// ended (see `super::background_count`), drawn dim as `bg:N` next to
+    /// every state; 0 when none ran or nobody knows.
+    pub(super) background_count: u32,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -430,6 +434,7 @@ pub(super) fn worker_lines_at(
                 }),
                 items: None,
                 background: None,
+                background_count: 0,
             }
         })
         .collect()
@@ -645,6 +650,7 @@ pub(super) fn space_tab_lines_filtered(
                     .filter(|_| tab.role == Some(crate::api::schema::TabRole::Coordinator))
                     .cloned(),
                 background: tab_background(snapshot, tab, state),
+                background_count: tab_background_count(snapshot, tab),
             }
         })
         .collect::<Vec<_>>();
@@ -690,6 +696,7 @@ pub(super) fn space_tab_lines_filtered(
                 worker: None,
                 items: None,
                 background: None,
+                background_count: 0,
             });
         }
     }
@@ -759,6 +766,7 @@ fn collapse_ended_workers(
                 worker: None,
                 items: None,
                 background: None,
+                background_count: 0,
             });
         }
         if open {
@@ -1081,6 +1089,17 @@ fn tab_background(
         .iter()
         .filter(|agent| agent.tab_id == tab.tab_id)
         .find_map(|agent| super::background_work_detail(snapshot, agent))
+}
+
+/// How many background tasks the tab's agents had running when their turns
+/// ended, summed over those that reported a count.
+fn tab_background_count(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> u32 {
+    snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id)
+        .filter_map(super::background_count)
+        .fold(0, u32::saturating_add)
 }
 
 /// The state icon of a tab line and its colour, as the sidebar draws it: the
@@ -1537,7 +1556,40 @@ pub(super) fn render_space_tab_lines(
                 starts_at_target: false,
             });
         }
-        let label_width = area_width.saturating_sub(plan_width + was_width);
+        // The background tasks its agents left running, dim and left of the
+        // above, in every state: `bg:N` says it in text, not only in colour.
+        let background = (line.background_count > 0)
+            .then(|| format!("bg:{}", line.background_count))
+            .filter(|text| {
+                area_width.saturating_sub(plan_width + was_width)
+                    >= super::render::display_width(text) + 1 + 6
+            });
+        let bg_width = background
+            .as_deref()
+            .map_or(0, |text| super::render::display_width(text) + 1);
+        if let Some(text) = background.as_deref() {
+            let bg_x = text_x + area_width - plan_width - was_width - (bg_width - 1);
+            super::render::put_text(
+                buffer,
+                bg_x,
+                y,
+                bg_width - 1,
+                text,
+                Style::default().fg(palette.overlay1),
+            );
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(bg_x, y, bg_width - 1, 1),
+                id: format!("tab-background:{}", line.tab_id),
+                text: format!(
+                    "{} background task{} (shells, servers, waits) running when its turn ended",
+                    line.background_count,
+                    if line.background_count == 1 { "" } else { "s" }
+                ),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        let label_width = area_width.saturating_sub(plan_width + was_width + bg_width);
         // The agent's badge leads the label (`CL fix tooltip`) while the
         // label keeps a few columns.
         let badge = line

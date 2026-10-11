@@ -920,6 +920,53 @@ mod tests {
     }
 
     #[test]
+    fn agent_background_tasks_tell_an_observed_zero_from_unknown() {
+        let (mut app, agents) = app_with_agents_in_two_workspaces();
+        let (_, pane) = &agents[0];
+        assert_eq!(
+            get_agent(&mut app, pane, None).unwrap().background_tasks,
+            None
+        );
+        for (value, expected) in [
+            (Some("2"), Some(2)),
+            (Some("0"), Some(0)),
+            (Some("2 bg"), None),
+            (None, None),
+        ] {
+            let params = serde_json::from_value(serde_json::json!({
+                "pane_id": pane,
+                "source": "claude-bg",
+                "tokens": { "bg_count": value },
+            }))
+            .unwrap();
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "report".into(),
+                method: crate::api::schema::Method::PaneReportMetadata(params),
+            });
+            assert!(response.contains("\"result\""), "{response}");
+            let agent = get_agent(&mut app, pane, None).unwrap();
+            assert_eq!(agent.background_tasks, expected, "{value:?}");
+            let json = serde_json::to_value(&agent).unwrap();
+            assert_eq!(
+                json.get("background_tasks")
+                    .and_then(|count| count.as_u64()),
+                expected.map(u64::from),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn background_task_counts_are_bare_decimals() {
+        use crate::api::schema::agents::background_task_count;
+        assert_eq!(background_task_count("3"), Some(3));
+        assert_eq!(background_task_count(" 0 "), Some(0));
+        for value in ["", " ", "-1", "+1", "2 bg", "1.5", "99999999999"] {
+            assert_eq!(background_task_count(value), None, "{value:?}");
+        }
+    }
+
+    #[test]
     fn agent_names_are_unique_per_workspace() {
         let (mut app, agents) = app_with_agents_in_two_workspaces();
         let [(_, first), (_, second), (_, other_workspace)] = agents.as_slice() else {

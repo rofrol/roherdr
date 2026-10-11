@@ -70,7 +70,8 @@ with `herdr-job list | grep`, which picks the wrong one when several run.
 - `herdr-bg-badge` (a Claude Code Stop hook) puts the number of Claude's own
   background tasks in `$bg` (`2 bg`). A `herdr-job wait` task counts there
   only while its job runs in another pane's tab (`1 bg ⧖ Build b17`, naming
-  the job); one on this pane's own job is already in `$jobs`.
+  the job); one on this pane's own job is already in `$jobs`. The bare count
+  (`0` included) goes in `bg_count`, shown on the tab line as `bg:N`.
 - The job tab's shell gets the `_exec` line typed into it, so it is kept out of
   your history: a leading space for atuin, and `HISTORY_IGNORE` in the tab's
   environment for zsh's history file.
@@ -335,6 +336,13 @@ A background `herdr-job wait-agent <pane>` counts once per waited pane, and
 the hook reports those panes' ids beside `$bg` in a `bg_agents` token, so a
 hover over the finished agent's `◔` mark names the agent of each such pane,
 in whichever space it is (`waits on: w-docs (other space)`).
+
+Beside `$bg` the hook always reports the bare count in a `bg_count` token,
+`0` included, so a pane it never reported on (an older Claude Code, another
+agent) stays unknown instead of passing for idle. Herdr's API returns it as
+the agent's `background_tasks`, and the sidebar's tab line shows it dim as
+`bg:N` in every state, working included. Like `$bg`, it expires 12 hours
+after the last Stop.
 
 ```json
 "Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}],

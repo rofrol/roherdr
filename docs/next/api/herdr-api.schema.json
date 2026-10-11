@@ -11109,6 +11109,15 @@
               "description": "The agent's last turn ended by asking the user something (reported through\n`pane.report_awaiting_reply`), nobody has typed into the pane since, and it is idle.",
               "type": "boolean"
             },
+            "background_tasks": {
+              "description": "How many background tasks (shells, dev servers, waits) the agent had running when\nits last turn ended, from the decimal `bg_count` token its integration reports\nthrough `pane.report_metadata`. Absent when unknown (no report seen, or an agent\nthat reports none); `0` when the agent was seen running none.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "completion_seq": {
               "description": "The current idle transition completed work, independently of who has viewed it.",
               "format": "uint64",

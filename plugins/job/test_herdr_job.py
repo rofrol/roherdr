@@ -561,19 +561,39 @@ class BgBadgeTests(unittest.TestCase):
         with patch.dict(globs, patches), patch.dict(os.environ, env), patch.object(sys, "stdin", payload), \
                 patch.object(subprocess, "run", lambda cmd, **_k: calls.append(cmd)):
             BADGE["main"]()
+        if not calls:
+            return None
         (cmd,) = calls
         return cmd[cmd.index("claude-bg") + 1:]
 
     def test_the_hook_reports_the_waited_panes_beside_the_count(self):
         waits = {"edges": 1, "waits": [], "agents": [{"target_pane": "p7"}]}
+        ttl = ["--ttl-ms", str(BADGE["TTL_MS"])]
         args = self.report([{"status": "running"}], waits)
-        self.assertEqual(args, ["--token", "bg=1 bg", "--token", "bg_agents=p7",
-                                "--ttl-ms", str(BADGE["TTL_MS"])])
+        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg=1 bg",
+                                "--token", "bg_agents=p7", *ttl])
         args = self.report([{"status": "running"}], {"edges": 0, "waits": []})
-        self.assertEqual(args, ["--token", "bg=1 bg", "--clear-token", "bg_agents",
-                                "--ttl-ms", str(BADGE["TTL_MS"])])
+        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg=1 bg",
+                                "--clear-token", "bg_agents", *ttl])
         args = self.report([{"status": "completed"}], waits)
-        self.assertEqual(args, ["--clear-token", "bg", "--clear-token", "bg_agents"])
+        self.assertEqual(args, ["--token", "bg_count=0", "--clear-token", "bg",
+                                "--clear-token", "bg_agents", *ttl])
+
+    def test_an_observed_zero_is_reported_apart_from_unknown(self):
+        # A payload with no running task reports the count 0, which expires
+        # like any count; a payload without `background_tasks` (an older
+        # Claude Code) reports nothing, so the pane stays unknown.
+        args = self.report([], {"edges": 0, "waits": []})
+        self.assertEqual(args[:2], ["--token", "bg_count=0"])
+        self.assertEqual(args[-2:], ["--ttl-ms", str(BADGE["TTL_MS"])])
+        self.assertIsNone(self.report(None, None))
+
+    def test_the_count_matches_the_badge(self):
+        count = BADGE["count"]
+        waits = {"edges": 3, "waits": [self.wait("a"), self.wait("a"), self.wait("b")]}
+        self.assertEqual(count(4, waits), 3)
+        self.assertEqual(count(1, {"edges": 1, "waits": [self.wait("a", local=True)]}), 0)
+        self.assertEqual(count(2, None), 2)
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

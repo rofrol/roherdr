@@ -1178,6 +1178,73 @@ fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
     );
 }
 
+fn report_bg(state: &mut ClientShellState, status: AgentStatus, tokens: &[(&str, &str)]) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].agent_status = status;
+    projected.agents[0].agent_status = status;
+    projected.agents[0].tokens = tokens
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    state.set_snapshot(Box::new(projected));
+}
+
+/// The first tab line's row and its background count's tooltip, if drawn.
+fn tab_background_count(state: &mut ClientShellState) -> (String, Option<String>) {
+    let frame = state.compose(106, 30).unwrap();
+    let (line, _) = state.hits.space_tabs[0];
+    let row = frame_rows(&frame)[line.y as usize].clone();
+    let tooltip = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-background:") && target.rect.y == line.y)
+        .map(|target| target.text.clone());
+    (row, tooltip)
+}
+
+#[test]
+fn a_tab_shows_its_background_task_count_next_to_every_state() {
+    let mut state = state_with_tabs(true);
+    for status in [
+        AgentStatus::Working,
+        AgentStatus::Blocked,
+        AgentStatus::Done,
+        AgentStatus::Idle,
+    ] {
+        report_bg(&mut state, status, &[("bg_count", "2"), ("bg", "2 bg")]);
+        let (row, tooltip) = tab_background_count(&mut state);
+        assert!(row.contains("bg:2"), "{status:?}: {row}");
+        assert_eq!(
+            tooltip.as_deref(),
+            Some("2 background tasks (shells, servers, waits) running when its turn ended"),
+            "{status:?}"
+        );
+    }
+    // A working agent keeps its working state: the count is not a mark.
+    report_bg(&mut state, AgentStatus::Working, &[("bg_count", "1")]);
+    assert!(tab_state_glyph(&mut state).0.starts_with("working · "));
+
+    // An observed zero and an unknown count both draw nothing.
+    report_bg(&mut state, AgentStatus::Working, &[("bg_count", "0")]);
+    let (row, tooltip) = tab_background_count(&mut state);
+    assert!(!row.contains("bg:"), "{row}");
+    assert_eq!(tooltip, None);
+    report_bg(&mut state, AgentStatus::Working, &[]);
+    assert_eq!(tab_background_count(&mut state).1, None);
+
+    // A hook from before `bg_count` still counts through its `bg` token,
+    // which `bg_count` overrides once reported.
+    report_bg(&mut state, AgentStatus::Done, &[("bg", "3 bg ⧖ Build b17")]);
+    assert!(tab_background_count(&mut state).0.contains("bg:3"));
+    report_bg(
+        &mut state,
+        AgentStatus::Done,
+        &[("bg_count", "1"), ("bg", "3 bg")],
+    );
+    assert!(tab_background_count(&mut state).0.contains("bg:1"));
+}
+
 #[test]
 fn a_finished_coordinators_background_mark_names_the_workers_still_running() {
     let mut state = state_with_tabs(true);

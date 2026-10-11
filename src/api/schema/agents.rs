@@ -436,6 +436,12 @@ pub struct AgentInfo {
     /// What the agent reported it works on now (`pane.report_task`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// How many background tasks (shells, dev servers, waits) the agent had running when
+    /// its last turn ended, from the decimal `bg_count` token its integration reports
+    /// through `pane.report_metadata`. Absent when unknown (no report seen, or an agent
+    /// that reports none); `0` when the agent was seen running none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_tasks: Option<u32>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,
@@ -444,6 +450,21 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+}
+
+/// The pane metadata token in which an agent's integration reports how many background
+/// tasks it had running when its turn ended (Claude Code's Stop hook `herdr-bg-badge`
+/// reports it from the hook payload, `0` included); its value is a decimal count.
+pub const BACKGROUND_TASKS_TOKEN: &str = "bg_count";
+
+/// The background task count a `bg_count` token value states; None (unknown) when it
+/// is not a decimal count.
+pub fn background_task_count(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 /// Which limit ended an agent's turn; the remedies differ.

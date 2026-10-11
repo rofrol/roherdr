@@ -3,7 +3,10 @@
 
 Reads the hook payload's `background_tasks` (Claude Code 2.1.28x), logs it to
 ~/.local/state/herdr-bg/payloads.jsonl, and reports `$bg` pane metadata:
-the number of running tasks (`2 bg`), or cleared when none run.
+the number of running tasks (`2 bg`), or cleared when none run, and beside it
+`$bg_count`, the bare count (`0` included), which herdr's API returns as the
+agent's `background_tasks` and the tab line shows as `bg:N`: a pane without
+it is unknown, not idle.
 
 A task that is a `herdr-job wait` is known from herdr-job's own wait records
 (`herdr-job _waits`), not from its command text: it counts here unless this
@@ -60,20 +63,12 @@ def short(text, width=NAME_WIDTH):
 
 
 def badge(running, waits):
-    """The `$bg` value, or None to clear it. `running` is the number of running
-    background tasks; every `herdr-job wait` among them has a record in
-    `waits`, so those tasks count only as the jobs they wait on that run and
-    that this pane's own job counts do not show; every `wait-agent` one in
-    `agents`, counted once per waited pane."""
-    waits = waits or {"edges": 0, "waits": []}
-    other = max(0, running - int(waits.get("edges") or 0))
-    shown = {}
-    for wait in waits.get("waits") or []:
-        if wait.get("running") and not wait.get("local"):
-            shown.setdefault(wait.get("job_id"), wait)
-    total = other + len(shown) + len(agent_panes(waits))
+    """The `$bg` value, or None to clear it (see `count`)."""
+    total = count(running, waits)
     if not total:
         return None
+    waits = waits or {"edges": 0, "waits": []}
+    shown = shown_waits(waits)
     text = f"{total} bg"
     if shown:
         first = next(iter(shown.values()))
@@ -81,6 +76,27 @@ def badge(running, waits):
         if len(shown) > 1:
             text += f" +{len(shown) - 1}"
     return text
+
+
+def shown_waits(waits):
+    """The running jobs of other tabs this pane's `herdr-job wait`s wait on,
+    once per job, in order."""
+    shown = {}
+    for wait in waits.get("waits") or []:
+        if wait.get("running") and not wait.get("local"):
+            shown.setdefault(wait.get("job_id"), wait)
+    return shown
+
+
+def count(running, waits):
+    """The background work the badge counts. `running` is the number of running
+    background tasks; every `herdr-job wait` among them has a record in
+    `waits`, so those tasks count only as the jobs they wait on that run and
+    that this pane's own job counts do not show; every `wait-agent` one in
+    `agents`, counted once per waited pane."""
+    waits = waits or {"edges": 0, "waits": []}
+    other = max(0, running - int(waits.get("edges") or 0))
+    return other + len(shown_waits(waits)) + len(agent_panes(waits))
 
 
 def agent_panes(waits):
@@ -116,7 +132,8 @@ def main():
         except (OSError, ValueError, subprocess.SubprocessError):
             waits = None
     value = badge(len(running), waits)
-    cmd = [HERDR, "pane", "report-metadata", pane, "--source", "claude-bg"]
+    cmd = [HERDR, "pane", "report-metadata", pane, "--source", "claude-bg",
+           "--token", f"bg_count={count(len(running), waits)}"]
     panes = agent_panes(waits) if value is not None else []
     if value is None:
         cmd += ["--clear-token", "bg"]
@@ -126,8 +143,8 @@ def main():
         cmd += ["--token", f"bg_agents={' '.join(panes)}"]
     else:
         cmd += ["--clear-token", "bg_agents"]
-    if value is not None:
-        cmd += ["--ttl-ms", str(TTL_MS)]
+    # Also an observed zero expires: after that nobody knows.
+    cmd += ["--ttl-ms", str(TTL_MS)]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
 
 

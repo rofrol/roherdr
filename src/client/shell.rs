@@ -273,6 +273,27 @@ fn background_work(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
         .map(|(_, value)| value.trim())
 }
 
+/// How many background tasks the agent had running when its last turn ended,
+/// in any state: its `bg_count` token (`0` included), else the count leading
+/// its `bg` token (`2 bg`, from a hook before `bg_count`). None when unknown:
+/// no report seen, or an agent whose integration reports none.
+fn background_count(agent: &crate::protocol::ClientShellAgent) -> Option<u32> {
+    use crate::api::schema::agents::{background_task_count, BACKGROUND_TASKS_TOKEN};
+    let token = |name: &str| {
+        agent
+            .tokens
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    if let Some(count) = token(BACKGROUND_TASKS_TOKEN).and_then(background_task_count) {
+        return Some(count);
+    }
+    token("bg")
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(background_task_count)
+}
+
 /// What a hover over the background-work mark names: the `bg` token, the
 /// agents it waits on in the background wherever they are (see
 /// `waited_agent_tabs`) and, for a coordinator, the other workers of its
