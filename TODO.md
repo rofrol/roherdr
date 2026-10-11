@@ -547,6 +547,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `herdr todo grant --revoke` / `todo.revoke` with an append-only
   `capability_grant_log`; a run not yet past its prepare is blocked after a
   revoke; grants show in `todo status` / `todo runs`. Left: slices 2-6, 8, 9.
+  Input from the odherdr spike (2026-10-11: an Odin worker host reproduced
+  herdr's grant hash and refusal order; recommendation: herdr's protocol is
+  not yet ready to be an odherdr milestone). Its 13 open questions belong to
+  this item's slices 4-9, to be answered in a written protocol spec before
+  any second implementation: (1) a wire protocol between driver and adapter
+  (transport, framing, method names, version negotiation); (2) which side
+  checks the grant; (3) result names: denied/failed/unsupported vs
+  grant_required/capability_unsupported, refusal as error or result; (4) an
+  unknown capability: malformed request or unsupported; (5) what
+  `exec{argv}` enforces (herdr counts it enforced but never compares argv);
+  (6) whether the job's cwd is writable; (7) the ending signal and
+  cancellation/budget reasons in a result; (8) whether the 40-line and
+  4000-character log bounds and log retention are contract; (9) `net.egress`
+  as HTTPS CONNECT through a local proxy to 443 (tools ignoring HTTPS_PROXY
+  fail; other ports?); (10) killing descendants that `setsid` out of the
+  group (a macOS group kill misses them); (11) whether the confinement
+  baseline is mandatory (herdr refuses off macOS); (12) what reads a
+  conforming host denies; (13) where the conformance suite lives. Source:
+  ~/personal_projects/odin/odherdr/spike/herdr-worker/README.md, "What herdr
+  leaves open".
 
 - [ ] Event-driven worker waits, no timers (user, 2026-10-07: "a deadline of [t-osip4upq]
   about 30 minutes? too much? why any asynchronous workaround at all? make
