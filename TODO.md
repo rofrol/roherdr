@@ -1726,6 +1726,21 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the organization's own limit is $200,000, so only the workspace limit
   caps spending. The org shows US$209.86 of credits. Left for the user: an
   API key in that workspace, stored in the Keychain.
+  Key storage decided 2026-10-12 (the user: "no Keychain, it may run on
+  the VPS without one; ask the models"; round 20261012-005401-f62e, sol,
+  MiMo, DeepSeek agreeing): a static `herdr-workers` workspace key in a
+  0600 file `<key file>` (config
+  `anthropic_api_key_file`, read with `read_secret_file`, same on the Mac
+  and the VPS; on Guix never declarative: the store is world-readable);
+  the key never reaches the worker: herdr keeps it in memory and proxies
+  the worker's Anthropic calls over a user-only socket with a fixed
+  Anthropic destination (no general or CONNECT proxy), rewriting
+  `Authorization`; the worker gets only a per-run opaque proxy token; the
+  sandbox must deny the key file; no header logging, core dumps off.
+  Rejected: Keychain/secret-tool (no keyring on a headless VPS), a
+  secret command (later at most), herdr as its own OIDC issuer (a signing
+  key on disk instead of an API key). Workload Identity Federation only
+  if a real identity provider appears.
 
 - [ ] `herdr todo run` serves a coordinator that owns two repositories [t-o73wcaoq]
   (the user via the rormpc coordinator, 2026-10-12: "report it to the herdr
