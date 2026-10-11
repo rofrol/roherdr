@@ -1898,6 +1898,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pasted_content, queued_command, multiline, missing and truncated
   transcript, restart/handoff, plus a supervisor self-test injecting an
   assignment with no parseable start.
+  Slice 1 landed 2026-10-12 (e97a3fea). The real cause was not the
+  pasted_content wrapper (the coordinator's lead was wrong): Claude Code
+  writes the turn's last assistant message to the transcript after the Stop
+  hook fires, so the Stop-time scan missed `WORKER-DONE`. Fixed: the Stop
+  hook sends `last_assistant_message` as `final_text` in `pane.report_turn`,
+  used when the transcript lacks it; paste tags ignored when matching;
+  the first sweep of a new server re-reads open assignments
+  (`turn_duration` marks a turn end); `wait-agent --until verdict` exits 8
+  (tracking lost) on an untracked request. Left for slice 2: the
+  `unaccounted_assignment` invariant decided above, and the
+  `prompt_turns` state (who reports turns, tracked requests) carried
+  across a handoff, which caused "the agent does not report turns".
 
 - [ ] Requirements from reports are traced to tests before an item closes [t-jyicwrb4]
   (follows from [t-276mtaqw]; round 20261012-010450-e610: the supervisor
