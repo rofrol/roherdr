@@ -106,12 +106,54 @@ fn a_tab_whose_agent_waits_names_what_it_waits_on() {
     let text = sidebar_text(&mut state);
     assert!(text.contains("waiting: Build b17"), "{text}");
     assert!(text.contains("↳ job Build b17 · running"), "{text}");
-    assert!(text.contains('⧖'), "{text}");
+    let waiting = text
+        .lines()
+        .find(|line| line.contains("waiting: Build b17"))
+        .expect("the waiting line");
+    assert!(!waiting.contains('⧖'), "{waiting}");
+    assert!(
+        waiting.contains('◐'),
+        "the job glyph, first frame: {waiting}"
+    );
 
     // Without the edge the tab is plainly idle again.
     projected.waits.clear();
     let mut state = state_with(projected);
     let text = sidebar_text(&mut state);
     assert!(!text.contains("waiting:"), "{text}");
-    assert!(!text.contains('⧖'), "{text}");
+}
+
+#[test]
+fn a_tab_waiting_on_a_run_turns_its_glyph_with_the_clock() {
+    let mut projected = snapshot();
+    for agent in &mut projected.agents {
+        agent.agent_status = crate::api::schema::AgentStatus::Idle;
+    }
+    for tab in &mut projected.tabs {
+        tab.agent_status = crate::api::schema::AgentStatus::Idle;
+    }
+    projected.waits = vec![ClientShellWait {
+        pane_id: "pane_1".into(),
+        kind: "run".into(),
+        target: "r-abcd2345".into(),
+        name: "r-abcd2345".into(),
+        tab_id: None,
+        since_ms: None,
+        last_output_ms: None,
+    }];
+    let mut state = state_with(projected);
+    // No agent works and no job runs: the wait alone keeps the glyph turning.
+    assert!(state.motion_active);
+    let waiting = |state: &mut ClientShellState| {
+        sidebar_text(state)
+            .lines()
+            .find(|line| line.contains("waiting: run r-abcd2345"))
+            .map(str::to_owned)
+            .expect("the waiting line")
+    };
+    assert!(waiting(&mut state).contains('◐'), "{}", waiting(&mut state));
+    // delay: not a wait, a clock reading one frame (160 ms) past the epoch.
+    let next_frame = state.motion_epoch + std::time::Duration::from_millis(170);
+    assert!(state.tick_motion(next_frame));
+    assert!(waiting(&mut state).contains('◒'), "{}", waiting(&mut state));
 }

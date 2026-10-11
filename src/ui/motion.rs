@@ -19,7 +19,10 @@ const WORKING_FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
 const JOB_FRAMES: [&str; 4] = ["◐", "◒", "◑", "◓"];
 const PERIOD: Duration = Duration::from_millis(160);
 const WORKING_STATIC: &str = WORKING_FRAMES[0];
-const JOB_STATIC: &str = "◑";
+/// Also what text written outside the client (herdr-job's `bg` and `jobs`
+/// tokens) puts
+/// where a running job is named; see [`turn_job_glyphs`].
+pub(crate) const JOB_STATIC: &str = "◑";
 
 /// Which frame each kind of glyph shows, or static glyphs when not `enabled`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,6 +90,19 @@ pub(crate) fn job_glyph() -> &'static str {
     }
 }
 
+/// `text` with each still running-job glyph ([`JOB_STATIC`]) drawn as
+/// [`job_glyph`], so a token another program wrote turns with the rest.
+/// The hourglass an older herdr-bg-badge wrote there is drawn the same way.
+pub(crate) fn turn_job_glyphs(text: &str) -> std::borrow::Cow<'_, str> {
+    const HOURGLASS: &str = "⧖";
+    let glyph = job_glyph();
+    let still = text.contains(JOB_STATIC) && glyph != JOB_STATIC;
+    if !still && !text.contains(HOURGLASS) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(text.replace(JOB_STATIC, glyph).replace(HOURGLASS, glyph))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +130,15 @@ mod tests {
         assert_eq!((working_glyph(), job_glyph()), ("◐", "◑"));
         let _scope = scope(Motion::STATIC);
         assert_eq!((working_glyph(), job_glyph()), ("◐", "◑"));
+    }
+
+    #[test]
+    fn a_written_job_glyph_turns_with_the_frame() {
+        assert_eq!(turn_job_glyphs("1 bg ◑ Build"), "1 bg ◑ Build");
+        let _scope = scope(Motion::at(ms(160)));
+        assert_eq!(turn_job_glyphs("1 bg ◑ Build"), "1 bg ◒ Build");
+        assert_eq!(turn_job_glyphs("2 bg"), "2 bg");
+        assert_eq!(turn_job_glyphs("1 bg ⧖ Build"), "1 bg ◒ Build");
     }
 
     #[test]

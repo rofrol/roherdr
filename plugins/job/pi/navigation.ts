@@ -16,7 +16,7 @@ export function matchesJob(meta: any, id: string, owner: string, tab: any): bool
   if (meta.tab_id !== tab.tab_id || typeof meta.name !== "string") return false;
   const name = meta.name.split(/\s+/u).filter(Boolean).join(" ");
   const short = [...name].length <= 30 ? name : [...name].slice(0, 29).join("") + "…";
-  const labels = meta.tab_status ? [short] : ["⧖", "✓", "✗"].map(icon => `${icon} ${short}`);
+  const labels = meta.tab_status ? [short] : ["◑", "✓", "✗"].map(icon => `${icon} ${short}`);
   return labels.includes(tab.label);
 }
 

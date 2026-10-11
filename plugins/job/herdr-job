@@ -225,7 +225,7 @@ def final_tab_status(code):
 def set_final_tab_status(meta, code):
     """The job's last word to herdr. A live handoff can leave the server
     unreachable for a while, so retry with backoff instead of leaving the tab
-    at ⧖; `reconcile_tabs` repairs whatever still slips through."""
+    running; `reconcile_tabs` repairs whatever still slips through."""
     for delay in (0, 1, 2, 4, 8, 15, 30):
         time.sleep(delay)
         if herdr_ok("tab", "status", meta["tab_id"], final_tab_status(code)):
@@ -236,7 +236,7 @@ def job_labels(meta):
     """The labels a job's tab carries: herdr builds without tab statuses get
     the state icon in the label."""
     name = short(meta["name"], 30)
-    labels = {name} if meta.get("tab_status") else {f"{mark} {name}" for mark in "⧖✓✗"}
+    labels = {name} if meta.get("tab_status") else {f"{mark} {name}" for mark in "◑✓✗"}
     if meta.get("intent"):
         labels.add(intent_label(meta))
     return labels
@@ -408,7 +408,7 @@ def reconcile_tabs():
 
 def update_owner_token(owner_pane):
     """Summarise the owner's jobs that still have a tab into its `$jobs`
-    sidebar token as counts, e.g. `⧖ 2 !1 ✓1`: the agents panel cannot
+    sidebar token as counts, e.g. `◑ 2 !1 ✓1`: the agents panel cannot
     scroll, so a list of names would push other agents out of view. A closed
     tab drops its job from the counts (the `tab.closed` hook recounts)."""
     if not owner_pane:
@@ -424,8 +424,9 @@ def update_owner_token(owner_pane):
         st, _ = status(path, meta, tabs)
         counts["running" if active(st) else "failed" if st == "lost" else st] += 1
     # The icons and order of herdr's own job counts (tab bar, space row):
-    # `!`, not `✗`, and `⧖` spaced from its digit, which it runs into.
-    marks = (("running", "⧖ "), ("failed", "!"), ("ok", "✓"))
+    # `!`, not `✗`, and the running half circle `◑` spaced from its digit,
+    # which it runs into; herdr turns it like its own.
+    marks = (("running", "◑ "), ("failed", "!"), ("ok", "✓"))
     parts = [f"{mark}{counts[key]}" for key, mark in marks if counts[key]]
     cmd = ["pane", "report-metadata", owner_pane, "--source", "herdr-job"]
     if parts:
@@ -1041,7 +1042,7 @@ def start_job(args, owner, root, key=None):
     meta["tab_status"] = herdr_ok("tab", "status", meta["tab_id"], "running")
     # Recorded before the rename, so the tab is recognized by either label.
     write_meta(path, meta)
-    label = short(args.name, 30) if meta["tab_status"] else f"⧖ {short(args.name, 30)}"
+    label = short(args.name, 30) if meta["tab_status"] else f"◑ {short(args.name, 30)}"
     herdr("tab", "rename", meta["tab_id"], label, check=False)
     meta["client_footer"] = register_job_metadata(meta)
     write_meta(path, meta)
@@ -1089,7 +1090,7 @@ class Footer:
 
     def __init__(self, meta):
         self.meta = meta
-        self.state = "⧖"
+        self.state = "◑"
         self.rows = None
 
     def text(self):
@@ -1130,7 +1131,7 @@ class Footer:
     def draw(self, cols):
         # No reverse video or background: it turns into a black bar on light
         # themes. The state is bold in a palette colour, which themes adapt.
-        colour = {"⧖": 35, "✓": 32}.get(self.state[:1], 31)
+        colour = {"◑": 35, "✓": 32}.get(self.state[:1], 31)
         if cols < 6:
             return
         remaining = cols - 6

@@ -297,8 +297,10 @@ fn git_label(part: GitPart) -> &'static str {
 
 const GROUP_COUNTS_LABEL: &str = "a tab's jobs: 1 running, 2 failed, 3 done, 1 no status";
 const SPACE_JOBS_LABEL: &str = "a space's jobs: 2 running, 1 failed";
-const BACKGROUND_TOKEN_EXAMPLE: &str = "1 bg ⧖ Build";
-const BACKGROUND_TOKEN_LABEL: &str = "1 background task of the agent; ⧖ the job it waits on";
+/// The `bg` token as herdr-bg-badge writes it; drawn through
+/// `motion::turn_job_glyphs`, so its job glyph turns.
+const BACKGROUND_TOKEN_EXAMPLE: &str = "1 bg ◑ Build";
+const BACKGROUND_TOKEN_LABEL: &str = "1 background task of the agent, and the job it waits on";
 
 /// The glyph a job count uses for `status`, as `children_summary` draws it.
 fn job_icon(status: Option<TabStatus>) -> &'static str {
@@ -433,7 +435,7 @@ pub(super) fn legend_lines(
     ));
     lines.push(example(
         vec![Span::styled(
-            BACKGROUND_TOKEN_EXAMPLE,
+            crate::ui::motion::turn_job_glyphs(BACKGROUND_TOKEN_EXAMPLE).into_owned(),
             Style::default().fg(palette.overlay1),
         )],
         BACKGROUND_TOKEN_LABEL,
@@ -845,7 +847,10 @@ mod tests {
         ));
         expected.push((
             LegendEntry::BackgroundToken,
-            format!("{BACKGROUND_TOKEN_EXAMPLE}  {BACKGROUND_TOKEN_LABEL}"),
+            format!(
+                "{}  {BACKGROUND_TOKEN_LABEL}",
+                crate::ui::motion::turn_job_glyphs(BACKGROUND_TOKEN_EXAMPLE)
+            ),
         ));
         for state in WORKER_STATES {
             expected.push((

@@ -182,7 +182,7 @@ class FooterTests(unittest.TestCase):
         output = self.capture(self.footer.start)
         self.assertIn("\x1b[1;23r\x1b[1;1H", output)
         self.assertIn("\x1b7\x1b[24;1H\x1b[2K", output)
-        for text in (" ← ", "⧖", "test", "check", "agent", "herdr-job probe", " × "):
+        for text in (" ← ", "◑", "test", "check", "agent", "herdr-job probe", " × "):
             self.assertIn(text, output)
         self.assertTrue(output.endswith("\x1b8"))
 
@@ -527,7 +527,7 @@ class BgBadgeTests(unittest.TestCase):
 
     def test_a_wait_counts_only_on_another_tab_while_its_job_runs(self):
         badge = BADGE["badge"]
-        self.assertEqual(badge(1, {"edges": 1, "waits": [self.wait("a")]}), "1 bg ⧖ Build a")
+        self.assertEqual(badge(1, {"edges": 1, "waits": [self.wait("a")]}), "1 bg ◑ Build a")
         self.assertIsNone(badge(1, {"edges": 1, "waits": [self.wait("a", local=True)]}))
         self.assertIsNone(badge(1, {"edges": 1, "waits": [self.wait("a", running=False)]}))
         # A record whose job is gone still accounts for its task.
@@ -536,7 +536,7 @@ class BgBadgeTests(unittest.TestCase):
     def test_waits_are_counted_once_per_job_beside_other_tasks(self):
         badge = BADGE["badge"]
         waits = {"edges": 3, "waits": [self.wait("a"), self.wait("a"), self.wait("b")]}
-        self.assertEqual(badge(4, waits), "3 bg ⧖ Build a +1")
+        self.assertEqual(badge(4, waits), "3 bg ◑ Build a +1")
 
     def test_without_herdr_jobs_answer_every_running_task_counts(self):
         self.assertEqual(BADGE["badge"](2, None), "2 bg")
@@ -549,7 +549,7 @@ class BgBadgeTests(unittest.TestCase):
         self.assertEqual(badge(4, waits), "3 bg")
         self.assertEqual(BADGE["agent_panes"](waits), ["p7", "p8"])
         self.assertEqual(badge(2, {"edges": 2, "waits": [self.wait("a")], "agents": agents[:1]}),
-                         "2 bg ⧖ Build a")
+                         "2 bg ◑ Build a")
 
     def report(self, tasks, waits):
         calls = []

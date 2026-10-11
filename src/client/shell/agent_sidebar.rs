@@ -284,7 +284,20 @@ pub(super) fn agent_row(
         .iter()
         .cloned()
         .collect::<HashMap<_, _>>();
-    let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
+    // herdr-job writes a running job as the still job glyph, in `jobs`
+    // (`◑ 2 !1`) and in `bg` (`1 bg ◑ Build`); it turns like the job's own.
+    let tokens = agent
+        .tokens
+        .iter()
+        .map(|(key, value)| {
+            let value = if key == "bg" || key == "jobs" {
+                crate::ui::motion::turn_job_glyphs(value).into_owned()
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect::<HashMap<_, _>>();
     let mark = agent_mark(snapshot, agent);
     let state_text = if mark == AgentMark::AwaitsReply {
         "awaiting reply"

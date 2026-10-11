@@ -1,8 +1,9 @@
 //! Todo runs in progress as lines under their coordinator's space (`run
 //! r-x · install · just clean-install · 4m`; a click opens the step's log,
 //! read-only), and what a waiting agent waits on: its tab shows `waiting:
-//! <job or run>` with an hourglass instead of the finished dot, and for a
-//! job a row `↳ job <name> · running · since 17:30 · last output 17:33`.
+//! <job or run>` with the running job's turning half circle instead of the
+//! finished dot, and for a job a row `↳ job <name> · running · since 17:30 ·
+//! last output 17:33`.
 //! Times are absolute or elapsed, never judged: no line says a run or a job
 //! is stale.
 

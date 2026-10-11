@@ -260,7 +260,7 @@ fn waits_on_idle_job(snapshot: &crate::protocol::ClientShellSnapshot, tab_id: &s
 /// What a finished agent's own background work is: its `bg` token, which
 /// Claude Code's Stop hook (`herdr-bg-badge`) reports through the pane
 /// metadata API from the last Stop's running background tasks, naming a job
-/// of another tab it waits on (`1 bg ⧖ Build b17`), and clears when that
+/// of another tab it waits on (`1 bg ◑ Build b17`), and clears when that
 /// Stop lists none. None while the agent works or blocks. A TUI presentation
 /// of a server fact, not an `AgentStatus`: the status stays done or idle.
 fn background_work(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
@@ -487,8 +487,9 @@ fn agent_icon(
 ) -> &'static str {
     match (mark, style) {
         (AgentMark::AwaitsReply, _) => "?",
-        // An hourglass: it waits on something named (`waiting: <name>`).
-        (AgentMark::Waits, _) => "⧖",
+        // The running-job half circle, turning: it waits on something
+        // named (`waiting: <name>`) that still runs.
+        (AgentMark::Waits, _) => crate::ui::motion::job_glyph(),
         // A job that runs but does nothing: a still `z`, "asleep". A dotted
         // ring (◌) rendered as a few faint dots and was hard to see.
         (AgentMark::WaitsOnIdleJob, _) => "z",

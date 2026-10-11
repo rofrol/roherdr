@@ -23,16 +23,17 @@ with `herdr-job list | grep`, which picks the wrong one when several run.
 - The job tab is a child of the tab that started it. While the workspace
   has jobs, a second row under the tab bar lists the active tab's own
   content first (named after its agent, e.g. `claude`) and then its jobs,
-  e.g. `claude  ⧖ tests  ! build`; the parent tab shows a summary such as
-  `1 ⧖ 1 !2 ✓3`. herdr draws the icons from the tab's status
-  (`herdr tab status`), set to running, then succeeded or failed; failure
+  e.g. `claude  ◑ tests  ! build`; the parent tab shows a summary such as
+  `1 ◑ 1 !2 ✓3`. herdr draws the icons from the tab's status
+  (`herdr tab status`), set to running, then succeeded or failed; a running
+  job's half circle turns, like a working agent's but the other way; failure
   is `!` because `✗` next to a tab label reads as a close button. After
   success the tab closes itself 10 s later, or once you leave it if it is
   the focused tab then (`--keep` leaves it open); after
   a failure it stays open with the output. Closing the parent tab asks first
   and closes its jobs too. herdr builds without child tabs get a top-level
   tab labelled
-  `⧖ Build b17`, then `✓ Build b17` or `✗ Build b17`.
+  `◑ Build b17`, then `✓ Build b17` or `✗ Build b17`.
 - The tab's last row is a pinned footer: ` ← `, state, name, `--why`, which
   agent and workspace started it, the job id and ` × `. Output scrolls above
   it into terminal scrollback. After the job ends, a shell or full-screen
@@ -53,15 +54,15 @@ with `herdr-job list | grep`, which picks the wrong one when several run.
   while it blocks on `herdr-job wait`, or has gaps. Closing the lid still
   sleeps. `HERDR_JOB_KEEP_AWAKE=0` turns it off.
 - The starting pane gets a `$jobs` token with counts of its jobs that still
-  have a tab, e.g. `⧖ 2 !1 ✓1`: running, failed (or lost) and successful,
-  with the same icons as the tab bar.
+  have a tab, e.g. `◑ 2 !1 ✓1`: running, failed (or lost) and successful,
+  with the same icons as the tab bar; herdr turns the half circle.
   Closing a job tab drops it from the counts (a `tab.closed` hook recounts),
   so a success shows until its tab closes itself and a failure until you
   close its tab. Counts, not names: the agents panel cannot scroll, so a
   list would push other agents out of view. Names and exit codes are in
   `herdr-job list` and the tab labels.
 - The space's row in the sidebar counts its running and failed tabs, e.g.
-  `○ repo ⧖ 1`: the space's dot is its agents' state, so it stays idle while
+  `○ repo ◑ 1`: the space's dot is its agents' state, so it stays idle while
   the agent waits for a job (the `tab_jobs` token). With
   `ui.sidebar.spaces.tabs` each tab listed under the space shows the
   running and failed counts of the job tabs nested under it, read from the
@@ -69,8 +70,8 @@ with `herdr-job list | grep`, which picks the wrong one when several run.
   a tab that is gone.
 - `herdr-bg-badge` (a Claude Code Stop hook) puts the number of Claude's own
   background tasks in `$bg` (`2 bg`). A `herdr-job wait` task counts there
-  only while its job runs in another pane's tab (`1 bg ⧖ Build b17`, naming
-  the job); one on this pane's own job is already in `$jobs`. The bare count
+  only while its job runs in another pane's tab (`1 bg ◑ Build b17`, naming
+  the job; herdr turns the half circle); one on this pane's own job is already in `$jobs`. The bare count
   (`0` included) goes in `bg_count`, shown on the tab line as `bg:N`.
 - The job tab's shell gets the `_exec` line typed into it, so it is kept out of
   your history: a leading space for atuin, and `HISTORY_IGNORE` in the tab's
@@ -336,7 +337,7 @@ the start time) to `~/.local/state/herdr-job/waits/`, published atomically
 and flocked by the waiting process, so it is gone, or ignored and removed,
 as soon as the wait ends however it ends (`herdr-job _waits --pane <pane>`
 prints them). A coordinator that waits on a job in its worker's tab thus
-shows `1 bg ⧖ <job name>` while that job runs, its agent state staying idle;
+shows `1 bg ◑ <job name>` while that job runs, its agent state staying idle;
 a wait on its own job is left to `$jobs`, each job counts once however many
 tasks wait on it, and a wait on a job that ended or is gone counts nothing.
 A background `herdr-job wait-agent <pane>` counts once per waited pane, and
@@ -360,7 +361,7 @@ tab is not reported as waiting on an untracked shell.
 
 A `bg_wait_jobs` token names the running jobs those waits wait on, the
 pane's own jobs too, and is cleared when none runs. Herdr shows such a pane's
-tab `waiting: <job name>` with an hourglass while the job's tab runs and the
+tab `waiting: <job name>` with the job's turning half circle while the job's tab runs and the
 agent sits finished, with a row `↳ job <name> · running · since 17:30 · last
 output 17:33` under it. The times come from the job's own pane: its executor
 reports `job_started_ms` when the job starts and `job_output_ms` at its first

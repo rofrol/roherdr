@@ -219,9 +219,9 @@ impl ClientShellState {
     ) -> Option<crate::client::frame_output::ComposedFrame> {
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
-        // Glyphs turn while an agent works, a job runs or the status legend
-        // shows them; with nothing to turn (or animations off) the timer
-        // stays idle.
+        // Glyphs turn while an agent works, a job runs, an agent waits on a
+        // job or a todo run, or the status legend shows them; with nothing to
+        // turn (or animations off) the timer stays idle.
         let legend_open = matches!(
             self.overlay,
             Some(ClientShellOverlay::Help(ClientHelpOverlay {
@@ -239,6 +239,7 @@ impl ClientShellState {
                             .tabs
                             .iter()
                             .any(|tab| tab.status == Some(crate::api::schema::TabStatus::Running))
+                            || !snapshot.waits.is_empty()
                     }));
         // Worker ages and turn times move by the minute: the frame is drawn
         // again when the first of them changes.

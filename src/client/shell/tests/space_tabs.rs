@@ -1124,11 +1124,11 @@ fn finish_with_bg(state: &mut ClientShellState, status: AgentStatus, bg: Option<
 #[test]
 fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
     let mut state = state_with_tabs(true);
-    finish_with_bg(&mut state, AgentStatus::Done, Some("1 bg ⧖ Build b17"));
+    finish_with_bg(&mut state, AgentStatus::Done, Some("1 bg ◑ Build b17"));
     let (text, glyph) = tab_state_glyph(&mut state);
     assert_eq!(
         text,
-        "finished, background work running (its bg token names it): 1 bg ⧖ Build b17 \
+        "finished, background work running (its bg token names it): 1 bg ◑ Build b17 \
          · click: status legend"
     );
     assert_eq!(glyph, '◔');
@@ -1236,7 +1236,7 @@ fn a_tab_shows_its_background_task_count_next_to_every_state() {
 
     // A hook from before `bg_count` still counts through its `bg` token,
     // which `bg_count` overrides once reported.
-    report_bg(&mut state, AgentStatus::Done, &[("bg", "3 bg ⧖ Build b17")]);
+    report_bg(&mut state, AgentStatus::Done, &[("bg", "3 bg ◑ Build b17")]);
     assert!(tab_background_count(&mut state).0.contains("bg:3"));
     report_bg(
         &mut state,

@@ -16,7 +16,8 @@ A task that is a `herdr-job wait` is known from herdr-job's own wait records
 (`herdr-job _waits`), not from its command text: it counts here unless this
 pane's own job counts (`$jobs`, the tab's job summary) already show that job,
 once per job, and only while that job runs; the token then names it
-(`1 bg ⧖ Build b17`). A `herdr-job wait-agent <pane>` counts once per waited
+(`1 bg ◑ Build b17`, the running half circle, which herdr turns like
+its own). A `herdr-job wait-agent <pane>` counts once per waited
 pane, whose ids go in a second token, `bg_agents`, so the sidebar's hover
 over the background mark names that pane's agent wherever it is. A last
 token, `bg_wait_jobs`, names every job whose `herdr-job wait` runs (its own
@@ -79,7 +80,7 @@ def badge(running, waits):
     text = f"{total} bg"
     if shown:
         first = next(iter(shown.values()))
-        text += f" ⧖ {short(first.get('job_name') or first.get('job_id'))}"
+        text += f" ◑ {short(first.get('job_name') or first.get('job_id'))}"
         if len(shown) > 1:
             text += f" +{len(shown) - 1}"
     return text
