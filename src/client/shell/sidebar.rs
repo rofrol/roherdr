@@ -579,6 +579,12 @@ pub(crate) fn render_sidebar(
                                 &tab_lines,
                             ),
                             entry.indented,
+                            super::space_tabs::space_collapsed(
+                                snapshot,
+                                workspace,
+                                state.collapsed_groups,
+                                config,
+                            ),
                             &config.spaces,
                         )
                         .len()
@@ -802,7 +808,23 @@ pub(crate) fn render_sidebar(
             state.collapsed_groups,
             &tab_lines,
         );
-        let rows = workspace_rows(workspace, status, tab_jobs, entry.indented, &config.spaces);
+        let collapsed =
+            super::space_tabs::space_collapsed(snapshot, workspace, state.collapsed_groups, config)
+                .then(|| CollapsedLine {
+                    focus: super::space_tabs::collapsed_focus(
+                        snapshot,
+                        workspace,
+                        state.collapsed_groups,
+                    ),
+                });
+        let rows = workspace_rows(
+            workspace,
+            status,
+            tab_jobs,
+            entry.indented,
+            collapsed.is_some(),
+            &config.spaces,
+        );
         let own_rows = rows.len().max(1).min(u16::MAX as usize) as u16;
         // Rows of the block above the list's top, and where it starts.
         let cut = scroll.saturating_sub(top);
@@ -896,8 +918,28 @@ pub(crate) fn render_sidebar(
             true,
             todo_button,
             to_top_button,
+            collapsed,
             config,
         );
+        // At rest a button on the focus fill takes the panel colour; under
+        // the pointer it keeps its own on the hover grey, so the hover never
+        // passes for the fill.
+        let at_rest = |color: ratatui::style::Color| {
+            if drawn.filled {
+                super::panel_contrast_fg(palette)
+            } else {
+                color
+            }
+        };
+        if let Some(cue) = drawn.focus_inside {
+            block_hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: cue,
+                id: format!("space-focus-inside:{}", workspace.workspace_id),
+                text: "The focused space is in this group".into(),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
         if let Some(jobs) = drawn.jobs.filter(|_| config.mouse_capture) {
             // The counts have no action of their own: a click explains them.
             block_hits
@@ -980,11 +1022,11 @@ pub(crate) fn render_sidebar(
             };
             // No background at rest; hovered, the chip's three columns, all
             // of them clickable, show as one.
-            let style = Style::default().fg(fg).add_modifier(Modifier::BOLD);
+            let style = Style::default().add_modifier(Modifier::BOLD);
             let style = if hovered {
-                style.bg(palette.surface1)
+                style.fg(fg).bg(palette.surface1)
             } else {
-                style
+                style.fg(at_rest(fg))
             };
             put_text(
                 target,
@@ -1017,15 +1059,13 @@ pub(crate) fn render_sidebar(
                 TODO_BUTTON_WIDTH,
                 1,
             );
-            let style = Style::default()
-                .fg(palette.overlay1)
-                .add_modifier(Modifier::BOLD);
+            let style = Style::default().add_modifier(Modifier::BOLD);
             let style = if state.hovered_name_button
                 == Some((workspace.workspace_id.as_str(), NameLineButton::Todo))
             {
-                style.bg(palette.surface1)
+                style.fg(palette.overlay1).bg(palette.surface1)
             } else {
-                style
+                style.fg(at_rest(palette.overlay1))
             };
             // Blank the padding, then the crown in the middle column only:
             // a terminal that draws it two columns wide spills into the
@@ -1066,11 +1106,13 @@ pub(crate) fn render_sidebar(
             } else {
                 ("⤒", "Move this space to the top (for every client)")
             };
-            let style = Style::default().fg(if hovered {
-                palette.accent
+            let style = if hovered && drawn.filled {
+                Style::default().fg(palette.accent).bg(palette.surface1)
+            } else if hovered {
+                Style::default().fg(palette.accent)
             } else {
-                palette.overlay1
-            });
+                Style::default().fg(at_rest(palette.overlay1))
+            };
             put_text(target, button.x, button.y, 1, glyph, style);
             block_hits
                 .space_to_top
@@ -1101,13 +1143,12 @@ pub(crate) fn render_sidebar(
                 3,
                 1,
             );
-            let style = Style::default().fg(palette.accent);
             let style = if state.hovered_name_button
                 == Some((workspace.workspace_id.as_str(), NameLineButton::NewTab))
             {
-                style.bg(palette.surface1)
+                Style::default().fg(palette.accent).bg(palette.surface1)
             } else {
-                style
+                Style::default().fg(at_rest(palette.accent))
             };
             put_text(
                 target,
@@ -1185,6 +1226,7 @@ pub(crate) fn render_sidebar(
                 entry,
                 workspace,
                 state.collapsed_groups,
+                drawn.filled,
                 config,
             )
         } else {
@@ -1832,6 +1874,9 @@ pub(in crate::client::shell) fn workspace_rows(
     status: crate::api::schema::AgentStatus,
     tab_jobs: (usize, usize),
     indented: bool,
+    // The space is collapsed (`space_tabs::space_collapsed`): its one line
+    // is `collapsed_row`.
+    collapsed: bool,
     config: &SpacesSidebarConfig,
 ) -> Vec<Vec<crate::ui::ResolvedToken>> {
     let label = if indented && !workspace.custom_label {
@@ -1844,18 +1889,22 @@ pub(in crate::client::shell) fn workspace_rows(
         &workspace.label
     };
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    let rows = crate::ui::sidebar_space_rows(
-        config,
-        crate::ui::SpaceTokenContext {
-            workspace: label,
-            branch: workspace.branch.as_deref(),
-            state_text: status_text(status),
-            ahead_behind: workspace.git_ahead_behind,
-            tab_jobs,
-            tokens: &token_values,
-            suppress_git_details: indented,
-        },
-    );
+    let context = crate::ui::SpaceTokenContext {
+        workspace: label,
+        branch: workspace.branch.as_deref(),
+        state_text: status_text(status),
+        // A collapsed group's parent shows its own commits, never one of
+        // its worktrees': there is no one status of the whole group.
+        ahead_behind: workspace.git_ahead_behind,
+        tab_jobs,
+        tokens: &token_values,
+        suppress_git_details: indented,
+    };
+    let rows = if collapsed && config.tabs {
+        crate::ui::sidebar_space_collapsed_row(config, context)
+    } else {
+        crate::ui::sidebar_space_rows(config, context)
+    };
     if !config.tabs {
         return rows;
     }
@@ -2164,6 +2213,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
     todo_button: bool,
     // The name starts two columns later, after the `⤒` button.
     to_top_button: bool,
+    // The space is collapsed to its name line (`collapsed_row`), and where
+    // the focus is, for the fill (vertical tabs only).
+    collapsed: Option<CollapsedLine>,
     config: &ClientShellConfig,
 ) -> WorkspaceRowsDrawn {
     // Where the push status chip was drawn, for its click and tooltip.
@@ -2179,6 +2231,28 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // name line ends in a new-tab `+` and the launch chip instead.
     let launch_button = launch_button && launch_button_shown(config, area.width);
     let todo_button = todo_button && launch_button;
+    // A collapsed space has no tab line to show the focus on, so its name
+    // line takes the focused active tab's solid accent, and every glyph on
+    // it the panel colour; a selection or a grab wins.
+    let fill = collapsed
+        .and_then(|line| line.focus)
+        .filter(|_| vertical_tabs && grabbed.is_none() && !selected);
+    let on_fill = Style::default()
+        .fg(super::panel_contrast_fg(palette))
+        .add_modifier(Modifier::BOLD);
+    let fill_spans = |spans: Vec<ratatui::text::Span<'static>>| {
+        if fill.is_none() {
+            return spans;
+        }
+        spans
+            .into_iter()
+            .map(|span| {
+                let style = span.style.fg(super::panel_contrast_fg(palette));
+                span.style(style)
+            })
+            .collect()
+    };
+    let mut focus_inside_rect = None;
     let reserved = |row_index: usize| {
         if vertical_tabs && row_index == 0 {
             NAME_LINE_ACTIONS_WIDTH
@@ -2222,6 +2296,13 @@ pub(in crate::client::shell) fn render_workspace_rows(
         if to_top_button && row_index == 0 {
             x = x.saturating_add(TO_TOP_BUTTON_WIDTH);
         }
+        if fill == Some(NameLineFocus::Inside) && row_index == 0 && x + 2 < area.right() {
+            // The focus is on a worktree space inside this group, not on
+            // the parent itself.
+            put_text(buffer, x, y, 1, FOCUS_INSIDE_GLYPH, on_fill);
+            focus_inside_rect = Some(Rect::new(x, y, 2, 1));
+            x = x.saturating_add(2);
+        }
         let highlighted = focused || grabbed.is_some();
         let grabbed = grabbed.map(|(name, _)| name);
         let workspace_style = Style::default()
@@ -2251,6 +2332,12 @@ pub(in crate::client::shell) fn render_workspace_rows(
         };
         let (push, rest): (Vec<_>, Vec<_>) = row.iter().cloned().partition(is_push);
         let (jobs, rest): (Vec<_>, Vec<_>) = rest.into_iter().partition(is_jobs);
+        // On a collapsed line the git status stands left of the counts too.
+        let is_git = |token: &crate::ui::ResolvedToken| {
+            collapsed.is_some()
+                && matches!(token.kind, crate::ui::ResolvedTokenKind::GitStatus { .. })
+        };
+        let (git, rest): (Vec<_>, Vec<_>) = rest.into_iter().partition(is_git);
         let right_edge = area.right().saturating_sub(reserved(row_index));
         let style_for = |tokens: &[crate::ui::ResolvedToken], width: usize| {
             crate::ui::resolved_token_spans(
@@ -2264,7 +2351,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 width,
             )
         };
-        let jobs_spans = style_for(&jobs, usize::from(right_edge.saturating_sub(x)));
+        let jobs_spans = fill_spans(style_for(&jobs, usize::from(right_edge.saturating_sub(x))));
         let jobs_width = jobs_spans
             .iter()
             .map(|span| display_width(&span.content))
@@ -2282,7 +2369,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             right_edge
         }
         .saturating_sub(u16::from(!push.is_empty()));
-        let push_spans = style_for(&push, usize::from(push_right.saturating_sub(x)));
+        let push_spans = fill_spans(style_for(&push, usize::from(push_right.saturating_sub(x))));
         let push_width = push_spans
             .iter()
             .map(|span| display_width(&span.content))
@@ -2301,14 +2388,26 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 1,
             ));
         }
-        let name_end = if push_width > 0 {
+        let mut name_end = if push_width > 0 {
             push_x.saturating_sub(1).max(x)
         } else if jobs_width > 0 {
             jobs_x.saturating_sub(1).max(x)
         } else {
             right_edge
         };
-        let spans = style_for(&rest, usize::from(name_end.saturating_sub(x)));
+        // The name is cut first, down to a few columns; then the git status
+        // goes whole, never the counts.
+        let git_spans = fill_spans(style_for(&git, usize::MAX));
+        let git_width = git_spans
+            .iter()
+            .map(|span| display_width(&span.content))
+            .sum::<u16>();
+        let git_x = name_end.saturating_sub(git_width);
+        if git_width > 0 && git_x > x.saturating_add(COLLAPSED_NAME_MIN_COLUMNS) {
+            Paragraph::new(Line::from(git_spans)).render(Rect::new(git_x, y, git_width, 1), buffer);
+            name_end = git_x - 1;
+        }
+        let spans = fill_spans(style_for(&rest, usize::from(name_end.saturating_sub(x))));
         Paragraph::new(Line::from(spans))
             .render(Rect::new(x, y, name_end.saturating_sub(x), 1), buffer);
         if jobs_width > 0 {
@@ -2318,13 +2417,23 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
     }
 
+    if let Some(start) = fill.and_then(|_| {
+        // From the disclosure triangle (`render_space_disclosure`) to the
+        // row's end; the bar or the tree connector stays on the panel.
+        let start = area.x.saturating_add(if entry.indented { 5 } else { 1 });
+        (start < area.right() && area.height > 0).then_some(start)
+    }) {
+        for x in start..area.right() {
+            buffer[(x, area.y)].set_bg(palette.accent);
+        }
+    }
     // With vertical tabs a space starts where its name row has a bar in the
     // first column: the accent for the focused space, a muted tone for the
     // others. The name is bold. No fill, so it cannot be mistaken for a tab
-    // line (the tab lines are the filled ones). A nested worktree space has
-    // its tree connector instead.
+    // line (the tab lines are the filled ones), except a collapsed focused
+    // space's above. A nested worktree space has its tree connector instead.
     if vertical_tabs && grabbed.is_none() && !entry.indented && area.height > 0 {
-        let color = if focused {
+        let color = if focused || fill.is_some() {
             palette.accent
         } else {
             super::tabs::blend(palette.text, palette.panel_bg, 1, 2).unwrap_or(palette.overlay1)
@@ -2351,6 +2460,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
     WorkspaceRowsDrawn {
         push_status: push_status_rect,
         jobs: jobs_rect,
+        filled: fill.is_some(),
+        focus_inside: focus_inside_rect,
     }
 }
 
@@ -2358,7 +2469,34 @@ pub(in crate::client::shell) fn render_workspace_rows(
 pub(in crate::client::shell) struct WorkspaceRowsDrawn {
     pub(in crate::client::shell) push_status: Option<Rect>,
     pub(in crate::client::shell) jobs: Option<Rect>,
+    /// The name line has the focus fill: the buttons drawn on it after take
+    /// the panel colour at rest.
+    pub(in crate::client::shell) filled: bool,
+    /// The "focus inside" cue of a collapsed group's parent.
+    pub(in crate::client::shell) focus_inside: Option<Rect>,
 }
+
+/// A collapsed space's name line (see [`render_workspace_rows`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::client::shell) struct CollapsedLine {
+    pub(in crate::client::shell) focus: Option<NameLineFocus>,
+}
+
+/// Where the focus is, for a collapsed space's name line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::client::shell) enum NameLineFocus {
+    /// On the space itself.
+    Own,
+    /// On a worktree space of the group the collapsed parent stands for.
+    Inside,
+}
+
+/// The cue in front of a collapsed group parent's name while the focus is
+/// on one of its worktree spaces.
+pub(in crate::client::shell) const FOCUS_INSIDE_GLYPH: &str = "↳";
+
+/// Columns a collapsed line's name keeps before its git status gives way.
+const COLLAPSED_NAME_MIN_COLUMNS: u16 = 4;
 
 /// Where a tab line is inside its space: the rows above it (the space's own
 /// rows and the lines before it) and its height with squares.
@@ -2395,6 +2533,7 @@ fn tab_line_extent(
             &tab_lines,
         ),
         entry.indented,
+        super::space_tabs::space_collapsed(snapshot, workspace, state.collapsed_groups, config),
         &config.spaces,
     )
     .len()
@@ -2445,6 +2584,7 @@ fn focus_depth(
             &tab_lines,
         ),
         entry.indented,
+        super::space_tabs::space_collapsed(snapshot, workspace, state.collapsed_groups, config),
         &config.spaces,
     )
     .len()

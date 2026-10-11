@@ -183,7 +183,15 @@ impl App {
 
     fn git_refresh_demand(&self) -> GitStatusRefreshDemand {
         let mut demand = GitStatusRefreshDemand::default();
-        for token in self.state.sidebar_spaces.rows.iter().flatten() {
+        let spaces = &self.state.sidebar_spaces;
+        // A collapsed space's line exists only with vertical tabs.
+        let collapsed_row = spaces.tabs.then_some(&spaces.collapsed_row);
+        for token in spaces
+            .rows
+            .iter()
+            .flatten()
+            .chain(collapsed_row.into_iter().flatten())
+        {
             match token.parts().0 {
                 crate::config::SpaceSidebarToken::Branch => demand.branch = true,
                 crate::config::SpaceSidebarToken::GitStatus => demand.ahead_behind = true,
@@ -698,6 +706,24 @@ mod tests {
                 "token: {token:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_collapsed_row_asks_for_git_status_only_with_vertical_tabs() {
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let app = test_app(&config);
+        assert!(app.git_refresh_demand().is_empty());
+
+        config.ui.sidebar.spaces.tabs = true;
+        let app = test_app(&config);
+        assert_eq!(
+            app.git_refresh_demand(),
+            GitStatusRefreshDemand {
+                branch: false,
+                ahead_behind: true,
+            }
+        );
     }
 
     #[test]

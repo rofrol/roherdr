@@ -1272,6 +1272,12 @@
           "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon, git_status and push_status accept fixed styles only; a click on push_status lists the other branches. At most 16 rows and 16 tokens per row."
         },
         {
+          "key": "ui.sidebar.spaces.collapsed_row",
+          "type": "list of tokens",
+          "default": "[\"workspace\", \"git_status\", \"tab_jobs\"]",
+          "description": "With ui.sidebar.spaces.tabs, the one line of a collapsed Space: its tab lines are folded away, or it is a collapsed worktree group's parent. Takes the same tokens as ui.sidebar.spaces.rows, at most 16. git_status and tab_jobs stand right-aligned, the git status first; when the line is short the name is cut first, then the git status goes, never the counts. Worktree Spaces show their commits without the branch, and a group's parent shows its own, not a worktree's. The focused collapsed Space's line takes the accent fill of the focused active tab; a group parent whose worktree Space has the focus also gets it, with a ↳ in front of its name."
+        },
+        {
           "key": "ui.accent",
           "type": "color",
           "default": "\"cyan\"",

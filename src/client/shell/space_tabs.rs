@@ -857,6 +857,39 @@ pub(super) fn space_tabs_folded(
     }
 }
 
+/// The space is one name line with vertical tabs: its tab lines are folded
+/// away (its own triangle), or it is a collapsed worktree group's parent,
+/// which stands for the group.
+pub(super) fn space_collapsed(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    collapsed_groups: &HashSet<String>,
+    config: &ClientShellConfig,
+) -> bool {
+    config.spaces.tabs
+        && (stands_for_a_group(snapshot, workspace, collapsed_groups)
+            || (space_tabs_folded(collapsed_groups, workspace)
+                && top_level_tabs(snapshot, workspace).next().is_some()))
+}
+
+/// Where the focus is for a collapsed space's name line: on the space, or
+/// on a worktree space of the group it stands for.
+pub(super) fn collapsed_focus(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    collapsed_groups: &HashSet<String>,
+) -> Option<super::sidebar::NameLineFocus> {
+    if workspace.focused {
+        Some(super::sidebar::NameLineFocus::Own)
+    } else if super::sidebar::displayed_workspaces(snapshot, workspace, collapsed_groups)
+        .any(|shown| shown.focused)
+    {
+        Some(super::sidebar::NameLineFocus::Inside)
+    } else {
+        None
+    }
+}
+
 impl super::ClientShellState {
     /// The header's fold button: puts away every quiet tab of the active
     /// machine (see [`tab_is_quiet`]), or, when all of them are put away
@@ -969,6 +1002,8 @@ pub(super) fn render_space_disclosure(
     entry: &WorkspaceEntry,
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
+    // The name line has the focus fill: the triangle takes its text colour.
+    on_fill: bool,
     config: &ClientShellConfig,
 ) -> Option<(Rect, String)> {
     let group_key = super::sidebar::parent_group_key(snapshot, entry.index);
@@ -999,7 +1034,11 @@ pub(super) fn render_space_disclosure(
         rect.y,
         1,
         if folded { "►" } else { "▼" },
-        Style::default().fg(config.palette.overlay1),
+        Style::default().fg(if on_fill {
+            super::panel_contrast_fg(&config.palette)
+        } else {
+            config.palette.overlay1
+        }),
     );
     Some((Rect::new(x, rect.y, 2, 1), key))
 }
@@ -2242,6 +2281,7 @@ mod tests {
                 &workspace,
                 AgentStatus::Working,
                 (0, 0),
+                false,
                 false,
                 &config(tabs).spaces,
             )

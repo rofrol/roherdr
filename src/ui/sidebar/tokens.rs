@@ -156,47 +156,69 @@ pub(crate) fn space_rows(
         .rows
         .iter()
         .filter_map(|row| {
-            let resolved = row
-                .iter()
-                .filter_map(|configured| {
-                    let (token, style) = configured.parts();
-                    let kind = match token {
-                        SpaceSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
-                        SpaceSidebarToken::StateText => {
-                            Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
-                        }
-                        SpaceSidebarToken::Workspace => {
-                            Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
-                        }
-                        SpaceSidebarToken::Branch if !context.suppress_git_details => context
-                            .branch
-                            .map(|branch| ResolvedTokenKind::Branch(branch.to_string())),
-                        SpaceSidebarToken::Branch => None,
-                        SpaceSidebarToken::GitStatus if !context.suppress_git_details => context
-                            .ahead_behind
-                            .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
-                            .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
-                        SpaceSidebarToken::GitStatus => None,
-                        SpaceSidebarToken::PushStatus => push_status(&context),
-                        SpaceSidebarToken::TabJobs => {
-                            let (running, failed) = context.tab_jobs;
-                            (running > 0 || failed > 0)
-                                .then_some(ResolvedTokenKind::TabJobs { running, failed })
-                        }
-                        SpaceSidebarToken::Custom(name) => context
-                            .tokens
-                            .get(name)
-                            .cloned()
-                            .map(ResolvedTokenKind::Custom),
-                        SpaceSidebarToken::Styled { .. } => None,
-                    }?;
-                    let style = kind
-                        .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
-                    Some(ResolvedToken::new(kind, style))
-                })
-                .collect::<Vec<_>>();
+            let resolved = space_row(row, &context, !context.suppress_git_details);
             (!resolved.is_empty()).then_some(resolved)
+        })
+        .collect()
+}
+
+/// The one line of a collapsed space (`collapsed_row`). A worktree child
+/// keeps its commits to push or pull here, never its branch: the branch is
+/// its name already.
+pub(crate) fn space_collapsed_row(
+    config: &SpacesSidebarConfig,
+    context: SpaceTokenContext<'_>,
+) -> Vec<Vec<ResolvedToken>> {
+    let resolved = space_row(&config.collapsed_row, &context, true);
+    if resolved.is_empty() {
+        Vec::new()
+    } else {
+        vec![resolved]
+    }
+}
+
+fn space_row(
+    row: &[SpaceSidebarToken],
+    context: &SpaceTokenContext<'_>,
+    git_status: bool,
+) -> Vec<ResolvedToken> {
+    row.iter()
+        .filter_map(|configured| {
+            let (token, style) = configured.parts();
+            let kind = match token {
+                SpaceSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                SpaceSidebarToken::StateText => {
+                    Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
+                }
+                SpaceSidebarToken::Workspace => {
+                    Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
+                }
+                SpaceSidebarToken::Branch if !context.suppress_git_details => context
+                    .branch
+                    .map(|branch| ResolvedTokenKind::Branch(branch.to_string())),
+                SpaceSidebarToken::Branch => None,
+                SpaceSidebarToken::GitStatus if git_status => context
+                    .ahead_behind
+                    .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
+                    .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
+                SpaceSidebarToken::GitStatus => None,
+                SpaceSidebarToken::PushStatus => push_status(context),
+                SpaceSidebarToken::TabJobs => {
+                    let (running, failed) = context.tab_jobs;
+                    (running > 0 || failed > 0)
+                        .then_some(ResolvedTokenKind::TabJobs { running, failed })
+                }
+                SpaceSidebarToken::Custom(name) => context
+                    .tokens
+                    .get(name)
+                    .cloned()
+                    .map(ResolvedTokenKind::Custom),
+                SpaceSidebarToken::Styled { .. } => None,
+            }?;
+            let style = kind
+                .text_value()
+                .map_or(Some(style), |value| configured.style_for_value(value))?;
+            Some(ResolvedToken::new(kind, style))
         })
         .collect()
 }
@@ -642,6 +664,39 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 failed: 2
             })
         );
+    }
+
+    #[test]
+    fn the_collapsed_row_puts_git_status_on_the_name_line_without_the_branch() {
+        let tokens = std::collections::HashMap::new();
+        let row = |suppress_git_details| {
+            space_collapsed_row(
+                &SpacesSidebarConfig::default(),
+                SpaceTokenContext {
+                    workspace: "herdr",
+                    branch: Some("feature"),
+                    state_text: "idle",
+                    ahead_behind: Some((2, 0)),
+                    tab_jobs: (1, 3),
+                    tokens: &tokens,
+                    suppress_git_details,
+                },
+            )
+        };
+        let expected = vec![vec![
+            ResolvedToken::unstyled(ResolvedTokenKind::Workspace("herdr".into())),
+            ResolvedToken::unstyled(ResolvedTokenKind::GitStatus {
+                ahead: 2,
+                behind: 0,
+            }),
+            ResolvedToken::unstyled(ResolvedTokenKind::TabJobs {
+                running: 1,
+                failed: 3,
+            }),
+        ]];
+        assert_eq!(row(false), expected);
+        // A worktree child keeps its commits, still without a branch.
+        assert_eq!(row(true), expected);
     }
 
     #[test]

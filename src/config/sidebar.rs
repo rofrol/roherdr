@@ -22,6 +22,20 @@ where
     Ok(rows)
 }
 
+fn deserialize_sidebar_row<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let row = Vec::<T>::deserialize(deserializer)?;
+    if row.len() > MAX_SIDEBAR_TOKENS_PER_ROW {
+        return Err(serde::de::Error::custom(format!(
+            "sidebar rows may contain at most {MAX_SIDEBAR_TOKENS_PER_ROW} tokens"
+        )));
+    }
+    Ok(row)
+}
+
 fn validate_sidebar_rows<T>(rows: &[Vec<T>]) -> Result<(), String> {
     if rows.len() > MAX_SIDEBAR_ROWS {
         return Err(format!(
@@ -412,6 +426,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
 
 type AgentSidebarRows = Vec<Vec<AgentSidebarToken>>;
 type SpaceSidebarRows = Vec<Vec<SpaceSidebarToken>>;
+type SpaceSidebarRow = Vec<SpaceSidebarToken>;
 
 fn deserialize_rows_by_agent<'de, D>(
     deserializer: D,
@@ -472,6 +487,11 @@ impl Default for AgentsSidebarConfig {
 pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
+    /// The one line of a collapsed space (`tabs` only): its tab lines are
+    /// folded away, or it is a worktree group's parent standing for the
+    /// group. Default: `workspace`, `git_status`, `tab_jobs`.
+    #[serde(deserialize_with = "deserialize_sidebar_row")]
+    pub collapsed_row: SpaceSidebarRow,
     pub row_gap: u16,
     /// List each space's tabs under it, as vertical tabs: one line per
     /// top-level tab with its agent state, label and the running and failed
@@ -496,6 +516,11 @@ impl Default for SpacesSidebarConfig {
                 SpaceSidebarToken::PushStatus,
                 SpaceSidebarToken::TabJobs,
             ]],
+            collapsed_row: vec![
+                SpaceSidebarToken::Workspace,
+                SpaceSidebarToken::GitStatus,
+                SpaceSidebarToken::TabJobs,
+            ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
             tabs: false,
             todo_command: None,
@@ -554,6 +579,43 @@ mod tests {
             ],]
         );
         assert_eq!(config.spaces.row_gap, 0);
+    }
+
+    #[test]
+    fn the_collapsed_row_has_its_own_tokens() {
+        assert_eq!(
+            SpacesSidebarConfig::default().collapsed_row,
+            vec![
+                SpaceSidebarToken::Workspace,
+                SpaceSidebarToken::GitStatus,
+                SpaceSidebarToken::TabJobs,
+            ]
+        );
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.spaces]
+collapsed_row = ["workspace", "$jj", "tab_jobs"]
+"#,
+        )
+        .expect("collapsed row config");
+        assert_eq!(
+            config.ui.sidebar.spaces.collapsed_row,
+            vec![
+                SpaceSidebarToken::Workspace,
+                SpaceSidebarToken::Custom("jj".into()),
+                SpaceSidebarToken::TabJobs,
+            ]
+        );
+        // The expanded rows keep their default.
+        assert_eq!(
+            config.ui.sidebar.spaces.rows,
+            SpacesSidebarConfig::default().rows
+        );
+        let too_many = std::iter::repeat_n("\"workspace\"", MAX_SIDEBAR_TOKENS_PER_ROW + 1)
+            .collect::<Vec<_>>()
+            .join(",");
+        let input = format!("[ui.sidebar.spaces]\ncollapsed_row = [{too_many}]\n");
+        assert!(toml::from_str::<crate::config::Config>(&input).is_err());
     }
 
     #[test]

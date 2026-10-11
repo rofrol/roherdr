@@ -6230,3 +6230,191 @@ fn several_parents_exiting_at_once_are_named_in_one_notice() {
         None
     );
 }
+
+/// The cell at `(x, y)` of a composed frame.
+fn frame_cell(frame: &FrameData, x: u16, y: u16) -> &crate::protocol::CellData {
+    &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
+}
+
+/// The text of a space's name line, from its hit.
+fn space_name_line(state: &ClientShellState, frame: &FrameData, workspace_id: &str) -> String {
+    let rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == workspace_id)
+        .expect("space hit")
+        .rect;
+    (rect.x..rect.right())
+        .map(|x| frame_cell(frame, x, rect.y).symbol.clone())
+        .collect()
+}
+
+#[test]
+fn a_collapsed_focused_space_fills_its_name_line_with_the_accent() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    state
+        .collapsed_groups
+        .insert(super::super::space_tabs::tabs_collapse_key("ws_1"));
+    let palette = state.config.palette.clone();
+    let accent = crate::protocol::color_to_u32(palette.accent);
+    let contrast = crate::protocol::color_to_u32(super::super::panel_contrast_fg(&palette));
+    let frame = state.compose(106, 30).unwrap();
+    let hit = state.hits.workspaces[0].clone();
+    let (toggle, _) = hit.group_toggle.clone().expect("triangle");
+    let row = hit.rect.y;
+
+    // The bar stays on the panel, in the accent.
+    let bar = frame_cell(&frame, hit.rect.x, row);
+    assert_eq!(bar.symbol, "▍");
+    assert_eq!(bar.fg, accent);
+    assert_ne!(bar.bg, accent);
+    // From the triangle to the row's end the line is the accent, and the
+    // triangle, the name and the new-tab button take the panel colour.
+    let triangle = frame_cell(&frame, toggle.x, row);
+    assert_eq!((triangle.symbol.as_str(), triangle.bg), ("►", accent));
+    assert_eq!(triangle.fg, contrast);
+    let name_x = (toggle.x..hit.rect.right())
+        .find(|x| frame_cell(&frame, *x, row).symbol == "c")
+        .expect("the name");
+    let name = frame_cell(&frame, name_x, row);
+    assert_eq!((name.bg, name.fg), (accent, contrast));
+    let (plus, _) = state.hits.space_new_tab[0].clone();
+    let plus = frame_cell(&frame, plus.x + 1, plus.y);
+    assert_eq!((plus.bg, plus.fg), (accent, contrast));
+    assert_eq!(frame_cell(&frame, hit.rect.right() - 1, row).bg, accent);
+
+    // Under the pointer the button is the hover grey with its own colour,
+    // never the fill.
+    let (plus, _) = state.hits.space_new_tab[0].clone();
+    mouse_at(
+        &mut state,
+        crossterm::event::MouseEventKind::Moved,
+        (plus.x + 1, plus.y),
+    );
+    let frame = state.compose(106, 30).unwrap();
+    let hovered = frame_cell(&frame, plus.x + 1, plus.y);
+    assert_eq!(hovered.bg, crate::protocol::color_to_u32(palette.surface1));
+    assert_eq!(hovered.fg, accent);
+
+    // A collapsed space without the focus has no fill.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].focused = false;
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    assert_ne!(frame_cell(&frame, toggle.x, row).bg, accent);
+
+    // An expanded focused space shows the focus on its tab line instead.
+    let mut state = state_with_tabs_and_width(true, 40);
+    let frame = state.compose(106, 30).unwrap();
+    assert_ne!(frame_cell(&frame, toggle.x, row).bg, accent);
+}
+
+#[test]
+fn a_collapsed_space_line_cuts_its_name_then_drops_git_status_never_the_counts() {
+    let line = |width: u16| {
+        let mut state = state_with_tabs_and_width(true, width);
+        with_job(&mut state, "job_1", TabStatus::Running);
+        let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+        projected.workspaces[0].label = "a-very-long-space-name-indeed".into();
+        projected.workspaces[0].git_ahead_behind = Some((12, 0));
+        state.set_snapshot(Box::new(projected));
+        state
+            .collapsed_groups
+            .insert(super::super::space_tabs::tabs_collapse_key("ws_1"));
+        let frame = state.compose(106, 30).unwrap();
+        space_name_line(&state, &frame, "ws_1")
+    };
+    let counts = |line: &str| line.contains(['◐', '◓', '◑', '◒']);
+
+    // The git status stands before the counts, the name is cut.
+    let wide = line(40);
+    let git = wide.find("↑12").expect("git status");
+    let jobs = wide.find(['◐', '◓', '◑', '◒']).expect("job counts");
+    assert!(git < jobs, "{wide:?}");
+    assert!(wide.contains('…'), "{wide:?}");
+    // No branch on the collapsed line.
+    assert!(!wide.contains("main"), "{wide:?}");
+
+    // Narrower, the git status goes, the counts stay.
+    let narrow = line(22);
+    assert!(!narrow.contains('↑'), "{narrow:?}");
+    assert!(counts(&narrow), "{narrow:?}");
+}
+
+#[test]
+fn a_collapsed_worktree_parent_shows_the_focus_inside_and_only_its_own_git_status() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    projected.workspaces[0].git_ahead_behind = Some((2, 0));
+    projected.workspaces[0].focused = false;
+    let mut child = projected.workspaces[0].clone();
+    child.workspace_id = "ws_2".into();
+    child.active_tab_id = "tab_ws2".into();
+    child.number = 2;
+    child.label = "repo-feature".into();
+    child.branch = Some("worktree/feature".into());
+    child.git_ahead_behind = Some((0, 5));
+    child.focused = true;
+    child.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    projected.workspaces.push(child);
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_ws2".into();
+    tab.workspace_id = "ws_2".into();
+    projected.tabs[0].focused = false;
+    projected.tabs.push(tab);
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_ws2".into());
+    state.set_snapshot(Box::new(projected));
+    state.collapsed_groups.insert("repo".into());
+    let accent = crate::protocol::color_to_u32(state.config.palette.accent);
+    let frame = state.compose(106, 30).unwrap();
+
+    let parent = space_name_line(&state, &frame, "ws_1");
+    // The fill and the cue in front of the name.
+    let hit = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("parent")
+        .clone();
+    let (toggle, _) = hit.group_toggle.expect("triangle");
+    assert_eq!(frame_cell(&frame, toggle.x, toggle.y).bg, accent);
+    assert!(
+        parent.contains(&format!(
+            "{} client-shell",
+            super::super::sidebar::FOCUS_INSIDE_GLYPH
+        )),
+        "{parent:?}"
+    );
+    assert!(state
+        .hits
+        .tooltips
+        .iter()
+        .any(|tooltip| tooltip.id == "space-focus-inside:ws_1"));
+    // Its own commits, not the focused worktree's.
+    assert!(parent.contains("↑2"), "{parent:?}");
+    assert!(!parent.contains("↓5"), "{parent:?}");
+
+    // Without the focus in the group: neither fill nor cue.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.workspaces[1].focused = false;
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(106, 30).unwrap();
+    let parent = space_name_line(&state, &frame, "ws_1");
+    assert!(
+        !parent.contains(super::super::sidebar::FOCUS_INSIDE_GLYPH),
+        "{parent:?}"
+    );
+    assert_ne!(frame_cell(&frame, toggle.x, toggle.y).bg, accent);
+}

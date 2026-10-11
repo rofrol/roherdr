@@ -376,6 +376,7 @@ pub(super) fn render_expanded(
                                 &tab_lines,
                             ),
                             entry.indented,
+                            false,
                             &config.spaces,
                         )
                         .len()
@@ -552,6 +553,7 @@ pub(super) fn render_expanded(
                     status,
                     tab_jobs,
                     entry.indented,
+                    false,
                     &config.spaces,
                 );
                 let own_rows = tokens.len().max(1).min(u16::MAX as usize) as u16;
@@ -604,6 +606,7 @@ pub(super) fn render_expanded(
                     false,
                     false,
                     false,
+                    None,
                     config,
                 );
                 let online = endpoint.status == ClientEndpointStatus::Online;
@@ -657,6 +660,7 @@ pub(super) fn render_expanded(
                         entry,
                         workspace,
                         collapsed_groups,
+                        false,
                         config,
                     )
                 } else {

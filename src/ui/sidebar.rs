@@ -7,8 +7,9 @@ use ratatui::{
 };
 
 pub(crate) use self::tokens::{
-    agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    agent_rows as sidebar_agent_rows, space_collapsed_row as sidebar_space_collapsed_row,
+    space_rows as sidebar_space_rows, AgentTokenContext, ResolvedToken, ResolvedTokenKind,
+    SpaceTokenContext,
 };
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
