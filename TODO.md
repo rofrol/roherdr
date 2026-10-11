@@ -1792,6 +1792,34 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ended; `prompt_request_not_found` after a handoff ends the wait at once
   with a distinct exit code; fix each with a test reproducing it. No
   timers.
+  Decided 2026-10-12 (the user: "very bad that the supervisor did not
+  catch it; discuss with the models"; round 20261012-010450-e610, sol,
+  MiMo, DeepSeek agreeing): the flaw is that both predicates fire only on
+  facts the transcript parser produced, so an unparsed start meant
+  silence, and the "anchor never resolved" predicate the earlier report
+  asked for was never built. Slice 2 adds a total-accounting invariant over
+  the accepted-assignment ledger (not over parsed starts): every open
+  assignment whose worker's turn closed causally after its acceptance
+  (turn ids/sequence, not elapsed time; no later turn start, queued
+  prompt or tool use) has a verdict, a stop, an open question tied to it,
+  or a causally linked continuation (a merely newer turn does not excuse
+  it); otherwise `unaccounted_assignment` (with the last lifecycle fact),
+  checked on Stop events, every sweep and at startup/handoff; missing or
+  unreadable transcript evidence is a finding, never silence. Fixtures:
+  pasted_content, queued_command, multiline, missing and truncated
+  transcript, restart/handoff, plus a supervisor self-test injecting an
+  assignment with no parseable start.
+
+- [ ] Requirements from reports are traced to tests before an item closes [t-jyicwrb4]
+  (follows from [t-276mtaqw]; round 20261012-010450-e610: the supervisor
+  predicate "an assignment whose waiter's anchor never resolved" was
+  requested in a report and silently dropped). Each point a report or the
+  user asks for is numbered in its TODO item (R1, R2, ...); the worker's
+  final message maps each to its implementation and test or an explicit
+  deferral; the coordinator checks that list before `--close` and moves
+  any deferral to its own item. Text change in the todo skill and
+  AGENTS.md (a worker); a `herdr todo` close check that refuses an item
+  whose numbered requirements are unmapped is a follow-up.
 
 ## Proposed
 
