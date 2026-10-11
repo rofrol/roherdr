@@ -1423,6 +1423,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   words, naming the line; `herdr decision add|decide` does the same for its
   statement and answer; a test for each.
 
+- [ ] A space shows its open owner steps and external waits (the owner via [t-rgvdor7o]
+  the roguix-vps coordinator, 2026-10-11: "why does this space not show
+  that there is work? report it to the herdr coordinator; ask the
+  models"). roguix-vps's real work is owner steps (run commands on the VPS,
+  a site returning 500, cert renewal) and a provider's ticket, kept only as
+  prose under "Waiting on others" in its docs/TODO.md; herdr sees none of
+  it, so the space looks finished. Round 20261011-160537-9169 (sol, MiMo,
+  DeepSeek agreeing), decided:
+  - First-class server state in the decision ledger with kinds `question`,
+    `owner_step`, `external_wait`: who it waits on, a completion condition,
+    evidence, created time; one entry per deliverable ("renew certs"), not
+    per command; TODO.md links to the entries, the ledger is authoritative;
+    the question gate keeps accepting only questions.
+  - Closing: a question on its answer or withdrawal; an owner step and an
+    external wait only by the coordinator's explicit close citing the
+    evidence (the owner's reply or the provider's mail is evidence, not
+    closure); every close keeps its reason. Nothing expires; the age is
+    shown, and open entries are listed to the coordinator when its turn
+    starts (an event), never flagged by a timer.
+  - Space row: compact non-zero counts per kind with distinct glyphs and the
+    oldest age; details and ages in the Supervision tab and its finding
+    list.
+  - The coordinator rules: a coordinator that reports awaiting-reply or
+    writes "Waiting on others" opens the matching entry (rule text, then
+    the stop check enforces it).
+  - Slice 1: the kinds and fields, `herdr decision add --kind owner_step|
+    external_wait --waits-on ... --until ...`, `close --evidence`, the space
+    row counts. Separately check whether a running headless worker shows in
+    its space (reported as not visible, unverified).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
