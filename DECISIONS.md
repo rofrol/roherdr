@@ -1258,3 +1258,12 @@ closed when unknown), lets an explicit --models win, prints each answer,
 call id and status and names skipped and failed models; the consult
 SKILL.md names no models. The brief is passed as an argument (about 1 MB
 limit).
+
+## The Stop hook's obligation block loops when auto mode denies the ack
+
+The Stop hook's obligation block looped when auto mode denied
+`herdr worker ack` (classify-x-posts, 2026-10-11). Now (fcf8a914) it blocks
+the same worker obligations at most 3 times per user message, then lets the
+stop through and puts the needed `herdr worker ack` in the user's `?` list;
+and the user's settings allow herdr's own coordination commands (dotfiles
+2741722, d-olgozj6v).
