@@ -129,6 +129,31 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      or prompts it), alerts the user in the sidebar and records a finding.
   The full report: the try-roguix coordinator's report-herdr-wait.md
   (copied into the herdr coordinator's scratchpad on 2026-10-11).
+  Addendum (user via try-roguix, 2026-10-11: "the supervisor goes over
+  the coordinators but over the workers too; ask the models"; round
+  20261011-151523-38f8, sol + MiMo + DeepSeek agreeing), approved:
+  invariant: every active worker assignment has a valid verdict, an open
+  question or blocker, or a continuation the supervisor can verify ("the
+  background wait will resume me" proves nothing). Triggers (events only):
+  worker turn end, blocked or question, herdr-job terminal state, a
+  waiter's registration or exit, a resume notification delivered, session
+  exit, herdr start/handoff/reload (reconcile all open assignments; a wake
+  that may be lost is never assumed delivered). Conditions and actions:
+  turn end without a WORKER line and no running herdr job with a live
+  waiter bound to the worker's session: wake the worker once (idempotent
+  key) with the job state and tell the coordinator; a job ended while the
+  assignment is open and no turn followed: wake at once; a running job
+  without a valid waiter: herdr registers the continuation itself; a
+  question or dialog: tell the coordinator, alert the user when only they
+  can answer, never wake past a dialog; WORKER-DONE whose sha does not
+  resolve or whose claimed test/build jobs have no exit-0 record: reject,
+  wake the worker to correct, tell the coordinator; WORKER-BLOCKED: route
+  to the coordinator, alert the user if its turn ends unhandled. The worker
+  registers its waiter {assignment, job, session} before its turn ends; a
+  bare background shell counts as not resuming. Register and check
+  atomically; idempotent wake tokens; no grace timer. The supervisor knows
+  only what herdr observes. Full text: report-herdr-wait-workers.md (copied
+  into the herdr coordinator's scratchpad).
 
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
