@@ -22,6 +22,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   deny, and the refusal request waits for the server's answer (a timeout is
   a fixed delay deciding an outcome: Rule 10); `enforce` with herdr down
   still denies, as decided. Follows from t-svsyvp3s.
+  The user, 2026-10-11: "a 0.5 s limit: what async workaround is this?
+  ask the models". Round 20261011-151651-5aeb (sol, MiMo, DeepSeek,
+  agreeing): the 0.5 s `settimeout` (9 places in the Claude hook, inherited
+  from upstream's first integration) is a forbidden workaround where it
+  decides an outcome (shadow becomes deny; reports are silently lost) and an
+  unmeasured magic number where it only bounds a wait. Decided, in order:
+  1. The hook reads the allowlist mode from a local file herdr publishes
+     atomically when the config changes; shadow and off never deny; enforce
+     with herdr unavailable says "herdr unavailable", not a policy refusal.
+  2. Turn and state reports (Stop, UserPromptSubmit, ...) are appended to a
+     durable local spool (idempotent ids, bounded size) before any send;
+     the server drains and acknowledges them and reconciles pane state on
+     start; the hook's wait ends on the local append, never on `recv`.
+     Addresses lost Stops behind stuck `working` without proving it.
+  3. Decision calls (allowlist, stop check, gate) end on the answer, EOF or
+     a connect error (ECONNREFUSED/ENOENT are immediate); Claude Code's own
+     10 s hook deadline is the only external bound; an unavailable server
+     maps to each gate's documented fallback.
+  4. Remove `settimeout(0.5)`; measure connect/answer latency instead of
+     guessing bounds.
 
 - [ ] A supervision report over all coordinators and their workers (user, [t-7zfjbcrf]
   2026-10-11, next: "add a process that every so often checks all
