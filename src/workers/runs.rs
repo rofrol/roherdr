@@ -2451,7 +2451,9 @@ impl WorkerSupervisor {
             return Ok(());
         };
         super::check_item_id(&next.item)?;
-        if next.item == run.info.item {
+        // A noted item stays open, so it may chain its own next step; a
+        // closed one is gone.
+        if params.close.is_some() && next.item == run.info.item {
             return invalid(format!(
                 "--next names the item this run closes ({})",
                 next.item

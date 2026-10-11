@@ -9034,6 +9034,53 @@ mod todo_runs {
     }
 
     #[test]
+    fn a_note_may_chain_its_own_items_next_step() {
+        let fixture = todo_repo("todo-note-same");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        let same_item = || crate::api::schema::TodoNextRun {
+            item: ITEM.into(),
+            ..next_of_item2()
+        };
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("The first step landed.".into()),
+                next: Some(same_item()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.next_item.as_deref(), Some(ITEM));
+        let next_id = finished.next_run_id.expect("the next step's run started");
+        assert_ne!(next_id, run.run_id);
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(
+            (next.info.item.as_str(), next.info.message.as_str()),
+            (ITEM, "feat: add b")
+        );
+        let (review, _) = wait(&fixture, &next_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        // A close removes the item, so it never chains the same item.
+        let error = fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                close: Some("## Closed\n".into()),
+                next: Some(same_item()),
+                ..resume_params(&next_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_request", "{error}");
+        assert!(error.to_string().contains("closes"), "{error}");
+        abort(&fixture, &next_id, review.event_id);
+    }
+
+    #[test]
     fn a_note_with_a_stop_reason_records_it_and_notifies_the_user() {
         let fixture = todo_repo("todo-note-stop");
         with_finish(&fixture);
