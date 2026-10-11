@@ -91,8 +91,9 @@ executed. Navigation/renderer failure never retries or cancels tools.
 
 All Herdr endpoint requests happen on explicit user navigation, not on events,
 rendering or timers. No server protocol, model calls or default model changes
-are introduced. The viewer has a one-hour deadline; stopping the job stops only
-the viewer. The standalone profile's own job activity should not be confused
+are introduced. The viewer waits on file events for the next saved record, with
+no deadline: it ends with the call's result, when the session file is removed or
+replaced, or when you close its job; stopping the job stops only the viewer. The standalone profile's own job activity should not be confused
 with the original call's execution state.
 
 ## Tests

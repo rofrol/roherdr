@@ -30,8 +30,10 @@ import json
 import os
 import re
 import secrets
+import select
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -48,9 +50,12 @@ if not os.access(HERDR, os.X_OK):
 # A backstop: the counts follow the job tabs, which the hooks track.
 TOKEN_TTL_MS = 24 * 60 * 60 * 1000
 EXIT_LOST = 125
-CLOSE_OK_AFTER_S = 10
-# How often a succeeded job whose tab is focused checks whether you left it.
-FOCUSED_POLL_S = 2
+# delay: designed backoff for genuine transport failures. A live handoff
+# leaves the server unreachable for a while; the job's last herdr calls
+# (its tab's final status, closing a succeeded job's tab) try again after
+# these pauses, about a minute in all, then give up loudly; `reconcile_tabs`
+# repairs whatever still slips through.
+TRANSPORT_BACKOFF_S = (0, 1, 2, 4, 8, 15, 30)
 # Keeps the typed `_exec` line out of zsh's history file; the leading space
 # keeps it out of atuin. zsh imports it from the environment.
 HISTORY_IGNORE = "*herdr-job _exec *"
@@ -223,13 +228,19 @@ def final_tab_status(code):
 
 
 def set_final_tab_status(meta, code):
-    """The job's last word to herdr. A live handoff can leave the server
-    unreachable for a while, so retry with backoff instead of leaving the tab
-    running; `reconcile_tabs` repairs whatever still slips through."""
-    for delay in (0, 1, 2, 4, 8, 15, 30):
+    """The job's last word to herdr, acknowledged by the server's reply. A
+    live handoff can leave the server unreachable for a while, so retry with
+    the transport backoff instead of leaving the tab running; giving up is
+    said on stderr and returns False. `reconcile_tabs` repairs whatever still
+    slips through."""
+    for delay in TRANSPORT_BACKOFF_S:
         time.sleep(delay)
         if herdr_ok("tab", "status", meta["tab_id"], final_tab_status(code)):
-            return
+            return True
+    print(f"herdr-job: herdr did not take tab {meta['tab_id']}'s final status "
+          f"({final_tab_status(code)}) after {sum(TRANSPORT_BACKOFF_S)} s of retries; "
+          "the next `herdr-job list`, `wait` or `clean` repairs it", file=sys.stderr, flush=True)
+    return False
 
 
 def job_labels(meta):
@@ -250,6 +261,8 @@ def job_labels(meta):
 # gone is settled by `resolve_launch`, so a crash at any step leaves no tab
 # nobody owns and no job that stays pending for ever.
 LAUNCHED = "launched"
+# Left in a job's directory by the `tab.closed` hook, to wake its waits.
+TAB_CLOSED = "tab-closed"
 
 
 def intent_label(meta):
@@ -352,34 +365,129 @@ def job_tabs(tabs):
     return {tab_id: job for tab_id, job in newest.items() if tabs[tab_id].get("label") in job_labels(job[1])}
 
 
-def close_due(meta, st):
-    return st == "ok" and not meta.get("keep") and time.time() - meta.get("ended", 0) >= CLOSE_OK_AFTER_S
+def close_due(path, meta, st):
+    """Whether someone other than the job's executor should close its
+    succeeded tab: only once the executor is gone (nothing holds the job's
+    lock), since a live executor closes it itself after its last words to
+    herdr, and closing the tab under it would cut them off."""
+    return st == "ok" and not meta.get("keep") and not lock_held(path, meta)
+
+
+# What can change whether a job's tab is the focused one, or still the job's.
+TAB_EVENTS = ("tab.focused", "tab.closed", "tab.renamed", "workspace.focused")
+
+
+class TabEvents:
+    """The server's tab focus, close and rename events, one subscription on
+    the API socket (HERDR_SOCKET_PATH). `next()` blocks until the next event
+    and returns False once the server closed the connection (a live handoff,
+    a restart). Raises OSError when the subscription cannot start."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    @classmethod
+    def subscribe(cls):
+        path = os.environ.get("HERDR_SOCKET_PATH")
+        if not path:
+            raise OSError("HERDR_SOCKET_PATH is not set, so herdr's events cannot be followed")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(path)
+            stream = sock.makefile("rwb")
+        except OSError:
+            sock.close()
+            raise
+        sock.close()  # the stream keeps the connection
+        events = cls(stream)
+        try:
+            request = {"id": "herdr-job:tab-events", "method": "events.subscribe",
+                       "params": {"subscriptions": [{"type": kind} for kind in TAB_EVENTS]}}
+            stream.write(json.dumps(request).encode() + b"\n")
+            stream.flush()
+            line = stream.readline()
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                reply = {}
+            if (reply.get("result") or {}).get("type") != "subscription_started":
+                raise OSError(f"events.subscribe was refused: {short(line.decode(errors='replace') or 'no answer', 200)}")
+        except BaseException:
+            events.close()
+            raise
+        return events
+
+    def next(self):
+        try:
+            return bool(self.stream.readline())
+        except OSError:
+            return False
+
+    def close(self):
+        with contextlib.suppress(OSError):
+            self.stream.close()
 
 
 def close_job_tab(meta):
-    """Close a succeeded job's tab, but not while it is the focused tab: you
-    are reading it, so it closes once you leave it. A live handoff can leave
-    the server unreachable for a while, so retry with backoff; stop once the
-    tab is gone or no longer this job's. `reconcile_tabs` closes whatever
-    still slips through."""
-    delays = iter((0, 1, 2, 4, 8, 15, 30))
-    delay = next(delays)
-    while delay is not None:
+    """Close a succeeded job's tab at once, but not while it is the focused
+    tab: you are reading it, so it closes when herdr reports that the focus
+    moved (`TabEvents`). Stops once the tab is gone or no longer this job's,
+    or when the server acknowledged the close. A server that does not answer
+    (a live handoff) is retried with the transport backoff; giving up is said
+    on stderr and returns False, and `reconcile_tabs` closes whatever still
+    slips through."""
+    backoff = iter(TRANSPORT_BACKOFF_S)
+    events = None
+
+    def give_up(why):
+        print(f"herdr-job: tab {meta['tab_id']} stays open: {why}; the next `herdr-job list`, "
+              "`wait` or `clean` closes it once it is not focused", file=sys.stderr, flush=True)
+        return False
+
+    def pause():
+        delay = next(backoff, None)
+        if delay is None:
+            return False
         time.sleep(delay)
-        try:
-            tabs = {tab["tab_id"]: tab for tab in list_tabs()}
-        except (SystemExit, ValueError, KeyError):
-            delay = next(delays, None)
-            continue
-        owner = job_tabs(tabs).get(meta["tab_id"])
-        if not owner or owner[1]["id"] != meta["id"]:
-            return
-        if tabs[meta["tab_id"]].get("focused"):
-            delay = FOCUSED_POLL_S
-            continue
-        if herdr_ok("tab", "close", meta["tab_id"]):
-            return
-        delay = next(delays, None)
+        return True
+
+    try:
+        while True:
+            try:
+                tabs = {tab["tab_id"]: tab for tab in list_tabs()}
+            except (SystemExit, ValueError, KeyError) as err:
+                if not pause():
+                    return give_up(f"herdr does not list its tabs ({short(err, 120)})")
+                continue
+            owner = job_tabs(tabs).get(meta["tab_id"])
+            if not owner or owner[1]["id"] != meta["id"]:
+                return True
+            if not tabs[meta["tab_id"]].get("focused"):
+                if herdr_ok("tab", "close", meta["tab_id"]):
+                    return True
+                if not pause():
+                    return give_up("herdr did not close it")
+                continue
+            if events is None:
+                try:
+                    events = TabEvents.subscribe()
+                except OSError as err:
+                    if not os.environ.get("HERDR_SOCKET_PATH") or not pause():
+                        return give_up(f"cannot follow its focus: {err}")
+                # Subscribed: look again, the focus may have moved meanwhile.
+                continue
+            if events.next():
+                # The subscription works: a later handoff gets the whole backoff again.
+                backoff = iter(TRANSPORT_BACKOFF_S)
+                continue
+            # The server went away (a handoff); subscribe to the next one.
+            events.close()
+            events = None
+            if not pause():
+                return give_up("herdr's event stream keeps closing")
+    finally:
+        if events is not None:
+            events.close()
 
 
 def reconcile_tabs():
@@ -402,7 +510,7 @@ def reconcile_tabs():
         if meta.get("tab_status") and tabs[tab_id].get("status") in ("running", None):
             herdr_ok("tab", "status", tab_id, final_tab_status(code))
         # A focused tab is being read; its job's own `close_job_tab` waits.
-        if close_due(meta, st) and not tabs[tab_id].get("focused"):
+        if close_due(path, meta, st) and not tabs[tab_id].get("focused"):
             herdr_ok("tab", "close", tab_id)
 
 
@@ -455,10 +563,17 @@ def cmd_tab_closed(_args):
     except ValueError:
         return
     reconcile_tabs()
-    for _, meta in all_jobs():
-        if meta.get("tab_id") == tab_id:
-            update_owner_token(meta.get("owner_pane"))
-            return
+    owner = None
+    for path, meta in all_jobs():
+        if tab_id and meta.get("tab_id") == tab_id and not finished(path):
+            # The event a `wait` on a job whose executor never started waits
+            # for: without its tab the job is lost (`status`).
+            with contextlib.suppress(OSError):
+                write_atomic(path / TAB_CLOSED, f"{tab_id}\n")
+        if meta.get("tab_id") == tab_id and owner is None:
+            owner = meta
+    if owner is not None:
+        update_owner_token(owner.get("owner_pane"))
 
 
 def top_level_tab(tab_id):
@@ -500,8 +615,6 @@ def create_job_tab(create, workspace_id, parent_tab):
 # has released that lock, and worktrees have their own target/.
 SLOTS = STATE / "slots"
 SLOT_ENV = "HERDR_JOB_SLOT"
-# flock has no wait-for-any-of-N, so a shared request with several slots polls them.
-SLOT_POLL_S = 0.5
 
 
 def slot_count():
@@ -534,6 +647,57 @@ def slot_holder(path):
     finally:
         os.close(fd)
     return None
+
+
+def wait_for_any_slot(paths):
+    """Blocks until one of `paths` is free and returns it as an open file
+    that holds its flock. flock has no wait-for-any-of-N, so one thread per
+    slot blocks on its own lock; the first that gets its slot wins, and the
+    others hand theirs straight back whenever they get them later (the
+    kernel cannot cancel a blocked flock), never holding a slot they did not
+    win longer than that."""
+    done = threading.Condition()
+    won, errors = [], []
+
+    def grab(path):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        except OSError as err:
+            with done:
+                errors.append(f"{path}: {err.strerror}")
+                done.notify_all()
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as err:
+            os.close(fd)
+            with done:
+                errors.append(f"{path}: {err.strerror}")
+                done.notify_all()
+            return
+        with done:
+            if won:
+                os.close(fd)  # the only reference: this frees the slot again
+                return
+            won.append((path, fd))
+            done.notify_all()
+
+    for path in paths:
+        threading.Thread(target=grab, args=(path,), daemon=True).start()
+    try:
+        with done:
+            while not won and len(errors) < len(paths):
+                done.wait()
+            if not won:
+                raise SystemExit(f"herdr-job: cannot wait for a slot: {'; '.join(errors)}")
+            path, fd = won[0]
+    except BaseException:
+        with done:
+            if won and won[0] is not None:
+                os.close(won[0][1])
+            won[:] = [None]  # a slot a thread gets from now on goes straight back
+        raise
+    return open(path, "a", opener=lambda _path, _flags: fd)
 
 
 def describe_holder(holder):
@@ -588,16 +752,14 @@ def take_slot(name, exclusive=False, job_id=None, on_wait=None):
                     fcntl.flock(handle, fcntl.LOCK_EX)
                 held.append(handle)
         else:
-            told = False
-            while not held:
-                free = next((handle for handle in handles if try_lock(handle)), None)
-                if free:
-                    held.append(free)
-                    break
-                if on_wait and not told:
+            free = next((handle for handle in handles if try_lock(handle)), None)
+            if free is None:
+                if on_wait:
                     on_wait(f"waiting for a slot held by {holders()}")
-                    told = True
-                time.sleep(SLOT_POLL_S)
+                # Ends when a holder lets go of its slot (or dies: the kernel drops its flock).
+                free = wait_for_any_slot(paths)
+                handles.append(free)
+            held.append(free)
     except BaseException:
         for handle in handles:
             handle.close()
@@ -1220,6 +1382,9 @@ def register_job_metadata(meta):
 # A job is idle when it printed nothing and used under 2% of one core for 5 minutes.
 IDLE_WINDOW_S = 300
 IDLE_CPU_FRACTION = 0.02
+# delay: a periodic measurement. CPU use over time has no event to wait
+# for, so `watch_activity` samples the job's process tree this often; the
+# samples end when the command does.
 SAMPLE_INTERVAL_S = 15
 # Idle is reported again now and then, so a restarted server learns it.
 IDLE_RESEND_SAMPLES = 20
@@ -1287,15 +1452,15 @@ def sample_tree_cpu(root_pid):
     return tree_cpu_seconds(out, root_pid)
 
 
-def watch_activity(proc, meta, last_output):
+def watch_activity(proc, meta, last_output, ended):
     """Reports to herdr when the job turns idle and when it works again, so
     the sidebar does not show a stalled job as working. `last_output` is a
-    one-item list holding the time of the last byte."""
+    one-item list holding the time of the last byte; `ended`, an Event the
+    executor sets when the command ended, stops the sampling at once."""
     samples = []
     reported = False
     since_report = 0
-    while proc.poll() is None:
-        time.sleep(SAMPLE_INTERVAL_S)
+    while not ended.wait(SAMPLE_INTERVAL_S):
         now = time.monotonic()
         cpu = sample_tree_cpu(proc.pid)
         if cpu is None:
@@ -1446,8 +1611,9 @@ def cmd_exec(args):
             signal.signal(signal.SIGWINCH, lambda *_: footer.resize())
         assert proc.stdout is not None
         last_output = [time.monotonic()]
+        ended = threading.Event()
         if meta.get("tab_status") and meta.get("tab_id"):
-            threading.Thread(target=watch_activity, args=(proc, meta, last_output), daemon=True).start()
+            threading.Thread(target=watch_activity, args=(proc, meta, last_output, ended), daemon=True).start()
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):
             last_output[0] = time.monotonic()
             clock.output(time.time())
@@ -1456,6 +1622,7 @@ def cmd_exec(args):
             log.write(chunk)
         proc.stdout.close()
         code = proc.wait()
+        ended.set()
         if code < 0:
             code = 128 - code
     meta["ended"] = time.time()
@@ -1469,8 +1636,10 @@ def cmd_exec(args):
     # label should not be ahead of the job's own status line.
     if not meta.get("client_footer"):
         footer.finish(code)
+    # Whether herdr took this executor's last words; the job's own result is the `exit` file.
+    delivered = True
     if meta.get("tab_status"):
-        set_final_tab_status(meta, code)
+        delivered = set_final_tab_status(meta, code)
     else:
         mark = "✓" if code == 0 else "✗"
         herdr("tab", "rename", meta["tab_id"], f"{mark} {short(meta['name'], 30)}", check=False)
@@ -1486,12 +1655,16 @@ def cmd_exec(args):
     notify(meta, code)
     print(f"\nherdr-job {meta['id']}: exit {code}", flush=True)
     if code == 0 and not meta.get("keep"):
-        # The log stays in the state dir and the sidebar keeps ✓; the tab is noise now.
-        print(f"closing this tab in {CLOSE_OK_AFTER_S} s (herdr-job run --keep leaves it open)", flush=True)
-        time.sleep(CLOSE_OK_AFTER_S)
-        close_job_tab(meta)
+        # The log stays in the state dir and the sidebar keeps ✓; the tab is
+        # noise now. It closes at once, or when you leave it if you are reading it.
+        print("closing this tab once it is not the focused one (herdr-job run --keep leaves it open)", flush=True)
+        delivered = close_job_tab(meta) and delivered
     if not meta.get("client_footer"):
         footer.release()
+    if code == 0 and not delivered:
+        # The job succeeded (its `exit` file says 0); this executor's exit
+        # says that herdr did not take its last words (see stderr above).
+        sys.exit(1)
     sys.exit(code)
 
 
@@ -1533,17 +1706,22 @@ def process_identity(pid):
 
 
 def wait_for_exit(pid):
-    """Block until the process exits, on its exit event where the OS has one."""
-    if hasattr(os, "pidfd_open"):  # Linux
-        import select
+    """Block until the process exits, on its exit event (a pidfd on Linux,
+    kqueue on macOS and BSD). A system with neither fails loudly instead of
+    polling the process."""
+    if hasattr(os, "pidfd_open"):  # Linux 5.3
         try:
             fd = os.pidfd_open(pid)
         except ProcessLookupError:
             return
-        select.select([fd], [], [])
-        os.close(fd)
-        return
-    import select
+        except OSError as err:  # an older kernel: no pidfd
+            fd, pidfd_error = None, err
+        if fd is not None:
+            select.select([fd], [], [])
+            os.close(fd)
+            return
+    else:
+        pidfd_error = None
     if hasattr(select, "kqueue"):  # macOS, BSD
         kq = select.kqueue()
         event = select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
@@ -1554,16 +1732,9 @@ def wait_for_exit(pid):
             pass
         kq.close()
         return
-    # No exit event for a process that is not our child: poll it (external
-    # polling, once a second is enough for work that takes minutes).
-    while True:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        except PermissionError:
-            pass
-        time.sleep(1)
+    reason = f" (pidfd_open: {pidfd_error.strerror})" if pidfd_error else ""
+    raise SystemExit(f"herdr-job: this system has no exit event for a process that is not our child "
+                     f"(pidfd needs Linux 5.3, or kqueue){reason}; not polling pid {pid}")
 
 
 def cmd_watch_pid(args):
@@ -1601,12 +1772,12 @@ class WriterExited(Exception):
 class KqueueWatch:
     """File events from kqueue (macOS, BSD): the file's own vnode (writes,
     truncation, rename, delete) and its directory's (an entry added or
-    removed, so a rotated file's successor is seen)."""
+    removed, so a rotated file's successor is seen). `wake_fd`, the read end
+    of a pipe, ends a wait when another thread writes to it."""
 
     FILE_EVENTS = ("KQ_NOTE_WRITE", "KQ_NOTE_EXTEND", "KQ_NOTE_ATTRIB", "KQ_NOTE_DELETE", "KQ_NOTE_RENAME")
 
-    def __init__(self, directory, pid=None):
-        import select
+    def __init__(self, directory, pid=None, wake_fd=None):
         self.select = select
         self.kq = select.kqueue()
         try:
@@ -1615,6 +1786,9 @@ class KqueueWatch:
             self.kq.close()
             raise TextSourceError(f"cannot watch {directory}: {err.strerror}") from err
         changes = [self._vnode(self.dir_fd, select.KQ_NOTE_WRITE | select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME)]
+        self.wake_fd = wake_fd
+        if wake_fd is not None:
+            changes.append(select.kevent(wake_fd, select.KQ_FILTER_READ, select.KQ_EV_ADD))
         if pid is not None:
             changes.append(select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                          select.KQ_NOTE_EXIT))
@@ -1641,6 +1815,8 @@ class KqueueWatch:
         for event in self.kq.control(None, 16, None):
             if event.filter == select.KQ_FILTER_PROC:
                 raise WriterExited()
+            if event.filter == select.KQ_FILTER_READ and event.ident == self.wake_fd:
+                drain_wake(self.wake_fd)
             if event.ident == self.dir_fd and event.fflags & (select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME):
                 raise TextSourceError("the file's directory was removed or renamed")
 
@@ -1651,25 +1827,29 @@ class KqueueWatch:
 
 class InotifyWatch:
     """File events from inotify (Linux): the directory's entries named like
-    the file, the opened file itself (writes after a rename still count), and
-    the writer's exit through a pidfd."""
+    the file (any entry when `name` is None), the opened file itself (writes
+    after a rename still count), the writer's exit through a pidfd, and
+    `wake_fd`, the read end of a pipe another thread writes to. With
+    `entries_only` the directory reports entries added, removed or renamed,
+    not writes to the files in it."""
 
     IN_MODIFY, IN_ATTRIB, IN_CLOSE_WRITE = 0x2, 0x4, 0x8
     IN_MOVED_FROM, IN_MOVED_TO, IN_CREATE, IN_DELETE = 0x40, 0x80, 0x100, 0x200
     IN_DELETE_SELF, IN_MOVE_SELF, IN_Q_OVERFLOW, IN_IGNORED = 0x400, 0x800, 0x4000, 0x8000
 
-    def __init__(self, directory, name, pid=None):
+    def __init__(self, directory, name, pid=None, wake_fd=None, entries_only=False):
         import ctypes
         self.libc = ctypes.CDLL(None, use_errno=True)
         self.ctypes = ctypes
-        self.name = os.fsencode(name)
+        self.name = None if name is None else os.fsencode(name)
+        self.wake_fd = wake_fd
         self.fd = self.libc.inotify_init1(os.O_CLOEXEC)
         if self.fd < 0:
             raise TextSourceError(f"inotify: {os.strerror(ctypes.get_errno())}")
         self.pidfd = None
         try:
-            self.dir_wd = self._add(directory, self.IN_MODIFY | self.IN_ATTRIB | self.IN_CLOSE_WRITE
-                                    | self.IN_MOVED_FROM | self.IN_MOVED_TO | self.IN_CREATE
+            writes = 0 if entries_only else self.IN_MODIFY | self.IN_ATTRIB | self.IN_CLOSE_WRITE
+            self.dir_wd = self._add(directory, writes | self.IN_MOVED_FROM | self.IN_MOVED_TO | self.IN_CREATE
                                     | self.IN_DELETE | self.IN_DELETE_SELF | self.IN_MOVE_SELF)
             if pid is not None:
                 if not hasattr(os, "pidfd_open"):
@@ -1696,12 +1876,15 @@ class InotifyWatch:
         self.file_wd = self._add(f"/proc/self/fd/{fd}", self.IN_MODIFY | self.IN_ATTRIB | self.IN_CLOSE_WRITE)
 
     def wait(self):
-        import select
         import struct
+        extra = [fd for fd in (self.pidfd, self.wake_fd) if fd is not None]
         while True:
-            readable = select.select([self.fd] + ([self.pidfd] if self.pidfd is not None else []), [], [])[0]
-            if self.pidfd in readable:
+            readable = select.select([self.fd] + extra, [], [])[0]
+            if self.pidfd is not None and self.pidfd in readable:
                 raise WriterExited()
+            if self.wake_fd is not None and self.wake_fd in readable:
+                drain_wake(self.wake_fd)
+                return
             data = os.read(self.fd, 64 * 1024)
             relevant = False
             offset = 0
@@ -1711,7 +1894,8 @@ class InotifyWatch:
                 offset += 16 + length
                 if wd == self.dir_wd and mask & (self.IN_DELETE_SELF | self.IN_MOVE_SELF | self.IN_IGNORED):
                     raise TextSourceError("the file's directory was removed or renamed")
-                if mask & self.IN_Q_OVERFLOW or wd == self.file_wd or name == self.name:
+                if (mask & self.IN_Q_OVERFLOW or wd == self.file_wd or self.name is None
+                        or name == self.name):
                     relevant = True
             if relevant:
                 return
@@ -1799,12 +1983,75 @@ class TextFollower:
 
 
 def make_text_watch(path, pid):
-    import select
     if hasattr(select, "kqueue"):
         return KqueueWatch(path.parent, pid)
     if sys.platform.startswith("linux"):
         return InotifyWatch(path.parent, path.name, pid)
     raise TextSourceError("no kqueue or inotify on this system")
+
+
+def make_dir_watch(directory, pid=None, wake_fd=None, entries_only=False):
+    """Events for any entry of `directory` (and files added with
+    `watch_file`), the exit of `pid` and writes to `wake_fd`; `wait()`
+    blocks for the next one. Raises TextSourceError where neither kqueue nor
+    inotify exists, WriterExited when `pid` is gone already."""
+    if hasattr(select, "kqueue"):
+        return KqueueWatch(directory, pid, wake_fd)
+    if sys.platform.startswith("linux"):
+        return InotifyWatch(directory, None, pid, wake_fd, entries_only)
+    raise TextSourceError("no kqueue or inotify on this system")
+
+
+class Wake:
+    """A pipe that ends a watch's wait (`make_dir_watch(wake_fd=...)`) from
+    another thread. `fire()` after `close()` does nothing, so a late thread
+    never writes into a descriptor number that was reused."""
+
+    def __init__(self):
+        self.fd, self._write = os.pipe()
+        for fd in (self.fd, self._write):
+            os.set_blocking(fd, False)
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def fire(self):
+        with self._lock:
+            if self._closed:
+                return
+            with contextlib.suppress(BlockingIOError):  # full: a wake is pending already
+                os.write(self._write, b"!")
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            os.close(self.fd)
+            os.close(self._write)
+
+
+def drain_wake(fd):
+    with contextlib.suppress(BlockingIOError):
+        while os.read(fd, 4096):
+            pass
+
+
+def wake_when_released(lock_path, wake):
+    """Fires `wake` once nobody holds the flock on `lock_path` any more:
+    a thread blocks on a shared lock and lets go of it at once. Only for a
+    lock whose holder took it already; a waiter that came first would keep
+    the holder from taking it."""
+    def released():
+        try:
+            fd = os.open(lock_path, os.O_RDONLY)
+        except OSError:
+            wake.fire()  # gone: let the waiter look again
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH)
+        finally:
+            os.close(fd)
+        wake.fire()
+
+    threading.Thread(target=released, daemon=True).start()
 
 
 def wait_text(path, regex, from_start=False, pid=None, announce=None):
@@ -2033,27 +2280,94 @@ def wait_for_job(args, path):
     if not stream and not args.quiet:
         meta = read_meta(path)
         print(f"herdr-job {args.id} ({meta['name']}): waiting; to look at it: herdr tab focus {meta.get('tab_id')}", flush=True)
-    while True:
-        drain()
-        st, code = status(path)
-        if not active(st):
+    watch = job_watch(path, stream)
+    try:
+        while True:
+            watch.follow_log(log_path)
             drain()
-            meta = read_meta(path)
-            if st == "lost":
-                update_owner_token(meta.get("owner_pane"))
-            reconcile_tabs()
-            if not stream and not args.quiet and st != "ok":
-                tail = log_tail(log_path)
-                if tail:
-                    print(f"--- last lines of the log (all of it: {log_path}) ---\n{tail}\n---", flush=True)
-            print(f"\nherdr-job {args.id} ({meta['name']}): {st}, exit {code}", flush=True)
-            sys.exit(code)
-        time.sleep(2)
+            st, code = status(path)
+            if not active(st):
+                drain()
+                meta = read_meta(path)
+                if st == "lost":
+                    update_owner_token(meta.get("owner_pane"))
+                reconcile_tabs()
+                if not stream and not args.quiet and st != "ok":
+                    tail = log_tail(log_path)
+                    if tail:
+                        print(f"--- last lines of the log (all of it: {log_path}) ---\n{tail}\n---", flush=True)
+                print(f"\nherdr-job {args.id} ({meta['name']}): {st}, exit {code}", flush=True)
+                sys.exit(code)
+            watch.arm(read_meta(path))
+            watch.wait()
+    finally:
+        watch.close()
+
+
+class JobWatch:
+    """The events that can end a job, or move it on, for `wait`: an entry of
+    the job's directory written (its `exit`, a new `meta.json` when the
+    executor starts, `launched`, the `tab-closed` mark the `tab.closed` hook
+    leaves), its executor and command letting go of the job's lock (a lost
+    job writes no `exit`), its launcher dying, and with `stream` the log
+    growing. The watch is armed before the state is read, so a change in
+    between is either read or wakes the wait."""
+
+    def __init__(self, path, stream):
+        self.path = path
+        self.stream = stream
+        self.wake = Wake()
+        self.armed = set()
+        self.log_fd = None
+        try:
+            self.watch = make_dir_watch(path, wake_fd=self.wake.fd, entries_only=True)
+        except TextSourceError as err:
+            self.wake.close()
+            raise SystemExit(f"herdr-job wait: {err}") from err
+
+    def follow_log(self, log_path):
+        if not self.stream or self.log_fd is not None:
+            return
+        try:
+            self.log_fd = os.open(log_path, os.O_RDONLY)
+        except FileNotFoundError:
+            return  # its creation is a directory event
+        self.watch.watch_file(self.log_fd)
+
+    def arm(self, meta):
+        # The job's lock only once the executor took it: a waiter that came
+        # first would make `_exec` take the job for one that already ran.
+        if "started" in meta and "lock" not in self.armed:
+            self.armed.add("lock")
+            wake_when_released(self.path / "lock", self.wake)
+        if launching(self.path, meta) and "launch" not in self.armed:
+            self.armed.add("launch")
+            wake_when_released(self.path / LAUNCH_HOLD, self.wake)
+
+    def wait(self):
+        try:
+            self.watch.wait()
+        except TextSourceError as err:
+            raise SystemExit(f"herdr-job wait: the job's directory {self.path}: {err}") from err
+
+    def close(self):
+        self.watch.close()
+        self.wake.close()
+        if self.log_fd is not None:
+            os.close(self.log_fd)
+
+
+def job_watch(path, stream):
+    return JobWatch(path, stream)
 
 
 # `wait-agent`: one job that waits for an agent and reconnects inside, so a
 # server restart or a dropped answer (`EmptyResponse`) never makes the caller
-# start a new job (a new tab) per attempt. Designed backoff, 1 s to 30 s.
+# start a new job (a new tab) per attempt.
+# delay: designed backoff for genuine transport failures, 1 s to 30 s, only
+# while herdr does not answer at all (`TRANSPORT_CODES`, no reply); every
+# answer, a handoff's included, ends it. After 15 minutes without herdr the
+# wait gives up on stderr with exit 5.
 AGENT_RETRY_FIRST_S = 1
 AGENT_RETRY_MAX_S = 30
 AGENT_GIVE_UP_S = 15 * 60
@@ -2229,9 +2543,11 @@ def call_until_answered(say, *request, handoff_answers=False):
         now = time.monotonic()
         failing_since = failing_since or now
         if now - failing_since >= AGENT_GIVE_UP_S:
-            say(f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}; "
-                "a verdict herdr records while nothing waits for it is a supervision finding "
-                "(verdict_undelivered, `herdr supervise --report`)")
+            message = (f"gave up after {int(now - failing_since) // 60} minutes without herdr: {short(text, 200)}; "
+                       "a verdict herdr records while nothing waits for it is a supervision finding "
+                       "(verdict_undelivered, `herdr supervise --report`)")
+            say(message)
+            print(f"herdr-job wait-agent: {message}", file=sys.stderr, flush=True)
             sys.exit(EXIT_TRANSPORT_GAVE_UP)
         say(f"herdr did not answer ({short(text, 120)}); retrying in {delay} s")
         time.sleep(delay)

@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 spec = importlib.util.spec_from_file_location("viewer", Path(__file__).with_name("viewer.py"))
@@ -25,13 +26,48 @@ class ViewerTests(unittest.TestCase):
             session = Path(root) / "session.jsonl"
             session.write_text("malformed\n" + "\n".join(json.dumps(entry) for entry in entries) + "\n")
             output = io.StringIO()
-            self.assertEqual(viewer.follow(session, "a", output, 1), 0)
+            self.assertEqual(viewer.follow(session, "a", output), 0)
         text = output.getvalue()
         self.assertIn("echo test", text)
         self.assertIn("result", text)
         self.assertNotIn("not shown", text)
         self.assertNotIn("unrelated", text)
         self.assertNotIn("\x1b", text)
+
+    def follow_in_thread(self, session, output):
+        result = []
+        thread = threading.Thread(target=lambda: result.append(viewer.follow(session, "a", output)), daemon=True)
+        thread.start()
+        return thread, result
+
+    def test_a_record_saved_later_ends_the_wait(self):
+        call = {"message": {"role": "assistant", "content": [
+            {"type": "toolCall", "id": "a", "name": "bash", "arguments": {"command": "make"}}]}}
+        done = {"message": {"role": "toolResult", "toolCallId": "a", "content": [{"type": "text", "text": "built"}]}}
+        with tempfile.TemporaryDirectory() as root:
+            session = Path(root) / "session.jsonl"
+            session.write_text(json.dumps(call) + "\n")
+            output = io.StringIO()
+            thread, result = self.follow_in_thread(session, output)
+            self.assertTrue(thread.is_alive())
+            with session.open("a") as stream:  # Pi appends the result
+                stream.write(json.dumps(done) + "\n")
+            thread.join(30)
+            self.assertFalse(thread.is_alive(), "the saved record did not end the wait")
+        self.assertEqual(result, [0])
+        self.assertIn("built", output.getvalue())
+
+    def test_a_removed_session_file_ends_the_wait_loudly(self):
+        with tempfile.TemporaryDirectory() as root:
+            session = Path(root) / "session.jsonl"
+            session.write_text("")
+            output = io.StringIO()
+            thread, result = self.follow_in_thread(session, output)
+            session.unlink()
+            thread.join(30)
+            self.assertFalse(thread.is_alive(), "the removal did not end the wait")
+        self.assertEqual(result, [1])
+        self.assertIn("removed or replaced", output.getvalue())
 
     def test_failure_and_images_preserve_transcript_reference(self):
         entry = {"message": {"role": "toolResult", "toolCallId": "a", "isError": True,

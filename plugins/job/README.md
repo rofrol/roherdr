@@ -28,8 +28,9 @@ with `herdr-job list | grep`, which picks the wrong one when several run.
   (`herdr tab status`), set to running, then succeeded or failed; a running
   job's half circle turns, like a working agent's but the other way; failure
   is `!` because `✗` next to a tab label reads as a close button. After
-  success the tab closes itself 10 s later, or once you leave it if it is
-  the focused tab then (`--keep` leaves it open); after
+  success the tab closes itself at once, or, if it is the focused tab, when
+  herdr reports that you left it (its `tab.focused` event; `--keep` leaves it
+  open); after
   a failure it stays open with the output. Closing the parent tab asks first
   and closes its jobs too. herdr builds without child tabs get a top-level
   tab labelled
@@ -282,12 +283,13 @@ concurrent launches cannot pass a limit together.
   open keeps the slot too (the job itself has ended then): `herdr-job
   slots` names the job, and stopping the daemon frees the slot.
 - The final tab status and the closing of a succeeded job's tab are retried
-  with backoff (about a minute each): during a live handoff the server may
-  not answer. Whatever still slips through is repaired by `run`, `wait`,
-  `list`, `clean` and the `tab.closed` hook: a tab still marked running whose
-  job has ended gets succeeded or failed (a lost job is failed, never
-  succeeded), and a succeeded job's tab closes 10 s after the job ended
-  unless `--keep`. Tab ids can be reused, so only the newest job of a tab
+  with backoff (about a minute each) only while the server does not answer
+  (a live handoff); then the executor says on stderr what it gave up and
+  exits 1 (the job's own result stays in its `exit` file). Whatever still
+  slips through is repaired by `run`, `wait`, `list`, `clean` and the
+  `tab.closed` hook: a tab still marked running whose job has ended gets
+  succeeded or failed (a lost job is failed, never succeeded), and a
+  succeeded job's tab closes once its executor is gone, unless `--keep`. Tab ids can be reused, so only the newest job of a tab
   decides, and only while the tab still has that job's label; `clean` does
   not close a tab the user renamed either.
 - macOS and Linux only (`flock`, `/bin/sh`, POSIX signals). State files are
@@ -403,7 +405,10 @@ A Claude Code `SessionStart`/`Stop` hook that reports the name other Claude
 sessions use to message this one (`herdr-ef`, from
 `~/.claude/sessions/<pid>.json`) as the `$peer` token, so you can tell which
 pane a cross-session message came from. `Stop` refreshes it and picks up a
-later `/rename`.
+later `/rename`. At `SessionStart` Claude has not written the name yet, so a
+detached child waits for it on file events in `~/.claude/sessions/` and ends
+when it reports the name, or with exit status 1 when that Claude process exits
+first.
 
 ```json
 "SessionStart": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-peer-token", "timeout": 10}]}],
@@ -512,7 +517,15 @@ herdr-job slots                           # who holds them: job, name, pid, sinc
   `just` recipes that build or test take a slot themselves (the benchmarks an
   exclusive one), so agents need no flag for them.
 - A job with `--slot` waits in its own tab: the tab says who it waits for and
-  shows as idle until it gets the slot.
+  shows as idle until it gets the slot. The wait blocks on the slots' locks
+  (one thread per slot for a shared request), so it ends the moment a holder
+  lets go or dies; nothing polls.
+- `wait` blocks on the job's events, never on a pause: its `exit` file, a new
+  `meta.json` when the executor starts, the job's lock going free (a lost
+  job), its launcher's death, the `tab.closed` hook's `tab-closed` mark for a
+  job whose executor never started, and with `--stream` the log growing
+  (kqueue or inotify). `watch` waits for the process's exit event (a pidfd
+  or kqueue) and fails on a system without one instead of polling.
 - Inside a slot (`HERDR_JOB_SLOT` is set), a shared request takes nothing, so
   `just check` under `herdr-job run --slot` does not wait for itself, and a
   `herdr-job run --slot` started from inside a slot shares its parent's

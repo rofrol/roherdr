@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import runpy
+import socket
 import re
 import sys
 import threading
@@ -19,6 +20,13 @@ from types import SimpleNamespace
 
 JOB = runpy.run_path(str(Path(__file__).with_name("herdr-job"))) if os.name == "posix" else {}
 Footer = JOB.get("Footer")
+
+
+def announced_watch(_path, _stream):
+    """A `job_watch` whose every wait returns at once: the patched `status`
+    stands for the state each event would have announced."""
+    return SimpleNamespace(follow_log=lambda _log: None, arm=lambda _meta: None,
+                           wait=lambda: None, close=lambda: None)
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
@@ -306,13 +314,13 @@ class OpenJobTests(unittest.TestCase):
 class WaitTests(unittest.TestCase):
     JOB = "20261001-124548-1827"
 
-    def wait(self, log, outcome=("ok", 0), polls=1, **flags):
+    def wait(self, log, outcome=("ok", 0), events=1, **flags):
         cmd_wait = JOB["cmd_wait"]
         base = Path(tempfile.mkdtemp())
         path = base / self.JOB
         path.mkdir()
         (path / "log").write_bytes(log)
-        states = iter([("running", None)] * polls + [outcome])
+        states = iter([("running", None)] * events + [outcome])
         patches = {
             "job_dir": lambda _id: path,
             "read_meta": lambda _path: {"name": "build", "tab_id": "w:t7", "owner_pane": None},
@@ -320,11 +328,11 @@ class WaitTests(unittest.TestCase):
             "reconcile_tabs": lambda: None,
             "update_owner_token": lambda _pane: None,
             "WAITS": base / "waits",
+            "job_watch": announced_watch,
         }
         args = SimpleNamespace(id=self.JOB, quiet=flags.get("quiet", False), stream=flags.get("stream", False))
         out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
-        with patch.dict(cmd_wait.__globals__, patches), patch.object(sys, "stdout", out), \
-                patch.object(time, "sleep", lambda _s: None):
+        with patch.dict(cmd_wait.__globals__, patches), patch.object(sys, "stdout", out):
             try:
                 cmd_wait(args)
                 code = 0
@@ -334,7 +342,7 @@ class WaitTests(unittest.TestCase):
         return code, out.buffer.getvalue().decode()
 
     def test_by_default_a_job_is_a_start_line_and_the_final_line(self):
-        code, text = self.wait(b"".join(b"line %d\n" % n for n in range(5000)), polls=3)
+        code, text = self.wait(b"".join(b"line %d\n" % n for n in range(5000)), events=3)
         self.assertEqual(code, 0)
         lines = [line for line in text.split("\n") if line]
         self.assertEqual(len(lines), 2, text)
@@ -438,10 +446,10 @@ class WaitEdgeTests(unittest.TestCase):
             return ("ok", 0) if len(seen) > 1 else ("running", None)
 
         patches = {"status": status, "reconcile_tabs": lambda: None,
-                   "update_owner_token": lambda _pane: None}
+                   "update_owner_token": lambda _pane: None, "job_watch": announced_watch}
         out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
         with patch.dict(JOB["cmd_wait"].__globals__, patches), patch.dict(os.environ, {"HERDR_PANE_ID": "p1"}), \
-                patch.object(sys, "stdout", out), patch.object(time, "sleep", lambda _s: None):
+                patch.object(sys, "stdout", out):
             with self.assertRaises(SystemExit):
                 JOB["cmd_wait"](SimpleNamespace(id="j1", quiet=True, stream=False))
         self.assertEqual([(e["job_id"], e["job_tab"], e["waiter_pane"]) for e in seen[0]], [("j1", "w:t9", "p1")])
@@ -504,13 +512,16 @@ class WaitEdgeTests(unittest.TestCase):
         for waiting in (True, False):
             with self.subTest(waiting=waiting):
                 proc = Mock()
-                proc.poll.side_effect = [None, None, 0]
+                # Two samples, then the command ends.
+                ended = Mock()
+                ended.wait.side_effect = [False, False, True]
                 calls = Mock(return_value=True)
                 globs = JOB["watch_activity"].__globals__
                 patches = {"sample_tree_cpu": lambda _pid: 1.0, "job_is_idle": lambda *_a: True,
                            "job_waits": lambda job_id: waiting and job_id == "j1", "herdr_ok": calls}
-                with patch.dict(globs, patches), patch.object(time, "sleep", lambda _s: None):
-                    JOB["watch_activity"](proc, {"id": "j1", "tab_id": "w:t5"}, [0.0])
+                with patch.dict(globs, patches):
+                    JOB["watch_activity"](proc, {"id": "j1", "tab_id": "w:t5"}, [0.0], ended)
+                self.assertEqual([c.args for c in ended.wait.call_args_list], [(JOB["SAMPLE_INTERVAL_S"],)] * 3)
                 idle = [c for c in calls.call_args_list if "--activity" in c.args]
                 self.assertEqual(bool(idle), not waiting)
 
@@ -643,6 +654,309 @@ class OutputClockTests(unittest.TestCase):
         self.assertEqual(calls, [("pane", "report-metadata", "p9", "--source", "herdr-job",
                                   "--token", "job_started_ms=1500")])
 
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitForExitTests(unittest.TestCase):
+    def test_without_an_exit_event_it_fails_loudly_instead_of_polling(self):
+        wait_for_exit = JOB["wait_for_exit"]
+        no_sleep = Mock(side_effect=AssertionError("polled"))
+        with patch.dict(wait_for_exit.__globals__, {"os": SimpleNamespace(), "select": SimpleNamespace()}), \
+                patch.object(time, "sleep", no_sleep):
+            with self.assertRaises(SystemExit) as result:
+                wait_for_exit(12345)
+        self.assertIn("not polling pid 12345", str(result.exception.code))
+
+    def test_it_returns_on_the_exit_event_of_a_process_that_is_not_its_child(self):
+        child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+        threading.Thread(target=child.wait, daemon=True).start()
+        done = threading.Event()
+        thread = threading.Thread(target=lambda: (JOB["wait_for_exit"](child.pid), done.set()), daemon=True)
+        thread.start()
+        self.assertFalse(done.is_set())
+        child.stdin.close()  # the child's exit, the event the wait ends on
+        thread.join(30)
+        self.assertTrue(done.is_set())
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class WaitEventTests(unittest.TestCase):
+    """`wait` blocks on the events that end a job, never on a pause."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name)
+        self.path = self.state / "j1"
+        self.path.mkdir()
+        self.tabs = [{"tab_id": "w:t1", "label": "build"}]
+        self.waiting = threading.Event()
+        real = JOB["JobWatch"]
+        waiting = self.waiting
+
+        class SignallingWatch(real):
+            def wait(self):
+                waiting.set()
+                super().wait()
+
+        globs = JOB["cmd_wait"].__globals__
+        patcher = patch.dict(globs, {
+            "STATE": self.state, "WAITS": self.state / "waits", "reconcile_tabs": lambda: None,
+            "update_owner_token": lambda _pane: None, "list_tabs": lambda: self.tabs,
+            "job_watch": SignallingWatch})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.sleep = patch.object(time, "sleep", Mock(side_effect=AssertionError("paused")))
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
+
+    def write_meta(self, **extra):
+        meta = {"id": "j1", "name": "build", "tab_id": "w:t1", "tab_status": True, "created": 0, **extra}
+        (self.path / "meta.json").write_text(json.dumps(meta))
+
+    def start_wait(self, stream=False):
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        result = {}
+
+        def run():
+            try:
+                JOB["cmd_wait"](SimpleNamespace(id="j1", quiet=not stream, stream=stream))
+            except SystemExit as err:
+                result["code"] = err.code
+
+        self.stdout = patch.object(sys, "stdout", out)
+        self.stdout.start()
+        self.addCleanup(self.stdout.stop)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(self.waiting.wait(30), "the wait never blocked")
+        return thread, result, out
+
+    def finish(self, thread, result, out):
+        thread.join(30)
+        self.assertFalse(thread.is_alive(), "the event did not end the wait")
+        self.stdout.stop()
+        out.flush()
+        return result.get("code"), out.buffer.getvalue().decode()
+
+    def hold_lock(self):
+        holder = open(self.path / "lock", "a")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        self.addCleanup(holder.close)
+        return holder
+
+    def test_the_exit_file_ends_the_wait_and_stream_follows_the_log_as_it_grows(self):
+        self.write_meta(started=1)
+        holder = self.hold_lock()
+        log = open(self.path / "log", "ab", buffering=0)
+        self.addCleanup(log.close)
+        thread, result, out = self.start_wait(stream=True)
+        self.waiting.clear()
+        log.write(b"compiling\n")
+        self.assertTrue(self.waiting.wait(30), "the log's growth did not wake the wait")
+        JOB["write_atomic"](self.path / "exit", "0\n")
+        code, text = self.finish(thread, result, out)
+        holder.close()
+        self.assertEqual(code, 0)
+        self.assertIn("compiling\n", text)
+        self.assertIn("ok, exit 0", text)
+
+    def test_a_job_whose_lock_goes_without_an_exit_is_lost_at_that_moment(self):
+        self.write_meta(started=1)
+        holder = self.hold_lock()
+        thread, result, out = self.start_wait()
+        self.assertTrue(thread.is_alive())
+        holder.close()  # the executor and its command died
+        code, text = self.finish(thread, result, out)
+        self.assertEqual(code, JOB["EXIT_LOST"])
+        self.assertIn("lost", text)
+
+    def test_a_job_that_never_started_is_lost_when_the_hook_reports_its_tab_closed(self):
+        self.write_meta()
+        thread, result, out = self.start_wait()
+        self.assertTrue(thread.is_alive())
+        self.tabs = []
+        event = json.dumps({"event": "tab.closed", "data": {"tab_id": "w:t1"}})
+        with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": event}):
+            JOB["cmd_tab_closed"](None)
+        code, text = self.finish(thread, result, out)
+        self.assertEqual(code, JOB["EXIT_LOST"])
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class CloseTabTests(unittest.TestCase):
+    """A succeeded job's tab closes at once, or when herdr reports the focus moved."""
+
+    META = {"id": "j1", "name": "build", "tab_id": "w:t1", "tab_status": True, "created": 0}
+
+    def close(self, tabs, events=None, socket_path="/nonexistent/herdr.sock"):
+        closed = []
+
+        def herdr_ok(*args):
+            closed.append(args)
+            return True
+
+        globs = JOB["close_job_tab"].__globals__
+        patches = {"list_tabs": tabs, "herdr_ok": herdr_ok,
+                   "job_tabs": lambda found: {"w:t1": (Path("/j1"), self.META)} if "w:t1" in found else {}}
+        if events is not None:
+            patches["TabEvents"] = SimpleNamespace(subscribe=events)
+        err = io.StringIO()
+        with patch.dict(globs, patches), patch.dict(os.environ, {"HERDR_SOCKET_PATH": socket_path}), \
+                patch.object(time, "sleep", Mock(side_effect=AssertionError("paused"))), \
+                contextlib.redirect_stderr(err):
+            done = JOB["close_job_tab"](self.META)
+        return done, closed, err.getvalue()
+
+    def test_a_tab_that_is_not_focused_closes_at_once(self):
+        done, closed, _ = self.close(lambda: [{"tab_id": "w:t1", "label": "build", "focused": False}])
+        self.assertTrue(done)
+        self.assertEqual(closed, [("tab", "close", "w:t1")])
+
+    def test_a_focused_tab_closes_when_herdr_reports_that_the_focus_moved(self):
+        ours, theirs = socket.socketpair()
+        self.addCleanup(theirs.close)
+        focused = [True]
+        looked = threading.Event()
+
+        def tabs():
+            if not focused[0]:
+                return [{"tab_id": "w:t1", "label": "build", "focused": False}]
+            looked.set()
+            return [{"tab_id": "w:t1", "label": "build", "focused": True}]
+
+        stream = ours.makefile("rwb")
+        ours.close()
+        subscribe = lambda: JOB["TabEvents"](stream)
+        result = []
+        thread = threading.Thread(target=lambda: result.append(self.close(tabs, subscribe)), daemon=True)
+        thread.start()
+        # It looked twice (before and after subscribing) and now blocks on the event stream.
+        self.assertTrue(looked.wait(30))
+        self.assertTrue(thread.is_alive())
+        focused[0] = False
+        theirs.sendall(json.dumps({"event": "tab_focused", "data": {"tab_id": "w:t2"}}).encode() + b"\n")
+        thread.join(30)
+        self.assertFalse(thread.is_alive(), "the focus event did not end the wait")
+        done, closed, _ = result[0]
+        self.assertTrue(done)
+        self.assertEqual(closed, [("tab", "close", "w:t1")])
+
+    def test_the_subscription_goes_to_the_api_socket_and_reads_the_servers_answer(self):
+        ours, theirs = socket.socketpair()
+        self.addCleanup(theirs.close)
+        connected = []
+
+        class FakeSocket:
+            def __init__(self, *_args):
+                pass
+
+            def connect(self, path):
+                connected.append(path)
+
+            def makefile(self, mode):
+                return ours.makefile(mode)
+
+            def close(self):
+                ours.close()
+
+        theirs.sendall(b'{"id":"herdr-job:tab-events","result":{"type":"subscription_started"}}\n')
+        with patch.dict(os.environ, {"HERDR_SOCKET_PATH": "/run/herdr.sock"}), \
+                patch.object(socket, "socket", FakeSocket):
+            events = JOB["TabEvents"].subscribe()
+        request = json.loads(theirs.makefile("rb").readline())
+        self.assertEqual(connected, ["/run/herdr.sock"])
+        self.assertEqual(request["method"], "events.subscribe")
+        self.assertIn({"type": "tab.focused"}, request["params"]["subscriptions"])
+        theirs.sendall(b'{"event":"tab_closed","data":{"tab_id":"w:t1"}}\n')
+        self.assertTrue(events.next())
+        theirs.close()
+        self.assertFalse(events.next())
+        events.close()
+
+    def test_a_focused_tab_without_herdr_events_is_left_open_loudly(self):
+        tabs = lambda: [{"tab_id": "w:t1", "label": "build", "focused": True}]
+        done, closed, err = self.close(tabs, socket_path="")
+        self.assertFalse(done)
+        self.assertEqual(closed, [])
+        self.assertIn("tab w:t1 stays open", err)
+
+    def test_the_final_status_is_retried_with_the_designed_backoff_then_given_up_loudly(self):
+        sleeps = []
+        err = io.StringIO()
+        with patch.dict(JOB["set_final_tab_status"].__globals__, {"herdr_ok": lambda *_a: False}), \
+                patch.object(time, "sleep", sleeps.append), contextlib.redirect_stderr(err):
+            self.assertFalse(JOB["set_final_tab_status"](self.META, 0))
+        self.assertEqual(tuple(sleeps), JOB["TRANSPORT_BACKOFF_S"])
+        self.assertIn("did not take tab w:t1's final status", err.getvalue())
+
+    def test_others_close_a_succeeded_tab_only_once_its_executor_is_gone(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            with open(path / "lock", "a") as executor:
+                fcntl.flock(executor, fcntl.LOCK_EX)
+                self.assertFalse(JOB["close_due"](path, self.META, "ok"))
+            self.assertTrue(JOB["close_due"](path, self.META, "ok"))
+            self.assertFalse(JOB["close_due"](path, {**self.META, "keep": True}, "ok"))
+            self.assertFalse(JOB["close_due"](path, self.META, "failed"))
+
+
+@unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
+class PeerTokenTests(unittest.TestCase):
+    """The SessionStart child waits for Claude to write its name, on file events."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.sessions = Path(self.tmp.name) / "sessions"
+        self.sessions.mkdir()
+        self.peer = runpy.run_path(str(Path(__file__).with_name("herdr-peer-token")))
+        self.calls = Path(self.tmp.name) / "calls"
+        stub = Path(self.tmp.name) / "herdr"
+        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {self.calls}\n")
+        stub.chmod(0o755)
+        patcher = patch.dict(self.peer["wait_and_report"].__globals__,
+                             {"SESSIONS": self.sessions, "HERDR": str(stub)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = patch.dict(os.environ, {"HERDR_PANE_ID": "w:p1"})
+        env.start()
+        self.addCleanup(env.stop)
+        # A stand-in for Claude: it lives until its stdin closes.
+        self.claude = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+        self.addCleanup(self.claude.wait)
+        self.addCleanup(lambda: self.claude.stdin.closed or self.claude.stdin.close())
+
+    def start(self):
+        result = []
+        err = io.StringIO()
+
+        def run():
+            with contextlib.redirect_stderr(err):
+                result.append(self.peer["wait_and_report"]("s1", self.claude.pid))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, result, err
+
+    def test_the_name_written_in_place_later_is_reported(self):
+        session = self.sessions / f"{self.claude.pid}.json"
+        session.write_text(json.dumps({"sessionId": "s1"}))
+        thread, result, _ = self.start()
+        self.assertTrue(thread.is_alive())
+        with open(session, "r+") as handle:  # Claude adds the name to its file
+            handle.write(json.dumps({"sessionId": "s1", "name": "herdr-ef"}))
+        thread.join(30)
+        self.assertFalse(thread.is_alive(), "the name did not end the wait")
+        self.assertEqual(result, [0])
+        self.assertIn("--token peer=herdr-ef", self.calls.read_text())
+
+    def test_claude_exiting_first_ends_the_wait_loudly(self):
+        thread, result, err = self.start()
+        self.claude.stdin.close()
+        thread.join(30)
+        self.assertFalse(thread.is_alive(), "Claude's exit did not end the wait")
+        self.assertEqual(result, [1])
+        self.assertIn("exited before it named session s1", err.getvalue())
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")
 class WatchPidTests(unittest.TestCase):
@@ -809,7 +1123,7 @@ class SlotTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         take = JOB["take_slot"]
-        patcher = patch.dict(take.__globals__, {"SLOTS": Path(self.tmp.name) / "slots", "SLOT_POLL_S": 0.01})
+        patcher = patch.dict(take.__globals__, {"SLOTS": Path(self.tmp.name) / "slots"})
         patcher.start()
         self.addCleanup(patcher.stop)
         env = patch.dict(os.environ, {"HERDR_JOB_SLOTS": "1"})
@@ -867,6 +1181,23 @@ class SlotTests(unittest.TestCase):
         self.release(result[0])
         late.join(5)
         self.release(late_result[0])
+
+    def test_a_shared_request_takes_whichever_slot_frees_first_and_hands_back_the_other(self):
+        os.environ["HERDR_JOB_SLOTS"] = "2"
+        first, second = self.take("cargo build"), self.take("nextest")
+        thread, heard, result = self.take_in_thread("just test")
+        self.assertIn("cargo build", heard[0])
+        self.assertIn("nextest", heard[0])
+        self.release(second)  # slot 1 frees, the waiting request takes it
+        thread.join(30)
+        self.assertFalse(thread.is_alive(), "the freed slot did not end the wait")
+        self.assertEqual([Path(handle.name).name for handle in result[0]], ["slot-1"])
+        # The thread still blocked on slot 0 gives it back as soon as it gets it.
+        self.release(first)
+        slot0, slot1 = JOB["slot_files"]()
+        wait_until_free(slot0)
+        self.assertTrue(lock_is_held(slot1))
+        self.release(result[0])
 
     def test_inside_a_slot_shared_needs_nothing_and_exclusive_fails_at_once(self):
         os.environ["HERDR_JOB_SLOT"] = "shared"
@@ -1296,10 +1627,11 @@ class WaitAgentTests(unittest.TestCase):
         (self.stub_dir / "agent.json").write_text(json.dumps([empty]))
         args = SimpleNamespace(pane="w:p5", until=[], request=None)
         with patch.object(time, "sleep", sleep), patch.object(time, "monotonic", lambda: clock[0]), \
-                contextlib.redirect_stdout(io.StringIO()):
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(SystemExit) as result:
                 self.wait_agent(args)
         self.assertEqual(result.exception.code, 5)
+        self.assertIn("gave up after 15 minutes", err.getvalue())
         self.assertEqual(max(self.sleeps), 30)
         self.assertGreaterEqual(clock[0], 15 * 60)
 

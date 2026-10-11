@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-import time
+import runpy
 
 MAX_LINE = 8 * 1024 * 1024
 ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
@@ -47,44 +47,73 @@ def selected_payload(entry, call_id):
     return None
 
 
-def follow(session, call_id, output, deadline_seconds=3600):
-    deadline = time.monotonic() + deadline_seconds
+def file_watch(session, stream):
+    """Herdr-job's kqueue/inotify watch on the session file and its directory."""
+    job = runpy.run_path(str(Path(__file__).resolve().parent.parent / "herdr-job"))
+    watch = job["make_dir_watch"](session.parent)
+    watch.watch_file(stream.fileno())
+    return watch, job["TextSourceError"]
+
+
+def follow(session, call_id, output):
+    """Shows the call's records as Pi saves them. Waits on file events for
+    the next record, never on a pause or a deadline: it ends with the call's
+    result, when the session file is removed or replaced, or when the user
+    closes the viewer's job."""
     output.write("Pi transcript detail viewer (not the tool executor).\n"
                  "Only this call is shown. Original data stays in the saved session.\n"
                  "Waiting for saved tool records; live partial output may not be persisted yet.\n\n")
     output.flush()
     with session.open(encoding="utf-8") as stream:
-        while time.monotonic() < deadline:
-            offset = stream.tell()
-            line = stream.readline(MAX_LINE + 1)
-            if not line or not line.endswith("\n"):
-                if len(line) > MAX_LINE:
-                    while line and not line.endswith("\n"):
-                        line = stream.readline(MAX_LINE + 1)
-                    output.write("[Oversized session record omitted; expand it in Pi instead.]\n")
-                    output.flush()
-                    continue
-                stream.seek(offset)
-                time.sleep(0.25)
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            payload = selected_payload(entry, call_id)
-            if payload is not None:
-                done, text = payload
-                output.write(safe_text(text) + "\n\n")
+        identity = os.fstat(stream.fileno()).st_ino
+        watch, source_error = file_watch(session, stream)
+        try:
+            return show_records(session, call_id, output, stream, identity, watch, source_error)
+        finally:
+            watch.close()
+
+
+def show_records(session, call_id, output, stream, identity, watch, source_error):
+    while True:
+        offset = stream.tell()
+        line = stream.readline(MAX_LINE + 1)
+        if not line or not line.endswith("\n"):
+            if len(line) > MAX_LINE:
+                while line and not line.endswith("\n"):
+                    line = stream.readline(MAX_LINE + 1)
+                output.write("[Oversized session record omitted; expand it in Pi instead.]\n")
                 output.flush()
-                if done:
-                    output.write("Detail view complete. Use the job footer to return to Pi.\n")
-                    output.flush()
-                    return 0
-    output.write("Detail viewer timed out; expand the tool in Pi for the latest result.\n")
-    output.flush()
-    return 1
+                continue
+            stream.seek(offset)
+            try:
+                if os.stat(session).st_ino != identity:
+                    raise FileNotFoundError
+            except FileNotFoundError:
+                output.write("The session file was removed or replaced; expand the tool in Pi instead.\n")
+                output.flush()
+                return 1
+            try:
+                watch.wait()  # Pi appends the next record
+            except source_error as err:
+                output.write(f"Cannot follow the session file ({err}); expand the tool in Pi instead.\n")
+                output.flush()
+                return 1
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        payload = selected_payload(entry, call_id)
+        if payload is not None:
+            done, text = payload
+            output.write(safe_text(text) + "\n\n")
+            output.flush()
+            if done:
+                output.write("Detail view complete. Use the job footer to return to Pi.\n")
+                output.flush()
+                return 0
 
 
 def main():
