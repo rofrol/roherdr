@@ -172,6 +172,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     resolved), never dropped.
   - Test: a verdict arriving at every handoff boundary, and a crash between
     the old server stopping and the new one listening.
+  Labels and a race fix landed 2026-10-11 (bdd3a8f7): coordinator lines name
+  what is known (working on run X, waiting on decision d-..., on job Y,
+  idle with nothing runnable, paused queue; "cannot establish progress" only
+  without such a fact); the held-output report counts a holder only when the
+  worker's own reads bracket its hold (kernel pipe addresses are reused),
+  40/40 under load. Found: `stop` gets EPERM from killpg on a macOS process
+  group holding only zombies; queued as its own item.
 
 - [ ] A verdict wait never ends on a prompt absorbed mid-turn, and the [t-i3p3apqh]
   supervisor must catch unobserved verdicts (user, 2026-10-11, via the
