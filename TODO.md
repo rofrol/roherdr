@@ -11,6 +11,36 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Supervision delivers its findings: it wakes the owning coordinator [t-due4cu42]
+  (the user, 2026-10-12: "and how does supervision work? ask the
+  models"). Audit at 01:29: 8 open findings, 7 of them the chat-hosted
+  coordinator's (verdicts nobody acknowledged, two workers stopped
+  without a WORKER line) with no owner, because chat-hosted holds no
+  coordinator tenure; rormpc idle with 3 runnable items; all marked
+  "seen" only because the herdr coordinator ran the report when asked.
+  The requirement "wakes the owning coordinator" is unmet: a finding
+  sends one user notification and waits in a table. Round
+  20261012-012938-bf23 (sol, MiMo, DeepSeek agreeing), decided:
+  1. Delivery: herdr sends a fixed-template notice (finding id,
+     severity, one-line fact, evidence references; finding text quoted as
+     data, no worker text as instructions) to the owning coordinator
+     through its own `agent prompt`, only at a turn boundary (queued while
+     the coordinator works); dispatch is recorded separately from
+     acknowledgement; the coordinator acknowledges by finding id
+     (`herdr supervise ack <id>`), not by reading the report; if its next
+     turn ends without that ack, one user alert. One notice per finding
+     state (idempotency key), batched per owner per turn boundary; no
+     deadlines, backoff or timers.
+  2. The herdr coordinator gets the same, as a digest of every owner's
+     findings it must fix processes for.
+  3. Ownerless findings go to the user at once and to the herdr
+     coordinator's unowned queue; tenure is never inferred from a pane
+     looking like a todo flow; a coordinator registers tenure when its
+     flow starts (the todo skill says so).
+  4. "Cannot establish progress" becomes a finding per open assignment
+     without a registered handle (a wait-text on a transcript is not a
+     handle), via `unaccounted_assignment`.
+
 - [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
   (the user via the chat-hosted coordinator, 2026-10-12: "the process is
   failing here; ask the models"): a TUI worker refused an approved
@@ -137,36 +167,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   decided work remains (the README line of the naming item, the TODO
   tracker plan). Edit only with scripts/todo_edit.py; one commit per
   section; every other item and heading unchanged in meaning.
-
-- [ ] Supervision delivers its findings: it wakes the owning coordinator [t-due4cu42]
-  (the user, 2026-10-12: "and how does supervision work? ask the
-  models"). Audit at 01:29: 8 open findings, 7 of them the chat-hosted
-  coordinator's (verdicts nobody acknowledged, two workers stopped
-  without a WORKER line) with no owner, because chat-hosted holds no
-  coordinator tenure; rormpc idle with 3 runnable items; all marked
-  "seen" only because the herdr coordinator ran the report when asked.
-  The requirement "wakes the owning coordinator" is unmet: a finding
-  sends one user notification and waits in a table. Round
-  20261012-012938-bf23 (sol, MiMo, DeepSeek agreeing), decided:
-  1. Delivery: herdr sends a fixed-template notice (finding id,
-     severity, one-line fact, evidence references; finding text quoted as
-     data, no worker text as instructions) to the owning coordinator
-     through its own `agent prompt`, only at a turn boundary (queued while
-     the coordinator works); dispatch is recorded separately from
-     acknowledgement; the coordinator acknowledges by finding id
-     (`herdr supervise ack <id>`), not by reading the report; if its next
-     turn ends without that ack, one user alert. One notice per finding
-     state (idempotency key), batched per owner per turn boundary; no
-     deadlines, backoff or timers.
-  2. The herdr coordinator gets the same, as a digest of every owner's
-     findings it must fix processes for.
-  3. Ownerless findings go to the user at once and to the herdr
-     coordinator's unowned queue; tenure is never inferred from a pane
-     looking like a todo flow; a coordinator registers tenure when its
-     flow starts (the todo skill says so).
-  4. "Cannot establish progress" becomes a finding per open assignment
-     without a registered handle (a wait-text on a transcript is not a
-     handle), via `unaccounted_assignment`.
 
 - [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
   reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
