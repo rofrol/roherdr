@@ -1316,3 +1316,17 @@ Correction of "A moved host" (2026-10-11, d-g7ops7qr, the user):
 not the machine's name; the VPS got its own A record <vps host>
 (<new IP>, created by roguix-vps's reviewed script) and every host
 setting moved to it (<domain> dfba82d).
+
+## A verdict wait never ends on a prompt absorbed mid-turn, and the
+
+Verdicts were lost when a prompt was absorbed mid-turn or the server
+handed off, and nothing caught it (try-roguix and violai reports,
+2026-10-11). Slice 1 (a3836343): the server records pane-worker verdicts
+from queued_command starts and assignments anchored on disk,
+`agent.verdict`/`agent.wait_verdict`, an unsupported request exits 9,
+herdr-job reconnects at once on a handoff. Slice 2 (c83710e8): an
+assignment superseded by a newer prompt closes as `superseded` (decided by
+the coordinator: never the later work's verdict), delivery counts from the
+waiter's ack (`agent.ack_verdict`), `stopped_without_verdict` and
+undelivered verdicts are findings routed to the owning coordinator, and a
+live-handoff test.
