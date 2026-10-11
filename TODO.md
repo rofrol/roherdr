@@ -11,6 +11,20 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The Stop hook's obligation block loops when auto mode denies the ack [t-w5q6bnxo]
+  (the classify-x-posts coordinator, 2026-10-11): it reviewed worker w83's
+  WORKER-BLOCKED end; the Stop hook requires `herdr worker ack w83 35477`;
+  Claude Code's auto-mode classifier denied that as "Self-Modification" (and
+  `herdr-job run -- herdr agent wait` as "Sensitive Remote Exec"), so every
+  turn end is blocked for ever. Fix: (1) the obligation block counts its
+  consecutive blocks of the same obligation (an event count, like the stall
+  check's 3 strikes) and after the third lets the stop through and
+  escalates the obligation to the user's `?` list naming the denied command;
+  (2) the Claude integration offers allow rules for herdr's own
+  coordination commands (`herdr worker ack|answer|escalate|wait|status`,
+  `herdr todo wait|status|resume`, `herdr-job wait|run -- herdr ...`), applied
+  only after the user approves the whole settings patch.
+
 - [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
   2026-10-11, looking at the herdr space during an install: "why is
   nothing happening here? ask the models, fix the process"). The driver was
