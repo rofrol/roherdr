@@ -356,18 +356,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the other chips (a glyph whose width differs between terminals must not
   shift the row), and keep its click and tooltip behavior.
 
-- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
-  ends with new commits, list them as "to review" until I acknowledge them.
-  Decided by the user 2026-10-06: start with lazygit in a popup on the
-  tab's repository, no new code beyond that; a herdr-native list only if
-  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
-  unit is the commit (uncommitted changes in the shared checkout cannot be
-  attributed); at turn start record the session id and HEAD, at turn end
-  find new commits carrying `Claude-Session: <id>`; show each commit's own
-  patch, never `git diff first^..last` (other agents' commits fall in the
-  range); only an explicit acknowledgement clears "to review". Codex and pi
-  need an equivalent of the trailer.
-
 - [ ] Compare the current headless worker implementation with T3 Code again, [t-ofobwsra]
   with the models (user, 2026-10-08: "in spare time, maybe give the models
   the current implementation to analyse again and let them compare it with
@@ -1508,6 +1496,25 @@ user needs to decide or do.
   Decided 2026-10-10 (the user: "decide with the models"; round
   20261010-142705-3267, all three): a fresh UTM Linux VM without shared
   folders or credentials, snapshot before each scenario, discarded after.
+
+- [ ] Review queue for agent commits, plus `herdr diff`. When an agent's turn [t-nwuo24w7]
+  ends with new commits, list them as "to review" until I acknowledge them.
+  Decided by the user 2026-10-06: start with lazygit in a popup on the
+  tab's repository, no new code beyond that; a herdr-native list only if
+  that falls short. For that list (GPT-6 Astra, DeepSeek, 2026-09-27): the
+  unit is the commit (uncommitted changes in the shared checkout cannot be
+  attributed); at turn start record the session id and HEAD, at turn end
+  find new commits carrying `Claude-Session: <id>`; show each commit's own
+  patch, never `git diff first^..last` (other agents' commits fall in the
+  range); only an explicit acknowledgement clears "to review". Codex and pi
+  need an equivalent of the trailer.
+  Done 2026-10-11 as the user decided (lazygit first, no new code):
+  `prefix+alt+g` opens lazygit in a 90% popup in the focused pane's
+  directory (dotfiles d603a3f, config reloaded; `prefix+g` is taken by
+  the default goto). Left: the herdr-native "to review" list, only if
+  lazygit falls short; the user's feedback decides.
+  Does lazygit in the popup (`prefix+alt+g`) cover reviewing agent commits, or build the herdr-native list?
+  Options: lazygit is enough, close the item (Recommended) | build the native "to review" list
 
 ### Decide
 
