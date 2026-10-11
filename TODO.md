@@ -238,6 +238,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   event that ends them (a blocking lock acquisition or kqueue/inotify on
   the slot file, the tab's close acknowledgement); every give-up is loud.
 
+- [ ] Turns reach interactive workers only through `herdr agent prompt` [t-2kjq5txq]
+  (the user via the guix-x86_64-iso-omguix coordinator, 2026-10-11:
+  "it looks like nothing happens here; report it to the herdr
+  coordinator; fix the process or the supervisor; ask the models"). The
+  coordinator sent ~900 chars with `pane send-text` then `send-keys Enter`;
+  Claude collapsed it to "[Pasted text #1]" and Enter did not submit (a
+  later `enter` did); its `agent wait --until working` waited ~10 min.
+  Also `agent start --name` returned "timed out waiting for agent startup"
+  each time although the agent started (the CLI polls to a deadline,
+  src/cli/agent.rs `wait_for_named_agent`), then `agent wait <name>` said
+  agent_not_found; long prompts fail `invalid_agent_argument`. Round
+  20261011-153541-4550 (sol, MiMo, DeepSeek), decided, in order:
+  1. `pane send-text`/`send-keys` to a pane with a detected agent refuse
+     and name `herdr agent prompt` (`--raw` keeps a diagnostic path); the
+     coordinator allowlist refuses them in coordinator tabs too.
+  2. `agent start` registers the name before spawning and ends on that
+     launch's SessionStart report correlated with the name, or on a spawn,
+     exit or hook error; no deadline decides; find why the name did not
+     resolve afterwards (rollback on the timeout path, a key mismatch).
+  3. Long prompts: a literal file/stdin input (`--prompt-file`) that herdr
+     types itself, then structured serialization instead of shell
+     interpolation; never a length-based refusal.
+  4. Trace `Enter` vs `enter` bytes and the bracketed-paste end vs the
+     Enter (the later `enter` may simply have arrived later); confirm
+     `agent prompt` sequences paste end before Enter.
+
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
   very top, fixed; ask the models"; round 20261011-143956-eed7, sol + MiMo
