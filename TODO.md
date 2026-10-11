@@ -49,6 +49,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   markers), never the raw last log line (ANSI, noise, secrets); log output
   proves output, not progress; one log watcher per job shared by every
   waiter, coalesced into the existing redraw; Supervision aggregates.
+  Slice 1 landed 2026-10-11 (3f1a4f38): running todo runs show under the
+  coordinator's space with step, command and time (a click opens the step
+  log: `todo.open_log`, `herdr todo log`); waiting tabs show `⧖ waiting:
+  <job|run>` with a `↳ job` row of absolute times, fed by driver step
+  activity, `todo.wait` waiter edges and the herdr-job/bg-badge tokens. Left:
+  Supervision mirrors the lines; a finished or failed run stays until
+  acknowledged; the coordinator's turn-end message; `herdr-job run --step`
+  markers; pi has no wait edges (no Stop hook); the step start is unknown
+  after a server restart until the next step; a render-scale bench.
 
 - [ ] The coordinator allowlist denies in shadow mode when the server [t-5sazb4ty]
   answers slowly (found 2026-10-11: a plain `VAR=...; cmd` was denied in
