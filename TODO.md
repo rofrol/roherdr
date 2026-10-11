@@ -61,6 +61,40 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the user's decision d-..., idle with nothing runnable, waiting on job Y),
   and keep "cannot establish progress" for the case with no such fact.
 
+- [ ] A verdict wait never ends on a prompt absorbed mid-turn, and the [t-i3p3apqh]
+  supervisor must catch unobserved verdicts (user, 2026-10-11, via the
+  try-roguix coordinator: "what is going on here? two workers do nothing.
+  add the check to the supervisor. ask the models" / "again a bug. fix
+  it!!!!" / "there must be a rule: limited trust in agents and models ...
+  trust about continuing the work ... one must not trust that an agent or
+  model will continue when it is a coordinator; the supervisor must catch
+  it"). Two pane workers ended with WORKER-DONE (12:08) and WORKER-BLOCKED
+  (14:04) and sat idle until 15:00; `herdr-job wait-agent --request <id>
+  --until verdict` never ended. Verified cause (bug A, plugins/job/
+  herdr-job): a prompt sent mid-turn is absorbed by Claude Code and written
+  as an `attachment` `queued_command`, not a user message;
+  `transcript_records` skips records without `message`, so the assignment
+  start is never found. Rounds 20261011-150812-c13a and -150913-9190 (sol,
+  MiMo, DeepSeek agreeing), approved by the user:
+  1. Parse a `queued_command` attachment carrying the prompt as the
+     assignment start, deduped with queue-operation records.
+  2. `wait-agent --request` on a request herdr reports `unsupported`
+     exits at once with a distinct code; `herdr agent prompt` says what to
+     do instead (wait for the worker's turn end, then prompt).
+  3. Anchor assignments by an id herdr records at prompt acceptance
+     (request id to transcript record), text match only as a fallback.
+  4. Supervisor check: herdr keeps a registry of assignments (registered
+     atomically at prompt acceptance) and the waiters bound to them; on
+     events (a worker's turn end with a WORKER line or a question, a
+     coordinator's turn end with outstanding assignments, a waiter's exit,
+     a handoff or restart) it finds an assignment whose verdict no waiter
+     observed, a waiter whose anchor never resolved, or a coordinator that
+     ended its turn with outstanding assignments and no live bound waiter;
+     then it delivers the verdict to the coordinator (ends its wait with it
+     or prompts it), alerts the user in the sidebar and records a finding.
+  The full report: the try-roguix coordinator's report-herdr-wait.md
+  (copied into the herdr coordinator's scratchpad on 2026-10-11).
+
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
   very top, fixed; ask the models"; round 20261011-143956-eed7, sol + MiMo
