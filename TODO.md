@@ -50,6 +50,37 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   (3) find where the typed text went (write bytes, target pane/PTY, the
   recap subagent holding input) and report it.
 
+- [ ] A supervision report over all coordinators and their workers (user, [t-7zfjbcrf]
+  2026-10-11, next: "add a process that every so often checks all
+  coordinators, whether they work and whether their workers work, reports
+  it to the herdr coordinator, records it somewhere; ask the models").
+  Round 20261011-124220-adc4 (sol at medium, MiMo, DeepSeek, agreeing),
+  decided by the coordinator:
+  - Events first, plus a read-only reconciliation sweep every 5 minutes in
+    the server (a derived view for humans, deduplicated; it never completes
+    a wait, retries, prompts, kills, restarts, clears a state or marks work
+    done; nothing waits on it, so it is not a timer workaround).
+  - Findings name a positive fact and the expected event: coordinator idle
+    with runnable items, no open decision and no registered wait; a pane
+    `working` after a matching Stop with no new `UserPromptSubmit`; a prompt
+    "accepted" without its acknowledgement; a run waiting on a step whose
+    dependency already ended; a coordinator waiting on an untracked shell
+    (`background_tasks` without a wait edge); a recorded resource failure
+    (disk full, the 15 GiB guard). Quiet output or low CPU is only
+    "cannot establish progress", never a diagnosis (no silence threshold).
+  - Stored append-only in the server's SQLite (`supervision_findings`: id,
+    fingerprint, repo, coordinator tenure, pane/run/job ids, predicate,
+    severity, expected event, evidence (event ids, timestamps), first/last
+    seen, status open/acknowledged/resolved, resolution evidence), not in
+    the decision ledger; `supervision.finding` events.
+  - Consumers: the user's `?` list and one notification per new or
+    escalated finding; the herdr coordinator reads them through a durable
+    inbox (`herdr supervise --report`, its inbox on wake), never as the
+    only consumer, since it can be the one that stalled.
+  - Slice 1: the sweep with the coordinator-idle, pane-working-after-Stop,
+    untracked-shell and disk predicates, the table, `herdr supervise
+    --report`, the `?` entries. Never acts.
+
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
   herdr coordinator, fix the process with the models"). The violai
