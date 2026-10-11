@@ -95,6 +95,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   The user, 2026-10-11: "the supervisor is not an agent, it is a
   deterministic loop": server code only, no model call anywhere in the
   sweep, the predicates or the delivery.
+  The loop (the user, 2026-10-11: "a deterministic supervisor, not an
+  agent, reports to the herdr-space coordinator, which after consulting
+  the models fixes how the coordinators, the workers or the supervisor
+  work; ask the models"; round 20261011-152049-35e4, sol + MiMo +
+  DeepSeek), decided by the coordinator:
+  - Findings flow automatically (no hand relay): each carries a stable id,
+    fingerprint, repo, session/pane/run/job ids, the violated check and its
+    version, expected vs observed, recurrence count, evidence references
+    (event ids, transcript paths and bounded excerpts) and a suspected
+    locus: herdr (shared orchestration, rules, the skill, the supervisor),
+    the repository (its code, tests, config: routed to that repository's
+    coordinator, not herdr's) or needs-the-user (parked with options).
+  - Each finding is tracked to its end: triaged, fix queued, verified,
+    installed, and resolved only when the failure stops recurring (the
+    supervisor checks the same predicate afterwards).
+  - The herdr coordinator is watched by the same event predicates; a finding
+    about it goes straight to the user (`?` and a notification), never
+    only into its own queue. No heartbeat or liveness timer (the models
+    proposed them; dismissed under Rule 10).
+  - Self-modification guard: a change that removes or weakens a supervisor
+    check or a coordinator rule needs the user's approval (one menu);
+    every check change ships with a regression case from the incident
+    that motivated it (a growing incident corpus). Adding checks or
+    tightening needs no approval.
+  - Dedupe by fingerprint, aggregate repeats, one notification per new
+    or escalated finding.
 
 - [ ] A verdict wait never ends on a prompt absorbed mid-turn, and the [t-i3p3apqh]
   supervisor must catch unobserved verdicts (user, 2026-10-11, via the
