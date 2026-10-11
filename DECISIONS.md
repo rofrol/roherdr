@@ -1283,3 +1283,20 @@ SessionStart event stays in the agent-prompt item (t-2kjq5txq).
 Version 22 shipped in roherdr-v0.9.3.1 and the client snapshot changed
 since; bumped once to 23 (173a31ee), with the test expectations and the
 generated API schema; generation-1 endpoint fixtures untouched.
+
+## A moved host: DNS names, a one-off search, no registry
+
+The roguix VPS moved from <old IP> to <new IP> on 2026-10-11;
+the old IP stayed in repositories' .env files and notes (the guix
+coordinator, at the user's request: "check other .env files; maybe herdr
+could help; ask the models"). Round 20261011-204318-6464 (sol, DeepSeek;
+MiMo wanted a registry and a per-turn scan), decided by the coordinator:
+no herdr feature: repositories use the DNS name (<service host>), never
+a raw IP; a move is handled by a one-off search reporting only file names
+(searching .env contents is reading them), and the owning coordinator
+(roguix-vps, d-kvgwjhpr) tells each repository's coordinator; no host
+registry beside DNS, no supervisor scan of config files, no edits across
+repositories. The herdr coordinator ran that search on 2026-10-11 (.env
+files naming the old IP: cometolight, <domain>, <domain>/matchalove,
+matterz/deploy, matchalove/project1, earn-money-bot/deploy,
+work-effects-dashboard/deploy, violai/deploy) and sent it to roguix-vps.
