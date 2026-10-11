@@ -207,6 +207,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   transport failures) with the reason next to it; replace the rest with the
   event that ends them (a blocking lock acquisition or kqueue/inotify on
   the slot file, the tab's close acknowledgement); every give-up is loud.
+  Slice 1 landed 2026-10-11 (4fb9476c): slots wait on blocking flocks,
+  `wait` on job-directory events (kqueue/inotify), tab closing on the
+  server's focus events, `watch` on pidfd/kqueue; only the CPU sample and
+  the transport backoffs remain, labelled `delay:`. Decided by the
+  coordinator on the worker's open points: (8) the executor exiting 1 with a
+  stderr line when herdr refused the last tab status is right; (9)
+  herdr-peer-token's give-up goes to a log line under the job state dir;
+  (10) `wait` also wakes when the server reports the job's tab gone at
+  start or handoff (reconciliation), not only on the `tab.closed` hook;
+  (11) the CLI call bounds in `herdr()`/`herdr_ok()` stay as bounds on a
+  hung call, labelled `delay:` with that reason; (12) `herdr_ok()` reports
+  its give-up on stderr with the command, never silently.
 
 - [ ] Turns reach interactive workers only through `herdr agent prompt` [t-2kjq5txq]
   (the user via the guix-x86_64-iso-omguix coordinator, 2026-10-11:
