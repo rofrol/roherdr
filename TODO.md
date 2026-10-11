@@ -1453,6 +1453,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     row counts. Separately check whether a running headless worker shows in
     its space (reported as not visible, unverified).
 
+- [ ] `worker stop` gets EPERM from killpg on a zombie-only process group [t-gwmojmax]
+  (macOS; found 2026-10-11 by the worker of bdd3a8f7): on EPERM check
+  whether the group still has a live non-zombie process and, if none, treat
+  it as ESRCH (gone); code in src/platform/macos.rs, with a test.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
