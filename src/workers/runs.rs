@@ -2394,33 +2394,40 @@ impl WorkerSupervisor {
         Ok(run.info)
     }
 
-    /// What follows a close: a closing decision names the next item to
-    /// start (`next`) or why none (`stop_reason`), never neither, never
-    /// both; neither comes without a close. The next run's parameters are
-    /// checked here as far as they do not depend on the repository's state
-    /// when it starts (its preflight checks the rest then).
-    /// In queue mode a close names neither: the queue starts the next item.
+    /// What follows a close or a note: a closing decision names the next
+    /// item to start (`next`) or why none (`stop_reason`), never neither,
+    /// never both; a note may name either (never both) or neither, since a
+    /// noted item stays open; neither comes without a close or a note. The
+    /// next run's parameters are checked here as far as they do not depend
+    /// on the repository's state when it starts (its preflight checks the
+    /// rest then). In queue mode a close or a note names neither: the queue
+    /// starts the next item.
     fn check_after_close(&self, run: &Run, params: &TodoResumeParams) -> Result<(), WorkerError> {
         let invalid = |why: String| Err(WorkerError::Invalid(why));
-        if params.close.is_some() && self.queue_is_on(&run.info.repo) {
+        let closes_or_notes = params.close.is_some() || params.note.is_some();
+        if closes_or_notes && self.queue_is_on(&run.info.repo) {
             if params.next.is_some() || params.stop_reason.is_some() {
                 return invalid(format!(
-                    "queue mode is on for {}: the queue starts the next item, so a close takes \
-                     neither --next nor --stop-reason (`herdr todo queue pause` stops it)",
+                    "queue mode is on for {}: the queue starts the next item, so a close or a \
+                     note takes neither --next nor --stop-reason (`herdr todo queue pause` \
+                     stops it)",
                     run.info.repo
                 ));
             }
             return Ok(());
         }
-        match (&params.close, &params.next, &params.stop_reason) {
+        let decision = params.close.as_ref().or(params.note.as_ref());
+        match (decision, &params.next, &params.stop_reason) {
             (None, None, None) => return Ok(()),
             (None, _, _) => {
                 return invalid(
-                    "only an approval with a closing decision (--close) takes --next or \
-                     --stop-reason"
+                    "only an approval with a closing decision (--close) or a TODO note \
+                     (--note) takes --next or --stop-reason"
                         .into(),
                 )
             }
+            // A noted item stays open: nothing needs to follow it.
+            (Some(_), None, None) if params.close.is_none() => return Ok(()),
             (Some(_), None, None) => {
                 return invalid(
                     "a closing decision needs --next <item-id> (the item whose run starts once \

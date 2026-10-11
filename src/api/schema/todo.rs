@@ -141,6 +141,8 @@ pub struct TodoResumeParams {
     pub env: Option<HashMap<String, String>>,
     /// With `approve`: lines the run appends to the item in `TODO.md` after
     /// the install (`scripts/todo_edit.py append-to`), committed by path.
+    /// Takes `next` or `stop_reason` as `close` does, or neither: a noted
+    /// item stays open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// With `approve`: the decision that closes the item. The run removes
@@ -151,15 +153,15 @@ pub struct TodoResumeParams {
     /// command that closes an item also carries what comes after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close: Option<String>,
-    /// With `close`: the item whose run the driver starts as soon as this
-    /// run is `done`, in the same repository, owned by this run's owner.
+    /// With `close` or `note`: the item whose run the driver starts as soon
+    /// as this run is `done`, in the same repository, owned by this run's owner.
     /// Recorded as intent before the start and result after it (a server
     /// restart in between starts it then); a refused start (its preflight,
     /// the usage gate, a run in progress) is a `next_refused` event on this
     /// run. Excludes `stop_reason`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<TodoNextRun>,
-    /// With `close`: why no next item is started. Recorded in the item's
+    /// With `close` or `note`: why no next item is started. Recorded in the item's
     /// history (`stopped`) when the run is `done`, and shown to the user as
     /// a notification. Excludes `next`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,7 +460,8 @@ pub struct TodoRunInfo {
     /// them once the slot moved on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept_branches: Vec<String>,
-    /// The item the close named to start next (`todo.resume`'s `next`).
+    /// The item the close or note named to start next (`todo.resume`'s
+    /// `next`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_item: Option<String>,
     /// The run of `next_item` the driver started once this run was done.
@@ -467,7 +470,8 @@ pub struct TodoRunInfo {
     /// Why `next_item` did not start (also a `next_refused` event).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_refusal: Option<String>,
-    /// Why the close started no next item (`todo.resume`'s `stop_reason`).
+    /// Why the close or note started no next item (`todo.resume`'s
+    /// `stop_reason`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     /// The server reviews the run's `review` events itself

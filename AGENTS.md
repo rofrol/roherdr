@@ -562,8 +562,9 @@ or, with `--close <decision-file>`, moves the item into `DECISIONS.md`
 `--close` needs `--next <item> --next-task <file> --next-message
 "<subject>" --next-paths <globs>`, whose run the driver starts once this
 one is done, or `--stop-reason "<why>"` when no item starts next; in
-queue mode, `herdr todo queue on`, `--close` takes neither and the queue
-starts the next item),
+`--note` takes the same `--next` or `--stop-reason`, or neither; in
+queue mode, `herdr todo queue on`, `--close` and `--note` take neither and
+the queue starts the next item),
 pushes `master` to `origin` only as a fast-forward and deletes the run's
 merged branches (the slot's checked-out one is deleted by the next run),
 and ends `done` or `blocked`. A failed install, TODO edit or push waits

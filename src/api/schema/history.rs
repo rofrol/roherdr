@@ -54,10 +54,10 @@ pub enum HistoryEventKind {
     /// That item coordinator ended; `text` is its outcome (`done`,
     /// `escalated`, `blocked`, `failed`) and what it reported.
     CoordinatorEnded,
-    /// The close named no next item: `text` is the coordinator's reason
-    /// (`todo.resume`'s `stop_reason`), written when the closing run was
-    /// done. It follows the close, and an item's summary keeps the close as
-    /// its latest record.
+    /// The close or note named no next item: `text` is the coordinator's
+    /// reason (`todo.resume`'s `stop_reason`), written when the approved run
+    /// was done. It follows the close or note, and an item's summary keeps
+    /// that as its latest record.
     Stopped,
     #[serde(other)]
     Unknown,

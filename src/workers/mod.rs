@@ -736,6 +736,10 @@ struct Entry {
     foreign: bool,
     /// The JSONL export, opened on the first event this server records.
     export: Option<Arc<Journal>>,
+    /// Held output found mid-turn before the reader read the tool call it
+    /// belongs to: the exited child and its holders, recorded once that
+    /// call's line is read ([`WorkerSupervisor::flush_held_output`]).
+    held_pending: Option<(u32, Vec<WorkerPipeHolder>)>,
 }
 
 impl Entry {
@@ -752,6 +756,7 @@ impl Entry {
             live: None,
             foreign: false,
             export: None,
+            held_pending: None,
         }
     }
 }
@@ -5028,28 +5033,78 @@ impl WorkerSupervisor {
         }
     }
 
+    /// Reports held output, naming the tool calls open now. The CLI writes
+    /// a call's `tool_use` line before it runs the tool, but the reader
+    /// may not have read it yet when the tool's child exits: a report found
+    /// mid-turn with no open call waits in the entry for that line
+    /// ([`Self::flush_held_output`]) instead of naming no call.
     fn report_held_output(&self, number: u64, exited: u32, holders: Vec<WorkerPipeHolder>) {
-        // Only the server attached to the worker reports: one that let go
-        // of it at a live handoff leaves that to the new one.
-        let Some((name, tool_calls)) = lock(&self.shared.registry)
-            .workers
-            .get(&number)
-            .filter(|entry| entry.live.is_some())
-            .map(|entry| {
-                (
-                    entry.status.name.clone(),
-                    entry.status.open_tool_calls.clone(),
-                )
-            })
-        else {
-            return;
+        let report = {
+            let mut registry = lock(&self.shared.registry);
+            // Only the server attached to the worker reports: one that let
+            // go of it at a live handoff leaves that to the new one.
+            let Some(entry) = registry
+                .workers
+                .get_mut(&number)
+                .filter(|entry| entry.live.is_some())
+            else {
+                return;
+            };
+            if entry.status.open_tool_calls.is_empty() && entry.status.mid_turn() {
+                match &mut entry.held_pending {
+                    Some((_, pending)) => pending.extend(holders),
+                    None => entry.held_pending = Some((exited, holders)),
+                }
+                return;
+            }
+            (
+                entry.status.name.clone(),
+                WorkerHeldOutput {
+                    exited_pid: exited,
+                    holders,
+                    tool_calls: entry.status.open_tool_calls.clone(),
+                    at_ms: now_ms(),
+                },
+            )
         };
-        let report = WorkerHeldOutput {
-            exited_pid: exited,
-            holders,
-            tool_calls,
-            at_ms: now_ms(),
+        self.record_held_output(number, report);
+    }
+
+    /// Records the held output waiting for its tool call
+    /// ([`Self::report_held_output`]), naming the calls open now. The
+    /// reader calls it after each `assistant` line, where it records only
+    /// once a call is open (a text block can come before the `tool_use`),
+    /// and with `at_turn_end` before the turn's `result` and the worker's
+    /// exit, so a report whose call never came is still recorded in its
+    /// turn.
+    fn flush_held_output(&self, number: u64, at_turn_end: bool) {
+        let report = {
+            let mut registry = lock(&self.shared.registry);
+            let Some(entry) = registry.workers.get_mut(&number) else {
+                return;
+            };
+            if entry.held_pending.is_none()
+                || (!at_turn_end && entry.status.open_tool_calls.is_empty())
+            {
+                return;
+            }
+            let Some((exited, holders)) = entry.held_pending.take() else {
+                return;
+            };
+            (
+                entry.status.name.clone(),
+                WorkerHeldOutput {
+                    exited_pid: exited,
+                    holders,
+                    tool_calls: entry.status.open_tool_calls.clone(),
+                    at_ms: now_ms(),
+                },
+            )
         };
+        self.record_held_output(number, report);
+    }
+
+    fn record_held_output(&self, number: u64, (name, report): (String, WorkerHeldOutput)) {
         let mut event = json!({"type": "tool_output_held"});
         if let (Some(event), Ok(Value::Object(fields))) =
             (event.as_object_mut(), serde_json::to_value(&report))
@@ -5564,7 +5619,15 @@ impl Reader {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             return self.record_line(broker_seq, Direction::Out, store::Recorded::Raw(line));
         };
+        // Held output waiting for its tool call goes into the turn it
+        // happened in, before the turn's end.
+        if event["type"].as_str() == Some("result") {
+            self.supervisor.flush_held_output(self.number, true);
+        }
         let spooled = self.record_line(broker_seq, Direction::Out, store::Recorded::Event(&event));
+        if event["type"].as_str() == Some("assistant") {
+            self.supervisor.flush_held_output(self.number, false);
+        }
         let request = event["type"].as_str() == Some("control_request")
             && matches!(
                 event["request"]["subtype"].as_str(),
@@ -5809,6 +5872,7 @@ impl Reader {
         // The temp dir goes first, so a worker shown exited has none; the
         // lock last, so a server waiting for it finds the exit stored.
         remove_temp_dir(&self.temp_dir);
+        self.supervisor.flush_held_output(self.number, true);
         let spooled =
             self.record_line(broker_seq, Direction::Herdr, store::Recorded::Event(exited));
         if let (true, Some(spool)) = (spooled.is_stored(), &self.spool) {

@@ -6270,10 +6270,10 @@
                   "type": "null"
                 }
               ],
-              "description": "With `close`: the item whose run the driver starts as soon as this\nrun is `done`, in the same repository, owned by this run's owner.\nRecorded as intent before the start and result after it (a server\nrestart in between starts it then); a refused start (its preflight,\nthe usage gate, a run in progress) is a `next_refused` event on this\nrun. Excludes `stop_reason`."
+              "description": "With `close` or `note`: the item whose run the driver starts as soon\nas this run is `done`, in the same repository, owned by this run's owner.\nRecorded as intent before the start and result after it (a server\nrestart in between starts it then); a refused start (its preflight,\nthe usage gate, a run in progress) is a `next_refused` event on this\nrun. Excludes `stop_reason`."
             },
             "note": {
-              "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (`scripts/todo_edit.py append-to`), committed by path.",
+              "description": "With `approve`: lines the run appends to the item in `TODO.md` after\nthe install (`scripts/todo_edit.py append-to`), committed by path.\nTakes `next` or `stop_reason` as `close` does, or neither: a noted\nitem stays open.",
               "type": [
                 "string",
                 "null"
@@ -6290,7 +6290,7 @@
               "type": "string"
             },
             "stop_reason": {
-              "description": "With `close`: why no next item is started. Recorded in the item's\nhistory (`stopped`) when the run is `done`, and shown to the user as\na notification. Excludes `next`.",
+              "description": "With `close` or `note`: why no next item is started. Recorded in the item's\nhistory (`stopped`) when the run is `done`, and shown to the user as\na notification. Excludes `next`.",
               "type": [
                 "string",
                 "null"
@@ -12868,7 +12868,7 @@
             },
             {
               "const": "stopped",
-              "description": "The close named no next item: `text` is the coordinator's reason\n(`todo.resume`'s `stop_reason`), written when the closing run was\ndone. It follows the close, and an item's summary keeps the close as\nits latest record.",
+              "description": "The close or note named no next item: `text` is the coordinator's\nreason (`todo.resume`'s `stop_reason`), written when the approved run\nwas done. It follows the close or note, and an item's summary keeps\nthat as its latest record.",
               "type": "string"
             }
           ]
@@ -18586,7 +18586,7 @@
               "type": "string"
             },
             "next_item": {
-              "description": "The item the close named to start next (`todo.resume`'s `next`).",
+              "description": "The item the close or note named to start next (`todo.resume`'s\n`next`).",
               "type": [
                 "string",
                 "null"
@@ -18652,7 +18652,7 @@
               "$ref": "#/schemas/success_response/$defs/TodoStep"
             },
             "stop_reason": {
-              "description": "Why the close started no next item (`todo.resume`'s `stop_reason`).",
+              "description": "Why the close or note started no next item (`todo.resume`'s\n`stop_reason`).",
               "type": [
                 "string",
                 "null"

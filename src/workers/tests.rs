@@ -263,6 +263,17 @@ while True:
         emit({"type": "user", "message": {"content": [{"type": "tool_result",
               "tool_use_id": "toolu-held", "content": "tool"}]}})
         result()
+    elif command == "late-tool":
+        # A text block, then, once the gate opens, a Bash call.
+        emit({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "before the call"}]}})
+        with open(words[1]) as gate:
+            gate.read()
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use",
+              "id": "toolu-late", "name": "Bash", "input": {"command": "late-tool"}}]}})
+        emit({"type": "user", "message": {"content": [{"type": "tool_result",
+              "tool_use_id": "toolu-late", "content": "tool"}]}})
+        result()
     elif command == "gate-perm":
         with open(words[1]) as gate:
             gate.read()
@@ -1483,6 +1494,97 @@ fn a_tool_call_whose_output_a_detached_child_holds_is_reported() {
     // Reported once, and kept for the turn it happened in.
     assert_eq!(fixture.herdr_events(&id, "tool_output_held").len(), 1);
     assert_eq!(attention.worker.held_output, Some(report));
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+}
+
+/// The journal's events in order, as `<dir>:<type>`.
+fn journal_kinds(fixture: &Fixture, worker_id: &str) -> Vec<String> {
+    fixture
+        .journal(worker_id)
+        .iter()
+        .map(|record| {
+            format!(
+                "{}:{}",
+                record["dir"].as_str().unwrap_or(""),
+                record["event"]["type"].as_str().unwrap_or("")
+            )
+        })
+        .collect()
+}
+
+fn fake_holder() -> Vec<WorkerPipeHolder> {
+    vec![WorkerPipeHolder {
+        pid: 1,
+        command: "holder".into(),
+    }]
+}
+
+#[test]
+fn held_output_found_before_its_tool_call_was_read_names_that_call() {
+    let fixture = Fixture::new("held-late");
+    let gate = fixture.root.join("gate");
+    fifo(&gate);
+    let id = fixture.start(&format!("late-tool {}", gate.display()));
+    let number = worker_number(&id).unwrap();
+    // The tool's child exited and the reader has not read the call yet:
+    // the report waits for it instead of naming no call.
+    fixture
+        .supervisor
+        .report_held_output(number, 4242, fake_holder());
+    assert!(fixture.herdr_events(&id, "tool_output_held").is_empty());
+
+    std::fs::write(&gate, b"go").unwrap();
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let held = fixture.herdr_events(&id, "tool_output_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["exited_pid"], 4242);
+    assert_eq!(held[0]["tool_calls"][0]["id"], "toolu-late", "{held:?}");
+    // Recorded right after the call's line, before its result.
+    let kinds = journal_kinds(&fixture, &id);
+    let at = kinds
+        .iter()
+        .position(|kind| kind == "herdr:tool_output_held")
+        .unwrap();
+    assert_eq!(kinds[at - 1], "out:assistant", "{kinds:?}");
+    assert_eq!(kinds[at + 1], "out:user", "{kinds:?}");
+    let worker = fixture.supervisor.status(&id).unwrap();
+    let report = worker.held_output.unwrap();
+    assert_eq!(report.tool_calls[0].id, "toolu-late");
+    fixture.supervisor.stop(&id).unwrap();
+    fixture.wait(&id, WorkerWaitUntil::Exit);
+}
+
+#[test]
+fn held_output_whose_tool_call_never_comes_is_recorded_before_the_turn_end() {
+    let fixture = Fixture::new("held-no-call");
+    let gate = fixture.root.join("gate");
+    fifo(&gate);
+    // `gate` writes a `tool_use` without an id: no call opens.
+    let id = fixture.start(&format!("gate {}", gate.display()));
+    let number = worker_number(&id).unwrap();
+    fixture
+        .supervisor
+        .report_held_output(number, 4242, fake_holder());
+    assert!(fixture.herdr_events(&id, "tool_output_held").is_empty());
+
+    std::fs::write(&gate, b"go").unwrap();
+    fixture.wait(&id, WorkerWaitUntil::TurnEnd);
+    let held = fixture.herdr_events(&id, "tool_output_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(held[0].get("tool_calls").is_none(), "{held:?}");
+    let kinds = journal_kinds(&fixture, &id);
+    let at = kinds
+        .iter()
+        .position(|kind| kind == "herdr:tool_output_held")
+        .unwrap();
+    assert_eq!(kinds[at + 1], "out:result", "{kinds:?}");
+    assert!(fixture
+        .supervisor
+        .status(&id)
+        .unwrap()
+        .held_output
+        .is_some());
     fixture.supervisor.stop(&id).unwrap();
     fixture.wait(&id, WorkerWaitUntil::Exit);
 }
@@ -8764,11 +8866,21 @@ mod todo_runs {
         });
         refused(TodoResumeParams {
             note: Some("a note".into()),
+            next: Some(next_of_item2()),
             stop_reason: Some("why".into()),
             ..approve()
         });
         refused(TodoResumeParams {
             next: Some(next_of_item2()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            stop_reason: Some("why".into()),
+            ..approve()
+        });
+        refused(TodoResumeParams {
+            note: Some("a note".into()),
+            stop_reason: Some("  ".into()),
             ..approve()
         });
         refused(TodoResumeParams {
@@ -8884,6 +8996,79 @@ mod todo_runs {
             "{review:#?}"
         );
         abort(&fixture, &next_id, review.event_id);
+    }
+
+    #[test]
+    fn a_note_with_a_next_item_starts_its_run_and_leaves_the_item_open() {
+        let fixture = todo_repo("todo-note-next");
+        with_finish(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("Half of it landed.".into()),
+                next: Some(next_of_item2()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(
+            master_subjects(&fixture)[0],
+            "docs(todo): note on t-abcd2345"
+        );
+        let todo = git_in(&fixture.repo, &["show", "master:TODO.md"]);
+        assert!(todo.contains(ITEM), "{todo}");
+        assert_eq!(finished.next_item.as_deref(), Some(ITEM2));
+        let next_id = finished.next_run_id.expect("the next run started");
+        let next = fixture.supervisor.load_run(&next_id).unwrap();
+        assert_eq!(next.info.item, ITEM2);
+        assert_eq!(next.owner_pane.as_deref(), Some("p-coordinator"));
+        let (review, _) = wait(&fixture, &next_id, None);
+        assert_eq!(review.kind, TodoEventKind::Review, "{review:#?}");
+        abort(&fixture, &next_id, review.event_id);
+    }
+
+    #[test]
+    fn a_note_with_a_stop_reason_records_it_and_notifies_the_user() {
+        let fixture = todo_repo("todo-note-stop");
+        with_finish(&fixture);
+        let repo = repo_of(&fixture);
+        let run = fixture
+            .supervisor
+            .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
+            .unwrap();
+        let (review, _) = wait(&fixture, &run.run_id, None);
+        crate::workers::take_user_notices();
+        fixture
+            .supervisor
+            .todo_resume(TodoResumeParams {
+                note: Some("Half of it landed.".into()),
+                stop_reason: Some(STOP_REASON.into()),
+                ..resume_params(&run.run_id, review.event_id, TodoAction::Approve)
+            })
+            .unwrap();
+        let (done, finished) = wait(&fixture, &run.run_id, Some(review.event_id));
+        assert_eq!(done.kind, TodoEventKind::Done, "{done:#?}");
+        assert_eq!(finished.stop_reason.as_deref(), Some(STOP_REASON));
+        let item = fixture.supervisor.history_item(ITEM, Some(&repo)).unwrap();
+        assert_eq!(
+            history_kinds(&item),
+            [
+                HistoryEventKind::Claimed,
+                HistoryEventKind::Noted,
+                HistoryEventKind::Stopped
+            ]
+        );
+        let notices = crate::workers::take_user_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].title.contains("approved"), "{notices:?}");
+        assert_eq!(notices[0].body, STOP_REASON);
+        assert_eq!(fixture.supervisor.todo_runs(None, None).unwrap().0.len(), 1);
     }
 
     #[test]
@@ -11505,6 +11690,16 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
                     &fixture,
                     &answers.iter().map(String::as_str).collect::<Vec<_>>(),
                 );
+                // The queue starts the next item: a note names none.
+                let error = fixture
+                    .supervisor
+                    .todo_resume(TodoResumeParams {
+                        note: Some("a note".into()),
+                        stop_reason: Some("why".into()),
+                        ..resume_params(&run_id, review.event_id, TodoAction::Approve)
+                    })
+                    .unwrap_err();
+                assert!(error.to_string().contains("queue mode"), "{error}");
                 // Neither a note nor a close: it closes like the queue's own
                 // review would, and the queue goes on with the next item.
                 fixture

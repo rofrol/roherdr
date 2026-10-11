@@ -83,15 +83,17 @@ const USAGE: &str = "usage:
                              retry-install|skip-install|retry-todo|skip-todo|
                              retry-push|abort
                     [--task FILE [--ignore-usage]]
-                    [--note FILE | --keep-open |
-                     --close FILE (--next ITEM --next-task FILE
+                    [--keep-open | (--note FILE | --close FILE)
+                     [--next ITEM --next-task FILE
                        --next-message SUBJECT --next-paths GLOB...
-                       [--next-check NAME...] | --stop-reason TEXT)]
+                       [--next-check NAME...] | --stop-reason TEXT]]
                     [--request REQUEST_ID] [--message TEXT]
                     [allow|deny|<choice>...]
       Answers the pending event; any other EVENT_ID is refused as stale.
       --close needs --next or --stop-reason, unless queue mode is on (todo
-      queue), where it takes neither: the queue starts the next item. In
+      queue), where it takes neither: the queue starts the next item.
+      --note takes either of them the same way, or neither (a noted item
+      stays open), and in queue mode neither. In
       queue mode (a run the queue started, or any run while the queue is on)
       approve without --note or --close closes the item as the queue's own
       review does (a section of DECISIONS.md), so the queue never runs it
@@ -391,13 +393,14 @@ fn caller_session(pane: Option<&str>) -> Option<String> {
         .filter(|session| !session.trim().is_empty())
 }
 
-/// What `resume --close` names after the close: the next item's run (`--next
-/// ITEM` with `--next-task`, `--next-message` and `--next-paths`, and
-/// optionally `--next-check`, else this run's checks) or `--stop-reason`;
-/// at most one of them, only with `--close`. A close with neither is the
-/// server's to refuse unless the repository's queue mode is on.
+/// What `resume --close` or `--note` names after the approval: the next
+/// item's run (`--next ITEM` with `--next-task`, `--next-message` and
+/// `--next-paths`, and optionally `--next-check`, else this run's checks)
+/// or `--stop-reason`; at most one of them, only with `--close` or
+/// `--note`. A close with neither is the server's to refuse unless the
+/// repository's queue mode is on; a note with neither is valid.
 fn next_run(
-    close: bool,
+    close_or_note: bool,
     item: Option<String>,
     task: Option<String>,
     message: Option<String>,
@@ -410,8 +413,8 @@ fn next_run(
         || message.is_some()
         || paths.is_some()
         || checks.is_some();
-    if !close && (any_next || stop_reason.is_some()) {
-        return Err("only --close takes --next and --stop-reason".into());
+    if !close_or_note && (any_next || stop_reason.is_some()) {
+        return Err("only --close or --note takes --next and --stop-reason".into());
     }
     if any_next && stop_reason.is_some() {
         return Err("--next and --stop-reason exclude each other".into());
@@ -597,7 +600,7 @@ fn parse(args: &[String]) -> Result<Option<Method>, String> {
                 return Err("--keep-open and --close exclude each other".into());
             }
             let next = next_run(
-                close.is_some(),
+                close.is_some() || note.is_some(),
                 next_item,
                 next_task,
                 next_message,
@@ -1225,12 +1228,57 @@ mod tests {
             ][..],
             // The next run needs its task, message and paths.
             &["--close", &close, "--next", "t-bcde3456"][..],
-            // Neither without a close.
+            // Neither without a close or a note.
             &["--stop-reason", "x"][..],
-            &["--note", &close, "--stop-reason", "x"][..],
+            &["--keep-open", "--stop-reason", "x"][..],
+            // Not both after a note either.
+            &[
+                "--note",
+                &close,
+                "--stop-reason",
+                "x",
+                "--next",
+                "t-bcde3456",
+                "--next-task",
+                &task,
+                "--next-message",
+                "feat: y",
+                "--next-paths",
+                "src/**",
+            ][..],
         ] {
             assert!(resume(bad).is_err(), "{bad:?}");
         }
+        // A note takes them too, or neither: the noted item stays open.
+        let Ok(Some(Method::TodoResume(params))) = resume(&[
+            "--note",
+            &close,
+            "--next",
+            "t-bcde3456",
+            "--next-task",
+            &task,
+            "--next-message",
+            "feat: y",
+            "--next-paths",
+            "src/**",
+        ]) else {
+            panic!("--note --next did not parse");
+        };
+        assert_eq!(params.next.unwrap().item, "t-bcde3456");
+        assert_eq!(params.note.as_deref(), Some("## Closed\n"));
+        let Ok(Some(Method::TodoResume(params))) =
+            resume(&["--note", &close, "--stop-reason", "the rest waits"])
+        else {
+            panic!("--note --stop-reason did not parse");
+        };
+        assert_eq!(
+            (params.next, params.stop_reason.as_deref()),
+            (None, Some("the rest waits"))
+        );
+        let Ok(Some(Method::TodoResume(params))) = resume(&["--note", &close]) else {
+            panic!("--note alone did not parse");
+        };
+        assert_eq!((params.next, params.stop_reason), (None, None));
         let _ = std::fs::remove_dir_all(dir);
     }
 

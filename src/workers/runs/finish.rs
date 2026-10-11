@@ -722,7 +722,7 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// Settles what a done run's close named after it: starts the next
+    /// Settles what a done run's close or note named after it: starts the next
     /// item's run ([`Self::start_next`]) or hands the stop reason to the
     /// user as a notification (the item's history has it with the `done`
     /// event). Each is recorded, so a server that starts settles only what
@@ -743,8 +743,13 @@ impl WorkerSupervisor {
         }
         if let Some(reason) = run.finish.stop_reason.clone() {
             if !run.finish.stop_notified {
+                let approved = if run.finish.close.is_some() {
+                    "closed"
+                } else {
+                    "approved"
+                };
                 crate::workers::notify_user(crate::workers::UserNotice {
-                    title: format!("{} closed; no next item started", run.info.item),
+                    title: format!("{} {approved}; no next item started", run.info.item),
                     body: reason.clone(),
                 });
                 let noted = self.update_run(
