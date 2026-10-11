@@ -1277,3 +1277,9 @@ tracked with their reason and followed once the agent reports turns;
 `wait-agent --until verdict` works without a request; every `herdr worker`
 subcommand answers --help. Replacing the startup deadline with the
 SessionStart event stays in the agent-prompt item (t-2kjq5txq).
+
+## Bump PROTOCOL_VERSION to 23 once (follows from 3f1a4f38, 2026-10-11):
+
+Version 22 shipped in roherdr-v0.9.3.1 and the client snapshot changed
+since; bumped once to 23 (173a31ee), with the test expectations and the
+generated API schema; generation-1 endpoint fixtures untouched.
