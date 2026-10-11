@@ -1708,6 +1708,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   worker) or refuses a duplicate awaiting-reply that names an owned
   worker's open question. (The pane was moved out of the split by someone
   else; not herdr.)
+  Landed 2026-10-11 (e91e0a43): the stop check skips open questions reported
+  at or after the turn's start; only earlier ones get the renew-or-withdraw
+  reminder. Left: the duplicate coordinator/worker question (the second
+  classify-x-posts report above).
 
 - [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
   reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
