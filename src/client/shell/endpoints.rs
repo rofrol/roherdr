@@ -646,7 +646,9 @@ impl ClientShellState {
                 .agent_presentation
                 .acknowledge_surface(&mut snapshot, surface, self.outer_focused);
         }
-        let previous = self.endpoints[index].snapshot.as_deref();
+        let previous = self.endpoints[index].snapshot.take();
+        self.notice_exited_parents(previous.as_deref(), &snapshot);
+        let previous = previous.as_deref();
         let mut next_recency = self
             .endpoints
             .iter()

@@ -216,4 +216,9 @@ pub struct TabInfo {
     /// when none was set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<TabRole>,
+    /// The name of the tab this one was nested under until that tab's shell
+    /// exited on its own and left this job running; absent otherwise, and
+    /// cleared when the tab is nested again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exited_parent: Option<String>,
 }

@@ -918,6 +918,8 @@ fn restore_tab(
                 activity: None,
                 bookmarked: snap.bookmarked,
                 role: snap.role,
+                // Runtime only: a restart ends the jobs it named.
+                exited_parent: None,
                 custom_name: snap.custom_name.clone(),
                 number,
                 parent: snap.parent_tab_number,

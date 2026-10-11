@@ -146,6 +146,7 @@ pub(super) fn snapshot_with_completions(
                 bookmarked: tab.bookmarked,
                 activity: tab.activity,
                 role: tab.role,
+                exited_parent: tab.exited_parent,
                 program: state
                     .terminal_id(state.layout.focused())
                     .and_then(|terminal_id| app.state.terminals.get(terminal_id))
@@ -790,6 +791,7 @@ mod tests {
             activity: None,
             program: None,
             role,
+            exited_parent: None,
         };
         let pane = |tab_id: &str, cwd: &str, foreground: Option<&str>| protocol::ClientShellPane {
             pane_id: format!("p-{tab_id}"),

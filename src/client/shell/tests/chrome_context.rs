@@ -18,6 +18,7 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
         status: None,
         program: None,
         role: None,
+        exited_parent: None,
     }));
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot));
@@ -70,6 +71,7 @@ fn tab_bar_wheel_stops_at_the_first_and_last_tab() {
         status: None,
         program: None,
         role: None,
+        exited_parent: None,
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot));
@@ -159,6 +161,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
             status: None,
             program: None,
             role: None,
+            exited_parent: None,
         })
         .collect();
     let mut state = ClientShellState::new(config_with_sidebar_width(26));
@@ -694,6 +697,7 @@ fn snapshot_with_second_tab() -> ClientShellSnapshot {
         status: None,
         program: None,
         role: None,
+        exited_parent: None,
     });
     snapshot
 }
@@ -795,6 +799,7 @@ fn tab_bar_shows_each_tabs_agent_state_like_the_sidebar() {
                 status: None,
                 program: None,
                 role: None,
+                exited_parent: None,
             },
         ));
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -861,6 +866,7 @@ fn title_tab_label_shows_the_agents_task_title_at_a_fixed_width() {
                     status: None,
                     program: (number != 4).then(|| "lazygit".into()),
                     role: None,
+                    exited_parent: None,
                 }
             }),
         );

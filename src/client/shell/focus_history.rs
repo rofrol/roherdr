@@ -233,6 +233,7 @@ mod tests {
                 status: None,
                 program: None,
                 role: None,
+                exited_parent: None,
             })
             .collect();
         snapshot.focused_tab_id = Some(focused.into());

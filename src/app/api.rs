@@ -2401,6 +2401,51 @@ mod tests {
     }
 
     #[test]
+    fn a_parent_shell_exit_keeps_its_jobs_named_after_it() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("orphans");
+        let parent = workspace.test_add_tab(Some("build"));
+        for name in ["tests", "lint"] {
+            let job = workspace.test_add_tab(Some(name));
+            workspace.set_tab_parent(job, Some(parent)).unwrap();
+        }
+        let parent_pane = workspace.tabs[parent].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: parent_pane,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        });
+
+        let tabs = (0..app.state.workspaces[0].tabs.len())
+            .filter_map(|idx| app.tab_info(0, idx))
+            .collect::<Vec<_>>();
+        assert!(tabs.iter().all(|tab| tab.label != "build"), "{tabs:?}");
+        for name in ["tests", "lint"] {
+            let job = tabs
+                .iter()
+                .find(|tab| tab.label == name)
+                .expect("the job kept running");
+            assert_eq!(job.parent_tab_id, None);
+            assert_eq!(job.exited_parent.as_deref(), Some("build"));
+        }
+        let json = serde_json::to_value(tabs.iter().find(|tab| tab.label == "tests")).unwrap();
+        assert_eq!(json["exited_parent"], "build");
+        let first = tabs.first().expect("the first tab");
+        assert_eq!(first.exited_parent, None);
+        let json = serde_json::to_value(first).unwrap();
+        assert!(json.get("exited_parent").is_none(), "{json}");
+    }
+
+    #[test]
     fn idle_agent_exit_emits_release_event_without_a_state_change() {
         for agent_name in [None, Some("reviewer")] {
             let event_hub = crate::api::EventHub::default();

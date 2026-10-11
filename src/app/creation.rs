@@ -232,6 +232,7 @@ impl App {
             bookmarked: tab.bookmarked,
             activity: tab.activity,
             role: tab.role,
+            exited_parent: tab.exited_parent.clone(),
             job: tab.job.clone(),
         })
     }

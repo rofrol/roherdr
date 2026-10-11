@@ -2211,6 +2211,7 @@ fn a_closed_tab_reopens_with_its_directory_and_own_name_in_its_place() {
         activity: None,
         bookmarked: false,
         role: None,
+        exited_parent: None,
         job: None,
         tab_id: "tab_9".into(),
         workspace_id: "ws_1".into(),
@@ -5969,4 +5970,97 @@ fn the_menu_opens_the_legend_at_its_top_and_an_entry_far_down_is_scrolled_into_v
         .find(|row| row.contains('▍') && row.contains("item blocked"))
         .unwrap_or_else(|| panic!("{}", rows.join("\n")));
     assert!(marked.contains("a decision is due"), "{marked}");
+}
+
+#[test]
+fn a_job_whose_parent_exited_is_noticed_once_and_marked_was_its_parent() {
+    let mut state = state_with_tabs_and_width(true, 40);
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    let mut parent = projected.tabs[0].clone();
+    parent.tab_id = "tab_2".into();
+    parent.number = 2;
+    parent.label = "build".into();
+    parent.focused = false;
+    parent.agent_status = AgentStatus::Unknown;
+    let mut job = parent.clone();
+    job.tab_id = "tab_3".into();
+    job.number = 3;
+    job.label = "tests".into();
+    job.parent_tab_id = Some("tab_2".into());
+    job.status = Some(TabStatus::Running);
+    projected.tabs.push(parent);
+    projected.tabs.push(job);
+    state.set_snapshot(Box::new(projected));
+    assert!(state.visible_endpoint_notice.is_none());
+
+    // The parent's shell exits on its own: the server drops its tab and
+    // names it on the job, which is top-level now.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
+    let job = projected
+        .tabs
+        .iter_mut()
+        .find(|tab| tab.tab_id == "tab_3")
+        .expect("job");
+    job.parent_tab_id = None;
+    job.exited_parent = Some("build".into());
+    state.set_snapshot(Box::new(projected.clone()));
+
+    let notice = state.visible_endpoint_notice.take().expect("notice");
+    assert_eq!(notice.title, "Parent build exited; 1 job kept running");
+    assert_eq!(notice.body, "tests");
+    let frame = state.compose(120, 30).unwrap();
+    let rows = frame_rows(&frame);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("tests"))
+        .expect("the job's line");
+    let label = row.find("tests").expect("label");
+    let mark = row.find("was build").expect("was mark");
+    assert!(label < mark, "{row:?}");
+    assert!(state
+        .hits
+        .tooltips
+        .iter()
+        .any(|target| target.text == "Parent build exited; this job kept running"));
+
+    // Later snapshots say nothing new.
+    state.set_snapshot(Box::new(projected));
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn a_first_snapshot_with_kept_jobs_shows_no_notice() {
+    let mut config = config_with_sidebar_width(40);
+    config.spaces.tabs = true;
+    let mut state = ClientShellState::new(config);
+    let mut projected = snapshot();
+    projected.tabs[0].exited_parent = Some("build".into());
+    state.set_snapshot(Box::new(projected));
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn several_parents_exiting_at_once_are_named_in_one_notice() {
+    let previous = snapshot();
+    let mut next = previous.clone();
+    let mut job = next.tabs[0].clone();
+    job.tab_id = "tab_8".into();
+    job.label = "lint".into();
+    job.exited_parent = Some("check".into());
+    next.tabs.push(job.clone());
+    job.tab_id = "tab_9".into();
+    job.label = "deploy".into();
+    job.exited_parent = Some("release".into());
+    next.tabs.push(job);
+    let notice = super::super::tab_groups::exited_parents_notice(&previous, &next).expect("notice");
+    assert_eq!(
+        notice.title,
+        "Parents check, release exited; 2 jobs kept running"
+    );
+    assert_eq!(notice.body, "lint, deploy");
+    assert_eq!(
+        super::super::tab_groups::exited_parents_notice(&next, &next),
+        None
+    );
 }

@@ -521,6 +521,9 @@ impl Workspace {
             None => None,
         };
         self.tabs[tab_idx].parent = parent;
+        if parent.is_some() {
+            self.tabs[tab_idx].exited_parent = None;
+        }
         self.normalize_tab_groups();
         Ok(())
     }
@@ -1044,6 +1047,7 @@ impl Workspace {
             if tab_count <= 1 {
                 return true;
             }
+            self.mark_children_of_exited_parent(tab_idx);
             if self.remove_tab_and_refocus(tab_idx).is_some() {
                 self.unregister_pane(pane_id);
             }
@@ -1054,6 +1058,22 @@ impl Workspace {
             self.unregister_pane(removed);
         }
         false
+    }
+
+    /// The tab's shell exited on its own, so its job tabs keep running
+    /// top-level (`DECISIONS.md`, "Closing a parent's last pane"): each
+    /// remembers the parent's name, for clients to say where it came from.
+    fn mark_children_of_exited_parent(&mut self, tab_idx: usize) {
+        let children = self.tab_children(tab_idx);
+        if children.is_empty() {
+            return;
+        }
+        let Some(name) = self.tab_display_name(tab_idx) else {
+            return;
+        };
+        for child in children {
+            self.tabs[child].exited_parent = Some(name.clone());
+        }
     }
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
@@ -1340,6 +1360,7 @@ impl Workspace {
             activity: None,
             bookmarked: false,
             role: None,
+            exited_parent: None,
             custom_name: None,
             number: 1,
             parent: None,
@@ -1404,6 +1425,7 @@ impl Workspace {
             activity: None,
             bookmarked: false,
             role: None,
+            exited_parent: None,
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
             parent: None,
@@ -2258,6 +2280,66 @@ mod tests {
             "closing an inactive tab keeps the focus"
         );
         ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn a_parent_whose_shell_exits_names_itself_on_its_kept_jobs() {
+        // The parent's shell exits on its own (remove_pane, the PaneDied
+        // path): its jobs keep running top-level and remember its name. An
+        // explicit close (close_pane) leaves no such mark.
+        for exits in [true, false] {
+            let mut ws = Workspace::test_new("test");
+            let parent = ws.test_add_tab(Some("build"));
+            let job = ws.test_add_tab(Some("tests"));
+            ws.set_tab_parent(job, Some(parent)).unwrap();
+            ws.test_add_tab(Some("other"));
+            let pane = ws.tabs[parent].root_pane;
+
+            assert!(!if exits {
+                ws.remove_pane(pane)
+            } else {
+                ws.close_pane(pane)
+            });
+
+            let job = ws
+                .tabs
+                .iter()
+                .position(|tab| tab.custom_name.as_deref() == Some("tests"))
+                .expect("the job survives");
+            assert_eq!(ws.tab_parent_index(job), None, "the job is top-level");
+            let expected = exits.then(|| "build".to_owned());
+            assert_eq!(ws.tabs[job].exited_parent, expected);
+            let other = ws
+                .tabs
+                .iter()
+                .position(|tab| tab.custom_name.as_deref() == Some("other"))
+                .expect("the other tab survives");
+            assert_eq!(ws.tabs[other].exited_parent, None, "not a job of it");
+            ws.assert_invariants_for_test();
+
+            // Nesting it again under a live tab ends the mark.
+            ws.set_tab_parent(job, Some(other)).unwrap();
+            let job = ws
+                .tabs
+                .iter()
+                .position(|tab| tab.custom_name.as_deref() == Some("tests"))
+                .expect("the job");
+            assert_eq!(ws.tabs[job].exited_parent, None);
+        }
+    }
+
+    #[test]
+    fn a_parent_with_other_panes_left_does_not_mark_its_jobs() {
+        let mut ws = Workspace::test_new("test");
+        let job = ws.test_add_tab(Some("job"));
+        ws.set_tab_parent(job, Some(0)).unwrap();
+        ws.active_tab = 0;
+        let split = ws.test_split(Direction::Horizontal);
+
+        assert!(!ws.remove_pane(split));
+
+        assert_eq!(ws.tab_parent_index(job), Some(0));
+        assert_eq!(ws.tabs[job].exited_parent, None);
     }
 
     #[test]

@@ -7,6 +7,29 @@ use crate::api::schema::TabStatus;
 use crate::protocol::{ClientShellSnapshot, ClientShellTab};
 
 impl super::ClientShellState {
+    /// Says so when a snapshot shows jobs whose parent's shell exited on its
+    /// own (`exited_parent` newly set): they kept running, top-level, each
+    /// line marked `was <name>`. Nothing on the first snapshot of a server
+    /// boot, which only shows what happened before.
+    pub(super) fn notice_exited_parents(
+        &mut self,
+        previous: Option<&ClientShellSnapshot>,
+        next: &ClientShellSnapshot,
+    ) {
+        let Some(previous) = previous.filter(|previous| previous.boot_id == next.boot_id) else {
+            return;
+        };
+        let Some(notice) = exited_parents_notice(previous, next) else {
+            return;
+        };
+        self.push_endpoint_notice(
+            super::ClientEndpointNoticeKind::Info,
+            notice.code,
+            notice.title,
+            notice.body,
+        );
+    }
+
     /// Drops kept jobs that closed, so a new job that reuses the id is not
     /// shown as kept.
     pub(super) fn forget_closed_kept_jobs(&mut self) {
@@ -250,6 +273,66 @@ fn focused_workspace_tabs(snapshot: &ClientShellSnapshot) -> impl Iterator<Item 
         .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ExitedParentsNotice {
+    /// Names the orphaned jobs, so each event is shown once.
+    pub(super) code: String,
+    pub(super) title: String,
+    pub(super) body: String,
+}
+
+/// The notice for jobs that `next` shows orphaned and `previous` did not:
+/// `Parent <name> exited; N jobs kept running`, and the jobs' names.
+pub(super) fn exited_parents_notice(
+    previous: &ClientShellSnapshot,
+    next: &ClientShellSnapshot,
+) -> Option<ExitedParentsNotice> {
+    let mut parents: Vec<&str> = Vec::new();
+    let mut jobs: Vec<&ClientShellTab> = Vec::new();
+    for tab in &next.tabs {
+        let Some(parent) = tab.exited_parent.as_deref() else {
+            continue;
+        };
+        let known = previous.tabs.iter().any(|before| {
+            before.tab_id == tab.tab_id && before.exited_parent.as_deref() == Some(parent)
+        });
+        if known {
+            continue;
+        }
+        if !parents.contains(&parent) {
+            parents.push(parent);
+        }
+        jobs.push(tab);
+    }
+    if jobs.is_empty() {
+        return None;
+    }
+    let count = match jobs.len() {
+        1 => "1 job".to_owned(),
+        n => format!("{n} jobs"),
+    };
+    let title = match parents.as_slice() {
+        [parent] => format!("Parent {parent} exited; {count} kept running"),
+        parents => format!(
+            "Parents {} exited; {count} kept running",
+            parents.join(", ")
+        ),
+    };
+    let ids = jobs
+        .iter()
+        .map(|tab| tab.tab_id.as_str())
+        .collect::<Vec<_>>();
+    let labels = jobs
+        .iter()
+        .map(|tab| tab.label.as_str())
+        .collect::<Vec<_>>();
+    Some(ExitedParentsNotice {
+        code: format!("exited-parent:{}", ids.join(",")),
+        title,
+        body: labels.join(", "),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +358,7 @@ mod tests {
             status,
             program: None,
             role: None,
+            exited_parent: None,
         }
     }
 

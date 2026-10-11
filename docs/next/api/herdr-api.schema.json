@@ -1070,6 +1070,13 @@
               "description": "Whether the user bookmarked the tab (see `tab.bookmark`). Absent\nmeans false.",
               "type": "boolean"
             },
+            "exited_parent": {
+              "description": "The name of the tab this one was nested under until that tab's shell\nexited on its own and left this job running; absent otherwise, and\ncleared when the tab is nested again.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "focused": {
               "type": "boolean"
             },
@@ -17512,6 +17519,13 @@
             "bookmarked": {
               "description": "Whether the user bookmarked the tab (see `tab.bookmark`). Absent\nmeans false.",
               "type": "boolean"
+            },
+            "exited_parent": {
+              "description": "The name of the tab this one was nested under until that tab's shell\nexited on its own and left this job running; absent otherwise, and\ncleared when the tab is nested again.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "focused": {
               "type": "boolean"

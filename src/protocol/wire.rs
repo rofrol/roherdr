@@ -1228,6 +1228,12 @@ pub struct ClientShellTab {
     /// bincode form of this type.
     #[serde(default)]
     pub role: Option<crate::api::schema::TabRole>,
+    /// The name of the tab this one was nested under until that tab's
+    /// shell exited on its own and left this job running; older servers do
+    /// not send it. Always serialized: skipping a field breaks the bincode
+    /// form of this type.
+    #[serde(default)]
+    pub exited_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3048,6 +3054,7 @@ mod tests {
                 status: None,
                 program: None,
                 role: None,
+                exited_parent: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),

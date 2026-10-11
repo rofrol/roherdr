@@ -922,7 +922,11 @@ top-level tab, and `tab.set_status` (`tab_id`, optional `status`: `running`,
 `succeeded` or `failed`) sets a tab's status. Tab objects report them as
 optional `parent_tab_id` and `status`; the server keeps children right after
 their parent in the tab order, and `tab.close` of a tab with children fails
-with `tab_has_children`.
+with `tab_has_children`. When a parent's last pane exits on its own (its shell
+or agent ends, not a close), its children keep running as top-level tabs, and
+tab objects carry the parent's name as optional `exited_parent` until the tab
+is nested again; the TUI shows "Parent <name> exited; N jobs kept running"
+once and marks each such line `was <name>`.
 `tab.create_child` (`parent_tab_id`, optional `cwd`, `focus`, `label` and
 `env`, as in `tab.create`) creates a tab already nested under a top-level tab,
 in that tab's workspace, so it never appears as a top-level tab first; it

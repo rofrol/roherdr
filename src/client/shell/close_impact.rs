@@ -181,6 +181,7 @@ mod tests {
             status,
             program: None,
             role: None,
+            exited_parent: None,
         }
     }
 

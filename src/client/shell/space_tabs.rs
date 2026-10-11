@@ -60,6 +60,9 @@ pub(super) struct SpaceTabLine {
     /// Whoever opened the tab gave its agent a role (`tab.set_role`): its
     /// mark in the marker column before the state glyph.
     pub(super) role: Option<crate::api::schema::TabRole>,
+    /// The tab was a job of a tab whose shell exited on its own and kept
+    /// running: that tab's name, shown dim as `was <name>` after the label.
+    pub(super) exited_parent: Option<String>,
     /// What the tab's agent waits on the user for, as the `?` list's `↳`
     /// line says it: drawn on a row of its own under the line.
     pub(super) ask: Option<String>,
@@ -411,6 +414,7 @@ pub(super) fn worker_lines_at(
                 hidden_focus: None,
                 quiet: Vec::new(),
                 role: None,
+                exited_parent: None,
                 ask: snapshot
                     .worker_questions
                     .iter()
@@ -631,6 +635,7 @@ pub(super) fn space_tab_lines_filtered(
                 squares,
                 quiet: Vec::new(),
                 role: tab.role,
+                exited_parent: tab.exited_parent.clone(),
                 ask: tab_ask(snapshot, tab),
                 worker: None,
                 items: snapshot
@@ -680,6 +685,7 @@ pub(super) fn space_tab_lines_filtered(
                 hidden_focus: None,
                 quiet: folded.into_iter().map(|line| line.tab_id).collect(),
                 role: None,
+                exited_parent: None,
                 ask: None,
                 worker: None,
                 items: None,
@@ -748,6 +754,7 @@ fn collapse_ended_workers(
                 hidden_focus: None,
                 quiet: members.clone(),
                 role: None,
+                exited_parent: None,
                 ask: None,
                 worker: None,
                 items: None,
@@ -1499,7 +1506,38 @@ pub(super) fn render_space_tab_lines(
             .as_deref()
             .filter(|plan| area_width >= plan.chars().count() as u16 + 1 + 6);
         let plan_width = plan.map_or(0, |plan| plan.chars().count() as u16 + 1);
-        let label_width = area_width.saturating_sub(plan_width);
+        // A job whose parent exited on its own says where it came from, dim
+        // like the progress and left of it, while the label keeps a few
+        // columns.
+        let was = line
+            .exited_parent
+            .as_deref()
+            .map(|name| format!("was {name}"))
+            .filter(|was| {
+                area_width.saturating_sub(plan_width) >= super::render::display_width(was) + 1 + 6
+            });
+        let was_width = was
+            .as_deref()
+            .map_or(0, |was| super::render::display_width(was) + 1);
+        if let (Some(was), Some(name)) = (was.as_deref(), line.exited_parent.as_deref()) {
+            let was_x = text_x + area_width - plan_width - (was_width - 1);
+            super::render::put_text(
+                buffer,
+                was_x,
+                y,
+                was_width - 1,
+                was,
+                Style::default().fg(palette.overlay1),
+            );
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: Rect::new(was_x, y, was_width - 1, 1),
+                id: format!("tab-exited-parent:{}", line.tab_id),
+                text: format!("Parent {name} exited; this job kept running"),
+                bg: None,
+                starts_at_target: false,
+            });
+        }
+        let label_width = area_width.saturating_sub(plan_width + was_width);
         // The agent's badge leads the label (`CL fix tooltip`) while the
         // label keeps a few columns.
         let badge = line

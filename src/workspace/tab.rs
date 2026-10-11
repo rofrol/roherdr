@@ -48,6 +48,10 @@ pub struct Tab {
     /// What the tab's agent does for the user, set by whoever opened the tab
     /// (`tab.set_role`); clients mark it.
     pub role: Option<crate::api::schema::TabRole>,
+    /// The name of the tab this one was nested under until that tab's shell
+    /// exited on its own and left this job running; runtime only, cleared
+    /// when the tab is nested again. Clients mark the tab `was <name>`.
+    pub exited_parent: Option<String>,
     /// What the tab's running job does, as its runner reports it; runtime
     /// only, so a restart clears it until the runner reports again.
     pub activity: Option<crate::api::schema::TabActivity>,
@@ -200,6 +204,7 @@ impl Tab {
                 status: None,
                 bookmarked: false,
                 role: None,
+                exited_parent: None,
                 activity: None,
                 job: None,
                 root_pane: root_id,
@@ -469,6 +474,7 @@ impl Tab {
             status: None,
             bookmarked: false,
             role: None,
+            exited_parent: None,
             activity: None,
             job: None,
             root_pane: pane_id,
