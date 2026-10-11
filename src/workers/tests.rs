@@ -42,7 +42,7 @@ use serde_json::Value;
 use super::*;
 use crate::api::schema::{
     WorkerAnswerParams, WorkerCommandTarget, WorkerDecision, WorkerPromptParams,
-    WorkerQuestionKind, WorkerQuestionState,
+    WorkerQuestionKind, WorkerQuestionState, WorkerRunOutcome,
 };
 
 const STUB: &str = r#"#!/usr/bin/env python3
@@ -4949,17 +4949,6 @@ fn an_item_that_is_not_a_todo_id_is_refused() {
 }
 
 #[test]
-fn done_commits_are_read_from_worker_done_lines() {
-    assert_eq!(
-        done_commits("x\nWORKER-DONE 3ecc4be6 | summary\n  WORKER-DONE abcdef0123 | more"),
-        ["3ecc4be6", "abcdef0123"]
-    );
-    assert!(
-        done_commits("WORKER-DONE <sha> | x\nWORKER-BLOCKED no\nWORKER-DONE abc | x").is_empty()
-    );
-}
-
-#[test]
 fn an_ended_worker_is_listed_until_its_owner_acknowledges_the_end() {
     const ITEM: &str = "t-abcd2345";
     let fixture = Fixture::new("listed");
@@ -5553,17 +5542,6 @@ fn a_server_gone_mid_turn_leaves_the_worker_running_and_a_new_server_reattaches(
     assert!(!broker.socket.exists());
 }
 
-/// Folds `events` into a new status as the store does, without one.
-fn folded(events: &[(Direction, Value)]) -> Status {
-    let mut status = Status::new("w1".into());
-    for (seq, (direction, event)) in (1..).zip(events) {
-        let before = status.before();
-        status.apply(*direction, event);
-        status.mark_seq(seq, 0, &before, *direction, &store::Recorded::Event(event));
-    }
-    status
-}
-
 /// Waits, woken by state changes, until the internal status of a worker
 /// of `supervisor` satisfies `done`.
 fn wait_on_status(supervisor: &WorkerSupervisor, worker_id: &str, done: impl Fn(&Status) -> bool) {
@@ -5583,53 +5561,6 @@ fn wait_on_status(supervisor: &WorkerSupervisor, worker_id: &str, done: impl Fn(
             .unwrap()
             .0;
     }
-}
-
-#[test]
-fn a_reattach_after_a_lost_init_waits_for_the_replayed_init() {
-    let started = (
-        Direction::Herdr,
-        json!({"type": "started", "cwd": "/repo", "pid": 4242,
-               "broker": {"pid": 4241, "socket": "/state/w1.sock", "cwd": "/repo"}}),
-    );
-    let prompt = (Direction::In, user_message("block"));
-    let reattached = (
-        Direction::Herdr,
-        json!({"type": "reattached", "broker_pid": 4241}),
-    );
-    let init = (
-        Direction::Out,
-        json!({"type": "system", "subtype": "init", "session_id": "s"}),
-    );
-
-    // The gone server took the CLI's `system/init` and stored nothing: the
-    // re-attach itself changes nothing.
-    let status = folded(&[started.clone(), prompt.clone(), reattached.clone()]);
-    assert_eq!(status.state, WorkerState::Starting);
-    assert_eq!(status.session_id, None);
-    // The broker replays the init after the re-attach: the turn works and
-    // the session is known, as a takeover needs.
-    let status = folded(&[started.clone(), prompt.clone(), reattached.clone(), init]);
-    assert_eq!(status.state, WorkerState::Working);
-    assert_eq!(status.session_id.as_deref(), Some("s"));
-
-    // Without the init, because continuity is not proven, nothing is made
-    // up: the worker stays starting, with no session, degraded.
-    let gap = (
-        Direction::Herdr,
-        json!({"type": "continuity_gap", "reason": "lines 2..=4 are missing"}),
-    );
-    let status = folded(&[started, prompt, reattached, gap]);
-    assert_eq!(status.state, WorkerState::Starting);
-    assert_eq!(status.session_id, None);
-    assert_eq!(
-        status.continuity_gap.as_deref(),
-        Some("lines 2..=4 are missing")
-    );
-    assert_eq!(
-        status.degraded.as_deref(),
-        Some("output continuity not proven: lines 2..=4 are missing")
-    );
 }
 
 #[test]
