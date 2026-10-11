@@ -18,6 +18,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   on 2026-10-11). Point 4 stays: queue mode (`herdr todo queue on`) once
   the question gate and the enforced stop check ran clean for a week
   (from 2026-10-11).
+  First point landed 2026-10-11 (be086b38): `todo resume --note` takes
+  `--next`/`--stop-reason` like `--close` (a note alone stays valid).
+  Left: point 4, queue mode after a clean week (from 2026-10-11).
+  The same commit fixes a race verify found in 4fffb6e0: the held-output
+  report is recorded once its tool call's `tool_use` line is read (or just
+  before the turn's `result` when none comes), so `tool_calls` is never
+  empty by ordering; 40/40 under a stress loop.
 
 - [ ] Measure whether coordinator/worker pays off (from the devil's [t-2p6nfwpg]
   advocate round 20261010-032145-a9e1, recorded in DECISIONS.md
