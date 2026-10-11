@@ -1559,6 +1559,30 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     coordinator tab created with the space + removing the crown; slice 2:
     worktree tabs; slice 3: aliases and merge; restart policy with slice 1.
 
+- [ ] The stop check counts every remaining item, and a trust dialog is [t-iywq5qf4]
+  reported at once (the user via the guix coordinator, 2026-10-11: "work;
+  report it to the herdr coordinator; ask the models": it asked about two
+  user-blocked items and stopped although a third, independent item was
+  runnable; the enforced stop check let it through because a question was
+  open). Round 20261011-174524-db36 (sol, MiMo, DeepSeek), decided:
+  1. An open question exempts nothing: the stop goes through only when
+     every remaining item in "Next, in order" (or the driver's state) is
+     linked (`herdr decision ... --item`) to an open decision or owner step
+     awaiting the user that names what is needed; an unlinked or
+     unclassified item counts as runnable and blocks; links to answered or
+     closed decisions do not count; many items on one decision are flagged.
+  2. `herdr agent start` and `worktree create` report
+     `trust_dialog_pending` with the folder as soon as screen detection sees
+     Claude Code's folder-trust dialog (as `agent prompt` names dialogs
+     today), so the coordinator asks the user at once and goes on with
+     other work; workers default to headless where they can (no dialog);
+     agents never answer the dialog. Pre-trusting herdr's worktree roots is
+     the user's choice ("Needs a decision").
+  Also (guix addendum): after `agent start` failed with agent_name_taken
+  behind the trust dialog, a later `agent prompt` returned request
+  prompt_1a12ba24d47_3 but `wait-agent --request` said "herdr does not know
+  request"; find why the request was not tracked for that pane.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
@@ -1995,6 +2019,11 @@ user needs to decide or do.
   in-session request does not lift a classifier category; only a
   permission rule does, and permission changes need your approval of the
   whole patch (AGENTS.md); a peer coordinator cannot grant it.
+
+- [ ] [t-rntnb7bs] Pre-trust herdr's worktree roots in Claude Code so pane workers in new worktrees do not stop at the folder-trust dialog?
+  Options: no, keep the dialog and let herdr report it at once; prefer headless workers (Recommended) | yes, trust ~/.herdr/worktrees and ../herdr-worktrees once yourself (trust extends to everything created there)
+  Checked 2026-10-11: agents may not answer the dialog or write trust
+  config (AGENTS.md); a guix pane worker sat blocked until the user clicked.
 
 ### Decide
 
