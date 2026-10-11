@@ -29,6 +29,7 @@ pub(crate) mod broker;
 mod capabilities;
 pub(crate) mod coordinators;
 mod decisions;
+mod error;
 mod grant_questions;
 mod history;
 mod inbox;
@@ -40,6 +41,7 @@ mod live;
 mod log;
 mod policy;
 mod pre_tool_checks;
+mod registry;
 pub(crate) mod reports;
 mod review;
 mod runs;
@@ -50,16 +52,22 @@ mod store;
 mod tests;
 mod todo_titles;
 pub(crate) mod transcript;
+mod types;
 mod verify;
 
 pub(crate) use coordinators::coordinators;
 #[cfg(test)]
 pub(crate) use coordinators::set_test_coordinators;
+pub(crate) use error::WorkerError;
 pub(crate) use item_coordinators::resume_item_coordinators_at_start;
 pub(crate) use log::{entry_lines, log_lines};
 #[cfg(unix)]
 pub(crate) use runs::{envs_for_handoff, restore_handed_off_envs};
 pub(crate) use runs::{resume_runs_at_start, usage_reading_published};
+pub(crate) use types::{
+    Attention, ItemCounts, OwnerEvent, PendingWorkerQuestion, Takeover, TakeoverFound,
+    TakeoverTabCandidate, UnfinishedTakeover, UserNotice, WorkerSummary, TAKEOVER_ID_ENV,
+};
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -76,13 +84,12 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::api::schema::{
-    WorkerAnswerAsParams, WorkerAnswerParams, WorkerAttentionReason, WorkerChoiceQuestion,
-    WorkerCommandTarget, WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction,
-    WorkerHeldOutput, WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams,
-    WorkerKillReport, WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion,
-    WorkerQuestionDetail, WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunsParams,
-    WorkerStartParams, WorkerState, WorkerVerification, WorkerVerifyParams,
-    WorkerWaitDrainedParams, WorkerWaitUntil,
+    WorkerAnswerAsParams, WorkerAnswerParams, WorkerChoiceQuestion, WorkerCommandTarget,
+    WorkerDecision, WorkerDenyAndStopParams, WorkerDrain, WorkerDrainAction, WorkerHeldOutput,
+    WorkerInfo, WorkerInterruptParams, WorkerItemRuns, WorkerKillParams, WorkerKillReport,
+    WorkerObligation, WorkerPipeHolder, WorkerPromptParams, WorkerQuestion, WorkerQuestionDetail,
+    WorkerQuestionKind, WorkerQuestionState, WorkerRun, WorkerRunsParams, WorkerStartParams,
+    WorkerState, WorkerVerification, WorkerVerifyParams, WorkerWaitDrainedParams, WorkerWaitUntil,
 };
 use crate::platform::Signal;
 
@@ -93,6 +100,7 @@ use journal::{
 #[cfg(unix)]
 use live::{continuity_gap_event, input_id, input_written, output_lost, Input};
 use live::{Live, Reader, Source, Spooled};
+use registry::{worker_number, Drain, Entry, Registry, StartAdmission};
 #[cfg(unix)]
 use status::BrokerRecord;
 use status::{Before, Direction, Pending, Status, RESOLVED_QUESTIONS_KEPT};
@@ -248,199 +256,6 @@ fn is_credential_env(name: &str, bedrock: bool, vertex: bool) -> bool {
         || SUFFIXES.iter().any(|suffix| upper.ends_with(suffix))
 }
 
-#[derive(Debug)]
-pub(crate) enum WorkerError {
-    NotFound(String),
-    Invalid(String),
-    NotRunning(String),
-    Busy(String),
-    NoQuestion(String),
-    /// The named question is no longer pending; the message says why.
-    QuestionGone(String),
-    /// A kill of an exited or lost worker without `force`; the message says
-    /// what it would signal.
-    NeedsForce(String),
-    /// An interrupt named a turn that has already ended.
-    TurnEnded(String),
-    Unsupported(String),
-    /// A command id was reused with another method or other parameters.
-    CommandConflict(String),
-    /// A command id whose command a server restart cut off before its
-    /// outcome was stored.
-    CommandInterrupted(String),
-    /// The refusal a command id got the first time, returned again.
-    Replayed(&'static str, String),
-    /// The repository has an active coordinator, or the pane coordinates
-    /// another one; the message names it.
-    CoordinatorActive(String),
-    CoordinatorNotFound(String),
-    /// New turns are not admitted while the server drains for an install
-    /// ([`WorkerSupervisor::drain`]); the message names it.
-    Draining(String),
-    /// The worker's output since a server restart is not proven complete
-    /// ([`Status::continuity_gap`]); the message names the gap.
-    ContinuityGap(String),
-    /// No `todo.run` run has that id.
-    RunNotFound(String),
-    /// A `todo.resume` named an event that is not the run's pending one.
-    EventStale(String),
-    /// The repository already has a run in progress; the message names it.
-    RunActive(String),
-    /// A `todo.resume` from a pane other than the run's owner, whose pane is
-    /// still there; the message names the owner.
-    RunOwnedElsewhere(String),
-    /// A `todo.run`'s preflight refused it; the message says which check.
-    Preflight(String),
-    /// A new run or attempt refused while Claude's usage is high or
-    /// unknown; the message names each window and its value, or the
-    /// failed read of Claude's usage.
-    UsageGate(String),
-    /// `history.item` named an item without records.
-    HistoryNotFound(String),
-    /// No report has that id.
-    ReportNotFound(String),
-    /// `report.close` from a pane that does not hold the herdr
-    /// repository's coordination tenure; the message says what it holds.
-    ReportCloseRefused(String),
-    /// A run requests a capability its adapter (the worker kind, or the
-    /// confined job that runs an operation) cannot enforce; the message
-    /// names the capability and the adapter.
-    CapabilityUnsupported(String),
-    /// The repository's operation has no user grant for its definition;
-    /// the message shows the definition and its hash.
-    GrantRequired(String),
-    /// A grant question answered other than from the user's own client
-    /// (a click in the `?` list): the API refuses it, so no agent grants.
-    GrantNeedsUser(String),
-    /// A `worker.answer_as` from a tenure that no longer owns the worker;
-    /// the message names the owner. The answer was not applied.
-    OwnershipTransferred(String),
-    Io(std::io::Error),
-}
-
-/// Every code a [`WorkerError`] has, so a stored refusal keeps its code.
-const WORKER_ERROR_CODES: &[&str] = &[
-    "worker_not_found",
-    "invalid_request",
-    "worker_not_running",
-    "worker_busy",
-    "worker_no_question",
-    "worker_question_gone",
-    "worker_needs_force",
-    "worker_turn_ended",
-    "worker_unsupported",
-    "worker_command_conflict",
-    "worker_command_interrupted",
-    "worker_io_error",
-    "coordinator_active",
-    "coordinator_not_found",
-    "workers_draining",
-    "worker_continuity_gap",
-    "todo_run_not_found",
-    "todo_event_stale",
-    "todo_run_active",
-    "run_owned_elsewhere",
-    "todo_preflight_failed",
-    "usage_gate",
-    "history_item_not_found",
-    "report_not_found",
-    "report_close_refused",
-    "capability_unsupported",
-    "grant_required",
-    "grant_needs_user",
-    "ownership_transferred",
-];
-
-impl WorkerError {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Self::NotFound(_) => "worker_not_found",
-            Self::Invalid(_) => "invalid_request",
-            Self::NotRunning(_) => "worker_not_running",
-            Self::Busy(_) => "worker_busy",
-            Self::NoQuestion(_) => "worker_no_question",
-            Self::QuestionGone(_) => "worker_question_gone",
-            Self::NeedsForce(_) => "worker_needs_force",
-            Self::TurnEnded(_) => "worker_turn_ended",
-            Self::Unsupported(_) => "worker_unsupported",
-            Self::CommandConflict(_) => "worker_command_conflict",
-            Self::CommandInterrupted(_) => "worker_command_interrupted",
-            Self::Replayed(code, _) => code,
-            Self::Io(_) => "worker_io_error",
-            Self::CoordinatorActive(_) => "coordinator_active",
-            Self::CoordinatorNotFound(_) => "coordinator_not_found",
-            Self::Draining(_) => "workers_draining",
-            Self::ContinuityGap(_) => "worker_continuity_gap",
-            Self::RunNotFound(_) => "todo_run_not_found",
-            Self::EventStale(_) => "todo_event_stale",
-            Self::RunActive(_) => "todo_run_active",
-            Self::RunOwnedElsewhere(_) => "run_owned_elsewhere",
-            Self::Preflight(_) => "todo_preflight_failed",
-            Self::UsageGate(_) => "usage_gate",
-            Self::HistoryNotFound(_) => "history_item_not_found",
-            Self::ReportNotFound(_) => "report_not_found",
-            Self::ReportCloseRefused(_) => "report_close_refused",
-            Self::CapabilityUnsupported(_) => "capability_unsupported",
-            Self::GrantRequired(_) => "grant_required",
-            Self::GrantNeedsUser(_) => "grant_needs_user",
-            Self::OwnershipTransferred(_) => "ownership_transferred",
-        }
-    }
-
-    /// A refusal stored with a command id, as it is returned again.
-    fn replayed(code: &str, message: String) -> Self {
-        let code = WORKER_ERROR_CODES
-            .iter()
-            .find(|known| **known == code)
-            .copied()
-            .unwrap_or("worker_io_error");
-        Self::Replayed(code, message)
-    }
-}
-
-impl std::fmt::Display for WorkerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(id) => write!(f, "worker {id} not found"),
-            Self::Invalid(message)
-            | Self::NotRunning(message)
-            | Self::Busy(message)
-            | Self::NoQuestion(message)
-            | Self::QuestionGone(message)
-            | Self::NeedsForce(message)
-            | Self::TurnEnded(message)
-            | Self::Unsupported(message)
-            | Self::CommandConflict(message)
-            | Self::CommandInterrupted(message)
-            | Self::Replayed(_, message)
-            | Self::CoordinatorActive(message)
-            | Self::CoordinatorNotFound(message)
-            | Self::Draining(message)
-            | Self::ContinuityGap(message)
-            | Self::RunNotFound(message)
-            | Self::EventStale(message)
-            | Self::RunActive(message)
-            | Self::RunOwnedElsewhere(message)
-            | Self::Preflight(message)
-            | Self::UsageGate(message)
-            | Self::HistoryNotFound(message)
-            | Self::ReportNotFound(message)
-            | Self::ReportCloseRefused(message)
-            | Self::CapabilityUnsupported(message)
-            | Self::GrantRequired(message)
-            | Self::GrantNeedsUser(message)
-            | Self::OwnershipTransferred(message) => f.write_str(message),
-            Self::Io(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl From<std::io::Error> for WorkerError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
 /// Whether `item` is a TODO item's stable id: `t-` and 8 lowercase
 /// base32 characters (`scripts/todo_edit.py`).
 fn is_item_id(item: &str) -> bool {
@@ -499,51 +314,6 @@ pub(super) fn held_output_summary(report: &WorkerHeldOutput) -> String {
     lines.join("\n")
 }
 
-struct Entry {
-    status: Status,
-    journal_path: PathBuf,
-    live: Option<Arc<Live>>,
-    /// Another server runs the worker (the old server of a live handoff)
-    /// and writes its projection; this one appends only events for it
-    /// until that server lets go ([`WorkerSupervisor::adopt_when_released`]).
-    foreign: bool,
-    /// The JSONL export, opened on the first event this server records.
-    export: Option<Arc<Journal>>,
-    /// Held output found mid-turn before the reader read the tool call it
-    /// belongs to: the exited child and its holders, recorded once that
-    /// call's line is read ([`WorkerSupervisor::flush_held_output`]).
-    held_pending: Option<(u32, Vec<WorkerPipeHolder>)>,
-}
-
-impl Entry {
-    /// Whether a live handoff keeps the worker running: its broker owns
-    /// its pipes.
-    fn survives_handoff(&self) -> bool {
-        self.status.broker.is_some()
-    }
-
-    fn new(status: Status, journal_path: PathBuf) -> Self {
-        Self {
-            status,
-            journal_path,
-            live: None,
-            foreign: false,
-            export: None,
-            held_pending: None,
-        }
-    }
-}
-
-/// What `worker.wait` with `until: attention` returns
-/// ([`WorkerSupervisor::wait_attention`]).
-#[derive(Debug, Clone)]
-pub(crate) struct Attention {
-    pub(crate) reason: WorkerAttentionReason,
-    pub(crate) questions: Vec<WorkerQuestion>,
-    pub(crate) seq: i64,
-    pub(crate) worker: WorkerInfo,
-}
-
 /// Workers' statuses after an `owner_moved` event written in a transaction
 /// not committed yet, each with its number and the event's `seq`
 /// ([`WorkerSupervisor::stage_owner_moves`]).
@@ -557,61 +327,6 @@ struct Committed {
     seq: Option<i64>,
     /// The store committed the event.
     stored: bool,
-}
-
-#[derive(Default)]
-struct Registry {
-    next_number: u64,
-    workers: BTreeMap<u64, Entry>,
-    /// The client command ids this server runs now, each with its method
-    /// and parameters; a repeat waits for the outcome ([`WorkerSupervisor::command`]).
-    commands: BTreeMap<String, (&'static str, String)>,
-    /// Owner panes whose agent cannot handle a question now (it hit a limit,
-    /// or is blocked on its own question to the user), with why: a question
-    /// its workers ask meanwhile goes to the user at once. Only this
-    /// server's memory: herdr re-evaluates the owners when it starts
-    /// ([`owners_at_start`]).
-    stuck_owners: BTreeMap<String, String>,
-    /// When each owner pane last showed an event herdr saw (its agent's
-    /// state, a limit, an ack), Unix milliseconds. Shown next to a quiet
-    /// question; it decides nothing.
-    owner_seen_ms: BTreeMap<String, u64>,
-    /// Owner panes whose pane closed or whose agent exited, with why: a
-    /// `todo.resume` from another pane takes over a run they own. Only this
-    /// server's memory: herdr re-evaluates the owners when it starts
-    /// ([`owners_at_start`]), the runs' owners among them.
-    gone_owners: BTreeMap<String, String>,
-    /// The drain before an install, while new turns are refused. Only this
-    /// server's memory: the server a handoff starts does not drain.
-    drain: Option<Drain>,
-    /// Worker starts that passed the drain check and have not registered
-    /// their worker (or failed) yet; a drain waits for them too.
-    starts_admitted: u32,
-    /// The inbox rows whose store write failed, per tenure: its next
-    /// `worker.events` answers `resync_required` ([`inbox::Losses`]).
-    inbox_losses: inbox::Losses,
-}
-
-/// What drains, and since when ([`WorkerSupervisor::drain`]).
-#[derive(Debug, Clone)]
-struct Drain {
-    reason: String,
-    started_ms: u64,
-}
-
-/// A worker start admitted past the drain check, counted in
-/// [`Registry::starts_admitted`] until dropped.
-struct StartAdmission<'a> {
-    supervisor: &'a WorkerSupervisor,
-}
-
-impl Drop for StartAdmission<'_> {
-    fn drop(&mut self) {
-        let mut registry = lock(&self.supervisor.shared.registry);
-        registry.starts_admitted = registry.starts_admitted.saturating_sub(1);
-        drop(registry);
-        self.supervisor.shared.changed.notify_all();
-    }
 }
 
 /// A client command id while its command runs: reserved in the store with
@@ -711,10 +426,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn worker_number(worker_id: &str) -> Option<u64> {
-    worker_id.strip_prefix('w')?.parse().ok()
-}
-
 /// Marks a stop or kill `signal` event as sent by the worker's owner when
 /// `caller_pane` is that owner, so its exit creates no obligation.
 fn mark_by_owner(signal: &mut Value, status: &Status, caller_pane: Option<&str>) {
@@ -743,14 +454,6 @@ fn notify_clients() {
     }
 }
 
-/// A notification a driver raised for the user (a todo run's stop reason),
-/// which the server sends to its client shells.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UserNotice {
-    pub(crate) title: String,
-    pub(crate) body: String,
-}
-
 /// The notices no server took yet, and whether there are any, which the
 /// server's loop reads without the lock.
 static USER_NOTICES: Mutex<Vec<UserNotice>> = Mutex::new(Vec::new());
@@ -773,18 +476,6 @@ pub(crate) fn take_user_notices() -> Vec<UserNotice> {
     std::mem::take(&mut *lock(&USER_NOTICES))
 }
 
-/// A question some worker waits on, with the worker it belongs to.
-#[derive(Debug, Clone)]
-pub(crate) struct PendingWorkerQuestion {
-    pub(crate) worker_id: String,
-    pub(crate) cwd: String,
-    pub(crate) question: WorkerQuestion,
-    /// It waits for the worker's owner, not for the user.
-    pub(crate) quiet: bool,
-    /// When the owner last showed an event herdr saw; display only.
-    pub(crate) owner_seen_ms: Option<u64>,
-}
-
 /// Every pending question of the server's supervisor; empty when no
 /// supervisor was opened (it is never opened just to answer this).
 pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
@@ -792,65 +483,6 @@ pub(crate) fn pending_questions() -> Vec<PendingWorkerQuestion> {
         .get()
         .map(WorkerSupervisor::pending_questions)
         .unwrap_or_default()
-}
-
-/// What a worker owner's pane or agent did, as herdr's own events report
-/// it ([`WorkerSupervisor::owner_event`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OwnerEvent {
-    /// The pane closed: the owner is gone for good.
-    PaneClosed,
-    /// The agent in it exited: the owner is gone for good.
-    AgentExited,
-    /// Its turn ended on a usage or credit limit (`pane.report_limit`).
-    Limited,
-    /// It waits on its own question to the user.
-    Blocked,
-    /// It went idle or done: a question still unanswered then was not
-    /// answered in its turn (acknowledging is not answering).
-    TurnEnded,
-    /// It works again: it can handle new questions.
-    Working,
-}
-
-impl OwnerEvent {
-    /// What an owner pane's agent status change means: its agent left the
-    /// pane (`released`), works again, is blocked, or went idle or done from
-    /// a state that was neither (a turn's end; idle and done only differ in
-    /// whether the user has seen it).
-    pub(crate) fn from_agent_status(
-        previous: crate::api::schema::AgentStatus,
-        now: crate::api::schema::AgentStatus,
-        released: bool,
-    ) -> Option<Self> {
-        use crate::api::schema::AgentStatus;
-        let resting = |status| matches!(status, AgentStatus::Idle | AgentStatus::Done);
-        if released {
-            Some(Self::AgentExited)
-        } else if previous == now {
-            None
-        } else if now == AgentStatus::Working {
-            Some(Self::Working)
-        } else if now == AgentStatus::Blocked {
-            Some(Self::Blocked)
-        } else if resting(now) && !resting(previous) {
-            Some(Self::TurnEnded)
-        } else {
-            None
-        }
-    }
-
-    /// Why it hands its workers' quiet questions to the user, if it does.
-    fn cause(self) -> Option<&'static str> {
-        Some(match self {
-            Self::PaneClosed => "the coordinator's pane closed",
-            Self::AgentExited => "the coordinator's agent exited",
-            Self::Limited => "the coordinator hit a usage or credit limit",
-            Self::Blocked => "the coordinator is blocked on its own question to the user",
-            Self::TurnEnded => "the coordinator ended its turn without answering",
-            Self::Working => return None,
-        })
-    }
 }
 
 /// Reports an owner's event to the server's supervisor; nothing when no
@@ -906,56 +538,6 @@ pub(crate) fn detach_for_handoff() {
     }
 }
 
-/// What the sidebar shows of a worker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkerSummary {
-    pub(crate) worker_id: String,
-    pub(crate) workspace_id: Option<String>,
-    pub(crate) name: String,
-    pub(crate) cwd: String,
-    pub(crate) state: WorkerState,
-    pub(crate) session_id: Option<String>,
-    pub(crate) takeover: bool,
-    /// The TODO item it works on and that item's title when it started.
-    pub(crate) item: Option<String>,
-    pub(crate) item_title: Option<String>,
-    /// Its folder slot and the branch checked out there.
-    pub(crate) slot: Option<String>,
-    pub(crate) branch: Option<String>,
-    pub(crate) turns: u32,
-    /// When it started, Unix milliseconds.
-    pub(crate) started_ms: Option<u64>,
-    /// When its running turn began; none between turns and once it ended.
-    pub(crate) turn_started_ms: Option<u64>,
-    /// When its latest event was recorded.
-    pub(crate) last_event_ms: Option<u64>,
-    /// Whether the sidebar lists it ([`Status::in_sidebar`]): while it
-    /// works or asks, and after its turn or its end until its owner
-    /// acknowledges it.
-    pub(crate) listed: bool,
-    /// Its process is gone (exited, or lost with a server).
-    pub(crate) gone: bool,
-    /// What ended it beyond its state, e.g. `ended by a server restart`
-    /// for one lost between turns, which keeps its last turn's state.
-    pub(crate) end_note: Option<String>,
-    /// Nothing waits on anyone: its turn or process ended, no question is
-    /// open and its owner, if any, acknowledged every event
-    /// ([`Status::settled`]).
-    pub(crate) quiet: bool,
-    /// The pane of the coordinator that owns it.
-    pub(crate) owner_pane: Option<String>,
-}
-
-/// How many TODO items of one repository have workers on them, for the
-/// coordinator's Items button: items with a running worker, and items with
-/// an ended run whose owner has not acknowledged its end (a result or a
-/// failure to review).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ItemCounts {
-    pub(crate) in_progress: u32,
-    pub(crate) attention: u32,
-}
-
 /// [`ItemCounts`] of repository `repo` in the server's supervisor; zero
 /// when no supervisor was opened.
 pub(crate) fn item_counts(repo: &str) -> ItemCounts {
@@ -1008,19 +590,6 @@ fn task_name(prompt: &str) -> String {
     )
 }
 
-/// What a takeover hands to the tab that resumes the worker's session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Takeover {
-    pub(crate) worker_id: String,
-    pub(crate) workspace_id: Option<String>,
-    pub(crate) name: String,
-    pub(crate) cwd: String,
-    pub(crate) session_id: String,
-    /// The claim's id, which the tab carries in [`TAKEOVER_ID_ENV`] and in
-    /// its title.
-    pub(crate) takeover_id: String,
-}
-
 fn unfinished_takeover_of(status: &Status) -> Option<UnfinishedTakeover> {
     status.takeover_unfinished.then(|| UnfinishedTakeover {
         worker_id: status.worker_id.clone(),
@@ -1039,40 +608,6 @@ pub(crate) fn unfinished_takeover_refusal(worker_id: &str) -> String {
          Retrying with --force opens another tab on the same session: if the \
          first one exists, two writers fork its transcript"
     )
-}
-
-/// The environment variable a takeover tab is created with: its claim's id.
-pub(crate) const TAKEOVER_ID_ENV: &str = "HERDR_TAKEOVER_ID";
-
-/// A takeover whose claim an earlier server recorded without its tab: what
-/// recovery looks for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnfinishedTakeover {
-    pub(crate) worker_id: String,
-    /// None for a claim recorded before takeovers had ids: then only a
-    /// process resuming the session can be found.
-    pub(crate) takeover_id: Option<String>,
-    pub(crate) session_id: Option<String>,
-}
-
-/// A tab recovery may adopt: its id, its title and the pids of its panes'
-/// shells.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TakeoverTabCandidate {
-    pub(crate) tab_id: String,
-    pub(crate) title: String,
-    pub(crate) shell_pids: Vec<u32>,
-}
-
-/// What recovery found of an unfinished takeover.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TakeoverFound {
-    /// The tab that carries its id, or whose pane runs a process resuming
-    /// its session.
-    Tab(String),
-    /// A process resuming its session outside herdr's tabs.
-    Process(u32),
-    Nothing,
 }
 
 /// The process facts recovery reads; [`LiveProcesses`] reads the system.
@@ -2838,22 +2373,6 @@ impl WorkerSupervisor {
         // The definitions waiting for the user's grant.
         pending.extend(grant_questions::pending_questions());
         pending
-    }
-
-    fn entry_number(registry: &Registry, worker_id: &str) -> Result<u64, WorkerError> {
-        worker_number(worker_id)
-            .filter(|number| registry.workers.contains_key(number))
-            .ok_or_else(|| WorkerError::NotFound(worker_id.to_owned()))
-    }
-
-    fn with_entry<T>(
-        &self,
-        worker_id: &str,
-        read: impl FnOnce(&Entry) -> T,
-    ) -> Result<T, WorkerError> {
-        let registry = lock(&self.shared.registry);
-        let number = Self::entry_number(&registry, worker_id)?;
-        Ok(read(&registry.workers[&number]))
     }
 
     pub(crate) fn status(&self, worker_id: &str) -> Result<WorkerInfo, WorkerError> {

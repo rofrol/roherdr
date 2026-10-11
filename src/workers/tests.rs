@@ -41,8 +41,8 @@ use serde_json::Value;
 
 use super::*;
 use crate::api::schema::{
-    WorkerAnswerParams, WorkerCommandTarget, WorkerDecision, WorkerPromptParams,
-    WorkerQuestionKind, WorkerQuestionState, WorkerRunOutcome,
+    WorkerAnswerParams, WorkerAttentionReason, WorkerCommandTarget, WorkerDecision,
+    WorkerPromptParams, WorkerQuestionKind, WorkerQuestionState, WorkerRunOutcome,
 };
 
 const STUB: &str = r#"#!/usr/bin/env python3
@@ -4470,24 +4470,6 @@ fn an_owner_ending_its_turn_hands_over_what_it_left_unanswered() {
     // One asked while it idles stays quiet: its wait wakes it.
     let asked_while_idle = owned_question(&fixture, "p1");
     assert!(shown_questions(&fixture.supervisor, &asked_while_idle)[0].1);
-}
-
-#[test]
-fn agent_status_changes_map_to_owner_events() {
-    use crate::api::schema::AgentStatus::{Blocked, Done, Idle, Unknown, Working};
-    let map = OwnerEvent::from_agent_status;
-    assert_eq!(map(Working, Idle, false), Some(OwnerEvent::TurnEnded));
-    assert_eq!(map(Working, Done, false), Some(OwnerEvent::TurnEnded));
-    assert_eq!(map(Blocked, Idle, false), Some(OwnerEvent::TurnEnded));
-    assert_eq!(map(Unknown, Idle, false), Some(OwnerEvent::TurnEnded));
-    // Seen or not is no turn's end.
-    assert_eq!(map(Done, Idle, false), None);
-    assert_eq!(map(Idle, Done, false), None);
-    assert_eq!(map(Idle, Idle, false), None);
-    assert_eq!(map(Idle, Working, false), Some(OwnerEvent::Working));
-    assert_eq!(map(Working, Blocked, false), Some(OwnerEvent::Blocked));
-    assert_eq!(map(Working, Unknown, false), None);
-    assert_eq!(map(Working, Working, true), Some(OwnerEvent::AgentExited));
 }
 
 #[test]
