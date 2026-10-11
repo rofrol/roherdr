@@ -17,6 +17,9 @@ use crate::api::subscriptions::{match_output, output_match_read_source};
 use crate::api::{ApiRequestSender, EventHub};
 use crate::ipc::LocalStream;
 
+mod start;
+pub(super) use start::wait_agent_start;
+
 pub(super) fn wait_for_output(
     request_id: String,
     params: crate::api::schema::PaneWaitForOutputParams,

@@ -798,10 +798,12 @@ fn agent_command() -> Command {
                         .required(true)
                         .help("Existing pane at an interactive shell prompt"),
                 )
-                .arg(
-                    option("timeout", "MS")
-                        .help("Wait for interactive readiness (default: 30000; max: 300000)"),
-                )
+                .arg(option("prompt", "TEXT").help(
+                    "First prompt, passed to claude, codex or pi at launch and followed like agent prompt; prints its prompt_request",
+                ))
+                .arg(option("timeout", "MS").help(
+                    "Your own bound on the launch (3001-300000); none by default. Past it, a launch whose agent never appeared frees its name",
+                ))
                 .arg(
                     Arg::new("agent_args")
                         .value_name("AGENT_ARG")
@@ -809,7 +811,7 @@ fn agent_command() -> Command {
                         .last(true),
                 )
                 .after_help(
-                    "The pane must be at its interactive shell prompt. Success means the expected agent was detected in the same terminal and is ready for input.\n\nnext: herdr agent prompt <TARGET> <TEXT> --wait",
+                    "The pane must be at its interactive shell prompt. The name is registered before the launch is typed. The command returns when the launch ends: success means the agent's integration reported its session (or detection saw it idle) in the same terminal and it is ready for input; it also ends when the agent stops at a dialog, exits or reports a limit. No duration decides.\n\nnext: herdr agent prompt <TARGET> <TEXT> --wait",
                 ),
         )
         .subcommand(
@@ -981,8 +983,9 @@ fn pane_command() -> Command {
                 .about("Send literal text to a pane")
                 .arg(required("pane_id", "PANE_ID"))
                 .arg(required("text", "TEXT"))
+                .arg(raw_typing_flag())
                 .after_help(
-                    "next: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call",
+                    "Refused in a pane with a detected agent: give it a turn with herdr agent prompt.\n\nnext: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call",
                 ),
         )
         .subcommand(
@@ -990,7 +993,8 @@ fn pane_command() -> Command {
                 .about("Send key presses to a pane")
                 .arg(required("pane_id", "PANE_ID"))
                 .arg(required("key", "KEY").num_args(1..))
-                .after_help("Use esc as the canonical Escape key name; escape is also accepted."),
+                .arg(raw_typing_flag())
+                .after_help("Refused in a pane with a detected agent: give it a turn with herdr agent prompt, answer a dialog with herdr agent send-keys.\n\nUse esc as the canonical Escape key name; escape is also accepted."),
         )
         .subcommand(
             Command::new("wait-output")
@@ -1406,6 +1410,11 @@ fn env_option() -> Arg {
     option("env", "KEY=VALUE")
         .action(ArgAction::Append)
         .help("Set an environment variable for the launched process")
+}
+
+/// `--raw` of `pane send-text` and `pane send-keys`.
+fn raw_typing_flag() -> Arg {
+    flag("raw").help("Type into a pane with a detected agent anyway (diagnostics)")
 }
 
 fn flag(name: &'static str) -> Arg {

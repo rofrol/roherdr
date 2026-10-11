@@ -88,12 +88,62 @@ impl App {
     }
 
     pub(super) fn handle_agent_start(&mut self, id: String, params: AgentStartParams) -> String {
-        let (agent, argv) = match self.start_agent(params) {
+        let prompt = params.prompt.clone();
+        let caller_pane_id = params.caller_pane_id.clone();
+        let started = match self.start_agent(params) {
             Ok(started) => started,
             Err(err) => return encode_error_body(id, self.agent_start_error_body(err)),
         };
+        // Followed like a prompt `agent.prompt` typed, registered before the app handles
+        // anything else, so the agent's report of the turn it starts always finds it.
+        let prompt_request = prompt.map(|prompt| {
+            self.follow_launch_prompt(
+                started.ws_idx,
+                started.pane_id,
+                &prompt,
+                caller_pane_id.as_deref(),
+            )
+        });
 
-        encode_success(id, ResponseResult::AgentStarted { agent, argv })
+        encode_success(
+            id,
+            ResponseResult::AgentStarted {
+                agent: started.agent,
+                argv: started.argv,
+                prompt_request,
+            },
+        )
+    }
+
+    /// Follows the first prompt an agent got as its launch argument. Its integration has not
+    /// reported anything yet, so the request is `unsupported` until it reports its session or
+    /// the turn (see `PromptTurns::unsupported_reason`).
+    fn follow_launch_prompt(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        prompt: &str,
+        caller_pane_id: Option<&str>,
+    ) -> crate::api::schema::AgentPromptRequest {
+        let request_id = next_prompt_request_id();
+        let error = self
+            .pane_terminal_mut(ws_idx, pane_id)
+            .and_then(|terminal| {
+                terminal.prompt_turns.accept(request_id.clone(), prompt);
+                terminal
+                    .prompt_turns
+                    .unsupported_reason(terminal.effective_agent_label())
+            });
+        self.register_assignment(ws_idx, pane_id, &request_id, prompt, caller_pane_id);
+        crate::api::schema::AgentPromptRequest {
+            request_id,
+            state: if error.is_some() {
+                AgentPromptRequestState::Unsupported
+            } else {
+                AgentPromptRequestState::Accepted
+            },
+            error,
+        }
     }
 
     pub(super) fn handle_agent_kind_list(&self, id: String) -> String {
@@ -1457,6 +1507,149 @@ mod tests {
         );
     }
 
+    /// A shell pane with a runtime, ready for `agent.start`.
+    fn shell_with_runtime(app: &mut App) -> (String, tokio::sync::mpsc::Receiver<Bytes>) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        (app.public_pane_id(0, pane_id).unwrap(), rx)
+    }
+
+    fn start_params(pane: &str, prompt: Option<&str>) -> AgentStartParams {
+        AgentStartParams {
+            name: "worker".into(),
+            kind: "claude".into(),
+            pane_id: pane.into(),
+            args: Vec::new(),
+            timeout_ms: None,
+            prompt: prompt.map(str::to_string),
+            caller_pane_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_start_with_a_prompt_follows_it_like_agent_prompt() {
+        let dir = scratch_dir();
+        crate::assignments::set_test_dir(Some(dir.join("assignments")));
+        let mut app = app_with_agent();
+        let (pane, mut rx) = shell_with_runtime(&mut app);
+
+        let response =
+            app.handle_agent_start("start".into(), start_params(&pane, Some("do the item")));
+        let success: SuccessResponse = serde_json::from_str(&response).expect(&response);
+        let ResponseResult::AgentStarted {
+            argv,
+            prompt_request: Some(request),
+            ..
+        } = success.result
+        else {
+            panic!("expected a started agent with a prompt request: {response}");
+        };
+        // The prompt is the launch's last argument.
+        assert_eq!(argv, vec!["claude".to_string(), "do the item".to_string()]);
+        let typed = rx.try_recv().unwrap();
+        assert!(String::from_utf8_lossy(&typed).contains("do the item"));
+        // Nothing reported yet: followed, but not known to be followable.
+        assert_eq!(request.state, AgentPromptRequestState::Unsupported);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Unsupported
+        );
+
+        // Claude's `SessionStart` ends the launch, and the turn its first prompt starts
+        // follows the request.
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(app.state.terminals[&terminal_id].managed_agent_launch_pending());
+        app.handle_pane_report_agent_session(
+            "session".into(),
+            crate::api::schema::PaneReportAgentSessionParams {
+                pane_id: pane.clone(),
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                seq: Some(1),
+                agent_session_id: Some("s1".into()),
+                agent_session_path: None,
+                session_start_source: Some("startup".into()),
+                resume_argv: None,
+                turn_reports: true,
+            },
+        );
+        assert!(app.state.terminals[&terminal_id].managed_agent_interactive_ready());
+        assert_eq!(
+            app.state.terminals[&terminal_id].agent_name.as_deref(),
+            Some("worker")
+        );
+        report_turn(&mut app, &pane, "started", Some("do the item"));
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Working
+        );
+        report_turn(&mut app, &pane, "finished", None);
+        assert_eq!(
+            prompt_state(&mut app, &request.request_id),
+            AgentPromptRequestState::Finished
+        );
+        crate::assignments::set_test_dir(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_due_launch_is_reconciled_when_the_runtime_wakes_for_it() {
+        let mut app = app_with_agent();
+        let (pane, _rx) = shell_with_runtime(&mut app);
+        let started = app.handle_agent_start("start".into(), start_params(&pane, None));
+        assert!(started.contains("agent_started"), "{started}");
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let due = app.state.next_managed_agent_deadline().unwrap();
+        // delay: not a wait, a virtual instant just before the settle delay ends.
+        let just_before = due - Duration::from_millis(1);
+        assert!(!app.reconcile_due_managed_agents(just_before));
+        assert!(app.state.terminals[&terminal_id].managed_agent_launch_pending());
+        // The runtime wakes at the deadline and reconciles, without any reader asking.
+        assert!(app.reconcile_due_managed_agents(due));
+        assert!(app.state.terminals[&terminal_id].managed_agent_interactive_ready());
+        assert_eq!(app.state.next_managed_agent_deadline(), None);
+    }
+
+    #[tokio::test]
+    async fn agent_start_refuses_a_prompt_it_cannot_pass() {
+        let mut app = app_with_agent();
+        let (pane, mut rx) = shell_with_runtime(&mut app);
+        let mut params = start_params(&pane, Some("do the item"));
+        params.kind = "opencode".into();
+        let refused = app.handle_agent_start("start".into(), params);
+        assert!(refused.contains("agent_prompt_unsupported"), "{refused}");
+        let empty = app.handle_agent_start("start".into(), start_params(&pane, Some("  ")));
+        assert!(empty.contains("empty_agent_prompt"), "{empty}");
+        // Nothing was typed and no name was taken.
+        assert!(rx.try_recv().is_err());
+        let started = app.handle_agent_start("start".into(), start_params(&pane, None));
+        let success: SuccessResponse = serde_json::from_str(&started).unwrap();
+        let ResponseResult::AgentStarted { prompt_request, .. } = success.result else {
+            panic!("expected a started agent: {started}");
+        };
+        assert_eq!(prompt_request, None);
+    }
+
     #[tokio::test]
     async fn a_verdict_recorded_after_its_waiter_died_is_read_at_once_by_the_next_server() {
         let dir = scratch_dir();
@@ -2317,7 +2510,7 @@ mod tests {
             Agent::OpenCode,
             now,
             std::time::Duration::from_secs(3),
-            std::time::Duration::from_secs(10),
+            None,
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);

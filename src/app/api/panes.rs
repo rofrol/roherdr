@@ -1646,6 +1646,16 @@ impl App {
             seq: params.seq,
             session_start_source: session_start_source.clone(),
         });
+        // The session report (Claude's `SessionStart`) of the kind a pending `agent.start`
+        // launched in this pane ends that launch; its `pane.updated` wakes `agent.wait_start`.
+        if self
+            .pane_terminal_mut(ws_idx, pane_id)
+            .is_some_and(|terminal| terminal.report_managed_agent_session(&agent_label))
+        {
+            self.state.mark_session_dirty();
+            self.schedule_session_save();
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         if applied && session_ref.is_some() {

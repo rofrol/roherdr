@@ -217,7 +217,38 @@ pub struct AgentStartParams {
     pub pane_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
+    /// The caller's own bound on the launch, in milliseconds (greater than 3000, at most
+    /// 300000). Herdr adds none: without it the name stays registered until the launch ends.
+    /// With it, a launch whose agent never appeared by then gives its name up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// The agent's first prompt, passed as its launch argument (claude, codex and pi) and
+    /// followed like one `agent.prompt` typed: the response's `prompt_request` names it for
+    /// `agent.wait_turn`, `agent.prompt_status` and `agent.wait_verdict`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// The pane that started the agent, recorded with the first prompt's assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
+}
+
+/// Waits until the launch `agent.start` began in a pane ends: the agent's integration
+/// reported its session (Claude's `SessionStart`) or screen detection saw it ready, it stopped
+/// at a dialog, it exited or another program took the pane, or its integration reported a
+/// limit. Every outcome is an event; `timeout_ms` is only the caller's own bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentWaitStartParams {
+    /// The name the launch registered.
+    pub name: String,
+    /// The terminal `agent.start` answered with: a name that moved to another terminal is
+    /// not this launch's.
+    pub terminal_id: String,
+    /// The pane `agent.start` answered with, read when the name no longer resolves.
+    pub pane_id: String,
+    /// The kind `agent.start` launched.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }

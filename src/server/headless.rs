@@ -3470,6 +3470,15 @@ impl HeadlessServer {
 
         if self
             .app
+            .state
+            .next_managed_agent_deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            changed |= self.app.reconcile_due_managed_agents(now);
+        }
+
+        if self
+            .app
             .restored_worktree_validation_retry_at
             .is_some_and(|deadline| now >= deadline)
         {

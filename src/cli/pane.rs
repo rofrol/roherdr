@@ -1040,25 +1040,78 @@ fn pane_close(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn pane_send_text(args: &[String]) -> std::io::Result<i32> {
+    let (raw, args) = split_raw_flag(args);
     if args.len() < 2 {
-        eprintln!("usage: herdr pane send-text <pane_id> <text>");
+        eprintln!("usage: herdr pane send-text [--raw] <pane_id> <text>");
         return Ok(2);
     }
 
     let pane_id = super::normalize_pane_id(&args[0]);
+    if !raw && refuse_typing_into_agent(&pane_id, "send-text")? {
+        return Ok(1);
+    }
     let text = args[1..].join(" ");
     super::send_ok_request(Method::PaneSendText(PaneSendTextParams { pane_id, text }))
 }
 
 fn pane_send_keys(args: &[String]) -> std::io::Result<i32> {
+    let (raw, args) = split_raw_flag(args);
     if args.len() < 2 {
-        eprintln!("usage: herdr pane send-keys <pane_id> <key> [key ...]");
+        eprintln!("usage: herdr pane send-keys [--raw] <pane_id> <key> [key ...]");
         return Ok(2);
     }
 
     let pane_id = super::normalize_pane_id(&args[0]);
+    if !raw && refuse_typing_into_agent(&pane_id, "send-keys")? {
+        return Ok(1);
+    }
     let keys = args[1..].to_vec();
     super::send_ok_request(Method::PaneSendKeys(PaneSendKeysParams { pane_id, keys }))
+}
+
+/// `--raw` before the pane id or right after it; the text or keys follow.
+fn split_raw_flag(args: &[String]) -> (bool, Vec<String>) {
+    let position = args.iter().take(2).position(|arg| arg == "--raw");
+    let mut rest = args.to_vec();
+    if let Some(position) = position {
+        rest.remove(position);
+    }
+    (position.is_some(), rest)
+}
+
+/// Refuses typing into a pane with a detected agent, printing why, and returns whether it
+/// refused. Typed text starts no turn herdr can follow and may end in a paste the agent
+/// never submits or in one of its dialogs; `herdr agent prompt` types a turn and confirms it.
+/// A pane herdr cannot read is left to the send, which reports it.
+fn refuse_typing_into_agent(pane_id: &str, command: &str) -> std::io::Result<bool> {
+    let response = super::send_request(&Request {
+        id: "cli:pane:get".into(),
+        method: Method::PaneGet(PaneTarget {
+            pane_id: pane_id.to_owned(),
+        }),
+    })?;
+    let Some(refusal) = agent_pane_refusal(pane_id, &response["result"]["pane"], command) else {
+        return Ok(false);
+    };
+    eprintln!("{refusal}");
+    Ok(true)
+}
+
+fn agent_pane_refusal(
+    pane_id: &str,
+    pane: &serde_json::Value,
+    command: &str,
+) -> Option<serde_json::Value> {
+    let agent = pane["agent"].as_str()?;
+    Some(serde_json::json!({
+        "id": format!("cli:pane:{command}"),
+        "error": {
+            "code": "pane_runs_agent",
+            "message": format!(
+                "pane {pane_id} runs {agent}: give it a turn with `herdr agent prompt {pane_id} <text>`, which types the prompt, confirms the agent took it and follows its turn; answer a dialog with `herdr agent send-keys {pane_id} <key>...`; `herdr pane {command} --raw` types into the pane anyway, for diagnostics"
+            ),
+        },
+    }))
 }
 
 fn pane_run(args: &[String]) -> std::io::Result<i32> {
@@ -1803,8 +1856,8 @@ fn print_pane_help() {
     eprintln!("  herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]");
     eprintln!("  herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]");
     eprintln!("  herdr pane close <pane_id>");
-    eprintln!("  herdr pane send-text <pane_id> <text>");
-    eprintln!("  herdr pane send-keys <pane_id> <key> [key ...]");
+    eprintln!("  herdr pane send-text [--raw] <pane_id> <text>");
+    eprintln!("  herdr pane send-keys [--raw] <pane_id> <key> [key ...]");
     eprintln!("  herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]");
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
@@ -1821,6 +1874,40 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn typing_into_a_pane_with_an_agent_names_agent_prompt() {
+        let pane = serde_json::json!({"pane_id": "w1:p2", "agent": "claude"});
+        let refusal = agent_pane_refusal("w1:p2", &pane, "send-text").unwrap();
+        assert_eq!(refusal["error"]["code"], "pane_runs_agent");
+        let message = refusal["error"]["message"].as_str().unwrap();
+        assert!(message.contains("herdr agent prompt w1:p2"), "{message}");
+        assert!(message.contains("--raw"), "{message}");
+        // A shell pane, or one herdr could not read, is typed into as before.
+        let shell = serde_json::json!({"pane_id": "w1:p2"});
+        assert_eq!(agent_pane_refusal("w1:p2", &shell, "send-keys"), None);
+        assert_eq!(
+            agent_pane_refusal("w1:p2", &serde_json::Value::Null, "send-keys"),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_is_read_before_or_right_after_the_pane_id() {
+        assert_eq!(
+            split_raw_flag(&args(&["--raw", "p1", "enter"])),
+            (true, args(&["p1", "enter"]))
+        );
+        assert_eq!(
+            split_raw_flag(&args(&["p1", "--raw", "enter"])),
+            (true, args(&["p1", "enter"]))
+        );
+        // Later, it is the text itself.
+        assert_eq!(
+            split_raw_flag(&args(&["p1", "echo", "--raw"])),
+            (false, args(&["p1", "echo", "--raw"]))
+        );
     }
 
     #[test]

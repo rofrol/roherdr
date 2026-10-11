@@ -4,9 +4,9 @@ use crate::api::schema::{
     AgentAckVerdictParams, AgentPromptConfirmedParams, AgentPromptParams, AgentPromptStatusParams,
     AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
     AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentVerdictParams,
-    AgentWaitChangeParams, AgentWaitParams, AgentWaitTurnParams, AgentWaitVerdictParams,
-    EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
-    ReadSource, Request,
+    AgentWaitChangeParams, AgentWaitParams, AgentWaitStartParams, AgentWaitTurnParams,
+    AgentWaitVerdictParams, EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams,
+    PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -75,12 +75,6 @@ impl NameScope {
                 .then_some(caller_workspace_id)
                 .flatten()
                 .map(super::normalize_workspace_id),
-        }
-    }
-
-    fn workspace(workspace_id: Option<&str>) -> Self {
-        Self {
-            prefer_workspace_id: workspace_id.map(str::to_owned),
         }
     }
 
@@ -356,7 +350,7 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
+        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--prompt TEXT] [--timeout MS] [-- <agent-args...>]");
         return Ok(2);
     };
     let separator = args
@@ -366,9 +360,18 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let mut kind = None;
     let mut pane_id = None;
     let mut timeout_ms = None;
+    let mut prompt = None;
     let mut index = 1;
     while index < separator {
         match args[index].as_str() {
+            "--prompt" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --prompt");
+                    return Ok(2);
+                };
+                prompt = Some(value.clone());
+                index += 2;
+            }
             "--kind" => {
                 let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
                     eprintln!("missing value for --kind");
@@ -420,9 +423,12 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     } else {
         Vec::new()
     };
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
-    let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
-        && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
+    // A busy pane is retried while its new shell initializes, except for a caller's bound
+    // the server refuses anyway.
+    let retryable_timeout = timeout_ms.map(Duration::from_millis).is_none_or(|timeout| {
+        timeout > crate::app::AGENT_START_SETTLE_DELAY
+            && timeout <= crate::app::MAX_AGENT_START_TIMEOUT
+    });
     let pinned_terminal_id = pane_terminal_id(&pane_id)?;
     let mut retry_deadline = None;
     let mut previous_busy_response = None;
@@ -445,6 +451,8 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 pane_id: pane_id.clone(),
                 args: agent_args.clone(),
                 timeout_ms,
+                prompt: prompt.clone(),
+                caller_pane_id: super::target::caller_pane_id(),
             }),
         })?;
         if response.get("error").is_none() {
@@ -471,11 +479,14 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         std::thread::sleep(AGENT_START_POLL_INTERVAL.min(remaining));
     };
 
-    let Some(expected_terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
+    let started = &response["result"]["agent"];
+    let (Some(expected_terminal_id), Some(started_pane_id)) =
+        (started["terminal_id"].as_str(), started["pane_id"].as_str())
+    else {
         return super::print_response(&cli_agent_error(
             "cli:agent:start",
             "agent_start_failed",
-            "agent start response did not include terminal_id",
+            "agent start response did not include terminal_id and pane_id",
         ));
     };
     if pinned_terminal_id
@@ -484,22 +495,46 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     {
         return super::print_response(&agent_name_lost_error("cli:agent:start", name));
     }
-    // Names are unique per workspace, so look the new name up in the started pane's workspace.
-    let scope = NameScope::workspace(response["result"]["agent"]["workspace_id"].as_str());
-    let waited = wait_for_named_agent(
-        name,
-        &scope,
-        &pane_id,
-        timeout,
-        &expected_kind,
-        expected_terminal_id,
-    );
+    // The launch ends on an event the server sees (the agent's session report, a dialog, an
+    // exit), never on a duration of the CLI's: `agent.wait_start` waits for it. Names are
+    // unique per workspace, so the name is looked up in the started pane's workspace.
+    let params = AgentWaitStartParams {
+        name: name.clone(),
+        terminal_id: expected_terminal_id.to_string(),
+        pane_id: started_pane_id.to_string(),
+        kind: expected_kind,
+        prefer_workspace_id: started["workspace_id"].as_str().map(str::to_owned),
+        timeout_ms,
+    };
+    let what = format!("the launch of agent {name}");
+    let waited = super::reconnect::wait("agent start", &what, |elapsed| Request {
+        id: "cli:agent:start".into(),
+        method: Method::AgentWaitStart(AgentWaitStartParams {
+            timeout_ms: super::reconnect::remaining_ms(timeout_ms, elapsed),
+            ..params.clone()
+        }),
+    })
+    .map(|reply| {
+        super::reconnect::report_gave_up("agent start", &what, &reply);
+        reply.response
+    });
     match waited {
-        Ok(Ok(agent)) => {
-            response["result"]["agent"] = agent;
+        Ok(waited) if waited.get("error").is_none() => {
+            response["result"]["agent"] = waited["result"]["agent"].clone();
             super::print_response(&response)
         }
-        Ok(Err(error)) => super::print_response(&error),
+        Ok(mut error) => {
+            // The first prompt stays followed whatever happened to the launch: name it.
+            if let (Some(message), Some(request_id)) = (
+                error["error"]["message"].as_str(),
+                response["result"]["prompt_request"]["request_id"].as_str(),
+            ) {
+                error["error"]["message"] =
+                    format!("{message} (first prompt request {request_id})").into();
+            }
+            error["id"] = "cli:agent:start".into();
+            super::print_response(&error)
+        }
         Err(err) => {
             print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
         }
@@ -828,135 +863,6 @@ fn agent_prompt_status(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-fn wait_for_named_agent(
-    name: &str,
-    scope: &NameScope,
-    fallback_pane_id: &str,
-    timeout: Duration,
-    expected_kind: &str,
-    expected_terminal_id: &str,
-) -> std::io::Result<Result<serde_json::Value, serde_json::Value>> {
-    let deadline = Instant::now().checked_add(timeout);
-    let mut first_poll = true;
-    loop {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            // Let the server reconcile its matching startup deadline before
-            // returning: a launch whose agent never appeared frees its name for
-            // reuse, and one whose agent runs keeps it.
-            let reconciled = resolve_agent_target_unchecked(name, scope, "cli:agent:start:timeout");
-            let agent = reconciled
-                .ok()
-                .map(|response| response["result"]["agent"].clone())
-                .filter(|agent| {
-                    agent["terminal_id"].as_str() == Some(expected_terminal_id)
-                        && agent["name"].as_str() == Some(name)
-                });
-            return Ok(Err(agent_wait_timeout(name, agent.as_ref())));
-        }
-        let poll_id = "cli:agent:start";
-        let mut response = if first_poll {
-            first_poll = false;
-            resolve_agent_target(name, scope, poll_id)?
-        } else {
-            resolve_agent_target_unchecked(name, scope, poll_id)?
-        };
-        if response.get("error").is_some() {
-            response = resolve_agent_target_unchecked(fallback_pane_id, scope, poll_id)?;
-            if response.get("error").is_some() {
-                std::thread::sleep(AGENT_START_POLL_INTERVAL);
-                continue;
-            }
-        }
-        let agent = &response["result"]["agent"];
-        let outcome = if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else if let Some(actual) = agent["agent"]
-            .as_str()
-            .filter(|actual| *actual != expected_kind)
-        {
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_kind_mismatch",
-                format!("expected {expected_kind}, detected {actual}"),
-            )))
-        } else if agent["name"].is_null() {
-            // The agent appeared only after the startup deadline released its name.
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_name_not_found",
-                format!(
-                    "{expected_kind} started in pane {pane} only after its startup deadline released the name {name}; name it with `herdr agent rename {pane} {name}`",
-                    pane = agent["pane_id"].as_str().unwrap_or(fallback_pane_id),
-                ),
-            )))
-        } else if agent["name"].as_str() != Some(name) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else {
-            match agent["agent_status"].as_str() {
-                Some("blocked") => Some(Err(cli_agent_error(
-                    "cli:agent:start",
-                    "agent_not_ready",
-                    format!(
-                        "agent {name} is blocked during startup by {} and is not ready for prompts; answer it in pane {} (an agent started in a folder it never trusted asks whether to trust it)",
-                        startup_dialog(name, scope, agent),
-                        agent["pane_id"].as_str().unwrap_or(fallback_pane_id),
-                    ),
-                ))),
-                Some("unknown")
-                    if expected_kind == "codex"
-                        && agent["interactive_ready"].as_bool() == Some(true) =>
-                {
-                    Some(Ok(agent.clone()))
-                }
-                Some("working" | "unknown") => None,
-                Some("idle" | "done") if agent["interactive_ready"].as_bool() == Some(true) => {
-                    Some(Ok(agent.clone()))
-                }
-                Some("idle" | "done") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
-                    Some(Err(cli_agent_error(
-                        "cli:agent:start",
-                        "agent_start_failed",
-                        "agent process exited before becoming interactive",
-                    )))
-                }
-                _ => None,
-            }
-        };
-        if let Some(outcome) = outcome {
-            return Ok(outcome);
-        }
-        std::thread::sleep(AGENT_START_POLL_INTERVAL);
-    }
-}
-
-/// The dialog an agent blocked during startup shows: `the "<rule>" dialog` when a blocking
-/// screen-detection rule matches its screen (a folder-trust prompt), else the question its
-/// integration reported, else `a dialog`.
-fn startup_dialog(name: &str, scope: &NameScope, agent: &serde_json::Value) -> String {
-    let explained = super::send_request_unchecked(&Request {
-        id: "cli:agent:start:explain".into(),
-        method: Method::AgentExplain(scope.target(name)),
-    });
-    if let Some(dialog) = explained
-        .ok()
-        .and_then(|value| blocking_rule_dialog(&value["result"]["explain"]["matched_rule"]))
-    {
-        return dialog;
-    }
-    match agent["question"].as_str().map(str::trim) {
-        Some(question) if !question.is_empty() => format!("the question \"{question}\""),
-        _ => "a dialog".to_string(),
-    }
-}
-
-/// `the "<id>" dialog` for a matched screen-detection rule whose state is `blocked`.
-fn blocking_rule_dialog(rule: &serde_json::Value) -> Option<String> {
-    (rule["state"] == "blocked")
-        .then(|| rule["id"].as_str())
-        .flatten()
-        .map(|id| format!("the \"{id}\" dialog"))
-}
-
 fn pane_terminal_id(pane_id: &str) -> std::io::Result<Option<String>> {
     let response = super::send_request(&Request {
         id: "cli:agent:start:pane".into(),
@@ -1039,19 +945,6 @@ fn print_agent_transport_error(
     super::print_response(&cli_agent_error(request_id, code, err.to_string()))
 }
 
-/// The startup wait ran out. An agent that runs but is not ready yet keeps its name (the
-/// server releases it only when the agent never appeared), so the message says where it is.
-fn agent_wait_timeout(name: &str, still_named: Option<&serde_json::Value>) -> serde_json::Value {
-    let message = match still_named {
-        Some(agent) => format!(
-            "timed out waiting for agent startup: agent {name} runs in pane {} but is not ready for prompts yet; it keeps its name and becomes ready when it idles (read the pane: it may show a dialog, such as the folder-trust prompt)",
-            agent["pane_id"].as_str().unwrap_or("?"),
-        ),
-        None => "timed out waiting for agent startup".to_string(),
-    };
-    cli_agent_error("cli:agent:start", "timeout", message)
-}
-
 fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_json::Value {
     serde_json::json!({
         "id": id,
@@ -1065,14 +958,6 @@ fn resolve_agent_target(
     request_id: &str,
 ) -> std::io::Result<serde_json::Value> {
     super::send_request(&agent_get_request(target, scope, request_id))
-}
-
-fn resolve_agent_target_unchecked(
-    target: &str,
-    scope: &NameScope,
-    request_id: &str,
-) -> std::io::Result<serde_json::Value> {
-    super::send_request_unchecked(&agent_get_request(target, scope, request_id))
 }
 
 fn agent_get_request(target: &str, scope: &NameScope, request_id: &str) -> Request {
@@ -1551,21 +1436,9 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        blocking_rule_dialog, method_unknown, prompt_turn_unavailable, split_global_flag,
-        unsupported_request_note, NameScope,
+        method_unknown, prompt_turn_unavailable, split_global_flag, unsupported_request_note,
+        NameScope,
     };
-
-    #[test]
-    fn a_blocking_rule_names_the_startup_dialog() {
-        let rule = serde_json::json!({"id": "trust_directory", "state": "blocked"});
-        assert_eq!(
-            blocking_rule_dialog(&rule).as_deref(),
-            Some("the \"trust_directory\" dialog")
-        );
-        let working = serde_json::json!({"id": "spinner", "state": "working"});
-        assert_eq!(blocking_rule_dialog(&working), None);
-        assert_eq!(blocking_rule_dialog(&serde_json::Value::Null), None);
-    }
 
     #[test]
     fn an_older_server_without_prompt_tracked_is_recognized() {

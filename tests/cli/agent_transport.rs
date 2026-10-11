@@ -1,7 +1,7 @@
 use super::harness::*;
 
 #[test]
-fn agent_start_waits_through_unknown_then_rejects_blocked() {
+fn agent_start_waits_for_the_launch_with_agent_wait_start() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();
     let socket_path = base.join("herdr.sock");
@@ -48,57 +48,29 @@ fn agent_start_waits_through_unknown_then_rejects_blocked() {
         .unwrap();
         start_stream.flush().unwrap();
 
-        let (mut get_stream, get_line) = accept_fake_cli_operation(&listener);
-        let get: serde_json::Value = serde_json::from_str(&get_line).unwrap();
-        assert_eq!(get["method"], "agent.get");
-        assert_eq!(get["params"]["target"], "reviewer");
+        // The CLI waits for the launch's end with one event-driven request, not by polling.
+        let (mut wait_stream, wait_line) = accept_fake_cli_operation(&listener);
+        let wait: serde_json::Value = serde_json::from_str(&wait_line).unwrap();
+        assert_eq!(wait["method"], "agent.wait_start");
+        assert_eq!(wait["params"]["name"], "reviewer");
+        assert_eq!(wait["params"]["terminal_id"], "term_1");
+        assert_eq!(wait["params"]["pane_id"], "w1:p1");
+        assert_eq!(wait["params"]["kind"], "opencode");
+        // No caller bound was given, and herdr adds none.
+        assert!(wait["params"].get("timeout_ms").is_none());
         writeln!(
-            get_stream,
+            wait_stream,
             "{}",
             serde_json::json!({
-                "id": get["id"],
-                "result": {
-                    "type": "agent_info",
-                    "agent": {
-                        "agent": null,
-                        "agent_status": "unknown",
-                        "interactive_ready": true,
-                        "launch_pending": false,
-                        "name": "reviewer",
-                        "pane_id": "w1:p1",
-                        "terminal_id": "term_1"
-                    }
+                "id": wait["id"],
+                "error": {
+                    "code": "agent_not_ready",
+                    "message": "agent reviewer is blocked during startup by a dialog"
                 }
             })
         )
         .unwrap();
-        get_stream.flush().unwrap();
-
-        let (mut get_stream, get_line) = accept_fake_cli_operation(&listener);
-        let get: serde_json::Value = serde_json::from_str(&get_line).unwrap();
-        assert_eq!(get["method"], "agent.get");
-        assert_eq!(get["params"]["target"], "reviewer");
-        writeln!(
-            get_stream,
-            "{}",
-            serde_json::json!({
-                "id": get["id"],
-                "result": {
-                    "type": "agent_info",
-                    "agent": {
-                        "agent": "opencode",
-                        "agent_status": "blocked",
-                        "interactive_ready": true,
-                        "launch_pending": false,
-                        "name": "reviewer",
-                        "pane_id": "w1:p1",
-                        "terminal_id": "term_1"
-                    }
-                }
-            })
-        )
-        .unwrap();
-        get_stream.flush().unwrap();
+        wait_stream.flush().unwrap();
     });
 
     let started = run_cli(

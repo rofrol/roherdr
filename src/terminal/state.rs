@@ -88,7 +88,9 @@ struct StaleFullLifecycleHookSession {
 enum ManagedAgentPhase {
     Pending {
         ready_after: Option<Instant>,
-        deadline: Instant,
+        /// The caller's own bound on the launch (`agent.start`'s `timeout_ms`); herdr adds
+        /// none. Past it, a launch whose agent never appeared gives its name up.
+        deadline: Option<Instant>,
         observed_expected: bool,
     },
     Blocked,
@@ -2765,7 +2767,7 @@ impl TerminalState {
         kind: Agent,
         now: Instant,
         settle_delay: Duration,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) {
         self.codex_prompt_ready = false;
         self.set_agent_name(name);
@@ -2778,7 +2780,7 @@ impl TerminalState {
             kind,
             phase: ManagedAgentPhase::Pending {
                 ready_after: Some(now.checked_add(settle_delay).unwrap_or(now)),
-                deadline: now.checked_add(timeout).unwrap_or(now),
+                deadline: timeout.map(|timeout| now.checked_add(timeout).unwrap_or(now)),
                 observed_expected: false,
             },
         });
@@ -2825,7 +2827,10 @@ impl TerminalState {
         else {
             return None;
         };
-        Some(ready_after.unwrap_or(deadline).min(deadline))
+        match (ready_after, deadline) {
+            (Some(ready_after), Some(deadline)) => Some(ready_after.min(deadline)),
+            (ready_after, deadline) => ready_after.or(deadline),
+        }
     }
 
     pub fn reconcile_managed_agent_at(&mut self, now: Instant, process_exited: bool) -> bool {
@@ -2839,11 +2844,10 @@ impl TerminalState {
             } => observed_expected || known_agent == Some(managed.kind),
             ManagedAgentPhase::Blocked | ManagedAgentPhase::Active => false,
         };
-        let clear = process_exited
-            || known_agent.is_some_and(|agent| agent != managed.kind)
-            || matches!(managed.phase, ManagedAgentPhase::Pending { .. })
-                && observed_expected
-                && known_agent.is_none();
+        // Detection losing the agent for a moment is no exit: the name is the only handle its
+        // owner has on the pane (a recorded exit frees it, see `set_detected_state...`). Freeing
+        // it here once lost the names of agents that worked on their first prompt.
+        let clear = process_exited || known_agent.is_some_and(|agent| agent != managed.kind);
         if clear {
             self.clear_agent_name();
             return true;
@@ -2877,12 +2881,13 @@ impl TerminalState {
                 });
                 return true;
             }
-            if now >= deadline {
-                // The expected agent runs but is not ready yet (a folder-trust dialog, a slow
-                // start): it keeps its name, the only handle its owner has on the pane, and
-                // becomes ready once it idles. Only a launch whose agent never appeared frees
-                // the name for reuse.
-                if known_agent == Some(managed.kind) {
+            if deadline.is_some_and(|deadline| now >= deadline) {
+                // The expected agent runs, or ran, but is not ready yet (a folder-trust
+                // dialog, a slow start, a first prompt it works on): it keeps its name, the
+                // only handle its owner has on the pane, and becomes ready once it idles or
+                // reports its session. Only a launch whose agent never appeared frees the name
+                // for reuse; the current detection alone is no proof of that.
+                if observed_expected {
                     self.managed_agent = Some(ManagedAgent {
                         kind: managed.kind,
                         phase: ManagedAgentPhase::Blocked,
@@ -2931,6 +2936,26 @@ impl TerminalState {
             }
         }
         false
+    }
+
+    /// The agent's integration reported a session (Claude's `SessionStart`) of the kind this
+    /// pane's pending launch started: the launch is over and the agent takes prompts. Returns
+    /// whether the launch ended now.
+    pub fn report_managed_agent_session(&mut self, agent_label: &str) -> bool {
+        let Some(managed) = self.managed_agent else {
+            return false;
+        };
+        if managed.phase == ManagedAgentPhase::Active
+            || crate::detect::parse_agent_label(agent_label) != Some(managed.kind)
+        {
+            return false;
+        }
+        self.managed_agent = Some(ManagedAgent {
+            kind: managed.kind,
+            phase: ManagedAgentPhase::Active,
+        });
+        self.managed_agent_launch_session = None;
+        true
     }
 
     pub fn restore_managed_agent(&mut self, name: String, kind: Agent) {
@@ -3322,7 +3347,7 @@ mod tests {
             Agent::Pi,
             now,
             Duration::from_millis(100),
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Unknown);
 
@@ -3365,7 +3390,7 @@ mod tests {
             Agent::Codex,
             now,
             Duration::from_millis(100),
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Unknown);
         terminal.observe_codex_prompt_ready(true);
@@ -3387,7 +3412,7 @@ mod tests {
             Agent::Codex,
             now,
             Duration::ZERO,
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         terminal.reconcile_managed_agent_at(now, false);
         assert!(!terminal.managed_agent_interactive_ready());
@@ -3411,7 +3436,7 @@ mod tests {
             Agent::Pi,
             now,
             Duration::ZERO,
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         mismatch.set_detected_state(Some(Agent::Codex), AgentState::Idle);
         assert!(mismatch.reconcile_managed_agent_at(now, false));
@@ -3424,7 +3449,7 @@ mod tests {
             Agent::Pi,
             now,
             Duration::from_millis(10),
-            Duration::from_millis(20),
+            Some(Duration::from_millis(20)),
         );
         timed_out.set_managed_agent_launch_session(crate::agent_resume::PersistedAgentSession {
             source: "herdr:codex".into(),
@@ -3444,7 +3469,7 @@ mod tests {
         let settle = Duration::from_millis(10);
         let deadline = Duration::from_millis(20);
         let mut terminal = test_terminal();
-        terminal.begin_managed_agent("worker".into(), Agent::Claude, now, settle, deadline);
+        terminal.begin_managed_agent("worker".into(), Agent::Claude, now, settle, Some(deadline));
         // Claude runs behind its folder-trust dialog, which screen detection does not read
         // as blocked, so it neither idles nor blocks before the deadline.
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Unknown);
@@ -3458,6 +3483,89 @@ mod tests {
         assert!(terminal.reconcile_managed_agent_at(now + deadline + settle, false));
         assert!(terminal.managed_agent_interactive_ready());
         assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn a_launch_keeps_its_name_while_detection_loses_its_working_agent() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        // No caller bound: herdr adds no deadline of its own.
+        terminal.begin_managed_agent("worker".into(), Agent::Claude, now, Duration::ZERO, None);
+        // Claude started on its first prompt, so it works instead of idling.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        terminal.reconcile_managed_agent_at(now, false);
+        // Detection loses it for a moment, with no recorded exit.
+        terminal.set_detected_state(None, AgentState::Unknown);
+        terminal.reconcile_managed_agent_at(now, false);
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        assert!(terminal.managed_agent_launch_pending());
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+
+        // With a caller bound, the deadline sees that the agent appeared, whatever detection
+        // says at that moment.
+        let mut bounded = test_terminal();
+        // delay: not a wait, a virtual instant handed to the reconcile; nothing sleeps.
+        let bound = Duration::from_millis(20);
+        bounded.begin_managed_agent(
+            "worker".into(),
+            Agent::Claude,
+            now,
+            Duration::ZERO,
+            Some(bound),
+        );
+        bounded.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        bounded.reconcile_managed_agent_at(now, false);
+        bounded.set_detected_state(None, AgentState::Unknown);
+        assert!(bounded.reconcile_managed_agent_at(now + bound, false));
+        assert_eq!(bounded.agent_name.as_deref(), Some("worker"));
+        assert!(bounded.managed_agent_launch_pending());
+    }
+
+    #[test]
+    fn a_launch_without_a_bound_never_gives_its_name_up_on_time() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent("worker".into(), Agent::Pi, now, Duration::ZERO, None);
+        // The settle delay passes; nothing was detected.
+        terminal.reconcile_managed_agent_at(now, false);
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+        // delay: not a wait, a virtual instant far past any old startup deadline.
+        let much_later = now + Duration::from_secs(3600);
+        assert!(!terminal.reconcile_managed_agent_at(much_later, false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        assert!(terminal.managed_agent_launch_pending());
+    }
+
+    #[test]
+    fn the_launched_agents_session_report_ends_the_launch() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        // delay: not a wait, the settle delay the session report does not wait for.
+        let settle = Duration::from_secs(3);
+        terminal.begin_managed_agent("worker".into(), Agent::Claude, now, settle, None);
+        // Another agent's report is not this launch's.
+        assert!(!terminal.report_managed_agent_session("pi"));
+        assert!(terminal.managed_agent_launch_pending());
+        // Before the settle delay and while the agent works on its first prompt.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(terminal.report_managed_agent_session("claude"));
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        // A later session (`/clear`) changes nothing.
+        assert!(!terminal.report_managed_agent_session("claude"));
+
+        // An agent that stopped at a dialog during startup reports its session once it is
+        // answered.
+        let mut blocked = test_terminal();
+        blocked.begin_managed_agent("worker".into(), Agent::Claude, now, Duration::ZERO, None);
+        blocked.set_detected_state(Some(Agent::Claude), AgentState::Blocked);
+        assert!(blocked.reconcile_managed_agent_at(now, false));
+        assert!(blocked.managed_agent_launch_pending());
+        assert!(blocked.report_managed_agent_session("claude"));
+        assert!(blocked.managed_agent_interactive_ready());
+
+        // Without a launch there is nothing to end.
+        assert!(!test_terminal().report_managed_agent_session("claude"));
     }
 
     #[test]
@@ -6200,7 +6308,7 @@ mod tests {
             Agent::OpenCode,
             now,
             Duration::ZERO,
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
         assert!(terminal.reconcile_managed_agent_at(now, false));

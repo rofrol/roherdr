@@ -1702,6 +1702,13 @@
               },
               "type": "array"
             },
+            "caller_pane_id": {
+              "description": "The pane that started the agent, recorded with the first prompt's assignment.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "type": "string"
             },
@@ -1711,8 +1718,15 @@
             "pane_id": {
               "type": "string"
             },
+            "prompt": {
+              "description": "The agent's first prompt, passed as its launch argument (claude, codex and pi) and\nfollowed like one `agent.prompt` typed: the response's `prompt_request` names it for\n`agent.wait_turn`, `agent.prompt_status` and `agent.wait_verdict`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "timeout_ms": {
-              "description": "Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.",
+              "description": "The caller's own bound on the launch, in milliseconds (greater than 3000, at most\n300000). Herdr adds none: without it the name stays registered until the launch ends.\nWith it, a launch whose agent never appeared by then gives its name up.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -2106,6 +2120,48 @@
           },
           "required": [
             "target"
+          ],
+          "type": "object"
+        },
+        "AgentWaitStartParams": {
+          "description": "Waits until the launch `agent.start` began in a pane ends: the agent's integration\nreported its session (Claude's `SessionStart`) or screen detection saw it ready, it stopped\nat a dialog, it exited or another program took the pane, or its integration reported a\nlimit. Every outcome is an event; `timeout_ms` is only the caller's own bound.",
+          "properties": {
+            "kind": {
+              "description": "The kind `agent.start` launched.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The name the launch registered.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The pane `agent.start` answered with, read when the name no longer resolves.",
+              "type": "string"
+            },
+            "prefer_workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "terminal_id": {
+              "description": "The terminal `agent.start` answered with: a name that moved to another terminal is\nnot this launch's.",
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "terminal_id",
+            "pane_id",
+            "kind"
           ],
           "type": "object"
         },
@@ -9941,6 +9997,22 @@
         {
           "properties": {
             "method": {
+              "const": "agent.wait_start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentWaitStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.wait",
               "type": "string"
             },
@@ -16750,6 +16822,17 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "prompt_request": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/AgentPromptRequest"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The first prompt herdr follows, when `agent.start` had one."
                 },
                 "type": {
                   "const": "agent_started",

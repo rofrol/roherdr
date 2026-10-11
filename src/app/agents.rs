@@ -5,7 +5,6 @@ use bytes::Bytes;
 use super::{terminal_targets::TerminalTargetError, App};
 use crate::api::schema::AgentStartParams;
 
-const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
 pub(crate) const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
 const INVALID_AGENT_TIMEOUT_MESSAGE: &str =
@@ -63,6 +62,47 @@ impl App {
             self.schedule_session_save();
             self.emit_pane_updated(resolved.ws_idx, resolved.pane_id);
         }
+    }
+
+    /// Reconciles the launches whose settle delay or caller's bound passed. The runtime wakes
+    /// at `next_managed_agent_deadline`; each change emits `pane.updated`, which wakes
+    /// `agent.wait_start`. Returns whether any launch changed.
+    pub(crate) fn reconcile_due_managed_agents(&mut self, now: Instant) -> bool {
+        let due: Vec<(usize, crate::layout::PaneId, crate::terminal::TerminalId)> = self
+            .state
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, ws)| {
+                ws.tabs.iter().flat_map(move |tab| {
+                    tab.panes.iter().map(move |(pane_id, pane)| {
+                        (ws_idx, *pane_id, pane.attached_terminal_id.clone())
+                    })
+                })
+            })
+            .filter(|(_, _, terminal_id)| {
+                self.state
+                    .terminals
+                    .get(terminal_id)
+                    .and_then(crate::terminal::TerminalState::next_managed_agent_deadline)
+                    .is_some_and(|deadline| deadline <= now)
+            })
+            .collect();
+        let mut changed = false;
+        for (ws_idx, pane_id, terminal_id) in due {
+            if self
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .is_some_and(|terminal| terminal.reconcile_managed_agent_at(now, false))
+            {
+                changed = true;
+                self.state.mark_session_dirty();
+                self.schedule_session_save();
+                self.emit_pane_updated(ws_idx, pane_id);
+            }
+        }
+        changed
     }
 
     pub(super) fn agent_info_for_target(
@@ -152,7 +192,7 @@ impl App {
     pub(super) fn start_agent(
         &mut self,
         params: AgentStartParams,
-    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
+    ) -> Result<StartedAgent, AgentStartError> {
         let name = params.name;
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
@@ -160,9 +200,20 @@ impl App {
         let Some(kind) = crate::detect::parse_agent_label(&params.kind) else {
             return Err(AgentStartError::UnsupportedKind(params.kind));
         };
+        if let Some(prompt) = params.prompt.as_deref() {
+            if prompt.trim().is_empty() {
+                return Err(AgentStartError::EmptyPrompt);
+            }
+            if !agent_takes_a_launch_prompt(kind) {
+                return Err(AgentStartError::PromptUnsupported(
+                    crate::detect::agent_label(kind).to_string(),
+                ));
+            }
+        }
         if params
             .args
             .iter()
+            .chain(params.prompt.as_ref())
             .any(|arg| arg.chars().any(char::is_control))
         {
             return Err(AgentStartError::InvalidArgument);
@@ -203,15 +254,16 @@ impl App {
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);
+        // The first prompt goes last, as the agent's positional prompt argument.
+        argv.extend(params.prompt.clone());
         let command = crate::platform::interactive_shell_command(&argv, &shell_name)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
-        let timeout = Duration::from_millis(
-            params
-                .timeout_ms
-                .unwrap_or(DEFAULT_AGENT_START_TIMEOUT.as_millis() as u64),
-        );
-        if timeout <= AGENT_START_SETTLE_DELAY || timeout > MAX_AGENT_START_TIMEOUT {
+        // The caller's own bound, if it gave one; herdr adds none.
+        let timeout = params.timeout_ms.map(Duration::from_millis);
+        if timeout.is_some_and(|timeout| {
+            timeout <= AGENT_START_SETTLE_DELAY || timeout > MAX_AGENT_START_TIMEOUT
+        }) {
             return Err(AgentStartError::InvalidTimeout);
         }
 
@@ -235,7 +287,12 @@ impl App {
         let agent = self
             .agent_info(ws_idx, pane_id)
             .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
-        Ok((agent, argv))
+        Ok(StartedAgent {
+            agent,
+            argv,
+            ws_idx,
+            pane_id,
+        })
     }
 
     pub(super) fn agent_start_error_body(
@@ -274,6 +331,16 @@ impl App {
             AgentStartError::InputFailed(message) => crate::api::schema::ErrorBody {
                 code: "agent_start_input_failed".into(),
                 message,
+            },
+            AgentStartError::EmptyPrompt => crate::api::schema::ErrorBody {
+                code: "empty_agent_prompt".into(),
+                message: "agent prompt must not be empty".into(),
+            },
+            AgentStartError::PromptUnsupported(kind) => crate::api::schema::ErrorBody {
+                code: "agent_prompt_unsupported".into(),
+                message: format!(
+                    "herdr passes a first prompt only to claude, codex and pi, not {kind}; start it without one and send it with `herdr agent prompt`"
+                ),
             },
             AgentStartError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
                 code: "agent_name_taken".into(),
@@ -506,8 +573,27 @@ fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crat
         })
 }
 
+/// A launch `start_agent` typed into its pane.
+pub(super) struct StartedAgent {
+    pub(super) agent: crate::api::schema::AgentInfo,
+    pub(super) argv: Vec<String>,
+    pub(super) ws_idx: usize,
+    pub(super) pane_id: crate::layout::PaneId,
+}
+
+/// The agents whose CLI takes a first prompt as its positional argument and stays
+/// interactive: `claude <prompt>`, `codex <prompt>`, `pi <prompt>`.
+fn agent_takes_a_launch_prompt(kind: crate::detect::Agent) -> bool {
+    matches!(
+        kind,
+        crate::detect::Agent::Claude | crate::detect::Agent::Codex | crate::detect::Agent::Pi
+    )
+}
+
 pub(super) enum AgentStartError {
     InvalidName,
+    EmptyPrompt,
+    PromptUnsupported(String),
     UnsupportedKind(String),
     InvalidArgument,
     InvalidTimeout,

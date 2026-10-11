@@ -1365,6 +1365,13 @@ impl App {
                     "agent.wait_turn is handled by the api server",
                 );
             }
+            Method::AgentWaitStart(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.wait_start is handled by the api server",
+                );
+            }
             Method::AgentWait(_) => {
                 return responses::encode_error(
                     request.id,

@@ -1179,3 +1179,72 @@ fn wait_verdict_answers_a_superseded_assignment() {
         "prompt_v2"
     );
 }
+
+// `agent.wait_start`: the app answers the agent reads; events about the launch's pane make the
+// wait read again, and only an outcome ends it.
+
+fn wait_start(client: &mut Client) {
+    client.send(json!({
+        "id": "start",
+        "method": "agent.wait_start",
+        "params": {
+            "name": "worker", "terminal_id": "term_1", "pane_id": "pane_1", "kind": "claude"
+        }
+    }));
+}
+
+fn reply_launch(test: &mut SocketTest, fields: Value) {
+    let request = test.app_request();
+    let Method::AgentGet(target) = &request.request.method else {
+        panic!("expected an agent read: {:?}", request.request.method);
+    };
+    assert_eq!(target.target, "worker");
+    let mut agent = json!({
+        "terminal_id": "term_1", "name": "worker", "agent": "claude",
+        "agent_status": "working", "workspace_id": "workspace_1", "tab_id": "tab_1",
+        "pane_id": "pane_1", "focused": false, "launch_pending": true, "revision": 0,
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        agent[key] = value.clone();
+    }
+    reply(
+        request,
+        ResponseResult::AgentInfo {
+            agent: serde_json::from_value(agent).unwrap(),
+        },
+    );
+}
+
+#[test]
+fn wait_start_goes_on_while_the_agent_works_and_ends_on_its_session_report() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_start(&mut client);
+    // Claude works on its first prompt: no idle, no answer.
+    reply_launch(&mut test, json!({}));
+    // Its `SessionStart` report ends the launch and emits `pane.updated`.
+    test.hub.push(pane_updated());
+    reply_launch(
+        &mut test,
+        json!({"launch_pending": false, "interactive_ready": true}),
+    );
+    let response = client.response();
+    assert_eq!(response["id"], "start");
+    assert_eq!(response["result"]["type"], "agent_info", "{response}");
+    assert_eq!(response["result"]["agent"]["interactive_ready"], true);
+}
+
+#[test]
+fn wait_start_names_the_dialog_that_stopped_the_launch() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_start(&mut client);
+    reply_launch(&mut test, json!({"agent_status": "blocked"}));
+    reply_explain(&mut test, "trust_directory");
+    let response = client.response();
+    assert_eq!(response["error"]["code"], "agent_not_ready", "{response}");
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("the \"trust_directory\" dialog"));
+}

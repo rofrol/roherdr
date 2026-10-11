@@ -3380,7 +3380,7 @@ mod tests {
                     Agent::Pi,
                     Instant::now(),
                     std::time::Duration::ZERO,
-                    std::time::Duration::from_secs(60),
+                    None,
                 );
             for state in [first_state, AgentState::Idle] {
                 app.handle_app_event(AppEvent::StateChanged {
@@ -3421,7 +3421,7 @@ mod tests {
                 Agent::Codex,
                 Instant::now(),
                 std::time::Duration::ZERO,
-                std::time::Duration::from_secs(60),
+                None,
             );
         app.handle_app_event(AppEvent::StateChanged {
             pane_id,

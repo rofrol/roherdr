@@ -409,6 +409,8 @@ pub enum Method {
     AgentPromptConfirmed(AgentPromptConfirmedParams),
     #[serde(rename = "agent.wait_turn")]
     AgentWaitTurn(AgentWaitTurnParams),
+    #[serde(rename = "agent.wait_start")]
+    AgentWaitStart(AgentWaitStartParams),
     #[serde(rename = "agent.wait")]
     AgentWait(AgentWaitParams),
     #[serde(rename = "agent.wait_change")]

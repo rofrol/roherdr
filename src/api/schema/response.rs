@@ -320,6 +320,9 @@ pub enum ResponseResult {
     AgentStarted {
         agent: AgentInfo,
         argv: Vec<String>,
+        /// The first prompt herdr follows, when `agent.start` had one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_request: Option<AgentPromptRequest>,
     },
     /// Canonical ids of the interactive agents whose executable is on the
     /// server's `PATH`, in Herdr's agent order.

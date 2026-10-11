@@ -659,7 +659,7 @@ mod tests {
                 crate::detect::Agent::Pi,
                 now,
                 std::time::Duration::ZERO,
-                std::time::Duration::from_secs(1),
+                Some(std::time::Duration::from_secs(1)),
             );
 
         let pending = capture_from_state(&state);
