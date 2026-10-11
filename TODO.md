@@ -321,6 +321,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   4. Trace `Enter` vs `enter` bytes and the bracketed-paste end vs the
      Enter (the later `enter` may simply have arrived later); confirm
      `agent prompt` sequences paste end before Enter.
+  Gap (guix, 2026-10-11): `herdr agent start --name ... -- "<prompt>"`
+  gives the first task without a request id, so the coordinator cannot use
+  `wait-agent --request <id> --until verdict` on it; `agent start` with a
+  prompt returns the prompt's request id (tracked like `agent prompt`).
 
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
