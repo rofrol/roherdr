@@ -11,6 +11,24 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Pane workers lose tracking when `agent start` misnames them (the [t-r6spemep]
+  chat-hosted coordinator, 2026-10-11, at the owner's request; `herdr
+  report` r-7; same class as guix's agent_name_taken): `herdr agent start
+  <name> --kind claude --pane <fresh pane>` returned
+  `agent_name_not_found` ("no longer owns the target terminal") while Claude
+  started unnamed; every later `agent prompt` returned state
+  `unsupported`; `wait-agent --request ... --until verdict` exited 8
+  "tracking lost" though the worker printed WORKER-DONE; and `wait-agent
+  --until done|idle` on a worker pane is refused, so no supported wait
+  remains (the coordinator fell back to a marker file + `wait-text`). Fix:
+  find why naming fails on a fresh pane (a race between the agent's
+  detection and the name registration); prompt tracking must work for any
+  Claude pane whose hooks report turns, named or not; when a request is
+  `unsupported`, `agent prompt` says so with the reason and `wait-agent
+  --until verdict` accepts the pane's next turn end with a WORKER line
+  instead of refusing. Also `herdr worker verify --help` says "takes no
+  --help"; every subcommand answers --help.
+
 - [ ] The Stop hook's obligation block loops when auto mode denies the ack [t-w5q6bnxo]
   (the classify-x-posts coordinator, 2026-10-11): it reviewed worker w83's
   WORKER-BLOCKED end; the Stop hook requires `herdr worker ack w83 35477`;
@@ -1694,6 +1712,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   turn", forcing an extra turn. A question reported in the current turn
   (its report's turn id or time after the turn's start) is current; only
   older open questions get the reminder.
+  Second classify-x-posts report (2026-10-11, the owner: "what is going
+  on here?"): one wait shows twice in the `?` list: the worker
+  fomobox-dns asks "will you connect the Claude extension in Chrome?" and
+  its coordinator holds its own copy ("connect Chrome for fomobox-dns"),
+  which the stop check keeps asking it to renew. Want: a coordinator
+  waiting on its worker's question holds none of its own; herdr links the
+  coordinator's report to the worker's question (one entry tied to the
+  worker) or refuses a duplicate awaiting-reply that names an owned
+  worker's open question. (The pane was moved out of the split by someone
+  else; not herdr.)
 
 - [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
   reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
