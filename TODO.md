@@ -1058,44 +1058,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `-f -`) and say it in the consult and openrouter SKILL.md files.
   Approved by the user 2026-10-09 ("zgoda jest").
 
-- [ ] An open question stays visible while its agent works on (user, [t-edrkeo3r]
-  2026-10-10, relayed by the violai coordinator w75:p2: it asked "Adres
-  Google Wioli?" with `herdr agent awaiting-reply`, a worker then finished,
-  the coordinator went on working and the `?` vanished; the user lost track
-  of the question; suggestion: the open question lives in its own place,
-  e.g. its own tab or a persistent question entry, until the user answers,
-  independent of the agent's working/idle state). Checked by the herdr
-  coordinator: the report is held but shown only while the pane is idle
-  (`TerminalState::awaiting_reply` is `reported && state == Idle`,
-  `src/terminal/state.rs:2430`); typing into the pane clears it, a later
-  blocked state (a question dialog) forgets it, and a new report replaces
-  its text. Want: an awaiting-reply report becomes a question entry in the
-  `?` list (like a headless worker's question) that stays while the agent
-  works, shows its age and the asking pane, and ends only on an answer (the
-  user types into that pane or answers from the list), on the agent
-  withdrawing it, or on the agent's session ending; several open questions
-  from one pane stay separate. Server state, exposed through the API.
-  Second report (try-roguix coordinator, 2026-10-10): the `?` turned into
-  the green idle dot as soon as the user began typing the answer (before
-  Enter); he read it as a wrong state. Cause: every keystroke into the pane
-  clears the report (`clear_awaiting_reply_on_input`, also
-  `pane.send_text`). A compaction continuation kept the `?` (correct).
-  Round 20261010-225031-5b82 (sol, MiMo, DeepSeek, agreeing), decided by
-  the coordinator, added to this item:
-  - Clear on a submitted reply (the agent's `UserPromptSubmit` from the
-    user, or the client's submit), never on a keystroke, paste or
-    `send_text`; while the user types, the `?` stays (optionally a
-    "composing" glyph, not green); green means no open question.
-  - Keep the report across turns the user did not start (compaction, a
-    background wake), as today; the agent can withdraw or replace it
-    (`herdr agent awaiting-reply --withdraw`); a turn that ends with an
-    open question gets a reminder to renew or withdraw it.
-  - A submitted reply clears the pane's mark; the persistent entry closes
-    when the question is answered, withdrawn or the session ends (sol:
-    submitted is not resolved).
-  - Clicking the `?` shows the question, its age and "clears when you
-    submit a reply"; the legend says the same.
-
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.

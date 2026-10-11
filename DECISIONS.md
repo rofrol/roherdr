@@ -1183,3 +1183,18 @@ unknown kept apart from zero; `agent.get`/`agent.list` carry
 turn end (9b4eebe1): the done completion and its notification are held
 while it is above zero and sent once a later turn end reports zero.
 Accepted: a held notification does not survive a live handoff.
+
+## An open question stays visible while its agent works on (user,
+
+A `?` vanished once the agent worked on, and turned green at the first
+keystroke (violai, try-roguix, 2026-10-10). Now (0da5f163): an
+awaiting-reply report is a persistent entry in the `?` list (age, pane,
+several per pane) until a submitted reply, a withdrawal (`herdr agent
+awaiting-reply --withdraw`, `pane.withdraw_awaiting_reply`) or the
+session's end; typing, paste and API input keep it; a turn that ends with
+an older open question is blocked once by the Stop hook to renew or
+withdraw it; clicking the `?` shows the question; legend and docs updated.
+Decided by the coordinator: turns started through the API (`herdr agent
+prompt`) do not get the reminder (the hook cannot tell them from the
+user's), accepted; a question now survives a permission dialog in the
+same turn, the turn-end reminder clears a stale one.
