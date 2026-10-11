@@ -1721,6 +1721,33 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the Console, create the workspace with a spend limit and an API key in it,
   store the key in the Keychain.
 
+- [ ] `herdr todo run` serves a coordinator that owns two repositories [t-o73wcaoq]
+  (the user via the rormpc coordinator, 2026-10-12: "report it to the herdr
+  coordinator and let it ask the models"; todo-rormpc owns rormpc, with the
+  TODO.md, and rormpc-tools, Python, branch `main`, no TODO.md; four items
+  blocked). Round of 2026-10-12 (sol, MiMo, DeepSeek agreeing), decided:
+  1. Separate the backlog owner from the execution target: `todo run
+     --repo <path>` reads the item from the owner's TODO.md and updates
+     TODO.md/DECISIONS.md there, while the folder slot, sandbox, checks,
+     allowed paths, commit, [install] and push come from the target;
+     the target's default branch is read from git (never a hard-coded
+     `master`); the target must be one the coordinator owns (its
+     AGENTS.md or a registration), not an arbitrary path; the run records
+     both repositories and the landed commit.
+  2. Release recipes registered in the target's `.herdr/` (argv), run by the
+     driver after landing, never by a worker: staged and resumable (version
+     landing, tag and push, the dependent repository's pin, install), each
+     stage recorded, never repeating a tag, push or install blindly after
+     an interruption; repository-scoped.
+  3. A change spanning both repositories is two chained items (`--next`),
+     the dependency first; the consumer tolerates the intermediate state
+     (a version gate). No multi-repository worker (rejected by all three:
+     no atomic landing across pushes, two write roots weaken the sandbox).
+  Meanwhile (sol, MiMo; DeepSeek: single use only): rormpc runs
+  rormpc-tools items the old way with the allowlist override, one start per
+  item, keeping per-repository checks and verify; releases stay by hand
+  with a checklist; the two-repository feature is split now.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
