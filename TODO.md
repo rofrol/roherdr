@@ -1583,6 +1583,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   prompt_1a12ba24d47_3 but `wait-agent --request` said "herdr does not know
   request"; find why the request was not tracked for that pane.
 
+- [ ] Three gaps from the job-seeker coordinator (the user, 2026-10-11: [t-jarmf2sq]
+  "why is there no work here?"):
+  1. Ready items were handed (user decision 2026-10-07) to "the separate
+     job-search session", which no live pane holds; the space looked idle
+     with nothing waiting. With one space = one coordinator (the space
+     item) such handoffs disappear; until then the supervisor reports an
+     item owned by a role no live agent holds.
+  2. Headless worker w79 waited ~14 h in waiting_approval: its task needed
+     the network (the consult scripts) which the sandbox lacks, and its
+     escalated question after `owner_gone` reached no one visible; the
+     coordinator waited with `herdr-job watch --pid`, which sees only the
+     exit. Fix: `herdr todo run`/`worker start` refuse a task that names
+     network tools unless the run is granted `net.egress` (capabilities
+     item); an escalated worker question appears in the user's `?` list
+     and notifies; the todo skill already says `herdr worker wait
+     --attention` (check its wording names watch --pid as wrong).
+  3. `herdr-job wait-agent --until verdict` exits 7 ("turn finished without
+     a WORKER line") on `WORKER-DONE none | ...`, a valid no-commit result;
+     accept `none` as a done verdict without a commit check.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
