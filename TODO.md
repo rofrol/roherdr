@@ -1748,6 +1748,15 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   pauses the run (no switch to a pane). The run's temp dir is a granted
   write root kept until the run ends, not the turn. Pane workers stay for
   attended interactive work only; the todo skill says so when this lands.
+  Addendum (guix, 2026-10-11): worker w189 in a linked worktree of a
+  submodule (git dir ~/personal_projects/guix/roguix-vps/.git/modules/roguix)
+  could not commit: the sandbox denied the worktree's git dir
+  (index.lock: Operation not permitted). So a headless worker cannot commit
+  in any linked worktree whose git dir lies outside its cwd. Part of this
+  slice: the worker's write roots always include its worktree's resolved
+  git dir (`git rev-parse --git-dir` and the common dir's refs/objects), as
+  herdr's own folder slot already works because its git dir is under the
+  repository; no grant needed for that.
 
 - [ ] What to do about the auto-mode classifier's inconsistent denials (the [t-aabu5rjo]
   user, 2026-10-11: "plan it with the models as a TODO item"; reports from
