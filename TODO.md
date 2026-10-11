@@ -1801,6 +1801,17 @@ user needs to decide or do.
   Does lazygit in the popup (`prefix+alt+g`) cover reviewing agent commits, or build the herdr-native list?
   Options: lazygit is enough, close the item (Recommended) | build the native "to review" list
 
+- [ ] [t-csew6r2l] Allow a reviewed DNS cutover script past the auto-mode classifier?
+  Options: an allow rule in settings.json for one named, reviewed script (e.g. the roguix-vps Porkbun cutover), approved by you as a whole patch (Recommended) | keep running such scripts yourself with `!` | a herdr "grant" decision kind the classifier honours (not possible: herdr cannot change Claude Code's classifier)
+  Reported by the roguix-vps coordinator 2026-10-11: after RackNerd moved
+  the VPS to <new IP>, 11 Porkbun A records had to move; the owner
+  said "change the records, you have Porkbun API access", but the
+  classifier's DNS category denied even reading the variable names in
+  <DNS provider env file>; the agent handed a script to run with `!`. An
+  in-session request does not lift a classifier category; only a
+  permission rule does, and permission changes need your approval of the
+  whole patch (AGENTS.md); a peer coordinator cannot grant it.
+
 ### Decide
 
 ### Needs you to act or watch
