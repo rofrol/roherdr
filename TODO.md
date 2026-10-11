@@ -121,6 +121,29 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     tightening needs no approval.
   - Dedupe by fingerprint, aggregate repeats, one notification per new
     or escalated finding.
+  Handover to a new build (the user, 2026-10-11: "when there is a new
+  supervisor, a new build, must its work be handed over? ask the models";
+  round 20261011-153655-05f9, sol + MiMo + DeepSeek agreeing), decided:
+  hand over durable obligations, not the running loop.
+  - Durable first: assignments, verdicts, waits and the other transitions
+    the checks read are written to SQLite before their producer is
+    acknowledged (producers resend unacknowledged ones with stable ids);
+    notification and inbox deliveries go through an outbox keyed by
+    (finding, epoch); in-memory triggers and the sweep schedule are not
+    handed over, they are rebuilt.
+  - The new server runs one reconciliation sweep over assignments, waits,
+    verdicts and open findings, ordered by durable event id from the last
+    processed cursor, before it serves; waiters replay from their cursor;
+    `server_handed_off` is a reconnect signal, not proof of delivery.
+  - Single writer: the old supervisor stops intake and writes before the
+    new one writes; every supervisor write carries the server's epoch and
+    a stale epoch is rejected (the run lock alone is not enough).
+  - Checks carry an id and version; open findings are re-evaluated under
+    the new version off the handoff path; a removed or changed check closes
+    its findings as `check_changed`/`check_removed` (distinct from
+    resolved), never dropped.
+  - Test: a verdict arriving at every handoff boundary, and a crash between
+    the old server stopping and the new one listening.
 
 - [ ] A verdict wait never ends on a prompt absorbed mid-turn, and the [t-i3p3apqh]
   supervisor must catch unobserved verdicts (user, 2026-10-11, via the
