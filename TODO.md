@@ -59,6 +59,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      maps to each gate's documented fallback.
   4. Remove `settimeout(0.5)`; measure connect/answer latency instead of
      guessing bounds.
+  Points 1, 3 and 4 landed 2026-10-11 (b5b7ae75): the Claude hook reads the
+  allowlist mode from `<socket>.allowlist-mode` (published atomically) or the
+  answer; shadow and off never deny; enforce without herdr says "Herdr
+  unavailable"; no `settimeout(0.5)`: decisions wait for the answer, EOF or a
+  connect error, reports end once sent; latency logged to
+  claude-hook-calls.jsonl. Left: point 2, the durable report spool.
 
 - [ ] A supervision report over all coordinators and their workers (user, [t-7zfjbcrf]
   2026-10-11, next: "add a process that every so often checks all
