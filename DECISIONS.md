@@ -1173,3 +1173,13 @@ A parent whose shell exits by itself kept its jobs without any sign (user,
 "Parent <name> exited; N jobs kept running" once (one combined notice for
 several parents, none on the first snapshot) and a `was <name>` mark on
 the orphaned job lines.
+
+## The tab state does not show that something runs in the background
+
+A tab showed idle while Claude waited on a background shell (user,
+2026-10-06). Now the tab line shows `bg:N` in every state (089b5ff0,
+unknown kept apart from zero; `agent.get`/`agent.list` carry
+`background_tasks`), and Claude's Stop report carries the count with the
+turn end (9b4eebe1): the done completion and its notification are held
+while it is above zero and sent once a later turn end reports zero.
+Accepted: a held notification does not survive a live handoff.

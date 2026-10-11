@@ -512,37 +512,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   keeping tracker items with the repository rather than in a private
   database (git-bug is the git analogue).
 
-- [ ] The tab state does not show that something runs in the background [t-fyd7ts3f]
-  (user, 2026-10-06, screenshot: "the tab state doesn't show that something
-  is running in the background"). Space `music-mpd`: the tab showed idle
-  while Claude waited for a finite `musicdb update` (about 2 minutes), its
-  footer saying `1 shell still running`. The 2026-10-03 decision left a
-  shell alone idle on purpose (`DECISIONS.md`, "Claude background tasks and
-  working state"); this revisits it.
-  Decided by the user 2026-10-06: a `bg:N` observed-count badge on the
-  tab, dev servers included; a `herdr-job wait` counts as work; no
-  separate awaiting-background flag.
-  - Shape: an optional runtime field (pane background task counts, parsed
-    from the footer below the prompt box) in the JSON API, drawn by the TUI
-    on the tab line; never a new `AgentStatus` variant (append-closed in
-    frozen codecs). Report unknown (no footer seen, agents such as Codex)
-    apart from an observed zero; show the count next to every state; notify
-    only the final done, never on shell exit (sol). A bare count never makes
-    a space busy (bubble, header).
-  - Glyph: not `◑` (herdr-job jobs; it promises a tab, a log and an exit
-    code), not `⧖`, not `○` (the idle glyph). Dimming must be carried by
-    text, not colour (16-colour themes, `NO_COLOR`). Consult calls
-    `557d6c84`, `56fe2bac`, `f2132f2c`, `9c834783`.
-  Landed 2026-10-11 (2df5e35c): the tab line shows `bg:N` in every state;
-  the bg hook always reports `bg_count` (0 included, with a TTL; nothing
-  when the payload has no `background_tasks`, so unknown stays apart from
-  zero); `agent.get`/`agent.list` return `background_tasks` from the
-  `bg_count` metadata. Left, decided by the coordinator: the notify rule
-  (no "done" notification while background work runs) needs the count in
-  the same Stop report as `done`, since the state and the bg hooks race;
-  `herdr-agent-state.sh` sends it (an integration asset change, version
-  bumped once from the latest release).
-
 - [ ] Consult cost per model and the coordinator's extra spend (user, [t-4hgsm43b]
   2026-10-03: "how much money/tokens a model used on a consult, and how much
   more the coordinator burned by asking it"). Today every call logs normalized
