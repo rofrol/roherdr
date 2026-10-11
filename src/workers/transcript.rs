@@ -284,6 +284,8 @@ impl WorkerSupervisor {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+
     use super::*;
     use crate::api::schema::{WorkerTranscriptEntry, WorkerTranscriptRole};
 
