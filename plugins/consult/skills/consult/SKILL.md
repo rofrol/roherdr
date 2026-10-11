@@ -1,6 +1,6 @@
 ---
 name: consult
-description: Ask several other models for a second opinion in one round — use when the user says "pytaj modeli", "spytaj modeli", "skonsultuj z modelami", "ask the models" or "consult the models" without naming them, or before a non-trivial design decision. Holds the default set (Sol + MiMo), the no-self-consultation rule, and how to run, rate and score a round.
+description: Ask several other models for a second opinion in one round — use when the user says "pytaj modeli", "spytaj modeli", "skonsultuj z modelami", "ask the models" or "consult the models" without naming them, or before a non-trivial design decision. Holds the default set (Sol + MiMo + DeepSeek), the no-self-consultation rule, and how to run, rate and score a round.
 ---
 
 # Consulting the default set of models
@@ -15,12 +15,16 @@ report. If the same message also asks for a TODO entry, do both and record the o
 
 ## Who joins a round
 
-- Default set (revised 2026-10-03 by the user: **sol 6.1 (default effort) plus Xiaomi MiMo** in parallel, unless
-  the user named models). Ask MiMo with `"$D/../openrouter/ask_openrouter.sh"` (MiMo is its default model).
-  DeepSeek left the default set on 2026-10-03: in shared rounds it was the weakest of the three (sol +0.67 accepted
+- Default set (revised 2026-10-11 by the user: **sol 6.1 (effort medium, the script's default) plus Xiaomi MiMo
+  plus DeepSeek** in parallel, unless the user named models). Ask sol with `"$D/../gpt/ask_gpt.sh"`, MiMo with
+  `"$D/../openrouter/ask_openrouter.sh"` (MiMo is its default model) and DeepSeek with
+  `python3 "$D/../deepseek/ask_deepseek.py"` (deepseek-flash, its default model), all three in the same Bash call.
+  DeepSeek rejoined the default set on 2026-10-11 at the user's request ("add deepseek to the default set"; asked
+  first on 2026-10-07: it is fast, and on Claude Max 20 the tokens spent reading its answer matter less).
+  History: DeepSeek had left the default set on 2026-10-03: in shared rounds it was the weakest of the three (sol +0.67 accepted
   unique findings per call over 161 rounds, MiMo +0.48 over 58 rounds and +0.45 in its 20-round trial), and its
   speed bought nothing because a round waits for sol anyway. It was not dropped for cost (about a cent a call); it
-  stays available on request. **Astra is off by default for now, available on request**. The 2026-09-27 astra/luna
+  stayed available on request. **Astra is off by default for now, available on request**. The 2026-09-27 astra/luna
   trial is still the only paired evidence: luna@medium was clearly behind astra (0.58 vs 1.43 accepted unique findings
   per rated call and 22% vs 35% rejected findings; astra 69, luna@medium 33 rated calls), and gpt-6-sol never beat
   astra over ~12 paired rounds.
@@ -28,8 +32,9 @@ report. If the same message also asks for a TODO entry, do both and record the o
   as a fallback when a sol call fails or hits the Plus limit. Terra only on request.
 - Space Bunny was removed on 2026-10-03 (failed its trial); the MiMo trials are recorded in the openrouter skill.
 - Never consult the model you are running on: that is a self-consultation, not a second opinion. Check your own model
-  first (`$PI_MODEL`, or the model id you were given) and drop it from the set. When the acting model is MiMo, the
-  pair is **sol + DeepSeek**; when it is GPT, **MiMo + Claude Sonnet**; Claude and DeepSeek ask the default sol + MiMo.
+  first (`$PI_MODEL`, or the model id you were given) and drop it from the set: a DeepSeek coordinator asks
+  **sol + MiMo**, a MiMo coordinator **sol + DeepSeek**, a GPT coordinator **MiMo + DeepSeek**; Claude asks all
+  three.
 - A vendor that answers with a usage-limit error sits out that round; go on with the others and tell the user. The
   vendor skills say when to try it again.
 

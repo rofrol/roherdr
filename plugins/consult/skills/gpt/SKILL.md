@@ -16,7 +16,7 @@ Models available on ChatGPT (as of 2026-09-30): `sol` = **gpt-6.1-sol**, `astra`
 Check with `jq -r '.models[].slug' ~/.codex/models_cache.json`; when a new slug appears there, update the `case` in ask_gpt.sh.
 
 ```bash
-"$D"/ask_gpt.sh "question"                  # sol = gpt-6.1-sol (default)
+"$D"/ask_gpt.sh "question"                  # sol = gpt-6.1-sol (default), effort medium
 "$D"/ask_gpt.sh -m astra "q"                # gpt-6-astra; also terra (gpt-5.6-terra), luna (gpt-6-luna, fast);
                                             # the older sol as -m gpt-6-sol
 "$D"/ask_gpt.sh -f src/foo.py "Find bugs in this file"
@@ -24,7 +24,7 @@ git diff | "$D"/ask_gpt.sh -f - "Review this diff"   # stdin only via -f -
 "$D"/ask_gpt.sh -r "Review ... (see Code review below)"  # run in the current git repo, read-only
 ```
 
-Options: `-m sol|astra|luna|terra|<full id>` (default `sol` = gpt-6.1-sol), `-e low|medium` (reasoning effort; high/xhigh are disabled by the user's decision (2026-09-26): ~3× the time and 4–7× the output tokens without more unique findings — the script refuses them), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
+Options: `-m sol|astra|luna|terra|<full id>` (default `sol` = gpt-6.1-sol), `-e low|medium` (reasoning effort; sol runs at `medium` unless `-e` says otherwise (the user, 2026-10-11), the other models at Codex's default; high/xhigh are disabled by the user's decision (2026-09-26): ~3× the time and 4–7× the output tokens without more unique findings — the script refuses them), `-f FILE` (repeatable; `-f -` = stdin, never read implicitly), `-r` (repo mode), env `GPT_MODEL`.
 Codex runs ephemeral, in a read-only sandbox. By default it runs in an empty temp dir and sees only what you put in the prompt.
 With `-r` it runs at the top of the current git repo (refuses `$HOME`), so it can read files, callers, tests and git history itself;
 everything in that checkout it reads (including untracked files like `.env`) goes to OpenAI.

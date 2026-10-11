@@ -29,7 +29,7 @@ Guidelines:
   `"$D/../consult-stats/consult.py" rate <id> useful|partial|useless --findings N --accepted N --unique N --note "..."`
   — see the consult-stats skill for what the fields mean. Then score yourself for the round with `consult.py self`
   (write your own findings down before reading the answers).
-- DeepSeek left the default set on 2026-10-03 (now sol + MiMo); ask it on request. Who joins a round is set in the `consult` skill's `SKILL.md`.
+- DeepSeek is in the default set (sol + MiMo + DeepSeek) again since 2026-10-11, at the user's request; it had left it on 2026-10-03. Who joins a round is set in the `consult` skill's `SKILL.md`.
 - Every consultation is a round: start the command with `export CONSULT_ROUND=$("$D/../consult-stats/consult.py" new-round)`
   and launch all models for that question in the same Bash call, so their calls share the round id
   (paired token comparisons in `consult.py stats --pairs`; `consult.py self --round <id>`).

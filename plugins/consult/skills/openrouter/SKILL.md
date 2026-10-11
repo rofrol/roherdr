@@ -59,7 +59,8 @@ payload summary is printed there.
 
 ## When to use it
 
-- MiMo is in the default set (sol + MiMo, from 2026-10-03, see the `consult` skill) and joins every default round.
+- MiMo is in the default set (from 2026-10-03; sol + MiMo + DeepSeek since 2026-10-11, see the `consult` skill) and
+  joins every default round.
   Other OpenRouter models only on an explicit request to try or evaluate them.
 - A cloaked model's provider is **anonymous** and **retains** the prompt and completion (OpenRouter Stealth Model
   Terms: not used for training, but logged by the unnamed lab). Treat everything sent as read by a third party.

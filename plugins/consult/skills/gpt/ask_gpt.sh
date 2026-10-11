@@ -12,6 +12,8 @@ done
 shift $((OPTIND-1))
 # No high/xhigh: in consult-stats it took ~3x the time and 4-7x the output tokens without more unique findings.
 case $effort in high|xhigh) echo "Effort $effort is disabled; use the default, low or medium" >&2; exit 2;; esac
+# Sol reasons at medium unless -e says otherwise (the user, 2026-10-11); other models keep Codex's default.
+case $model in sol|gpt-6.1-sol) effort=${effort:-medium};; esac
 if [ -z "${CONSULT_IN_JOB:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && command -v herdr-job >/dev/null; then
   exec "$consult_dir"/in_herdr_job.sh "gpt $model/${effort:-default}" "$0" ${orig[@]+"${orig[@]}"}  # watch it in its own herdr tab
 fi
