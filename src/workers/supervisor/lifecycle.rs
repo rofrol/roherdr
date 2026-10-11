@@ -571,7 +571,7 @@ impl WorkerSupervisor {
         {
             return Err(WorkerError::Busy(format!(
                 "worker {} still runs in folder slot {shown}; wait for it and stop it first",
-                status.worker_id
+                slot::holder(status)
             )));
         }
         let mut killed = Vec::new();

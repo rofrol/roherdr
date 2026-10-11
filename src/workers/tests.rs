@@ -2492,7 +2492,7 @@ fn a_folder_slot_is_reused_clean_by_one_worker_at_a_time() {
     let first = fixture.supervisor.start(&in_slot("w/one")).unwrap();
     let slot = fixture
         .root
-        .join("herdr-worktrees/worker")
+        .join("herdr-worktrees/repo/worker")
         .canonicalize()
         .unwrap();
     assert_eq!(first.cwd, slot.display().to_string());
@@ -2592,6 +2592,110 @@ fn a_folder_slot_is_reused_clean_by_one_worker_at_a_time() {
         .unwrap();
     assert!(!marker.exists());
     assert!(zig_cache.is_dir());
+    fixture.wait(&third.worker_id, WorkerWaitUntil::TurnEnd);
+}
+
+/// Two repositories beside each other each get their own folder slot and
+/// run a worker there at once (they shared `herdr-worktrees/worker` before,
+/// so rormpc's start was refused while herdr's worker ran, 2026-10-11). A
+/// slot made at the old place keeps serving the repository it belongs to,
+/// and a refusal names the repository of the worker that holds the slot.
+#[test]
+fn each_repository_has_its_own_folder_slot() {
+    let fixture = Fixture::new("slot-repos");
+    let other = fixture.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    for repo in [&fixture.repo, &other] {
+        git_in(repo, &["init", "-q", "-b", "master"]);
+        std::fs::write(repo.join(".gitignore"), "/target\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git_in(repo, &["add", "."]);
+        git_in(repo, &["commit", "-q", "-m", "init"]);
+    }
+    // The first repository's slot at the old place, as herdr's own was.
+    let legacy = fixture.root.join("herdr-worktrees/worker");
+    git_in(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &legacy.display().to_string(),
+            "master",
+        ],
+    );
+    let legacy = legacy.canonicalize().unwrap();
+    let in_slot = |repo: &Path, branch: &str| WorkerStartParams {
+        folder_slot: Some("worker".into()),
+        branch: Some(branch.into()),
+        ..start_params(repo, "finish", None)
+    };
+
+    let first = fixture
+        .supervisor
+        .start(&in_slot(&fixture.repo, "a/one"))
+        .unwrap();
+    assert_eq!(first.cwd, legacy.display().to_string());
+    fixture.wait(&first.worker_id, WorkerWaitUntil::TurnEnd);
+    // The old slot is not the other repository's: it gets its own while
+    // the first worker still runs.
+    let second = fixture.supervisor.start(&in_slot(&other, "b/one")).unwrap();
+    let own = fixture
+        .root
+        .join("herdr-worktrees/other/worker")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(second.cwd, own.display().to_string());
+    assert_eq!(git_in(&own, &["branch", "--show-current"]).trim(), "b/one");
+    assert_eq!(
+        git_in(&legacy, &["branch", "--show-current"]).trim(),
+        "a/one"
+    );
+    fixture.wait(&second.worker_id, WorkerWaitUntil::TurnEnd);
+    for worker in [&first, &second] {
+        assert_eq!(
+            fixture.supervisor.status(&worker.worker_id).unwrap().state,
+            WorkerState::Finished
+        );
+    }
+
+    let busy = fixture
+        .supervisor
+        .start(&in_slot(&fixture.repo, "a/two"))
+        .unwrap_err();
+    assert_eq!(busy.code(), "worker_busy", "{busy}");
+    let holder = repository_of(&legacy).unwrap();
+    assert!(
+        busy.to_string()
+            .contains(&format!("{} (repository {holder})", first.worker_id)),
+        "{busy}"
+    );
+
+    // Once the new place exists, it wins over the old one.
+    for worker in [&first, &second] {
+        fixture.supervisor.stop(&worker.worker_id).unwrap();
+        fixture.wait(&worker.worker_id, WorkerWaitUntil::Exit);
+    }
+    let moved = fixture.root.join("herdr-worktrees/repo/worker");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    git_in(
+        &fixture.repo,
+        &[
+            "worktree",
+            "move",
+            &legacy.display().to_string(),
+            &moved.display().to_string(),
+        ],
+    );
+    let third = fixture
+        .supervisor
+        .start(&in_slot(&fixture.repo, "a/three"))
+        .unwrap();
+    assert_eq!(
+        third.cwd,
+        moved.canonicalize().unwrap().display().to_string()
+    );
     fixture.wait(&third.worker_id, WorkerWaitUntil::TurnEnd);
 }
 
@@ -6552,7 +6656,7 @@ mod todo_runs {
         let worker = fixture.supervisor.status(&worker_id).unwrap();
         assert_eq!(worker.item.as_deref(), Some(ITEM));
         assert!(
-            worker.cwd.ends_with("herdr-worktrees/worker"),
+            worker.cwd.ends_with("herdr-worktrees/repo/worker"),
             "{}",
             worker.cwd
         );
@@ -9470,7 +9574,7 @@ mod todo_runs {
             .todo_run(params(&fixture, &format!("commit a.txt {SUBJECT}"), "ok"))
             .unwrap();
         runs::wait_crashed(&repo, HANG_GUARD);
-        let slot = fixture.root.join("herdr-worktrees/worker");
+        let slot = fixture.root.join("herdr-worktrees/repo/worker");
         std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
         std::fs::write(&slot, "not a directory\n").unwrap();
         fixture.supervisor.resume_runs();

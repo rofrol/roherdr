@@ -21,9 +21,12 @@ pub struct WorkerStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     /// Runs the worker in the persistent git worktree
-    /// `<repository parent>/herdr-worktrees/<folder_slot>` of `cwd`'s
-    /// repository instead of in `cwd`, one worker at a time, so its build
-    /// caches stay warm. Needs `branch`.
+    /// `<repository parent>/herdr-worktrees/<repository name>/<folder_slot>`
+    /// of `cwd`'s repository instead of in `cwd`, one worker at a time, so
+    /// its build caches stay warm; each repository has its own. A slot made
+    /// earlier at `<repository parent>/herdr-worktrees/<folder_slot>` stays in
+    /// use while it is a worktree of this repository and the new place does
+    /// not exist. Needs `branch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_slot: Option<String>,
     /// With `folder_slot`: the new branch checked out in the slot; it must

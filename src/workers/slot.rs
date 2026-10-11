@@ -1,5 +1,6 @@
 //! A persistent worker folder ("folder slot"): one git worktree
-//! `<repository parent>/herdr-worktrees/<name>` that headless workers use one
+//! `<repository parent>/herdr-worktrees/<repository>/<name>` ([`path_of`])
+//! per repository that headless workers use one
 //! at a time, so its `target/` and Zig cache stay warm between workers and
 //! only the changes compile. Copying a warm cache into a new worktree does not
 //! help (both record absolute paths), and sharing the user's caches would
@@ -61,30 +62,100 @@ pub(super) fn validate_name(name: &str) -> Result<(), WorkerError> {
     }
 }
 
-/// Finds the slot of the repository `caller_cwd` belongs to and creates its
-/// worktree at `base` (detached) when it does not exist yet. Returns the
-/// slot's real path and whether it was created.
+/// The directory beside a repository that holds the folder slots, as
+/// `herdr worktree create` keeps worktrees under `<dir>/<repository>/`.
+const SLOTS_DIR: &str = "herdr-worktrees";
+
+/// The repository `dir` belongs to: its common `.git` directory (absolute,
+/// real) and its top directory, the parent of that.
+fn repository_of(dir: &Path) -> Result<(PathBuf, PathBuf), WorkerError> {
+    let repo_common_dir = common_dir(dir)?;
+    if repo_common_dir.file_name().and_then(|name| name.to_str()) != Some(".git") {
+        return Err(WorkerError::Invalid(format!(
+            "folder slots need a repository with a .git directory; {} has {}",
+            dir.display(),
+            repo_common_dir.display()
+        )));
+    }
+    let repository = repo_common_dir
+        .parent()
+        .ok_or_else(|| WorkerError::Invalid("the repository has no directory".into()))?
+        .to_owned();
+    Ok((repo_common_dir, repository))
+}
+
+/// Where the folder slot `name` of the repository `dir` belongs to lives:
+/// `<repository parent>/herdr-worktrees/<repository name>/<name>`, one per
+/// repository, so repositories beside each other never share a slot (they
+/// did while the slot was `herdr-worktrees/<name>`: rormpc's run was refused
+/// because herdr's worker ran there, 2026-10-11). A slot made before that,
+/// `herdr-worktrees/<name>`, stays in use while it is a worktree of this
+/// repository and the new place does not exist, so its warm `target/` (whose
+/// fingerprints hold absolute paths) is kept; `git worktree move` it to the
+/// new place to migrate, at the cost of one cold build.
+pub(super) fn path_of(dir: &Path, name: &str) -> Result<PathBuf, WorkerError> {
+    validate_name(name)?;
+    let (repo_common_dir, repository) = repository_of(dir)?;
+    resolve(&repo_common_dir, &repository, name)
+}
+
+fn resolve(repo_common_dir: &Path, repository: &Path, name: &str) -> Result<PathBuf, WorkerError> {
+    let parent = repository.parent().ok_or_else(|| {
+        WorkerError::Invalid(format!("{} has no parent directory", repository.display()))
+    })?;
+    let repository_name = repository.file_name().ok_or_else(|| {
+        WorkerError::Invalid(format!("{} has no directory name", repository.display()))
+    })?;
+    let slots = parent.join(SLOTS_DIR);
+    let folder = slots.join(repository_name);
+    let path = folder.join(name);
+    if std::fs::symlink_metadata(&path).is_err() {
+        let legacy = slots.join(name);
+        let legacy_is_ours = legacy.is_dir()
+            && common_dir(&legacy).is_ok_and(|common| common == repo_common_dir)
+            && git(&legacy, &["rev-parse", "--show-toplevel"])
+                .ok()
+                .and_then(|top| PathBuf::from(top.trim()).canonicalize().ok())
+                .zip(legacy.canonicalize().ok())
+                .is_some_and(|(top, legacy)| top == legacy);
+        if legacy_is_ours {
+            return Ok(legacy);
+        }
+    }
+    // `herdr-worktrees/<repository name>` may already be a worktree of
+    // another repository (an old slot or a task worktree with that name); a
+    // slot inside it would be nested in that tree.
+    if folder.join(".git").exists() {
+        return Err(WorkerError::Invalid(format!(
+            "{} is a git checkout, so it cannot hold the folder slots of {}; move it away",
+            folder.display(),
+            repository.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// A worker that holds a slot, for a busy refusal: its id and the
+/// repository it was started for, so the refusal names whose work blocks it.
+pub(super) fn holder(status: &super::status::Status) -> String {
+    match &status.repo {
+        Some(repo) => format!("{} (repository {repo})", status.worker_id),
+        None => status.worker_id.clone(),
+    }
+}
+
+/// Finds the slot of the repository `caller_cwd` belongs to ([`path_of`])
+/// and creates its worktree at `base` (detached) when it does not exist yet.
+/// Returns the slot's real path and whether it was created.
 pub(super) fn locate_or_create(
     caller_cwd: &Path,
     name: &str,
     base: &str,
 ) -> Result<(PathBuf, bool), WorkerError> {
     validate_name(name)?;
-    let repo_common_dir = common_dir(caller_cwd)?;
-    if repo_common_dir.file_name().and_then(|name| name.to_str()) != Some(".git") {
-        return Err(WorkerError::Invalid(format!(
-            "folder slots need a repository with a .git directory; {} has {}",
-            caller_cwd.display(),
-            repo_common_dir.display()
-        )));
-    }
-    let repository = repo_common_dir
-        .parent()
-        .ok_or_else(|| WorkerError::Invalid("the repository has no directory".into()))?;
-    let parent = repository.parent().ok_or_else(|| {
-        WorkerError::Invalid(format!("{} has no parent directory", repository.display()))
-    })?;
-    let path = parent.join("herdr-worktrees").join(name);
+    let (repo_common_dir, repository) = repository_of(caller_cwd)?;
+    let repository = repository.as_path();
+    let path = resolve(&repo_common_dir, repository, name)?;
     let created = match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_dir() => false,
         Ok(_) => {

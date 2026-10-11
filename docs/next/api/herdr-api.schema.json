@@ -7069,7 +7069,7 @@
               "type": "string"
             },
             "folder_slot": {
-              "description": "Runs the worker in the persistent git worktree\n`<repository parent>/herdr-worktrees/<folder_slot>` of `cwd`'s\nrepository instead of in `cwd`, one worker at a time, so its build\ncaches stay warm. Needs `branch`.",
+              "description": "Runs the worker in the persistent git worktree\n`<repository parent>/herdr-worktrees/<repository name>/<folder_slot>`\nof `cwd`'s repository instead of in `cwd`, one worker at a time, so\nits build caches stay warm; each repository has its own. A slot made\nearlier at `<repository parent>/herdr-worktrees/<folder_slot>` stays in\nuse while it is a worktree of this repository and the new place does\nnot exist. Needs `branch`.",
               "type": [
                 "string",
                 "null"

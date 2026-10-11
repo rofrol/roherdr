@@ -526,9 +526,13 @@ first outcome instead of starting a second worker or sending a second
 answer; a new attempt after a refusal needs a new id.
 To let a headless worker build and test herdr in its sandbox, start it
 with `--folder-slot worker --branch <unique branch>` instead of `--cwd
-<worktree>`: it runs in the persistent worktree `../herdr-worktrees/worker`
-on that new branch from `master` (`--base`), whose `target/` and Zig cache
-stay warm between workers. One worker at a time: stop the previous one
+<worktree>`: it runs in the persistent worktree of that name beside the
+repository, on that new branch from `master` (`--base`), whose `target/` and
+Zig cache stay warm between workers. Each repository has its own slot,
+`../herdr-worktrees/<repository>/worker`; herdr's slot predates that and
+stays at `../herdr-worktrees/worker`, which herdr keeps using while it is a
+herdr worktree and `../herdr-worktrees/herdr/worker` does not exist (moving
+it costs one cold build). One worker at a time: stop the previous one
 first, and bring in or drop its commits before reusing the slot; herdr
 refuses a slot with uncommitted changes. `--fresh-build` rebuilds from
 scratch. The worker runs only the tests that work in the sandbox and lists

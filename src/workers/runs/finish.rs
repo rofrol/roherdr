@@ -962,7 +962,13 @@ impl WorkerSupervisor {
             return Ok(());
         }
         let mut errors = Vec::new();
-        let slot = super::slot_dir(&repo).filter(|slot| slot.is_dir());
+        let slot = match super::slot_dir(&repo) {
+            Ok(slot) => Some(slot).filter(|slot| slot.is_dir()),
+            Err(error) => {
+                errors.push(error);
+                None
+            }
+        };
         let head = slot.as_deref().and_then(|slot| {
             git(slot, &["symbolic-ref", "--quiet", "--short", "HEAD"])
                 .ok()

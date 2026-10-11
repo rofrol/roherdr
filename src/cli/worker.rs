@@ -17,10 +17,11 @@ const USAGE: &str =
     --name names the worker's line in the sidebar (default: the prompt's first line);
     --workspace is the space it is listed under (default: the caller's space);
     --item is the TODO item it works on (its id, t-abcd2345), which `runs` lists it under.
-    --folder-slot runs it in the persistent worktree ../herdr-worktrees/NAME of
-    --cwd's repository, on the new branch BRANCH from REF (default: master),
-    one worker at a time, keeping target/ warm; --fresh-build removes the
-    slot's target/ and Zig cache first.
+    --folder-slot runs it in the persistent worktree
+    ../herdr-worktrees/<repository>/NAME of --cwd's repository (or an earlier
+    slot of that repository at ../herdr-worktrees/NAME), on the new branch
+    BRANCH from REF (default: master), one worker at a time, keeping target/
+    warm; --fresh-build removes the slot's target/ and Zig cache first.
     The caller's pane (HERDR_PANE_ID) and agent session (CLAUDE_CODE_SESSION_ID)
     become the worker's owner.
   herdr worker status <worker_id>

@@ -737,10 +737,9 @@ fn new_run_id(repo: &str, item: &str) -> String {
     format!("r-{id}")
 }
 
-/// The repository's folder slot, beside it as [`super::slot`] places it.
-fn slot_dir(repo: &Path) -> Option<PathBuf> {
-    repo.parent()
-        .map(|parent| parent.join("herdr-worktrees").join(SLOT))
+/// The repository's folder slot, where [`super::slot::path_of`] places it.
+fn slot_dir(repo: &Path) -> Result<PathBuf, String> {
+    super::slot::path_of(repo, SLOT).map_err(|error| error.to_string())
 }
 
 /// The attempt's branch: with the run's id, so a later run of the same
@@ -910,7 +909,7 @@ fn min_free_gib(preflight: &PreflightConfig) -> f64 {
 /// which frees the slot's build artifacts; a slot not created yet has
 /// nothing to sweep.
 pub(super) fn sweep_slot(repo: &Path) -> Result<(), String> {
-    match slot_dir(repo).filter(|slot| slot.is_dir()) {
+    match Some(slot_dir(repo)?).filter(|slot| slot.is_dir()) {
         Some(slot) => super::slot::bound_target(&slot).map_err(|error| error.to_string()),
         None => Ok(()),
     }
@@ -1777,10 +1776,7 @@ impl WorkerSupervisor {
     /// The folder slot is free: no worker of this server runs in it, and
     /// it has nothing uncommitted. A slot not created yet is free.
     fn check_slot_free(&self, repo: &Path) -> Result<(), String> {
-        let Some(slot) = slot_dir(repo) else {
-            return Err(format!("{} has no parent directory", repo.display()));
-        };
-        let Ok(real) = slot.canonicalize() else {
+        let Ok(real) = slot_dir(repo)?.canonicalize() else {
             return Ok(());
         };
         let busy: Vec<String> = {
@@ -1794,7 +1790,7 @@ impl WorkerSupervisor {
                         .canonicalize()
                         .is_ok_and(|cwd| cwd == real)
                 })
-                .map(|entry| entry.status.worker_id.clone())
+                .map(|entry| super::slot::holder(&entry.status))
                 .collect()
         };
         if !busy.is_empty() {

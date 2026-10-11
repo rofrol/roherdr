@@ -23,7 +23,8 @@ const USAGE: &str = "usage:
       any Claude window is 90% or more used or the read fails, and after such
       a refusal until a read shows every Claude window below 80%;
       --ignore-usage, on the user's word, starts anyway), then
-      start a headless worker in the folder slot ../herdr-worktrees/worker on
+      start a headless worker in the repository's folder slot
+      ../herdr-worktrees/<repository>/worker (see `herdr worker start`) on
       the branch todo/<item-id>-<attempt> from master with FILE's text as its
       task (followed by SUBJECT, the GLOBs and the WORKER-DONE line it must
       keep), owned by this pane. Prints the run (its id r-...). The run then
