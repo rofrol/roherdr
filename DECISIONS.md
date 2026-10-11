@@ -1083,3 +1083,14 @@ the running workers of its space; the status legend explains it.
 Follow-up, decided by the coordinator 2026-10-11: `herdr-bg-badge` records
 `wait-agent` waits as agent edges with the target pane, so the
 coordinator's mark names the exact worker even in another space.
+
+## A legend explaining the UI's dots and symbols (agent state dots,
+
+The user asked whether a legend of all states and marks exists
+(2026-10-10). Now (69f008f2) the status legend covers every domain
+(agents, roles, bg and `◔`, workers, jobs, git, header counters, the `?`
+list, TODO items and runs), drawn by the sidebar's own functions with
+real swatches; a click on a state glyph, role mark or job count opens it
+at the entry; glyphs with their own action mention it in their tooltip;
+exhaustive per-variant tests; docs/next "Status legend". Queue mode
+status has no entry because the TUI draws none yet.
