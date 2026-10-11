@@ -1741,6 +1741,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   secret command (later at most), herdr as its own OIDC issuer (a signing
   key on disk instead of an API key). Workload Identity Federation only
   if a real identity provider appears.
+  Done 2026-10-12: the user created the key `herdr-worker` in
+  `herdr-workers` and stored it in `<key file>`
+  (checked: 0600, owned by the user, `sk-ant-` prefix; the contents were
+  not read). Ready for a worker.
 
 - [ ] `herdr todo run` serves a coordinator that owns two repositories [t-o73wcaoq]
   (the user via the rormpc coordinator, 2026-10-12: "report it to the herdr
