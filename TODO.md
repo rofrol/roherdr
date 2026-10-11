@@ -1603,6 +1603,18 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      a WORKER line") on `WORKER-DONE none | ...`, a valid no-commit result;
      accept `none` as a done verdict without a commit check.
 
+- [ ] An interactive worker gets its own unfocused tab, never a split of the [t-ollsffj5]
+  coordinator's pane (the owner via classify-x-posts, 2026-10-11: "why is a
+  split open here?"): its coordinator ran `herdr pane split w7:pV ...` then
+  `agent start --pane` for workers that need SSH and a browser (no
+  worktree), so the coordinator and a worker share a tab at half width.
+  Want: `herdr agent start --new-tab [--no-focus] [--cwd]` (a new tab with
+  the worker role in the coordinator's space, unfocused by default; it
+  returns the pane and, with a prompt, its request id); the coordinator
+  allowlist refuses `pane split` of the caller's own pane in coordinator
+  tabs naming `--new-tab`; the todo skill says so (text edit done
+  2026-10-11).
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
