@@ -1044,14 +1044,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      overview offering "Set up coordinator" (create a TODO.md, then start
      one), not a coordinator.
 
-- [ ] DeepSeek back in the default consult set (user, 2026-10-07: "add [t-sjngd5gy]
-  DeepSeek to the consultations; it is fast, and since I have Claude Max 20
-  the tokens Claude spends reading its answer do not hurt as much"). The
-  `consult` skill (`plugins/consult/skills/consult/SKILL.md`) names sol +
-  MiMo as the default set and says DeepSeek left it on 2026-10-03; make it
-  sol + MiMo + DeepSeek. The coordinator asks DeepSeek in its rounds from
-  now on.
-
 - [ ] What the usage footer can take from Magpie (user, 2026-10-07: "what of [t-wdfmvf66]
   this for our usage widget, https://usemagpie.ai/? work out a TODO with
   the models if needed"). Magpie is a local MIT gateway agents route

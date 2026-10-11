@@ -1208,3 +1208,14 @@ worktree parents landed 2026-10-11 (cf49ba40). Decided by the user
 2026-10-11 from a menu (d-fwxs4xwq): keep it. Not done, on purpose: the
 row-by-row slide animation, a per-job menu on a square, the drag in the
 multi-machine sidebar, the priority view.
+
+## DeepSeek back in the default consult set (user, 2026-10-07: "add
+
+DeepSeek left the default consult set on 2026-10-03 (weakest unique
+findings); the user asked it back on 2026-10-07, 2026-10-09 and
+2026-10-11 ("add deepseek to the default set"; Claude Max makes reading
+its answer cheap). Now (f99925d6) the default is sol + MiMo + DeepSeek,
+self-consultation pairs updated (DeepSeek: sol + MiMo; MiMo: sol +
+DeepSeek; GPT: MiMo + DeepSeek; Claude: all three), and `ask_gpt.sh` runs
+sol at reasoning effort medium unless `-e` overrides (the user,
+2026-10-11); `~/.codex/config.toml` stays at low for interactive Codex.
