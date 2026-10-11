@@ -397,6 +397,8 @@ pub enum Method {
     AgentWaitTurn(AgentWaitTurnParams),
     #[serde(rename = "agent.wait")]
     AgentWait(AgentWaitParams),
+    #[serde(rename = "agent.wait_change")]
+    AgentWaitChange(AgentWaitChangeParams),
     #[serde(rename = "pane.split")]
     PaneSplit(PaneSplitParams),
     #[serde(rename = "pane.swap")]

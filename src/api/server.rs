@@ -16,7 +16,7 @@ use crate::api::schema::{
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::wait::{
     prompt_agent, prompt_agent_confirmed, prompt_agent_tracked, prompt_agent_turn, wait_agent_turn,
-    wait_for_agent, wait_for_event, wait_for_output,
+    wait_for_agent, wait_for_agent_change, wait_for_event, wait_for_output,
 };
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
@@ -166,6 +166,7 @@ fn is_open_wait(method: &Method) -> bool {
             | Method::AgentPromptConfirmed(_)
             | Method::AgentWaitTurn(_)
             | Method::AgentWait(_)
+            | Method::AgentWaitChange(_)
             | Method::PaneWaitForOutput(_)
             | Method::WorkerWait(_)
             | Method::WorkerEvents(_)
@@ -690,6 +691,23 @@ fn handle_connection_with_stop(
                 changes_ui,
             )
         }
+        Method::AgentWaitChange(params) => {
+            let response = wait_for_agent_change(
+                request_id.clone(),
+                params,
+                &mut stream,
+                api_tx,
+                event_hub,
+                running,
+            )?;
+            finish_wait_response(
+                &mut stream,
+                answer(response),
+                &request_id,
+                method,
+                changes_ui,
+            )
+        }
         Method::PaneWaitForOutput(params) => {
             let response =
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?;
@@ -972,6 +990,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentPromptConfirmed(_) => "agent.prompt_confirmed",
         Method::AgentWaitTurn(_) => "agent.wait_turn",
         Method::AgentWait(_) => "agent.wait",
+        Method::AgentWaitChange(_) => "agent.wait_change",
         Method::PaneSplit(_) => "pane.split",
         Method::PaneSwap(_) => "pane.swap",
         Method::PaneMove(_) => "pane.move",

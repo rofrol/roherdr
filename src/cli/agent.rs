@@ -1,10 +1,11 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptConfirmedParams, AgentPromptParams, AgentPromptTrackedParams, AgentPromptTurnParams,
-    AgentPromptWaitOptions, AgentReadParams, AgentRenameParams, AgentSendKeysParams,
-    AgentStartParams, AgentTarget, AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentPromptConfirmedParams, AgentPromptParams, AgentPromptStatusParams,
+    AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
+    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitChangeParams,
+    AgentWaitParams, AgentWaitTurnParams, EmptyParams, ErrorBody, ErrorResponse, Method,
+    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -29,6 +30,8 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => agent_focus(&scoped_args, scope()),
         "wait" => agent_wait(&scoped_args, scope()),
         "wait-turn" => agent_wait_turn(&args[1..]),
+        "wait-change" => agent_wait_change(&scoped_args, scope()),
+        "prompt-status" => agent_prompt_status(&args[1..]),
         "attach" => agent_attach(&scoped_args, scope()),
         "explain" => agent_explain(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
@@ -767,6 +770,46 @@ fn agent_wait(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     super::print_response(&reply.response)
 }
 
+/// `agent.wait_change`, sent once: a live handoff answers `server_handed_off`, and the caller
+/// reads the agent again, since the new server's `state_change_seq` differs anyway.
+fn agent_wait_change(args: &[String], scope: NameScope) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent wait-change <target> --after <state_change_seq>";
+    let (Some(target), Some("--after"), Some(seq), None) = (
+        args.first(),
+        args.get(1).map(String::as_str),
+        args.get(2),
+        args.get(3),
+    ) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let Ok(state_change_seq) = seq.parse::<u64>() else {
+        eprintln!("--after takes a number (the agent's state_change_seq): {seq}");
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:wait_change".into(),
+        method: Method::AgentWaitChange(AgentWaitChangeParams {
+            target: target.clone(),
+            prefer_workspace_id: scope.prefer_workspace_id,
+            state_change_seq,
+        }),
+    })?)
+}
+
+fn agent_prompt_status(args: &[String]) -> std::io::Result<i32> {
+    let [request_id] = args else {
+        eprintln!("usage: herdr agent prompt-status <request_id>");
+        return Ok(2);
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:prompt_status".into(),
+        method: Method::AgentPromptStatus(AgentPromptStatusParams {
+            request_id: request_id.clone(),
+        }),
+    })?)
+}
+
 fn wait_for_named_agent(
     name: &str,
     scope: &NameScope,
@@ -817,7 +860,11 @@ fn wait_for_named_agent(
                 Some("blocked") => Some(Err(cli_agent_error(
                     "cli:agent:start",
                     "agent_not_ready",
-                    format!("agent {name} is blocked during startup and is not ready for prompts"),
+                    format!(
+                        "agent {name} is blocked during startup by {} and is not ready for prompts; answer it in pane {} (an agent started in a folder it never trusted asks whether to trust it)",
+                        startup_dialog(name, scope, agent),
+                        agent["pane_id"].as_str().unwrap_or(fallback_pane_id),
+                    ),
                 ))),
                 Some("unknown")
                     if expected_kind == "codex"
@@ -844,6 +891,34 @@ fn wait_for_named_agent(
         }
         std::thread::sleep(AGENT_START_POLL_INTERVAL);
     }
+}
+
+/// The dialog an agent blocked during startup shows: `the "<rule>" dialog` when a blocking
+/// screen-detection rule matches its screen (a folder-trust prompt), else the question its
+/// integration reported, else `a dialog`.
+fn startup_dialog(name: &str, scope: &NameScope, agent: &serde_json::Value) -> String {
+    let explained = super::send_request_unchecked(&Request {
+        id: "cli:agent:start:explain".into(),
+        method: Method::AgentExplain(scope.target(name)),
+    });
+    if let Some(dialog) = explained
+        .ok()
+        .and_then(|value| blocking_rule_dialog(&value["result"]["explain"]["matched_rule"]))
+    {
+        return dialog;
+    }
+    match agent["question"].as_str().map(str::trim) {
+        Some(question) if !question.is_empty() => format!("the question \"{question}\""),
+        _ => "a dialog".to_string(),
+    }
+}
+
+/// `the "<id>" dialog` for a matched screen-detection rule whose state is `blocked`.
+fn blocking_rule_dialog(rule: &serde_json::Value) -> Option<String> {
+    (rule["state"] == "blocked")
+        .then(|| rule["id"].as_str())
+        .flatten()
+        .map(|id| format!("the \"{id}\" dialog"))
 }
 
 fn pane_terminal_id(pane_id: &str) -> std::io::Result<Option<String>> {
@@ -1285,6 +1360,8 @@ fn print_agent_help() {
     eprintln!("  herdr agent set-task [--pane PANE_ID] <task>|--clear");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent wait-turn <request_id>");
+    eprintln!("  herdr agent wait-change <target> --after <state_change_seq>");
+    eprintln!("  herdr agent prompt-status <request_id>");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
@@ -1296,7 +1373,9 @@ fn print_agent_help() {
     );
     eprintln!("  targets accept unique agent names and pane ids that currently host agents");
     eprintln!("  inside a pane, a name resolves in the caller's workspace first, then in all;");
-    eprintln!("  --global (get, read, send-keys, prompt, rename, focus, wait, attach, explain)");
+    eprintln!(
+        "  --global (get, read, send-keys, prompt, rename, focus, wait, wait-change, attach, explain)"
+    );
     eprintln!("  looks a name up in every workspace at once");
     eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
 }
@@ -1310,7 +1389,21 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{method_unknown, prompt_turn_unavailable, split_global_flag, NameScope};
+    use super::{
+        blocking_rule_dialog, method_unknown, prompt_turn_unavailable, split_global_flag, NameScope,
+    };
+
+    #[test]
+    fn a_blocking_rule_names_the_startup_dialog() {
+        let rule = serde_json::json!({"id": "trust_directory", "state": "blocked"});
+        assert_eq!(
+            blocking_rule_dialog(&rule).as_deref(),
+            Some("the \"trust_directory\" dialog")
+        );
+        let working = serde_json::json!({"id": "spinner", "state": "working"});
+        assert_eq!(blocking_rule_dialog(&working), None);
+        assert_eq!(blocking_rule_dialog(&serde_json::Value::Null), None);
+    }
 
     #[test]
     fn an_older_server_without_prompt_tracked_is_recognized() {

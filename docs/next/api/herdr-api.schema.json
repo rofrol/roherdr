@@ -1993,6 +1993,31 @@
             }
           ]
         },
+        "AgentWaitChangeParams": {
+          "description": "Waits until the agent's state changes after the caller looked at it: answers with the agent\nonce its `state_change_seq` differs from `state_change_seq` (level-triggered, so a change\nmade before the wait began answers at once), and `agent_not_running` when the agent exits,\nis released or its pane closes. A caller reads the agent and its own sources (a\ntranscript), then waits with the `state_change_seq` it read, so no change between the read\nand the wait is missed. The sequence is per server: after a restart it differs, which\nanswers at once and makes the caller look again. It has no timeout.",
+          "properties": {
+            "prefer_workspace_id": {
+              "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state_change_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "state_change_seq"
+          ],
+          "type": "object"
+        },
         "AgentWaitParams": {
           "properties": {
             "prefer_workspace_id": {
@@ -9733,6 +9758,22 @@
         {
           "properties": {
             "method": {
+              "const": "agent.wait_change",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentWaitChangeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.split",
               "type": "string"
             },
@@ -16253,6 +16294,13 @@
                 },
                 "prompt_request": {
                   "$ref": "#/schemas/success_response/$defs/AgentPromptRequest"
+                },
+                "text": {
+                  "description": "The prompt herdr typed, whitespace runs collapsed to one space, so a caller can\nfind where the prompt's work starts in the agent's transcript.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "agent_prompt_status",

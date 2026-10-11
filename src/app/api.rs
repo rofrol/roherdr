@@ -1343,6 +1343,13 @@ impl App {
                     "agent.wait is handled by the api server",
                 );
             }
+            Method::AgentWaitChange(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "agent.wait_change is handled by the api server",
+                );
+            }
             Method::WorkerStart(_)
             | Method::WorkerStatus(_)
             | Method::WorkerList(_)

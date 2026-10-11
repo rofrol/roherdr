@@ -162,6 +162,7 @@ pub(super) fn wait_for_agent(
             initial,
             last_event_sequence,
             after_state_change_seq: None,
+            changed_from_state_change_seq: None,
             accept_transient_status: true,
         },
         stream,
@@ -169,6 +170,60 @@ pub(super) fn wait_for_agent(
         event_hub,
         running,
     )? {
+        Some(AgentWaitOutcome::Matched(agent)) => agent_wait_success(request_id, *agent).map(Some),
+        Some(AgentWaitOutcome::Response(response)) => Ok(Some(response)),
+        None => Ok(None),
+    }
+}
+
+/// `agent.wait_change`: answers with the agent once its `state_change_seq` differs from the one
+/// the caller read. It takes the event cursor before it first reads the agent, so a change
+/// between the caller's read and this wait answers at once; afterwards it reads the agent again
+/// only when an event about its pane arrives. The agent exiting, moving away or its pane closing
+/// answers `agent_not_running`.
+pub(super) fn wait_for_agent_change(
+    request_id: String,
+    params: crate::api::schema::AgentWaitChangeParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    use crate::api::schema::AgentStatus;
+
+    let last_event_sequence = event_hub.current_sequence();
+    let target = crate::api::schema::AgentTarget {
+        target: params.target,
+        prefer_workspace_id: params.prefer_workspace_id,
+    };
+    let initial = match agent_get(&request_id, &target, api_tx) {
+        Ok(agent) => agent,
+        Err(response) => {
+            return serde_json::to_string(&response)
+                .map(Some)
+                .map_err(std::io::Error::other);
+        }
+    };
+    let wait = ResolvedAgentWait {
+        target,
+        until: vec![
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ],
+        timeout_ms: None,
+        initial,
+        last_event_sequence,
+        after_state_change_seq: None,
+        changed_from_state_change_seq: Some(params.state_change_seq),
+        accept_transient_status: false,
+    };
+    if wait.matches(&wait.initial) {
+        return agent_wait_success(request_id, wait.initial).map(Some);
+    }
+    match wait_for_resolved_agent(request_id.clone(), wait, stream, api_tx, event_hub, running)? {
         Some(AgentWaitOutcome::Matched(agent)) => agent_wait_success(request_id, *agent).map(Some),
         Some(AgentWaitOutcome::Response(response)) => Ok(Some(response)),
         None => Ok(None),
@@ -305,6 +360,7 @@ pub(super) fn prompt_agent(
             // the acknowledgement still terminate this settled-state wait.
             last_event_sequence,
             after_state_change_seq,
+            changed_from_state_change_seq: None,
             accept_transient_status: false,
         },
         stream,
@@ -1007,7 +1063,19 @@ struct ResolvedAgentWait {
     initial: crate::api::schema::AgentInfo,
     last_event_sequence: u64,
     after_state_change_seq: Option<u64>,
+    /// Matches only once the agent's `state_change_seq` differs from this one
+    /// (`agent.wait_change`).
+    changed_from_state_change_seq: Option<u64>,
     accept_transient_status: bool,
+}
+
+impl ResolvedAgentWait {
+    fn matches(&self, agent: &crate::api::schema::AgentInfo) -> bool {
+        agent_wait_matches(agent, &self.until, self.after_state_change_seq)
+            && self
+                .changed_from_state_change_seq
+                .is_none_or(|seq| agent.state_change_seq != seq)
+    }
 }
 
 enum AgentWaitOutcome {
@@ -1132,7 +1200,7 @@ fn wait_for_resolved_agent(
                 matched.agent_status = status;
                 return Ok(Some(AgentWaitOutcome::Matched(Box::new(matched))));
             }
-            if agent_wait_matches(&current, &wait.until, wait.after_state_change_seq) {
+            if wait.matches(&current) {
                 return Ok(Some(AgentWaitOutcome::Matched(Box::new(current))));
             }
         }
@@ -1156,7 +1224,7 @@ fn wait_for_resolved_agent(
                     .map(AgentWaitOutcome::Response)
                     .map(Some);
             }
-            if agent_wait_matches(&current, &wait.until, wait.after_state_change_seq) {
+            if wait.matches(&current) {
                 return Ok(Some(AgentWaitOutcome::Matched(Box::new(current))));
             }
             return agent_wait_timeout(request_id)

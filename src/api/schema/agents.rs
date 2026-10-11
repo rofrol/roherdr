@@ -46,6 +46,24 @@ pub struct AgentWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// Waits until the agent's state changes after the caller looked at it: answers with the agent
+/// once its `state_change_seq` differs from `state_change_seq` (level-triggered, so a change
+/// made before the wait began answers at once), and `agent_not_running` when the agent exits,
+/// is released or its pane closes. A caller reads the agent and its own sources (a
+/// transcript), then waits with the `state_change_seq` it read, so no change between the read
+/// and the wait is missed. The sequence is per server: after a restart it differs, which
+/// answers at once and makes the caller look again. It has no timeout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentWaitChangeParams {
+    pub target: String,
+    /// Workspace whose agent names take precedence when `target` is an agent
+    /// name: a name found there resolves even if other workspaces use it too;
+    /// a name absent there resolves across all workspaces as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_workspace_id: Option<String>,
+    pub state_change_seq: u64,
+}
+
 /// Makes `agent.prompt` wait after typing. From a non-working state it first waits for the
 /// agent's acknowledgement, the same as `agent.prompt_confirmed` (the prompt's turn report, else
 /// the agent turning `working`), with no time limit of its own; then it waits for one of `until`
