@@ -41,6 +41,19 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - Slice 1: the sweep with the coordinator-idle, pane-working-after-Stop,
     untracked-shell and disk predicates, the table, `herdr supervise
     --report`, the `?` entries. Never acts.
+  Slice 1 landed 2026-10-11 (f12a83b1): the sweep (5-minute timer plus
+  coordinator turn and state events), the four predicates, the append-only
+  `supervision_findings` with fingerprint dedupe and `supervision.finding`
+  events, one notification and one `?` entry per new or escalated finding,
+  `herdr supervise --report [--all] [--json]` (`supervise.report`). Open
+  points, decided by the coordinator 2026-10-11: disk is a warning below the
+  15 GiB guard and critical below 5 GiB (a cold `target/` build no longer
+  fits); slice 2: (a) read herdr-job's wait edges (e3228f41) so a wait on
+  another pane's job is not "untracked"; (b) only the user or the herdr
+  coordinator (its tenure) acknowledges a finding, never a worker or another
+  agent's `worker answer`; (c) findings reach the herdr coordinator's
+  durable inbox (the user asked that it reports to the herdr coordinator),
+  as reports do, besides the user's `?` list.
 
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
