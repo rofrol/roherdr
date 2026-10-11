@@ -61,6 +61,27 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   the user's decision d-..., idle with nothing runnable, waiting on job Y),
   and keep "cannot establish progress" for the case with no such fact.
 
+- [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
+  2026-10-11: "the coordinator investigator gets its own tab, always at the
+  very top, fixed; ask the models"; round 20261011-143956-eed7, sol + MiMo
+  + DeepSeek agreeing), decided by the coordinator:
+  - A pinned read-only view (rendered from the server's `supervise.report`
+    and live `supervision.finding` events, like the worker tab), not a
+    space and not an agent; labelled "Supervision".
+  - Its row sits above the spaces, outside their scroll, never dragged,
+    closed, filtered, sorted or folded; one line: the worst unresolved
+    severity glyph and counts by severity in fixed widths (no jitter on
+    each sweep), not the header's `?`; "no findings" is not "healthy"; a
+    stale or unavailable sweep shows as such.
+  - Its main view: the last sweep's time, the per-coordinator table (repo,
+    state, progress label, run, workers, pane link), findings with their
+    evidence; "Open coordinator pane" focuses the existing tab.
+  - Config `[supervision] show_tab = true` (positive name, default on).
+  - Server: a snapshot on subscribe plus delta events with sequence numbers
+    (add only what is missing); the client never polls. One triage state:
+    the `?` entries link to these findings, not a second inbox.
+  - Slice 1: the row, the view, freshness, Open pane; acknowledge later.
+
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
   herdr coordinator, fix the process with the models"). The violai
