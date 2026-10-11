@@ -40,6 +40,32 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repositories' own coordinators, see the item on waiting on another
   coordinator.
 
+- [ ] The aarch64 musl build links again, and a partial build is never [t-i7xfozha]
+  deployed (the user via the chat-hosted coordinator, 2026-10-12: "sloppy
+  work; ask the models"). Manual build run 38183050127 on aa18b74f: x86_64
+  musl linked, aarch64 musl failed: `sqlite3.c: undefined reference to
+  'open64'`: since rusqlite `bundled` (863987ae, 2026-10-08) cc-rs compiles
+  SQLite with the glibc cross gcc (`aarch64-linux-gnu-gcc`, also the
+  linker), and musl 1.2.4+ has no LFS64 symbols; chat-hosted's deploy
+  picked the latest successful run and kept deploying an old build.
+  Round 20261012-011805-8b53 (sol, DeepSeek agreeing; MiMo refused the
+  brief), decided:
+  1. Both musl targets compile C and link with Zig (already in the job):
+     wrapper scripts running `zig cc -target <arch>-linux-musl`, set as
+     the target's CC (cc-rs) and Cargo linker (and AR if needed), in the
+     fork's own workflows (build-artifacts-manual, fork-release);
+     upstream's preview/release copies stay untouched. Rejected:
+     `-D_LARGEFILE64_SOURCE` (hides the libc mismatch), dropping aarch64.
+  2. A failed target fails the run (`fail-fast: false`, no
+     continue-on-error); a publish step runs only when every target built.
+  3. Every artifact carries its commit (`--build-commit`, the asset name
+     or BUILD_INFO); consumers request an exact commit and target and fail
+     when it is missing, never "latest successful" (chat-hosted's
+     deploy.sh is that coordinator's; tell it).
+  4. A link check of the real binary for both musl targets (no INTERP or
+     NEEDED, a qemu-aarch64 smoke of `--build-commit`) on changes to
+     Cargo.toml, Cargo.lock, build.rs or the workflows.
+
 - [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
   (the user, 2026-10-12, rejecting a herdr-managed cross-repository
   handover: "I don't like this; there is supposed to be a coordinator per
