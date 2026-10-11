@@ -35,13 +35,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   dependency: a handover that names the landed commit or version and
   wakes the dependent coordinator (its own item); release recipes come
   before the release item.
+  Revised again 2026-10-12: no herdr handover between coordinators (the
+  user rejected it); cross-repository work is plain messages between the
+  repositories' own coordinators, see the item on waiting on another
+  coordinator.
 
-- [ ] A cross-repository handover between coordinators (follows from [t-x3s2qblm]
-  [t-oe3wrkvz], round of 2026-10-12): an item in one backlog depends on an
-  item in another repository's backlog; when the dependency lands, herdr
-  records the landed commit or version and wakes the dependent
-  coordinator (an event, no polling); idempotent markers, visible in both
-  spaces; never a cross-repository transaction.
+- [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
+  (the user, 2026-10-12, rejecting a herdr-managed cross-repository
+  handover: "I don't like this; there is supposed to be a coordinator per
+  git repo; ask the models"; round of 2026-10-12, sol, MiMo, DeepSeek
+  agreeing). Each coordinator owns only its repository; cross-repository
+  work starts as a plain message in the requester's words, the receiver
+  decides, queues it in its own TODO and replies "landed <tag or sha>";
+  releases use version pins as the contract (prefer tags). herdr tracks no
+  cross-repository dependency, commit or wake-on-land. What herdr
+  provides: messages between coordinators are durable and visible to the
+  user, and a `Waiting on <coordinator>` state for an item, distinct from
+  "Needs a decision", that the todo tooling and the sidebar show so a
+  waiting item does not rot; the todo skill describes the convention.
 
 - [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
   2026-10-11, looking at the herdr space during an install: "why is
