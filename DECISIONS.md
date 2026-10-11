@@ -1267,3 +1267,13 @@ the same worker obligations at most 3 times per user message, then lets the
 stop through and puts the needed `herdr worker ack` in the user's `?` list;
 and the user's settings allow herdr's own coordination commands (dotfiles
 2741722, d-olgozj6v).
+
+## Pane workers lose tracking when `agent start` misnames them (the
+
+Pane workers lost prompt tracking when `agent start` misnamed them
+(chat-hosted r-7, guix; 2026-10-11). Now (8f18a18c): `agent start` keeps a
+running agent's name after its startup deadline; unsupported prompts are
+tracked with their reason and followed once the agent reports turns;
+`wait-agent --until verdict` works without a request; every `herdr worker`
+subcommand answers --help. Replacing the startup deadline with the
+SessionStart event stays in the agent-prompt item (t-2kjq5txq).
