@@ -1773,6 +1773,26 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   item, keeping per-repository checks and verify; releases stay by hand
   with a checklist; the two-repository feature is split now.
 
+- [ ] A pane worker's verdict was never recorded and nothing flagged it [t-276mtaqw]
+  (follows from [t-i3p3apqh]; the user via todo-try-roguix, 2026-10-12:
+  "the supervisor did not catch a missed worker verdict"). Worker
+  capture-doc (wB2:p1) got prompt_1a12cc5bb91_1 at 23:02 (`agent prompt`
+  returned working), printed `WORKER-DONE 220dd3dd` and ended its turn the
+  same minute; `herdr agent verdict` still shows the assignment with no
+  verdict, and its `wait-agent --until verdict` waited 102 min. The server
+  then ran a3836343 (slice 1); 6931ee21 (slice 2, `stopped_without_verdict`,
+  reconciliation) was installed a few minutes later by a handoff, and its
+  reconciliation did not flag the open assignment either. Also reported:
+  after a handoff `wait-agent` retried forever on `prompt_request_not_found`
+  (r-10), and two panes answered "the agent does not report turns".
+  Find, with the transcript of wB2:p1, why the Stop did not record the
+  verdict (a turn that ends in the minute the prompt was accepted, the
+  anchor, the transcript record shape) and why reconciliation at server
+  start or handoff misses an open assignment whose worker's turn already
+  ended; `prompt_request_not_found` after a handoff ends the wait at once
+  with a distinct exit code; fix each with a test reproducing it. No
+  timers.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
