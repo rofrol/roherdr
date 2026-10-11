@@ -102,6 +102,10 @@ pub(super) struct TabSquare {
     pub(super) focused: bool,
 }
 
+/// The mark of a `coordinator` tab, also on a space's todo chip, which
+/// starts one.
+pub(super) const COORDINATOR_MARK: &str = "♛";
+
 /// The mark of a tab's role (`tab.set_role`), before its state glyph, and
 /// what it says on hover: the user chose both glyphs from mockups.
 pub(super) fn role_marker(
@@ -109,7 +113,10 @@ pub(super) fn role_marker(
 ) -> Option<(&'static str, &'static str)> {
     use crate::api::schema::TabRole;
     match role {
-        TabRole::Coordinator => Some(("♛", "Coordinator: hands each TODO item to a worker")),
+        TabRole::Coordinator => Some((
+            COORDINATOR_MARK,
+            "Coordinator: hands each TODO item to a worker",
+        )),
         TabRole::Worker => Some(("⚒", "Worker: does one item in a worktree")),
         TabRole::Unknown => None,
     }

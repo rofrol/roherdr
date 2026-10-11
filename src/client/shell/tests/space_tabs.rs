@@ -4636,7 +4636,7 @@ fn the_todo_button_shows_only_with_a_todo_command_and_runs_it_for_the_space() {
     let (launch, _) = state.hits.space_launch_agent[0].clone();
     let (plus, _) = state.hits.space_new_tab[0].clone();
     assert_eq!(workspace_id, "ws_1");
-    // `+`, `T`, `A`, left to right, at the name line's end.
+    // `+`, the crown, `A`, left to right, at the name line's end.
     assert_eq!(todo.y, launch.y);
     assert_eq!(todo.right(), launch.x);
     assert_eq!(plus.right(), todo.x);
@@ -4647,7 +4647,7 @@ fn the_todo_button_shows_only_with_a_todo_command_and_runs_it_for_the_space() {
             .take(rect.width as usize)
             .collect::<String>()
     };
-    assert_eq!(at(todo), " T ", "{rows:?}");
+    assert_eq!(at(todo), " ♛ ", "{rows:?}");
 
     let outcome = left_click(&mut state, (todo.x, todo.y));
     let command = outcome.actions.iter().find_map(|action| match action {

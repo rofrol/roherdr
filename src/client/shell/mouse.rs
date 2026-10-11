@@ -3026,7 +3026,7 @@ impl ClientShellState {
                     self.click_launch_button(workspace_id, button, outcome);
                     return;
                 }
-                // The `T` runs the space's `todo_command`.
+                // The todo crown runs the space's `todo_command`.
                 let todo = self
                     .hits
                     .space_todo

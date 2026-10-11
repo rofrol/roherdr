@@ -118,7 +118,7 @@ pub(super) struct ShellHitMap {
     pub(super) space_push_status: Vec<(Rect, String)>,
     /// A space's launch button, left of its `+`.
     pub(super) space_launch_agent: Vec<(Rect, String)>,
-    /// A space's `T`, which runs `ui.sidebar.spaces.todo_command` for it.
+    /// A space's todo crown, which runs `ui.sidebar.spaces.todo_command` for it.
     pub(super) space_todo: Vec<(Rect, String)>,
     /// The `⤒` on a hovered space's name line: that space to the top.
     pub(super) space_to_top: Vec<(Rect, String)>,

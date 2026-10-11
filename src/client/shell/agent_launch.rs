@@ -228,7 +228,7 @@ pub(super) fn space_command_notice(
 }
 
 impl ClientShellState {
-    /// A click on a space's `T`: runs `todo_command` for it on this machine.
+    /// A click on a space's todo crown: runs `todo_command` for it on this machine.
     pub(super) fn click_todo_button(&mut self, workspace_id: &str, outcome: &mut ClientShellInput) {
         let Some(template) = self.config.spaces.todo_command.clone() else {
             return;

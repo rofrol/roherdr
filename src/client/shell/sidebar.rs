@@ -1027,7 +1027,18 @@ pub(crate) fn render_sidebar(
             } else {
                 style
             };
-            put_text(target, button.x, button.y, button.width, TODO_LABEL, style);
+            // Blank the padding, then the crown in the middle column only:
+            // a terminal that draws it two columns wide spills into the
+            // padding and the row keeps its place.
+            put_text(target, button.x, button.y, button.width, "   ", style);
+            put_text(
+                target,
+                button.x.saturating_add(1),
+                button.y,
+                1,
+                TODO_GLYPH,
+                style,
+            );
             let button = button.intersection(rect);
             block_hits
                 .space_todo
@@ -2104,11 +2115,13 @@ const LAUNCH_BUTTON_WIDTH: u16 = 3;
 /// The `⤒` in front of a space's name, with the column after it.
 const TO_TOP_BUTTON_WIDTH: u16 = 2;
 
-/// The `T` left of the launch chip: runs `ui.sidebar.spaces.todo_command`.
-const TODO_LABEL: &str = " T ";
+/// The crown left of the launch chip: runs `ui.sidebar.spaces.todo_command`,
+/// which starts the space's coordinator, so it is the mark of a
+/// `coordinator` tab, padded to three columns.
+const TODO_GLYPH: &str = super::space_tabs::COORDINATOR_MARK;
 const TODO_BUTTON_WIDTH: u16 = 3;
 
-/// The `T` shows with the launch chip when a `todo_command` is set and the
+/// The crown shows with the launch chip when a `todo_command` is set and the
 /// space is on this machine, where the command runs.
 pub(in crate::client::shell) fn todo_button_shown(
     config: &ClientShellConfig,
@@ -2146,7 +2159,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     grabbed: Option<(ratatui::style::Color, Option<ratatui::style::Color>)>,
     // The name line ends in the launch button (the local machine's spaces).
     launch_button: bool,
-    // And in the `T` left of it (`todo_button_shown`).
+    // And in the crown left of it (`todo_button_shown`).
     todo_button: bool,
     // The name starts two columns later, after the `⤒` button.
     to_top_button: bool,
