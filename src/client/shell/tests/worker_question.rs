@@ -47,6 +47,7 @@ fn worker(worker_id: &str, state: &str) -> crate::protocol::ClientShellWorker {
         state: state.into(),
         session_id: Some("session-1".into()),
         takeover: false,
+        ..Default::default()
     }
 }
 

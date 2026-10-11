@@ -275,10 +275,20 @@ pub(super) fn worker_space<'a>(
 }
 
 /// One line per headless worker of `workspace`, oldest first, named by its
-/// task; its pending question, as in the `?` list, on the row under it.
+/// TODO item's title (else its task) with its age at the right end; its
+/// pending question, as in the `?` list, on the row under it.
 pub(super) fn worker_lines(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,
+) -> Vec<SpaceTabLine> {
+    worker_lines_at(snapshot, workspace, super::workers::unix_now_ms())
+}
+
+/// [`worker_lines`] with the ages counted to `now_ms`.
+pub(super) fn worker_lines_at(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    now_ms: u64,
 ) -> Vec<SpaceTabLine> {
     snapshot
         .workers
@@ -287,7 +297,12 @@ pub(super) fn worker_lines(
         .map(|worker| {
             let (status, said, word) = worker_state(&worker.state);
             let running = !matches!(worker.state.as_str(), "exited" | "lost");
-            let mut tooltip = format!("{} · worker {}, {said}", worker.name, worker.worker_id);
+            let title = super::workers::worker_title(worker);
+            let age = super::workers::worker_age_ms(worker, now_ms).map(super::workers::age_text);
+            let mut tooltip = std::iter::once(format!("{title} · {said}"))
+                .chain(super::workers::worker_details(worker, now_ms))
+                .collect::<Vec<_>>()
+                .join(" · ");
             if worker.takeover && running {
                 tooltip.push_str(" · being taken over");
             } else if worker.takeover {
@@ -298,15 +313,16 @@ pub(super) fn worker_lines(
             SpaceTabLine {
                 tab_id: worker_line_id(&worker.worker_id),
                 state: Some((status, AgentMark::None)),
-                label: if worker.name.is_empty() {
-                    format!("worker {}", worker.worker_id)
-                } else {
-                    worker.name.clone()
-                },
+                label: title,
                 agent: None,
                 active: false,
                 jobs: Vec::new(),
-                plan: word.map(str::to_owned),
+                // The age sits where a tab's todo progress does, after the
+                // word of a worker that no longer works.
+                plan: match (word, age) {
+                    (Some(word), Some(age)) => Some(format!("{word} {age}")),
+                    (word, age) => age.or(word.map(str::to_owned)),
+                },
                 squares: Vec::new(),
                 unfolded: false,
                 hidden_focus: None,

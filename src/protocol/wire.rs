@@ -1012,7 +1012,7 @@ pub struct ClientShellWorkerItems {
 }
 
 /// A headless worker as the sidebar shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellWorker {
     pub worker_id: String,
     /// The space it was started from; none for one started outside a space.
@@ -1028,6 +1028,30 @@ pub struct ClientShellWorker {
     pub session_id: Option<String>,
     /// A takeover is ending it to resume its session in a tab.
     pub takeover: bool,
+    /// The TODO item it works on (`worker.start`'s `item`), and that item's
+    /// title in its repository's `TODO.md` when it started. None from a
+    /// server that does not send them.
+    #[serde(default)]
+    pub item: Option<String>,
+    #[serde(default)]
+    pub item_title: Option<String>,
+    /// Its folder slot and the branch checked out there.
+    #[serde(default)]
+    pub slot: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Turns it has run.
+    #[serde(default)]
+    pub turns: u32,
+    /// When it started, Unix milliseconds: its line's age counts from it.
+    #[serde(default)]
+    pub started_ms: Option<u64>,
+    /// When its running turn began; none between turns and once it ended.
+    #[serde(default)]
+    pub turn_started_ms: Option<u64>,
+    /// When its latest event was recorded.
+    #[serde(default)]
+    pub last_event_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3037,6 +3061,14 @@ mod tests {
                 state: "working".into(),
                 session_id: None,
                 takeover: false,
+                item: Some("t-abcd2345".into()),
+                item_title: Some("Fix login".into()),
+                slot: Some("worker".into()),
+                branch: Some("todo/t-abcd2345-1".into()),
+                turns: 2,
+                started_ms: Some(1_000),
+                turn_started_ms: Some(2_000),
+                last_event_ms: Some(3_000),
             }],
             worker_items: vec![ClientShellWorkerItems {
                 tab_id: "t1".into(),

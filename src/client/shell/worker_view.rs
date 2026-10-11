@@ -259,18 +259,35 @@ fn columns(text: &str, from: u16, to: Option<u16>) -> String {
     out
 }
 
+/// What a worker's tab drew, for the pointer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct WorkerViewHits {
+    /// The whole tab.
+    pub(super) area: Rect,
+    /// Its transcript, under the header.
+    pub(super) body: Rect,
+    /// The header's takeover button; empty when none is offered.
+    pub(super) take_over: Rect,
+}
+
+/// The header's takeover button.
+const TAKE_OVER_LABEL: &str = " take over ";
+
 /// Draws a worker's tab over `area`, the main pane's place: a header with
-/// the worker, its state and a read-only label, then its transcript.
-/// Returns the tab's area and its body's, for the pointer.
+/// the worker's title, its state, the takeover action when one is offered
+/// and a read-only label, a row of its details (item, name, branch, slot,
+/// turns, times), then its transcript.
 pub(super) fn render_worker_view(
     view: &mut ClientWorkerView,
     worker: Option<&crate::protocol::ClientShellWorker>,
+    can_take_over: bool,
+    now_ms: u64,
     palette: &Palette,
     buffer: &mut Buffer,
     area: Rect,
-) -> (Rect, Rect) {
+) -> WorkerViewHits {
     if area.is_empty() {
-        return (Rect::default(), Rect::default());
+        return WorkerViewHits::default();
     }
     let base = Style::default().bg(palette.panel_bg).fg(palette.text);
     for y in area.y..area.bottom() {
@@ -291,34 +308,63 @@ pub(super) fn render_worker_view(
         })
         .unwrap_or_default();
     let (_, said, _) = super::space_tabs::worker_state(&state);
-    let name = worker
-        .map(|worker| worker.name.clone())
-        .filter(|name| !name.is_empty())
+    let title = worker
+        .map(super::workers::worker_title)
         .unwrap_or_else(|| format!("worker {}", view.worker_id));
     let label = " read-only ";
-    let header = format!(
-        " ⚒ {name} · {} · {said}{}",
-        view.worker_id,
-        view.run_id
-            .as_deref()
-            .map(|run| format!(" · {run}"))
-            .unwrap_or_default()
-    );
+    // The state first: a narrow header cuts the title, not the state.
+    let header = format!(" ⚒ {said} · {title}");
+    let mut details = worker
+        .map(|worker| super::workers::worker_details(worker, now_ms))
+        .unwrap_or_else(|| vec![format!("worker {}", view.worker_id)]);
+    if let Some(run) = &view.run_id {
+        details.push(run.clone());
+    }
+    let details = format!(" {}", details.join(" · "));
     let header_style = Style::default()
         .bg(palette.surface0)
         .fg(palette.text)
         .add_modifier(Modifier::BOLD);
     buffer.set_style(Rect::new(area.x, area.y, area.width, 1), header_style);
-    let label_width = label.chars().count() as u16;
-    let header_room = area.width.saturating_sub(label_width);
+    let read_only = view.tab.as_ref().is_none_or(|tab| tab.read_only);
+    let label_width = if read_only {
+        label.chars().count() as u16
+    } else {
+        0
+    };
+    let take_over_width = TAKE_OVER_LABEL.chars().count() as u16;
+    // The takeover button keeps a few columns of the title left of it.
+    let take_over = if can_take_over && area.width >= label_width + take_over_width + 1 + 12 {
+        Rect::new(
+            area.right() - label_width - take_over_width - 1,
+            area.y,
+            take_over_width,
+            1,
+        )
+    } else {
+        Rect::default()
+    };
+    let header_room = area
+        .width
+        .saturating_sub(label_width + take_over.width + u16::from(!take_over.is_empty()));
     buffer.set_stringn(
         area.x,
         area.y,
-        &header,
+        super::space_tabs::truncate(&header, usize::from(header_room)),
         usize::from(header_room),
         header_style,
     );
-    let read_only = view.tab.as_ref().is_none_or(|tab| tab.read_only);
+    if !take_over.is_empty() {
+        buffer.set_string(
+            take_over.x,
+            take_over.y,
+            TAKE_OVER_LABEL,
+            Style::default()
+                .bg(palette.accent)
+                .fg(palette.panel_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
     if read_only && area.width > label_width {
         buffer.set_string(
             area.right() - label_width,
@@ -327,14 +373,30 @@ pub(super) fn render_worker_view(
             Style::default().bg(palette.overlay0).fg(palette.panel_bg),
         );
     }
+    if area.height > 1 {
+        let details_style = Style::default().bg(palette.surface0).fg(palette.overlay1);
+        buffer.set_style(Rect::new(area.x, area.y + 1, area.width, 1), details_style);
+        buffer.set_stringn(
+            area.x,
+            area.y + 1,
+            super::space_tabs::truncate(&details, usize::from(area.width)),
+            usize::from(area.width),
+            details_style,
+        );
+    }
     let body = Rect::new(
         area.x,
-        area.y.saturating_add(1),
+        area.y.saturating_add(2),
         area.width,
-        area.height.saturating_sub(1),
+        area.height.saturating_sub(2),
     );
+    let hits = WorkerViewHits {
+        area,
+        body,
+        take_over,
+    };
     if body.is_empty() {
-        return (area, body);
+        return hits;
     }
     let selection = view.selection;
     let total = view.rows(body.width).len();
@@ -395,7 +457,7 @@ pub(super) fn render_worker_view(
                 .add_modifier(Modifier::BOLD),
         );
     }
-    (area, body)
+    hits
 }
 
 impl ClientShellState {
@@ -595,6 +657,15 @@ impl ClientShellState {
             }
             MouseEventKind::ScrollDown => {
                 outcome.repaint |= self.scroll_worker_view(WHEEL_ROWS as isize);
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if super::contains(self.hits.worker_view_take_over, point) =>
+            {
+                if let Some(worker_id) =
+                    self.worker_view.as_ref().map(|view| view.worker_id.clone())
+                {
+                    self.take_over_worker(worker_id, outcome);
+                }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(view) = self.worker_view.as_mut() {

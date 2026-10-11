@@ -1193,6 +1193,7 @@ fn a_finished_coordinators_background_mark_names_the_workers_still_running() {
             state: state.into(),
             session_id: None,
             takeover: false,
+            ..Default::default()
         });
     }
     state.set_snapshot(Box::new(projected));
@@ -4868,6 +4869,7 @@ fn with_worker(state: &mut ClientShellState, worker_id: &str, name: &str, worker
         state: worker_state.into(),
         session_id: Some("session-1".into()),
         takeover: false,
+        ..Default::default()
     });
     state.set_snapshot(Box::new(projected));
 }

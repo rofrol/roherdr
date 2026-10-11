@@ -841,6 +841,7 @@ impl Store {
                 continue;
             };
             load_questions(&conn, &mut status)?;
+            load_event_facts(&conn, &mut status)?;
             workers.insert(number, status);
         }
         Ok(workers)
@@ -859,6 +860,7 @@ impl Store {
         match status {
             Some(mut status) => {
                 load_questions(&conn, &mut status)?;
+                load_event_facts(&conn, &mut status)?;
                 Ok(Some(status))
             }
             None => Ok(None),
@@ -2729,6 +2731,41 @@ fn status_from_row(row: &rusqlite::Row<'_>) -> StoreResult<Status> {
     Ok(status)
 }
 
+/// Fills what a status keeps only in memory from its events: its slot's
+/// branch (`started`), when its current or last turn began (`turn_seq`)
+/// and when its latest event was recorded (`last_seq`). A `seq` counted on
+/// in memory after a failed write names no stored event and leaves its
+/// time unknown.
+fn load_event_facts(conn: &Connection, status: &mut Status) -> StoreResult<()> {
+    status.branch = conn
+        .query_row(
+            "SELECT json_extract(body, '$.folder_slot.branch') FROM events
+             WHERE worker_id = ?1 AND direction = 'herdr' AND type = 'started'
+             ORDER BY seq LIMIT 1",
+            [&status.worker_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let worker_id = status.worker_id.clone();
+    let time_of = |seq: i64| -> StoreResult<Option<u64>> {
+        Ok(conn
+            .query_row(
+                "SELECT ts_ms FROM events WHERE seq = ?1 AND worker_id = ?2",
+                rusqlite::params![seq, worker_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(|ms| ms as u64))
+    };
+    status.turn_started_ms = match status.turn_seq {
+        Some(seq) => time_of(seq)?,
+        None => None,
+    };
+    status.last_event_ms = time_of(status.last_seq)?;
+    Ok(())
+}
+
 /// Fills a status's open questions (pending or answering), oldest first,
 /// and the most recently settled ones.
 fn load_questions(conn: &Connection, status: &mut Status) -> StoreResult<()> {
@@ -3143,6 +3180,59 @@ mod tests {
         assert!(error.contains("forced failure"), "{error}");
         assert_eq!((count(&store, "events"), count(&store, "workers")), (1, 1));
         assert_eq!(store.load("w1").unwrap().unwrap().last_seq, seq);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_load_reads_the_slots_branch_and_the_turns_and_last_events_times() {
+        let dir = scratch("event-facts");
+        let path = dir.join(STORE_FILE);
+        let store = Store::open(&path).unwrap();
+        let events = [
+            (
+                Direction::Herdr,
+                json!({"type": "started", "cwd": "/repo",
+                    "folder_slot": {"name": "worker", "branch": "todo/t-abcd2345-1"}}),
+            ),
+            (
+                Direction::In,
+                json!({"type": "user", "message": {"content": "go"}}),
+            ),
+            (
+                Direction::Out,
+                json!({"type": "assistant", "message": {"content": []}}),
+            ),
+        ];
+        let mut status = Status::new("w1".to_owned());
+        for (index, (direction, event)) in events.iter().enumerate() {
+            status.apply(*direction, event);
+            store
+                .transaction(|tx| {
+                    let seq = tx.event(&EventRow {
+                        worker_id: "w1",
+                        direction: *direction,
+                        record: &Recorded::Event(event),
+                        ts_ms: 1_000 * (index as u64 + 1),
+                    })?;
+                    if *direction == Direction::In {
+                        status.turn_seq = Some(seq);
+                    }
+                    tx.worker(&status, seq)?;
+                    Ok(seq)
+                })
+                .unwrap();
+        }
+        let loaded = Store::open(&path).unwrap().load("w1").unwrap().unwrap();
+        assert_eq!(loaded.slot.as_deref(), Some("worker"));
+        assert_eq!(loaded.branch.as_deref(), Some("todo/t-abcd2345-1"));
+        assert_eq!(
+            (loaded.turn_started_ms, loaded.last_event_ms),
+            (Some(2_000), Some(3_000))
+        );
+        let all = Store::open(&path).unwrap().load_all().unwrap();
+        let loaded = all.values().next().unwrap();
+        assert_eq!(loaded.branch.as_deref(), Some("todo/t-abcd2345-1"));
+        assert_eq!(loaded.turn_started_ms, Some(2_000));
         let _ = std::fs::remove_dir_all(dir);
     }
 

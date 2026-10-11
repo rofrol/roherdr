@@ -238,6 +238,9 @@ impl ClientShellState {
                             .iter()
                             .any(|tab| tab.status == Some(crate::api::schema::TabStatus::Running))
                     }));
+        // Worker ages and turn times move by the minute: the frame is drawn
+        // again when the first of them changes.
+        self.note_worker_times(super::workers::unix_now_ms());
         let _motion = crate::ui::motion::scope(if self.config.animations {
             self.motion
         } else {
@@ -508,6 +511,9 @@ impl ClientShellState {
         }
         // A worker's tab takes the main pane's place: the focused tab's
         // panes are neither drawn nor hit.
+        let can_take_over_shown = self
+            .shown_worker_id()
+            .is_some_and(|worker_id| self.can_take_over_worker(worker_id));
         let worker_view = self
             .worker_view
             .as_mut()
@@ -518,15 +524,18 @@ impl ClientShellState {
                 .workers
                 .iter()
                 .find(|worker| worker.worker_id == view.worker_id);
-            let (area, body) = super::worker_view::render_worker_view(
+            let hits = super::worker_view::render_worker_view(
                 view,
                 worker,
+                can_take_over_shown,
+                super::workers::unix_now_ms(),
                 &self.config.palette,
                 &mut buffer,
                 layout.pane_surface,
             );
-            self.hits.worker_view = area;
-            self.hits.worker_view_body = body;
+            self.hits.worker_view = hits.area;
+            self.hits.worker_view_body = hits.body;
+            self.hits.worker_view_take_over = hits.take_over;
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }

@@ -39,6 +39,7 @@ fn worker(worker_id: &str) -> crate::protocol::ClientShellWorker {
         state: "working".into(),
         session_id: Some("session-1".into()),
         takeover: false,
+        ..Default::default()
     }
 }
 
@@ -183,8 +184,10 @@ fn a_worker_line_opens_its_tab_in_the_main_pane_not_a_modal() {
     let frame = state.compose(WIDTH, HEIGHT).unwrap();
     let rows = frame_rows(&frame);
     let header = &rows[usize::from(layout.pane_surface.y)];
-    assert!(header.contains("fix login · w1 · working"), "{header}");
+    assert!(header.contains("⚒ working · fix login"), "{header}");
     assert!(header.contains("read-only"), "{header}");
+    let details = &rows[usize::from(layout.pane_surface.y) + 1];
+    assert!(details.contains("worker w1 · 0 turns"), "{details}");
     assert!(!rows.iter().any(|row| row.contains("LIVE")), "{rows:#?}");
     // Its line is the active one.
     let snapshot = state.snapshot.as_deref().unwrap();
@@ -229,8 +232,8 @@ fn the_pushed_transcript_shows_the_lines_worker_log_prints() {
     let shown: Vec<&String> = rows.iter().filter(|row| !row.is_empty()).collect();
     assert_eq!(shown, expected.iter().collect::<Vec<_>>());
     let frame = state.compose(WIDTH, HEIGHT).unwrap();
-    let header = &frame_rows(&frame)[usize::from(state.hits.worker_view.y)];
-    assert!(header.contains("r-abc"), "the run id: {header}");
+    let details = &frame_rows(&frame)[usize::from(state.hits.worker_view.y) + 1];
+    assert!(details.contains("r-abc"), "the run id: {details}");
 
     // A resend after a reconnect repeats nothing.
     assert!(!push(&mut state, events, 3));
@@ -471,4 +474,146 @@ fn worktree_dialogs_and_release_notes_close_on_a_click_outside() {
         methods(&outcome).as_slice(),
         [Method::ReleaseNotesDismiss(_)]
     ));
+}
+
+/// Worker w1 working on an item for 12 minutes, its turn 3 of them, its
+/// last event a minute ago, as of `now`.
+fn timed_worker(now: u64) -> crate::protocol::ClientShellWorker {
+    crate::protocol::ClientShellWorker {
+        item: Some("t-abcd2345".into()),
+        item_title: Some("A worker's line shows its age and its todo item".into()),
+        slot: Some("worker".into()),
+        branch: Some("todo/t-abcd2345-1".into()),
+        turns: 1,
+        started_ms: Some(now - 12 * 60_000 - 30_000),
+        turn_started_ms: Some(now - 3 * 60_000 - 30_000),
+        last_event_ms: Some(now - 60_000 - 30_000),
+        ..worker("w1")
+    }
+}
+
+fn state_with_timed_worker() -> ClientShellState {
+    let mut state = state_with_worker();
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers = vec![timed_worker(super::super::workers::unix_now_ms())];
+    state.set_snapshot(Box::new(projected));
+    state.compose(WIDTH, HEIGHT).unwrap();
+    state
+}
+
+#[test]
+fn a_worker_line_shows_its_items_title_and_its_age_at_the_right() {
+    let now = 100 * 60 * 60_000;
+    let mut projected = snapshot();
+    projected.workers = vec![timed_worker(now)];
+    let lines =
+        super::super::space_tabs::worker_lines_at(&projected, &projected.workspaces[0], now);
+    let [line] = lines.as_slice() else {
+        panic!("one line: {lines:?}");
+    };
+    assert_eq!(
+        line.label,
+        "A worker's line shows its age and its todo item"
+    );
+    assert_eq!(line.plan.as_deref(), Some("12m"));
+    let tooltip = &line.worker.as_ref().expect("a worker line").tooltip;
+    assert!(
+        tooltip.starts_with(
+            "A worker's line shows its age and its todo item · working · t-abcd2345 \
+             · worker w1 (fix login) · 1 turn · this turn 3m · last activity 1m ago \
+             · age 12m · branch todo/t-abcd2345-1 · slot worker"
+        ),
+        "{tooltip}"
+    );
+
+    // An ended worker keeps its word before its age, which stopped.
+    projected.workers[0].state = "exited".into();
+    let lines = super::super::space_tabs::worker_lines_at(
+        &projected,
+        &projected.workspaces[0],
+        now + 60 * 60_000,
+    );
+    assert_eq!(lines[0].plan.as_deref(), Some("exited 11m"));
+
+    // Drawn: the title cut with an ellipsis, the age at the line's end.
+    let mut state = state_with_timed_worker();
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    let line = worker_line(&state, "w1");
+    let row = &frame_rows(&frame)[usize::from(line.y)];
+    let sidebar: String = row.chars().take(usize::from(line.right())).collect();
+    assert!(sidebar.contains("A worker's"), "{sidebar}");
+    assert!(sidebar.contains('…'), "{sidebar}");
+    assert!(sidebar.trim_end().ends_with("12m"), "{sidebar}");
+}
+
+#[test]
+fn a_frame_is_drawn_again_when_a_shown_worker_time_changes() {
+    let mut state = state_with_timed_worker();
+    let change_at = state
+        .worker_times_change_at
+        .expect("a moment a shown time changes");
+    let now = super::super::workers::unix_now_ms();
+    // The first change is the last activity's, under a minute away.
+    assert!(
+        change_at > now && change_at <= now + 60_000,
+        "{change_at} {now}"
+    );
+    assert!(!state.tick_worker_times_at(change_at - 1));
+    assert!(state.tick_worker_times_at(change_at));
+    // Once: the next frame sets the next moment.
+    assert!(!state.tick_worker_times_at(change_at));
+
+    // No worker time shown: no redraw.
+    let mut state = state_with_worker();
+    assert_eq!(state.worker_times_change_at, None);
+    assert!(!state.tick_worker_times_at(u64::MAX));
+}
+
+#[test]
+fn the_tabs_header_names_the_item_and_details_and_offers_a_takeover() {
+    let mut state = state_with_timed_worker();
+    open(&mut state);
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    let rows = frame_rows(&frame);
+    let top = usize::from(state.hits.worker_view.y);
+    let header = &rows[top];
+    assert!(
+        header.contains("⚒ working · A worker's line shows its age"),
+        "{header}"
+    );
+    assert!(header.contains("take over"), "{header}");
+    // Wide enough for every detail.
+    let frame = state.compose(220, HEIGHT).unwrap();
+    let details = &frame_rows(&frame)[top + 1];
+    for part in [
+        "t-abcd2345",
+        "worker w1 (fix login)",
+        "branch todo/t-abcd2345-1",
+        "slot worker",
+        "1 turn",
+        "this turn 3m",
+        "last activity 1m ago",
+        "age 12m",
+    ] {
+        assert!(details.contains(part), "{part}: {details}");
+    }
+
+    // A click on it takes the worker over.
+    let button = state.hits.worker_view_take_over;
+    assert!(button.width > 0);
+    let outcome = left_click(&mut state, (button.x + 1, button.y));
+    assert!(
+        methods(&outcome).iter().any(|method| matches!(method,
+            Method::WorkerTakeOver(target) if target.worker_id == "w1")),
+        "{:?}",
+        methods(&outcome)
+    );
+
+    // Not offered while the worker asks.
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.workers[0].state = "waiting_approval".into();
+    state.set_snapshot(Box::new(projected));
+    let frame = state.compose(WIDTH, HEIGHT).unwrap();
+    assert_eq!(state.hits.worker_view_take_over, Rect::default());
+    assert!(!frame_rows(&frame)[top].contains("take over"));
 }

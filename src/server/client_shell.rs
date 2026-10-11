@@ -727,6 +727,14 @@ fn client_shell_workers(
                 .unwrap_or_default(),
             session_id: worker.session_id,
             takeover: worker.takeover,
+            item: worker.item,
+            item_title: worker.item_title,
+            slot: worker.slot,
+            branch: worker.branch,
+            turns: worker.turns,
+            started_ms: worker.started_ms,
+            turn_started_ms: worker.turn_started_ms,
+            last_event_ms: worker.last_event_ms,
         })
         .collect()
 }
@@ -830,6 +838,14 @@ mod tests {
             state: crate::api::schema::WorkerState::Exited,
             session_id: None,
             takeover: false,
+            item: None,
+            item_title: None,
+            slot: None,
+            branch: None,
+            turns: 0,
+            started_ms: None,
+            turn_started_ms: None,
+            last_event_ms: None,
             listed,
         };
         let workers = client_shell_workers(vec![worker("w1", false), worker("w2", true)]);
@@ -843,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_carries_workers_with_their_space_task_and_state() {
+    fn the_snapshot_carries_workers_with_their_space_task_state_item_and_times() {
         let workers = client_shell_workers(vec![crate::workers::WorkerSummary {
             worker_id: "w3".into(),
             workspace_id: Some("ws_1".into()),
@@ -852,6 +868,14 @@ mod tests {
             state: crate::api::schema::WorkerState::WaitingApproval,
             session_id: Some("session-1".into()),
             takeover: false,
+            item: Some("t-abcd2345".into()),
+            item_title: Some("Fix the login".into()),
+            slot: Some("worker".into()),
+            branch: Some("todo/t-abcd2345-1".into()),
+            turns: 3,
+            started_ms: Some(1_000),
+            turn_started_ms: Some(5_000),
+            last_event_ms: Some(6_000),
             listed: true,
         }]);
         assert_eq!(
@@ -864,6 +888,14 @@ mod tests {
                 state: "waiting_approval".into(),
                 session_id: Some("session-1".into()),
                 takeover: false,
+                item: Some("t-abcd2345".into()),
+                item_title: Some("Fix the login".into()),
+                slot: Some("worker".into()),
+                branch: Some("todo/t-abcd2345-1".into()),
+                turns: 3,
+                started_ms: Some(1_000),
+                turn_started_ms: Some(5_000),
+                last_event_ms: Some(6_000),
             }]
         );
     }

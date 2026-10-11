@@ -523,6 +523,16 @@ struct Status {
     end_note: Option<String>,
     /// The folder slot it runs in, if any.
     slot: Option<String>,
+    /// The branch checked out in its folder slot (`started`'s
+    /// `folder_slot.branch`). Not a stored column: a reopen reads it from
+    /// the `started` event ([`store::Store::load`]).
+    branch: Option<String>,
+    /// When the user message that began the current or last turn and the
+    /// latest event were recorded, in Unix milliseconds. Not stored
+    /// columns: a reopen reads them from the events `turn_seq` and
+    /// `last_seq` name.
+    turn_started_ms: Option<u64>,
+    last_event_ms: Option<u64>,
     /// The `seq` of its latest event: the store's, or, after a store write
     /// failed, one counted on in this server's memory, so waits still see
     /// each event as new ([`WorkerSupervisor::commit_locked`]).
@@ -675,6 +685,9 @@ impl Status {
             lost: false,
             end_note: None,
             slot: None,
+            branch: None,
+            turn_started_ms: None,
+            last_event_ms: None,
             last_seq: 0,
             turn_seq: None,
             turn_end_seq: 0,
@@ -805,6 +818,7 @@ impl Status {
         record: &store::Recorded<'_>,
     ) {
         self.last_seq = seq;
+        self.last_event_ms = Some(ts_ms);
         for pending in &mut self.questions {
             if !before
                 .pending
@@ -823,6 +837,7 @@ impl Status {
         }
         if (direction, kind) == (Direction::In, Some("user")) && !self.is_gone() {
             self.turn_seq = Some(seq);
+            self.turn_started_ms = Some(ts_ms);
         }
         if (direction, kind) == (Direction::Herdr, Some("tool_output_held")) {
             self.held_output_seq = Some(seq);
@@ -1042,6 +1057,7 @@ impl Status {
                 self.workspace_id = string_field(event, "workspace_id");
                 self.model = string_field(event, "model");
                 self.slot = event["folder_slot"]["name"].as_str().map(str::to_owned);
+                self.branch = event["folder_slot"]["branch"].as_str().map(str::to_owned);
                 self.owner_pane = event["owner"]["pane_id"].as_str().map(str::to_owned);
                 self.owner_session = event["owner"]["session_id"].as_str().map(str::to_owned);
                 self.owner_coordinator =
@@ -2440,6 +2456,19 @@ pub(crate) struct WorkerSummary {
     pub(crate) state: WorkerState,
     pub(crate) session_id: Option<String>,
     pub(crate) takeover: bool,
+    /// The TODO item it works on and that item's title when it started.
+    pub(crate) item: Option<String>,
+    pub(crate) item_title: Option<String>,
+    /// Its folder slot and the branch checked out there.
+    pub(crate) slot: Option<String>,
+    pub(crate) branch: Option<String>,
+    pub(crate) turns: u32,
+    /// When it started, Unix milliseconds.
+    pub(crate) started_ms: Option<u64>,
+    /// When its running turn began; none between turns and once it ended.
+    pub(crate) turn_started_ms: Option<u64>,
+    /// When its latest event was recorded.
+    pub(crate) last_event_ms: Option<u64>,
     /// Whether the sidebar lists it ([`Status::listed`]): while it runs,
     /// and after its end until its owner acknowledges that end.
     pub(crate) listed: bool,
@@ -4346,6 +4375,17 @@ impl WorkerSupervisor {
                 state: entry.status.state,
                 session_id: entry.status.session_id.clone(),
                 takeover: entry.status.takeover_ms.is_some() && !entry.status.takeover_unfinished,
+                item: entry.status.item.clone(),
+                item_title: entry.status.item_title.clone(),
+                slot: entry.status.slot.clone(),
+                branch: entry.status.branch.clone(),
+                turns: entry.status.turns,
+                started_ms: entry.status.started_ms,
+                turn_started_ms: entry
+                    .status
+                    .turn_started_ms
+                    .filter(|_| !entry.status.turn_ended()),
+                last_event_ms: entry.status.last_event_ms,
                 listed: entry.status.listed(),
             })
             .collect()

@@ -219,6 +219,8 @@ pub(super) struct ShellHitMap {
     /// under the header.
     pub(super) worker_view: Rect,
     pub(super) worker_view_body: Rect,
+    /// The takeover button in the shown worker tab's header.
+    pub(super) worker_view_take_over: Rect,
     pub(super) overlay_primary: Rect,
     /// The drawn box of the open overlay: a click outside it closes it.
     pub(super) overlay_area: Rect,
@@ -1414,6 +1416,10 @@ pub(crate) struct ClientShellState {
     pub(super) motion: crate::ui::motion::Motion,
     /// Whether the last frame had a glyph that turns; the timer runs only then.
     pub(super) motion_active: bool,
+    /// When a worker time the last frame showed (an age, a turn's time, a
+    /// last activity) next changes, Unix milliseconds; the frame is drawn
+    /// again then ([`Self::tick_worker_times`]).
+    pub(super) worker_times_change_at: Option<u64>,
     /// Last focused tab of each tab group, by endpoint and the group's
     /// top-level tab. Kept by this client, so one client's navigation never
     /// moves another's.
@@ -1655,6 +1661,7 @@ impl ClientShellState {
             motion_epoch: std::time::Instant::now(),
             motion: crate::ui::motion::Motion::at(std::time::Duration::ZERO),
             motion_active: false,
+            worker_times_change_at: None,
             last_group_tabs: HashMap::new(),
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
