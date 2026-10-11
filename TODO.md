@@ -1720,6 +1720,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Org"; $200 arrived, next credit Nov 8, 2026. Left for the user: log in to
   the Console, create the workspace with a spend limit and an API key in it,
   store the key in the Keychain.
+  Done 2026-10-12: Console workspace `herdr-workers`
+  (<workspace id>) with a $200 monthly spend limit (the
+  limit resets on the 1st of the calendar month, the credits on the 8th);
+  the organization's own limit is $200,000, so only the workspace limit
+  caps spending. The org shows US$209.86 of credits. Left for the user: an
+  API key in that workspace, stored in the Keychain.
 
 - [ ] `herdr todo run` serves a coordinator that owns two repositories [t-o73wcaoq]
   (the user via the rormpc coordinator, 2026-10-12: "report it to the herdr
