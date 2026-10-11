@@ -60,6 +60,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   label should name what is known instead (working with run X, waiting on
   the user's decision d-..., idle with nothing runnable, waiting on job Y),
   and keep "cannot establish progress" for the case with no such fact.
+  The user, 2026-10-11: "the supervisor is not an agent, it is a
+  deterministic loop": server code only, no model call anywhere in the
+  sweep, the predicates or the delivery.
 
 - [ ] A verdict wait never ends on a prompt absorbed mid-turn, and the [t-i3p3apqh]
   supervisor must catch unobserved verdicts (user, 2026-10-11, via the
