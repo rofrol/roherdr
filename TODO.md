@@ -348,32 +348,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     cache) depends on the repository; it belongs in each repository's
     AGENTS.md, the global rule stays language-neutral.
 
-- [ ] A headless worker's line shows how long it has been working and which [t-jfo7bcvb]
-  TODO task it got (user, 2026-10-08: "I don't see how long a given worker
-  has been working, nor which task from the TODO it got; ask the models").
-  Round `20261008-031505-ffde` (sol, MiMo, DeepSeek), agreeing, chosen by the
-  coordinator:
-  - the line: a per-state glyph (with a text state in the tooltip, not
-    colour alone), the task title (not the coordinator's nickname,
-    truncated with `…`) and the age right-aligned (`<1m`, `12m`, `1h05`,
-    `2d03h`), counted from the worker's start (it includes waiting; the
-    current turn's time goes to the tooltip and the log);
-  - the age refreshes with the sidebar's existing animation/minute
-    redraw, computed from the server's timestamps at render, no per-row
-    timer (render stays cheap);
-  - the tooltip: full TODO title, item id, worker name, state, branch,
-    folder slot, turns, current turn's time, last activity;
-  - the log popup header: the same, then the full assigned task text
-    (collapsible) above the log, and the takeover action visible there
-    (DeepSeek: right-click alone is undiscoverable);
-  - `worker.start --item <title or id>` separate from `--name`, stored as
-    the worker's item; without it, the prompt's first line (recorded as
-    inferred); the coordinator passes the TODO item title, and the id once
-    items have `[t-...]` ids;
-  - ended workers: their lines may go (item "Headless worker lines after
-    their work is done") but stay reachable in a history view (sol,
-    DeepSeek), which the item history can provide.
-
 - [ ] Headless worker lines in the sidebar after their work is done [t-nulti42o]
   (proposed by the coordinator 2026-10-08 from the user's screenshot of the
   herdr space: "header arrows lost", "answers name their q… lost",

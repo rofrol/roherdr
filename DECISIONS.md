@@ -1135,3 +1135,13 @@ failed at once (2026-10-08). Now (de151473) the owner's `worker wait
 prints only the job id on stdout (tested, documented); AGENTS.md shows the
 loop without `--after` and the rule to pass arguments literally and treat
 a failed wait as a failure.
+
+## A headless worker's line shows how long it has been working and which
+
+The user could not see how long a worker had worked nor its TODO task
+(2026-10-08). Now (2cb6dc3f) a worker's line shows a per-state glyph, its
+item's title (from `worker start --item`) and a right-aligned age computed
+at render from the server's timestamps (the client schedules one redraw
+at the next visible change, no per-row timer); the tooltip and the worker
+tab's header carry the details, and the header has a take-over button
+(hidden while the worker asks).
