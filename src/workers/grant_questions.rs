@@ -304,7 +304,8 @@ impl WorkerSupervisor {
     }
 
     /// `worker.answer` as the user's own client sends it (the client
-    /// shell's endpoint lane): the only way a grant question is answered.
+    /// shell's endpoint lane): the only way a grant question is answered,
+    /// and the user's way to acknowledge a supervision finding.
     /// Any other question is answered as [`Self::answer`] answers it.
     pub(crate) fn answer_from_client(
         &self,
@@ -317,6 +318,13 @@ impl WorkerSupervisor {
                 params.decision,
                 &params.answers,
             ),
+            // So is a supervision finding the user acknowledges.
+            Some(request_id) if super::supervision::is_finding_question(request_id) => self
+                .answer_finding_question_from_client(
+                    &params.worker_id,
+                    request_id,
+                    params.decision,
+                ),
             _ => self.answer(params),
         }
     }
@@ -333,6 +341,15 @@ impl WorkerSupervisor {
                 &params.request_id,
                 Some(WorkerDecision::Deny),
                 &[],
+            );
+        }
+        // A supervision finding has no worker to stop: the user
+        // acknowledges it.
+        if super::supervision::is_finding_question(&params.request_id) {
+            return self.answer_finding_question_from_client(
+                &params.worker_id,
+                &params.request_id,
+                Some(WorkerDecision::Deny),
             );
         }
         self.deny_and_stop(params)

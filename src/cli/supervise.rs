@@ -1,14 +1,16 @@
 //! `herdr supervise --report`: the server's supervision findings over the
 //! coordinators and their workers (`supervise.report`), as text or, with
-//! `--json`, as the server's reply.
+//! `--json`, as the server's reply; `herdr supervise --ack`
+//! (`supervise.acknowledge`) for the herdr repository's coordinator.
 
 use crate::api::schema::{
-    AgentStatus, Method, Request, SuperviseReportParams, SupervisionFinding, SupervisionReport,
-    SupervisionSeverity, SupervisionStatus,
+    AgentStatus, Method, Request, SuperviseAcknowledgeParams, SuperviseReportParams,
+    SupervisionFinding, SupervisionReport, SupervisionSeverity, SupervisionStatus,
 };
 
 const USAGE: &str = "usage:
   herdr supervise --report [--all] [--json]
+  herdr supervise --ack FINDING_ID [--json]
       What herdr's supervision sweep (on the server's timer, and when a
       coordinator's pane reports a turn or changes state) saw of each active
       coordinator, and the findings that hold (open or acknowledged; with
@@ -20,10 +22,19 @@ const USAGE: &str = "usage:
       repository's disk below the build guard's 15 GiB. A coordinator without
       one shows \"cannot establish progress\": quiet output is never a
       finding. The sweep only reports: it never waits, retries, prompts,
-      kills, restarts, clears a state or marks work done.";
+      kills, restarts, clears a state or marks work done.
+      Each new or escalated finding notifies the herdr repository's
+      coordinator (its pane), whose inbox this report is: read from that
+      pane, it marks the findings that hold seen by its tenure, and shows
+      `new` beside those it had not seen.
+  --ack FINDING_ID
+      Acknowledges an open finding: only from the pane that holds the herdr
+      repository's coordination tenure, refused otherwise with
+      finding_ack_refused. You acknowledge yours in the `?` list; a worker
+      or another agent never does.";
 
 pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
-    let (params, json) = match parse(args) {
+    let (command, json) = match parse(args) {
         Ok(Some(parsed)) => parsed,
         Ok(None) => {
             println!("{USAGE}");
@@ -35,12 +46,35 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    let pane_id = super::target::caller_pane_id();
+    let method = match command {
+        Supervise::Report { all } => Method::SuperviseReport(SuperviseReportParams {
+            all,
+            pane_id: pane_id.clone(),
+        }),
+        Supervise::Ack(finding_id) => Method::SuperviseAcknowledge(SuperviseAcknowledgeParams {
+            finding_id,
+            pane_id,
+        }),
+    };
+    let ack = matches!(method, Method::SuperviseAcknowledge(_));
     let response = super::send_request(&Request {
         id: "cli:supervise".into(),
-        method: Method::SuperviseReport(params),
+        method,
     })?;
     if json || response.get("error").is_some() {
         return super::print_response(&response);
+    }
+    if ack {
+        return match serde_json::from_value::<SupervisionFinding>(
+            response["result"]["finding"].clone(),
+        ) {
+            Ok(finding) => {
+                println!("{} {}", finding.finding_id, status_text(finding.status));
+                Ok(0)
+            }
+            Err(_) => super::print_response(&response),
+        };
     }
     match serde_json::from_value::<SupervisionReport>(response["result"]["report"].clone()) {
         Ok(report) => {
@@ -54,24 +88,49 @@ pub(super) fn run_supervise_command(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+/// What `herdr supervise` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Supervise {
+    Report { all: bool },
+    Ack(String),
+}
+
 /// `Ok(None)` asks for help; the flag says `--json`.
-fn parse(args: &[String]) -> Result<Option<(SuperviseReportParams, bool)>, String> {
+fn parse(args: &[String]) -> Result<Option<(Supervise, bool)>, String> {
     let mut report = false;
+    let mut ack = None;
     let mut all = false;
     let mut json = false;
-    for arg in args {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--report" => report = true,
+            "--ack" => match args.next() {
+                Some(finding) if !finding.starts_with("--") => ack = Some(finding.clone()),
+                _ => return Err("--ack takes a finding id (f-N)".into()),
+            },
             "--all" => all = true,
             "--json" => json = true,
             "help" | "--help" | "-h" => return Ok(None),
             other => return Err(format!("unexpected argument: {other}")),
         }
     }
-    if !report {
-        return Err("supervise takes --report".into());
+    match (report, ack) {
+        (true, None) => Ok(Some((Supervise::Report { all }, json))),
+        (false, Some(finding)) if !all => Ok(Some((Supervise::Ack(finding), json))),
+        (false, Some(_)) => Err("--all goes with --report, not --ack".into()),
+        (true, Some(_)) => Err("supervise takes --report or --ack, not both".into()),
+        (false, None) => Err("supervise takes --report or --ack".into()),
     }
-    Ok(Some((SuperviseReportParams { all }, json)))
+}
+
+fn status_text(status: SupervisionStatus) -> &'static str {
+    match status {
+        SupervisionStatus::Open => "open",
+        SupervisionStatus::Acknowledged => "acknowledged",
+        SupervisionStatus::Resolved => "resolved",
+        SupervisionStatus::Unknown => "unknown",
+    }
 }
 
 fn agent_status(status: AgentStatus) -> &'static str {
@@ -84,13 +143,14 @@ fn agent_status(status: AgentStatus) -> &'static str {
     }
 }
 
-fn finding_text(finding: &SupervisionFinding, when: &impl Fn(u64) -> String) -> String {
-    let status = match finding.status {
-        SupervisionStatus::Open => "open",
-        SupervisionStatus::Acknowledged => "acknowledged",
-        SupervisionStatus::Resolved => "resolved",
-        SupervisionStatus::Unknown => "unknown",
-    };
+/// One finding; `herdr` is the herdr repository's active tenure, whose
+/// inbox it is: one that tenure has not read shows `new`.
+fn finding_text(
+    finding: &SupervisionFinding,
+    herdr: Option<&str>,
+    when: &impl Fn(u64) -> String,
+) -> String {
+    let status = status_text(finding.status);
     let severity = match finding.severity {
         SupervisionSeverity::Warning => "warning",
         SupervisionSeverity::Critical => "critical",
@@ -100,8 +160,18 @@ fn finding_text(finding: &SupervisionFinding, when: &impl Fn(u64) -> String) -> 
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".into());
+    let new = match herdr {
+        Some(herdr)
+            if finding.status != SupervisionStatus::Resolved
+                && finding.coordinator_seen_by.as_deref() != Some(herdr) =>
+        {
+            "  new"
+        }
+        _ => "",
+    };
     let mut out = format!(
-        "{}  {status}  {severity}  {predicate}  since {}, last seen {}\n    {}\n    expected: {}\n",
+        "{}{new}  {status}  {severity}  {predicate}  since {}, last seen {}\n    {}\n    expected: \
+         {}\n",
         finding.finding_id,
         when(finding.first_seen_ms),
         when(finding.last_seen_ms),
@@ -113,6 +183,18 @@ fn finding_text(finding: &SupervisionFinding, when: &impl Fn(u64) -> String) -> 
     }
     for fact in &finding.evidence.facts {
         out.push_str(&format!("    {fact}\n"));
+    }
+    if let (Some(by), Some(ms)) = (&finding.acknowledged_by, finding.acknowledged_ms) {
+        out.push_str(&format!("    acknowledged by {by} {}\n", when(ms)));
+    }
+    match (&finding.coordinator_seen_by, finding.coordinator_seen_ms) {
+        (Some(by), Some(ms)) => {
+            out.push_str(&format!("    seen by coordinator {by} {}\n", when(ms)));
+        }
+        _ if finding.status != SupervisionStatus::Resolved => {
+            out.push_str("    not seen by the herdr coordinator yet\n");
+        }
+        _ => {}
     }
     if let Some(resolution) = &finding.resolution {
         out.push_str(&format!("    resolved: {resolution}\n"));
@@ -127,6 +209,10 @@ fn report_text(report: &SupervisionReport, offset: i64) -> String {
         (Some(ms), None) => format!("swept {}\n", when(ms)),
         _ => "no sweep yet on this server\n".to_owned(),
     };
+    match &report.herdr_coordinator_id {
+        Some(herdr) => out.push_str(&format!("herdr coordinator {herdr}\n")),
+        None => out.push_str("no herdr coordinator: findings notify you\n"),
+    }
     if report.coordinators.is_empty() {
         out.push_str("no active coordinator\n");
     }
@@ -157,7 +243,11 @@ fn report_text(report: &SupervisionReport, offset: i64) -> String {
         out.push_str("no findings\n");
     }
     for finding in &report.findings {
-        out.push_str(&finding_text(finding, &when));
+        out.push_str(&finding_text(
+            finding,
+            report.herdr_coordinator_id.as_deref(),
+            &when,
+        ));
     }
     out
 }
@@ -178,8 +268,20 @@ mod tests {
         assert_eq!(parse(&args(&["--help"])), Ok(None));
         assert_eq!(
             parse(&args(&["--report", "--all", "--json"])),
-            Ok(Some((SuperviseReportParams { all: true }, true)))
+            Ok(Some((Supervise::Report { all: true }, true)))
         );
+        assert_eq!(
+            parse(&args(&["--ack", "f-3"])),
+            Ok(Some((Supervise::Ack("f-3".into()), false)))
+        );
+        for bad in [
+            &["--ack"][..],
+            &["--ack", "--json"],
+            &["--ack", "f-3", "--report"],
+            &["--ack", "f-3", "--all"],
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -187,6 +289,7 @@ mod tests {
         let report = SupervisionReport {
             swept_ms: Some(0),
             trigger: Some("timer".into()),
+            herdr_coordinator_id: Some("c-aaaaaaaa".into()),
             coordinators: vec![SupervisedCoordinator {
                 coordinator_id: "c-aaaaaaaa".into(),
                 repo: "/repo".into(),
@@ -218,6 +321,9 @@ mod tests {
                 first_seen_ms: 0,
                 last_seen_ms: 0,
                 acknowledged_ms: None,
+                acknowledged_by: None,
+                coordinator_seen_ms: None,
+                coordinator_seen_by: None,
                 resolved_ms: None,
                 resolution: None,
             }],
@@ -227,7 +333,27 @@ mod tests {
             text.contains("c-aaaaaaaa  /repo  pane w1:p1  working  cannot establish progress"),
             "{text}"
         );
-        assert!(text.contains("f-1  open  warning  disk_low"), "{text}");
+        assert!(text.contains("herdr coordinator c-aaaaaaaa"), "{text}");
+        assert!(text.contains("f-1  new  open  warning  disk_low"), "{text}");
         assert!(text.contains("    free_bytes: 1"), "{text}");
+        assert!(
+            text.contains("not seen by the herdr coordinator yet"),
+            "{text}"
+        );
+
+        // Once the herdr coordinator's tenure read it, it is no longer new.
+        let mut seen = report.clone();
+        seen.findings[0].coordinator_seen_by = Some("c-aaaaaaaa".into());
+        seen.findings[0].coordinator_seen_ms = Some(0);
+        seen.findings[0].status = SupervisionStatus::Acknowledged;
+        seen.findings[0].acknowledged_by = Some("user".into());
+        seen.findings[0].acknowledged_ms = Some(0);
+        let text = report_text(&seen, 0);
+        assert!(
+            text.contains("f-1  acknowledged  warning  disk_low"),
+            "{text}"
+        );
+        assert!(text.contains("seen by coordinator c-aaaaaaaa"), "{text}");
+        assert!(text.contains("acknowledged by user"), "{text}");
     }
 }

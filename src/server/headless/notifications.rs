@@ -980,6 +980,16 @@ impl HeadlessServer {
     /// user (a todo run's stop reason), also into `notification.list`.
     pub(super) fn forward_worker_notices(&mut self) {
         for notice in crate::workers::take_user_notices() {
+            let (workspace_id, tab_id, pane_id) = match notice
+                .pane_id
+                .as_deref()
+                .and_then(|pane| self.notification_target(pane))
+            {
+                Some((workspace_id, tab_id, pane_id)) => {
+                    (Some(workspace_id), tab_id, Some(pane_id))
+                }
+                None => (None, None, None),
+            };
             self.send_to_client_shells(ServerMessage::SemanticNotification(
                 protocol::SemanticNotification {
                     kind: protocol::SemanticNotificationKind::Custom,
@@ -987,9 +997,9 @@ impl HeadlessServer {
                     body: sanitize_notification_text(&notice.body, 240),
                     sound: Some(protocol::SemanticNotificationSound::Request),
                     agent: None,
-                    workspace_id: None,
-                    tab_id: None,
-                    pane_id: None,
+                    workspace_id,
+                    tab_id,
+                    pane_id,
                     position: None,
                 },
             ));

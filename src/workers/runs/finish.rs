@@ -749,6 +749,7 @@ impl WorkerSupervisor {
                     "approved"
                 };
                 crate::workers::notify_user(crate::workers::UserNotice {
+                    pane_id: None,
                     title: format!("{} {approved}; no next item started", run.info.item),
                     body: reason.clone(),
                 });
@@ -862,6 +863,7 @@ impl WorkerSupervisor {
                     refused.code()
                 );
                 crate::workers::notify_user(crate::workers::UserNotice {
+                    pane_id: None,
                     title: format!(
                         "{} done; the next item {} did not start",
                         run.info.item, next.item

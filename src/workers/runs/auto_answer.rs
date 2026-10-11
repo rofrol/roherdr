@@ -708,6 +708,7 @@ impl WorkerSupervisor {
         super::announce();
         let (_, _, first, options) = &to_user[0];
         crate::workers::notify_user(crate::workers::UserNotice {
+            pane_id: None,
             title: format!(
                 "{}: the worker's request needs you (run {})",
                 run.info.item, run.info.run_id

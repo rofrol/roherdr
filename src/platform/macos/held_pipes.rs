@@ -138,17 +138,61 @@ fn tree_of(root_pid: u32, parents: &[(u32, u32)]) -> HashSet<u32> {
     tree
 }
 
-/// The processes outside `root_pid`'s tree that hold the write end of a
-/// pipe `root_pid` reads on a descriptor above 2 (its own stdin, stdout and
-/// stderr are its parent's), each once, by pid.
-pub(crate) fn outside_pipe_writers(root_pid: u32) -> Vec<PipeWriter> {
-    let wanted: HashSet<u64> = pipe_ends(root_pid)
+/// The pipes `pid` reads on a descriptor above 2 (its own stdin, stdout and
+/// stderr are its parent's) whose write end is open, as (descriptor, the
+/// write end's handle).
+fn read_ends(pid: u32) -> Vec<(i32, u64)> {
+    pipe_ends(pid)
         .into_iter()
         .filter(|(fd, end)| {
             *fd > 2 && end.flags & FREAD != 0 && end.flags & FWRITE == 0 && end.peer != 0
         })
-        .map(|(_, end)| end.peer)
-        .collect();
+        .map(|(fd, end)| (fd, end.peer))
+        .collect()
+}
+
+/// The pipe ends `pid` holds whose handle is in `wanted`, as (descriptor,
+/// handle).
+fn held_ends(pid: u32, wanted: &HashSet<u64>) -> Vec<(i32, u64)> {
+    pipe_ends(pid)
+        .into_iter()
+        .filter(|(_, end)| wanted.contains(&end.handle))
+        .map(|(fd, end)| (fd, end.handle))
+        .collect()
+}
+
+/// Whether a process held, on one descriptor, the write end of a pipe the
+/// root read on one of its own, across reads taken in this order: the
+/// root's (`read_before`), the process's (`held_before`), the root's again
+/// (`read_after`), the process's again (`held_after`).
+///
+/// A handle is a hash of the end's kernel address, which the kernel gives
+/// to a new pipe as soon as both ends of the old one are closed, and two
+/// processes' descriptors cannot be read at one instant: one read alone
+/// would take a process that opened a pipe at the address of one the root
+/// closed in between for a writer of the root's pipe. Bracketing each read
+/// with the other side's leaves that only to the same address being reused
+/// three times between the four reads.
+fn held_throughout(
+    read_before: &[(i32, u64)],
+    held_before: &[(i32, u64)],
+    read_after: &[(i32, u64)],
+    held_after: &[(i32, u64)],
+) -> bool {
+    held_before.iter().any(|held| {
+        held_after.contains(held)
+            && read_before
+                .iter()
+                .any(|read| read.1 == held.1 && read_after.contains(read))
+    })
+}
+
+/// The processes outside `root_pid`'s tree that hold the write end of a
+/// pipe `root_pid` reads on a descriptor above 2 (its own stdin, stdout and
+/// stderr are its parent's), each once, by pid.
+pub(crate) fn outside_pipe_writers(root_pid: u32) -> Vec<PipeWriter> {
+    let read_before = read_ends(root_pid);
+    let wanted: HashSet<u64> = read_before.iter().map(|(_, peer)| *peer).collect();
     if wanted.is_empty() {
         return Vec::new();
     }
@@ -161,14 +205,27 @@ pub(crate) fn outside_pipe_writers(root_pid: u32) -> Vec<PipeWriter> {
         .map(|(pid, info)| (*pid, info.pbi_ppid))
         .collect();
     let tree = tree_of(root_pid, &parents);
-    let mut writers: Vec<PipeWriter> = infos
-        .iter()
-        .filter(|(pid, _)| !tree.contains(pid))
-        .filter(|(pid, _)| {
-            pipe_ends(**pid)
-                .iter()
-                .any(|(_, end)| wanted.contains(&end.handle))
+    let candidates: Vec<(u32, Vec<(i32, u64)>)> = infos
+        .keys()
+        .filter(|pid| !tree.contains(pid))
+        .map(|pid| (*pid, held_ends(*pid, &wanted)))
+        .filter(|(_, held)| !held.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let read_after = read_ends(root_pid);
+    let mut writers: Vec<PipeWriter> = candidates
+        .into_iter()
+        .filter(|(pid, held_before)| {
+            held_throughout(
+                &read_before,
+                held_before,
+                &read_after,
+                &held_ends(*pid, &wanted),
+            )
         })
+        .filter_map(|(pid, _)| infos.get_key_value(&pid))
         .map(|(pid, info)| PipeWriter {
             pid: *pid,
             command: process_argv(*pid)
@@ -297,6 +354,13 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// A tool command that leaves a detached `tail -f /dev/null` holding
+    /// its stderr. Its Popen returns only once the child ran
+    /// `tail`, so the tool exits after that and the child is found by that
+    /// name, never as the shell it was forked from.
+    const DETACH_TAIL: &str = "python3 -c \"import subprocess, sys; \
+        subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)\" tail -f /dev/null";
+
     /// delay: hang guard, fails a broken test instead of hanging the suite;
     /// never decides an outcome a passing test depends on.
     const HANG_GUARD: Duration = Duration::from_secs(60);
@@ -331,11 +395,11 @@ mod tests {
     /// writer outside the shell's tree.
     #[test]
     fn a_detached_child_holding_a_tool_s_stderr_is_found_at_the_tool_s_exit() {
-        let (mut shell, exits) = watched_shell(
+        let (mut shell, exits) = watched_shell(&format!(
             "read go; \
-             out=$(/bin/sh -c '(exec tail -f /dev/null </dev/null >/dev/null &); echo tool' 2>&1); \
-             echo \"$out\"",
-        );
+             out=$(/bin/sh -c '{DETACH_TAIL}; echo tool' 2>&1); \
+             echo \"$out\""
+        ));
         let mut found = Vec::new();
         while let Ok(writers) = exits.recv_timeout(HANG_GUARD) {
             if !writers.is_empty() {
@@ -363,11 +427,12 @@ mod tests {
                  r, w = os.pipe()\n\
                  actions = [(os.POSIX_SPAWN_DUP2, w, 1), (os.POSIX_SPAWN_DUP2, w, 2)]\n\
                  os.posix_spawn('/bin/sh', ['sh', '-c', \
-                 '(exec tail -f /dev/null </dev/null >/dev/null &); echo tool'], \
+                 sys.argv[1] + '; echo tool'], \
                  os.environ, file_actions=actions)\n\
                  os.close(w)\n\
                  while os.read(r, 4096):\n    pass\n",
             )
+            .arg(DETACH_TAIL)
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();
@@ -392,6 +457,29 @@ mod tests {
             writers[0].command.contains("tail -f /dev/null"),
             "{writers:?}"
         );
+    }
+
+    /// A process counts as a writer only when the root reads the pipe on
+    /// the same descriptor before and after its read, and it holds the end
+    /// on the same descriptor at both of its reads: a handle is a reused
+    /// kernel address, so a match the other side's reads do not bracket
+    /// may be another pipe at the same address.
+    #[test]
+    fn a_writer_is_one_whose_hold_the_root_s_reads_bracket() {
+        let root = [(5, 0xa)];
+        let held = [(7, 0xa)];
+        assert!(held_throughout(&root, &held, &root, &held));
+        // The root closed its read end after the scan read the process:
+        // the process's pipe is another one at the freed address.
+        assert!(!held_throughout(&root, &held, &[], &held));
+        // The root reads that handle on another descriptor afterwards: a
+        // new pipe of its own at the same address.
+        assert!(!held_throughout(&root, &held, &[(6, 0xa)], &held));
+        // The process let go of it, or holds it on another descriptor.
+        assert!(!held_throughout(&root, &held, &root, &[]));
+        assert!(!held_throughout(&root, &held, &root, &[(8, 0xa)]));
+        // Only the handles the root read count.
+        assert!(!held_throughout(&root, &[(7, 0xb)], &root, &[(7, 0xb)]));
     }
 
     #[test]

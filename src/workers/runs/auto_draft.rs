@@ -698,6 +698,7 @@ impl WorkerSupervisor {
             escalations::list(escalation);
         }
         crate::workers::notify_user(crate::workers::UserNotice {
+            pane_id: None,
             title: format!(
                 "{}: the task draft asks you (run {})",
                 run.info.item, run.info.run_id

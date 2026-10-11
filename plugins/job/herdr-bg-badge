@@ -6,7 +6,11 @@ Reads the hook payload's `background_tasks` (Claude Code 2.1.28x), logs it to
 the number of running tasks (`2 bg`), or cleared when none run, and beside it
 `$bg_count`, the bare count (`0` included), which herdr's API returns as the
 agent's `background_tasks` and the tab line shows as `bg:N`: a pane without
-it is unknown, not idle.
+it is unknown, not idle. A third token, `$bg_waits`, says how many of those
+running tasks are herdr-job waits with a live record (`0` included; cleared
+when herdr-job does not answer): herdr's supervision sweep counts only the
+rest as untracked shells, so a coordinator waiting on another pane's job is
+not reported as waiting on nothing.
 
 A task that is a `herdr-job wait` is known from herdr-job's own wait records
 (`herdr-job _waits`), not from its command text: it counts here unless this
@@ -99,6 +103,17 @@ def count(running, waits):
     return other + len(shown_waits(waits)) + len(agent_panes(waits))
 
 
+def wait_count(running, waits):
+    """The `$bg_waits` value: how many of the `running` tasks are herdr-job
+    waits (`wait`, `wait-agent`) with a live record, or None when herdr-job did
+    not answer, so nobody knows."""
+    if not running:
+        return 0
+    if waits is None:
+        return None
+    return min(running, max(0, int(waits.get("edges") or 0)))
+
+
 def agent_panes(waits):
     """The panes whose agents this pane waits on, once each, in order."""
     panes = []
@@ -134,6 +149,11 @@ def main():
     value = badge(len(running), waits)
     cmd = [HERDR, "pane", "report-metadata", pane, "--source", "claude-bg",
            "--token", f"bg_count={count(len(running), waits)}"]
+    tracked = wait_count(len(running), waits)
+    if tracked is None:
+        cmd += ["--clear-token", "bg_waits"]
+    else:
+        cmd += ["--token", f"bg_waits={tracked}"]
     panes = agent_panes(waits) if value is not None else []
     if value is None:
         cmd += ["--clear-token", "bg"]

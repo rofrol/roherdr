@@ -24,7 +24,7 @@ use super::plugins::{
 use super::reports::ReportInfo;
 use super::server::{ServerCapabilities, SystemPtyUsageInfo};
 use super::session::SessionSnapshot;
-use super::supervision::SupervisionReport;
+use super::supervision::{SupervisionFinding, SupervisionReport};
 use super::tabs::TabInfo;
 use super::todo::{
     TodoChainInfo, TodoGrant, TodoLanding, TodoQueueInfo, TodoReview, TodoRunEvent, TodoRunInfo,
@@ -252,6 +252,10 @@ pub enum ResponseResult {
     /// `supervise.report`'s reply.
     SupervisionReport {
         report: SupervisionReport,
+    },
+    /// `supervise.acknowledge`'s reply.
+    SupervisionFinding {
+        finding: SupervisionFinding,
     },
     /// `report.close`'s reply.
     Report {

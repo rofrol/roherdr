@@ -64,6 +64,10 @@ pub(crate) enum WorkerError {
     /// A grant question answered other than from the user's own client
     /// (a click in the `?` list): the API refuses it, so no agent grants.
     GrantNeedsUser(String),
+    /// A supervision finding acknowledged by someone other than the user
+    /// (their own client) or the herdr repository's coordinator (its
+    /// tenure's pane); the message names who may.
+    FindingAckRefused(String),
     /// A `worker.answer_as` from a tenure that no longer owns the worker;
     /// the message names the owner. The answer was not applied.
     OwnershipTransferred(String),
@@ -100,6 +104,7 @@ const WORKER_ERROR_CODES: &[&str] = &[
     "capability_unsupported",
     "grant_required",
     "grant_needs_user",
+    "finding_ack_refused",
     "ownership_transferred",
 ];
 
@@ -135,6 +140,7 @@ impl WorkerError {
             Self::CapabilityUnsupported(_) => "capability_unsupported",
             Self::GrantRequired(_) => "grant_required",
             Self::GrantNeedsUser(_) => "grant_needs_user",
+            Self::FindingAckRefused(_) => "finding_ack_refused",
             Self::OwnershipTransferred(_) => "ownership_transferred",
         }
     }
@@ -181,6 +187,7 @@ impl std::fmt::Display for WorkerError {
             | Self::CapabilityUnsupported(message)
             | Self::GrantRequired(message)
             | Self::GrantNeedsUser(message)
+            | Self::FindingAckRefused(message)
             | Self::OwnershipTransferred(message) => f.write_str(message),
             Self::Io(error) => write!(f, "{error}"),
         }

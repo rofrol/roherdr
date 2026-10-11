@@ -1302,6 +1302,12 @@ impl App {
             }
             Method::ReportRecord(params) => return self.handle_report_record(request.id, params),
             Method::ReportClose(params) => return self.handle_report_close(request.id, params),
+            Method::SuperviseReport(params) => {
+                return self.handle_supervise_report(request.id, params);
+            }
+            Method::SuperviseAcknowledge(params) => {
+                return self.handle_supervise_acknowledge(request.id, params);
+            }
             Method::WorkspaceBookmark(params) => {
                 return self.handle_workspace_bookmark(request.id, params);
             }
@@ -1409,7 +1415,6 @@ impl App {
             | Method::HistoryOverrides(_)
             | Method::HistoryWouldDeny(_)
             | Method::ReportList(_)
-            | Method::SuperviseReport(_)
             | Method::WorkerTranscript(_)
             | Method::WorkerTranscriptWait(_) => {
                 return responses::encode_error(

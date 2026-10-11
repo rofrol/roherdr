@@ -480,6 +480,12 @@ pub struct AgentOpenQuestion {
 /// reports it from the hook payload, `0` included); its value is a decimal count.
 pub const BACKGROUND_TASKS_TOKEN: &str = "bg_count";
 
+/// The pane metadata token in which an agent's integration reports how many of the
+/// background tasks its turn ended with are herdr-job waits with a live record (`herdr-job
+/// wait`, `wait-agent`; `herdr-bg-badge` reports it from `herdr-job _waits`, `0` included):
+/// waits herdr knows of, which the supervision sweep does not count as untracked shells.
+pub const BACKGROUND_WAITS_TOKEN: &str = "bg_waits";
+
 /// The background task count a `bg_count` token value states; None (unknown) when it
 /// is not a decimal count.
 pub fn background_task_count(value: &str) -> Option<u32> {

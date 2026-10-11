@@ -929,6 +929,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ReportList(_) => "report.list",
         Method::ReportClose(_) => "report.close",
         Method::SuperviseReport(_) => "supervise.report",
+        Method::SuperviseAcknowledge(_) => "supervise.acknowledge",
         Method::NotificationShow(_) => "notification.show",
         Method::NotificationShowForPane(_) => "notification.show_for_pane",
         Method::ProductAnnouncementDismiss(_) => "product_announcement.dismiss",

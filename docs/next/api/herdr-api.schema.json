@@ -5497,11 +5497,38 @@
             }
           ]
         },
+        "SuperviseAcknowledgeParams": {
+          "description": "`supervise.acknowledge`: acknowledges an open finding, from the pane that\nholds the herdr repository's coordination tenure. The user acknowledges\nwith a click in the `?` list of their own client; nobody else does.",
+          "properties": {
+            "finding_id": {
+              "description": "`f-` and the finding's number.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The acknowledging coordinator's pane (the CLI sends its\n`HERDR_PANE_ID`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "finding_id"
+          ],
+          "type": "object"
+        },
         "SuperviseReportParams": {
           "description": "`supervise.report`: the findings that hold (open or acknowledged), or\nevery finding with `all`, and what the latest sweep saw of each\ncoordinator.",
           "properties": {
             "all": {
               "type": "boolean"
+            },
+            "pane_id": {
+              "description": "The reader's pane (the CLI sends its `HERDR_PANE_ID`). When it holds\nthe herdr repository's coordination tenure, the findings that hold\nare marked seen by that tenure once the reply is made; the reply\nshows the marks as they were before this read.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "type": "object"
@@ -8821,6 +8848,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/SuperviseReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Acknowledges a supervision finding; only from the herdr repository's\ncoordinator pane (the user acknowledges in their client's `?` list).",
+          "properties": {
+            "method": {
+              "const": "supervise.acknowledge",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SuperviseAcknowledgeParams"
             }
           },
           "required": [
@@ -16099,6 +16143,23 @@
               "type": "object"
             },
             {
+              "description": "`supervise.acknowledge`'s reply.",
+              "properties": {
+                "finding": {
+                  "$ref": "#/schemas/success_response/$defs/SupervisionFinding"
+                },
+                "type": {
+                  "const": "supervision_finding",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "finding"
+              ],
+              "type": "object"
+            },
+            {
               "description": "`report.close`'s reply.",
               "properties": {
                 "report": {
@@ -17709,6 +17770,13 @@
         "SupervisionFinding": {
           "description": "One finding: a predicate that held for one subject from `first_seen_ms`\nto `last_seen_ms`.",
           "properties": {
+            "acknowledged_by": {
+              "description": "Who acknowledged it: `user`, or `coordinator <id>` (the herdr\nrepository's tenure).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "acknowledged_ms": {
               "format": "uint64",
               "minimum": 0,
@@ -17721,6 +17789,22 @@
               "description": "The coordination tenure it concerns.",
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "coordinator_seen_by": {
+              "description": "The tenure that read it then; a later tenure has not seen it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "coordinator_seen_ms": {
+              "description": "When the herdr repository's coordinator last read it in\n`supervise.report`, Unix milliseconds; cleared when it escalates.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
                 "null"
               ]
             },
@@ -17839,7 +17923,7 @@
             },
             {
               "const": "untracked_shell",
-              "description": "A coordinator's turn ended with background tasks running and no wait\nedge the server knows of (a running herdr-job job of its pane, a\nworker of its tenure, a run of its repository).",
+              "description": "A coordinator's turn ended with more background tasks running than\nherdr-job waits with a live record (its `bg_waits` token; a wait on\nanother pane's job is one) and no other wait edge the server knows\nof (a running herdr-job job of its pane, a worker of its tenure, a\nrun of its repository).",
               "type": "string"
             },
             {
@@ -17864,6 +17948,13 @@
                 "$ref": "#/schemas/success_response/$defs/SupervisionFinding"
               },
               "type": "array"
+            },
+            "herdr_coordinator_id": {
+              "description": "The herdr repository's active coordination tenure, whose inbox the\nfindings reach; a finding it has not seen has no\n`coordinator_seen_by` naming it.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "swept_ms": {
               "description": "When the latest sweep of this server ran; absent before its first.",
@@ -17894,7 +17985,7 @@
           "type": "string"
         },
         "SupervisionStatus": {
-          "description": "`open` until the user (or anyone answering its `?` entry) acknowledges\nit; `resolved` once a sweep finds its predicate no longer holding, which\nis final: the same fingerprint later opens a new finding.",
+          "description": "`open` until the user (a click in the `?` list of their own client) or\nthe herdr repository's coordinator acknowledges it; `resolved` once a sweep finds its predicate no longer holding, which\nis final: the same fingerprint later opens a new finding.",
           "enum": [
             "open",
             "acknowledged",

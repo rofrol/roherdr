@@ -740,6 +740,7 @@ BEGIN SELECT RAISE(ABORT, 'coordinator_would_deny is append-only'); END;
 ALTER TABLE workers ADD COLUMN end_by_owner INTEGER NOT NULL DEFAULT 0;
 "#,
     super::supervision::SUPERVISION_MIGRATION,
+    super::supervision::SUPERVISION_INBOX_MIGRATION,
 ];
 
 pub(super) type StoreResult<T> = rusqlite::Result<T>;
@@ -3402,7 +3403,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN end_by_owner;
                  DROP TABLE supervision_findings;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 27
+                MIGRATIONS.len() - 28
             ))
             .unwrap();
         drop(store);
@@ -3467,7 +3468,7 @@ mod tests {
                  ALTER TABLE workers DROP COLUMN end_by_owner;
                  DROP TABLE supervision_findings;
                  UPDATE meta SET value = '{}' WHERE key = 'schema_version';",
-                MIGRATIONS.len() - 16
+                MIGRATIONS.len() - 17
             ))
             .unwrap();
         drop(store);

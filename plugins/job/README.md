@@ -344,6 +344,13 @@ the agent's `background_tasks`, and the sidebar's tab line shows it dim as
 `bg:N` in every state, working included. Like `$bg`, it expires 12 hours
 after the last Stop.
 
+A `bg_waits` token beside it says how many of the running tasks are
+herdr-job waits (`wait`, `wait-agent`) with a live record, `0` included, and
+is cleared when `herdr-job _waits` does not answer. Herdr's supervision sweep
+(`herdr supervise --report`) subtracts it from the background tasks the
+agent's turn ended with, so a coordinator waiting on a job in another pane's
+tab is not reported as waiting on an untracked shell.
+
 ```json
 "Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}],
 "SubagentStop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}]

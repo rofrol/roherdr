@@ -252,11 +252,15 @@ while True:
             read()
     elif command == "held":
         # A Bash call whose tool leaves a detached child holding its
-        # stderr: the call ends only once that child is gone.
+        # stderr: the call ends only once that child is gone. The child's
+        # parent returns from its Popen only once the child ran `tail`, so
+        # the tool exits after that and the child is found by that name.
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use",
               "id": "toolu-held", "name": "Bash", "input": {"command": "held-tool"}}]}})
+        detach = ("import subprocess, sys; subprocess.Popen(sys.argv[1:], "
+                  "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)")
         tool = subprocess.Popen(["/bin/sh", "-c",
-            "(exec tail -f /dev/null </dev/null >/dev/null &); echo tool"],
+            '"$0" -c "$1" tail -f /dev/null; echo tool', sys.executable, detach],
             start_new_session=True, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         tool.communicate()
@@ -3973,7 +3977,16 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
         .unwrap();
     let worker = fixture.supervisor.ack(&id, turn_end.seq).unwrap();
     assert_eq!(worker.acked_seq, Some(turn_end.seq));
-    assert_eq!(worker.state, WorkerState::Working);
+    // In its new turn: the turn's question may be asked already.
+    assert!(
+        matches!(
+            worker.state,
+            WorkerState::Working | WorkerState::WaitingApproval
+        ),
+        "{:?}",
+        worker.state
+    );
+    assert_eq!(worker.stop_requested_ms, None);
 
     // A newer event, a question, is owed again.
     let (asked, _) = fixture.attention(&id, Some(ended.seq), || {});

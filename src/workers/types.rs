@@ -21,6 +21,9 @@ pub(crate) struct Attention {
 pub(crate) struct UserNotice {
     pub(crate) title: String,
     pub(crate) body: String,
+    /// The pane a click on it goes to (a supervision finding's to the herdr
+    /// coordinator's pane), by its public id; none for the user's own.
+    pub(crate) pane_id: Option<String>,
 }
 
 /// A question some worker waits on, with the worker it belongs to.

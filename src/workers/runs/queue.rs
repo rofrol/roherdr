@@ -697,6 +697,7 @@ impl WorkerSupervisor {
         if paused {
             super::announce();
             crate::workers::notify_user(crate::workers::UserNotice {
+                pane_id: None,
                 title: format!("TODO queue of {repo} paused"),
                 body: ENV_NEEDED.to_owned(),
             });
@@ -794,6 +795,7 @@ impl WorkerSupervisor {
         super::announce();
         if let Some(reason) = paused {
             crate::workers::notify_user(crate::workers::UserNotice {
+                pane_id: None,
                 title: format!("TODO queue of {repo} paused"),
                 body: reason,
             });
@@ -811,6 +813,7 @@ impl WorkerSupervisor {
             if tried == ITEM_ATTEMPTS {
                 if let Some(reason) = blocked_reason(&run.item, &run.item_digest, &runs) {
                     crate::workers::notify_user(crate::workers::UserNotice {
+                        pane_id: None,
                         title: format!("TODO queue: {} blocked ({status})", run.item),
                         body: reason,
                     });

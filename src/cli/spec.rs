@@ -584,6 +584,7 @@ fn supervise_command() -> Command {
     Command::new("supervise")
         .about("Show what herdr's supervision sweep sees of the coordinators")
         .arg(flag("report"))
+        .arg(option("ack", "FINDING_ID"))
         .arg(flag("all"))
         .arg(flag("json"))
 }

@@ -277,6 +277,10 @@ pub enum Method {
     /// and what the latest sweep saw of each coordinator. Reads only.
     #[serde(rename = "supervise.report")]
     SuperviseReport(SuperviseReportParams),
+    /// Acknowledges a supervision finding; only from the herdr repository's
+    /// coordinator pane (the user acknowledges in their client's `?` list).
+    #[serde(rename = "supervise.acknowledge")]
+    SuperviseAcknowledge(SuperviseAcknowledgeParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "notification.show_for_pane")]

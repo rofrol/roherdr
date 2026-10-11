@@ -17,6 +17,25 @@ use super::common::AgentStatus;
 pub struct SuperviseReportParams {
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub all: bool,
+    /// The reader's pane (the CLI sends its `HERDR_PANE_ID`). When it holds
+    /// the herdr repository's coordination tenure, the findings that hold
+    /// are marked seen by that tenure once the reply is made; the reply
+    /// shows the marks as they were before this read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+}
+
+/// `supervise.acknowledge`: acknowledges an open finding, from the pane that
+/// holds the herdr repository's coordination tenure. The user acknowledges
+/// with a click in the `?` list of their own client; nobody else does.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SuperviseAcknowledgeParams {
+    /// `f-` and the finding's number.
+    pub finding_id: String,
+    /// The acknowledging coordinator's pane (the CLI sends its
+    /// `HERDR_PANE_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
 }
 
 /// The predicate a finding names: a positive fact and the event that did
@@ -32,9 +51,11 @@ pub enum SupervisionPredicate {
     /// reported (Claude's `Stop`) with no turn start since
     /// (`UserPromptSubmit`).
     WorkingAfterStop,
-    /// A coordinator's turn ended with background tasks running and no wait
-    /// edge the server knows of (a running herdr-job job of its pane, a
-    /// worker of its tenure, a run of its repository).
+    /// A coordinator's turn ended with more background tasks running than
+    /// herdr-job waits with a live record (its `bg_waits` token; a wait on
+    /// another pane's job is one) and no other wait edge the server knows
+    /// of (a running herdr-job job of its pane, a worker of its tenure, a
+    /// run of its repository).
     UntrackedShell,
     /// The file system of a coordinator's repository has less free space
     /// than the build guard's 15 GiB.
@@ -54,8 +75,8 @@ pub enum SupervisionSeverity {
     Unknown,
 }
 
-/// `open` until the user (or anyone answering its `?` entry) acknowledges
-/// it; `resolved` once a sweep finds its predicate no longer holding, which
+/// `open` until the user (a click in the `?` list of their own client) or
+/// the herdr repository's coordinator acknowledges it; `resolved` once a sweep finds its predicate no longer holding, which
 /// is final: the same fingerprint later opens a new finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -115,6 +136,17 @@ pub struct SupervisionFinding {
     pub last_seen_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged_ms: Option<u64>,
+    /// Who acknowledged it: `user`, or `coordinator <id>` (the herdr
+    /// repository's tenure).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_by: Option<String>,
+    /// When the herdr repository's coordinator last read it in
+    /// `supervise.report`, Unix milliseconds; cleared when it escalates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_seen_ms: Option<u64>,
+    /// The tenure that read it then; a later tenure has not seen it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_seen_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ms: Option<u64>,
     /// Why it was resolved: what the sweep saw instead.
@@ -157,6 +189,11 @@ pub struct SupervisionReport {
     /// What started it: `timer` or the event, such as `pane w1:p1 turn`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
+    /// The herdr repository's active coordination tenure, whose inbox the
+    /// findings reach; a finding it has not seen has no
+    /// `coordinator_seen_by` naming it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr_coordinator_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coordinators: Vec<SupervisedCoordinator>,
     /// The latest seen first.

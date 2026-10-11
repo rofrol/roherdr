@@ -570,14 +570,26 @@ class BgBadgeTests(unittest.TestCase):
         waits = {"edges": 1, "waits": [], "agents": [{"target_pane": "p7"}]}
         ttl = ["--ttl-ms", str(BADGE["TTL_MS"])]
         args = self.report([{"status": "running"}], waits)
-        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg=1 bg",
-                                "--token", "bg_agents=p7", *ttl])
+        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg_waits=1",
+                                "--token", "bg=1 bg", "--token", "bg_agents=p7", *ttl])
         args = self.report([{"status": "running"}], {"edges": 0, "waits": []})
-        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg=1 bg",
-                                "--clear-token", "bg_agents", *ttl])
+        self.assertEqual(args, ["--token", "bg_count=1", "--token", "bg_waits=0",
+                                "--token", "bg=1 bg", "--clear-token", "bg_agents", *ttl])
         args = self.report([{"status": "completed"}], waits)
-        self.assertEqual(args, ["--token", "bg_count=0", "--clear-token", "bg",
-                                "--clear-token", "bg_agents", *ttl])
+        self.assertEqual(args, ["--token", "bg_count=0", "--token", "bg_waits=0",
+                                "--clear-token", "bg", "--clear-token", "bg_agents", *ttl])
+
+    def test_the_hook_reports_how_many_running_tasks_are_herdr_job_waits(self):
+        # Two tasks: one waits on another tab's job, one is a plain shell.
+        waits = {"edges": 1, "waits": [self.wait("a")]}
+        args = self.report([{"status": "running"}, {"status": "running"}], waits)
+        self.assertIn("bg_waits=1", args)
+        # A record left by a task that already ended never counts above the
+        # running tasks.
+        self.assertEqual(BADGE["wait_count"](1, {"edges": 3, "waits": []}), 1)
+        # herdr-job did not answer: nobody knows, so the token is cleared.
+        args = self.report([{"status": "running"}], None)
+        self.assertEqual(args[2:4], ["--clear-token", "bg_waits"])
 
     def test_an_observed_zero_is_reported_apart_from_unknown(self):
         # A payload with no running task reports the count 0, which expires

@@ -115,7 +115,7 @@ Raw socket method names use dot notation:
 | Item history | `history.list`, `history.item`, `history.reconcile`, `history.overrides`, `history.would_deny` |
 | Decision ledger | `decision.add`, `decision.decide`, `decision.list`, `decision.get` |
 | Reports | `report.record`, `report.list`, `report.close` |
-| Supervision | `supervise.report` |
+| Supervision | `supervise.report`, `supervise.acknowledge` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -1143,9 +1143,11 @@ event and answers `report`. It is refused with `report_close_refused` unless
 `pane_id` is bound to the herdr repository's active tenure, with
 `report_not_found` for an unknown report and with `invalid_request` for a
 closed one or a bad `fix`.
-`supervise.report` (optional `all`) answers `supervision_report` with
-`report`: `swept_ms` and `trigger` (`timer`, or the event, such as `pane
-w1:p1 turn`) of this server's latest sweep, `coordinators` (each active
+`supervise.report` (optional `all` and `pane_id`, the reader's pane)
+answers `supervision_report` with `report`: `swept_ms` and `trigger`
+(`timer`, or the event, such as `pane w1:p1 turn`) of this server's latest
+sweep, `herdr_coordinator_id` (the herdr repository's active tenure, whose
+inbox the findings are), `coordinators` (each active
 tenure's `coordinator_id`, `repo`, `pane_id`, `agent_status`, running
 `workers`, `active_run`, the `findings` that hold for it, else `note`:
 `cannot establish progress`) and `findings`, those that hold (open or
@@ -1156,12 +1158,23 @@ unknown one as `unknown`), `severity` (`warning`, `critical`), `status`
 (`open`, `acknowledged`, `resolved`), `summary`, `expected_event`, `repo`,
 `coordinator_id`, `pane_id`, `run_id`, `job_ids`, `evidence` (`observed_ms`,
 `event_ids`, `facts`), `first_seen_ms`, `last_seen_ms`, `acknowledged_ms`,
-`resolved_ms` and `resolution`. The server's read-only sweep (see `herdr
+`acknowledged_by` (`user` or `coordinator <id>`), `coordinator_seen_ms`,
+`coordinator_seen_by`, `resolved_ms` and `resolution`. When `pane_id` holds
+the herdr repository's tenure, the findings that hold are marked seen by it
+after the reply, which shows the marks as they were before; an escalation
+clears them. The server's read-only sweep (see `herdr
 supervise` in the CLI reference) writes them, append-only, in the worker
 store, each change with a `supervision.finding` event; it never acts on
 them. A new or escalated finding is one notification to the client shells
-(also into `notification.list`) and one entry in the user's `?` list, which
-`worker.answer` (any answer) acknowledges.
+(also into `notification.list`), pointing at the herdr repository's
+coordinator pane when one holds it, and one entry in the user's `?` list,
+which the user's own client acknowledges with any answer.
+`supervise.acknowledge` (`finding_id`, `pane_id`) acknowledges an open
+finding and answers `supervision_finding` with `finding`; it is refused
+with `finding_ack_refused` unless `pane_id` is bound to the herdr
+repository's active tenure. `worker.answer` and `worker.deny_and_stop` on a
+finding's `?` entry through this API are refused with `finding_ack_refused`
+too: a worker or another agent never acknowledges a finding.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
 `pane.moved`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.

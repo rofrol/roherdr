@@ -247,13 +247,11 @@ impl WorkerSupervisor {
         if grant_questions::is_grant_question(&params.request_id) {
             return Err(grant_questions::needs_user(&params.request_id));
         }
-        // A supervision finding has no worker to stop: it is acknowledged.
+        // A supervision finding is acknowledged only by the user's client
+        // ([`Self::deny_and_stop_from_client`]) or the herdr coordinator
+        // (`supervise.acknowledge`), never through this API.
         if supervision::is_finding_question(&params.request_id) {
-            return self.answer_finding_question(
-                &params.worker_id,
-                &params.request_id,
-                Some(WorkerDecision::Deny),
-            );
+            return self.refuse_finding_answer(&params.worker_id, &params.request_id);
         }
         // A review escalation's worker has already exited: the denial
         // leaves the review to the coordinator.
@@ -468,7 +466,10 @@ impl WorkerSupervisor {
             .as_deref()
             .filter(|request_id| supervision::is_finding_question(request_id))
         {
-            return self.answer_finding_question(&params.worker_id, request_id, params.decision);
+            // Only the user's client or the herdr coordinator acknowledges
+            // a finding ([`Self::answer_from_client`],
+            // `supervise.acknowledge`).
+            return self.refuse_finding_answer(&params.worker_id, request_id);
         }
         if let Some(request_id) = params
             .request_id

@@ -19,8 +19,18 @@
 //! move its `last_seen_ms` and evidence; once a sweep no longer sees it, it is
 //! resolved for good, and the same fingerprint later opens a new finding.
 //! Every change is a `supervision.finding` event in the store. A new or
-//! escalated finding sends one notification and lists one `?` entry for the
-//! user, until someone acknowledges it there or it resolves.
+//! escalated finding sends one notification, pointing at the herdr
+//! repository's coordinator pane as a `herdr report` does (to the user when
+//! no pane coordinates herdr), and lists one `?` entry for the user, until
+//! it is acknowledged or resolves. The table is that coordinator's durable
+//! inbox: `supervise.report` read from its pane marks the findings that hold
+//! seen by its tenure, and an escalation clears the mark.
+//!
+//! Only the user (a click in the `?` list of their own client) or the herdr
+//! repository's coordinator (`supervise.acknowledge` from its tenure's pane)
+//! acknowledges a finding; a worker's or another agent's `worker.answer` is
+//! refused with `finding_ack_refused`, since the agent that stalled could
+//! otherwise silence its own finding.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +43,7 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use super::coordinators::store_error;
+use super::reports::is_herdr_repository;
 use super::store::{EventRow, Recorded, StoreResult, Tx};
 use super::{lock, notify_clients, notify_user, now_ms, Direction, PendingWorkerQuestion};
 use super::{UserNotice, WorkerError, WorkerSupervisor};
@@ -80,6 +91,17 @@ WHEN OLD.status = 'resolved'
 BEGIN SELECT RAISE(ABORT, 'a resolved supervision finding is final'); END;
 "#;
 
+/// Who acknowledged a finding, and the herdr coordinator's reads of it.
+pub(super) const SUPERVISION_INBOX_MIGRATION: &str = r#"
+-- Who acknowledged a finding: `user` (their own client) or `coordinator
+-- <id>` (the herdr repository's tenure). The herdr coordinator's inbox:
+-- when its tenure (`coordinator_seen_by`) last read the finding in
+-- `supervise.report`; an escalation clears both.
+ALTER TABLE supervision_findings ADD COLUMN acknowledged_by TEXT;
+ALTER TABLE supervision_findings ADD COLUMN coordinator_seen_ms INTEGER;
+ALTER TABLE supervision_findings ADD COLUMN coordinator_seen_by TEXT;
+"#;
+
 /// How often the server sweeps without an event: a reconciliation for the
 /// user's view, decided with the findings' design (TODO t-7zfjbcrf); no
 /// wait, retry or state depends on it.
@@ -119,6 +141,10 @@ pub(crate) struct PaneFacts {
     /// The background tasks its last reported turn end still ran; `None`
     /// while unknown.
     pub(crate) background_tasks: Option<u32>,
+    /// How many of those are herdr-job waits with a live record (its
+    /// `bg_waits` metadata token, which `herdr-bg-badge` reports from
+    /// herdr-job's wait edges); `None` while unknown.
+    pub(crate) wait_edges: Option<u32>,
     /// It asked the user a question that is still open.
     pub(crate) asks_user: bool,
     /// Its turn ended on a usage or credit limit.
@@ -262,6 +288,11 @@ fn pane_evidence(pane: &PaneFacts, facts: &mut Vec<String>, event_ids: &mut Vec<
         pane.background_tasks
             .map_or_else(|| "unknown".to_owned(), |count| count.to_string())
     ));
+    facts.push(format!(
+        "wait_edges: {}",
+        pane.wait_edges
+            .map_or_else(|| "unknown".to_owned(), |count| count.to_string())
+    ));
     if let Some(seq) = pane.state_seq {
         event_ids.push(format!("pane {} state change {seq}", pane.pane_id));
     }
@@ -362,12 +393,18 @@ fn coordinator_idle(coordinator: &CoordinatorFacts, observed_ms: u64) -> Option<
 }
 
 /// A coordinator's turn ended with background tasks still running while
-/// the server knows of no wait edge for them: no running job of its pane, no
-/// running worker of its tenure, no run of its repository in progress.
+/// the server knows of no wait edge for them: more tasks than herdr-job
+/// waits with a live record (a wait on another pane's job is one), no
+/// running job of its pane, no running worker of its tenure, no run of its
+/// repository in progress.
 fn untracked_shell(coordinator: &CoordinatorFacts, observed_ms: u64) -> Option<Candidate> {
     let tenure = &coordinator.tenure;
     let pane = coordinator.pane.as_ref()?;
     let tasks = pane.background_tasks.filter(|count| *count > 0)?;
+    let untracked = tasks.saturating_sub(pane.wait_edges.unwrap_or(0));
+    if untracked == 0 {
+        return None;
+    }
     let active_run = coordinator
         .runnable
         .as_ref()
@@ -393,8 +430,8 @@ fn untracked_shell(coordinator: &CoordinatorFacts, observed_ms: u64) -> Option<C
         predicate: SupervisionPredicate::UntrackedShell,
         severity: SupervisionSeverity::Warning,
         summary: format!(
-            "coordinator {} of {} ended its turn with {tasks} background task(s) running and no \
-             wait edge herdr knows of",
+            "coordinator {} of {} ended its turn with {untracked} of {tasks} background task(s) \
+             running and no wait edge herdr knows of",
             tenure.coordinator_id, tenure.repo
         ),
         expected_event: "a herdr-job wait on the shell (`herdr-job watch --pid <its pid>`), or \
@@ -490,7 +527,8 @@ fn disk_low(disk: &DiskFacts, observed_ms: u64) -> Option<Candidate> {
 
 const COLUMNS: &str = "id, fingerprint, predicate, severity, status, summary, expected_event, \
                        repo, coordinator_id, pane_id, run_id, job_ids, evidence, first_seen_ms, \
-                       last_seen_ms, acknowledged_ms, resolved_ms, resolution";
+                       last_seen_ms, acknowledged_ms, resolved_ms, resolution, acknowledged_by, \
+                       coordinator_seen_ms, coordinator_seen_by";
 
 fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SupervisionFinding> {
     let job_ids: String = row.get(11)?;
@@ -514,6 +552,9 @@ fn finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SupervisionFind
         acknowledged_ms: row.get::<_, Option<i64>>(15)?.map(|ms| ms as u64),
         resolved_ms: row.get::<_, Option<i64>>(16)?.map(|ms| ms as u64),
         resolution: row.get(17)?,
+        acknowledged_by: row.get(18)?,
+        coordinator_seen_ms: row.get::<_, Option<i64>>(19)?.map(|ms| ms as u64),
+        coordinator_seen_by: row.get(20)?,
     })
 }
 
@@ -566,6 +607,8 @@ fn finding_event(
         "coordinator_id": finding.coordinator_id,
         "pane_id": finding.pane_id,
         "resolution": finding.resolution,
+        "acknowledged_by": finding.acknowledged_by,
+        "coordinator_seen_by": finding.coordinator_seen_by,
     });
     tx.event(&EventRow {
         worker_id: &format!("supervision:{}", finding.finding_id),
@@ -641,7 +684,12 @@ fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResul
                          summary = ?4, job_ids = ?5, run_id = ?6,
                          severity = CASE WHEN ?7 THEN ?8 ELSE severity END,
                          status = CASE WHEN ?7 THEN 'open' ELSE status END,
-                         acknowledged_ms = CASE WHEN ?7 THEN NULL ELSE acknowledged_ms END
+                         acknowledged_ms = CASE WHEN ?7 THEN NULL ELSE acknowledged_ms END,
+                         acknowledged_by = CASE WHEN ?7 THEN NULL ELSE acknowledged_by END,
+                         coordinator_seen_ms =
+                             CASE WHEN ?7 THEN NULL ELSE coordinator_seen_ms END,
+                         coordinator_seen_by =
+                             CASE WHEN ?7 THEN NULL ELSE coordinator_seen_by END
                      WHERE id = ?1",
                     params![
                         number,
@@ -692,9 +740,42 @@ fn record_sweep(tx: &Tx<'_>, candidates: &[Candidate], at_ms: u64) -> StoreResul
     Ok(changes)
 }
 
+/// Who acknowledges a finding: the only two who may.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Acknowledger {
+    /// The user, from their own client's `?` list.
+    User,
+    /// The herdr repository's coordination tenure, by its id.
+    Coordinator(String),
+}
+
+impl Acknowledger {
+    fn text(&self) -> String {
+        match self {
+            Self::User => "user".into(),
+            Self::Coordinator(id) => format!("coordinator {id}"),
+        }
+    }
+}
+
+/// The refusal of an acknowledgement from anyone else.
+fn ack_refused(finding: &str, why: &str) -> WorkerError {
+    WorkerError::FindingAckRefused(format!(
+        "{finding} is a supervision finding: only the user acknowledges it, with a click in the \
+         `?` list of their own client, or the herdr repository's coordinator, with `herdr \
+         supervise --ack {finding}` from the pane that holds its tenure; a worker or another \
+         agent never does ({why})"
+    ))
+}
+
 /// Acknowledges an open finding; `None` when there is no such finding,
 /// `Some(false)` when it was not open.
-fn acknowledge(tx: &Tx<'_>, number: i64, at_ms: u64) -> StoreResult<Option<bool>> {
+fn acknowledge(
+    tx: &Tx<'_>,
+    number: i64,
+    by: &Acknowledger,
+    at_ms: u64,
+) -> StoreResult<Option<bool>> {
     let conn = tx.connection();
     let Some(finding) = finding_by_number(conn, number)? else {
         return Ok(None);
@@ -703,9 +784,10 @@ fn acknowledge(tx: &Tx<'_>, number: i64, at_ms: u64) -> StoreResult<Option<bool>
         return Ok(Some(false));
     }
     conn.execute(
-        "UPDATE supervision_findings SET status = 'acknowledged', acknowledged_ms = ?2
+        "UPDATE supervision_findings SET status = 'acknowledged', acknowledged_ms = ?2,
+             acknowledged_by = ?3
          WHERE id = ?1 AND status = 'open'",
-        params![number, at_ms as i64],
+        params![number, at_ms as i64, by.text()],
     )?;
     if let Some(finding) = finding_by_number(conn, number)? {
         finding_event(tx, &finding, "acknowledged", at_ms)?;
@@ -713,19 +795,61 @@ fn acknowledge(tx: &Tx<'_>, number: i64, at_ms: u64) -> StoreResult<Option<bool>
     Ok(Some(true))
 }
 
-/// The notification a new or escalated finding sends.
-fn notice(finding: &SupervisionFinding, escalated: bool) -> UserNotice {
+/// Marks the findings that hold seen by the herdr coordinator's tenure
+/// `coordinator_id`, those it had not seen yet, with an event each.
+fn mark_seen(tx: &Tx<'_>, coordinator_id: &str, at_ms: u64) -> StoreResult<Vec<String>> {
+    let conn = tx.connection();
+    let unseen: Vec<i64> = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM supervision_findings
+             WHERE status != 'resolved' AND coordinator_seen_by IS NOT ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map([coordinator_id], |row| row.get(0))?;
+        rows.collect::<StoreResult<_>>()?
+    };
+    let mut marked = Vec::new();
+    for number in unseen {
+        conn.execute(
+            "UPDATE supervision_findings SET coordinator_seen_ms = ?2, coordinator_seen_by = ?3
+             WHERE id = ?1",
+            params![number, at_ms as i64, coordinator_id],
+        )?;
+        if let Some(finding) = finding_by_number(conn, number)? {
+            finding_event(tx, &finding, "seen", at_ms)?;
+            marked.push(finding.finding_id);
+        }
+    }
+    Ok(marked)
+}
+
+/// The notification a new or escalated finding sends: to the herdr
+/// repository's coordinator pane, as a `herdr report` does, else to the
+/// user.
+fn notice(
+    finding: &SupervisionFinding,
+    escalated: bool,
+    herdr: Option<&CoordinatorInfo>,
+) -> UserNotice {
     let severity = match finding.severity {
         SupervisionSeverity::Critical => " (critical)",
         _ => "",
     };
     let change = if escalated { " escalated" } else { "" };
+    let pane_id = herdr
+        .filter(|coordinator| !coordinator.headless)
+        .and_then(|coordinator| coordinator.pane_id.clone());
+    let nobody = if pane_id.is_none() {
+        " (no herdr coordinator)"
+    } else {
+        ""
+    };
     UserNotice {
         title: format!(
-            "Supervision finding {}{change}{severity}",
+            "Supervision finding {}{change}{severity}{nobody}",
             finding.finding_id
         ),
         body: format!("{}; expected: {}", finding.summary, finding.expected_event),
+        pane_id,
     }
 }
 
@@ -825,8 +949,9 @@ fn question_of(finding: &SupervisionFinding) -> WorkerQuestion {
         since_ms: finding.first_seen_ms,
         state: WorkerQuestionState::Pending,
         escalated: Some(
-            "a supervision finding herdr's sweep saw; herdr acts on none: Acknowledge takes it \
-             off this list, and it resolves on its own once the sweep no longer sees it"
+            "a supervision finding herdr's sweep saw; herdr acts on none: Acknowledge (yours, or \
+             the herdr coordinator's) takes it off this list, and it resolves on its own once \
+             the sweep no longer sees it"
                 .into(),
         ),
     }
@@ -951,11 +1076,19 @@ impl WorkerSupervisor {
                 .collect(),
         });
         self.refresh_open_findings();
+        if changes.opened.is_empty() && changes.escalated.is_empty() {
+            return Ok(());
+        }
+        let herdr = facts
+            .coordinators
+            .iter()
+            .map(|coordinator| &coordinator.tenure)
+            .find(|tenure| is_herdr_repository(&tenure.repo));
         for finding in &changes.opened {
-            notify_user(notice(finding, false));
+            notify_user(notice(finding, false, herdr));
         }
         for finding in &changes.escalated {
-            notify_user(notice(finding, true));
+            notify_user(notice(finding, true, herdr));
         }
         Ok(())
     }
@@ -1009,36 +1142,95 @@ impl WorkerSupervisor {
     }
 
     /// `supervise.report`: the findings that hold, or all, and what the
-    /// latest sweep saw of each coordinator.
-    pub(crate) fn supervision_report(&self, all: bool) -> Result<SupervisionReport, WorkerError> {
+    /// latest sweep saw of each coordinator. Read from `reader_pane` (its
+    /// public id) while it holds the herdr repository's tenure, it then
+    /// marks the findings that hold seen by that tenure; the reply shows the
+    /// marks as they were before.
+    pub(crate) fn supervision_report(
+        &self,
+        all: bool,
+        reader_pane: Option<&str>,
+    ) -> Result<SupervisionReport, WorkerError> {
         let findings = self.supervision_findings(all)?;
+        let herdr = self.herdr_coordinator();
+        let reader = reader_pane
+            .and_then(|pane| self.coordinator_of_pane(pane))
+            .filter(|tenure| {
+                herdr
+                    .as_ref()
+                    .is_some_and(|herdr| herdr.coordinator_id == tenure.coordinator_id)
+            });
+        if let Some(reader) = reader {
+            self.supervision_store()?
+                .transaction(|tx| mark_seen(tx, &reader.coordinator_id, now_ms()))
+                .map_err(store_error)?;
+        }
         let last = lock(&LAST_SWEEP).clone().unwrap_or_default();
         Ok(SupervisionReport {
             swept_ms: last.swept_ms,
             trigger: last.trigger,
+            herdr_coordinator_id: herdr.map(|herdr| herdr.coordinator_id),
             coordinators: last.coordinators,
             findings,
         })
     }
 
-    /// Acknowledges finding `finding_id`: it leaves the `?` list and stays
-    /// in the report until it resolves.
-    pub(crate) fn supervision_acknowledge(&self, finding_id: &str) -> Result<(), WorkerError> {
+    /// Acknowledges finding `finding_id` as `by`: it leaves the `?` list
+    /// and stays in the report until it resolves. Callers check that `by`
+    /// may ([`Self::supervision_acknowledge_from_pane`], the user's client).
+    fn supervision_acknowledge(
+        &self,
+        finding_id: &str,
+        by: &Acknowledger,
+    ) -> Result<SupervisionFinding, WorkerError> {
         let number = finding_number(finding_id).ok_or_else(|| {
             WorkerError::NotFound(format!("{finding_id} is not a supervision finding id"))
         })?;
-        let outcome = self
-            .supervision_store()?
-            .transaction(|tx| acknowledge(tx, number, now_ms()))
+        let store = self.supervision_store()?;
+        let outcome = store
+            .transaction(|tx| acknowledge(tx, number, by, now_ms()))
             .map_err(store_error)?;
         self.refresh_open_findings();
+        let missing = || WorkerError::NotFound(format!("no supervision finding {}", id_of(number)));
         match outcome {
-            None => Err(WorkerError::NotFound(format!(
-                "no supervision finding {}",
-                id_of(number)
-            ))),
-            Some(_) => Ok(()),
+            None => Err(missing()),
+            Some(_) => store
+                .read(|conn| finding_by_number(conn, number))
+                .map_err(store_error)?
+                .ok_or_else(missing),
         }
+    }
+
+    /// `supervise.acknowledge`: only from `pane_id` (its public id) while it
+    /// holds the herdr repository's coordination tenure. Acknowledging a
+    /// finding that is not open changes nothing and answers it as it is.
+    pub(crate) fn supervision_acknowledge_from_pane(
+        &self,
+        finding_id: &str,
+        pane_id: Option<&str>,
+    ) -> Result<SupervisionFinding, WorkerError> {
+        let Some(pane) = pane_id else {
+            return Err(ack_refused(finding_id, "HERDR_PANE_ID is not set"));
+        };
+        let tenure = self.coordinator_of_pane(pane).ok_or_else(|| {
+            ack_refused(
+                finding_id,
+                &format!("pane {pane} holds no coordination tenure"),
+            )
+        })?;
+        if !is_herdr_repository(&tenure.repo) {
+            return Err(ack_refused(
+                finding_id,
+                &format!(
+                    "pane {pane} coordinates {} ({})",
+                    tenure.repo, tenure.coordinator_id
+                ),
+            ));
+        }
+        self.supervision_acknowledge(
+            finding_id,
+            &Acknowledger::Coordinator(tenure.coordinator_id),
+        )
     }
 
     /// The finding's `?` entry as the answer dialog shows it.
@@ -1076,17 +1268,33 @@ impl WorkerSupervisor {
         })
     }
 
-    /// An answer to a finding's `?` entry, whatever it says (Acknowledge,
-    /// or a denial from the dialog): acknowledges the finding.
-    pub(super) fn answer_finding_question(
+    /// The user's answer to a finding's `?` entry from their own client,
+    /// whatever it says (Acknowledge, or a denial from the dialog):
+    /// acknowledges the finding.
+    pub(crate) fn answer_finding_question_from_client(
         &self,
         worker_id: &str,
         request_id: &str,
         _decision: Option<WorkerDecision>,
     ) -> Result<WorkerInfo, WorkerError> {
         let finding = find_open(worker_id, request_id)?;
-        self.supervision_acknowledge(&finding.finding_id)?;
+        self.supervision_acknowledge(&finding.finding_id, &Acknowledger::User)?;
         finding_reply(worker_id, finding.repo.as_deref())
+    }
+
+    /// An answer to a finding's `?` entry from anywhere but the user's
+    /// client (`worker.answer`, `worker.deny_and_stop` on the API): refused,
+    /// naming who may acknowledge it.
+    pub(super) fn refuse_finding_answer(
+        &self,
+        worker_id: &str,
+        request_id: &str,
+    ) -> Result<WorkerInfo, WorkerError> {
+        let finding = find_open(worker_id, request_id)?;
+        Err(ack_refused(
+            &finding.finding_id,
+            "an answer through the API is not the user's click",
+        ))
     }
 
     /// What escalating a finding's `?` entry replies: it is the user's
@@ -1145,6 +1353,7 @@ mod tests {
             state_seq: Some(41),
             turn_closed: false,
             background_tasks: Some(0),
+            wait_edges: Some(0),
             asks_user: false,
             limited: false,
             running_jobs: Vec::new(),
@@ -1384,7 +1593,9 @@ mod tests {
         assert_eq!(holding[0].status, SupervisionStatus::Open);
 
         // Acknowledged, it stays acknowledged while it holds.
-        supervisor.supervision_acknowledge(&id).unwrap();
+        supervisor
+            .supervision_acknowledge(&id, &Acknowledger::User)
+            .unwrap();
         assert_eq!(record(&supervisor, &idle, 3000), Changes::default());
         let holding = supervisor.supervision_findings(false).unwrap();
         assert_eq!(holding[0].status, SupervisionStatus::Acknowledged);
@@ -1451,7 +1662,9 @@ mod tests {
         };
         let opened = record(&supervisor, &disk(10 * GIB), 1000);
         let id = opened.opened[0].finding_id.clone();
-        supervisor.supervision_acknowledge(&id).unwrap();
+        supervisor
+            .supervision_acknowledge(&id, &Acknowledger::User)
+            .unwrap();
         // Lower again but still a warning: nothing new.
         assert_eq!(
             record(&supervisor, &disk(9 * GIB), 2000),
@@ -1463,6 +1676,7 @@ mod tests {
         assert_eq!(finding.finding_id, id);
         assert_eq!(finding.severity, SupervisionSeverity::Critical);
         assert_eq!(finding.status, SupervisionStatus::Open);
+        assert_eq!(finding.acknowledged_by, None);
         // Back to a warning does not lower it.
         assert_eq!(
             record(&supervisor, &disk(9 * GIB), 4000),
@@ -1495,19 +1709,18 @@ mod tests {
         );
 
         supervisor
-            .answer_finding_question(&entry.worker_id, &entry.question.request_id, None)
+            .answer_finding_question_from_client(&entry.worker_id, &entry.question.request_id, None)
             .unwrap();
         assert!(pending_questions()
             .iter()
             .all(|pending| pending.question.request_id != entry.question.request_id));
         let gone = supervisor
-            .answer_finding_question(&entry.worker_id, &entry.question.request_id, None)
+            .answer_finding_question_from_client(&entry.worker_id, &entry.question.request_id, None)
             .unwrap_err();
         assert!(matches!(gone, WorkerError::QuestionGone(_)), "{gone:?}");
-        assert_eq!(
-            supervisor.supervision_findings(false).unwrap()[0].status,
-            SupervisionStatus::Acknowledged
-        );
+        let holding = supervisor.supervision_findings(false).unwrap();
+        assert_eq!(holding[0].status, SupervisionStatus::Acknowledged);
+        assert_eq!(holding[0].acknowledged_by.as_deref(), Some("user"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1528,7 +1741,7 @@ mod tests {
         let notices = super::super::take_user_notices();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].title.starts_with("Supervision finding f-1"));
-        let report = supervisor.supervision_report(false).unwrap();
+        let report = supervisor.supervision_report(false, None).unwrap();
         assert_eq!(report.trigger.as_deref(), Some("timer"));
         assert_eq!(report.findings.len(), 1);
         assert_eq!(
@@ -1551,15 +1764,295 @@ mod tests {
         stuck.status = AgentStatus::Idle;
         supervisor.supervision_sweep("timer", vec![stuck]).unwrap();
         assert!(super::super::take_user_notices().is_empty());
-        let report = supervisor.supervision_report(false).unwrap();
+        let report = supervisor.supervision_report(false, None).unwrap();
         assert!(report.findings.is_empty());
         assert_eq!(
             report.coordinators[0].note.as_deref(),
             Some(CANNOT_ESTABLISH_PROGRESS)
         );
         assert_eq!(
-            supervisor.supervision_report(true).unwrap().findings.len(),
+            supervisor
+                .supervision_report(true, None)
+                .unwrap()
+                .findings
+                .len(),
             1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_wait_on_another_panes_job_is_a_wait_edge_not_an_untracked_shell() {
+        // Two background tasks, both herdr-job waits with a live record
+        // (`bg_waits`): one on a job in a worker's tab, which the pane's own
+        // running jobs do not show.
+        let mut waiting = coordinator(AgentStatus::Idle);
+        waiting.pane.as_mut().unwrap().background_tasks = Some(2);
+        waiting.pane.as_mut().unwrap().wait_edges = Some(2);
+        assert!(predicates(&facts(vec![waiting.clone()], Vec::new())).is_empty());
+
+        // One of them is a plain shell: one untracked task.
+        let mut one = waiting.clone();
+        one.pane.as_mut().unwrap().wait_edges = Some(1);
+        let found = evaluate(&facts(vec![one], Vec::new()));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].predicate, SupervisionPredicate::UntrackedShell);
+        assert!(
+            found[0].summary.contains("1 of 2 background task"),
+            "{}",
+            found[0].summary
+        );
+        assert!(found[0]
+            .evidence
+            .facts
+            .contains(&"wait_edges: 1".to_owned()));
+
+        // Unknown edges (no `bg_waits` reported) count as none.
+        let mut unknown = waiting;
+        unknown.pane.as_mut().unwrap().wait_edges = None;
+        assert_eq!(
+            predicates(&facts(vec![unknown], Vec::new())),
+            vec![SupervisionPredicate::UntrackedShell]
+        );
+    }
+
+    /// A directory whose `Cargo.toml` names the package `herdr`.
+    fn herdr_checkout(root: &std::path::Path) -> String {
+        let dir = root.join("herdr");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"herdr\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        dir.display().to_string()
+    }
+
+    #[test]
+    fn only_the_user_or_the_herdr_coordinator_acknowledges_a_finding() {
+        use crate::api::schema::{WorkerAnswerParams, WorkerDenyAndStopParams};
+        let (supervisor, root) = supervisor("authority");
+        let idle = evaluate(&facts(vec![coordinator(AgentStatus::Idle)], Vec::new()));
+        record(&supervisor, &idle, 1000);
+        supervisor.refresh_open_findings();
+        let entry = pending_questions()
+            .into_iter()
+            .find(|pending| pending.cwd == "/repo")
+            .unwrap();
+        let id = entry.worker_id.trim_start_matches(WORKER_PREFIX).to_owned();
+        let answer = WorkerAnswerParams {
+            worker_id: entry.worker_id.clone(),
+            request_id: Some(entry.question.request_id.clone()),
+            decision: None,
+            answers: vec![ACKNOWLEDGE.into()],
+            message: None,
+            command_id: None,
+        };
+
+        // A worker's or another agent's answer through the API: refused,
+        // naming who may.
+        let refused = supervisor.answer(&answer).unwrap_err();
+        assert_eq!(refused.code(), "finding_ack_refused", "{refused}");
+        assert!(refused.to_string().contains("only the user"), "{refused}");
+        assert!(
+            refused.to_string().contains("herdr supervise --ack"),
+            "{refused}"
+        );
+        let stop = WorkerDenyAndStopParams {
+            worker_id: entry.worker_id.clone(),
+            request_id: entry.question.request_id.clone(),
+            message: None,
+        };
+        assert_eq!(
+            supervisor.deny_and_stop(&stop).unwrap_err().code(),
+            "finding_ack_refused"
+        );
+
+        // `supervise.acknowledge` without a pane, from a pane without a
+        // tenure and from another repository's coordinator: refused.
+        for pane in [None, Some("w9:p9")] {
+            assert_eq!(
+                supervisor
+                    .supervision_acknowledge_from_pane(&id, pane)
+                    .unwrap_err()
+                    .code(),
+                "finding_ack_refused",
+                "{pane:?}"
+            );
+        }
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        supervisor
+            .coordinator_start(&other.display().to_string(), "w2:p1", None)
+            .unwrap();
+        let refused = supervisor
+            .supervision_acknowledge_from_pane(&id, Some("w2:p1"))
+            .unwrap_err();
+        assert_eq!(refused.code(), "finding_ack_refused");
+        assert!(
+            refused.to_string().contains(&other.display().to_string()),
+            "{refused}"
+        );
+        assert_eq!(
+            supervisor.supervision_findings(false).unwrap()[0].status,
+            SupervisionStatus::Open
+        );
+
+        // The herdr repository's coordinator acknowledges it.
+        let herdr = herdr_checkout(&root);
+        let tenure = supervisor.coordinator_start(&herdr, "w3:p1", None).unwrap();
+        let acknowledged = supervisor
+            .supervision_acknowledge_from_pane(&id, Some("w3:p1"))
+            .unwrap();
+        assert_eq!(acknowledged.status, SupervisionStatus::Acknowledged);
+        assert_eq!(
+            acknowledged.acknowledged_by,
+            Some(format!("coordinator {}", tenure.coordinator_id))
+        );
+        assert!(pending_questions()
+            .iter()
+            .all(|pending| pending.question.request_id != entry.question.request_id));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_user_acknowledges_from_their_own_client() {
+        use crate::api::schema::WorkerDenyAndStopParams;
+        let (supervisor, root) = supervisor("client");
+        let idle = evaluate(&facts(vec![coordinator(AgentStatus::Idle)], Vec::new()));
+        record(&supervisor, &idle, 1000);
+        supervisor.refresh_open_findings();
+        let entry = pending_questions()
+            .into_iter()
+            .find(|pending| pending.cwd == "/repo")
+            .unwrap();
+        // The dialog's Stop on a finding: no worker to stop, acknowledged.
+        supervisor
+            .deny_and_stop_from_client(&WorkerDenyAndStopParams {
+                worker_id: entry.worker_id.clone(),
+                request_id: entry.question.request_id.clone(),
+                message: None,
+            })
+            .unwrap();
+        let holding = supervisor.supervision_findings(false).unwrap();
+        assert_eq!(holding[0].status, SupervisionStatus::Acknowledged);
+        assert_eq!(holding[0].acknowledged_by.as_deref(), Some("user"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn findings_reach_the_herdr_coordinators_inbox_and_its_reads_mark_them_seen() {
+        let (supervisor, root) = supervisor("inbox");
+        let herdr = herdr_checkout(&root);
+        let tenure = supervisor.coordinator_start(&herdr, "w1:p1", None).unwrap();
+        let mut stuck = pane("w4:p2", AgentStatus::Working);
+        stuck.turn_closed = true;
+        let _ = super::super::take_user_notices();
+
+        supervisor
+            .supervision_sweep("timer", vec![stuck.clone()])
+            .unwrap();
+        // The herdr checkout's disk may be low too: look at the pane's.
+        let finding = supervisor
+            .supervision_findings(false)
+            .unwrap()
+            .into_iter()
+            .find(|finding| finding.predicate == SupervisionPredicate::WorkingAfterStop)
+            .unwrap();
+        let notices = super::super::take_user_notices();
+        let notice = notices
+            .iter()
+            .find(|notice| {
+                notice
+                    .title
+                    .starts_with(&format!("Supervision finding {} ", finding.finding_id))
+                    || notice.title == format!("Supervision finding {}", finding.finding_id)
+            })
+            .unwrap_or_else(|| panic!("{notices:?}"));
+        // Pointed at the herdr coordinator's pane, as a report is.
+        assert_eq!(notice.pane_id.as_deref(), Some("w1:p1"));
+        assert!(!notice.title.contains("no herdr coordinator"), "{notice:?}");
+
+        // Another pane's read marks nothing.
+        let report = supervisor.supervision_report(false, Some("w4:p2")).unwrap();
+        assert_eq!(
+            report.herdr_coordinator_id.as_deref(),
+            Some(tenure.coordinator_id.as_str())
+        );
+        let unseen = |report: &SupervisionReport| {
+            report
+                .findings
+                .iter()
+                .find(|shown| shown.finding_id == finding.finding_id)
+                .unwrap()
+                .coordinator_seen_by
+                .clone()
+        };
+        assert_eq!(unseen(&report), None);
+        // The herdr coordinator's read shows it unseen, then marks it.
+        let first = supervisor.supervision_report(false, Some("w1:p1")).unwrap();
+        assert_eq!(unseen(&first), None);
+        let second = supervisor.supervision_report(false, None).unwrap();
+        assert_eq!(unseen(&second), Some(tenure.coordinator_id.clone()));
+        let seen = second
+            .findings
+            .iter()
+            .find(|shown| shown.finding_id == finding.finding_id)
+            .unwrap();
+        assert!(seen.coordinator_seen_ms.is_some());
+        // A seen event was recorded, once: a later read marks nothing new.
+        supervisor.supervision_report(false, Some("w1:p1")).unwrap();
+        let seen_events: i64 = supervisor
+            .supervision_store()
+            .unwrap()
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT count(*) FROM events WHERE type = 'supervision.finding'
+                     AND worker_id = ?1 AND body LIKE '%\"change\":\"seen\"%'",
+                    [format!("supervision:{}", finding.finding_id)],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(seen_events, 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_escalation_clears_the_coordinators_seen_mark() {
+        let (supervisor, root) = supervisor("escalate-seen");
+        let disk = |free_bytes| {
+            let mut facts = facts(Vec::new(), Vec::new());
+            facts.disks = vec![DiskFacts {
+                repo: "/repo".into(),
+                free_bytes,
+            }];
+            evaluate(&facts)
+        };
+        let id = record(&supervisor, &disk(10 * GIB), 1000).opened[0]
+            .finding_id
+            .clone();
+        supervisor
+            .supervision_store()
+            .unwrap()
+            .transaction(|tx| mark_seen(tx, "c-herdr", 1500))
+            .unwrap();
+        assert_eq!(
+            supervisor.supervision_findings(false).unwrap()[0]
+                .coordinator_seen_by
+                .as_deref(),
+            Some("c-herdr")
+        );
+        let escalated = record(&supervisor, &disk(GIB), 2000);
+        assert_eq!(escalated.escalated[0].finding_id, id);
+        assert_eq!(escalated.escalated[0].coordinator_seen_by, None);
+        assert_eq!(escalated.escalated[0].coordinator_seen_ms, None);
+        // A notice without a herdr coordinator goes to the user.
+        let notice = notice(&escalated.escalated[0], true, None);
+        assert_eq!(notice.pane_id, None);
+        assert!(
+            notice.title.ends_with("(no herdr coordinator)"),
+            "{notice:?}"
         );
         let _ = std::fs::remove_dir_all(root);
     }
