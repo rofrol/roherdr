@@ -52,6 +52,92 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   coordinator grant a worker "run deploy.sh on host X" with ssh to X, not
   ssh to host Y.
 
+- [ ] The aarch64 musl build links again, and a partial build is never [t-i7xfozha]
+  deployed (the user via the chat-hosted coordinator, 2026-10-12: "sloppy
+  work; ask the models"). Manual build run 38183050127 on aa18b74f: x86_64
+  musl linked, aarch64 musl failed: `sqlite3.c: undefined reference to
+  'open64'`: since rusqlite `bundled` (863987ae, 2026-10-08) cc-rs compiles
+  SQLite with the glibc cross gcc (`aarch64-linux-gnu-gcc`, also the
+  linker), and musl 1.2.4+ has no LFS64 symbols; chat-hosted's deploy
+  picked the latest successful run and kept deploying an old build.
+  Round 20261012-011805-8b53 (sol, DeepSeek agreeing; MiMo refused the
+  brief), decided:
+  1. Both musl targets compile C and link with Zig (already in the job):
+     wrapper scripts running `zig cc -target <arch>-linux-musl`, set as
+     the target's CC (cc-rs) and Cargo linker (and AR if needed), in the
+     fork's own workflows (build-artifacts-manual, fork-release);
+     upstream's preview/release copies stay untouched. Rejected:
+     `-D_LARGEFILE64_SOURCE` (hides the libc mismatch), dropping aarch64.
+  2. A failed target fails the run (`fail-fast: false`, no
+     continue-on-error); a publish step runs only when every target built.
+  3. Every artifact carries its commit (`--build-commit`, the asset name
+     or BUILD_INFO); consumers request an exact commit and target and fail
+     when it is missing, never "latest successful" (chat-hosted's
+     deploy.sh is that coordinator's; tell it).
+  4. A link check of the real binary for both musl targets (no INTERP or
+     NEEDED, a qemu-aarch64 smoke of `--build-commit`) on changes to
+     Cargo.toml, Cargo.lock, build.rs or the workflows.
+
+- [ ] The coordinator allowlist denies in shadow mode when the server [t-5sazb4ty]
+  answers slowly (found 2026-10-11: a plain `VAR=...; cmd` was denied in
+  the herdr coordinator's tab although the mode is shadow). The Claude
+  hook's `ask_server` uses a 0.5 s socket timeout and treats any failure
+  as "herdr cannot say", which denies; under load (verify runs) the
+  answer can take longer. Fix: the hook knows the mode without a round
+  trip that can time out (the server writes the mode into the integration
+  state when it changes, or the hook reads the config), shadow and off never
+  deny, and the refusal request waits for the server's answer (a timeout is
+  a fixed delay deciding an outcome: Rule 10); `enforce` with herdr down
+  still denies, as decided. Follows from t-svsyvp3s.
+  The user, 2026-10-11: "a 0.5 s limit: what async workaround is this?
+  ask the models". Round 20261011-151651-5aeb (sol, MiMo, DeepSeek,
+  agreeing): the 0.5 s `settimeout` (9 places in the Claude hook, inherited
+  from upstream's first integration) is a forbidden workaround where it
+  decides an outcome (shadow becomes deny; reports are silently lost) and an
+  unmeasured magic number where it only bounds a wait. Decided, in order:
+  1. The hook reads the allowlist mode from a local file herdr publishes
+     atomically when the config changes; shadow and off never deny; enforce
+     with herdr unavailable says "herdr unavailable", not a policy refusal.
+  2. Turn and state reports (Stop, UserPromptSubmit, ...) are appended to a
+     durable local spool (idempotent ids, bounded size) before any send;
+     the server drains and acknowledges them and reconciles pane state on
+     start; the hook's wait ends on the local append, never on `recv`.
+     Addresses lost Stops behind stuck `working` without proving it.
+  3. Decision calls (allowlist, stop check, gate) end on the answer, EOF or
+     a connect error (ECONNREFUSED/ENOENT are immediate); Claude Code's own
+     10 s hook deadline is the only external bound; an unavailable server
+     maps to each gate's documented fallback.
+  4. Remove `settimeout(0.5)`; measure connect/answer latency instead of
+     guessing bounds.
+  Points 1, 3 and 4 landed 2026-10-11 (b5b7ae75): the Claude hook reads the
+  allowlist mode from `<socket>.allowlist-mode` (published atomically) or the
+  answer; shadow and off never deny; enforce without herdr says "Herdr
+  unavailable"; no `settimeout(0.5)`: decisions wait for the answer, EOF or a
+  connect error, reports end once sent; latency logged to
+  claude-hook-calls.jsonl. Left: point 2, the durable report spool.
+
+- [ ] Slim TODO.md into a compact index and merge overlapping items (the [t-geyiws7o]
+  user, 2026-10-12, d-llnxblhd: after a TODO analysis with the models,
+  round of 2026-10-12, sol, MiMo, DeepSeek agreeing on the structure).
+  Each open item keeps: its title and id, the approved outcome, who asked
+  and when (one line), depends-on, done-when, the next slice, and open
+  points; everything else (incident narratives, round transcripts and
+  per-model votes, closed slices, landed commits) moves to DECISIONS.md
+  under a heading with the item's id, and the item links to it. Merge,
+  keeping every distinct requirement and both ids: supervision ("A
+  supervision report over all coordinators", "Supervision delivers its
+  findings", "A pane worker's verdict was never recorded"); worker waits
+  ("Event-driven worker waits", the `agent wait --timeout` failure,
+  "Waiting for a pane worker's final report", the flickering detected
+  state); the stop check ("counts every remaining item" and "asks to
+  renew a question raised in the same turn"). Close `todo run serves a
+  coordinator that owns two repositories` [t-o73wcaoq] as superseded by
+  the user's one-coordinator-per-repository decision (d-33kat4ps). Verify
+  before closing anything else: the models proposed closing items whose
+  decided work remains (the README line of the naming item, the TODO
+  tracker plan). Edit only with scripts/todo_edit.py; one commit per
+  section; every other item and heading unchanged in meaning.
+
 - [ ] Supervision delivers its findings: it wakes the owning coordinator [t-due4cu42]
   (the user, 2026-10-12: "and how does supervision work? ask the
   models"). Audit at 01:29: 8 open findings, 7 of them the chat-hosted
@@ -111,32 +197,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repositories' own coordinators, see the item on waiting on another
   coordinator.
 
-- [ ] The aarch64 musl build links again, and a partial build is never [t-i7xfozha]
-  deployed (the user via the chat-hosted coordinator, 2026-10-12: "sloppy
-  work; ask the models"). Manual build run 38183050127 on aa18b74f: x86_64
-  musl linked, aarch64 musl failed: `sqlite3.c: undefined reference to
-  'open64'`: since rusqlite `bundled` (863987ae, 2026-10-08) cc-rs compiles
-  SQLite with the glibc cross gcc (`aarch64-linux-gnu-gcc`, also the
-  linker), and musl 1.2.4+ has no LFS64 symbols; chat-hosted's deploy
-  picked the latest successful run and kept deploying an old build.
-  Round 20261012-011805-8b53 (sol, DeepSeek agreeing; MiMo refused the
-  brief), decided:
-  1. Both musl targets compile C and link with Zig (already in the job):
-     wrapper scripts running `zig cc -target <arch>-linux-musl`, set as
-     the target's CC (cc-rs) and Cargo linker (and AR if needed), in the
-     fork's own workflows (build-artifacts-manual, fork-release);
-     upstream's preview/release copies stay untouched. Rejected:
-     `-D_LARGEFILE64_SOURCE` (hides the libc mismatch), dropping aarch64.
-  2. A failed target fails the run (`fail-fast: false`, no
-     continue-on-error); a publish step runs only when every target built.
-  3. Every artifact carries its commit (`--build-commit`, the asset name
-     or BUILD_INFO); consumers request an exact commit and target and fail
-     when it is missing, never "latest successful" (chat-hosted's
-     deploy.sh is that coordinator's; tell it).
-  4. A link check of the real binary for both musl targets (no INTERP or
-     NEEDED, a qemu-aarch64 smoke of `--build-commit`) on changes to
-     Cargo.toml, Cargo.lock, build.rs or the workflows.
-
 - [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
   (the user, 2026-10-12, rejecting a herdr-managed cross-repository
   handover: "I don't like this; there is supposed to be a coordinator per
@@ -190,44 +250,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   acknowledged; the coordinator's turn-end message; `herdr-job run --step`
   markers; pi has no wait edges (no Stop hook); the step start is unknown
   after a server restart until the next step; a render-scale bench.
-
-- [ ] The coordinator allowlist denies in shadow mode when the server [t-5sazb4ty]
-  answers slowly (found 2026-10-11: a plain `VAR=...; cmd` was denied in
-  the herdr coordinator's tab although the mode is shadow). The Claude
-  hook's `ask_server` uses a 0.5 s socket timeout and treats any failure
-  as "herdr cannot say", which denies; under load (verify runs) the
-  answer can take longer. Fix: the hook knows the mode without a round
-  trip that can time out (the server writes the mode into the integration
-  state when it changes, or the hook reads the config), shadow and off never
-  deny, and the refusal request waits for the server's answer (a timeout is
-  a fixed delay deciding an outcome: Rule 10); `enforce` with herdr down
-  still denies, as decided. Follows from t-svsyvp3s.
-  The user, 2026-10-11: "a 0.5 s limit: what async workaround is this?
-  ask the models". Round 20261011-151651-5aeb (sol, MiMo, DeepSeek,
-  agreeing): the 0.5 s `settimeout` (9 places in the Claude hook, inherited
-  from upstream's first integration) is a forbidden workaround where it
-  decides an outcome (shadow becomes deny; reports are silently lost) and an
-  unmeasured magic number where it only bounds a wait. Decided, in order:
-  1. The hook reads the allowlist mode from a local file herdr publishes
-     atomically when the config changes; shadow and off never deny; enforce
-     with herdr unavailable says "herdr unavailable", not a policy refusal.
-  2. Turn and state reports (Stop, UserPromptSubmit, ...) are appended to a
-     durable local spool (idempotent ids, bounded size) before any send;
-     the server drains and acknowledges them and reconciles pane state on
-     start; the hook's wait ends on the local append, never on `recv`.
-     Addresses lost Stops behind stuck `working` without proving it.
-  3. Decision calls (allowlist, stop check, gate) end on the answer, EOF or
-     a connect error (ECONNREFUSED/ENOENT are immediate); Claude Code's own
-     10 s hook deadline is the only external bound; an unavailable server
-     maps to each gate's documented fallback.
-  4. Remove `settimeout(0.5)`; measure connect/answer latency instead of
-     guessing bounds.
-  Points 1, 3 and 4 landed 2026-10-11 (b5b7ae75): the Claude hook reads the
-  allowlist mode from `<socket>.allowlist-mode` (published atomically) or the
-  answer; shadow and off never deny; enforce without herdr says "Herdr
-  unavailable"; no `settimeout(0.5)`: decisions wait for the answer, EOF or a
-  connect error, reports end once sent; latency logged to
-  claude-hook-calls.jsonl. Left: point 2, the durable report spool.
 
 - [ ] A supervision report over all coordinators and their workers (user, [t-7zfjbcrf]
   2026-10-11, next: "add a process that every so often checks all
