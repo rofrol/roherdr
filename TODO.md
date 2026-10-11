@@ -310,6 +310,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ends on a question or dialog). Covered here: a blocked worker with an
   open assignment is a finding delivered to its coordinator and, when only
   the user can answer, to the user.
+  Slice 1 landed 2026-10-11 (1ac385e1): the server records pane-worker
+  verdicts (queued_command starts, assignments anchored on disk),
+  `agent.verdict`/`agent.wait_verdict`, an unsupported request exits 9,
+  herdr-job reconnects at once on a handoff, a `verdict_undelivered` finding.
+  Decided by the coordinator for slice 2: an assignment superseded by a newer
+  prompt before its own verdict closes as `superseded` (never takes the later
+  work's verdict, which would end the wrong wait); the live-handoff test the
+  worker wrote (kept in the coordinator's scratchpad) goes into
+  tests/live_handoff.rs; delivery is marked when the waiter acknowledges, not
+  when the answer is sent.
 
 - [ ] Audit herdr-job's sleeps under Rule 10 (follows from the violai [t-3ifvwy3l]
   verdict-loss report, 2026-10-11; round 20261011-153206-ca97): its
