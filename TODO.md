@@ -207,6 +207,36 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     exits at once, request-id anchoring) plus verdicts stored per assignment
     and replayed by `wait-agent --until verdict`, then A + G + F as findings
     to the coordinator; E last.
+  Third incident (violai, 2026-10-11, the user: "fix the process so the
+  supervisor catches it; ask the models"): worker w9N:p1 printed
+  `WORKER-DONE da956d6` at 13:42; the coordinator's `wait-agent --request
+  ... --until verdict` logged "herdr did not answer (server_handed_off);
+  retrying in 1 s" twice during a live handoff, then blocked until 15:30;
+  the supervisor recorded nothing. Round 20261011-153206-ca97 (sol, MiMo,
+  DeepSeek agreeing), decided:
+  - The server records the verdict itself from the worker's Stop and
+    transcript (request id, worker, time; idempotent), as the source of
+    truth; the waiter's own parsing is a fallback. Proven by a test that
+    kills the waiter before the worker finishes, hands the server off and
+    gets the verdict at once on reconnect.
+  - herdr-job treats `server_handed_off` as an answer: it reconnects at
+    once, no sleep (its 1 s backoff stays only for real transport
+    failures); a give-up is a supervisor finding, never a silent exit.
+  - Supervisor predicates, on events: a recorded verdict whose waiter is
+    still blocked (on verdict upsert and on waiter registration); a worker
+    Stop with no verdict; a waiter's exit or unregister; reconciliation at
+    server start and handoff. No delivery deadline, lease or heartbeat (the
+    models proposed them; dismissed under Rule 10).
+
+- [ ] Audit herdr-job's sleeps under Rule 10 (follows from the violai [t-3ifvwy3l]
+  verdict-loss report, 2026-10-11; round 20261011-153206-ca97): its
+  `time.sleep` sites: reconnect backoff lists (0,1,2,4,8,15,30), slot
+  polling (`SLOT_POLL_S`), the sample interval, the tab-close delay
+  (`CLOSE_OK_AFTER_S`), a 1 s lock loop, a 2 s pause. Keep a sleep only for a
+  real timer (a periodic measurement, designed backoff for genuine
+  transport failures) with the reason next to it; replace the rest with the
+  event that ends them (a blocking lock acquisition or kqueue/inotify on
+  the slot file, the tab's close acknowledgement); every give-up is loud.
 
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
