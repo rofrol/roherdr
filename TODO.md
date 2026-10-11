@@ -1715,6 +1715,11 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Billing, link a Console organization), create a workspace with a spend
   limit and an API key in it, store the key where herdr reads it
   (Keychain), and say where.
+  Done 2026-10-12 (the user approved linking, from the menu): the Max plan's
+  API credits are linked to the Console organization "Roman's Individual
+  Org"; $200 arrived, next credit Nov 8, 2026. Left for the user: log in to
+  the Console, create the workspace with a spend limit and an API key in it,
+  store the key in the Keychain.
 
 ## Proposed
 
