@@ -44,6 +44,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   - The coordinator's turn-end message names what runs and what wakes it
     ("driver installing r-x; my wait on todo wait r-x"), per the
     limited-trust rule.
+  Same for herdr-job waits (the user via the odherdr coordinator,
+  2026-10-11: "why is nothing happening?" while its 10-20 min job ran in
+  another tab; round 20261011-173444-d8b9, sol + MiMo + DeepSeek),
+  decided: (b) the coordinator's tab shows a distinct `waiting: <job>` state
+  while a wait edge exists, never the idle/done dot; (a) under its space
+  `↳ job <name> · running · since 17:30 · last output 17:33` linking to the
+  read-only log; absolute start and last-output times (no ticking clock);
+  a structured step only when the job declares one (`herdr-job run --step`
+  markers), never the raw last log line (ANSI, noise, secrets); log output
+  proves output, not progress; one log watcher per job shared by every
+  waiter, coalesced into the existing redraw; Supervision aggregates.
 
 - [ ] One consult command, so no session runs a stale model set (the user, [t-aa3mhh4e]
   2026-10-11: "why don't the coordinators ask DeepSeek too? fix it; ask
