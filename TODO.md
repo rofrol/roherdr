@@ -1615,6 +1615,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   tabs naming `--new-tab`; the todo skill says so (text edit done
   2026-10-11).
 
+- [ ] A "chrome doctor" before a Claude in Chrome task (the owner via [t-wyvdvqrk]
+  roguix-vps, 2026-10-11: "fix it; ask the models": Chrome tools worked in
+  the morning, then "Browser extension is not connected" with
+  `list_connected_browsers` []; Chrome was not running; after `open -g -a
+  "Google Chrome"` the native host started but the list stayed empty).
+  Round 20261011-174924-* (sol, MiMo, DeepSeek): a running native host only
+  proves the extension reached the local host, not that the browser is
+  bound to this session; whether one browser binds to one session at a time
+  is disputed between the models and unverified. Decided: a script
+  (`~/scripts/chrome-doctor`, in the dotfiles) that checks, in order, each
+  with its positive fact: Chrome runs; its front window is a real profile,
+  not `chrome://profile-picker` (osascript); the native host manifest points
+  to an existing `claude`; the host process is alive; then the session's
+  own `list_connected_browsers` is non-empty (select the browser if it
+  lists one) and `tabs_context_mcp` answers. The coordinator runs it in the
+  worker's session before handing over a Chrome task; on a failed step it
+  reports that step and the user's action once and stops (no retry). A
+  session may launch Chrome (`open -g`), never quit or restart it; the
+  profile picker, sign-in and enabling the extension are the user's. The
+  todo skill names the doctor step. Verify the per-session binding
+  question with two sessions.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
