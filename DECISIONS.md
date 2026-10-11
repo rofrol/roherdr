@@ -1330,3 +1330,14 @@ the coordinator: never the later work's verdict), delivery counts from the
 waiter's ack (`agent.ack_verdict`), `stopped_without_verdict` and
 undelivered verdicts are findings routed to the owning coordinator, and a
 live-handoff test.
+
+## Audit herdr-job's sleeps under Rule 10 (follows from the violai
+
+herdr-job's waits slept instead of waiting for what ends them (violai
+report, Rule 10). Slice 1 (7a4af4a0): flock slots, job-directory events
+for `wait`, server focus events for tab closing, pidfd/kqueue for `watch`.
+Slice 2 (369f2231): herdr-peer-token logs its give-up, `wait` wakes on the
+server's (re)subscription after a cold restart, CLI call bounds labelled
+`delay:` (a bound on a hung call), `herdr_ok()` gives up on stderr. Kept
+timers: the 15 s CPU sample and the transport backoffs (designed backoff).
+Left as a follow-up item: a connect between the server's bind and listen.
