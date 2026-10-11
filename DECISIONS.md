@@ -1224,3 +1224,16 @@ sol at reasoning effort medium unless `-e` overrides (the user,
 
 Duplicate of t-sjngd5gy (the try-roguix relay, 2026-10-09), closed with it
 2026-10-11 (e166cea7): DeepSeek is in the default consult set.
+
+## A pane worker stays "working" after its turn, and a prompt is
+
+A violai pane worker stayed `working` after its turn and a prompt was
+"confirmed" that never arrived (2026-10-11). Now (669ace61): a prompt
+confirmation needs an event after the typing (for Claude its
+`UserPromptSubmit`), and a prompt to a `working` pane waits for its idle
+event; a turn closed by a Stop with no background work shows screen
+`working` as idle until the next `UserPromptSubmit` (dialogs still show
+`blocked`; reset when the agent process exits). The hooks were ruled out
+(subagent events are skipped); the screen rule that fired is unknown (the
+screen was gone). The typed bytes reached the pane's PTY but never reached
+Claude (no transcript entry); where they went cannot be checked any more.
