@@ -1124,3 +1124,14 @@ user had said "choose with the models"; MiMo: a one-line policy): the
 coordinator queues the request first, then runs the round itself in the
 same turn, since a consult is a decision step, not implementation, and
 records the outcome in the item; global rule in the dotfiles (98a6921).
+
+## Waiting for a worker without shell state (user, 2026-10-08, after the
+
+A `${SEQ:+--after $SEQ}` became one argument in zsh and a worker wait
+failed at once (2026-10-08). Now (de151473) the owner's `worker wait
+--attention` without `--after` starts after its acked seq (an optional
+`caller_pane_id`, owner by pane or tenure; non-owners do not inherit it);
+`--after=SEQ` is one token and stray arguments are named; `herdr-job run`
+prints only the job id on stdout (tested, documented); AGENTS.md shows the
+loop without `--after` and the rule to pass arguments literally and treat
+a failed wait as a failure.
