@@ -1675,6 +1675,20 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      user's `/feedback` when findings accumulate (on the event, no cadence
      timer); never sent automatically.
 
+- [ ] An optional evidence-backed model review between verify and cherry-pick [t-aiizvfcy]
+  (from NVIDIA Boro's adjudication, github.com/NVIDIA/boro; the user
+  delegated the choice to the models, d-6vlqbplk, round
+  20261011-232549-57cc: sol and MiMo add, DeepSeek skip). After `verify`
+  passes, `herdr todo run` can ask a reviewer model for findings on the
+  worker's diff; each finding must cite file:line and a concrete failure
+  mechanism; a serious finding is dismissed only with evidence (a command's
+  output or file:line), and every disposition is recorded as a supervision
+  finding (merged with the supervisor's findings, not a second store).
+  Opt-in per run or per repository; it never blocks on ambiguity alone; the
+  coordinator still reads the full diff. Skipped by the same round: a
+  false-positive memory for consult rounds and baseline-plus-novel-only
+  rounds.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
