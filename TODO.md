@@ -1737,6 +1737,28 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   commit, a release tag, a rormpc commit) need ordered steps across
   repositories.
 
+- [ ] Headless workers get granted network and file access instead of a [t-dy4nxuj2]
+  pane fallback (the user via the guix coordinator, 2026-10-11: "a
+  workaround, fix it in herdr; ask the models": worker w185 was blocked by
+  the sandbox: guix.gnu.org through the proxy, ~/.config/gh, /private/tmp;
+  earlier no ssh; each time the coordinator fell back to a pane worker, and
+  w185's temp files under ~/.local/state/herdr/workers/tmp/w185/ were gone
+  after the blocked turn). Round 20261011-210835-20a3 (sol, MiMo, DeepSeek
+  agreeing), decided: build slice 2 of t-ih3cmtjf now: requested
+  capabilities (repository `.herdr/` or the task) are mapped into the
+  headless worker's Claude sandbox settings: `net.egress{hosts[:port]}` to
+  the proxy allowlist, `fs.write{paths}`, a new `fs.read{paths}` (e.g.
+  ~/.config/gh, an ssh key), ssh as host+port plus `exec{ssh}` plus the
+  key read; credential access is its own grant, separate from reaching a
+  host; a capability the sandbox cannot enforce is refused (never silently
+  widened); only the user grants, at the scope he chooses (repository or
+  run), through the `?` grant question. A preflight diffs the declared needs
+  against grants and refuses before the model runs, naming the missing
+  capability; a runtime denial returns the same structured request and
+  pauses the run (no switch to a pane). The run's temp dir is a granted
+  write root kept until the run ends, not the turn. Pane workers stay for
+  attended interactive work only; the todo skill says so when this lands.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
