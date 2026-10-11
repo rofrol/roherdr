@@ -11,6 +11,16 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] The waiting mark is the spinning circle, not the hourglass (the user, [t-v6fv2tl3]
+  2026-10-11: "⧖ waiting: we no longer use the hourglass, only the
+  spinning circle"). 5a8b6eb8 drew `⧖ waiting: <job|run>`; `⧖` also remains
+  in the waits mark (src/client/shell.rs:490, `AgentMark::Waits`), the
+  status legend's bg token example, and herdr-job/herdr-bg-badge tokens
+  and tab labels (plugins/job). Replace each with the spinning circle the
+  sidebar already animates for running work (find its frames in the
+  client; reuse its existing redraw, no new timer), keep `✓`/`!`; update
+  the legend, the plugin tests and docs.
+
 - [ ] Bump PROTOCOL_VERSION to 23 once (follows from 3f1a4f38, 2026-10-11): [t-vfznp3lo]
   version 22 shipped in roherdr-v0.9.3.1, and since then several commits
   changed the private client snapshot's bincode shape (67d6ab03, ce9d68c0,
