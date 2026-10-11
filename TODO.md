@@ -378,6 +378,10 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      fits; per-model budget about 50-60k tokens of input (MiMo). Then one
      separate integration review of cross-module paths (start, answer,
      takeover, handoff), where atomicity bugs live (sol).
+  Step 1, first module landed 2026-10-11 (6cb6395c): `status.rs` (Status,
+  questions, Direction, BrokerRecord, their tests); `apply` was already
+  pure, an effects-returning `apply` stays a follow-up. Next: `journal.rs`,
+  then `live.rs`/`process.rs`, `registry.rs`, `types.rs`, `supervisor/`.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
