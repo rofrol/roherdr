@@ -54,6 +54,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   agent's `worker answer`; (c) findings reach the herdr coordinator's
   durable inbox (the user asked that it reports to the herdr coordinator),
   as reports do, besides the user's `?` list.
+  First live report (2026-10-11 14:24, after bea6de4b): every coordinator
+  line says "cannot establish progress", also the herdr one, which was
+  `working` with an active run, and idle ones with no runnable item; the
+  label should name what is known instead (working with run X, waiting on
+  the user's decision d-..., idle with nothing runnable, waiting on job Y),
+  and keep "cannot establish progress" for the case with no such fact.
 
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
