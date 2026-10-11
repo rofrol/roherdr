@@ -11,6 +11,47 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
+  (the user via the chat-hosted coordinator, 2026-10-12: "the process is
+  failing here; ask the models"): a TUI worker refused an approved
+  production deploy because the approval came only in the coordinator's
+  task text; earlier workers accepted similar tasks (inconsistent). Round
+  20261012-013415-4126 (sol, MiMo, DeepSeek agreeing), decided:
+  1. Citing a TODO.md entry or a `herdr decision` id is not approval: both
+     are agent-writable (`decision decide --source menu` is written by the
+     coordinator itself, and so is "Next, in order"). The worker that
+     refused was right.
+  2. herdr captures the owner's AskUserQuestion answer itself (a hook
+     records the exact question, options, the selected option, session,
+     repository and time; append-only, not writable through agent
+     commands) as `source: owner-click`; records written by agents are
+     marked `agent-asserted` and never bear authority.
+  3. `herdr agent prompt` / `worker start` attach a grant id minted only
+     from an owner-click record, scoped to the repository, item, intended
+     worker, target and the operations named in the clicked option's own
+     words (never the coordinator's paraphrase); the worker checks it with
+     `herdr grant show` (server state) and refuses a wider action.
+  4. Still the owner's own word (in the worker's pane, or a herdr prompt
+     to the owner showing the exact action): no or unverifiable grant;
+     changed scope, target or consequences; irreversible steps outside
+     the grant (image prune, data deletion, secrets, permissions); anything
+     touching the trust machinery (grants, hooks, ledger, prompts).
+  5. The todo skill and global rule say this; until grants exist, a
+     coordinator tells the owner which worker pane waits for his yes.
+  Open: whether the hook can tell a real click from a forged answer
+  (state the threat model's floor).
+  Clarified 2026-10-12 (the user: "I thought the coordinator gives the
+  worker the permissions and access it needs; ask the models"; sol, MiMo,
+  DeepSeek agreeing): it does, within the owner's approval. The
+  coordinator delegates (picks the worker, the task, the subset of the
+  approved access, narrowing, order) and requests the grant; herdr checks
+  the request against the owner-click record, mints the grant and
+  enforces it; the worker checks herdr, not the text. Only something new
+  or wider (a new host, credential, path, destructive action) needs the
+  owner's click. Example: "Rebuild and deploy <a friend>'s box" lets the
+  coordinator grant a worker "run deploy.sh on host X" with ssh to X, not
+  ssh to host Y.
+
 - [ ] Supervision delivers its findings: it wakes the owning coordinator [t-due4cu42]
   (the user, 2026-10-12: "and how does supervision work? ask the
   models"). Audit at 01:29: 8 open findings, 7 of them the chat-hosted
@@ -1935,47 +1976,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   never blank; Enter/Space opens it too; the right-click menu mirrors its
   actions (takeover where a worker allows it). Rule: a line that looks
   clickable never silently does nothing.
-
-- [ ] Owner approvals reach workers as server-verified grants, not text [t-c4mmrmab]
-  (the user via the chat-hosted coordinator, 2026-10-12: "the process is
-  failing here; ask the models"): a TUI worker refused an approved
-  production deploy because the approval came only in the coordinator's
-  task text; earlier workers accepted similar tasks (inconsistent). Round
-  20261012-013415-4126 (sol, MiMo, DeepSeek agreeing), decided:
-  1. Citing a TODO.md entry or a `herdr decision` id is not approval: both
-     are agent-writable (`decision decide --source menu` is written by the
-     coordinator itself, and so is "Next, in order"). The worker that
-     refused was right.
-  2. herdr captures the owner's AskUserQuestion answer itself (a hook
-     records the exact question, options, the selected option, session,
-     repository and time; append-only, not writable through agent
-     commands) as `source: owner-click`; records written by agents are
-     marked `agent-asserted` and never bear authority.
-  3. `herdr agent prompt` / `worker start` attach a grant id minted only
-     from an owner-click record, scoped to the repository, item, intended
-     worker, target and the operations named in the clicked option's own
-     words (never the coordinator's paraphrase); the worker checks it with
-     `herdr grant show` (server state) and refuses a wider action.
-  4. Still the owner's own word (in the worker's pane, or a herdr prompt
-     to the owner showing the exact action): no or unverifiable grant;
-     changed scope, target or consequences; irreversible steps outside
-     the grant (image prune, data deletion, secrets, permissions); anything
-     touching the trust machinery (grants, hooks, ledger, prompts).
-  5. The todo skill and global rule say this; until grants exist, a
-     coordinator tells the owner which worker pane waits for his yes.
-  Open: whether the hook can tell a real click from a forged answer
-  (state the threat model's floor).
-  Clarified 2026-10-12 (the user: "I thought the coordinator gives the
-  worker the permissions and access it needs; ask the models"; sol, MiMo,
-  DeepSeek agreeing): it does, within the owner's approval. The
-  coordinator delegates (picks the worker, the task, the subset of the
-  approved access, narrowing, order) and requests the grant; herdr checks
-  the request against the owner-click record, mints the grant and
-  enforces it; the worker checks herdr, not the text. Only something new
-  or wider (a new host, credential, path, destructive action) needs the
-  owner's click. Example: "Rebuild and deploy <a friend>'s box" lets the
-  coordinator grant a worker "run deploy.sh on host X" with ssh to X, not
-  ssh to host Y.
 
 ## Proposed
 
