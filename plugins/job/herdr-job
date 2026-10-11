@@ -1634,13 +1634,33 @@ def job_waits(job_id):
 
 
 def waits_of_pane(pane):
-    """The `herdr-job wait`s the pane runs: `edges`, how many run, and `waits`,
-    one per job, each with whether its job still runs and whether the pane's
-    own job counts show that job already (the pane started it, or its tab is,
-    or nests under, the pane's tab)."""
-    edges = [edge for edge in live_edges() if edge.get("kind") == "job" and edge.get("waiter_pane") == pane]
+    """The `herdr-job wait`s and `wait-agent`s the pane runs: `edges`, how many
+    run; `waits`, one per job, each with whether its job still runs and
+    whether the pane's own job counts show that job already (the pane started
+    it, or its tab is, or nests under, the pane's tab); and `agents`, one per
+    waited agent's pane, which the sidebar resolves to that agent wherever
+    it is."""
+    mine = [edge for edge in live_edges() if edge.get("waiter_pane") == pane]
+    edges = [edge for edge in mine if edge.get("kind") == "job"]
+    # Records come in file-name order, which is random: order the agents by
+    # their earliest wait's start, then pane id, so the tooltip is stable.
+    agents = {}
+    for edge in mine:
+        target = str(edge.get("target_pane") or "")
+        if edge.get("kind") != "agent" or not target:
+            continue
+        started = edge.get("started")
+        started = float(started) if isinstance(started, (int, float)) else float("inf")
+        if target not in agents or started < agents[target]["started"]:
+            agents[target] = {"target_pane": target, "started": started}
+    agents = sorted(agents.values(), key=lambda agent: (agent["started"], agent["target_pane"]))
+    for agent in agents:
+        if agent["started"] == float("inf"):
+            agent["started"] = None
+    counted = len(edges) + sum(1 for edge in mine if edge.get("kind") == "agent")
+    result = {"edges": counted, "waits": [], "agents": agents}
     if not edges:
-        return {"edges": 0, "waits": []}
+        return result
     try:
         tabs = {tab["tab_id"]: tab for tab in list_tabs()}
     except (SystemExit, ValueError, KeyError, TypeError):
@@ -1662,7 +1682,7 @@ def waits_of_pane(pane):
         local = meta.get("owner_pane") == pane or (waiter_tab is not None and waiter_tab in (job_tab, parent_tab))
         waits[job_id] = {"job_id": job_id, "job_name": meta.get("name"), "job_tab": job_tab,
                          "started": edge.get("started"), "running": running, "local": local}
-    return {"edges": len(edges), "waits": list(waits.values())}
+    return {**result, "waits": list(waits.values())}
 
 
 def cmd_waits(args):

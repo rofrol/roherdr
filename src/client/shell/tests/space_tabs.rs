@@ -1206,6 +1206,56 @@ fn a_finished_coordinators_background_mark_names_the_workers_still_running() {
 }
 
 #[test]
+fn a_finished_coordinators_background_mark_names_the_agents_it_waits_on_wherever_they_are() {
+    let mut state = state_with_tabs(true);
+    finish_with_bg(&mut state, AgentStatus::Idle, Some("2 bg"));
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    projected.agents[0]
+        .tokens
+        .push(("bg_agents".into(), "pane_9 pane_8 pane_gone pane_9".into()));
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.label = "other space".into();
+    other.focused = false;
+    projected.workspaces.push(other);
+    for (tab_id, workspace_id, label, pane_id) in [
+        ("tab_9", "ws_2", "w-docs", "pane_9"),
+        ("tab_8", "ws_1", "w-local", "pane_8"),
+        ("tab_7", "ws_1", "w-other", "pane_7"),
+    ] {
+        let mut tab = projected.tabs[0].clone();
+        tab.tab_id = tab_id.into();
+        tab.workspace_id = workspace_id.into();
+        tab.label = label.into();
+        tab.focused = false;
+        tab.role = Some(crate::api::schema::TabRole::Worker);
+        tab.agent_status = AgentStatus::Working;
+        projected.tabs.push(tab);
+        let mut agent = projected.agents[0].clone();
+        agent.pane_id = pane_id.into();
+        agent.tab_id = tab_id.into();
+        agent.workspace_id = workspace_id.into();
+        agent.agent_status = AgentStatus::Working;
+        agent.tokens.clear();
+        agent.focused = false;
+        projected.agents.push(agent);
+    }
+    state.set_snapshot(Box::new(projected));
+    let (text, glyph) = tab_state_glyph(&mut state);
+    // The waited agents are named once each, the one in another space with
+    // that space, a gone pane not at all; a worker named there is not named
+    // again among the space's running workers.
+    assert_eq!(
+        text,
+        "finished, background work running (its bg token names it): 2 bg \
+         · waits on: w-docs (other space), w-local · workers running: w-other \
+         · click: status legend"
+    );
+    assert_eq!(glyph, '◔');
+}
+
+#[test]
 fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
     let mut state = state_with_tabs(true);
     let mut projected = state.snapshot.as_deref().expect("snapshot").clone();

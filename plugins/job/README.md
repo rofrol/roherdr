@@ -291,6 +291,10 @@ prints them). A coordinator that waits on a job in its worker's tab thus
 shows `1 bg ⧖ <job name>` while that job runs, its agent state staying idle;
 a wait on its own job is left to `$jobs`, each job counts once however many
 tasks wait on it, and a wait on a job that ended or is gone counts nothing.
+A background `herdr-job wait-agent <pane>` counts once per waited pane, and
+the hook reports those panes' ids beside `$bg` in a `bg_agents` token, so a
+hover over the finished agent's `◔` mark names the agent of each such pane,
+in whichever space it is (`waits on: w-docs (other space)`).
 
 ```json
 "Stop": [{"hooks": [{"type": "command", "command": "~/.local/bin/herdr-bg-badge", "timeout": 10}]}],

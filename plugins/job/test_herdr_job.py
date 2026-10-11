@@ -470,16 +470,35 @@ class WaitEdgeTests(unittest.TestCase):
                 stack.enter_context(JOB["wait_edge"]("job", job_id="cross"))
             stack.enter_context(JOB["wait_edge"]("agent", target_pane="p7"))
             result = self.pane_waits(states, tabs)
-        self.assertEqual(result["edges"], 6)
+        self.assertEqual(result["edges"], 7)
+        self.assertEqual([a["target_pane"] for a in result["agents"]], ["p7"])
         got = {w["job_id"]: (w["running"], w["local"]) for w in result["waits"]}
         self.assertEqual(got, {"cross": (True, False), "mine": (True, True),
                                "nested": (True, True), "ended": (False, False)})
         self.assertEqual({w["job_id"]: w["job_name"] for w in result["waits"]}["cross"], "build cross")
 
+    def test_agent_waits_name_their_panes_once_without_asking_herdr(self):
+        boom = Mock(side_effect=AssertionError("no herdr call"))
+        # Ordered by each pane's earliest wait, then pane id, never by the
+        # records' (random) file names: p9 starts first, p7 and p8 tie.
+        starts = iter([30.0, 20.0, 20.0, 10.0, 5.0])
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "p1"}), contextlib.ExitStack() as stack:
+            with patch.object(time, "time", lambda: next(starts)):
+                for target in ("p8", "p8", "p7", "p9"):
+                    stack.enter_context(JOB["wait_edge"]("agent", target_pane=target, request=None))
+                with patch.dict(os.environ, {"HERDR_PANE_ID": "p2"}):
+                    stack.enter_context(JOB["wait_edge"]("agent", target_pane="p6"))
+            with patch.dict(JOB["waits_of_pane"].__globals__, {"list_tabs": boom, "herdr": boom}):
+                result = JOB["waits_of_pane"]("p1")
+        self.assertEqual(result["edges"], 4)
+        self.assertEqual(result["waits"], [])
+        self.assertEqual([(a["target_pane"], a["started"]) for a in result["agents"]],
+                         [("p9", 10.0), ("p7", 20.0), ("p8", 20.0)])
+
     def test_a_pane_without_waits_asks_herdr_nothing(self):
         boom = Mock(side_effect=AssertionError("no herdr call"))
         with patch.dict(JOB["waits_of_pane"].__globals__, {"list_tabs": boom, "herdr": boom}):
-            self.assertEqual(JOB["waits_of_pane"]("p1"), {"edges": 0, "waits": []})
+            self.assertEqual(JOB["waits_of_pane"]("p1"), {"edges": 0, "waits": [], "agents": []})
 
     def test_a_job_that_waits_is_never_reported_idle(self):
         for waiting in (True, False):
@@ -521,6 +540,40 @@ class BgBadgeTests(unittest.TestCase):
 
     def test_without_herdr_jobs_answer_every_running_task_counts(self):
         self.assertEqual(BADGE["badge"](2, None), "2 bg")
+
+    def test_agent_waits_count_once_per_pane(self):
+        badge = BADGE["badge"]
+        agents = [{"target_pane": "p7"}, {"target_pane": "p8"}]
+        waits = {"edges": 3, "waits": [], "agents": agents}
+        # Three wait-agent tasks on two panes, beside one other task.
+        self.assertEqual(badge(4, waits), "3 bg")
+        self.assertEqual(BADGE["agent_panes"](waits), ["p7", "p8"])
+        self.assertEqual(badge(2, {"edges": 2, "waits": [self.wait("a")], "agents": agents[:1]}),
+                         "2 bg ⧖ Build a")
+
+    def report(self, tasks, waits):
+        calls = []
+        payload = io.StringIO(json.dumps({"hook_event_name": "Stop", "background_tasks": tasks}))
+        env = {"HERDR_PANE_ID": "p1", "HERDR_SOCKET_PATH": "/nonexistent"}
+        globs = BADGE["main"].__globals__
+        patches = {"job_waits": lambda _pane: waits, "log": lambda _entry: None,
+                   "HERDR": "herdr"}
+        with patch.dict(globs, patches), patch.dict(os.environ, env), patch.object(sys, "stdin", payload), \
+                patch.object(subprocess, "run", lambda cmd, **_k: calls.append(cmd)):
+            BADGE["main"]()
+        (cmd,) = calls
+        return cmd[cmd.index("claude-bg") + 1:]
+
+    def test_the_hook_reports_the_waited_panes_beside_the_count(self):
+        waits = {"edges": 1, "waits": [], "agents": [{"target_pane": "p7"}]}
+        args = self.report([{"status": "running"}], waits)
+        self.assertEqual(args, ["--token", "bg=1 bg", "--token", "bg_agents=p7",
+                                "--ttl-ms", str(BADGE["TTL_MS"])])
+        args = self.report([{"status": "running"}], {"edges": 0, "waits": []})
+        self.assertEqual(args, ["--token", "bg=1 bg", "--clear-token", "bg_agents",
+                                "--ttl-ms", str(BADGE["TTL_MS"])])
+        args = self.report([{"status": "completed"}], waits)
+        self.assertEqual(args, ["--clear-token", "bg", "--clear-token", "bg_agents"])
 
 
 @unittest.skipUnless(os.name == "posix", "herdr-job supports Unix only")

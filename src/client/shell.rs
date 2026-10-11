@@ -273,10 +273,11 @@ fn background_work(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
         .map(|(_, value)| value.trim())
 }
 
-/// What a hover over the background-work mark names: the `bg` token and,
-/// for a coordinator, the workers of its space that still run (headless
-/// ones, and worker tabs whose agent works), since its wait on a worker
-/// counts there only as a task. Built once per tab line that shows the mark.
+/// What a hover over the background-work mark names: the `bg` token, the
+/// agents it waits on in the background wherever they are (see
+/// `waited_agent_tabs`) and, for a coordinator, the other workers of its
+/// space that still run (headless ones, and worker tabs whose agent works).
+/// Built once per tab line that shows the mark.
 fn background_work_detail(
     snapshot: &crate::protocol::ClientShellSnapshot,
     agent: &crate::protocol::ClientShellAgent,
@@ -284,6 +285,20 @@ fn background_work_detail(
     use crate::api::schema::{AgentStatus, TabRole};
     let token = background_work(agent)?;
     let mut detail = token.to_owned();
+    let waited = waited_agent_tabs(snapshot, agent);
+    if !waited.is_empty() {
+        detail.push_str(" · waits on: ");
+        detail.push_str(
+            &waited
+                .iter()
+                .map(|(tab, workspace)| match workspace {
+                    Some(workspace) => format!("{} ({})", tab.label, workspace.label),
+                    None => tab.label.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
     let coordinator = snapshot
         .tabs
         .iter()
@@ -315,6 +330,7 @@ fn background_work_detail(
                         tab.agent_status,
                         AgentStatus::Working | AgentStatus::Blocked
                     )
+                    && !waited.iter().any(|(named, _)| named.tab_id == tab.tab_id)
             })
             .map(|tab| tab.label.clone());
         let workers = headless.chain(tabs).collect::<Vec<_>>();
@@ -324,6 +340,48 @@ fn background_work_detail(
         }
     }
     Some(detail)
+}
+
+/// The tabs of the agents a finished agent waits on through a background
+/// `herdr-job wait-agent <pane>`: its `bg_agents` token, which `herdr-bg-badge`
+/// reports beside `bg` as the waited panes' ids, resolved in any space (with
+/// that space when it is not the agent's own), once per tab. A pane that is
+/// gone names nothing.
+fn waited_agent_tabs<'a>(
+    snapshot: &'a crate::protocol::ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+) -> Vec<(
+    &'a crate::protocol::ClientShellTab,
+    Option<&'a crate::protocol::ClientShellWorkspace>,
+)> {
+    let Some((_, panes)) = agent.tokens.iter().find(|(key, _)| key == "bg_agents") else {
+        return Vec::new();
+    };
+    let mut tabs: Vec<(
+        &crate::protocol::ClientShellTab,
+        Option<&crate::protocol::ClientShellWorkspace>,
+    )> = Vec::new();
+    for pane in panes.split_whitespace() {
+        let Some(target) = snapshot.agents.iter().find(|target| target.pane_id == pane) else {
+            continue;
+        };
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == target.tab_id) else {
+            continue;
+        };
+        if tabs.iter().any(|(named, _)| named.tab_id == tab.tab_id) {
+            continue;
+        }
+        let workspace = (tab.workspace_id != agent.workspace_id)
+            .then(|| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == tab.workspace_id)
+            })
+            .flatten();
+        tabs.push((tab, workspace));
+    }
+    tabs
 }
 
 /// What a finished agent waits on, beyond its `AgentStatus`. A TUI presentation.
