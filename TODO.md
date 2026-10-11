@@ -404,6 +404,9 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   Step 1, second module landed 2026-10-11 (1ad6614a): `journal.rs`
   (Journal, read/parse, gap, replay, import, owner lock). Next:
   `live.rs`/`process.rs`, `registry.rs`, `types.rs`, `supervisor/`.
+  Step 1, third module landed 2026-10-11 (a371baba): `live.rs` (Input,
+  Live, Spooled, spawn_worker, Reader). Next: `registry.rs`, `types.rs`,
+  `supervisor/`.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
