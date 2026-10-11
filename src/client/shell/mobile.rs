@@ -679,6 +679,8 @@ fn mobile_items(
                 "waiting on an idle job".to_owned()
             } else if mark == AgentMark::WaitsOnJob {
                 "waiting on job".to_owned()
+            } else if mark == AgentMark::BackgroundWork {
+                "finished, background work running".to_owned()
             } else {
                 agent
                     .state_labels

@@ -67,6 +67,10 @@ pub(super) struct SpaceTabLine {
     /// shows (see [`super::worker_items`]); none on other lines, outside
     /// git, and from a server that cannot list worker runs.
     pub(super) items: Option<crate::protocol::ClientShellWorkerItems>,
+    /// What its agent's own background work is (see
+    /// `super::background_work_detail`), named on hover; set only with that
+    /// mark.
+    pub(super) background: Option<String>,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -230,7 +234,7 @@ pub(super) fn worker_state(
 /// The space a worker's line goes under: the one it was started from, else
 /// (none given, or that space is gone) the space whose directory holds the
 /// worker's, the deepest one.
-fn worker_space<'a>(
+pub(super) fn worker_space<'a>(
     snapshot: &'a ClientShellSnapshot,
     worker: &crate::protocol::ClientShellWorker,
 ) -> Option<&'a str> {
@@ -303,6 +307,7 @@ pub(super) fn worker_lines(
                     tooltip,
                 }),
                 items: None,
+                background: None,
             }
         })
         .collect()
@@ -473,9 +478,10 @@ pub(super) fn space_tab_lines_filtered(
                 .find(|square| !square.gone && kept == Some(&square.tab_id))
                 .filter(|_| !unfolded)
                 .cloned();
+            let state = tab_state(snapshot, tab);
             SpaceTabLine {
                 tab_id: tab.tab_id.clone(),
-                state: tab_state(snapshot, tab),
+                state,
                 label: super::render::tabs::sidebar_tab_label(tab, snapshot, config),
                 agent: super::agent_launch::tab_agent(snapshot, &tab.tab_id).map(str::to_owned),
                 active: active_group == Some(tab.tab_id.as_str()),
@@ -494,6 +500,7 @@ pub(super) fn space_tab_lines_filtered(
                     .find(|items| items.tab_id == tab.tab_id)
                     .filter(|_| tab.role == Some(crate::api::schema::TabRole::Coordinator))
                     .cloned(),
+                background: tab_background(snapshot, tab, state),
             }
         })
         .collect::<Vec<_>>();
@@ -534,6 +541,7 @@ pub(super) fn space_tab_lines_filtered(
                 ask: None,
                 worker: None,
                 items: None,
+                background: None,
             });
         }
     }
@@ -833,10 +841,33 @@ fn tab_state(
         } else {
             AgentMark::WaitsOnJob
         }
+    } else if matches!(status, AgentStatus::Idle | AgentStatus::Done)
+        && snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.tab_id == tab.tab_id && super::background_work(agent).is_some())
+    {
+        AgentMark::BackgroundWork
     } else {
         AgentMark::None
     };
     Some((status, mark))
+}
+
+/// What the tab's background-work mark names on hover; none without it.
+fn tab_background(
+    snapshot: &ClientShellSnapshot,
+    tab: &ClientShellTab,
+    state: Option<(crate::api::schema::AgentStatus, AgentMark)>,
+) -> Option<String> {
+    if !matches!(state, Some((_, AgentMark::BackgroundWork))) {
+        return None;
+    }
+    snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id)
+        .find_map(|agent| super::background_work_detail(snapshot, agent))
 }
 
 /// The state icon of a tab line and its colour, as the sidebar draws it: the
@@ -1144,13 +1175,17 @@ pub(super) fn render_space_tab_lines(
             text: match &line.worker {
                 Some(worker) => worker.tooltip.clone(),
                 None => format!(
-                    "{} · menu › status legend",
+                    "{}{} · menu › status legend",
                     match line.state {
                         Some((status, mark)) => {
                             super::status_legend::agent_state_label(status, mark)
                         }
                         None => super::status_legend::PROGRAM_LABEL,
-                    }
+                    },
+                    line.background
+                        .as_deref()
+                        .map(|detail| format!(": {detail}"))
+                        .unwrap_or_default()
                 ),
             },
             bg: None,

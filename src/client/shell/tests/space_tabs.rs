@@ -1093,6 +1093,118 @@ fn resting_on_a_tab_state_glyph_says_what_it_means() {
     assert!(row.contains("working · menu › status legend"), "{row}");
 }
 
+/// The tab state glyph's tooltip and the glyph drawn on its line.
+fn tab_state_glyph(state: &mut ClientShellState) -> (String, char) {
+    let frame = state.compose(106, 30).unwrap();
+    let (line, _) = state.hits.space_tabs[0];
+    let target = state
+        .hits
+        .tooltips
+        .iter()
+        .find(|target| target.id.starts_with("tab-state:") && target.rect.y == line.y)
+        .expect("state glyph tooltip")
+        .clone();
+    let row = frame_rows(&frame)[target.rect.y as usize]
+        .chars()
+        .collect::<Vec<_>>();
+    (target.text, row[target.rect.x as usize])
+}
+
+fn finish_with_bg(state: &mut ClientShellState, status: AgentStatus, bg: Option<&str>) {
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].agent_status = status;
+    projected.agents[0].agent_status = status;
+    projected.agents[0].tokens = bg
+        .map(|value| vec![("bg".to_owned(), value.to_owned())])
+        .unwrap_or_default();
+    state.set_snapshot(Box::new(projected));
+}
+
+#[test]
+fn a_finished_agent_with_its_own_background_work_shows_it_until_it_ends() {
+    let mut state = state_with_tabs(true);
+    finish_with_bg(&mut state, AgentStatus::Done, Some("1 bg ⧖ Build b17"));
+    let (text, glyph) = tab_state_glyph(&mut state);
+    assert_eq!(
+        text,
+        "finished, background work running (its bg token names it): 1 bg ⧖ Build b17 \
+         · menu › status legend"
+    );
+    assert_eq!(glyph, '◔');
+    // The status stays finished, and the mark keeps its colour.
+    let snapshot = state.snapshot.as_deref().expect("snapshot");
+    let agent = &snapshot.agents[0];
+    assert!(matches!(
+        agent.agent_status,
+        AgentStatus::Done | AgentStatus::Idle
+    ));
+    let mark = super::super::agent_mark(snapshot, agent);
+    assert_eq!(mark, super::super::AgentMark::BackgroundWork);
+    assert_eq!(
+        super::super::agent_color(agent.agent_status, mark, &state.config.palette),
+        super::super::status_color(agent.agent_status, &state.config.palette)
+    );
+
+    // The next Stop lists none: back to the plain dot.
+    finish_with_bg(&mut state, AgentStatus::Done, None);
+    let (text, glyph) = tab_state_glyph(&mut state);
+    // Focused, so the client already counts it as seen.
+    let status = state.snapshot.as_deref().expect("snapshot").tabs[0].agent_status;
+    let plain = super::super::agent_icon(
+        status,
+        super::super::AgentMark::None,
+        state.config.status_indicators,
+    );
+    assert_eq!(
+        text,
+        format!(
+            "{} · menu › status legend",
+            super::super::status_legend::agent_state_label(status, super::super::AgentMark::None)
+        )
+    );
+    assert_eq!(Some(glyph), plain.chars().next());
+
+    // An empty token is no background work either.
+    finish_with_bg(&mut state, AgentStatus::Idle, Some(" "));
+    assert!(tab_state_glyph(&mut state)
+        .0
+        .starts_with("finished or waiting"));
+
+    // A working agent's token does not change its state.
+    finish_with_bg(&mut state, AgentStatus::Working, Some("2 bg"));
+    assert_eq!(
+        tab_state_glyph(&mut state).0,
+        "working · menu › status legend"
+    );
+}
+
+#[test]
+fn a_finished_coordinators_background_mark_names_the_workers_still_running() {
+    let mut state = state_with_tabs(true);
+    finish_with_bg(&mut state, AgentStatus::Idle, Some("1 bg"));
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.tabs[0].role = Some(crate::api::schema::TabRole::Coordinator);
+    for (worker_id, name, state) in [("w1", "fix login", "working"), ("w2", "old item", "exited")] {
+        projected.workers.push(crate::protocol::ClientShellWorker {
+            worker_id: worker_id.into(),
+            workspace_id: Some("ws_1".into()),
+            name: name.into(),
+            cwd: "/repo".into(),
+            state: state.into(),
+            session_id: None,
+            takeover: false,
+        });
+    }
+    state.set_snapshot(Box::new(projected));
+    let (text, glyph) = tab_state_glyph(&mut state);
+    assert_eq!(
+        text,
+        "finished, background work running (its bg token names it): 1 bg \
+         · workers running: fix login · menu › status legend"
+    );
+    assert_eq!(glyph, '◔');
+}
+
 #[test]
 fn resting_on_a_cut_tab_label_shows_it_whole_until_a_key() {
     let mut state = state_with_tabs(true);

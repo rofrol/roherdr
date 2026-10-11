@@ -13,7 +13,7 @@ use crate::config::StatusIndicatorStyle;
 
 /// Every agent state the sidebar can show, in the order the legend lists
 /// them: the plain statuses, then the marks that override a finished one.
-pub(super) const AGENT_STATES: [(AgentStatus, AgentMark); 8] = [
+pub(super) const AGENT_STATES: [(AgentStatus, AgentMark); 9] = [
     (AgentStatus::Working, AgentMark::None),
     (AgentStatus::Blocked, AgentMark::None),
     (AgentStatus::Done, AgentMark::None),
@@ -22,6 +22,8 @@ pub(super) const AGENT_STATES: [(AgentStatus, AgentMark); 8] = [
     (AgentStatus::Idle, AgentMark::AwaitsReply),
     (AgentStatus::Idle, AgentMark::WaitsOnJob),
     (AgentStatus::Idle, AgentMark::WaitsOnIdleJob),
+    // Shown in the finished colour it keeps: the dot it stands apart from.
+    (AgentStatus::Done, AgentMark::BackgroundWork),
 ];
 
 /// Job statuses in the order a group line counts them.
@@ -39,6 +41,7 @@ pub(super) fn agent_state_label(status: AgentStatus, mark: AgentMark) -> &'stati
         AgentMark::AwaitsReply => "turn ended with a question for you",
         AgentMark::WaitsOnJob => "turn ended; a job it started still runs",
         AgentMark::WaitsOnIdleJob => "turn ended; its running jobs are silent",
+        AgentMark::BackgroundWork => "finished, background work running (its bg token names it)",
         AgentMark::None => match status {
             AgentStatus::Working => "working",
             AgentStatus::Blocked => "blocked: needs input, approval or a decision",
@@ -200,6 +203,7 @@ mod tests {
                     AgentMark::AwaitsReply,
                     AgentMark::WaitsOnJob,
                     AgentMark::WaitsOnIdleJob,
+                    AgentMark::BackgroundWork,
                 ] {
                     let shown = format!(
                         "{} {}",
@@ -207,8 +211,12 @@ mod tests {
                         agent_state_label(status, mark)
                     );
                     // A mark only shows on a finished agent, so the
-                    // legend lists it once, under any finished status.
-                    if mark == AgentMark::None || status == AgentStatus::Idle {
+                    // legend lists it once, under one finished status.
+                    let listed_under = match mark {
+                        AgentMark::BackgroundWork => AgentStatus::Done,
+                        _ => AgentStatus::Idle,
+                    };
+                    if mark == AgentMark::None || status == listed_under {
                         assert!(legend.contains(&shown), "{style:?}: {shown}\n{legend}");
                     }
                 }
@@ -226,6 +234,7 @@ mod tests {
             AgentMark::AwaitsReply,
             AgentMark::WaitsOnJob,
             AgentMark::WaitsOnIdleJob,
+            AgentMark::BackgroundWork,
         ] {
             assert_eq!(
                 agent_state_label(AgentStatus::Idle, mark),
@@ -251,5 +260,9 @@ mod tests {
             "{legend}"
         );
         assert!(legend.contains("animation on"), "{legend}");
+        assert!(
+            legend.contains("◔ finished, background work running (its bg token names it) (teal)"),
+            "{legend}"
+        );
     }
 }

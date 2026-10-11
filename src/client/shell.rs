@@ -255,10 +255,84 @@ fn waits_on_idle_job(snapshot: &crate::protocol::ClientShellSnapshot, tab_id: &s
     any
 }
 
+/// What a finished agent's own background work is: its `bg` token, which
+/// Claude Code's Stop hook (`herdr-bg-badge`) reports through the pane
+/// metadata API from the last Stop's running background tasks, naming a job
+/// of another tab it waits on (`1 bg ⧖ Build b17`), and clears when that
+/// Stop lists none. None while the agent works or blocks. A TUI presentation
+/// of a server fact, not an `AgentStatus`: the status stays done or idle.
+fn background_work(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+    use crate::api::schema::AgentStatus;
+    if !matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done) {
+        return None;
+    }
+    agent
+        .tokens
+        .iter()
+        .find(|(key, value)| key == "bg" && !value.trim().is_empty())
+        .map(|(_, value)| value.trim())
+}
+
+/// What a hover over the background-work mark names: the `bg` token and,
+/// for a coordinator, the workers of its space that still run (headless
+/// ones, and worker tabs whose agent works), since its wait on a worker
+/// counts there only as a task. Built once per tab line that shows the mark.
+fn background_work_detail(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+) -> Option<String> {
+    use crate::api::schema::{AgentStatus, TabRole};
+    let token = background_work(agent)?;
+    let mut detail = token.to_owned();
+    let coordinator = snapshot
+        .tabs
+        .iter()
+        .any(|tab| tab.tab_id == agent.tab_id && tab.role == Some(TabRole::Coordinator));
+    if coordinator {
+        let headless = snapshot
+            .workers
+            .iter()
+            .filter(|worker| {
+                matches!(
+                    worker.state.as_str(),
+                    "starting" | "working" | "waiting_approval"
+                ) && space_tabs::worker_space(snapshot, worker) == Some(agent.workspace_id.as_str())
+            })
+            .map(|worker| {
+                if worker.name.is_empty() {
+                    format!("worker {}", worker.worker_id)
+                } else {
+                    worker.name.clone()
+                }
+            });
+        let tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.workspace_id == agent.workspace_id
+                    && tab.role == Some(TabRole::Worker)
+                    && matches!(
+                        tab.agent_status,
+                        AgentStatus::Working | AgentStatus::Blocked
+                    )
+            })
+            .map(|tab| tab.label.clone());
+        let workers = headless.chain(tabs).collect::<Vec<_>>();
+        if !workers.is_empty() {
+            detail.push_str(" · workers running: ");
+            detail.push_str(&workers.join(", "));
+        }
+    }
+    Some(detail)
+}
+
 /// What a finished agent waits on, beyond its `AgentStatus`. A TUI presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentMark {
     None,
+    /// Its own background work still runs (see `background_work`): drawn
+    /// apart from a plain finished dot, in the same colour.
+    BackgroundWork,
     /// A job it started still runs (see `waits_on_job`).
     WaitsOnJob,
     /// Every job it started that still runs is idle (see `waits_on_idle_job`).
@@ -281,6 +355,8 @@ fn agent_mark(
         } else {
             AgentMark::WaitsOnJob
         }
+    } else if background_work(agent).is_some() {
+        AgentMark::BackgroundWork
     } else {
         AgentMark::None
     }
@@ -326,6 +402,10 @@ fn agent_icon(
         // A job that runs but does nothing: a still `z`, "asleep". A dotted
         // ring (◌) rendered as a few faint dots and was hard to see.
         (AgentMark::WaitsOnIdleJob, _) => "z",
+        // Finished with something still going: a dot with a quarter left
+        // open, in the finished colour, so it is not read as only waiting
+        // to be looked at.
+        (AgentMark::BackgroundWork, _) => "◔",
         (AgentMark::WaitsOnJob, crate::config::StatusIndicatorStyle::Dots) => "●",
         (
             AgentMark::WaitsOnJob,
@@ -348,7 +428,7 @@ fn agent_color(
     match mark {
         AgentMark::WaitsOnJob | AgentMark::WaitsOnIdleJob => palette.mauve,
         AgentMark::AwaitsReply => status_color(crate::api::schema::AgentStatus::Done, palette),
-        AgentMark::None => status_color(status, palette),
+        AgentMark::BackgroundWork | AgentMark::None => status_color(status, palette),
     }
 }
 

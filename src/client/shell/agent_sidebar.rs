@@ -292,6 +292,8 @@ pub(super) fn agent_row(
         "waiting on an idle job"
     } else if mark == AgentMark::WaitsOnJob {
         "waiting on job"
+    } else if mark == AgentMark::BackgroundWork {
+        "finished, background work running"
     } else {
         labels
             .get(status_text(agent.agent_status))
