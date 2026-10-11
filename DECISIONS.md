@@ -1300,3 +1300,11 @@ repositories. The herdr coordinator ran that search on 2026-10-11 (.env
 files naming the old IP: cometolight, <domain>, <domain>/matchalove,
 matterz/deploy, matchalove/project1, earn-money-bot/deploy,
 work-effects-dashboard/deploy, violai/deploy) and sent it to roguix-vps.
+
+## The waiting mark is the spinning circle, not the hourglass (the user,
+
+The waiting mark was the hourglass while the UI moved to a spinning
+circle (the user, 2026-10-11). Now (bc93c50f) waiting and running marks use
+the turning job half circle (`motion::job_glyph`): the Waits mark, motion
+on wait edges; herdr-job and herdr-bg-badge write a still `◑` that the
+client turns in the bg/jobs tokens; legend, tests and docs updated.
