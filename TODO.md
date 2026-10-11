@@ -690,6 +690,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   one-line space and the "focus inside" cue for worktree parents, then
   moves the item back under Needs a decision with the variants named, so
   the user picks with a click.
+  2026-10-11 (11e9abc3): the consulted variant is built and installed as the
+  live demo: the focused collapsed space's name line gets the solid accent
+  fill, its own `collapsed_row` tokens (default workspace, git_status,
+  tab_jobs), readable glyphs on the accent, a distinct hover and a `↳`
+  "focus inside" cue for worktree parents. The user had asked for demos to
+  pick from (2026-10-06); the coordinator's task missed that, so the choice
+  is asked in "Needs a decision" against this live variant.
 
 - [ ] "Restart agents…": restart agent CLIs (Claude, pi) after they update, [t-wbgh3nrb]
   resuming their sessions, e.g. when Claude reports that a new version is
