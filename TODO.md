@@ -278,6 +278,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     Stop with no verdict; a waiter's exit or unregister; reconciliation at
     server start and handoff. No delivery deadline, lease or heartbeat (the
     models proposed them; dismissed under Rule 10).
+  Third guix report (2026-10-11, the user: "what is going on? why did you
+  wait?"): its pane worker sat on a permission prompt (`blocked`) while the
+  coordinator waited `--until working` then `--until done`, a pattern from
+  the todo skill text it had loaded before d556206 (the verdict wait, which
+  ends on a question or dialog). Covered here: a blocked worker with an
+  open assignment is a finding delivered to its coordinator and, when only
+  the user can answer, to the user.
 
 - [ ] Audit herdr-job's sleeps under Rule 10 (follows from the violai [t-3ifvwy3l]
   verdict-loss report, 2026-10-11; round 20261011-153206-ca97): its
@@ -1411,6 +1418,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   with Polish diacritics (ąćęłńóśźż) or a short list of common Polish
   words, naming the line; `herdr decision add|decide` does the same for its
   statement and answer; a test for each.
+
+- [ ] A worktree file shares its inode with the main checkout's (the guix [t-f7k7lhev]
+  coordinator, 2026-10-11): in a herdr worktree of guix-x86_64-iso-omguix
+  the gitignored `.macbook_known_hosts` has the same inode as the main
+  checkout's, so a worker's `rm` there would delete the shared file (Claude
+  Code stopped it with a permission prompt). herdr's worktree code has no
+  hard-link or clone step (checked: no `hard_link`/`clonefile` in
+  src/worktree.rs); find what created the link (the repository's own setup
+  script, a `.worktreeinclude`, Claude Code's worktree seeding) and, if it is
+  herdr's, copy instead of linking; else tell that repository's coordinator.
 
 ## Proposed
 
