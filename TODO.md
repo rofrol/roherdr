@@ -286,6 +286,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   install of run `r-fle3tkul` completed (server log: "live handoff
   completed; old server exiting" at 17:27:56). Every install of this queue
   kills other sessions' `agent wait`; raises the priority of this fix.
+  Landed 2026-10-11 (d05883cc): `herdr-job wait-agent <pane> --request <id>
+  --until verdict` ends only on the assignment's WORKER-DONE/WORKER-BLOCKED
+  or a question (inspect-then-subscribe through the new `agent.wait_change`,
+  survives restarts through the recorded assignment); exit codes: done,
+  blocked, question, 3 agent exited without a verdict, 7 WORKER-DONE names a
+  missing commit; a bare turn end never ends it. `wait-agent` on a worker
+  pane without `--request` refuses and names the verdict form. Point 9 done:
+  `agent_not_ready` names the startup dialog and its pane. Left: points 5,
+  6, 7, 8; the `todo` skill naming this wait for pane workers (a text edit
+  of the user's skill, done by the coordinator's worker next);
+  `--until background-drained` (optional, from the fourth report).
 
 - [ ] A "finished" dot on an agent whose own background work still runs [t-i5ez4yft]
   (user, 2026-10-10, about the guix-x86_64-iso-omguix pane worker: "the
