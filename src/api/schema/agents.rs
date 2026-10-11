@@ -64,7 +64,9 @@ pub struct AgentWaitChangeParams {
     pub state_change_seq: u64,
 }
 
-/// Makes `agent.prompt` wait after typing. From a non-working state it first waits for the
+/// Makes `agent.prompt` wait after typing. A prompt for an agent that is `working` is typed only
+/// once its state changes to anything else, as with `agent.prompt_confirmed`; a caller timeout
+/// before that answers `timeout` with nothing typed. After typing it first waits for the
 /// agent's acknowledgement, the same as `agent.prompt_confirmed` (the prompt's turn report, else
 /// the agent turning `working`), with no time limit of its own; then it waits for one of `until`
 /// (default `idle`, `done` or `blocked`). A dialog before the acknowledgement answers with the
@@ -287,11 +289,12 @@ pub struct AgentPromptTrackedParams {
 
 /// Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the
 /// turn report of the prompt (Claude's `UserPromptSubmit`, Pi's turn start) for an agent that
-/// reports turns, else the agent's state turning `working`. An agent already `working` when the
-/// prompt is typed has its input open and queues it, so the written submission is the
-/// acknowledgement. A dialog (`blocked`) or an agent not ready is refused before typing, naming
-/// the dialog when screen detection recognizes it; a dialog that appears after typing, before
-/// the acknowledgement, answers `agent_prompt_blocked` without typing again. It has no timeout:
+/// reports turns, else the agent's state turning `working` after the typing; a state the agent
+/// already had never counts. A prompt for an agent that is `working` waits, untyped, for its
+/// state to change to anything else (its `idle` event) and is typed then. A dialog (`blocked`)
+/// or an agent not ready is refused before typing, naming the dialog when screen detection
+/// recognizes it; a dialog that appears after typing, before the acknowledgement, answers
+/// `agent_prompt_blocked` without typing again. It has no timeout:
 /// it waits for one of these events, the agent's exit, or the caller closing the connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptConfirmedParams {

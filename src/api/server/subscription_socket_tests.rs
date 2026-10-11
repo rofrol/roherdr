@@ -701,6 +701,72 @@ fn prompt_confirmed_without_an_acknowledgement_waits_until_the_agent_exits() {
     assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
 }
 
+#[test]
+fn prompt_confirmed_types_into_a_working_agent_only_after_its_idle_event() {
+    // The reported bug: a pane still read `working` after its turn ended, and the prompt was
+    // confirmed at once although it never arrived.
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "working", 1);
+    // Read again after the event cursor is taken: still working, so nothing is typed.
+    reply_agent(&mut test, "working", 1);
+    // An event about the pane only makes it read the agent again; still nothing is typed.
+    test.hub.push(pane_updated());
+    reply_agent(&mut test, "working", 1);
+    // The idle event: now it types.
+    test.hub.push(status_changed(AgentStatus::Idle));
+    reply_agent(&mut test, "idle", 2);
+    reply_prompted(&mut test, "accepted");
+    reply_prompt_state(&mut test, "accepted", None);
+    reply_agent(&mut test, "idle", 2);
+    // A working state after the typing proves nothing for an agent that reports turns.
+    test.hub.push(status_changed(AgentStatus::Working));
+    reply_prompt_state(&mut test, "accepted", None);
+    reply_agent(&mut test, "working", 3);
+    // Only the `UserPromptSubmit` of this prompt does.
+    test.hub.push(pane_updated());
+    reply_prompt_state(&mut test, "working", None);
+    let response = client.response();
+    assert_eq!(response["id"], "prompt");
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+    assert_eq!(response["result"]["prompt_request"]["state"], "working");
+}
+
+#[test]
+fn prompt_confirmed_to_a_working_agent_that_exits_types_nothing() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "working", 1);
+    reply_agent(&mut test, "working", 1);
+    test.hub.push(EventEnvelope {
+        event: EventKind::PaneExited,
+        data: EventData::PaneExited {
+            pane_id: "pane_1".into(),
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    let response = client.response();
+    assert_eq!(response["error"]["code"], "agent_not_running", "{response}");
+}
+
+#[test]
+fn prompt_confirmed_to_an_agent_working_at_the_first_read_types_once_it_idles() {
+    // The turn ended between the first read and the wait: the second read sees it.
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    prompt_confirmed(&mut client);
+    reply_agent(&mut test, "working", 1);
+    reply_agent(&mut test, "idle", 2);
+    reply_prompted(&mut test, "unsupported");
+    reply_agent(&mut test, "idle", 2);
+    test.hub.push(status_changed(AgentStatus::Working));
+    reply_agent(&mut test, "working", 3);
+    let response = client.response();
+    assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+}
+
 // `agent.prompt` with `wait`: it first waits for the same acknowledgement as
 // `agent.prompt_confirmed`, with no time limit of its own.
 
@@ -813,6 +879,22 @@ fn prompt_wait_reports_stalled_when_the_caller_timeout_passes_first() {
         response["error"]["code"], "agent_prompt_stalled",
         "{response}"
     );
+}
+
+#[test]
+fn prompt_wait_to_a_working_agent_times_out_without_typing() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    // delay: the caller's own deadline is the behavior under test (its timeout path).
+    prompt_wait(&mut client, json!({"until": ["idle"], "timeout_ms": 1000}));
+    reply_agent(&mut test, "working", 1);
+    reply_agent(&mut test, "working", 1);
+    // The caller's own deadline passes while the agent works: one last read, and no prompt.
+    reply_agent(&mut test, "working", 1);
+    let response = client.response();
+    assert_eq!(response["error"]["code"], "timeout", "{response}");
+    let message = response["error"]["message"].as_str().unwrap();
+    assert!(message.contains("nothing was typed"), "{message}");
 }
 
 // `agent.wait_change`: the app answers each agent read; the wait answers once the agent's

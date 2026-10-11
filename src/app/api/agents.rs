@@ -1573,6 +1573,75 @@ mod tests {
         assert!(finished_toast(&mut app));
     }
 
+    #[tokio::test]
+    async fn screen_activity_after_the_stop_never_reopens_the_turn() {
+        // The reported bug: Claude's recap runs as a subagent after the `Stop`
+        // (`SubagentStop` two seconds later, its hooks carry `agent_id` and report nothing),
+        // and the pane read `working` for sixteen minutes after the turn ended.
+        let mut app = app_with_agent();
+        let (pane, _rx) = claude_with_runtime(&mut app);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let set_screen = |app: &mut App, state: AgentState| {
+            app.state
+                .handle_app_event(crate::events::AppEvent::StateChanged {
+                    pane_id,
+                    agent: Some(Agent::Claude),
+                    state,
+                    visible_blocker: false,
+                    visible_working: state == AgentState::Working,
+                    process_exited: false,
+                    observed_at: std::time::Instant::now(),
+                });
+        };
+        let finish = |app: &mut App, tasks: Option<u32>| {
+            let mut params = serde_json::json!({
+                "pane_id": pane, "source": "herdr:claude", "agent": "claude",
+                "phase": "finished",
+            });
+            if let Some(tasks) = tasks {
+                params["background_tasks"] = tasks.into();
+            }
+            let response =
+                app.handle_pane_report_turn("turn".into(), serde_json::from_value(params).unwrap());
+            assert!(
+                serde_json::from_str::<SuccessResponse>(&response).is_ok(),
+                "{response}"
+            );
+        };
+        let state = |app: &App| app.state.terminals[&terminal_id].state;
+
+        report_turn(&mut app, &pane, "started", Some("add the stats"));
+        set_screen(&mut app, AgentState::Working);
+        assert_eq!(state(&app), AgentState::Working);
+
+        // The `Stop` with no background task arrives while the screen still shows the spinner.
+        finish(&mut app, Some(0));
+        assert_eq!(state(&app), AgentState::Idle);
+        // The recap subagent's spinner, and any later redraw of it, keeps the pane idle.
+        set_screen(&mut app, AgentState::Idle);
+        set_screen(&mut app, AgentState::Working);
+        assert_eq!(state(&app), AgentState::Idle);
+        // A dialog still shows.
+        set_screen(&mut app, AgentState::Blocked);
+        assert_eq!(state(&app), AgentState::Blocked);
+        set_screen(&mut app, AgentState::Working);
+        assert_eq!(state(&app), AgentState::Idle);
+
+        // A new `UserPromptSubmit` opens a turn: the screen decides again.
+        report_turn(&mut app, &pane, "started", Some("deploy it"));
+        assert_eq!(state(&app), AgentState::Working);
+
+        // A turn that ends with background work, or with no count, leaves the screen in charge.
+        finish(&mut app, Some(1));
+        assert_eq!(state(&app), AgentState::Working);
+        report_turn(&mut app, &pane, "started", Some("<task-notification>"));
+        finish(&mut app, None);
+        assert_eq!(state(&app), AgentState::Working);
+    }
+
     #[test]
     fn a_done_after_held_turns_is_delivered_once() {
         let mut app = app_with_agent();

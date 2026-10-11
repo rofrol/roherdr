@@ -1706,8 +1706,6 @@ impl App {
         };
         terminal.prompt_turns.mark_reporting(&agent_label);
         let finished = params.phase == crate::api::schema::AgentTurnPhase::Finished;
-        // The count belongs to the turn's end: a start leaves it unknown until that end.
-        terminal.report_turn_background_tasks(params.background_tasks.filter(|_| finished));
         // A turn the user started (not a continuation, not a prompt sent through the API) is
         // the user's reply: it answers the open questions.
         let answered = params.phase == crate::api::schema::AgentTurnPhase::Started
@@ -1723,6 +1721,14 @@ impl App {
                     .prompt_turns
                     .turn_finished(params.error.as_deref(), params.interrupted),
             };
+        // The count belongs to the turn's end: a start leaves it unknown until that end. The
+        // end also closes the turn, so a subagent or a stale spinner after it never shows as
+        // working until the next start (`TerminalState::report_turn_phase`).
+        self.handle_internal_event(crate::events::AppEvent::AgentTurnReported {
+            pane_id,
+            started: !finished,
+            background_tasks: params.background_tasks,
+        });
         if finished {
             changed |= self.state.release_held_completion(ws_idx, pane_id);
         }

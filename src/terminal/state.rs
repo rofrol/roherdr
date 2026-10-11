@@ -251,6 +251,12 @@ pub struct TerminalState {
     /// that turn's end (`pane.report_turn`); `None` while unknown: no end reported since the
     /// turn started, or one without a count.
     turn_background_tasks: Option<u32>,
+    /// The agent reported that its last turn ended with no background task running, and no
+    /// turn started since. Until a turn starts (Claude's `UserPromptSubmit`), what the screen
+    /// shows as `working` is no turn of the agent's (Claude's post-turn recap runs as a subagent
+    /// after the `Stop`), so the pane shows `idle`. A turn that ended with background work, or
+    /// with no count, leaves the screen in charge: a monitor wakes the agent on its own.
+    turn_closed: bool,
     /// The agent turned idle with work done while `turn_background_tasks` was above zero, so
     /// that completion and its done notification wait for a turn end that reports none.
     held_completion: bool,
@@ -310,6 +316,7 @@ impl TerminalState {
             reported_task: None,
             prompt_turns: Default::default(),
             turn_background_tasks: None,
+            turn_closed: false,
             held_completion: false,
             revision: 0,
             launch_argv: None,
@@ -629,6 +636,8 @@ impl TerminalState {
         self.fallback_visible_blocker = visible_blocker && fallback_state == AgentState::Blocked;
         self.fallback_observed_at = Some(now);
         if process_exited {
+            // The next agent's turns start from its own reports.
+            self.turn_closed = false;
             if let Some(agent) = agent {
                 self.recent_agent_process_exit = Some(RecentAgentProcessExit {
                     agent,
@@ -2956,6 +2965,7 @@ impl TerminalState {
         self.last_agent_state_change_seq = None;
         self.last_agent_completion_seq = None;
         self.turn_background_tasks = None;
+        self.turn_closed = false;
         self.held_completion = false;
         self.launch_argv = None;
         self.respawn_shell_on_exit = false;
@@ -2965,10 +2975,46 @@ impl TerminalState {
         self.clear_agent_name();
     }
 
-    /// A turn of the agent started (`None`) or ended with this many background tasks still
-    /// running (`None` when its report had no count).
-    pub fn report_turn_background_tasks(&mut self, count: Option<u32>) {
-        self.turn_background_tasks = count;
+    /// A turn of the agent started, or ended with `background_tasks` still running (`None` when
+    /// its report had no count), as its integration reported (`pane.report_turn`). An end with
+    /// no background work closes the turn: the screen's `working` shows `idle` until the next
+    /// start (see `turn_closed`). Returns the effective state change this makes.
+    pub fn report_turn_phase(
+        &mut self,
+        started: bool,
+        background_tasks: Option<u32>,
+    ) -> Option<TerminalStateMutation> {
+        self.turn_background_tasks = background_tasks.filter(|_| !started);
+        let turn_closed = !started && background_tasks == Some(0);
+        if self.turn_closed == turn_closed {
+            return None;
+        }
+        let now = Instant::now();
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        self.turn_closed = turn_closed;
+        let effective_state_change = self.recompute_effective_state(
+            previous_agent_label,
+            previous_known_agent,
+            previous_state,
+            previous_presentation,
+            now,
+        )?;
+        Some(TerminalStateMutation {
+            effective_state_change: Some(effective_state_change),
+            ..TerminalStateMutation::default()
+        })
+    }
+
+    /// Whether the screen's `working` is no turn of the agent's: the agent that reports turns
+    /// here closed its last one (see `turn_closed`).
+    fn screen_working_outside_turn(&self) -> bool {
+        self.turn_closed
+            && self
+                .prompt_turns
+                .supported_for(self.effective_agent_label())
     }
 
     /// Whether a completion now waits for the agent's background work: its last turn ended
@@ -3065,7 +3111,15 @@ impl TerminalState {
                 .as_ref()
                 .filter(|authority| self.hook_authority_is_effective(authority))
                 .map(|authority| authority.state)
-                .unwrap_or(self.fallback_state)
+                .unwrap_or_else(|| {
+                    if self.fallback_state == AgentState::Working
+                        && self.screen_working_outside_turn()
+                    {
+                        AgentState::Idle
+                    } else {
+                        self.fallback_state
+                    }
+                })
         };
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
@@ -3133,6 +3187,47 @@ mod tests {
 
         terminal.manual_label = Some("build".into());
         assert_eq!(terminal.running_label().as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn a_closed_turn_shows_screen_working_as_idle_only_for_the_reporting_agent() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        // No integration reports turns here yet: the screen decides.
+        assert!(terminal.report_turn_phase(false, Some(0)).is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(terminal.report_turn_phase(true, None).is_none());
+
+        terminal.prompt_turns.mark_reporting("claude");
+        let change = terminal
+            .report_turn_phase(false, Some(0))
+            .and_then(|mutation| mutation.effective_state_change)
+            .expect("the turn end changes the state");
+        assert_eq!(change.state, AgentState::Idle);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert_eq!(terminal.state, AgentState::Idle);
+
+        // Another agent in the pane reports no turns: its screen decides.
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    #[test]
+    fn the_agents_exit_opens_a_closed_turn() {
+        let mut terminal = test_terminal();
+        terminal.prompt_turns.mark_reporting("claude");
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal.report_turn_phase(false, Some(0));
+        terminal.set_detected_state_with_visible_blocker(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            true,
+        );
+        // A new session working before its first turn report shows as working.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert_eq!(terminal.state, AgentState::Working);
     }
 
     #[test]

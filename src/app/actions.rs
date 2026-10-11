@@ -1523,6 +1523,16 @@ impl AppState {
                     .collect()
                 }
             }
+            AppEvent::AgentTurnReported {
+                pane_id,
+                started,
+                background_tasks,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.report_turn_phase(started, background_tasks)
+                })
+                .into_iter()
+                .collect(),
             AppEvent::AgentResumeReported {
                 pane_id,
                 source,

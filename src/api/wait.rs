@@ -266,6 +266,20 @@ pub(super) fn prompt_agent(
     let deadline = wait
         .timeout_ms
         .map(|timeout_ms| wait_started + std::time::Duration::from_millis(timeout_ms));
+    let before_prompt = match await_agent_not_working(
+        &request_id,
+        &target,
+        before_prompt,
+        deadline,
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )? {
+        None => return Ok(None),
+        Some(Ok(agent)) => agent,
+        Some(Err(response)) => return Ok(Some(response)),
+    };
     if let Some(prompt_wait) = params.wait.as_mut() {
         prompt_wait.submission_deadline = deadline;
     }
@@ -340,11 +354,9 @@ pub(super) fn prompt_agent(
         }
         Some(PromptAcknowledgement::Response(response)) => return Ok(Some(response)),
     };
-    // After a prompt typed into a non-working agent, only a state reached since then answers:
+    // The prompt is typed into a non-working agent, so only a state reached since then answers:
     // the agent read when the turn report arrived may still show the state from before.
-    let after_state_change_seq = (before_prompt.agent_status
-        != crate::api::schema::AgentStatus::Working)
-        .then_some(before_prompt.state_change_seq);
+    let after_state_change_seq = Some(before_prompt.state_change_seq);
     if agent_wait_matches(&initial, &until, after_state_change_seq) {
         return agent_prompt_success(request_id, initial, prompt_request).map(Some);
     }
@@ -540,7 +552,8 @@ pub(super) fn prompt_agent_tracked(
 }
 
 /// `agent.prompt_confirmed`: types the prompt like `agent.prompt`, then answers only once the
-/// agent shows it accepted it (see `await_prompt_acknowledgement`).
+/// agent shows it accepted it (see `await_prompt_acknowledgement`). A prompt for an agent that is
+/// `working` is typed only once it is no longer working (see `await_agent_not_working`).
 ///
 /// A dialog that is on screen before typing is refused by `agent.prompt` itself; one that
 /// appears afterwards without an acknowledgement answers `agent_prompt_blocked`, and both name
@@ -565,6 +578,20 @@ pub(super) fn prompt_agent_confirmed(
                 .map(Some)
                 .map_err(std::io::Error::other);
         }
+    };
+    let before = match await_agent_not_working(
+        &request_id,
+        &target,
+        before,
+        None,
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )? {
+        None => return Ok(None),
+        Some(Ok(agent)) => agent,
+        Some(Err(response)) => return Ok(Some(response)),
     };
     // Taken before typing, so an acknowledgement that arrives while the prompt call is
     // answered is still seen below.
@@ -678,13 +705,14 @@ enum PromptAcknowledgement {
 }
 
 /// Waits until the agent shows it accepted a typed prompt. The acknowledgement is an event,
-/// never a duration:
+/// never a duration, and always one that happened after the typing:
 /// - an agent that reports turns: the followed request leaves `accepted`, which happens when
 ///   the agent reports the turn this prompt started (Claude's `UserPromptSubmit` hook);
-/// - any other agent: its state turns `working` after the prompt was typed;
-/// - an agent already `working` when the prompt is typed: its input is open and queues the
-///   prompt, so the written submission is the acknowledgement (a prompt typed into a working
-///   Pi joins its running turn and is never reported as a turn of its own).
+/// - any other agent: its state turns `working` after the prompt was typed.
+///
+/// A state the agent already had is no acknowledgement: a `working` state left over from a turn
+/// that ended (Claude's post-turn recap) once confirmed a prompt that never arrived. Callers type
+/// only into an agent that is not working (`await_agent_not_working`).
 ///
 /// A dialog that appears after typing without an acknowledgement ends it as `Blocked`. Without
 /// any of these events it waits until the agent exits, the caller disconnects, or the caller's
@@ -712,12 +740,6 @@ fn await_prompt_acknowledgement(
         mut last_event_sequence,
         deadline,
     } = wait;
-    if before.agent_status == AgentStatus::Working {
-        return Ok(Some(PromptAcknowledgement::Accepted {
-            agent: Box::new(prompted),
-            prompt_request,
-        }));
-    }
     let followed = prompt_request
         .as_ref()
         .is_some_and(|request| request.state == AgentPromptRequestState::Accepted);
@@ -854,6 +876,99 @@ fn await_prompt_acknowledgement(
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
+}
+
+/// A prompt for an agent that is `working` waits for the end of that turn, its state change to
+/// anything but `working` (the `idle` event screen detection or the agent's hooks produce), and
+/// is typed then: typed into a running turn, nothing could show that this prompt arrived. The
+/// event cursor is taken before the agent is read again, so a turn that ends between the
+/// caller's read and this wait answers at once. Answers the agent as read once it no longer
+/// works, or the response that ended the wait with nothing typed: the agent exited, or the
+/// caller's own `deadline` passed (`timeout`). Without a deadline only these events end it.
+#[allow(clippy::too_many_arguments)] // The wait needs the connection's whole context.
+fn await_agent_not_working(
+    request_id: &str,
+    target: &crate::api::schema::AgentTarget,
+    before: crate::api::schema::AgentInfo,
+    deadline: Option<std::time::Instant>,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<Result<crate::api::schema::AgentInfo, String>>> {
+    use crate::api::schema::AgentStatus;
+
+    if before.agent_status != AgentStatus::Working {
+        return Ok(Some(Ok(before)));
+    }
+    let last_event_sequence = event_hub.current_sequence();
+    let current = match agent_get(request_id, target, api_tx) {
+        Ok(agent) => agent,
+        Err(response) => {
+            return serde_json::to_string(&response)
+                .map(|response| Some(Err(response)))
+                .map_err(std::io::Error::other);
+        }
+    };
+    if !agent_wait_identity_matches(
+        &current,
+        &before.terminal_id,
+        before.name.as_deref().filter(|name| *name == target.target),
+        before.agent.as_deref(),
+    ) {
+        return agent_wait_not_running(request_id.to_string()).map(|response| Some(Err(response)));
+    }
+    if current.agent_status != AgentStatus::Working {
+        return Ok(Some(Ok(current)));
+    }
+    let timeout_ms = deadline.map(|deadline| {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        remaining.as_millis().min(u128::from(u64::MAX)) as u64
+    });
+    let outcome = wait_for_resolved_agent(
+        request_id.to_string(),
+        ResolvedAgentWait {
+            target: target.clone(),
+            until: vec![
+                AgentStatus::Idle,
+                AgentStatus::Done,
+                AgentStatus::Blocked,
+                AgentStatus::Unknown,
+            ],
+            timeout_ms,
+            initial: current,
+            last_event_sequence,
+            after_state_change_seq: None,
+            changed_from_state_change_seq: None,
+            accept_transient_status: false,
+        },
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )?;
+    Ok(match outcome {
+        None => None,
+        Some(AgentWaitOutcome::Matched(agent)) => Some(Ok(*agent)),
+        Some(AgentWaitOutcome::Response(response)) => {
+            let timed_out = serde_json::from_str::<serde_json::Value>(&response)
+                .is_ok_and(|value| value["error"]["code"] == "timeout");
+            if !timed_out {
+                return Ok(Some(Err(response)));
+            }
+            Some(Err(serde_json::to_string(&ErrorResponse {
+                id: request_id.to_string(),
+                error: ErrorBody {
+                    code: "timeout".into(),
+                    message: format!(
+                        "agent {} was still working when the caller's timeout passed; nothing was typed",
+                        target.target
+                    ),
+                },
+            })
+            .map_err(std::io::Error::other)?))
+        }
+    })
 }
 
 /// `agent_prompt_blocked`: the prompt was typed, then a dialog appeared before the agent

@@ -124,6 +124,13 @@ pub enum AppEvent {
         seq: Option<u64>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
     },
+    /// The pane's agent reported that a turn started, or ended with this many background tasks
+    /// still running (`pane.report_turn`).
+    AgentTurnReported {
+        pane_id: PaneId,
+        started: bool,
+        background_tasks: Option<u32>,
+    },
     /// Agent session identity was reported without state authority.
     AgentSessionReported {
         pane_id: PaneId,
