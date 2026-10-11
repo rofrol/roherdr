@@ -295,6 +295,7 @@ mod tests {
             open_questions: Vec::new(),
             todo_runs: Vec::new(),
             waits: Vec::new(),
+            supervision: None,
         }
     }
 

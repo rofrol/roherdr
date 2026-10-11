@@ -25,6 +25,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) show_agents_panel: bool,
+    /// `[supervision] show_tab`: the Supervision tab pinned at the top of
+    /// the sidebar.
+    pub(super) show_supervision_tab: bool,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
@@ -224,6 +227,15 @@ pub(super) struct ShellHitMap {
     pub(super) worker_view_body: Rect,
     /// The takeover button in the shown worker tab's header.
     pub(super) worker_view_take_over: Rect,
+    /// The Supervision tab's row pinned at the top of the sidebar.
+    pub(super) supervision_row: Rect,
+    /// The shown Supervision tab (see [`super::supervision`]), its rows
+    /// under the header, how far they scroll, and its coordinators' pane
+    /// links.
+    pub(super) supervision_view: Rect,
+    pub(super) supervision_view_body: Rect,
+    pub(super) supervision_view_max_scroll: usize,
+    pub(super) supervision_pane_links: Vec<(Rect, String)>,
     pub(super) overlay_primary: Rect,
     /// The drawn box of the open overlay: a click outside it closes it.
     pub(super) overlay_area: Rect,
@@ -1498,6 +1510,9 @@ pub(crate) struct ClientShellState {
     /// A headless worker's tab shown in the main pane instead of the
     /// focused tab's panes.
     pub(super) worker_view: Option<super::worker_view::ClientWorkerView>,
+    /// The Supervision tab shown in the main pane instead of the focused
+    /// tab's panes.
+    pub(super) supervision_view: Option<super::supervision::ClientSupervisionView>,
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) link_hover: Option<super::link_hover::LinkHover>,
@@ -1725,6 +1740,7 @@ impl ClientShellState {
             reveal_navigation_workspace: false,
             overlay,
             worker_view: None,
+            supervision_view: None,
             previous_pane_id: None,
             pane_mouse_gesture: None,
             link_hover: None,
@@ -2069,6 +2085,7 @@ impl ClientShellState {
         self.active_snapshot_generation = generation;
         self.graphics.set_scope(&graphics_scope);
         self.close_worker_view_on_focus_change(snapshot.focused_tab_id.as_deref());
+        self.close_supervision_view_on_focus_change(snapshot.focused_tab_id.as_deref());
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()
                 || current

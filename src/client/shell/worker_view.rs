@@ -503,6 +503,7 @@ impl ClientShellState {
             .as_deref()
             .and_then(|snapshot| snapshot.focused_tab_id.clone());
         self.selection = None;
+        self.supervision_view = None;
         self.worker_view = Some(ClientWorkerView::new(
             self.active_endpoint_id.clone(),
             worker_id,

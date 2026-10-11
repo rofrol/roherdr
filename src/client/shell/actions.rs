@@ -477,8 +477,9 @@ impl ClientShellState {
         };
         if changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
-            // Going to a tab leaves the worker's tab.
+            // Going to a tab leaves the worker's or the Supervision tab.
             self.close_worker_view(outcome);
+            self.close_supervision_view(outcome);
         }
         // A new tab that takes the focus must show: open its collapsed space.
         let new_tab_workspace = match &method {

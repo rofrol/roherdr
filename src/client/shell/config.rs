@@ -163,6 +163,7 @@ impl ClientShellConfig {
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             spaces: config.ui.sidebar.spaces.clone(),
             show_agents_panel: config.ui.sidebar.show_agents_panel,
+            show_supervision_tab: config.supervision.show_tab,
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
@@ -425,6 +426,9 @@ impl ClientShellConfig {
             self.theme_runtime = crate::app::client_theme_runtime_from_config(config);
             self.theme_name = self.theme_runtime.manual_name.clone();
             self.palette = crate::app::client_palette_from_config(config);
+        }
+        if !invalid_section("supervision") {
+            self.show_supervision_tab = config.supervision.show_tab;
         }
         if !invalid_section("experimental") {
             self.switch_ascii_input_source_in_prefix =

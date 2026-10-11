@@ -288,6 +288,14 @@ pub(super) fn render_expanded(
         crate::ui::expanded_sidebar_sections(sections, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(sections, state.sidebar_section_split);
+    // The active machine's Supervision tab, pinned above the machines.
+    let workspace_area = super::supervision::render_row(
+        buffer,
+        workspace_area,
+        state.supervision_row,
+        palette,
+        hits,
+    );
     put_text(
         buffer,
         workspace_area.x,

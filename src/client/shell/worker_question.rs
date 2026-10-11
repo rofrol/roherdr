@@ -78,6 +78,9 @@ pub(super) enum WorkerQuestionButton {
     ViewLog,
     Stop,
     OpenOwner,
+    /// A supervision finding's entry: the same finding in the Supervision
+    /// tab.
+    OpenSupervision,
     Previous,
     Next,
     Close,
@@ -404,6 +407,23 @@ impl ClientShellState {
             .find(|pane| pane.pane_id == owner)
     }
 
+    /// The supervision finding whose `?` entry the dialog shows, when the
+    /// Supervision tab has it.
+    fn worker_question_finding(&self) -> Option<String> {
+        let dialog = self.worker_question_dialog()?;
+        let finding_id = dialog
+            .worker_id
+            .strip_prefix(super::supervision::FINDING_WORKER_PREFIX)?;
+        self.snapshot
+            .as_deref()?
+            .supervision
+            .as_ref()?
+            .findings
+            .iter()
+            .any(|finding| finding.finding_id == finding_id)
+            .then(|| finding_id.to_owned())
+    }
+
     /// Which buttons the dialog has, each with whether it can be pressed.
     fn worker_question_buttons(
         &self,
@@ -461,6 +481,9 @@ impl ClientShellState {
         buttons.push((WorkerQuestionButton::Stop, "stop worker", live && stop));
         if self.worker_question_owner_pane().is_some() {
             buttons.push((WorkerQuestionButton::OpenOwner, "open owner", true));
+        }
+        if self.worker_question_finding().is_some() {
+            buttons.push((WorkerQuestionButton::OpenSupervision, "supervision", true));
         }
         if self.next_worker_question(1).is_some() {
             buttons.push((WorkerQuestionButton::Previous, "‹ prev", true));
@@ -784,6 +807,13 @@ impl ClientShellState {
                     }),
                     outcome,
                 );
+            }
+            WorkerQuestionButton::OpenSupervision => {
+                let Some(finding) = self.worker_question_finding() else {
+                    return;
+                };
+                self.overlay = None;
+                self.open_supervision_view(Some(finding), outcome);
             }
             WorkerQuestionButton::Previous | WorkerQuestionButton::Next => {
                 let step = if button == WorkerQuestionButton::Next {

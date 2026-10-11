@@ -75,6 +75,7 @@ fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSn
         open_questions: Vec::new(),
         todo_runs: Vec::new(),
         waits: Vec::new(),
+        supervision: None,
     }
 }
 
@@ -450,6 +451,7 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
         open_questions: Vec::new(),
         todo_runs: Vec::new(),
         waits: Vec::new(),
+        supervision: None,
     };
     assert_eq!(
         activation.receive_snapshot(&target, 7, &snapshot),

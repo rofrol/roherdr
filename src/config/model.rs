@@ -335,6 +335,7 @@ pub struct Config {
     pub worktrees: WorktreesConfig,
     pub workers: WorkersConfig,
     pub coordinator: CoordinatorConfig,
+    pub supervision: SupervisionConfig,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
@@ -931,6 +932,21 @@ pub struct CoordinatorConfig {
     /// "off" lets it run unrecorded. Default: "shadow". A headless item
     /// coordinator always enforces.
     pub allowlist: CoordinatorAllowlistConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct SupervisionConfig {
+    /// Show the Supervision tab pinned at the top of the sidebar: what the
+    /// server's supervision sweep saw of the coordinators, and its findings.
+    /// Default: true.
+    pub show_tab: bool,
+}
+
+impl Default for SupervisionConfig {
+    fn default() -> Self {
+        Self { show_tab: true }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

@@ -73,6 +73,7 @@ impl ClientShellState {
         let space_to_top_undo = self.space_to_top_undo().map(str::to_owned);
         let open_list = self.open_notification_list();
         let shown_worker = self.shown_worker_id().map(str::to_owned);
+        let supervision_row = self.supervision_row(super::workers::unix_now_ms());
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -139,6 +140,7 @@ impl ClientShellState {
             bookmark_count,
             open_list,
             shown_worker: shown_worker.as_deref(),
+            supervision_row,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -329,6 +331,7 @@ impl ClientShellState {
         let space_to_top_undo = self.space_to_top_undo().map(str::to_owned);
         let open_list = self.open_notification_list();
         let shown_worker = self.shown_worker_id().map(str::to_owned);
+        let supervision_row = self.supervision_row(super::workers::unix_now_ms());
         // Typing narrows the list; folded groups open for the view only.
         let space_filter = self
             .space_filter
@@ -428,6 +431,7 @@ impl ClientShellState {
                 bookmark_count,
                 open_list,
                 shown_worker: shown_worker.as_deref(),
+                supervision_row,
             },
         );
         // The next frame holds this order while the pointer is over the list.
@@ -539,6 +543,29 @@ impl ClientShellState {
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }
+        // So does the Supervision tab.
+        let supervision_view = self
+            .supervision_view
+            .as_mut()
+            .filter(|view| view.endpoint_id == self.active_endpoint_id && !worker_view_shown);
+        let supervision_view_shown = supervision_view.is_some();
+        if let Some(view) = supervision_view {
+            let hits = super::supervision::render_view(
+                view,
+                snapshot,
+                super::workers::unix_now_ms(),
+                &self.config.palette,
+                &mut buffer,
+                layout.pane_surface,
+            );
+            self.hits.supervision_view = hits.area;
+            self.hits.supervision_view_body = hits.body;
+            self.hits.supervision_view_max_scroll = hits.max_scroll;
+            self.hits.supervision_pane_links = hits.panes;
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
+        }
+        let worker_view_shown = worker_view_shown || supervision_view_shown;
         let mode_bar_area = if layout.mobile_header.is_empty()
             && self.config.tab_bar_position == TabBarPositionConfig::Bottom
             && !layout.tab_bar.is_empty()

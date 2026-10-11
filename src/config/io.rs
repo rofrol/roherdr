@@ -13,6 +13,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "remote",
     "server",
     "session",
+    "supervision",
     "terminal",
     "theme",
     "ui",
@@ -385,6 +386,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.coordinator = section,
+    );
+    load_live_section(
+        table,
+        "supervision",
+        "supervision config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.supervision = section,
     );
     load_live_section(
         table,
@@ -925,6 +934,15 @@ resume_agents_on_restore = true
         assert!(loaded.config.session.resume_agents_on_restore);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn load_live_config_shows_the_supervision_tab_unless_turned_off() {
+        let loaded = load_live_config_from_str("").unwrap();
+        assert!(loaded.config.supervision.show_tab);
+        let loaded = load_live_config_from_str("[supervision]\nshow_tab = false\n").unwrap();
+        assert!(!loaded.config.supervision.show_tab);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
     }
 
     #[test]

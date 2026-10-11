@@ -2554,7 +2554,9 @@ impl ClientShellState {
             return;
         }
 
-        if self.worker_view_mouse(mouse, point, outcome) {
+        if self.worker_view_mouse(mouse, point, outcome)
+            || self.supervision_view_mouse(mouse, point, outcome)
+        {
             return;
         }
         if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
@@ -2939,6 +2941,10 @@ impl ClientShellState {
                         outcome.repaint = true;
                         return;
                     }
+                }
+                if super::contains(self.hits.supervision_row, point) {
+                    self.open_supervision_view(None, outcome);
+                    return;
                 }
                 if super::contains(self.hits.quiet_fold_button, point) {
                     self.toggle_quiet_folds();

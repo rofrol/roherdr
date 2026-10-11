@@ -287,7 +287,9 @@ impl ClientShellState {
             snapshots().flat_map(|snapshot| snapshot.todo_runs.iter()),
             now_ms,
         );
-        self.worker_times_change_at = workers.into_iter().chain(runs).min();
+        // The Supervision tab's row turns stale, and its view's sweep age.
+        let supervision = self.supervision_times_change_at(now_ms);
+        self.worker_times_change_at = workers.into_iter().chain(runs).chain(supervision).min();
     }
 }
 

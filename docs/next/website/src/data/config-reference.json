@@ -1685,6 +1685,18 @@
       ]
     },
     {
+      "id": "supervision",
+      "title": "Supervision",
+      "keys": [
+        {
+          "key": "supervision.show_tab",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the Supervision tab pinned at the top of the sidebar: the worst severity and the counts of the findings that hold, and on a click what the server's supervision sweep saw of each coordinator and the findings with their evidence. Shown only when the server sends supervision."
+        }
+      ]
+    },
+    {
       "id": "remote",
       "title": "Remote",
       "keys": [

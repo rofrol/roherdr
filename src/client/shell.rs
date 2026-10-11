@@ -44,6 +44,7 @@ mod space_sort;
 mod space_tabs;
 mod state;
 mod status_legend;
+mod supervision;
 mod surface_patch;
 mod tab_groups;
 mod text_editor;

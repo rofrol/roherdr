@@ -350,6 +350,7 @@ pub(super) fn snapshot_with_completions(
         open_questions,
         todo_runs: app.client_shell_todo_runs(crate::workers::active_runs()),
         waits: app.client_shell_waits(crate::workers::run_waits()),
+        supervision: crate::workers::supervision::client_shell_supervision(),
     };
     (shell, completions)
 }

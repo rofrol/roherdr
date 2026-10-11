@@ -986,6 +986,102 @@ pub struct ClientShellSnapshot {
     /// them.
     #[serde(default)]
     pub waits: Vec<ClientShellWait>,
+    /// What the server's supervision sweep saw (`supervise.report`), for
+    /// the Supervision tab pinned at the top of the sidebar. None from a
+    /// server that does not sweep or does not send it: the tab is not
+    /// shown then. Each sweep and each change of a finding
+    /// sends a new snapshot (its `revision` orders them), so the client
+    /// never asks for it.
+    #[serde(default)]
+    pub supervision: Option<ClientShellSupervision>,
+}
+
+/// The supervision sweep's projection for the Supervision tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellSupervision {
+    /// When the latest sweep ran, Unix milliseconds; none before the first.
+    #[serde(default)]
+    pub swept_ms: Option<u64>,
+    /// What started it: `timer` or the event, such as `pane w1:p1 turn`.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    /// Why the latest sweep failed, until one succeeds: what it saw before
+    /// is all there is, so supervision is unavailable.
+    #[serde(default)]
+    pub sweep_error: Option<String>,
+    /// How often the server sweeps without an event, milliseconds: a sweep
+    /// older than twice this is stale.
+    pub sweep_interval_ms: u64,
+    /// What the latest sweep saw of each active coordination tenure.
+    #[serde(default)]
+    pub coordinators: Vec<ClientShellSupervisedCoordinator>,
+    /// The findings that hold (open or acknowledged), the latest seen
+    /// first.
+    #[serde(default)]
+    pub findings: Vec<ClientShellSupervisionFinding>,
+}
+
+/// One coordinator as the latest sweep saw it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellSupervisedCoordinator {
+    pub coordinator_id: String,
+    pub repo: String,
+    /// Its pane; none for a headless tenure.
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    /// Its pane's agent status (`idle`, `working`...); none for a headless
+    /// tenure or a pane the server does not have.
+    #[serde(default)]
+    pub agent_status: Option<String>,
+    /// Its workers whose process runs.
+    #[serde(default)]
+    pub workers: Vec<String>,
+    /// Its repository's run in progress.
+    #[serde(default)]
+    pub active_run: Option<String>,
+    /// The findings that hold for it.
+    #[serde(default)]
+    pub findings: Vec<String>,
+    /// `cannot establish progress` when no finding holds.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// A supervision finding that holds, with its evidence. Names are strings
+/// so a predicate, severity or status this client does not know cannot
+/// break the snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellSupervisionFinding {
+    /// `f-` and the finding's number.
+    pub finding_id: String,
+    pub predicate: String,
+    /// `warning` or `critical`.
+    pub severity: String,
+    /// `open` or `acknowledged`.
+    pub status: String,
+    pub summary: String,
+    /// The event whose absence the finding names.
+    pub expected_event: String,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub coordinator_id: Option<String>,
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// The latest sweep's evidence: the events the facts come from, and
+    /// the facts, one per line.
+    #[serde(default)]
+    pub event_ids: Vec<String>,
+    #[serde(default)]
+    pub facts: Vec<String>,
+    /// Unix milliseconds.
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    /// Who acknowledged it: `user`, or `coordinator <id>`.
+    #[serde(default)]
+    pub acknowledged_by: Option<String>,
 }
 
 /// A `herdr todo run` in progress as its driver publishes it.
@@ -3229,6 +3325,40 @@ mod tests {
                 since_ms: Some(1_000),
                 last_output_ms: None,
             }],
+            supervision: Some(ClientShellSupervision {
+                swept_ms: Some(2_000),
+                trigger: Some("timer".into()),
+                sweep_error: None,
+                // delay: not a wait, a fixture value that only round-trips.
+                sweep_interval_ms: 300_000,
+                coordinators: vec![ClientShellSupervisedCoordinator {
+                    coordinator_id: "c-aaaaaaaa".into(),
+                    repo: "/repo".into(),
+                    pane_id: Some("w1:p1".into()),
+                    agent_status: Some("idle".into()),
+                    workers: vec!["w-1".into()],
+                    active_run: Some("r-abcd2345".into()),
+                    findings: vec!["f-1".into()],
+                    note: None,
+                }],
+                findings: vec![ClientShellSupervisionFinding {
+                    finding_id: "f-1".into(),
+                    predicate: "coordinator_idle".into(),
+                    severity: "warning".into(),
+                    status: "open".into(),
+                    summary: "idle".into(),
+                    expected_event: "the next item".into(),
+                    repo: Some("/repo".into()),
+                    coordinator_id: Some("c-aaaaaaaa".into()),
+                    pane_id: Some("w1:p1".into()),
+                    run_id: None,
+                    event_ids: vec!["pane w1:p1 state change 4".into()],
+                    facts: vec!["agent_status: idle".into()],
+                    first_seen_ms: 1_000,
+                    last_seen_ms: 2_000,
+                    acknowledged_by: None,
+                }],
+            }),
         }));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =

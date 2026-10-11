@@ -306,6 +306,9 @@ pub(super) struct ShellRenderState<'a> {
     /// The worker whose tab the main pane shows: its line is the active
     /// one, not the focused tab's.
     pub(super) shown_worker: Option<&'a str>,
+    /// The Supervision tab's row pinned above the spaces; none when the
+    /// config hides it or the server sends no supervision.
+    pub(super) supervision_row: Option<super::supervision::SupervisionRow>,
 }
 
 pub(super) fn render_shell(

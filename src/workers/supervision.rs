@@ -122,7 +122,7 @@ pub(crate) const CANNOT_ESTABLISH_PROGRESS: &str = "cannot establish progress";
 /// The request id of a finding's `?` entry: this and the finding's id.
 const REQUEST_PREFIX: &str = "herdr-finding-";
 /// The stand-in worker id a finding's `?` entry is listed under.
-const WORKER_PREFIX: &str = "supervision-";
+pub(crate) const WORKER_PREFIX: &str = "supervision-";
 const ACKNOWLEDGE: &str = "Acknowledge";
 
 /// What the server's app knows of one agent pane when a sweep starts.
@@ -865,11 +865,16 @@ static LAST_SWEEP: Mutex<Option<LastSweep>> = Mutex::new(None);
 /// The open findings, which the `?` list shows; refreshed after each change
 /// so a snapshot never reads the store.
 static OPEN_FINDINGS: Mutex<Vec<SupervisionFinding>> = Mutex::new(Vec::new());
+/// The findings that hold (open or acknowledged), which the clients'
+/// Supervision tab shows; refreshed with [`OPEN_FINDINGS`].
+static HOLDING_FINDINGS: Mutex<Vec<SupervisionFinding>> = Mutex::new(Vec::new());
 /// The panes active tenures were bound to at the latest sweep: their turn
 /// reports and state changes start a sweep.
 static COORDINATOR_PANES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// The event that asked for a sweep, until the server starts it.
 static REQUESTED: Mutex<Option<String>> = Mutex::new(None);
+/// Why the latest sweep failed, until one succeeds.
+static SWEEP_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// A sweep runs.
 static SWEEPING: AtomicBool = AtomicBool::new(false);
 
@@ -907,8 +912,19 @@ pub(crate) fn start_sweep(trigger: String, panes: Vec<PaneFacts>) -> bool {
     }
     let supervisor = supervisor.clone();
     let spawned = crate::thread_spawn::spawn_named("herdr-supervision", move || {
-        if let Err(error) = supervisor.supervision_sweep(&trigger, panes) {
+        let failed = supervisor.supervision_sweep(&trigger, panes).err();
+        if let Some(error) = &failed {
             warn!(%error, "the supervision sweep failed");
+        }
+        let failed = failed.map(|error| error.to_string());
+        let changed = {
+            let mut last = lock(&SWEEP_ERROR);
+            let changed = *last != failed;
+            *last = failed;
+            changed
+        };
+        if changed {
+            notify_clients();
         }
         SWEEPING.store(false, Ordering::Release);
     });
@@ -918,6 +934,71 @@ pub(crate) fn start_sweep(trigger: String, panes: Vec<PaneFacts>) -> bool {
         return false;
     }
     true
+}
+
+/// What the clients' Supervision tab shows: the latest sweep and the
+/// findings that hold, from memory (a snapshot never reads the store); none
+/// on a server without a supervisor.
+pub(crate) fn client_shell_supervision() -> Option<crate::protocol::ClientShellSupervision> {
+    super::coordinators()?;
+    let last = lock(&LAST_SWEEP).clone().unwrap_or_default();
+    let findings = lock(&HOLDING_FINDINGS)
+        .iter()
+        .map(client_shell_finding)
+        .collect();
+    Some(crate::protocol::ClientShellSupervision {
+        swept_ms: last.swept_ms,
+        trigger: last.trigger,
+        sweep_error: lock(&SWEEP_ERROR).clone(),
+        sweep_interval_ms: SWEEP_INTERVAL.as_millis().try_into().unwrap_or(u64::MAX),
+        coordinators: last
+            .coordinators
+            .into_iter()
+            .map(
+                |coordinator| crate::protocol::ClientShellSupervisedCoordinator {
+                    coordinator_id: coordinator.coordinator_id,
+                    repo: coordinator.repo,
+                    pane_id: coordinator.pane_id,
+                    agent_status: coordinator
+                        .agent_status
+                        .map(|status| status_text(status).to_owned()),
+                    workers: coordinator.workers,
+                    active_run: coordinator.active_run,
+                    findings: coordinator.findings,
+                    note: coordinator.note,
+                },
+            )
+            .collect(),
+        findings,
+    })
+}
+
+fn client_shell_finding(
+    finding: &SupervisionFinding,
+) -> crate::protocol::ClientShellSupervisionFinding {
+    let status = match finding.status {
+        SupervisionStatus::Open => "open",
+        SupervisionStatus::Acknowledged => "acknowledged",
+        SupervisionStatus::Resolved => "resolved",
+        SupervisionStatus::Unknown => "unknown",
+    };
+    crate::protocol::ClientShellSupervisionFinding {
+        finding_id: finding.finding_id.clone(),
+        predicate: predicate_name(finding.predicate).to_owned(),
+        severity: severity_name(finding.severity).to_owned(),
+        status: status.to_owned(),
+        summary: finding.summary.clone(),
+        expected_event: finding.expected_event.clone(),
+        repo: finding.repo.clone(),
+        coordinator_id: finding.coordinator_id.clone(),
+        pane_id: finding.pane_id.clone(),
+        run_id: finding.run_id.clone(),
+        event_ids: finding.evidence.event_ids.clone(),
+        facts: finding.evidence.facts.clone(),
+        first_seen_ms: finding.first_seen_ms,
+        last_seen_ms: finding.last_seen_ms,
+        acknowledged_by: finding.acknowledged_by.clone(),
+    }
 }
 
 fn worker_id_of(finding_id: &str) -> String {
@@ -1076,6 +1157,8 @@ impl WorkerSupervisor {
                 .collect(),
         });
         self.refresh_open_findings();
+        // The Supervision tab shows the sweep's time and what it saw.
+        notify_clients();
         if changes.opened.is_empty() && changes.escalated.is_empty() {
             return Ok(());
         }
@@ -1117,26 +1200,34 @@ impl WorkerSupervisor {
             .map_err(store_error)
     }
 
-    /// Reloads the open findings the `?` list shows, and tells the clients
-    /// when they changed.
+    /// Reloads the open findings the `?` list shows and the findings that
+    /// hold, which the Supervision tab shows, and tells the clients when
+    /// they changed.
     fn refresh_open_findings(&self) {
-        let open = match self.supervision_store() {
-            Ok(store) => match store.read(open_findings) {
-                Ok(open) => open,
-                Err(error) => {
-                    warn!(%error, "cannot read the open supervision findings");
-                    return;
-                }
-            },
+        let read = match self.supervision_store() {
+            Ok(store) => store.read(|conn| Ok((open_findings(conn)?, list_findings(conn, false)?))),
             Err(_) => return,
         };
-        let changed = {
+        let (open, holding) = match read {
+            Ok(read) => read,
+            Err(error) => {
+                warn!(%error, "cannot read the open supervision findings");
+                return;
+            }
+        };
+        let open_changed = {
             let mut listed = lock(&OPEN_FINDINGS);
             let changed = *listed != open;
             *listed = open;
             changed
         };
-        if changed {
+        let holding_changed = {
+            let mut listed = lock(&HOLDING_FINDINGS);
+            let changed = *listed != holding;
+            *listed = holding;
+            changed
+        };
+        if open_changed || holding_changed {
             notify_clients();
         }
     }
@@ -1778,6 +1869,53 @@ mod tests {
                 .len(),
             1
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_clients_see_the_latest_sweep_and_the_findings_that_hold() {
+        let (supervisor, root) = supervisor("client-shell");
+        let repo = root.join("not-a-repo").display().to_string();
+        supervisor.coordinator_start(&repo, "w1:p1", None).unwrap();
+        crate::workers::set_test_coordinators(supervisor);
+        let supervisor = crate::workers::coordinators().unwrap();
+        let mut stuck = pane("w1:p1", AgentStatus::Working);
+        stuck.turn_closed = true;
+        supervisor
+            .supervision_sweep("timer", vec![stuck.clone()])
+            .unwrap();
+        let shown = client_shell_supervision().expect("a server with a supervisor sends it");
+        assert!(shown.swept_ms.is_some());
+        assert_eq!(shown.trigger.as_deref(), Some("timer"));
+        assert_eq!(shown.sweep_error, None);
+        assert_eq!(
+            u128::from(shown.sweep_interval_ms),
+            SWEEP_INTERVAL.as_millis()
+        );
+        assert_eq!(shown.coordinators.len(), 1);
+        assert_eq!(shown.coordinators[0].pane_id.as_deref(), Some("w1:p1"));
+        assert_eq!(
+            shown.coordinators[0].agent_status.as_deref(),
+            Some("working")
+        );
+        assert_eq!(shown.findings.len(), 1);
+        let finding = &shown.findings[0];
+        assert_eq!(finding.predicate, "working_after_stop");
+        assert_eq!(finding.status, "open");
+        assert!(!finding.facts.is_empty(), "{finding:?}");
+
+        // An acknowledged finding still holds and still shows.
+        supervisor
+            .supervision_acknowledge(&finding.finding_id, &Acknowledger::User)
+            .unwrap();
+        let shown = client_shell_supervision().unwrap();
+        assert_eq!(shown.findings[0].status, "acknowledged");
+        assert_eq!(shown.findings[0].acknowledged_by.as_deref(), Some("user"));
+
+        // A resolved one does not.
+        stuck.status = AgentStatus::Idle;
+        supervisor.supervision_sweep("timer", vec![stuck]).unwrap();
+        assert!(client_shell_supervision().unwrap().findings.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

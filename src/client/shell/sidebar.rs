@@ -329,6 +329,15 @@ pub(crate) fn render_sidebar(
     } else {
         super::usage::split_spaces_and_footer(sections, state.usage)
     };
+    // The Supervision tab's row: pinned above the spaces, outside their
+    // scroll, header and filter.
+    let workspace_area = super::supervision::render_row(
+        buffer,
+        workspace_area,
+        state.supervision_row,
+        palette,
+        hits,
+    );
     let mut entries = super::space_sort::sorted_entries(
         snapshot,
         workspace_entries(snapshot, state.collapsed_groups),

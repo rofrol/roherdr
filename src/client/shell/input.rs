@@ -702,9 +702,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                // A worker's tab takes no input: its keys scroll it.
-                if self.worker_view_shown() {
-                    self.worker_view_key(key, outcome);
+                // A worker's or the Supervision tab takes no input: its keys
+                // scroll it.
+                if self.main_view_shown() {
+                    self.main_view_key(key, outcome);
                     return None;
                 }
                 self.focused_pane_id().map(ClientInputTarget::Pane)
@@ -720,7 +721,7 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    if self.worker_view_shown() {
+                    if self.main_view_shown() {
                         return None;
                     }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
@@ -1146,7 +1147,7 @@ impl ClientShellState {
         if self.popup_pending
             || self.overlay.is_some()
             || self.mode != ClientShellMode::Terminal
-            || self.worker_view_shown()
+            || self.main_view_shown()
         {
             return None;
         }
@@ -1217,8 +1218,9 @@ impl ClientShellState {
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
-        // Typed or pasted text never reaches the panes under a worker's tab.
-        if self.worker_view_shown() {
+        // Typed or pasted text never reaches the panes under a worker's or
+        // the Supervision tab.
+        if self.main_view_shown() {
             return;
         }
         if let Some(pane_id) = self.focused_pane_id() {
