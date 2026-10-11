@@ -1164,3 +1164,12 @@ The space row's ` T ` chip became the coordinator crown (user,
 2026-10-09; 21032101): the shared `COORDINATOR_MARK`, padded and drawn in
 one column so a wider rendering does not shift the row; click and tooltip
 unchanged.
+
+## Bug (user, 2026-10-03, screenshot): "I closed the tab with the job,
+
+A parent whose shell exits by itself kept its jobs without any sign (user,
+2026-10-03; decided 2026-10-06). Now (fdca7622) tabs carry
+`exited_parent` (server, TabInfo, client snapshot); the client shows
+"Parent <name> exited; N jobs kept running" once (one combined notice for
+several parents, none on the first snapshot) and a `was <name>` mark on
+the orphaned job lines.

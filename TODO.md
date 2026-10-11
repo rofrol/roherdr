@@ -512,15 +512,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   keeping tracker items with the repository rather than in a private
   database (git-bug is the git analogue).
 
-- [ ] Bug (user, 2026-10-03, screenshot): "I closed the tab with the job, [t-xieekngb]
-  but it did not close the job." The explicit close is fixed (`DECISIONS.md`,
-  "Closing a parent's last pane"); a parent whose shell exits by itself
-  keeps its jobs on purpose, but nothing shows it.
-  Decided by the user 2026-10-06: when a parent exits on its own, show the
-  "Parent <name> exited; N jobs kept running" notice and a `was <name>`
-  mark on the orphaned rows (sol, DeepSeek, MiMo); no new "Close tab, keep
-  jobs" button.
-
 - [ ] The tab state does not show that something runs in the background [t-fyd7ts3f]
   (user, 2026-10-06, screenshot: "the tab state doesn't show that something
   is running in the background"). Space `music-mpd`: the tab showed idle
