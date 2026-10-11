@@ -11,6 +11,45 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A pane worker stays "working" after its turn, and a prompt is [t-ul7klyyw]
+  "confirmed" that never arrived (violai coordinator, 2026-10-11, third
+  report: "nothing works in this space"). Pane w98:p1 (Claude, worktree
+  violai/todo-goatcounter) ended its turn at 11:43 with `WORKER-DONE
+  882c5cc` and a recap line, at an empty prompt; `herdr agent list` still
+  said `working`; a prompt sent at 11:46 (request
+  `prompt_1a12a52ec43_2`) never appeared in the pane, yet the server log
+  shows `agent.prompt_confirmed` returning ok at 09:46:35Z; `herdr-job
+  wait-agent --request ... --until verdict` kept waiting. At 12:00 the pane
+  read `idle`. Checked by the coordinator: the confirmation accepts "its
+  state turning working" as delivery, so a stale `working` likely
+  confirmed an undelivered prompt (hypothesis, not proven). Find (1) why
+  the 11:43 turn end was not applied (the Stop hook's report, the recap
+  redraw read as working by screen detection, ordering), (2) why the typed
+  prompt did not reach Claude's input, and make confirmation require a
+  transition after the send (a `UserPromptSubmit` for that request, or
+  working entered after it), never a state already present. Tests.
+  Investigated 2026-10-11 at the user's request ("investigate with the
+  models; the agent fails again"; round 20261011-120400-dd14, sol + MiMo):
+  - Proven: the confirmation returns Accepted at once when the state was
+    already `working` before typing (src/api/wait.rs,
+    `await_prompt_acknowledgement`, "an agent already working ... queues
+    the prompt"), so the stale state alone explains the false "ok".
+  - Ruled out: the background-task hold of 3e4883ae: the 11:43:16 Stop
+    payload (`~/.local/state/herdr-bg/payloads.jsonl`) lists
+    `background_tasks: []`.
+  - Lead: a `SubagentStop` for the same session follows at 11:43:18 (and
+    another at 11:59:48, near the time the pane read idle): Claude Code's
+    post-turn recap runs as a subagent after Stop. Check whether a
+    subagent's hook (or the recap's spinner seen by screen detection)
+    sets the pane `working` after the Stop and nothing ends it.
+  Decided: (1) delete the pre-existing-`working` acceptance; for Claude
+  the proof is a `UserPromptSubmit` for this request's prompt after the
+  typing (both models); a prompt for a `working` pane waits for its idle
+  event, then is typed; (2) a subagent or screen activity after a Stop
+  never reopens the parent's turn without a new `UserPromptSubmit`;
+  (3) find where the typed text went (write bytes, target pane/PTY, the
+  recap subagent holding input) and report it.
+
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
   herdr coordinator, fix the process with the models"). The violai
@@ -37,24 +76,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      (`herdr history overrides --would-deny`) before enforcing; when
      enforced it must judge the whole chained invocation (sol).
   The 12 h hang itself is a violai bug queued there; no timeout here.
-
-- [ ] A pane worker stays "working" after its turn, and a prompt is [t-ul7klyyw]
-  "confirmed" that never arrived (violai coordinator, 2026-10-11, third
-  report: "nothing works in this space"). Pane w98:p1 (Claude, worktree
-  violai/todo-goatcounter) ended its turn at 11:43 with `WORKER-DONE
-  882c5cc` and a recap line, at an empty prompt; `herdr agent list` still
-  said `working`; a prompt sent at 11:46 (request
-  `prompt_1a12a52ec43_2`) never appeared in the pane, yet the server log
-  shows `agent.prompt_confirmed` returning ok at 09:46:35Z; `herdr-job
-  wait-agent --request ... --until verdict` kept waiting. At 12:00 the pane
-  read `idle`. Checked by the coordinator: the confirmation accepts "its
-  state turning working" as delivery, so a stale `working` likely
-  confirmed an undelivered prompt (hypothesis, not proven). Find (1) why
-  the 11:43 turn end was not applied (the Stop hook's report, the recap
-  redraw read as working by screen detection, ordering), (2) why the typed
-  prompt did not reach Claude's input, and make confirmation require a
-  transition after the send (a `UserPromptSubmit` for that request, or
-  working entered after it), never a state already present. Tests.
 
 - [ ] `todo resume --note` takes `--next`/`--stop-reason` like `--close` [t-dgtlrinl]
   (points 4-5 of the closed t-pku6dsb6, 2026-10-10/11: approving a run
