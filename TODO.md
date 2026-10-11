@@ -745,6 +745,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     selected agents or the workspace, showing which support resume), pi's
     draft check. Restart only an idle pane: not blocked, no draft, no
     subagents (`SubagentStop` hook), no jobs; one at a time.
+  Landed 2026-10-11 (da36cd4e): Claude and pi panes get a "restart
+  pending" mark when their CLI's `--version` changes (checked on agent
+  start and on watched launcher changes, no timer): `↻` on the tab, a
+  status legend entry, optional `restart_pending` in `agent.get`/`list`.
+  Left: the menu's preview/picker counts and the idle checks (no pi draft,
+  no subagents, no background tasks) in `plugins/restart`, which can now read
+  `restart_pending`.
 
 - [ ] Does MiMo earn its slot in the default consult set? (user, 2026-10-06, [t-cdr6gn32]
   after a consult round on GLM and Kimi, `20261006-221442-cf9e`, where both
