@@ -474,10 +474,16 @@ named, questions and journal), and a run started without it is only
 named `<task>` with its state; a click opens its log, and its right-click
 menu takes it over (ends it, then resumes its session in a tab; not while
 it asks). Wait for it with `herdr-job run -- herdr worker wait <id>
---attention --after <seq>` (no `--after` the first time): it returns at
-once or at the first new question, turn end or exit, with the `reason`,
-the pending `questions` and `seq`; pass that `seq` as `--after` to the
-next wait, so a question already seen does not wake you again. Answer its
+--attention`: it returns at once or at the first new question, turn end or
+exit, with the `reason`, the pending `questions` and `seq`. Its owner's
+wait starts after the `seq` the owner acknowledged (`herdr worker ack`,
+below), so the loop is wait, handle, ack, the same wait again, with no
+cursor kept in the shell; `--after <seq>` (or `--after=<seq>`) is for
+recovery, tests and other observers. Pass arguments literally: never
+build options with `${X:+...}` or other unquoted expansions (zsh does not
+split them, so `--after 42` arrives as one argument), and use an array
+for a list. A wait that fails (a usage error, a refused request) is a
+failure to report, not a sign that the worker needs you. Answer its
 questions with
 `herdr worker answer <id> --request <request_id> ...` (they also show in
 the `?` list), and read what it did with `herdr worker log <id>`; the

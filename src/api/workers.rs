@@ -84,7 +84,12 @@ pub(super) fn handle_worker_request(
                 (WorkerWaitUntil::Attention, after) => supervisor
                     .wait_attention(
                         &params.worker_id,
-                        after,
+                        after.or_else(|| {
+                            params
+                                .caller_pane_id
+                                .as_deref()
+                                .and_then(|pane| supervisor.owner_cursor(&params.worker_id, pane))
+                        }),
                         CONNECTION_POLL_INTERVAL,
                         keep_waiting,
                     )

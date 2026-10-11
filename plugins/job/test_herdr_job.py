@@ -1061,6 +1061,13 @@ class GuardTests(unittest.TestCase):
         self.assertNotEqual(other.stdout, first.stdout)
         self.assertEqual(self.tab_creates(), 2)
 
+    def test_run_prints_only_the_job_id_on_stdout(self):
+        # A caller takes it with `id=$(herdr-job run ...)`, never from `list`.
+        out = self.run_job("probe")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        path = next(self.state.glob("2*"))
+        self.assertEqual(out.stdout, f"{path.name}\n")
+
     def test_a_failed_job_is_counted_by_its_executor(self):
         self.assertEqual(self.run_job("probe").returncode, 0)
         path = next(self.state.glob("2*"))

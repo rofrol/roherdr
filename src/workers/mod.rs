@@ -4654,6 +4654,27 @@ impl WorkerSupervisor {
         })
     }
 
+    /// Where `worker.wait --attention` without `after` starts for a caller
+    /// in `caller_pane`: after the `seq` the worker's owner acknowledged,
+    /// when that pane owns it (as in [`Self::obligations`]: through its
+    /// tenure, else as the starting pane) and has acknowledged anything.
+    /// The owner's loop is then wait, handle, ack, the same wait again,
+    /// with no cursor of its own; an ack means handled, so a crash before
+    /// it wakes the next wait again. Anyone else starts from the snapshot.
+    pub(crate) fn owner_cursor(&self, worker_id: &str, caller_pane: &str) -> Option<i64> {
+        let tenure = self
+            .coordinator_of_pane(caller_pane)
+            .map(|tenure| tenure.coordinator_id);
+        let registry = lock(&self.shared.registry);
+        let number = Self::entry_number(&registry, worker_id).ok()?;
+        let status = &registry.workers[&number].status;
+        let owns = match &status.owner_coordinator {
+            Some(coordinator) => tenure.as_ref() == Some(coordinator),
+            None => status.owner_pane.as_deref() == Some(caller_pane),
+        };
+        (owns && status.acked_seq > 0).then_some(status.acked_seq)
+    }
+
     /// Records that the worker's owner handled its events up to `seq`
     /// (an `acked` event). Idempotent and monotonic: an ack at or below the
     /// acknowledged `seq` records nothing. A `seq` past the worker's latest

@@ -16,6 +16,10 @@ herdr-job log "$id"       # log path
 herdr-job clean           # close this pane's finished job tabs (--all: everyone's)
 ```
 
+`run` prints the job id as its only stdout line, everything else to stderr,
+so `id=$(herdr-job run ...)` is the way to name the job: never find it again
+with `herdr-job list | grep`, which picks the wrong one when several run.
+
 - The job tab is a child of the tab that started it. While the workspace
   has jobs, a second row under the tab bar lists the active tab's own
   content first (named after its agent, e.g. `claude`) and then its jobs,

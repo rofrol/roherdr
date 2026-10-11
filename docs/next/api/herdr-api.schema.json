@@ -7186,6 +7186,13 @@
                 "null"
               ]
             },
+            "caller_pane_id": {
+              "description": "The caller's pane. With `until: attention` and no `after`, a caller\nthat owns the worker waits after the `seq` it acknowledged\n(`worker.ack`), so its loop keeps no cursor of its own; anyone else,\nand an owner that has acknowledged nothing, starts from the worker's\ncurrent state.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "until": {
               "anyOf": [
                 {

@@ -1047,7 +1047,11 @@ the same inbox: with `after` it answers from that worker's rows after it
 output, the end), and from the worker's status, the snapshot, without
 `after`, for a cursor older than the rows every worker has, and for a worker
 whose store write failed. A worker no tenure owns has inbox rows for that
-wait too; `worker.events` never returns them.
+wait too; `worker.events` never returns them. Without `after`, a request whose
+`caller_pane_id` owns the worker (through its tenure, or as the pane that
+started it) waits after the `seq` that owner acknowledged with `worker.ack`,
+so an owner's loop (wait, handle, ack, wait) keeps no cursor; anyone else,
+and an owner that has acknowledged nothing, gets the snapshot.
 `worker.answer_as` (`coordinator_id`, the answering tenure, and the fields of
 `worker.answer`) answers as that tenure: applied only while it owns the
 worker. Once the worker belongs to another tenure (a handoff or a resume

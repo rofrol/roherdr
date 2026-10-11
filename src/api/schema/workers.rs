@@ -393,6 +393,13 @@ pub struct WorkerWaitParams {
     /// not count again; only what later events bring does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<i64>,
+    /// The caller's pane. With `until: attention` and no `after`, a caller
+    /// that owns the worker waits after the `seq` it acknowledged
+    /// (`worker.ack`), so its loop keeps no cursor of its own; anyone else,
+    /// and an owner that has acknowledged nothing, starts from the worker's
+    /// current state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// One coordinator's event inbox over all of its workers (`worker.events`).

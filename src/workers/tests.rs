@@ -3925,6 +3925,60 @@ fn obligations_appear_for_a_question_and_a_turn_end_and_vanish_once_acked() {
 }
 
 #[test]
+fn the_owners_wait_without_a_cursor_starts_after_what_it_acked() {
+    let fixture = Fixture::new("owner-cursor");
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    assert_eq!(ended.reason, WorkerAttentionReason::TurnEnd);
+    // Nothing acknowledged yet: the owner starts from the snapshot, too.
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), None);
+    fixture.supervisor.ack(&id, ended.seq).unwrap();
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(ended.seq));
+    // Not the owner: no cursor of the owner's.
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p2"), None);
+    assert_eq!(fixture.supervisor.owner_cursor("w-none", "p1"), None);
+
+    // The handled turn end does not wake the owner's next wait; the next
+    // event does.
+    let cursor = fixture.supervisor.owner_cursor(&id, "p1");
+    let waited = fixture
+        .supervisor
+        .wait_attention(&id, cursor, HANG_GUARD, || false)
+        .unwrap();
+    assert!(waited.is_none(), "woken by the acknowledged turn end");
+    fixture
+        .supervisor
+        .prompt(&id, "classifier Bash git push origin master")
+        .unwrap();
+    let (asked, _) = fixture.attention(&id, cursor, || {});
+    assert_eq!(asked.reason, WorkerAttentionReason::Question);
+    // Unacknowledged, it wakes the same wait again.
+    let (again, _) = fixture.attention(&id, fixture.supervisor.owner_cursor(&id, "p1"), || {});
+    assert_eq!(again.reason, WorkerAttentionReason::Question);
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
+fn a_tenure_owned_workers_cursor_follows_the_tenure() {
+    let fixture = Fixture::new("owner-cursor-tenure");
+    let tenure = fixture
+        .supervisor
+        .coordinator_start("/repo", "p1", Some("p1-session"))
+        .unwrap();
+    let id = start_owned(&fixture, "p1", "finish");
+    let (ended, _) = fixture.attention(&id, None, || {});
+    fixture.supervisor.ack(&id, ended.seq).unwrap();
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), Some(ended.seq));
+    // Once the tenure has ended, the pane no longer owns the worker.
+    fixture
+        .supervisor
+        .coordinator_end(&tenure.coordinator_id, "ended", None)
+        .unwrap();
+    assert_eq!(fixture.supervisor.owner_cursor(&id, "p1"), None);
+    fixture.supervisor.kill(&id, false).unwrap();
+}
+
+#[test]
 fn an_exit_the_owner_asked_for_creates_no_obligation() {
     let fixture = Fixture::new("owner-stop");
     let stop = |id: &str, caller: Option<&str>| {

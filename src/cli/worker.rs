@@ -37,6 +37,9 @@ const USAGE: &str =
     --attention returns at once or at the first of a pending question, a
     turn's end or the worker's end, with the reason, the questions and seq;
     --after SEQ (the seq it returned) skips the state that seq already showed.
+    Without --after, the worker's owner (the caller's pane, or its tenure)
+    waits after the seq it acknowledged with ack: wait, handle, ack, the same
+    wait again, with no cursor in the shell. Options take --name=VALUE too.
   herdr worker events [--owner COORDINATOR_ID] [--after CURSOR] [--wait] [--limit N] [--snapshot]
     One coordinator's inbox over all of its workers (default owner: the
     tenure bound to the caller's pane): every question, turn end, exit,
@@ -349,6 +352,9 @@ fn parse_wait(args: &[String]) -> Result<WorkerWaitParams, String> {
         let flag = match arg.as_str() {
             "--exit" => WorkerWaitUntil::Exit,
             "--attention" => WorkerWaitUntil::Attention,
+            // Named whole, so an option a shell passed as one argument
+            // (`"--after 42"`) shows as such instead of as a second id.
+            _ if arg.starts_with('-') => return Err(format!("wait does not take {arg:?}")),
             _ => {
                 ids.push(arg);
                 continue;
@@ -358,17 +364,32 @@ fn parse_wait(args: &[String]) -> Result<WorkerWaitParams, String> {
             return Err("wait takes --exit or --attention, not both".into());
         }
     }
-    let [worker_id] = ids.as_slice() else {
-        return Err("wait takes one worker id".into());
+    let worker_id = match ids.as_slice() {
+        [worker_id] => worker_id.clone(),
+        [] => return Err("wait takes one worker id".into()),
+        [_, extra @ ..] => {
+            return Err(format!(
+                "wait takes one worker id, not also {}",
+                extra
+                    .iter()
+                    .map(|arg| format!("{arg:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
     };
     let until = until.unwrap_or(WorkerWaitUntil::TurnEnd);
     if after.is_some() && until != WorkerWaitUntil::Attention {
         return Err("--after needs --attention".into());
     }
     Ok(WorkerWaitParams {
-        worker_id: worker_id.clone(),
+        worker_id,
         until: Some(until),
         after,
+        // Lets the owner's wait without --after start after what it acked.
+        caller_pane_id: (until == WorkerWaitUntil::Attention && after.is_none())
+            .then(super::target::caller_pane_id)
+            .flatten(),
     })
 }
 
@@ -421,8 +442,8 @@ fn take_seq_option(args: &[String], flag: &str) -> Result<(Option<i64>, Vec<Stri
     Ok((seq, rest))
 }
 
-/// Takes `flag VALUE` out of `args`; returns the value and the other
-/// arguments.
+/// Takes `flag VALUE` or `flag=VALUE` out of `args`; returns the value and
+/// the other arguments.
 pub(super) fn take_string_option(
     args: &[String],
     flag: &str,
@@ -431,14 +452,20 @@ pub(super) fn take_string_option(
     let mut rest = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if arg != flag {
+        let value = if arg == flag {
+            args.next()
+                .ok_or_else(|| format!("missing value for {flag}"))?
+                .clone()
+        } else if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|value| value.strip_prefix('='))
+        {
+            value.to_owned()
+        } else {
             rest.push(arg.clone());
             continue;
-        }
-        let value = args
-            .next()
-            .ok_or_else(|| format!("missing value for {flag}"))?;
-        if found.replace(value.clone()).is_some() {
+        };
+        if found.replace(value).is_some() {
             return Err(format!("{flag} given twice"));
         }
     }
@@ -1022,8 +1049,28 @@ mod tests {
                 ..
             })))
         ));
+        assert!(matches!(
+            parse_worker_args(&args(&["wait", "w1", "--attention", "--after=42"])),
+            Ok(Some(Method::WorkerWait(WorkerWaitParams {
+                after: Some(42),
+                caller_pane_id: None,
+                ..
+            })))
+        ));
+        // An option a shell passed as one argument, and a second id, are
+        // named in the error.
+        assert_eq!(
+            parse_wait(&args(&["w1", "--attention", "--after 42"])),
+            Err("wait does not take \"--after 42\"".into())
+        );
+        assert_eq!(
+            parse_wait(&args(&["w1", "--attention", "42"])),
+            Err("wait takes one worker id, not also \"42\"".into())
+        );
         for bad in [
             &["wait", "w1", "--after", "42"][..],
+            &["wait", "w1", "--attention", "--after="],
+            &["wait", "w1", "--attention", "--after=42", "--after", "43"],
             &["wait", "w1", "--attention", "--exit"],
             &["wait", "w1", "--attention", "--after"],
             &["wait", "w1", "--attention", "--after", "x"],
