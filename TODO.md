@@ -411,6 +411,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   `supervisor/`.
   Step 1, fourth commit landed 2026-10-11 (e53b12b3): `registry.rs`,
   `error.rs` (WorkerError), `types.rs`. Next: `supervisor/` by verb.
+  Step 1, fifth commit (23f4d201, supervisor lifecycle/questions) failed
+  the install's `just check` on a race from ce9d68c0: an owner-asked exit
+  advanced `acked_seq`. Fixed 2026-10-11 (69ad3474): a persisted
+  `end_by_owner` flag keeps such an exit obligation-free without advancing
+  the ack; the test waits for the exit event; 40/40 under stress. Next:
+  takeover and views.
 
 - [ ] Extract the coordination layer into its own crate (user, 2026-10-08: [t-ydd2vlwe]
   "the coordinator/worker code, the whole control, could be extracted as a
