@@ -214,6 +214,8 @@ fi
 # ends with an open question it did not ask or renew (one from an earlier turn the user has not
 # answered) is blocked once with a reminder to renew it with `herdr agent awaiting-reply "<question>"` or to withdraw it with
 # `herdr agent awaiting-reply --withdraw`, so the user's `?` list never keeps a stale question.
+# A question herdr holds since this turn's start (its `since_ms` against the transcript's time of
+# the turn's first entry) was asked in this turn and needs no renewal.
 # A stop the check blocks does not end the turn; any other stop reports the turn finished.
 stop_check() {
   [ "${HERDR_ENV:-}" = "1" ] || return 0
@@ -334,6 +336,31 @@ def text_of(content):
         for block in content or []
         if isinstance(block, dict) and block.get("type") == "text"
     )
+
+
+def transcript_ms(stamp):
+    """Unix milliseconds of a transcript entry's `timestamp` (ISO 8601), or None."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def asked_before(entry, started_ms):
+    """Whether an open question (`agent.get`'s `open_questions` entry) was reported before the
+    turn that started at `started_ms`. One reported in this turn is current, even when the
+    transcript does not show the command yet; an unknown report time (0) counts as earlier."""
+    if started_ms is None:
+        return True
+    since = entry.get("since_ms")
+    return not isinstance(since, int) or since <= 0 or since < started_ms
 
 
 def is_plain_stop(text):
@@ -545,6 +572,9 @@ last_batch = []
 batch_has_results = False
 # The turn started without the user: a background task's notification or a compaction summary.
 turn_woken = False
+# When the turn started (Unix milliseconds of its first entry), or None when the transcript does
+# not say.
+turn_started_ms = None
 transcript = hook_input.get("transcript_path")
 if isinstance(transcript, str) and transcript:
     try:
@@ -577,6 +607,7 @@ if isinstance(transcript, str) and transcript:
                 if not text_of(content).lstrip().startswith(HOOK_FEEDBACK):
                     turn_woken = bool(entry.get("isCompactSummary")) or text_of(
                         content).lstrip().startswith("<task-notification>")
+                    turn_started_ms = transcript_ms(entry.get("timestamp"))
                 # A new prompt starts a new turn.
                 reported = False
                 last_text = ""
@@ -744,7 +775,9 @@ if (
     entries = agent.get("open_questions") if isinstance(agent, dict) else None
     if isinstance(entries, list):
         open_questions = [
-            str(entry.get("question") or "reply") for entry in entries if isinstance(entry, dict)
+            str(entry.get("question") or "reply")
+            for entry in entries
+            if isinstance(entry, dict) and asked_before(entry, turn_started_ms)
         ]
 # A coordinator that waits for the user's go-ahead while nothing it started runs: the precedence
 # of scripts/coordinator_turn_audit.py (a tool-based ask, then a running background task, then
