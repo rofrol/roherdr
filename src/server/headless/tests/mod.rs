@@ -2791,6 +2791,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
             pane_id: first_pane,
             agent: crate::detect::Agent::Claude,
             observed_at: Instant::now(),
+            agent_pid: None,
         })
         .unwrap();
     let (respond_to, response_rx) = std::sync::mpsc::channel();
@@ -7759,6 +7760,7 @@ fn api_resume_argv_is_ignored_when_its_session_report_is_refused() {
         pane_id,
         agent: crate::detect::Agent::Claude,
         observed_at: Instant::now(),
+        agent_pid: None,
     });
     let report = |session: &str| {
         api::schema::Method::PaneReportAgentSession(api::schema::PaneReportAgentSessionParams {
@@ -7974,6 +7976,7 @@ fn a_notification_the_agent_undoes_within_the_delay_reaches_nobody_and_the_histo
         pane_id,
         agent: crate::detect::Agent::Pi,
         observed_at: Instant::now(),
+        agent_pid: None,
     });
     let public = server.app.public_pane_id(0, pane_id).unwrap();
 
@@ -8054,6 +8057,7 @@ fn a_done_waits_for_the_turn_that_reports_no_background_work() {
         pane_id,
         agent: crate::detect::Agent::Pi,
         observed_at: Instant::now(),
+        agent_pid: None,
     });
     let public = server.app.public_pane_id(0, pane_id).unwrap();
     let terminal_id = server.app.state.workspaces[0]
@@ -8143,6 +8147,7 @@ fn completion_guard_api_startup_blocker_respects_suppression() {
         pane_id,
         agent: crate::detect::Agent::Pi,
         observed_at: Instant::now(),
+        agent_pid: None,
     });
     let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
     for (seq, state) in [
@@ -8306,6 +8311,7 @@ fn startup_idle_does_not_forward_completion() {
             pane_id,
             agent: crate::detect::Agent::Pi,
             observed_at: Instant::now(),
+            agent_pid: None,
         })
     );
 

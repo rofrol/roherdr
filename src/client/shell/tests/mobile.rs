@@ -193,6 +193,7 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
         question: None,
         waiting_since_ms: None,
         limited: None,
+        restart_pending: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

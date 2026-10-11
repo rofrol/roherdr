@@ -1310,6 +1310,9 @@ pub struct ClientShellAgent {
     /// The limit the agent's last turn ended on, while it idles.
     #[serde(default)]
     pub limited: Option<crate::api::schema::AgentLimit>,
+    /// The agent runs an older version of its CLI than the one installed (see `AgentInfo`).
+    #[serde(default)]
+    pub restart_pending: Option<crate::api::schema::AgentRestartPending>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

@@ -956,6 +956,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
             question: None,
             waiting_since_ms: None,
             limited: None,
+            restart_pending: None,
             pane_id: format!("agent-pane-{index}"),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),

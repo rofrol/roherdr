@@ -216,6 +216,7 @@ mod tests {
             question: None,
             waiting_since_ms: None,
             limited: None,
+            restart_pending: None,
             pane_id: "agent-pane".into(),
             workspace_id: "workspace".into(),
             tab_id: "tab".into(),

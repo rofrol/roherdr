@@ -437,6 +437,10 @@ pub struct AgentInfo {
     /// The limit the agent's last turn ended on (`pane.report_limit`), while it idles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limited: Option<AgentLimit>,
+    /// The agent's CLI was updated on disk since it started: it runs an older version than
+    /// its launcher now has installed, until it is restarted. Claude and pi only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_pending: Option<AgentRestartPending>,
     /// What the agent reported it works on now (`pane.report_task`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -504,6 +508,15 @@ pub struct AgentLimit {
     /// The agent's own error text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// An agent that runs an older version of its CLI than the one installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentRestartPending {
+    /// What its launcher's `--version` printed when the agent started.
+    pub running_version: String,
+    /// What it prints now.
+    pub installed_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

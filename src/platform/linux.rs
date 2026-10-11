@@ -26,6 +26,8 @@ pub(crate) use super::unix_common::{
 #[cfg(test)]
 mod config_file_tests;
 
+mod path_watch;
+pub(crate) use path_watch::PathWatcher;
 mod shutdown;
 pub(crate) use shutdown::monitor_host_shutdown;
 

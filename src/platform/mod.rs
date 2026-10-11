@@ -662,6 +662,27 @@ pub(crate) fn outside_pipe_writers(_root_pid: u32) -> Vec<PipeWriter> {
     Vec::new()
 }
 
+/// Watching paths for changes needs kqueue or inotify; elsewhere the
+/// watch is unavailable and its users rely on their other events.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) struct PathWatcher;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+impl PathWatcher {
+    pub(crate) fn start(
+        _on_change: Box<dyn Fn(std::path::PathBuf) + Send>,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "watching paths is supported on Linux and macOS only",
+        ))
+    }
+
+    pub(crate) fn watch(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

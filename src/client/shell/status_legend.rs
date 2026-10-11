@@ -146,6 +146,8 @@ pub(super) enum LegendEntry {
     SpaceJobs,
     /// The `bg` token of an agent's own background work.
     BackgroundToken,
+    /// A tab line's mark of an agent whose CLI was updated since it started.
+    RestartPending,
     Header(super::sidebar::HeaderIndicator),
     Ask(AskRow),
     Items(ItemsCount),
@@ -420,6 +422,12 @@ pub(super) fn legend_lines(
             ));
         }
     }
+    lines.push(row(
+        super::space_tabs::RESTART_MARK,
+        super::space_tabs::restart_mark_color(palette),
+        super::space_tabs::RESTART_LABEL,
+        LegendEntry::RestartPending,
+    ));
     lines.push(example(
         vec![Span::styled(
             BACKGROUND_TOKEN_EXAMPLE,
@@ -822,6 +830,14 @@ mod tests {
                 expected.push((LegendEntry::Role(role), format!("{glyph}    {meaning}")));
             }
         }
+        expected.push((
+            LegendEntry::RestartPending,
+            format!(
+                "{}    {}",
+                super::super::space_tabs::RESTART_MARK,
+                super::super::space_tabs::RESTART_LABEL
+            ),
+        ));
         expected.push((
             LegendEntry::BackgroundToken,
             format!("{BACKGROUND_TOKEN_EXAMPLE}  {BACKGROUND_TOKEN_LABEL}"),

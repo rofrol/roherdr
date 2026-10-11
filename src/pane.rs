@@ -279,6 +279,7 @@ async fn publish_agent_process_detected_event(
     state_events: mpsc::Sender<AppEvent>,
     pane_id: PaneId,
     agent: Agent,
+    agent_pid: Option<u32>,
     observed_at: std::time::Instant,
 ) {
     if let Err(e) = state_events
@@ -286,6 +287,7 @@ async fn publish_agent_process_detected_event(
             pane_id,
             agent,
             observed_at,
+            agent_pid,
         })
         .await
     {
@@ -1240,6 +1242,7 @@ fn spawn_basic_detection_task(
                                 state_events.clone(),
                                 pane_id,
                                 agent,
+                                probe.agent_pid,
                                 now,
                             )
                             .await;
@@ -3253,6 +3256,7 @@ impl PaneRuntime {
                                             state_events.clone(),
                                             pane_id,
                                             agent,
+                                            probe.agent_pid,
                                             now,
                                         )
                                         .await;

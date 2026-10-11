@@ -54,6 +54,25 @@ impl App {
                 self.handle_internal_event(ev);
                 false
             }
+            ev @ AppEvent::AgentProcessDetected {
+                pane_id,
+                agent,
+                agent_pid,
+                ..
+            } => {
+                self.handle_internal_event(ev);
+                self.agent_process_started(pane_id, agent, agent_pid);
+                true
+            }
+            AppEvent::AgentLauncherChanged { path } => {
+                self.agent_launcher_changed(&path);
+                false
+            }
+            AppEvent::AgentVersionChecked {
+                check,
+                version,
+                stamp,
+            } => self.agent_version_checked(check, version, stamp),
             ev @ AppEvent::UsageUpdated(_) => {
                 self.handle_internal_event(ev);
                 // A new reading is one of the todo queues' events: a queue

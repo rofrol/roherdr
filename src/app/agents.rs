@@ -441,6 +441,10 @@ impl App {
                         .flatten(),
                     message: report.message.clone(),
                 }),
+            restart_pending: self.state.agent_versions.restart_pending(
+                &terminal.id,
+                terminal.effective_known_agent().or(terminal.detected_agent),
+            ),
             task: terminal.reported_task().map(str::to_owned),
             background_tasks,
             completion_seq: terminal.last_agent_completion_seq,

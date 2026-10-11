@@ -91,7 +91,17 @@ pub enum AppEvent {
         pane_id: PaneId,
         agent: Agent,
         observed_at: Instant,
+        /// The process that identified as `agent`, when the probe knows it.
+        agent_pid: Option<u32>,
     },
+    /// An agent launcher's `--version` check ended (see `app::agent_versions`).
+    AgentVersionChecked {
+        check: crate::app::agent_versions::VersionCheck,
+        version: Option<String>,
+        stamp: Option<crate::app::agent_versions::LauncherStamp>,
+    },
+    /// A watched agent launcher, its symlink target or their directory changed.
+    AgentLauncherChanged { path: std::path::PathBuf },
     /// The current Codex input screen is visible during managed startup.
     CodexPromptObserved { pane_id: PaneId, ready: bool },
     /// Fallback detector state changed in a pane.

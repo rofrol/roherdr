@@ -11231,6 +11231,17 @@
                 "null"
               ]
             },
+            "restart_pending": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentRestartPending"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent's CLI was updated on disk since it started: it runs an older version than\nits launcher now has installed, until it is restarted. Claude and pi only."
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -11520,6 +11531,24 @@
               "type": "string"
             }
           ]
+        },
+        "AgentRestartPending": {
+          "description": "An agent that runs an older version of its CLI than the one installed.",
+          "properties": {
+            "installed_version": {
+              "description": "What it prints now.",
+              "type": "string"
+            },
+            "running_version": {
+              "description": "What its launcher's `--version` printed when the agent started.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "running_version",
+            "installed_version"
+          ],
+          "type": "object"
         },
         "AgentSessionInfo": {
           "properties": {

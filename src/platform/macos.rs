@@ -28,7 +28,9 @@ pub(crate) use bootstrap::{configure_server_daemon_context, prepare_server_proce
 mod confine;
 pub(crate) use confine::{confined_command, CONFINED_JOB_SUPPORTED};
 mod held_pipes;
+mod path_watch;
 pub(crate) use held_pipes::{outside_pipe_writers, watch_child_exits};
+pub(crate) use path_watch::PathWatcher;
 
 #[cfg(test)]
 mod config_file_tests;

@@ -81,6 +81,11 @@ pub(super) struct SpaceTabLine {
     /// ended (see `super::background_count`), drawn dim as `bg:N` next to
     /// every state; 0 when none ran or nobody knows.
     pub(super) background_count: u32,
+    /// Its agents that run an older version of their CLI than the one
+    /// installed (see `ClientShellAgent::restart_pending`), as the
+    /// [`RESTART_MARK`]'s tooltip names them; none when every agent is
+    /// current.
+    pub(super) restart: Option<String>,
 }
 
 /// What a worker's line knows beyond a tab line's parts.
@@ -127,6 +132,19 @@ pub(super) fn role_marker(
         TabRole::Worker => Some(("⚒", "Worker: does one item in a worktree")),
         TabRole::Unknown => None,
     }
+}
+
+/// The mark of a tab whose agent's CLI was updated since it started: it
+/// runs the old version until it is restarted.
+pub(super) const RESTART_MARK: &str = "↻";
+
+/// What the restart mark says, in its tooltip and the status legend.
+pub(super) const RESTART_LABEL: &str = "restart pending: its agent's CLI was updated";
+
+/// The colour the restart mark is drawn in: it waits on the user, but
+/// nothing is wrong.
+pub(super) fn restart_mark_color(palette: &Palette) -> Color {
+    palette.peach
 }
 
 /// The colour a role mark is drawn in.
@@ -438,6 +456,7 @@ pub(super) fn worker_lines_at(
                 items: None,
                 background: None,
                 background_count: 0,
+                restart: None,
             }
         })
         .collect()
@@ -657,6 +676,7 @@ pub(super) fn space_tab_lines_filtered(
                     .cloned(),
                 background: tab_background(snapshot, tab, state),
                 background_count: tab_background_count(snapshot, tab),
+                restart: tab_restart(snapshot, tab),
             }
         })
         .collect::<Vec<_>>();
@@ -703,6 +723,7 @@ pub(super) fn space_tab_lines_filtered(
                 items: None,
                 background: None,
                 background_count: 0,
+                restart: None,
             });
         }
     }
@@ -773,6 +794,7 @@ fn collapse_ended_workers(
                 items: None,
                 background: None,
                 background_count: 0,
+                restart: None,
             });
         }
         if open {
@@ -1134,6 +1156,30 @@ fn tab_background(
         .iter()
         .filter(|agent| agent.tab_id == tab.tab_id)
         .find_map(|agent| super::background_work_detail(snapshot, agent))
+}
+
+/// The tab's agents whose CLI was updated since they started, with the
+/// versions: `claude 2.1.0 → 2.1.1`; none when every agent is current.
+fn tab_restart(snapshot: &ClientShellSnapshot, tab: &ClientShellTab) -> Option<String> {
+    let stale = snapshot
+        .agents
+        .iter()
+        .filter(|agent| agent.tab_id == tab.tab_id)
+        .filter_map(|agent| {
+            let pending = agent.restart_pending.as_ref()?;
+            Some(format!(
+                "{} {} → {}",
+                agent
+                    .display_agent
+                    .as_deref()
+                    .or(agent.agent.as_deref())
+                    .unwrap_or("agent"),
+                pending.running_version,
+                pending.installed_version
+            ))
+        })
+        .collect::<Vec<_>>();
+    (!stale.is_empty()).then(|| stale.join(", "))
 }
 
 /// How many background tasks the tab's agents had running when their turns
@@ -1625,6 +1671,37 @@ pub(super) fn render_space_tab_lines(
                 starts_at_target: false,
             });
         }
+        // A pending restart, left of the above, while the label keeps a
+        // few columns.
+        let restart = line
+            .restart
+            .as_deref()
+            .filter(|_| area_width.saturating_sub(plan_width + was_width) >= 1 + 1 + 6);
+        let restart_width = restart.map_or(0, |_| 2);
+        if let Some(detail) = restart {
+            let restart_x = text_x + area_width - plan_width - was_width - 1;
+            let mark = Rect::new(restart_x, y, 1, 1);
+            super::render::put_text(
+                buffer,
+                restart_x,
+                y,
+                1,
+                RESTART_MARK,
+                on_accent.unwrap_or_else(|| Style::default().fg(restart_mark_color(palette))),
+            );
+            hits.tooltips.push(super::tooltip::TooltipTarget {
+                rect: mark,
+                id: format!("tab-restart:{}", line.tab_id),
+                text: format!(
+                    "Restart pending: {detail}; restart it from its menu (Restart agents){LEGEND_CLICK}"
+                ),
+                bg: None,
+                starts_at_target: false,
+            });
+            hits.legend
+                .push((mark, super::status_legend::LegendEntry::RestartPending));
+        }
+        let was_width = was_width + restart_width;
         // The background tasks its agents left running, dim and left of the
         // above, in every state: `bg:N` says it in text, not only in colour.
         let background = (line.background_count > 0)

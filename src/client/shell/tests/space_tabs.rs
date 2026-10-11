@@ -17,6 +17,7 @@ fn state_with_tabs_and_width(tabs: bool, sidebar_width: u16) -> ClientShellState
         question: None,
         waiting_since_ms: None,
         limited: None,
+        restart_pending: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1243,6 +1244,64 @@ fn a_tab_shows_its_background_task_count_next_to_every_state() {
         &[("bg_count", "1"), ("bg", "3 bg")],
     );
     assert!(tab_background_count(&mut state).0.contains("bg:1"));
+}
+
+#[test]
+fn a_tab_marks_an_agent_whose_cli_was_updated_until_it_restarts() {
+    let mut state = state_with_tabs(true);
+    let restart_mark = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).unwrap();
+        let (line, _) = state.hits.space_tabs[0];
+        let row = frame_rows(&frame)[line.y as usize].clone();
+        let target = state
+            .hits
+            .tooltips
+            .iter()
+            .find(|target| target.id.starts_with("tab-restart:") && target.rect.y == line.y)
+            .cloned();
+        let legend = target.as_ref().and_then(|target| {
+            state
+                .hits
+                .legend_glyphs
+                .iter()
+                .find(|(rect, _)| *rect == target.rect)
+                .map(|(_, entry)| *entry)
+        });
+        (row, target.map(|target| target.text), legend)
+    };
+
+    let (row, tooltip, _) = restart_mark(&mut state);
+    assert!(
+        !row.contains(super::super::space_tabs::RESTART_MARK),
+        "{row}"
+    );
+    assert_eq!(tooltip, None);
+
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].agent = Some("claude".into());
+    projected.agents[0].restart_pending = Some(crate::api::schema::AgentRestartPending {
+        running_version: "2.1.0".into(),
+        installed_version: "2.1.1".into(),
+    });
+    state.set_snapshot(Box::new(projected));
+    let (row, tooltip, legend) = restart_mark(&mut state);
+    assert!(
+        row.contains(super::super::space_tabs::RESTART_MARK),
+        "{row}"
+    );
+    let tooltip = tooltip.expect("restart mark tooltip");
+    assert!(tooltip.contains("claude 2.1.0 → 2.1.1"), "{tooltip}");
+    assert!(tooltip.contains("Restart agents"), "{tooltip}");
+    assert_eq!(
+        legend,
+        Some(super::super::status_legend::LegendEntry::RestartPending)
+    );
+
+    // Restarted on the new version: the mark goes.
+    let mut projected = state.snapshot.as_deref().expect("snapshot").clone();
+    projected.agents[0].restart_pending = None;
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(restart_mark(&mut state).1, None);
 }
 
 #[test]
@@ -2652,6 +2711,7 @@ fn header_agent(
         question: None,
         waiting_since_ms: None,
         limited: None,
+        restart_pending: None,
         pane_id: pane.into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

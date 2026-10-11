@@ -231,6 +231,7 @@ pub(super) fn snapshot_with_completions(
                 question: agent.question,
                 waiting_since_ms: agent.waiting_since_ms,
                 limited: agent.limited,
+                restart_pending: agent.restart_pending,
                 state_labels,
                 tokens,
                 focused,

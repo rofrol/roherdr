@@ -122,9 +122,13 @@ This is the main Herdr workflow: start several agents, let them work in parallel
 
 ## Status legend
 
-The global menu's **status legend** explains every mark the sidebar draws, per domain: agent states and their marks, role marks (`♛` coordinator, `⚒` worker), headless worker states, job states and counts (`!2` is two failed jobs), the `bg` token of an agent's own background work, a branch's `↑`/`↓` counts, the header buttons (`✉`, `?`, the working count, `★`), the rows of the `?` list, and a coordinator's TODO items with their runs. Each glyph is drawn exactly as the sidebar draws it, in your style and theme, with a swatch of its colour.
+The global menu's **status legend** explains every mark the sidebar draws, per domain: agent states and their marks, role marks (`♛` coordinator, `⚒` worker), the `↻` restart-pending mark, headless worker states, job states and counts (`!2` is two failed jobs), the `bg` token of an agent's own background work, a branch's `↑`/`↓` counts, the header buttons (`✉`, `?`, the working count, `★`), the rows of the `?` list, and a coordinator's TODO items with their runs. Each glyph is drawn exactly as the sidebar draws it, in your style and theme, with a swatch of its colour.
 
-Click a tab's state glyph, its role mark or a space's job counts to open the legend at that entry. Glyphs that already do something when clicked, such as the header buttons, the Items button, the fold counts and the branch chip, point to the legend in their tooltip instead.
+Click a tab's state glyph, its role mark, its restart mark or a space's job counts to open the legend at that entry. Glyphs that already do something when clicked, such as the header buttons, the Items button, the fold counts and the branch chip, point to the legend in their tooltip instead.
+
+When Claude Code or pi is updated on disk while it runs, the running process keeps the old version until it restarts. Herdr notices and marks its tab with `↻`; hovering the mark names the agent and both versions (`claude 2.1.0 → 2.1.1`). Herdr never restarts an agent itself: restart it when it suits you, for example with the "Restart agents" menu actions.
+
+Herdr runs the agent's `--version` (the `claude` or `pi` found on Herdr's `PATH`) when the agent starts in a pane, and again when that launcher, its symlink target or their directory changes on disk (Linux and macOS) or when another pane starts the same agent. A launcher whose path, modification time and size are unchanged is not checked again. The API returns the mark as `restart_pending` of `agent.get` and `agent.list`, with `running_version` and `installed_version`. An agent running when the Herdr server was replaced or restarted counts as running the version installed at that moment.
 
 ## Custom agent labels
 

@@ -205,6 +205,7 @@ mod tests {
             question: None,
             waiting_since_ms: None,
             limited: None,
+            restart_pending: None,
             pane_id: pane_id.into(),
             workspace_id: "w1".into(),
             tab_id: tab_id.into(),

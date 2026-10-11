@@ -7,6 +7,7 @@ pub(crate) mod actions;
 mod agent_resume;
 #[cfg(test)]
 mod agent_suspend_tests;
+pub(crate) mod agent_versions;
 pub(crate) mod agent_view;
 mod agents;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
@@ -204,6 +205,8 @@ pub struct App {
     // False when startup could not pin every installation; cleanup could
     // otherwise reclaim files a restored consumer still uses.
     pub(crate) plugin_installation_cleanup_allowed: bool,
+    /// Watches agent launchers for updates; started with the first agent.
+    pub(crate) launcher_watch: Option<agent_versions::LauncherWatch>,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -587,6 +590,7 @@ impl App {
                 enabled: config.usage.enabled,
                 providers: Vec::new(),
             },
+            agent_versions: Default::default(),
             update_install_command,
             latest_release_notes_available,
             update_dismissed: false,
@@ -700,6 +704,7 @@ impl App {
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             last_git_repo_discovery_refresh: Instant::now(),
             git_refresh_in_flight: false,
+            launcher_watch: None,
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_refresh_spawn_retry_pending: false,
