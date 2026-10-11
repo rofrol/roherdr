@@ -1486,6 +1486,16 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   ... is not a worktree of .../rormpc", leaving only abort; the preflight
   refuses (or the start creates the repository's slot) instead.
 
+- [ ] The driver's task suffix asks the worker to verify the task's facts [t-c5bni564]
+  (the owner via the roguix-vps coordinator, 2026-10-11: a task said
+  `ssh root@<domain>` without the repository's documented port <ssh port>; the
+  worker did not check, the coordinator's review did not either, the run
+  failed). `herdr todo run` appends the contract to every task; add one line:
+  verify each concrete fact the task gives (host, port, user, path,
+  command) against the repository, name the source in the final message,
+  and stop with WORKER-BLOCKED when the task and the repository disagree.
+  The todo skill's matching rule is the coordinator's text edit.
+
 ## Proposed
 
 Items agents add. Not approved until the user moves them up.
