@@ -180,6 +180,33 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   atomically; idempotent wake tokens; no grace timer. The supervisor knows
   only what herdr observes. Full text: report-herdr-wait-workers.md (copied
   into the herdr coordinator's scratchpad).
+  Decided by the herdr coordinator 2026-10-11 (the user via try-roguix:
+  "the herdr space coordinator handles this; ask the models"; own round
+  20261011-152922-400f, sol + MiMo + DeepSeek agreeing; the try-roguix
+  rounds were input only):
+  - The supervisor never prompts a worker (waking is typing, an action);
+    it records a finding and delivers it to the owning coordinator's wait
+    or inbox; the coordinator wakes the worker once, idempotent on
+    (assignment, turn). This replaces B, C and E's "wake the worker".
+  - A (invariant) adopted as a mechanical check over herdr-visible facts.
+  - D only for driver jobs (the driver owns their lifecycle); herdr never
+    invents a continuation for a pane worker.
+  - E: a WORKER-DONE whose sha does not resolve or whose named herdr jobs
+    have no exit-0 record is marked unverified (kept, not deleted) and the
+    coordinator is told; the coordinator may override with a reason (a
+    moved sha), so no correction loop.
+  - F adopted: an unhandled WORKER-BLOCKED at the coordinator's turn end
+    alerts the user (no recorded disposition = unhandled).
+  - G: `herdr waiter register --assignment --job` from the pane; the server
+    derives the session from the pane, checks the assignment's owner and the
+    job's existence, binds the job's end to the coordinator atomically and
+    returns a receipt; an already-ended job is delivered at once; a bare
+    background shell has no job and so no waiter.
+  - No grace period or timer anywhere (sol proposed one; dismissed).
+  - Slice 1: points 1-3 of this item (queued_command ingestion, unsupported
+    exits at once, request-id anchoring) plus verdicts stored per assignment
+    and replayed by `wait-agent --until verdict`, then A + G + F as findings
+    to the coordinator; E last.
 
 - [ ] A Supervision tab pinned at the top of the sidebar (user, [t-76czwuj7]
   2026-10-11: "the coordinator investigator gets its own tab, always at the
