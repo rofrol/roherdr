@@ -381,6 +381,12 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     (add only what is missing); the client never polls. One triage state:
     the `?` entries link to these findings, not a second inbox.
   - Slice 1: the row, the view, freshness, Open pane; acknowledge later.
+  Slice 1 landed 2026-10-11 (ad7741f9): the pinned Supervision row (worst
+  glyph, fixed-width counts, stale/unavailable/no-sweep states) and its
+  read-only view (sweep time, coordinators with their run step and an open-pane
+  link, findings with evidence), `?` entries linking to it, `[supervision]
+  show_tab`; data in the shell snapshot, no polling. Left: the mobile layout
+  and the collapsed sidebar; acknowledging from the view.
 
 - [ ] A coordinator never waits on an untracked shell (user via the violai [t-7jdg43la]
   coordinator, 2026-10-11: "nothing moved all night; report it to the
