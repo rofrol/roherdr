@@ -1308,3 +1308,11 @@ circle (the user, 2026-10-11). Now (bc93c50f) waiting and running marks use
 the turning job half circle (`motion::job_glyph`): the Waits mark, motion
 on wait edges; herdr-job and herdr-bg-badge write a still `◑` that the
 client turns in the bg/jobs tokens; legend, tests and docs updated.
+
+## The VPS host name is <vps host>
+
+Correction of "A moved host" (2026-10-11, d-g7ops7qr, the user):
+<service host> is the roguix service subdomain (substitutes, channel),
+not the machine's name; the VPS got its own A record <vps host>
+(<new IP>, created by roguix-vps's reviewed script) and every host
+setting moved to it (<domain> dfba82d).
