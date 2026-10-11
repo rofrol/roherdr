@@ -197,6 +197,22 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   repositories' own coordinators, see the item on waiting on another
   coordinator.
 
+- [ ] `todo run` runs several install steps, some only when the landed [t-fpgkveff]
+  diff touches given paths (the user via the rormpc coordinator,
+  2026-10-12): rormpc's [install] runs `scripts/rormpc_install.sh install`,
+  but a commit that bumps the pinned rormpc-tools tag also needs
+  `scripts/rormpc_install.sh companions` (reinstalls mpd-player, musicdb,
+  hits at that tag, restarts their LaunchAgents); the run never runs it
+  and the allowlist blocks it by hand (run r-a7sefsnf installed ef27a12
+  pinning v0.2.54 while musicdb stayed old; the user approved one
+  override, d-b2ypouzq). Decided by the coordinator: `.herdr/checks.toml`
+  accepts an ordered list of named install steps, each an argv with an
+  optional `when_paths` glob list matched against the landed commit's
+  diff; the run executes the matching steps in order after the cherry-
+  pick with the coordinator's environment, records each, and a failed
+  step waits as `install_failed` naming it (`retry-install` resumes at
+  that step); the existing single [install] stays valid.
+
 - [ ] A TODO item can wait on another repository's coordinator, visibly [t-7iuvhmyd]
   (the user, 2026-10-12, rejecting a herdr-managed cross-repository
   handover: "I don't like this; there is supposed to be a coordinator per
