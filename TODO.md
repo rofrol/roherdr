@@ -38,6 +38,24 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      enforced it must judge the whole chained invocation (sol).
   The 12 h hang itself is a violai bug queued there; no timeout here.
 
+- [ ] A pane worker stays "working" after its turn, and a prompt is [t-ul7klyyw]
+  "confirmed" that never arrived (violai coordinator, 2026-10-11, third
+  report: "nothing works in this space"). Pane w98:p1 (Claude, worktree
+  violai/todo-goatcounter) ended its turn at 11:43 with `WORKER-DONE
+  882c5cc` and a recap line, at an empty prompt; `herdr agent list` still
+  said `working`; a prompt sent at 11:46 (request
+  `prompt_1a12a52ec43_2`) never appeared in the pane, yet the server log
+  shows `agent.prompt_confirmed` returning ok at 09:46:35Z; `herdr-job
+  wait-agent --request ... --until verdict` kept waiting. At 12:00 the pane
+  read `idle`. Checked by the coordinator: the confirmation accepts "its
+  state turning working" as delivery, so a stale `working` likely
+  confirmed an undelivered prompt (hypothesis, not proven). Find (1) why
+  the 11:43 turn end was not applied (the Stop hook's report, the recap
+  redraw read as working by screen detection, ordering), (2) why the typed
+  prompt did not reach Claude's input, and make confirmation require a
+  transition after the send (a `UserPromptSubmit` for that request, or
+  working entered after it), never a state already present. Tests.
+
 - [ ] `todo resume --note` takes `--next`/`--stop-reason` like `--close` [t-dgtlrinl]
   (points 4-5 of the closed t-pku6dsb6, 2026-10-10/11: approving a run
   with a note cannot chain the next item, so the coordinator starts it by
