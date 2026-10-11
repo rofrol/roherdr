@@ -36,6 +36,13 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   wakes the dependent coordinator (its own item); release recipes come
   before the release item.
 
+- [ ] A cross-repository handover between coordinators (follows from [t-x3s2qblm]
+  [t-oe3wrkvz], round of 2026-10-12): an item in one backlog depends on an
+  item in another repository's backlog; when the dependency lands, herdr
+  records the landed commit or version and wakes the dependent
+  coordinator (an event, no polling); idempotent markers, visible in both
+  spaces; never a cross-repository transaction.
+
 - [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
   2026-10-11, looking at the herdr space during an install: "why is
   nothing happening here? ask the models, fix the process"). The driver was
