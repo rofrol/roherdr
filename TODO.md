@@ -11,6 +11,17 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] A folder slot per repository (the rormpc coordinator, 2026-10-11, at [t-jt7cwur2]
+  the user's request; `herdr report` r-3): `--folder-slot worker` resolves
+  to `../herdr-worktrees/worker` relative to each repository, so every repo
+  under ~/personal_projects shares one slot; rormpc's `herdr todo run` was
+  refused "folder slot ... is busy: w162" (herdr's own worker). Want: the
+  slot keyed by repository (e.g. `../herdr-worktrees/<repo>/worker` or the
+  repository's own `.herdr` setting), the busy refusal naming the other
+  repository, a test with two repositories. Also check why the coordinator
+  allowlist blocked rormpc's old `herdr worker start` path although it runs
+  in shadow mode (likely the 0.5 s timeout of t-61c04b74's item).
+
 - [ ] One consult command, so no session runs a stale model set (the user, [t-aa3mhh4e]
   2026-10-11: "why don't the coordinators ask DeepSeek too? fix it; ask
   the models"). Checked: after the skill gained DeepSeek (e166cea7, ~13:00),
