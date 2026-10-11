@@ -1504,23 +1504,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   and stop with WORKER-BLOCKED when the task and the repository disagree.
   The todo skill's matching rule is the coordinator's text edit.
 
-- [ ] The space row's crown starts a coordinator only where it makes sense [t-nrkjbc4r]
-  (the user, 2026-10-11: "why is there a button to start a coordinator on a
-  worker's card? is the change that the herdr space is always a coordinator
-  deployed? ask the models"; round 20261011-173950-bc35, sol + MiMo +
-  DeepSeek agreeing). Checked: no such "always a coordinator" change was
-  decided or deployed; 140fa8cd only replaced the ` T ` chip with the crown,
-  shown on every local space and still labelled "Start a worker on this
-  space's TODO". Decided: the chip shows only on a repository's main
-  checkout space, never on a worktree or worker space; with an active
-  coordinator tenure for the repository it focuses that coordinator's tab
-  (resolved at click time, a missing tab falls back to start), otherwise it
-  starts one; distinct glyph states (outline = start, solid = active);
-  tooltips "Start TODO coordinator for <repo>" / "Focus active TODO
-  coordinator for <repo>"; no auto-start ("the space is the coordinator"
-  was rejected by all three: a space is a checkout, a coordinator a role
-  with a lifecycle); the one-per-repository constraint stays the guard.
-
 - [ ] A worker's space says who opened it and why, and never takes focus [t-qf7hytjv]
   (the user, 2026-10-11, screenshot: "why was a new space opened? ask the
   models"). The guix coordinator started a pane worker for an item in
@@ -1541,6 +1524,40 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
     slot as a headless worker by default; a pane worker is a deliberate
     choice; the task is delivered with the start (`agent start` with a
     prompt returns its request id, see the agent-prompt item).
+
+- [ ] One space per git repository, and the space is its coordinator (the [t-ntwtpg5y]
+  user, 2026-10-11: "there is to be no button to start a coordinator at
+  all; a space equals a coordinator; always one space per git repository
+  and one coordinator; ask the models"; this replaces the crown-chip item
+  of round 20261011-173950-bc35). Round 20261011-174413-916f (sol, MiMo,
+  DeepSeek) on the how, decided by the coordinator:
+  - Identity: a git space is keyed by the resolved git common directory
+    (worktrees map to their repository; nested repositories and submodules
+    are their own); `herdr workspace create` for a repository that has a
+    space returns and focuses it, atomically. Non-git spaces (`~`, chats)
+    are explicitly exempt and have no coordinator.
+  - The coordinator is the space's role, not a process: tab 1, pinned, role
+    `coordinator`, created with the space; its agent starts when the space
+    is created and is resumed (same session) on reopen and after a handoff;
+    an unexpected exit restarts it with designed, bounded backoff; a
+    deliberate stop, a usage limit or a login failure shows that state in
+    tab 1 with its recovery, never a restart loop. Plain chats are other
+    tabs. Closing the space is the only way to end the role.
+  - No start button: the crown chip and its `todo_command` launcher go (a
+    `herdr coordinator start` CLI stays for scripts one release).
+  - Worktrees: `herdr worktree create` returns a tab inside the repository's
+    space (each tab keeps its checkout path and branch, labelled), never a
+    new space; headless workers stay headless with their per-repository
+    slot.
+  - Existing duplicates (worktree child spaces, two spaces of one repo):
+    no automatic tab moving; old space ids become aliases of the canonical
+    one server-side; a `herdr space merge --into` command merges on the
+    user's request. Must not break: tenure exclusivity, handoff, session
+    restore, pane cwds, worker slots, the endpoint contract (new methods
+    only).
+  - Slice 1: identity + create-or-focus + non-git exemption + the
+    coordinator tab created with the space + removing the crown; slice 2:
+    worktree tabs; slice 3: aliases and merge; restart policy with slice 1.
 
 ## Proposed
 
