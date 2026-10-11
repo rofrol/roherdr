@@ -1610,6 +1610,15 @@ class WaitAgentTests(unittest.TestCase):
                 self.assertIn(words, text)
                 self.assertEqual(len(calls), 2)
 
+    def test_a_superseded_assignment_names_the_newer_request_to_wait_for(self):
+        superseded = self.recorded("superseded", assignment={
+            "request_id": "prompt_1", "pane_id": "w:p5", "accepted_ms": 1, "superseded_by": "prompt_2"})
+        code, text, calls = self.run_verdict([self.prompt_status(), superseded])
+        self.assertEqual(code, 10, text)
+        self.assertIn("--request prompt_2 --until verdict", text)
+        self.assertEqual([call[1] for call in calls], ["prompt-status", "wait-verdict"])
+        self.assertEqual(self.sleeps, [])
+
     def test_an_assignment_herdr_does_not_keep_is_read_from_the_transcript(self):
         done = self.transcript("k", ("user", self.PROMPT), ("assistant", "WORKER-DONE {sha} | parser"))
         unknown = self.recorded("unknown_request")

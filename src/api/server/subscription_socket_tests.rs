@@ -1080,3 +1080,102 @@ fn wait_verdict_reports_a_request_herdr_does_not_keep() {
     let response = assert_verdict_wait_ended(&mut client, "unknown_request");
     assert!(response["result"].get("assignment").is_none());
 }
+
+#[test]
+fn a_verdict_is_delivered_by_the_waiters_acknowledgement_on_the_same_connection() {
+    crate::assignments::set_test_dir(None);
+    crate::assignments::accepted("prompt_v1", "pane_1", None, None, None, "do it", None);
+    assert!(crate::assignments::record_verdict(
+        "prompt_v1",
+        crate::assignments::worker_line("WORKER-DONE abc1234 | done", 2).unwrap()
+    ));
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, Some("WORKER-DONE abc1234 | done"));
+    assert_verdict_wait_ended(&mut client, "verdict");
+    // Written, not delivered: the waiter still holds the wait, so nothing reports it as
+    // nobody's.
+    let record = crate::assignments::get("prompt_v1").unwrap();
+    assert!(record.answered_ms.is_some());
+    assert_eq!(record.delivered_ms, None);
+    assert!(crate::assignments::has_waiter("prompt_v1"));
+    assert!(crate::assignments::undelivered_unwatched().is_empty());
+
+    client.send(json!({
+        "id": "ack",
+        "method": "agent.ack_verdict",
+        "params": {"request_id": "prompt_v1"}
+    }));
+    let response = client.response();
+    assert_eq!(response["id"], "ack");
+    assert_eq!(response["result"]["type"], "agent_assignment", "{response}");
+    assert!(response["result"]["assignment"]["delivered_ms"].is_u64());
+    drop(client);
+    crate::assignments::set_test_dir(None);
+}
+
+#[test]
+fn a_waiter_that_closes_without_acknowledging_leaves_the_verdict_undelivered() {
+    crate::assignments::set_test_dir(None);
+    crate::assignments::accepted("prompt_v1", "pane_1", None, None, None, "do it", None);
+    assert!(crate::assignments::record_verdict(
+        "prompt_v1",
+        crate::assignments::worker_line("WORKER-DONE abc1234 | done", 2).unwrap()
+    ));
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, Some("WORKER-DONE abc1234 | done"));
+    assert_verdict_wait_ended(&mut client, "verdict");
+    drop(client);
+    // The waiter's end (the connection's close) unregisters it.
+    drop(test);
+    assert!(!crate::assignments::has_waiter("prompt_v1"));
+    let undelivered = crate::assignments::undelivered_unwatched();
+    assert_eq!(undelivered.len(), 1);
+    assert_eq!(undelivered[0].delivered_ms, None);
+    crate::assignments::set_test_dir(None);
+}
+
+#[test]
+fn a_recorded_verdict_wakes_the_wait_without_a_pane_event() {
+    crate::assignments::set_test_dir(None);
+    crate::assignments::accepted("prompt_v1", "pane_1", None, None, None, "do it", None);
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    reply_assignment(&mut test, None);
+    reply_agent(&mut test, "working", 3);
+    // No event about the pane: the verdict's record itself wakes the wait.
+    assert!(crate::assignments::record_verdict(
+        "prompt_v1",
+        crate::assignments::worker_line("WORKER-DONE abc1234 | done", 2).unwrap()
+    ));
+    reply_assignment(&mut test, Some("WORKER-DONE abc1234 | done"));
+    assert_verdict_wait_ended(&mut client, "verdict");
+    crate::assignments::set_test_dir(None);
+}
+
+#[test]
+fn wait_verdict_answers_a_superseded_assignment() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    wait_verdict(&mut client);
+    let request = test.app_request();
+    reply(
+        request,
+        ResponseResult::AgentAssignment {
+            assignment: serde_json::from_value(json!({
+                "request_id": "prompt_v1", "pane_id": "pane_1", "accepted_ms": 1,
+                "superseded_by": "prompt_v2"
+            }))
+            .unwrap(),
+        },
+    );
+    let response = assert_verdict_wait_ended(&mut client, "superseded");
+    assert_eq!(
+        response["result"]["assignment"]["superseded_by"],
+        "prompt_v2"
+    );
+}

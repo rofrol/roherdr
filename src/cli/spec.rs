@@ -764,9 +764,14 @@ fn agent_command() -> Command {
                 "Wait for the WORKER verdict of a prompt's assignment",
             )
             .after_help(
-                "Answers once herdr records the assignment's WORKER-DONE/WORKER-BLOCKED line (at once when it already did, also before a server restart or live handoff), the agent asks something (a dialog or an open question), or it exits. Follows a live handoff. Exits 0 only for a verdict. No timeout.",
+                "Answers once herdr records the assignment's WORKER-DONE/WORKER-BLOCKED line (at once when it already did, also before a server restart or live handoff), a newer prompt into the same pane supersedes it (reason superseded, naming that prompt's request), the agent asks something (a dialog or an open question), or it exits. Follows a live handoff. Acknowledges a verdict once it is printed, so herdr counts it delivered. Exits 0 only for a verdict. No timeout.",
             ),
         )
+        .subcommand(id_command(
+            "ack-verdict",
+            "request_id",
+            "Acknowledge a verdict a wait answered with, so herdr counts it delivered",
+        ))
         .subcommand(
             Command::new("attach")
                 .about("Attach directly to an agent terminal")

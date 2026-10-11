@@ -553,6 +553,8 @@ pub enum Method {
     AgentVerdict(AgentVerdictParams),
     #[serde(rename = "agent.wait_verdict")]
     AgentWaitVerdict(AgentWaitVerdictParams),
+    #[serde(rename = "agent.ack_verdict")]
+    AgentAckVerdict(AgentAckVerdictParams),
 }
 
 #[cfg(test)]

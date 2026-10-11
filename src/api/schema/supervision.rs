@@ -61,9 +61,14 @@ pub enum SupervisionPredicate {
     /// than the build guard's 15 GiB.
     DiskLow,
     /// Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or
-    /// `WORKER-BLOCKED` line) and no `agent.wait_verdict` received it while none waits for
-    /// it: its waiter was never started, ended on something else, gave up or was killed.
+    /// `WORKER-BLOCKED` line) and no waiter acknowledged it (`agent.ack_verdict`) while none
+    /// waits for it: its waiter was never started, ended on something else, gave up, or was
+    /// killed before or after the answer was written.
     VerdictUndelivered,
+    /// A pane worker's turn ended (Claude's `Stop`, no background task left) with its
+    /// assignment started and no `WORKER` line, and no turn started since: it asks
+    /// something, stopped early, or forgot the line.
+    StoppedWithoutVerdict,
     #[serde(other)]
     Unknown,
 }

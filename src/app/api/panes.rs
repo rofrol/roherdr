@@ -1714,8 +1714,16 @@ impl App {
         let finished = params.phase == crate::api::schema::AgentTurnPhase::Finished;
         // The verdicts this turn end brings, read before the end finishes the requests, so a
         // prompt the agent took in mid-turn ends with it.
-        let verdicts =
-            finished && params.error.is_none() && self.record_turn_end_verdicts(ws_idx, pane_id);
+        let verdicts = finished
+            && params.error.is_none()
+            && self.record_turn_end_verdicts(
+                ws_idx,
+                pane_id,
+                params.background_tasks.unwrap_or(0) == 0,
+            );
+        if !finished {
+            self.assignments_turn_started(ws_idx, pane_id);
+        }
         let Some(terminal) = self.pane_terminal_mut(ws_idx, pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };

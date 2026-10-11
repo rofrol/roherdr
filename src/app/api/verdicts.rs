@@ -21,13 +21,14 @@ impl App {
     }
 
     /// Registers a prompt herdr accepted for the pane's agent, anchored at the end of the
-    /// agent's transcript now.
+    /// agent's transcript now, owned by `caller_pane` (the coordinator that sent it).
     pub(super) fn register_assignment(
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
         request_id: &str,
         text: &str,
+        caller_pane: Option<&str>,
     ) {
         let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
             return;
@@ -41,25 +42,32 @@ impl App {
         let agent = terminal.and_then(|terminal| terminal.effective_agent_label());
         let worker = terminal.and_then(|terminal| terminal.agent_name.as_deref());
         let transcript = self.pane_transcript(ws_idx, pane_id);
+        let owner = caller_pane
+            .filter(|pane| !pane.trim().is_empty())
+            .map(|pane| self.canonical_pane_id(pane));
         crate::assignments::accepted(
             request_id,
             &public,
             agent,
             worker,
+            owner.as_deref(),
             text,
             transcript.as_deref(),
         );
     }
 
     /// The pane's agent reported a turn end: reads its transcript once for the pane's open
-    /// assignments, records each verdict found (once), and marks a prompt the agent took in
-    /// mid-turn as worked on by this turn, so its end ends it. A verdict that no
-    /// `agent.wait_verdict` waits for asks for a supervision sweep. Returns whether a followed
-    /// request changed.
+    /// assignments, records each verdict found (once), closes those a newer prompt superseded,
+    /// and marks a prompt the agent took in mid-turn as worked on by this turn, so its end ends
+    /// it. When `turn_closed` (no background task left to resume the agent), a started open
+    /// assignment the turn brought no verdict is marked stopped without one. A verdict that no
+    /// `agent.wait_verdict` waits for, and a stop without a verdict, ask for a supervision
+    /// sweep. Returns whether a followed request changed.
     pub(super) fn record_turn_end_verdicts(
         &mut self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
+        turn_closed: bool,
     ) -> bool {
         let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
             return false;
@@ -92,6 +100,9 @@ impl App {
                 }
             }
         }
+        for (request_id, by) in &scan.superseded {
+            crate::assignments::supersede(request_id, by);
+        }
         for (request_id, offset) in &scan.start_offsets {
             if !scan.verdicts.contains_key(request_id) {
                 crate::assignments::started_at(request_id, &path, *offset);
@@ -106,7 +117,44 @@ impl App {
                 ));
             }
         }
+        if turn_closed {
+            // Started now or at an earlier turn end, still open after this one.
+            let stopped = crate::assignments::open_for_pane(&public)
+                .into_iter()
+                .filter(|assignment| {
+                    assignment.started_ms.is_some()
+                        || scan.started.contains_key(&assignment.request_id)
+                })
+                .filter(|assignment| {
+                    crate::assignments::stopped_without_verdict(&assignment.request_id)
+                })
+                .count();
+            if stopped > 0 {
+                crate::workers::supervision::request_sweep(&format!(
+                    "a turn end in pane {public} without a verdict"
+                ));
+            }
+        }
         changed
+    }
+
+    /// A turn of the pane's agent started: its open assignments stopped without a verdict are
+    /// worked on again, and a finding about them resolves at the sweep this asks for.
+    pub(super) fn assignments_turn_started(&self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+        let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
+            return;
+        };
+        if crate::assignments::turn_started(&public) {
+            crate::workers::supervision::request_sweep(&format!("a turn start in pane {public}"));
+        }
+    }
+
+    pub(super) fn handle_agent_ack_verdict(
+        &mut self,
+        id: String,
+        params: crate::api::schema::AgentAckVerdictParams,
+    ) -> String {
+        crate::assignments::ack_response(id, &params.request_id)
     }
 
     pub(super) fn handle_agent_verdict(

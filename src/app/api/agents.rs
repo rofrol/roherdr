@@ -559,7 +559,13 @@ impl App {
             .ok_or_else(|| agent_not_found(id.clone(), &params.target))?;
         // Registered with the request, before the agent can take the prompt, so its verdict
         // is recorded even when nothing waits for it then.
-        self.register_assignment(ws_idx, pane_id, &prompt_request.request_id, &params.text);
+        self.register_assignment(
+            ws_idx,
+            pane_id,
+            &prompt_request.request_id,
+            &params.text,
+            params.caller_pane_id.as_deref(),
+        );
         self.clear_awaiting_reply_on_pane_input(ws_idx, pane_id);
         Ok((id, agent, prompt_request, completion))
     }
@@ -1091,6 +1097,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -1196,6 +1203,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: public_pane_id,
                 prefer_workspace_id: None,
@@ -1227,6 +1235,7 @@ mod tests {
             &mut app,
             "req-raw",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -1244,6 +1253,7 @@ mod tests {
             &mut app,
             "req-label",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "opencode".into(),
                 prefer_workspace_id: None,
@@ -1271,6 +1281,7 @@ mod tests {
 
     fn prompt_params(text: &str, follow_turn: bool) -> AgentPromptParams {
         AgentPromptParams {
+            caller_pane_id: None,
             follow_turn,
             target: "reviewer".into(),
             prefer_workspace_id: None,
@@ -2116,6 +2127,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2152,6 +2164,7 @@ mod tests {
                 &mut app,
                 "req",
                 AgentPromptParams {
+                    caller_pane_id: None,
                     follow_turn: false,
                     target: target.into(),
                     prefer_workspace_id: None,
@@ -2187,6 +2200,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2229,6 +2243,7 @@ mod tests {
             &mut app,
             "req",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,
@@ -2312,6 +2327,7 @@ mod tests {
             &mut app,
             "req-pending",
             AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,

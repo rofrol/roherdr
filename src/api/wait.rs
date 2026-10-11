@@ -441,6 +441,7 @@ pub(super) fn prompt_agent_turn(
                 target: params.target,
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
+                caller_pane_id: params.caller_pane_id,
                 wait: None,
                 follow_turn: true,
             }),
@@ -542,6 +543,7 @@ pub(super) fn prompt_agent_tracked(
                 target: params.target,
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
+                caller_pane_id: params.caller_pane_id,
                 wait: None,
                 follow_turn: true,
             }),
@@ -603,6 +605,7 @@ pub(super) fn prompt_agent_confirmed(
                 target: params.target,
                 prefer_workspace_id: params.prefer_workspace_id,
                 text: params.text,
+                caller_pane_id: params.caller_pane_id,
                 wait: None,
                 follow_turn: false,
             }),
@@ -1035,13 +1038,15 @@ fn blocking_dialog_from_explain(explain: &serde_json::Value) -> Option<String> {
 /// before the first probe, so a change between that probe and the first look at the events is
 /// never missed; afterwards it probes again only when an event about the pane arrives (its
 /// `pane.updated`, such as a turn report's, its agent's detection, release or status change,
-/// the pane's exit or close). `probe` gets the followed pane (it sets it on its first read, and
-/// a move is followed here) and whether the pane went away; an answer ends the wait. The
-/// client closing the connection or the server stopping ends it without one.
+/// the pane's exit or close), or when `changed` says the awaited record changed apart from
+/// them. `probe` gets the followed pane (it sets it on its first read, and a move is followed
+/// here) and whether the pane went away; an answer ends the wait. The client closing the
+/// connection or the server stopping ends it without one.
 fn follow_pane_events(
     stream: &mut LocalStream,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    mut changed: impl FnMut() -> bool,
     mut probe: impl FnMut(&mut Option<String>, bool) -> std::io::Result<Option<String>>,
 ) -> std::io::Result<Option<String>> {
     let mut last_event_sequence = event_hub.current_sequence();
@@ -1101,6 +1106,7 @@ fn follow_pane_events(
                 should_probe = true;
             }
         }
+        should_probe |= changed();
         if should_probe {
             should_probe = false;
             if let Some(answer) = probe(&mut pane_id, pane_gone)? {
@@ -1124,69 +1130,87 @@ pub(super) fn wait_agent_turn(
 ) -> std::io::Result<Option<String>> {
     use crate::api::schema::{AgentPromptRequestState, AgentTurnEndReason};
 
-    follow_pane_events(stream, event_hub, running, |pane_id, pane_gone| {
-        let status = dispatch_to_app_with_timeout(
-            Request {
-                id: format!("{request_id}:prompt_status"),
-                method: Method::AgentPromptStatus(crate::api::schema::AgentPromptStatusParams {
+    follow_pane_events(
+        stream,
+        event_hub,
+        running,
+        || false,
+        |pane_id, pane_gone| {
+            let status = dispatch_to_app_with_timeout(
+                Request {
+                    id: format!("{request_id}:prompt_status"),
+                    method: Method::AgentPromptStatus(
+                        crate::api::schema::AgentPromptStatusParams {
+                            request_id: params.request_id.clone(),
+                        },
+                    ),
+                },
+                api_tx,
+                Some(APP_RESPONSE_TIMEOUT),
+            );
+            let value: serde_json::Value =
+                serde_json::from_str(&status).unwrap_or(serde_json::Value::Null);
+            let error_code = value["error"]["code"].as_str();
+            if error_code.is_some_and(|code| code != "prompt_request_not_found") {
+                // The app did not answer (a timeout, a shutdown): pass its error on.
+                let mut value = value;
+                value["id"] = serde_json::Value::String(request_id.clone());
+                return serde_json::to_string(&value)
+                    .map(Some)
+                    .map_err(std::io::Error::other);
+            }
+            let request: Option<crate::api::schema::AgentPromptRequest> =
+                serde_json::from_value(value["result"]["prompt_request"].clone()).ok();
+            if let Some(current_pane) = value["result"]["pane_id"].as_str() {
+                *pane_id = Some(current_pane.to_string());
+            }
+            let reason = match request.as_ref().map(|request| request.state) {
+                // Its terminal went with the pane.
+                None if pane_gone => Some(AgentTurnEndReason::Exited),
+                None => Some(AgentTurnEndReason::UnknownRequest),
+                Some(AgentPromptRequestState::Finished) => Some(AgentTurnEndReason::Finished),
+                Some(AgentPromptRequestState::Failed) => Some(AgentTurnEndReason::Failed),
+                Some(AgentPromptRequestState::Interrupted) => Some(AgentTurnEndReason::Interrupted),
+                Some(AgentPromptRequestState::Exited) => Some(AgentTurnEndReason::Exited),
+                Some(AgentPromptRequestState::Unknown) => Some(AgentTurnEndReason::Unknown),
+                // The pane's shell ended, and the agent with it.
+                Some(_) if pane_gone => Some(AgentTurnEndReason::Exited),
+                Some(_) => None,
+            };
+            let Some(reason) = reason else {
+                return Ok(None);
+            };
+            serde_json::to_string(&SuccessResponse {
+                id: request_id.clone(),
+                result: ResponseResult::AgentTurnEnded {
                     request_id: params.request_id.clone(),
-                }),
-            },
-            api_tx,
-            Some(APP_RESPONSE_TIMEOUT),
-        );
-        let value: serde_json::Value =
-            serde_json::from_str(&status).unwrap_or(serde_json::Value::Null);
-        let error_code = value["error"]["code"].as_str();
-        if error_code.is_some_and(|code| code != "prompt_request_not_found") {
-            // The app did not answer (a timeout, a shutdown): pass its error on.
-            let mut value = value;
-            value["id"] = serde_json::Value::String(request_id.clone());
-            return serde_json::to_string(&value)
-                .map(Some)
-                .map_err(std::io::Error::other);
-        }
-        let request: Option<crate::api::schema::AgentPromptRequest> =
-            serde_json::from_value(value["result"]["prompt_request"].clone()).ok();
-        if let Some(current_pane) = value["result"]["pane_id"].as_str() {
-            *pane_id = Some(current_pane.to_string());
-        }
-        let reason = match request.as_ref().map(|request| request.state) {
-            // Its terminal went with the pane.
-            None if pane_gone => Some(AgentTurnEndReason::Exited),
-            None => Some(AgentTurnEndReason::UnknownRequest),
-            Some(AgentPromptRequestState::Finished) => Some(AgentTurnEndReason::Finished),
-            Some(AgentPromptRequestState::Failed) => Some(AgentTurnEndReason::Failed),
-            Some(AgentPromptRequestState::Interrupted) => Some(AgentTurnEndReason::Interrupted),
-            Some(AgentPromptRequestState::Exited) => Some(AgentTurnEndReason::Exited),
-            Some(AgentPromptRequestState::Unknown) => Some(AgentTurnEndReason::Unknown),
-            // The pane's shell ended, and the agent with it.
-            Some(_) if pane_gone => Some(AgentTurnEndReason::Exited),
-            Some(_) => None,
-        };
-        let Some(reason) = reason else {
-            return Ok(None);
-        };
-        serde_json::to_string(&SuccessResponse {
-            id: request_id.clone(),
-            result: ResponseResult::AgentTurnEnded {
-                request_id: params.request_id.clone(),
-                reason,
-                pane_id: pane_id.clone(),
-                error: request.and_then(|request| request.error),
-            },
-        })
-        .map(Some)
-        .map_err(std::io::Error::other)
-    })
+                    reason,
+                    pane_id: pane_id.clone(),
+                    error: request.and_then(|request| request.error),
+                },
+            })
+            .map(Some)
+            .map_err(std::io::Error::other)
+        },
+    )
 }
 
-/// `agent.wait_verdict`: waits until herdr records the verdict of a prompt's assignment, the
-/// agent asks something, or it goes away, and answers which. A verdict recorded before the
-/// wait, also by the server a live handoff replaced (assignments are on disk), answers at
-/// once; afterwards it reads again on each event about the pane ([`follow_pane_events`]). The
-/// wait is the assignment's waiter while it lives (`crate::assignments::wait_started`), and a
-/// verdict it answers with counts as delivered.
+/// What `agent.wait_verdict` answered.
+pub(super) struct VerdictWaitAnswer {
+    pub(super) response: String,
+    /// It answered with the verdict, which the waiter acknowledges next
+    /// (`agent.ack_verdict`).
+    pub(super) verdict: bool,
+}
+
+/// `agent.wait_verdict`: waits until herdr records the verdict of a prompt's assignment, a
+/// newer prompt supersedes it, the agent asks something, or it goes away, and answers which.
+/// A verdict recorded before the wait, also by the server a live handoff replaced (assignments
+/// are on disk), answers at once; afterwards it reads again on each event about the pane
+/// ([`follow_pane_events`]) and as soon as the assignment closes, whatever the pane's events
+/// (`crate::assignments::changed_since`). The caller keeps the wait registered as the
+/// assignment's waiter (`crate::assignments::wait_started`). Answering with the verdict marks
+/// it answered, not delivered: the waiter's acknowledgement delivers it.
 pub(super) fn wait_agent_verdict(
     request_id: String,
     params: crate::api::schema::AgentWaitVerdictParams,
@@ -1194,10 +1218,10 @@ pub(super) fn wait_agent_verdict(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<VerdictWaitAnswer>> {
     use crate::api::schema::{AgentStatus, AgentVerdictWaitReason};
 
-    let _waiter = crate::assignments::wait_started(&params.request_id);
+    let mut answered_verdict = false;
     let ended = |reason, pane_id, assignment, question| {
         serde_json::to_string(&SuccessResponse {
             id: request_id.clone(),
@@ -1212,99 +1236,115 @@ pub(super) fn wait_agent_verdict(
         .map(Some)
         .map_err(std::io::Error::other)
     };
-    follow_pane_events(stream, event_hub, running, |pane_id, pane_gone| {
-        let response = dispatch_to_app_with_timeout(
-            Request {
-                id: format!("{request_id}:verdict"),
-                method: Method::AgentVerdict(crate::api::schema::AgentVerdictParams {
-                    request_id: params.request_id.clone(),
-                }),
-            },
-            api_tx,
-            Some(APP_RESPONSE_TIMEOUT),
-        );
-        let mut value: serde_json::Value =
-            serde_json::from_str(&response).unwrap_or(serde_json::Value::Null);
-        match value["error"]["code"].as_str() {
-            Some("prompt_request_not_found") => {
-                return ended(AgentVerdictWaitReason::UnknownRequest, None, None, None);
-            }
-            Some(_) => {
-                // The app did not answer (a timeout, a shutdown): pass its error on.
-                value["id"] = serde_json::Value::String(request_id.clone());
-                return serde_json::to_string(&value)
-                    .map(Some)
-                    .map_err(std::io::Error::other);
-            }
-            None => {}
-        }
-        let Ok(assignment) = serde_json::from_value::<crate::api::schema::AgentAssignmentInfo>(
-            value["result"]["assignment"].clone(),
-        ) else {
-            return internal_error(
-                request_id.clone(),
-                "agent.verdict answered without an assignment",
-            )
-            .map(Some);
-        };
-        let followed = pane_id
-            .get_or_insert_with(|| assignment.pane_id.clone())
-            .clone();
-        if assignment.verdict.is_some() {
-            crate::assignments::mark_delivered(&params.request_id);
-            return ended(
-                AgentVerdictWaitReason::Verdict,
-                Some(followed),
-                Some(assignment),
-                None,
+    let mut seen = crate::assignments::change_count(&params.request_id);
+    let changed = || crate::assignments::changed_since(&params.request_id, &mut seen);
+    let response =
+        follow_pane_events(stream, event_hub, running, changed, |pane_id, pane_gone| {
+            let response = dispatch_to_app_with_timeout(
+                Request {
+                    id: format!("{request_id}:verdict"),
+                    method: Method::AgentVerdict(crate::api::schema::AgentVerdictParams {
+                        request_id: params.request_id.clone(),
+                    }),
+                },
+                api_tx,
+                Some(APP_RESPONSE_TIMEOUT),
             );
-        }
-        if pane_gone {
-            return ended(
-                AgentVerdictWaitReason::Exited,
-                Some(followed),
-                Some(assignment),
-                None,
-            );
-        }
-        let target = crate::api::schema::AgentTarget {
-            target: followed.clone(),
-            prefer_workspace_id: None,
-        };
-        match agent_get(&request_id, &target, api_tx) {
-            Ok(agent) if agent.agent_status == AgentStatus::Blocked || agent.awaiting_reply => {
-                let question = agent
-                    .question
-                    .unwrap_or_else(|| "a dialog (read the pane)".to_string());
-                ended(
-                    AgentVerdictWaitReason::Question,
+            let mut value: serde_json::Value =
+                serde_json::from_str(&response).unwrap_or(serde_json::Value::Null);
+            match value["error"]["code"].as_str() {
+                Some("prompt_request_not_found") => {
+                    return ended(AgentVerdictWaitReason::UnknownRequest, None, None, None);
+                }
+                Some(_) => {
+                    // The app did not answer (a timeout, a shutdown): pass its error on.
+                    value["id"] = serde_json::Value::String(request_id.clone());
+                    return serde_json::to_string(&value)
+                        .map(Some)
+                        .map_err(std::io::Error::other);
+                }
+                None => {}
+            }
+            let Ok(assignment) = serde_json::from_value::<crate::api::schema::AgentAssignmentInfo>(
+                value["result"]["assignment"].clone(),
+            ) else {
+                return internal_error(
+                    request_id.clone(),
+                    "agent.verdict answered without an assignment",
+                )
+                .map(Some);
+            };
+            let followed = pane_id
+                .get_or_insert_with(|| assignment.pane_id.clone())
+                .clone();
+            if assignment.verdict.is_some() {
+                crate::assignments::mark_answered(&params.request_id);
+                answered_verdict = true;
+                return ended(
+                    AgentVerdictWaitReason::Verdict,
                     Some(followed),
                     Some(assignment),
-                    Some(question),
-                )
+                    None,
+                );
             }
-            Ok(_) => Ok(None),
-            Err(error)
-                if matches!(
-                    error.error.code.as_str(),
-                    "agent_not_found" | "agent_not_running" | "pane_not_found"
-                ) =>
-            {
-                ended(
+            if assignment.superseded_by.is_some() {
+                return ended(
+                    AgentVerdictWaitReason::Superseded,
+                    Some(followed),
+                    Some(assignment),
+                    None,
+                );
+            }
+            if pane_gone {
+                return ended(
                     AgentVerdictWaitReason::Exited,
                     Some(followed),
                     Some(assignment),
                     None,
-                )
+                );
             }
-            Err(mut error) => {
-                error.id = request_id.clone();
-                serde_json::to_string(&error)
-                    .map(Some)
-                    .map_err(std::io::Error::other)
+            let target = crate::api::schema::AgentTarget {
+                target: followed.clone(),
+                prefer_workspace_id: None,
+            };
+            match agent_get(&request_id, &target, api_tx) {
+                Ok(agent) if agent.agent_status == AgentStatus::Blocked || agent.awaiting_reply => {
+                    let question = agent
+                        .question
+                        .unwrap_or_else(|| "a dialog (read the pane)".to_string());
+                    ended(
+                        AgentVerdictWaitReason::Question,
+                        Some(followed),
+                        Some(assignment),
+                        Some(question),
+                    )
+                }
+                Ok(_) => Ok(None),
+                Err(error)
+                    if matches!(
+                        error.error.code.as_str(),
+                        "agent_not_found" | "agent_not_running" | "pane_not_found"
+                    ) =>
+                {
+                    ended(
+                        AgentVerdictWaitReason::Exited,
+                        Some(followed),
+                        Some(assignment),
+                        None,
+                    )
+                }
+                Err(mut error) => {
+                    error.id = request_id.clone();
+                    serde_json::to_string(&error)
+                        .map(Some)
+                        .map_err(std::io::Error::other)
+                }
             }
-        }
-    })
+        })?;
+    Ok(response.map(|response| VerdictWaitAnswer {
+        response,
+        verdict: answered_verdict,
+    }))
 }
 
 fn internal_error(request_id: String, message: &str) -> std::io::Result<String> {

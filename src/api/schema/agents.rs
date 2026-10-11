@@ -244,6 +244,10 @@ pub struct AgentPromptParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_workspace_id: Option<String>,
     pub text: String,
+    /// The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that
+    /// owns the assignment herdr registers, whose inbox its supervision findings go to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,
     /// Set by `agent.prompt_turn`: refuse before typing when the agent does not report turns.
@@ -264,6 +268,10 @@ pub struct AgentPromptTurnParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_workspace_id: Option<String>,
     pub text: String,
+    /// The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that
+    /// owns the assignment herdr registers, whose inbox its supervision findings go to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -285,6 +293,10 @@ pub struct AgentPromptTrackedParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_workspace_id: Option<String>,
     pub text: String,
+    /// The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that
+    /// owns the assignment herdr registers, whose inbox its supervision findings go to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the
@@ -305,6 +317,10 @@ pub struct AgentPromptConfirmedParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_workspace_id: Option<String>,
     pub text: String,
+    /// The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that
+    /// owns the assignment herdr registers, whose inbox its supervision findings go to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 /// Waits until the turn a followed prompt (`agent.prompt_tracked`, `agent.prompt`) started
@@ -547,13 +563,25 @@ pub struct AgentVerdictParams {
     pub request_id: String,
 }
 
-/// Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), the agent
-/// asks something (`blocked`, or an open question) or its pane goes away, and answers which.
-/// A verdict recorded before the wait, also by the server a live handoff replaced, answers at
-/// once. It has no timeout: every outcome is an event, and a request herdr does not know
-/// answers `unknown_request` at once.
+/// Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), a newer
+/// prompt into the same pane supersedes it, the agent asks something (`blocked`, or an open
+/// question) or its pane goes away, and answers which. A verdict recorded before the wait, also
+/// by the server a live handoff replaced, answers at once. It has no timeout: every outcome is
+/// an event, and a request herdr does not know answers `unknown_request` at once. An answer
+/// with a verdict is not its delivery: the waiter acknowledges it with `agent.ack_verdict`,
+/// sent as the next request on the same connection (the server reads it there until the
+/// client closes) or on its own; until then the verdict counts as undelivered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentWaitVerdictParams {
+    pub request_id: String,
+}
+
+/// Acknowledges the verdict of a prompt's assignment that an `agent.wait_verdict` answered
+/// with: from then on it counts as delivered (`delivered_ms`). Answers the assignment; a
+/// repeated acknowledgement answers it as it is. `prompt_request_not_found` for a request herdr
+/// does not keep, `verdict_not_recorded` for one without a verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentAckVerdictParams {
     pub request_id: String,
 }
 
@@ -595,7 +623,14 @@ pub struct AgentAssignmentInfo {
     pub accepted_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<AgentVerdictInfo>,
+    /// The newer prompt into the same pane that started before this assignment's verdict and
+    /// closed it: this assignment never takes that work's verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     /// When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_ms: Option<u64>,
+    /// When the waiter acknowledged the verdict (`agent.ack_verdict`), Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered_ms: Option<u64>,
 }
@@ -606,6 +641,9 @@ pub struct AgentAssignmentInfo {
 pub enum AgentVerdictWaitReason {
     /// Herdr recorded the assignment's verdict; see `assignment.verdict`.
     Verdict,
+    /// A newer prompt into the same pane started before the verdict and closed this
+    /// assignment; see `assignment.superseded_by`, whose verdict to wait for instead.
+    Superseded,
     /// The agent asks something: a dialog (`blocked`) or an open question; see `question`.
     Question,
     /// The agent exited or its pane closed without a verdict.

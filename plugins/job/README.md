@@ -175,7 +175,13 @@ herdr-job wait "$id"
   survives the waiter, a herdr restart and a live handoff. The wait first
   asks herdr for it (`herdr agent wait-verdict <id>`, which follows a live
   handoff): a verdict recorded before the wait, also while no waiter ran,
-  ends it at once. Only an older herdr, or one that keeps no assignment for
+  ends it at once. That command acknowledges the verdict once it printed
+  it, so herdr counts it delivered only when a waiter has it; one killed
+  before that leaves it undelivered, a supervision finding for the
+  coordinator that sent the prompt. A newer prompt into the same pane that
+  starts before the verdict supersedes the assignment: it never takes the
+  later work's verdict, and the wait exits 10 naming the newer request to
+  wait for instead. Only an older herdr, or one that keeps no assignment for
   the request, makes it read the transcript itself: the verdict is the last
   `WORKER-DONE <sha>` or `WORKER-BLOCKED <reason>` line of an assistant
   text after the record that starts the assignment, where the text ended
@@ -228,8 +234,8 @@ herdr-job wait "$id"
   it retries with backoff from 1 s to 30 s and gives up after 15 minutes of
   continuous failures (exit 5). A live handoff's `server_handed_off` is an
   answer, not such a failure: the call goes to the new server at once. A
-  give-up is not silent: a verdict herdr records while no
-  `agent wait-verdict` waits for it is a supervision finding
+  give-up is not silent: a verdict herdr records that no waiter
+  acknowledged while none waits for it is a supervision finding
   (`verdict_undelivered`). An agent that is gone ends the wait (exit 3),
   not a retry. Another error exits 2.
 

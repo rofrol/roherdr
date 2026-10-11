@@ -2078,6 +2078,7 @@ EXIT_AWAITING_INPUT = 6
 EXIT_NEEDS_ATTENTION = 7
 EXIT_TRACKING_LOST = 8
 EXIT_UNSUPPORTED = 9
+EXIT_SUPERSEDED = 10
 
 
 def agent_call(*args):
@@ -2244,6 +2245,7 @@ EXIT_VERDICT_DONE = 0
 EXIT_VERDICT_BLOCKED = EXIT_WORKER_BLOCKED
 EXIT_VERDICT_QUESTION = EXIT_AWAITING_INPUT
 EXIT_VERDICT_AGENT_EXITED = EXIT_AGENT_GONE
+EXIT_VERDICT_SUPERSEDED = EXIT_SUPERSEDED
 # What `wait-agent --until verdict` learned about an assignment (its pane, its
 # prompt text, its transcript), so it goes on after herdr restarts and forgets
 # the request. Request ids are unique across server runs.
@@ -2429,8 +2431,9 @@ def recorded_verdict(say, args, record):
     """Waits with `herdr agent wait-verdict`: herdr records each assignment's
     verdict itself at the worker's turn end, keeps it across restarts and live
     handoffs, and answers at once with one recorded before the wait (also when
-    an earlier waiter was killed); the command follows a live handoff. Exits
-    with the verdict, a question or the agent's exit. Returns when this herdr
+    an earlier waiter was killed); the command follows a live handoff and
+    acknowledges the verdict it prints. Exits with the verdict, a question,
+    the agent's exit or the newer prompt that superseded the assignment. Returns when this herdr
     does not record verdicts (an older one) or keeps no assignment for the
     request, so the transcript is read instead."""
     say(f"waiting for the verdict herdr records for prompt request {args.request}")
@@ -2455,6 +2458,13 @@ def recorded_verdict(say, args, record):
     if reason == "exited":
         say("the agent exited without a verdict")
         sys.exit(EXIT_VERDICT_AGENT_EXITED)
+    if reason == "superseded":
+        newer = (result.get("assignment") or {}).get("superseded_by") or "?"
+        pane = result.get("pane_id") or (record or {}).get("pane") or args.pane
+        say(f"a newer prompt (request {newer}) into pane {pane} started before this assignment's "
+            f"verdict and closed it; wait for that one instead: "
+            f"`herdr-job wait-agent {pane} --request {newer} --until verdict`")
+        sys.exit(EXIT_VERDICT_SUPERSEDED)
     verdict = (result.get("assignment") or {}).get("verdict") or {}
     match = WORKER_LINE.match(verdict.get("line") or "")
     if reason != "verdict" or not match:

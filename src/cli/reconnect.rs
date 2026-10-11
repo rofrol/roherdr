@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::api::client::{ApiClient, ApiClientError};
+use crate::api::client::{ApiClient, ApiClientError, OpenConnection};
 use crate::api::schema::Request;
 
 /// The answer of a wait, and whether it came from a server that took over
@@ -51,21 +51,67 @@ pub(super) fn wait(
     )
 }
 
+/// [`wait`] that keeps the connection of the answer open for one more request on it (the
+/// acknowledgement of a verdict); none for a remote server, whose bridge relays one request
+/// per connection.
+pub(super) fn wait_keeping_connection(
+    command: &str,
+    target: &str,
+    mut request: impl FnMut(Duration) -> Request,
+) -> std::io::Result<(WaitReply, Option<OpenConnection>)> {
+    if super::target::is_remote() {
+        let reply = WaitReply {
+            response: super::send_request(&request(Duration::ZERO))?,
+            reconnected: false,
+        };
+        return Ok((reply, None));
+    }
+    let client = super::target::api_client()?;
+    let mut connection = None;
+    let reply = wait_with(
+        &client,
+        command,
+        target,
+        request,
+        super::ensure_server_protocol_compatible,
+        |request| {
+            let (value, open) = client.request_value_keeping_connection(request)?;
+            connection = Some(open);
+            Ok(value)
+        },
+    )?;
+    Ok((reply, connection))
+}
+
 /// [`wait`] with `client`'s server, whose protocol `check` checks first and
 /// after each handoff.
 fn wait_on(
     client: &ApiClient,
     command: &str,
     target: &str,
+    request: impl FnMut(Duration) -> Request,
+    check: impl Fn(&ApiClient, &str) -> std::io::Result<()>,
+) -> std::io::Result<WaitReply> {
+    wait_with(client, command, target, request, check, |request| {
+        client.request_value(request)
+    })
+}
+
+/// [`wait_on`] that sends each request with `send`.
+fn wait_with(
+    client: &ApiClient,
+    command: &str,
+    target: &str,
     mut request: impl FnMut(Duration) -> Request,
     check: impl Fn(&ApiClient, &str) -> std::io::Result<()>,
+    mut send: impl FnMut(&Request) -> Result<serde_json::Value, ApiClientError>,
 ) -> std::io::Result<WaitReply> {
     let request_id = request(Duration::ZERO).id;
     check(client, &request_id)?;
     let started = Instant::now();
     let mut reconnected = false;
     let response = send_across_handoffs(
-        || client.request_value(&request(started.elapsed())),
+        || send(&request(started.elapsed())),
         || {
             eprintln!(
                 "herdr {command}: the server handed off; going on waiting on {target} with \

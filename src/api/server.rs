@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -710,7 +710,10 @@ fn handle_connection_with_stop(
             )
         }
         Method::AgentWaitVerdict(params) => {
-            let response = wait_agent_verdict(
+            let prompt_request = params.request_id.clone();
+            // The assignment's waiter, for the wait and for the acknowledgement after it.
+            let _waiter = crate::assignments::wait_started(&prompt_request);
+            let answered = wait_agent_verdict(
                 request_id.clone(),
                 params,
                 &mut stream,
@@ -718,13 +721,21 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
+            let verdict = answered.as_ref().is_some_and(|answered| answered.verdict);
             finish_wait_response(
                 &mut stream,
-                answer(response),
+                answer(answered.map(|answered| answered.response)),
                 &request_id,
                 method,
                 changes_ui,
-            )
+            )?;
+            if !verdict {
+                return Ok(());
+            }
+            // A handoff does not wait for the acknowledgement: the waiter sends it to the new
+            // server on its own when this connection closes first.
+            drop(open_wait);
+            read_verdict_ack(&mut stream, &prompt_request)
         }
         Method::PaneWaitForOutput(params) => {
             let response =
@@ -1013,6 +1024,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentWait(_) => "agent.wait",
         Method::AgentWaitChange(_) => "agent.wait_change",
         Method::AgentVerdict(_) => "agent.verdict",
+        Method::AgentAckVerdict(_) => "agent.ack_verdict",
         Method::AgentWaitVerdict(_) => "agent.wait_verdict",
         Method::PaneSplit(_) => "pane.split",
         Method::PaneSwap(_) => "pane.swap",
@@ -1370,6 +1382,52 @@ fn stream_subscriptions(
     }
 }
 
+/// Reads the waiter's acknowledgement of the verdict an `agent.wait_verdict` answered with on
+/// its connection: its next request, `agent.ack_verdict` naming the same prompt request, is
+/// answered like one sent on its own (`crate::assignments::ack_response`); any other request
+/// is refused. It blocks until that line or the client closing the connection, with no
+/// timeout: the waiter stays registered meanwhile, so a verdict it holds unacknowledged is not
+/// reported as nobody's, and its end without the acknowledgement asks for a supervision sweep.
+fn read_verdict_ack(stream: &mut LocalStream, prompt_request: &str) -> std::io::Result<()> {
+    set_local_stream_polling(stream, false)?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(_) if byte[0] == b'\n' => break,
+            Ok(_) => {
+                line.push(byte[0]);
+                if line.len() > MAX_INITIAL_REQUEST_BYTES {
+                    return Ok(());
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) if is_connection_closed_error(&err) => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    }
+    let line = String::from_utf8_lossy(&line);
+    let refused = |id: String, message: String| error_response_json(id, "invalid_request", message);
+    let response = match serde_json::from_str::<Request>(line.trim()) {
+        Ok(Request {
+            id,
+            method: Method::AgentAckVerdict(params),
+        }) if params.request_id == prompt_request => {
+            crate::assignments::ack_response(id, prompt_request)
+        }
+        Ok(Request { id, .. }) => refused(
+            id,
+            format!(
+                "after a verdict, this connection takes only `agent.ack_verdict` for \
+                 {prompt_request}"
+            ),
+        ),
+        Err(error) => refused(String::new(), format!("invalid request: {error}")),
+    };
+    write_text_line_allow_disconnect(stream, &response)
+}
+
 fn write_text_line(stream: &mut LocalStream, value: &str) -> std::io::Result<()> {
     stream.write_all(value.as_bytes())?;
     stream.write_all(b"\n")?;
@@ -1499,6 +1557,7 @@ fn caller_timeout_dispatch_uses_timeout_error() {
         Request {
             id: "prompt-timeout".into(),
             method: Method::AgentPrompt(crate::api::schema::AgentPromptParams {
+                caller_pane_id: None,
                 follow_turn: false,
                 target: "reviewer".into(),
                 prefer_workspace_id: None,

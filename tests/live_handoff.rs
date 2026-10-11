@@ -1609,6 +1609,272 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
     cleanup_test_base(&base);
 }
 
+/// A pane worker's verdict survives its waiter and a live handoff: the waiter is killed
+/// before the worker finishes, the server records the verdict itself at the worker's turn end
+/// (here for a prompt Claude took in mid-turn, which it reports no turn start for), hands off,
+/// and a new wait gets the verdict from the new server at once; it is delivered only once that
+/// waiter acknowledges it.
+#[test]
+fn live_handoff_keeps_a_verdict_recorded_while_no_waiter_ran() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let state_home = base.join("state");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let transcript = base.join("session.jsonl");
+    let started_marker = base.join("agent-started");
+    let fake_claude = base.join("claude");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        &fake_claude,
+        format!(
+            "#!/bin/sh\nexport HERDR_AGENT=claude\necho started > {}\n/bin/sleep 30\n:\n",
+            started_marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_claude, fs::Permissions::from_mode(0o755)).unwrap();
+    let line = |value: serde_json::Value| format!("{value}\n");
+    fs::write(
+        &transcript,
+        line(serde_json::json!({"type": "user", "message": {"role": "user", "content": "the earlier item"}})),
+    )
+    .unwrap();
+
+    let state_env = state_home.display().to_string();
+    let spawned = spawn_server_with_env(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &[("XDG_STATE_HOME", state_env.as_str())],
+    );
+    // delay: test harness bound on the server's start, as in the other live handoff tests.
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    register_runtime_dir(&runtime_dir);
+    let created = request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:workspace:create",
+            "method": "workspace.create",
+            "params": {"cwd": "/tmp", "focus": true}
+        }),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:pane:start-agent",
+            "method": "pane.send_input",
+            "params": {"pane_id": pane_id, "text": fake_claude, "keys": ["Enter"]}
+        }),
+    ));
+    // delay: test harness bound on the fake agent's start (the marker it writes).
+    support::wait_for_file(&started_marker, Duration::from_secs(5));
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:agent:session",
+            "method": "pane.report_agent_session",
+            "params": {
+                "pane_id": pane_id,
+                "source": "herdr:claude",
+                "agent": "claude",
+                "seq": 1,
+                "agent_session_id": "s1",
+                "agent_session_path": transcript,
+                "session_start_source": "startup",
+                "turn_reports": true
+            }
+        }),
+    ));
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:agent:report",
+            "method": "pane.report_agent",
+            "params": {
+                "pane_id": pane_id,
+                "source": "herdr:claude",
+                "agent": "claude",
+                "state": "idle",
+                "seq": 2,
+                "agent_session_id": "s1"
+            }
+        }),
+    ));
+    // delay: test harness bound on herdr's process scan detecting the fake agent, which
+    // publishes no event a test can wait on; as in the other live handoff tests.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = request(
+            &api_socket,
+            serde_json::json!({
+                "id": "test:agent:wait-for-process",
+                "method": "agent.get",
+                "params": {"target": pane_id}
+            }),
+        );
+        if response.get("result").is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "agent process was not detected: {response}"
+        );
+        // delay: test harness polling of that scan.
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:agent:rename",
+            "method": "agent.rename",
+            "params": {"target": pane_id, "name": "w-item"}
+        }),
+    ));
+    let report_turn = |phase: &str, prompt: Option<&str>| {
+        let mut params = serde_json::json!({
+            "pane_id": pane_id, "source": "herdr:claude", "agent": "claude", "phase": phase,
+        });
+        if let Some(prompt) = prompt {
+            params["prompt"] = prompt.into();
+        }
+        assert_ok(request(
+            &api_socket,
+            serde_json::json!({"id": "test:turn", "method": "pane.report_turn", "params": params}),
+        ));
+    };
+    report_turn("started", Some("the earlier item"));
+
+    let prompted = request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:agent:prompt",
+            "method": "agent.prompt",
+            "params": {"target": "w-item", "text": "do the item"}
+        }),
+    );
+    let request_id = prompted["result"]["prompt_request"]["request_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no prompt request: {prompted}"))
+        .to_string();
+
+    // A waiter starts, then dies before the worker finishes.
+    let mut waiter = UnixStream::connect(&api_socket).unwrap();
+    waiter
+        .write_all(
+            line(serde_json::json!({
+                "id": "test:waiter",
+                "method": "agent.wait_verdict",
+                "params": {"request_id": request_id}
+            }))
+            .as_bytes(),
+        )
+        .unwrap();
+    drop(waiter);
+
+    // Claude takes the prompt in mid-turn and ends the turn with its verdict.
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    for record in [
+        serde_json::json!({"type": "queue-operation", "operation": "remove",
+            "content": "do the item", "reason": "absorbed_mid_turn", "commandUuid": "c1"}),
+        serde_json::json!({"type": "attachment", "attachment": {"type": "queued_command",
+            "prompt": "do the item", "source_uuid": "c1"}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "Done.\nWORKER-DONE abc1234 | the item"}]}}),
+    ] {
+        file.write_all(line(record).as_bytes()).unwrap();
+    }
+    drop(file);
+    report_turn("finished", None);
+
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+    ));
+    drop(spawned);
+    // delay: test harness bound on the new server accepting after the handoff.
+    wait_for_api(&api_socket, Duration::from_secs(10));
+
+    // The new server never saw the prompt's turn, but keeps its assignment and verdict. The
+    // waiter acknowledges it as its next request on the wait's connection.
+    let waiter = UnixStream::connect(&api_socket).unwrap();
+    let mut reader = BufReader::new(waiter.try_clone().unwrap());
+    let mut waiter = waiter;
+    waiter
+        .write_all(
+            line(serde_json::json!({
+                "id": "test:wait-verdict",
+                "method": "agent.wait_verdict",
+                "params": {"request_id": request_id}
+            }))
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut answer = String::new();
+    reader.read_line(&mut answer).unwrap();
+    let ended: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(
+        ended["result"]["type"], "agent_verdict_wait_ended",
+        "{ended}"
+    );
+    assert_eq!(ended["result"]["reason"], "verdict", "{ended}");
+    assert_eq!(ended["result"]["pane_id"], pane_id.as_str(), "{ended}");
+    let verdict = &ended["result"]["assignment"]["verdict"];
+    assert_eq!(verdict["line"], "WORKER-DONE abc1234 | the item", "{ended}");
+    assert_eq!(verdict["sha"], "abc1234", "{ended}");
+    assert_eq!(ended["result"]["assignment"]["worker"], "w-item", "{ended}");
+    // Answered, not delivered: the waiter has not acknowledged it yet.
+    assert!(
+        ended["result"]["assignment"].get("delivered_ms").is_none(),
+        "{ended}"
+    );
+    waiter
+        .write_all(
+            line(serde_json::json!({
+                "id": "test:ack-verdict",
+                "method": "agent.ack_verdict",
+                "params": {"request_id": request_id}
+            }))
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut answer = String::new();
+    reader.read_line(&mut answer).unwrap();
+    let acknowledged: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(
+        acknowledged["result"]["type"], "agent_assignment",
+        "{acknowledged}"
+    );
+    drop(waiter);
+    let recorded = request(
+        &api_socket,
+        serde_json::json!({
+            "id": "test:verdict",
+            "method": "agent.verdict",
+            "params": {"request_id": request_id}
+        }),
+    );
+    let assignment = &recorded["result"]["assignment"];
+    assert!(assignment["answered_ms"].is_u64(), "{recorded}");
+    assert!(assignment["delivered_ms"].is_u64(), "{recorded}");
+
+    let _ = request(
+        &api_socket,
+        serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
+    );
+    cleanup_test_base(&base);
+}
+
 #[test]
 fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
     use std::os::unix::fs::PermissionsExt;

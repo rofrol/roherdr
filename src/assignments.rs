@@ -15,11 +15,24 @@
 //! transcript of the work still open. The read runs on the app thread at a turn end of a pane
 //! with open assignments, not in a render or parse loop.
 //!
+//! A newer prompt into the same pane that starts before an assignment's verdict supersedes it:
+//! the assignment closes as `superseded` (naming the newer request) and never takes the later
+//! work's verdict, which would end a wait on the wrong work. A turn end (no background task
+//! left) that brings an open, started assignment no verdict marks it stopped without one until
+//! the pane's next turn starts.
+//!
+//! A verdict counts as delivered only when its waiter acknowledges it (`agent.ack_verdict`, on
+//! the connection of the `agent.wait_verdict` that answered with it or on its own), not when
+//! the answer is written: a waiter killed between the two leaves it undelivered.
+//!
 //! Records are JSON files in herdr's state directory (`assignments/<request_id>.json`, apart per
 //! named session), written atomically; the newest [`MAX_KEPT`] are kept. A server started by a
 //! live handoff reads them, so `agent.wait_verdict` answers at once with a verdict recorded
-//! before the handoff. `agent.wait_verdict` waits register here ([`wait_started`]), so the
-//! supervision sweep knows a verdict nobody received ([`undelivered_unwatched`]).
+//! before the handoff, and its first supervision sweep reconciles them all. `agent.wait_verdict`
+//! waits register here ([`wait_started`]), so the supervision sweep knows a verdict nobody
+//! received ([`undelivered_unwatched`]); a recorded verdict or a supersession wakes them at once
+//! ([`changed_since`]), whatever the pane's events, and a waiter that ends without an
+//! acknowledgement asks for a sweep.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -48,6 +61,10 @@ pub(crate) struct Assignment {
     /// The agent's name in herdr, the worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) worker: Option<String>,
+    /// The pane that sent the prompt (its `HERDR_PANE_ID`), the coordinator that owns the
+    /// assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner_pane: Option<String>,
     /// The prompt, whitespace runs collapsed to one space.
     pub(crate) text: String,
     /// The agent's transcript when the prompt was typed.
@@ -61,11 +78,40 @@ pub(crate) struct Assignment {
     /// Orders the assignments of one server run; a later one starts after an earlier one.
     #[serde(default)]
     pub(crate) order: u64,
+    /// When its start was found in the transcript, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) started_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verdict: Option<Verdict>,
-    /// When an `agent.wait_verdict` answered with the verdict, Unix milliseconds.
+    /// The newer prompt that started before this one's verdict and closed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) superseded: Option<Superseded>,
+    /// When a turn end with no background task left brought this started assignment no
+    /// verdict, Unix milliseconds; cleared when the pane's next turn starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) stopped_ms: Option<u64>,
+    /// When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) answered_ms: Option<u64>,
+    /// When the waiter acknowledged the verdict (`agent.ack_verdict`), Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivered_ms: Option<u64>,
+}
+
+impl Assignment {
+    /// Neither a verdict nor a newer prompt closed it.
+    pub(crate) fn is_open(&self) -> bool {
+        self.verdict.is_none() && self.superseded.is_none()
+    }
+}
+
+/// A newer prompt into the same pane that started before an assignment's verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Superseded {
+    /// The newer prompt's request.
+    pub(crate) by: String,
+    /// Unix milliseconds.
+    pub(crate) at_ms: u64,
 }
 
 /// The `WORKER` line an assignment's work ended on.
@@ -95,6 +141,9 @@ static STORE: Mutex<Store> = Mutex::new(Store {
 });
 /// The open `agent.wait_verdict` waits, by request id.
 static WAITERS: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+/// How many times each request's assignment closed (a verdict, a supersession), so its waiters
+/// read it again at once ([`changed_since`]).
+static CHANGES: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -209,6 +258,7 @@ pub(crate) fn accepted(
     pane_id: &str,
     agent: Option<&str>,
     worker: Option<&str>,
+    owner_pane: Option<&str>,
     text: &str,
     transcript: Option<&Path>,
 ) {
@@ -223,12 +273,17 @@ pub(crate) fn accepted(
         pane_id: pane_id.to_string(),
         agent: agent.map(str::to_string),
         worker: worker.map(str::to_string),
+        owner_pane: owner_pane.map(str::to_string),
         text: normalize(text),
         transcript: transcript.map(|path| path.display().to_string()),
         anchor,
         accepted_ms: now_ms(),
         order,
+        started_ms: None,
         verdict: None,
+        superseded: None,
+        stopped_ms: None,
+        answered_ms: None,
         delivered_ms: None,
     };
     persist(&record);
@@ -252,13 +307,13 @@ pub(crate) fn get(request_id: &str) -> Option<Assignment> {
     store.records.get(request_id).cloned()
 }
 
-/// The pane's newest [`OPEN_SCANNED`] assignments without a verdict, oldest first.
+/// The pane's newest [`OPEN_SCANNED`] open assignments, oldest first.
 pub(crate) fn open_for_pane(pane_id: &str) -> Vec<Assignment> {
     let store = store();
     let mut open: Vec<Assignment> = store
         .records
         .values()
-        .filter(|record| record.pane_id == pane_id && record.verdict.is_none())
+        .filter(|record| record.pane_id == pane_id && record.is_open())
         .cloned()
         .collect();
     open.sort_by_key(|record| (record.accepted_ms, record.order));
@@ -274,48 +329,191 @@ pub(crate) fn started_at(request_id: &str, transcript: &Path, offset: u64) {
         return;
     };
     let transcript = transcript.display().to_string();
-    if record.verdict.is_some()
+    if !record.is_open()
         || (record.transcript.as_deref() == Some(transcript.as_str())
-            && record.anchor == Some(offset))
+            && record.anchor == Some(offset)
+            && record.started_ms.is_some())
     {
         return;
     }
     record.transcript = Some(transcript);
     record.anchor = Some(offset);
+    record.started_ms.get_or_insert_with(now_ms);
     let record = record.clone();
     persist(&record);
 }
 
-/// Records the verdict of `request_id` unless it has one; whether it was recorded now.
-pub(crate) fn record_verdict(request_id: &str, verdict: Verdict) -> bool {
+/// Changes the record of `request_id` with `change` when it returns `true`, then stores it;
+/// whether it changed.
+fn update(request_id: &str, change: impl FnOnce(&mut Assignment) -> bool) -> bool {
     let mut store = store();
     let Some(record) = store.records.get_mut(request_id) else {
         return false;
     };
-    if record.verdict.is_some() {
+    if !change(record) {
         return false;
     }
-    record.verdict = Some(verdict);
     let record = record.clone();
     persist(&record);
     true
 }
 
-/// An `agent.wait_verdict` answered with the verdict of `request_id`.
-pub(crate) fn mark_delivered(request_id: &str) {
-    let mut store = store();
-    let Some(record) = store.records.get_mut(request_id) else {
-        return;
-    };
-    if record.delivered_ms.is_some() {
-        return;
-    }
-    record.delivered_ms = Some(now_ms());
-    let record = record.clone();
-    persist(&record);
+/// The assignment of `request_id` closed: its waiters read it again.
+fn closed(request_id: &str) {
+    *lock(&CHANGES).entry(request_id.to_string()).or_default() += 1;
 }
 
-/// The verdicts no `agent.wait_verdict` has received while none waits for them.
+/// Records the verdict of `request_id` unless it is closed; whether it was recorded now.
+pub(crate) fn record_verdict(request_id: &str, verdict: Verdict) -> bool {
+    let recorded = update(request_id, |record| {
+        if !record.is_open() {
+            return false;
+        }
+        record.verdict = Some(verdict);
+        record.stopped_ms = None;
+        true
+    });
+    if recorded {
+        closed(request_id);
+    }
+    recorded
+}
+
+/// Closes `request_id` as superseded by the newer prompt `by` unless it is closed; whether it
+/// was closed now.
+pub(crate) fn supersede(request_id: &str, by: &str) -> bool {
+    let superseded = update(request_id, |record| {
+        if !record.is_open() {
+            return false;
+        }
+        record.superseded = Some(Superseded {
+            by: by.to_string(),
+            at_ms: now_ms(),
+        });
+        record.stopped_ms = None;
+        true
+    });
+    if superseded {
+        closed(request_id);
+    }
+    superseded
+}
+
+/// A turn end with no background task left brought the open, started assignment
+/// `request_id` no verdict; whether that is new.
+pub(crate) fn stopped_without_verdict(request_id: &str) -> bool {
+    update(request_id, |record| {
+        if !record.is_open() || record.stopped_ms.is_some() {
+            return false;
+        }
+        record.stopped_ms = Some(now_ms());
+        true
+    })
+}
+
+/// A turn of the agent in `pane_id` started: its open assignments are worked on again.
+/// Whether one was marked stopped without a verdict.
+pub(crate) fn turn_started(pane_id: &str) -> bool {
+    let stopped: Vec<String> = store()
+        .records
+        .values()
+        .filter(|record| record.pane_id == pane_id && record.stopped_ms.is_some())
+        .map(|record| record.request_id.clone())
+        .collect();
+    let mut cleared = false;
+    for request_id in stopped {
+        cleared |= update(&request_id, |record| record.stopped_ms.take().is_some());
+    }
+    cleared
+}
+
+/// An `agent.wait_verdict` answered with the verdict of `request_id`; it is not delivered
+/// until the waiter acknowledges it ([`acknowledge`]).
+pub(crate) fn mark_answered(request_id: &str) {
+    update(request_id, |record| {
+        if record.verdict.is_none() || record.answered_ms.is_some() {
+            return false;
+        }
+        record.answered_ms = Some(now_ms());
+        true
+    });
+}
+
+/// Why an acknowledgement was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AckError {
+    /// Herdr keeps no assignment of that request.
+    NotFound,
+    /// The assignment has no verdict to acknowledge.
+    NoVerdict,
+}
+
+/// The waiter acknowledged the verdict of `request_id`: it is delivered (once; a repeated
+/// acknowledgement answers it as it is).
+pub(crate) fn acknowledge(request_id: &str) -> Result<Assignment, AckError> {
+    let record = get(request_id).ok_or(AckError::NotFound)?;
+    if record.verdict.is_none() {
+        return Err(AckError::NoVerdict);
+    }
+    let delivered_now = update(request_id, |record| {
+        if record.delivered_ms.is_some() {
+            return false;
+        }
+        record.delivered_ms = Some(now_ms());
+        true
+    });
+    if delivered_now {
+        // A finding about it resolves.
+        crate::workers::supervision::request_sweep(&format!(
+            "verdict of {request_id} acknowledged"
+        ));
+    }
+    get(request_id).ok_or(AckError::NotFound)
+}
+
+/// The answer to an acknowledgement of the verdict of `request_id` (`agent.ack_verdict`), also
+/// one the api server reads on the connection of the `agent.wait_verdict` that answered with
+/// it.
+pub(crate) fn ack_response(id: String, request_id: &str) -> String {
+    use crate::api::schema::{ErrorBody, ErrorResponse, ResponseResult, SuccessResponse};
+    let error = |code: &str, message: String| {
+        serde_json::to_string(&ErrorResponse {
+            id: id.clone(),
+            error: ErrorBody {
+                code: code.into(),
+                message,
+            },
+        })
+    };
+    let encoded = match acknowledge(request_id) {
+        Ok(assignment) => serde_json::to_string(&SuccessResponse {
+            id: id.clone(),
+            result: ResponseResult::AgentAssignment {
+                assignment: info(&assignment),
+            },
+        }),
+        Err(AckError::NotFound) => error(
+            "prompt_request_not_found",
+            format!(
+                "herdr keeps no assignment {request_id}; it never typed that prompt, or the \
+                 record is gone"
+            ),
+        ),
+        Err(AckError::NoVerdict) => error(
+            "verdict_not_recorded",
+            format!("the assignment {request_id} has no verdict to acknowledge"),
+        ),
+    };
+    encoded.unwrap_or_else(|encoding| {
+        format!(
+            r#"{{"id":{},"error":{{"code":"internal_error","message":{}}}}}"#,
+            serde_json::Value::String(id),
+            serde_json::Value::String(encoding.to_string())
+        )
+    })
+}
+
+/// The verdicts no waiter has acknowledged while none waits for them.
 pub(crate) fn undelivered_unwatched() -> Vec<Assignment> {
     let waiting: BTreeSet<String> = lock(&WAITERS).keys().cloned().collect();
     store()
@@ -330,19 +528,63 @@ pub(crate) fn undelivered_unwatched() -> Vec<Assignment> {
         .collect()
 }
 
-/// An open `agent.wait_verdict` on one request, for as long as it lives.
+/// The open assignments a turn end left without a verdict, while no turn started since.
+pub(crate) fn stopped_open() -> Vec<Assignment> {
+    store()
+        .records
+        .values()
+        .filter(|record| record.is_open() && record.stopped_ms.is_some())
+        .cloned()
+        .collect()
+}
+
+/// An open `agent.wait_verdict` on one request, for as long as it lives (also while it waits
+/// for the acknowledgement of the verdict it answered with). Its end without one asks for a
+/// supervision sweep.
 pub(crate) struct WaiterGuard(String);
 
 impl Drop for WaiterGuard {
     fn drop(&mut self) {
-        let mut waiters = lock(&WAITERS);
-        if let Some(count) = waiters.get_mut(&self.0) {
-            *count -= 1;
-            if *count == 0 {
-                waiters.remove(&self.0);
+        let last = {
+            let mut waiters = lock(&WAITERS);
+            match waiters.get_mut(&self.0) {
+                Some(count) => {
+                    *count -= 1;
+                    let last = *count == 0;
+                    if last {
+                        waiters.remove(&self.0);
+                    }
+                    last
+                }
+                None => false,
             }
+        };
+        let unacknowledged = last
+            && store()
+                .records
+                .get(&self.0)
+                .is_some_and(|record| record.verdict.is_some() && record.delivered_ms.is_none());
+        if unacknowledged {
+            crate::workers::supervision::request_sweep(&format!(
+                "the waiter of {} ended without acknowledging its verdict",
+                self.0
+            ));
         }
     }
+}
+
+/// How many times the assignment of `request_id` closed so far, for [`changed_since`].
+pub(crate) fn change_count(request_id: &str) -> u64 {
+    lock(&CHANGES).get(request_id).copied().unwrap_or(0)
+}
+
+/// Whether the assignment of `request_id` closed since `seen` ([`change_count`]), which it
+/// moves to now.
+pub(crate) fn changed_since(request_id: &str, seen: &mut u64) -> bool {
+    let now = change_count(request_id);
+    let changed = now != *seen;
+    *seen = now;
+    changed
 }
 
 pub(crate) fn wait_started(request_id: &str) -> WaiterGuard {
@@ -404,6 +646,8 @@ pub(crate) struct Scan {
     /// The byte offset of each start found.
     pub(crate) start_offsets: BTreeMap<String, u64>,
     pub(crate) verdicts: BTreeMap<String, Verdict>,
+    /// The assignments a newer prompt started before their verdict, with that prompt's request.
+    pub(crate) superseded: BTreeMap<String, String>,
 }
 
 /// One record of a transcript that matters here.
@@ -507,8 +751,8 @@ fn entry_of(line: &str, absorbed_seen: &mut BTreeSet<String>) -> Option<Entry> {
 /// `lines`, each with its byte offset. An assignment starts at the last prompt carrying its
 /// text after its anchor. Its verdict is the first `WORKER` line of an assistant text that
 /// ended a turn after its start (no tool call followed it before the next user record; the
-/// text at the end counts when `turn_over`), so an assignment a later prompt took over gets
-/// the verdict that work ended on.
+/// text at the end counts when `turn_over`). A record that starts a newer assignment
+/// supersedes every earlier one still without a verdict that it does not carry too.
 pub(crate) fn scan_lines<'a>(
     lines: impl Iterator<Item = (u64, &'a str)>,
     open: &[Assignment],
@@ -518,8 +762,8 @@ pub(crate) fn scan_lines<'a>(
     let mut scan = Scan::default();
     let mut absorbed_seen = BTreeSet::new();
     let mut pending: Option<String> = None;
-    // A text that ended a turn is the verdict of every started assignment still without one:
-    // a later prompt into the same pane took over the work of an earlier one.
+    // A text that ended a turn is the verdict of every started assignment still without one
+    // (several when the agent took queued prompts as one).
     let settle = |scan: &mut Scan, pending: &mut Option<String>| {
         let Some(verdict) = pending.take().and_then(|text| worker_line(&text, now_ms)) else {
             return;
@@ -542,13 +786,37 @@ pub(crate) fn scan_lines<'a>(
             Entry::Prompt { text, absorbed } => {
                 settle(&mut scan, &mut pending);
                 let text = normalize(&text);
+                let carried: Vec<bool> = open
+                    .iter()
+                    .map(|assignment| {
+                        !assignment.text.is_empty()
+                            && assignment.anchor.is_none_or(|anchor| anchor <= offset)
+                            && !scan.superseded.contains_key(&assignment.request_id)
+                            && text.contains(&assignment.text)
+                    })
+                    .collect();
                 // The newest assignment typed before this record whose prompt it carries.
-                let started = open.iter().rev().find(|assignment| {
-                    !assignment.text.is_empty()
-                        && assignment.anchor.is_none_or(|anchor| anchor <= offset)
-                        && text.contains(&assignment.text)
-                });
-                if let Some(assignment) = started {
+                let Some(newest) = carried.iter().rposition(|carries| *carries) else {
+                    continue;
+                };
+                // The earlier ones this record carries too (the agent took queued prompts as
+                // one) start with it; every other earlier one still without a verdict is
+                // superseded by it, so it never takes this later work's verdict.
+                let mut starting = Vec::new();
+                for (earlier, carries) in open[..newest].iter().zip(&carried) {
+                    if *carries {
+                        starting.push(earlier);
+                    } else if !scan.verdicts.contains_key(&earlier.request_id)
+                        && !scan.superseded.contains_key(&earlier.request_id)
+                    {
+                        scan.started.remove(&earlier.request_id);
+                        scan.start_offsets.remove(&earlier.request_id);
+                        scan.superseded
+                            .insert(earlier.request_id.clone(), open[newest].request_id.clone());
+                    }
+                }
+                starting.push(&open[newest]);
+                for assignment in starting {
                     scan.verdicts.remove(&assignment.request_id);
                     scan.started.insert(assignment.request_id.clone(), absorbed);
                     scan.start_offsets
@@ -627,6 +895,11 @@ pub(crate) fn info(assignment: &Assignment) -> crate::api::schema::AgentAssignme
             sha: verdict.sha.clone(),
             recorded_ms: verdict.recorded_ms,
         }),
+        superseded_by: assignment
+            .superseded
+            .as_ref()
+            .map(|superseded| superseded.by.clone()),
+        answered_ms: assignment.answered_ms,
         delivered_ms: assignment.delivered_ms,
     }
 }
@@ -671,12 +944,17 @@ mod tests {
             pane_id: "w1:p1".into(),
             agent: Some("claude".into()),
             worker: None,
+            owner_pane: None,
             text: normalize(text),
             transcript: None,
             anchor,
             accepted_ms: 1,
             order: 0,
+            started_ms: None,
             verdict: None,
+            superseded: None,
+            stopped_ms: None,
+            answered_ms: None,
             delivered_ms: None,
         }
     }
@@ -778,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_prompt_takes_over_an_assignment_without_a_verdict() {
+    fn a_newer_prompt_supersedes_an_assignment_without_a_verdict() {
         let open = [
             assignment("p1", "do item one", Some(0)),
             assignment("p2", "do item two", Some(0)),
@@ -793,9 +1071,45 @@ mod tests {
             assistant("WORKER-DONE abc1234 | three", false),
         ];
         let found = scan(&lines, &open, true);
-        assert!(found.verdicts["p1"].blocked);
+        // p1 never takes p2's verdict, which would end its wait on the wrong work.
+        assert_eq!(found.superseded.get("p1").map(String::as_str), Some("p2"));
+        assert!(!found.verdicts.contains_key("p1"));
+        assert!(!found.started.contains_key("p1"));
         assert!(found.verdicts["p2"].blocked);
+        assert!(!found.superseded.contains_key("p2"));
         assert_eq!(found.verdicts["p3"].sha.as_deref(), Some("abc1234"));
+    }
+
+    #[test]
+    fn a_prompt_taken_in_mid_turn_supersedes_the_running_assignment() {
+        let open = [
+            assignment("p1", "do item one", Some(0)),
+            assignment("p2", "do item two", Some(0)),
+        ];
+        let mut lines = vec![user("do item one"), assistant("working", true)];
+        lines.extend(absorbed("do item two", "c1"));
+        lines.push(tool_result());
+        lines.push(assistant("WORKER-DONE abc1234 | item two", false));
+        let found = scan(&lines, &open, true);
+        assert_eq!(found.superseded.get("p1").map(String::as_str), Some("p2"));
+        assert!(!found.verdicts.contains_key("p1"));
+        assert_eq!(found.verdicts["p2"].sha.as_deref(), Some("abc1234"));
+    }
+
+    #[test]
+    fn queued_prompts_the_agent_took_as_one_share_the_verdict() {
+        let open = [
+            assignment("p1", "do item one", Some(0)),
+            assignment("p2", "do item two", Some(0)),
+        ];
+        let lines = vec![
+            user("do item one\ndo item two"),
+            assistant("WORKER-DONE abc1234 | both", false),
+        ];
+        let found = scan(&lines, &open, true);
+        assert!(found.superseded.is_empty());
+        assert_eq!(found.verdicts["p1"].sha.as_deref(), Some("abc1234"));
+        assert_eq!(found.verdicts["p2"].sha.as_deref(), Some("abc1234"));
     }
 
     #[test]
@@ -829,7 +1143,15 @@ mod tests {
     fn a_turn_end_reads_from_the_start_of_the_newest_open_assignments() {
         set_test_dir(None);
         for n in 0..10 {
-            accepted(&format!("prompt_o_{n}"), "w9:p1", None, None, "ask", None);
+            accepted(
+                &format!("prompt_o_{n}"),
+                "w9:p1",
+                None,
+                None,
+                None,
+                "ask",
+                None,
+            );
         }
         let open = open_for_pane("w9:p1");
         assert_eq!(open.len(), OPEN_SCANNED);
@@ -856,6 +1178,7 @@ mod tests {
             "w1:p1",
             Some("claude"),
             Some("w"),
+            Some("w1:p9"),
             "do it",
             None,
         );
@@ -879,10 +1202,63 @@ mod tests {
         set_test_dir(Some(dir.clone()));
         let record = get("prompt_a_1").unwrap();
         assert_eq!(record.verdict, Some(verdict));
-        mark_delivered("prompt_a_1");
+        assert_eq!(record.owner_pane.as_deref(), Some("w1:p9"));
+        // An answer written is not a delivery; the waiter's acknowledgement is.
+        mark_answered("prompt_a_1");
+        set_test_dir(Some(dir.clone()));
+        assert!(get("prompt_a_1").unwrap().answered_ms.is_some());
+        assert_eq!(undelivered_unwatched().len(), 1);
+        let acknowledged = acknowledge("prompt_a_1").unwrap();
+        assert!(acknowledged.delivered_ms.is_some());
+        assert_eq!(acknowledge("prompt_a_1").unwrap(), acknowledged);
         set_test_dir(Some(dir.clone()));
         assert!(undelivered_unwatched().is_empty());
+        assert_eq!(acknowledge("prompt_none"), Err(AckError::NotFound));
         set_test_dir(None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_superseded_or_stopped_assignment_is_kept_and_wakes_its_waiters() {
+        set_test_dir(None);
+        accepted("prompt_s_1", "w8:p1", None, None, None, "one", None);
+        accepted("prompt_s_2", "w8:p1", None, None, None, "two", None);
+        assert_eq!(acknowledge("prompt_s_1"), Err(AckError::NoVerdict));
+        let mut seen = change_count("prompt_s_1");
+        assert!(!changed_since("prompt_s_1", &mut seen));
+        assert!(supersede("prompt_s_1", "prompt_s_2"));
+        assert!(changed_since("prompt_s_1", &mut seen));
+        assert!(!supersede("prompt_s_1", "prompt_s_3"));
+        let record = get("prompt_s_1").unwrap();
+        assert_eq!(
+            record.superseded.map(|superseded| superseded.by).as_deref(),
+            Some("prompt_s_2")
+        );
+        // A closed assignment takes no verdict, and is not open any more.
+        assert!(!record_verdict(
+            "prompt_s_1",
+            worker_line("WORKER-DONE abc1234 | x", 1).unwrap()
+        ));
+        assert_eq!(
+            open_for_pane("w8:p1")
+                .iter()
+                .map(|record| record.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prompt_s_2"]
+        );
+
+        // A turn end without a verdict holds until the pane's next turn starts.
+        assert!(stopped_without_verdict("prompt_s_2"));
+        assert!(!stopped_without_verdict("prompt_s_2"));
+        assert_eq!(stopped_open().len(), 1);
+        assert!(turn_started("w8:p1"));
+        assert!(!turn_started("w8:p1"));
+        assert!(stopped_open().is_empty());
+        assert!(stopped_without_verdict("prompt_s_2"));
+        assert!(record_verdict(
+            "prompt_s_2",
+            worker_line("WORKER-DONE abc1234 | two", 1).unwrap()
+        ));
+        assert!(stopped_open().is_empty());
     }
 }

@@ -1382,6 +1382,9 @@ impl App {
             Method::AgentVerdict(params) => {
                 return self.handle_agent_verdict(request.id, params);
             }
+            Method::AgentAckVerdict(params) => {
+                return self.handle_agent_ack_verdict(request.id, params);
+            }
             Method::AgentWaitVerdict(_) => {
                 return responses::encode_error(
                     request.id,

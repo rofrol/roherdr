@@ -60,6 +60,19 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
+    /// Sends `request` and returns its answer with the connection, which stays open for one
+    /// more request on it ([`OpenConnection::request_value`]).
+    pub fn request_value_keeping_connection(
+        &self,
+        request: &Request,
+    ) -> Result<(serde_json::Value, OpenConnection), ApiClientError> {
+        let mut stream = self.connect()?;
+        write_request(&mut stream, request)?;
+        let mut reader = BufReader::new(stream);
+        let value = read_json_line(&mut reader)?;
+        Ok((value, OpenConnection { reader }))
+    }
+
     pub fn request_value_with_timeout(
         &self,
         request: &Request,
@@ -122,6 +135,20 @@ impl ApiClient {
 
     fn connect(&self) -> io::Result<LocalStream> {
         crate::ipc::connect_local_stream(&self.socket_path())
+    }
+}
+
+/// A connection whose request was answered, kept open for the next request on it, such as the
+/// acknowledgement of the verdict an `agent.wait_verdict` answered with.
+pub struct OpenConnection {
+    reader: BufReader<LocalStream>,
+}
+
+impl OpenConnection {
+    /// Sends `request` on this connection and returns its answer.
+    pub fn request_value(mut self, request: &Request) -> Result<serde_json::Value, ApiClientError> {
+        write_request(self.reader.get_mut(), request)?;
+        read_json_line(&mut self.reader)
     }
 }
 

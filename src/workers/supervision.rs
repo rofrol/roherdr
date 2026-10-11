@@ -179,9 +179,15 @@ struct Facts {
     coordinators: Vec<CoordinatorFacts>,
     panes: Vec<PaneFacts>,
     disks: Vec<DiskFacts>,
-    /// The verdicts of prompts' assignments no `agent.wait_verdict` received while none
-    /// waits for them (`crate::assignments::undelivered_unwatched`).
+    /// The verdicts of prompts' assignments no waiter acknowledged while none waits for them
+    /// (`crate::assignments::undelivered_unwatched`).
     verdicts: Vec<crate::assignments::Assignment>,
+    /// The open assignments a worker's turn end left without a verdict
+    /// (`crate::assignments::stopped_open`).
+    stopped: Vec<crate::assignments::Assignment>,
+    /// The coordination tenure bound to each pane, by its public id: the coordinator that
+    /// owns an assignment sent from that pane.
+    tenure_of_pane: BTreeMap<String, String>,
 }
 
 /// A predicate that holds now, before it is recorded.
@@ -207,6 +213,7 @@ fn predicate_name(predicate: SupervisionPredicate) -> &'static str {
         SupervisionPredicate::UntrackedShell => "untracked_shell",
         SupervisionPredicate::DiskLow => "disk_low",
         SupervisionPredicate::VerdictUndelivered => "verdict_undelivered",
+        SupervisionPredicate::StoppedWithoutVerdict => "stopped_without_verdict",
         SupervisionPredicate::Unknown => "unknown",
     }
 }
@@ -329,9 +336,49 @@ fn evaluate(facts: &Facts) -> Vec<Candidate> {
         candidates.extend(disk_low(disk, facts.observed_ms));
     }
     for assignment in &facts.verdicts {
-        candidates.extend(verdict_undelivered(assignment, facts.observed_ms));
+        candidates.extend(verdict_undelivered(
+            assignment,
+            owner_of(assignment, facts),
+            facts.observed_ms,
+        ));
+    }
+    for assignment in &facts.stopped {
+        candidates.extend(stopped_without_verdict(
+            assignment,
+            owner_of(assignment, facts),
+            facts.observed_ms,
+        ));
     }
     candidates
+}
+
+/// The coordination tenure that owns `assignment`: the one bound to the pane that sent it.
+fn owner_of<'a>(assignment: &crate::assignments::Assignment, facts: &'a Facts) -> Option<&'a str> {
+    assignment
+        .owner_pane
+        .as_deref()
+        .and_then(|pane| facts.tenure_of_pane.get(pane))
+        .map(String::as_str)
+}
+
+/// The facts and the summary suffix an assignment's finding names.
+fn assignment_evidence(assignment: &crate::assignments::Assignment) -> (Vec<String>, String) {
+    let mut facts = vec![
+        format!("request: {}", assignment.request_id),
+        format!("pane: {}", assignment.pane_id),
+    ];
+    if let Some(worker) = &assignment.worker {
+        facts.push(format!("worker: {worker}"));
+    }
+    if let Some(owner) = &assignment.owner_pane {
+        facts.push(format!("sent_from: {owner}"));
+    }
+    let worker = assignment
+        .worker
+        .as_ref()
+        .map(|worker| format!(" ({worker})"))
+        .unwrap_or_default();
+    (facts, worker)
 }
 
 /// A coordinator's agent rests while its repository has runnable items
@@ -491,26 +538,26 @@ fn working_after_stop(pane: &PaneFacts, observed_ms: u64) -> Option<Candidate> {
     })
 }
 
-/// Herdr recorded an assignment's verdict and no `agent.wait_verdict` received it while none
-/// waits for it. It resolves once a wait answers with it.
+/// Herdr recorded an assignment's verdict and no waiter acknowledged it while none waits for
+/// it. It resolves once a waiter acknowledges it. The finding goes to the coordinator that sent
+/// the prompt (`owner`), when one holds a tenure.
 fn verdict_undelivered(
     assignment: &crate::assignments::Assignment,
+    owner: Option<&str>,
     observed_ms: u64,
 ) -> Option<Candidate> {
     let verdict = assignment.verdict.as_ref()?;
     if assignment.delivered_ms.is_some() {
         return None;
     }
-    let mut facts = vec![
-        format!("request: {}", assignment.request_id),
-        format!("pane: {}", assignment.pane_id),
-        format!("verdict: {}", verdict.line),
-        format!("recorded_ms: {}", verdict.recorded_ms),
-        "waiters: none".to_string(),
-    ];
-    if let Some(worker) = &assignment.worker {
-        facts.insert(2, format!("worker: {worker}"));
-    }
+    let (mut facts, worker) = assignment_evidence(assignment);
+    facts.push(format!("verdict: {}", verdict.line));
+    facts.push(format!("recorded_ms: {}", verdict.recorded_ms));
+    facts.push(match assignment.answered_ms {
+        Some(answered) => format!("answered_ms: {answered} (not acknowledged)"),
+        None => "answered: never".to_string(),
+    });
+    facts.push("waiters: none".to_string());
     Some(Candidate {
         fingerprint: fingerprint(
             SupervisionPredicate::VerdictUndelivered,
@@ -523,23 +570,16 @@ fn verdict_undelivered(
             SupervisionSeverity::Warning
         },
         summary: format!(
-            "{} in pane {}{} ended its assignment ({}) and nothing received it",
-            verdict.line,
-            assignment.pane_id,
-            assignment
-                .worker
-                .as_ref()
-                .map(|worker| format!(" ({worker})"))
-                .unwrap_or_default(),
-            assignment.request_id
+            "{} in pane {}{worker} ended its assignment ({}) and no waiter acknowledged it",
+            verdict.line, assignment.pane_id, assignment.request_id
         ),
         expected_event: format!(
             "its coordinator reads it: `herdr agent wait-verdict {}` (or `herdr-job wait-agent \
-             {} --request {} --until verdict`)",
+             {} --request {} --until verdict`), which acknowledges it",
             assignment.request_id, assignment.pane_id, assignment.request_id
         ),
         repo: None,
-        coordinator_id: None,
+        coordinator_id: owner.map(str::to_owned),
         pane_id: Some(assignment.pane_id.clone()),
         run_id: None,
         job_ids: Vec::new(),
@@ -548,6 +588,55 @@ fn verdict_undelivered(
             event_ids: vec![format!(
                 "verdict of {} recorded at {}",
                 assignment.request_id, verdict.recorded_ms
+            )],
+            facts,
+        },
+    })
+}
+
+/// A worker's turn ended with its assignment started and open (no verdict, not superseded),
+/// no background task left to resume it, and no turn started since. It resolves when the
+/// worker's next turn starts, a verdict is recorded or a newer prompt supersedes the
+/// assignment. The finding goes to the coordinator that sent the prompt (`owner`).
+fn stopped_without_verdict(
+    assignment: &crate::assignments::Assignment,
+    owner: Option<&str>,
+    observed_ms: u64,
+) -> Option<Candidate> {
+    let stopped_ms = assignment.stopped_ms?;
+    if !assignment.is_open() {
+        return None;
+    }
+    let (mut facts, worker) = assignment_evidence(assignment);
+    facts.push(format!("stopped_ms: {stopped_ms}"));
+    facts.push("verdict: none".to_string());
+    Some(Candidate {
+        fingerprint: fingerprint(
+            SupervisionPredicate::StoppedWithoutVerdict,
+            &assignment.request_id,
+        ),
+        predicate: SupervisionPredicate::StoppedWithoutVerdict,
+        severity: SupervisionSeverity::Warning,
+        summary: format!(
+            "the worker in pane {}{worker} ended its turn on assignment {} without a WORKER line \
+             and nothing resumes it",
+            assignment.pane_id, assignment.request_id
+        ),
+        expected_event: format!(
+            "its coordinator reads the pane (`herdr agent read {}`) and answers or prompts the \
+             worker once, or the worker's next turn",
+            assignment.pane_id
+        ),
+        repo: None,
+        coordinator_id: owner.map(str::to_owned),
+        pane_id: Some(assignment.pane_id.clone()),
+        run_id: None,
+        job_ids: Vec::new(),
+        evidence: SupervisionEvidence {
+            observed_ms,
+            event_ids: vec![format!(
+                "turn end of {} at {stopped_ms} without a verdict",
+                assignment.request_id
             )],
             facts,
         },
@@ -865,16 +954,20 @@ fn acknowledge(
     Ok(Some(true))
 }
 
-/// Marks the findings that hold seen by the herdr coordinator's tenure
-/// `coordinator_id`, those it had not seen yet, with an event each.
-fn mark_seen(tx: &Tx<'_>, coordinator_id: &str, at_ms: u64) -> StoreResult<Vec<String>> {
+/// Marks the findings that hold seen by the tenure `coordinator_id`, those
+/// it had not seen yet, with an event each: all of them for the herdr
+/// coordinator, else only those that belong to that coordinator (its inbox,
+/// such as its workers' undelivered verdicts).
+fn mark_seen(tx: &Tx<'_>, coordinator_id: &str, all: bool, at_ms: u64) -> StoreResult<Vec<String>> {
     let conn = tx.connection();
     let unseen: Vec<i64> = {
         let mut statement = conn.prepare(
             "SELECT id FROM supervision_findings
-             WHERE status != 'resolved' AND coordinator_seen_by IS NOT ?1 ORDER BY id",
+             WHERE status != 'resolved' AND coordinator_seen_by IS NOT ?1
+                 AND (?2 OR coordinator_id = ?1)
+             ORDER BY id",
         )?;
-        let rows = statement.query_map([coordinator_id], |row| row.get(0))?;
+        let rows = statement.query_map(params![coordinator_id, all], |row| row.get(0))?;
         rows.collect::<StoreResult<_>>()?
     };
     let mut marked = Vec::new();
@@ -892,20 +985,24 @@ fn mark_seen(tx: &Tx<'_>, coordinator_id: &str, at_ms: u64) -> StoreResult<Vec<S
     Ok(marked)
 }
 
-/// The notification a new or escalated finding sends: to the herdr
-/// repository's coordinator pane, as a `herdr report` does, else to the
-/// user.
+/// The notification a new or escalated finding sends: to the pane of the
+/// coordinator the finding belongs to (`owner`, the one that sent a worker's
+/// prompt), else to the herdr repository's coordinator pane, as a `herdr
+/// report` does, else to the user.
 fn notice(
     finding: &SupervisionFinding,
     escalated: bool,
     herdr: Option<&CoordinatorInfo>,
+    owner: Option<&CoordinatorInfo>,
 ) -> UserNotice {
     let severity = match finding.severity {
         SupervisionSeverity::Critical => " (critical)",
         _ => "",
     };
     let change = if escalated { " escalated" } else { "" };
-    let pane_id = herdr
+    let pane_id = owner
+        .filter(|coordinator| !coordinator.headless && coordinator.pane_id.is_some())
+        .or(herdr)
         .filter(|coordinator| !coordinator.headless)
         .and_then(|coordinator| coordinator.pane_id.clone());
     let nobody = if pane_id.is_none() {
@@ -1209,12 +1306,21 @@ impl WorkerSupervisor {
                 Some(DiskFacts { repo, free_bytes })
             })
             .collect();
+        let tenure_of_pane = coordinators
+            .iter()
+            .filter_map(|coordinator| {
+                let pane = coordinator.tenure.pane_id.clone()?;
+                Some((pane, coordinator.tenure.coordinator_id.clone()))
+            })
+            .collect();
         let facts = Facts {
             observed_ms,
             coordinators,
             panes,
             disks,
             verdicts: crate::assignments::undelivered_unwatched(),
+            stopped: crate::assignments::stopped_open(),
+            tenure_of_pane,
         };
         let candidates = evaluate(&facts);
         let changes = self
@@ -1247,11 +1353,19 @@ impl WorkerSupervisor {
             .iter()
             .map(|coordinator| &coordinator.tenure)
             .find(|tenure| is_herdr_repository(&tenure.repo));
+        let owner = |finding: &SupervisionFinding| {
+            let owner = finding.coordinator_id.as_deref()?;
+            facts
+                .coordinators
+                .iter()
+                .map(|coordinator| &coordinator.tenure)
+                .find(|tenure| tenure.coordinator_id == owner)
+        };
         for finding in &changes.opened {
-            notify_user(notice(finding, false, herdr));
+            notify_user(notice(finding, false, herdr, owner(finding)));
         }
         for finding in &changes.escalated {
-            notify_user(notice(finding, true, herdr));
+            notify_user(notice(finding, true, herdr, owner(finding)));
         }
         Ok(())
     }
@@ -1315,8 +1429,10 @@ impl WorkerSupervisor {
     /// `supervise.report`: the findings that hold, or all, and what the
     /// latest sweep saw of each coordinator. Read from `reader_pane` (its
     /// public id) while it holds the herdr repository's tenure, it then
-    /// marks the findings that hold seen by that tenure; the reply shows the
-    /// marks as they were before.
+    /// marks the findings that hold seen by that tenure; read from another
+    /// coordinator's pane, it marks seen those that belong to that
+    /// coordinator (its inbox). The reply shows the marks as they were
+    /// before.
     pub(crate) fn supervision_report(
         &self,
         all: bool,
@@ -1324,16 +1440,13 @@ impl WorkerSupervisor {
     ) -> Result<SupervisionReport, WorkerError> {
         let findings = self.supervision_findings(all)?;
         let herdr = self.herdr_coordinator();
-        let reader = reader_pane
-            .and_then(|pane| self.coordinator_of_pane(pane))
-            .filter(|tenure| {
-                herdr
-                    .as_ref()
-                    .is_some_and(|herdr| herdr.coordinator_id == tenure.coordinator_id)
-            });
+        let reader = reader_pane.and_then(|pane| self.coordinator_of_pane(pane));
         if let Some(reader) = reader {
+            let all = herdr
+                .as_ref()
+                .is_some_and(|herdr| herdr.coordinator_id == reader.coordinator_id);
             self.supervision_store()?
-                .transaction(|tx| mark_seen(tx, &reader.coordinator_id, now_ms()))
+                .transaction(|tx| mark_seen(tx, &reader.coordinator_id, all, now_ms()))
                 .map_err(store_error)?;
         }
         let last = lock(&LAST_SWEEP).clone().unwrap_or_default();
@@ -1577,6 +1690,8 @@ mod tests {
             panes,
             disks: Vec::new(),
             verdicts: Vec::new(),
+            stopped: Vec::new(),
+            tenure_of_pane: BTreeMap::new(),
         }
     }
 
@@ -1587,21 +1702,30 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_verdict_nothing_received_is_a_finding_until_it_is_delivered() {
-        let mut assignment = crate::assignments::Assignment {
+    fn assignment(verdict: Option<&str>) -> crate::assignments::Assignment {
+        crate::assignments::Assignment {
             request_id: "prompt_1_2".into(),
             pane_id: "w1:p2".into(),
             agent: Some("claude".into()),
             worker: Some("w-item".into()),
+            owner_pane: Some("w1:p1".into()),
             text: "do the item".into(),
             transcript: None,
             anchor: None,
             accepted_ms: 1,
             order: 0,
-            verdict: crate::assignments::worker_line("WORKER-BLOCKED needs a key", 5),
+            started_ms: Some(2),
+            verdict: verdict.and_then(|line| crate::assignments::worker_line(line, 5)),
+            superseded: None,
+            stopped_ms: None,
+            answered_ms: None,
             delivered_ms: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_verdict_no_waiter_acknowledged_is_the_owners_finding_until_it_is() {
+        let mut assignment = assignment(Some("WORKER-BLOCKED needs a key"));
         let mut found = facts(Vec::new(), Vec::new());
         found.verdicts.push(assignment.clone());
         let candidates = evaluate(&found);
@@ -1611,11 +1735,86 @@ mod tests {
         );
         assert_eq!(candidates[0].severity, SupervisionSeverity::Critical);
         assert_eq!(candidates[0].pane_id.as_deref(), Some("w1:p2"));
+        assert_eq!(candidates[0].coordinator_id, None);
         assert!(candidates[0].summary.contains("WORKER-BLOCKED needs a key"));
 
-        assignment.delivered_ms = Some(6);
+        // The coordinator whose pane sent the prompt owns it, also once it was answered.
+        found
+            .tenure_of_pane
+            .insert("w1:p1".into(), "c-owner".into());
+        assignment.answered_ms = Some(6);
+        found.verdicts = vec![assignment.clone()];
+        let candidates = evaluate(&found);
+        assert_eq!(candidates[0].coordinator_id.as_deref(), Some("c-owner"));
+        assert!(candidates[0]
+            .evidence
+            .facts
+            .iter()
+            .any(|fact| fact == "answered_ms: 6 (not acknowledged)"));
+
+        assignment.delivered_ms = Some(7);
         found.verdicts = vec![assignment];
         assert!(predicates(&found).is_empty());
+    }
+
+    #[test]
+    fn a_worker_stop_without_a_verdict_is_the_owners_finding_while_the_assignment_is_open() {
+        let mut stopped = assignment(None);
+        stopped.stopped_ms = Some(9);
+        let mut found = facts(Vec::new(), Vec::new());
+        found
+            .tenure_of_pane
+            .insert("w1:p1".into(), "c-owner".into());
+        found.stopped.push(stopped.clone());
+        let candidates = evaluate(&found);
+        assert_eq!(
+            predicates(&found),
+            vec![SupervisionPredicate::StoppedWithoutVerdict]
+        );
+        assert_eq!(candidates[0].coordinator_id.as_deref(), Some("c-owner"));
+        assert_eq!(candidates[0].severity, SupervisionSeverity::Warning);
+        assert!(candidates[0].summary.contains("prompt_1_2"));
+
+        // A newer prompt that superseded it closes it.
+        stopped.superseded = Some(crate::assignments::Superseded {
+            by: "prompt_1_3".into(),
+            at_ms: 10,
+        });
+        found.stopped = vec![stopped];
+        assert!(predicates(&found).is_empty());
+    }
+
+    #[test]
+    fn a_finding_notice_goes_to_its_owning_coordinator_before_the_herdr_one() {
+        let finding: SupervisionFinding = serde_json::from_value(json!({
+            "finding_id": "f-1",
+            "fingerprint": "x",
+            "predicate": "verdict_undelivered",
+            "severity": "warning",
+            "status": "open",
+            "summary": "s",
+            "expected_event": "e",
+            "coordinator_id": "c-owner",
+            "job_ids": [],
+            "evidence": {"observed_ms": 1, "event_ids": [], "facts": []},
+            "first_seen_ms": 1,
+            "last_seen_ms": 1
+        }))
+        .unwrap();
+        let herdr = tenure("c-herdr", "w1:p1");
+        let owner = tenure("c-owner", "w2:p1");
+        assert_eq!(
+            notice(&finding, false, Some(&herdr), Some(&owner))
+                .pane_id
+                .as_deref(),
+            Some("w2:p1")
+        );
+        assert_eq!(
+            notice(&finding, false, Some(&herdr), None)
+                .pane_id
+                .as_deref(),
+            Some("w1:p1")
+        );
     }
 
     #[test]
@@ -2285,7 +2484,7 @@ mod tests {
         supervisor
             .supervision_store()
             .unwrap()
-            .transaction(|tx| mark_seen(tx, "c-herdr", 1500))
+            .transaction(|tx| mark_seen(tx, "c-herdr", true, 1500))
             .unwrap();
         assert_eq!(
             supervisor.supervision_findings(false).unwrap()[0]
@@ -2298,7 +2497,7 @@ mod tests {
         assert_eq!(escalated.escalated[0].coordinator_seen_by, None);
         assert_eq!(escalated.escalated[0].coordinator_seen_ms, None);
         // A notice without a herdr coordinator goes to the user.
-        let notice = notice(&escalated.escalated[0], true, None);
+        let notice = notice(&escalated.escalated[0], true, None, None);
         assert_eq!(notice.pane_id, None);
         assert!(
             notice.title.ends_with("(no herdr coordinator)"),
@@ -2314,6 +2513,8 @@ mod tests {
             SupervisionPredicate::WorkingAfterStop,
             SupervisionPredicate::UntrackedShell,
             SupervisionPredicate::DiskLow,
+            SupervisionPredicate::VerdictUndelivered,
+            SupervisionPredicate::StoppedWithoutVerdict,
         ] {
             assert_eq!(
                 serde_json::to_value(predicate).unwrap(),

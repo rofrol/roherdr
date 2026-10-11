@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptConfirmedParams, AgentPromptParams, AgentPromptStatusParams,
+    AgentAckVerdictParams, AgentPromptConfirmedParams, AgentPromptParams, AgentPromptStatusParams,
     AgentPromptTrackedParams, AgentPromptTurnParams, AgentPromptWaitOptions, AgentReadParams,
     AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget, AgentVerdictParams,
     AgentWaitChangeParams, AgentWaitParams, AgentWaitTurnParams, AgentWaitVerdictParams,
@@ -35,6 +35,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "prompt-status" => agent_prompt_status(&args[1..]),
         "verdict" => agent_verdict(&args[1..]),
         "wait-verdict" => agent_wait_verdict(&args[1..]),
+        "ack-verdict" => agent_ack_verdict(&args[1..]),
         "attach" => agent_attach(&scoped_args, scope()),
         "explain" => agent_explain(&scoped_args, scope()),
         "list" => agent_list(&args[1..]),
@@ -1175,6 +1176,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
         let response = super::send_request(&Request {
             id: "cli:agent:prompt_confirmed".into(),
             method: Method::AgentPromptConfirmed(AgentPromptConfirmedParams {
+                caller_pane_id: super::target::caller_pane_id(),
                 target: target.clone(),
                 prefer_workspace_id: scope.prefer_workspace_id.clone(),
                 text: text.clone(),
@@ -1192,6 +1194,7 @@ fn agent_prompt(args: &[String], scope: NameScope) -> std::io::Result<i32> {
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
+            caller_pane_id: super::target::caller_pane_id(),
             follow_turn: false,
             target: target.clone(),
             prefer_workspace_id: scope.prefer_workspace_id,
@@ -1251,6 +1254,7 @@ fn prompt_and_wait_for_turn(
         let response = super::send_request(&Request {
             id: "cli:agent:prompt_tracked".into(),
             method: Method::AgentPromptTracked(AgentPromptTrackedParams {
+                caller_pane_id: super::target::caller_pane_id(),
                 target: target.to_string(),
                 prefer_workspace_id: scope.prefer_workspace_id.clone(),
                 text: text.to_string(),
@@ -1271,6 +1275,7 @@ fn prompt_and_wait_for_turn(
     let response = super::send_request(&Request {
         id: "cli:agent:prompt_turn".into(),
         method: Method::AgentPromptTurn(AgentPromptTurnParams {
+            caller_pane_id: super::target::caller_pane_id(),
             target: target.to_string(),
             prefer_workspace_id: scope.prefer_workspace_id.clone(),
             text: text.to_string(),
@@ -1323,26 +1328,77 @@ fn agent_verdict(args: &[String]) -> std::io::Result<i32> {
 }
 
 /// Waits with `agent.wait_verdict` across live handoffs and prints why it answered. Exit 0
-/// only for a verdict.
+/// only for a verdict. A verdict is acknowledged (`agent.ack_verdict`) once it is printed: as
+/// the next request on the wait's connection, else on its own when that connection closed
+/// first (a live handoff), so herdr counts it delivered only when this waiter has it.
 fn agent_wait_verdict(args: &[String]) -> std::io::Result<i32> {
     let [request_id] = args else {
         eprintln!("usage: herdr agent wait-verdict <request_id>");
         return Ok(2);
     };
     let what = format!("the verdict of prompt request {request_id}");
-    let reply = super::reconnect::wait("agent wait-verdict", &what, |_| Request {
-        id: "cli:agent:wait_verdict".into(),
-        method: Method::AgentWaitVerdict(AgentWaitVerdictParams {
-            request_id: request_id.clone(),
-        }),
-    })?;
+    let (reply, connection) =
+        super::reconnect::wait_keeping_connection("agent wait-verdict", &what, |_| Request {
+            id: "cli:agent:wait_verdict".into(),
+            method: Method::AgentWaitVerdict(AgentWaitVerdictParams {
+                request_id: request_id.clone(),
+            }),
+        })?;
     super::reconnect::report_gave_up("agent wait-verdict", &what, &reply);
     let response = reply.response;
     let exit_code = super::print_response(&response)?;
     if exit_code == 0 && response["result"]["reason"] != "verdict" {
         return Ok(1);
     }
+    if exit_code == 0 {
+        std::io::Write::flush(&mut std::io::stdout())?;
+        acknowledge_verdict(request_id, connection);
+    }
     Ok(exit_code)
+}
+
+/// Acknowledges the verdict of `request_id` this command printed: on the wait's `connection`,
+/// else (none, or it closed) on its own. A failure is said on stderr; the verdict then stays
+/// undelivered, which herdr's supervisor reports.
+fn acknowledge_verdict(request_id: &str, connection: Option<crate::api::client::OpenConnection>) {
+    let ack = Request {
+        id: "cli:agent:ack_verdict".into(),
+        method: Method::AgentAckVerdict(AgentAckVerdictParams {
+            request_id: request_id.to_string(),
+        }),
+    };
+    let on_connection = connection
+        .and_then(|connection| connection.request_value(&ack).ok())
+        .filter(|response| response.get("result").is_some());
+    if on_connection.is_some() {
+        return;
+    }
+    match super::send_request(&ack) {
+        Ok(response) if response.get("result").is_some() => {}
+        Ok(response) => eprintln!(
+            "herdr agent wait-verdict: herdr did not take the acknowledgement of {request_id}: {}",
+            response["error"]["message"].as_str().unwrap_or("?")
+        ),
+        Err(error) => eprintln!(
+            "herdr agent wait-verdict: cannot acknowledge the verdict of {request_id}: {error}"
+        ),
+    }
+}
+
+/// Acknowledges a verdict an `agent.wait_verdict` answered with (`agent.ack_verdict`), for a
+/// waiter that did not acknowledge it on the wait's connection.
+fn agent_ack_verdict(args: &[String]) -> std::io::Result<i32> {
+    let [request_id] = args else {
+        eprintln!("usage: herdr agent ack-verdict <request_id>");
+        return Ok(2);
+    };
+    let response = super::send_request(&Request {
+        id: "cli:agent:ack_verdict".into(),
+        method: Method::AgentAckVerdict(AgentAckVerdictParams {
+            request_id: request_id.clone(),
+        }),
+    })?;
+    super::print_response(&response)
 }
 
 /// Whether an older server refused `method` because it does not know it.
@@ -1466,6 +1522,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent prompt-status <request_id>");
     eprintln!("  herdr agent verdict <request_id>");
     eprintln!("  herdr agent wait-verdict <request_id>");
+    eprintln!("  herdr agent ack-verdict <request_id>");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"

@@ -1385,6 +1385,18 @@
     },
     "request": {
       "$defs": {
+        "AgentAckVerdictParams": {
+          "description": "Acknowledges the verdict of a prompt's assignment that an `agent.wait_verdict` answered\nwith: from then on it counts as delivered (`delivered_ms`). Answers the assignment; a\nrepeated acknowledgement answers it as it is. `prompt_request_not_found` for a request herdr\ndoes not keep, `verdict_not_recorded` for one without a verdict.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ],
+          "type": "object"
+        },
         "AgentHandoffParams": {
           "description": "Hands the session of the agent in `pane_id` over to another agent: a new\ntab after the source tab, in the source pane's directory, starts `to` with\na first prompt that points at the source session's transcript. The source\ntab stays as it is.",
           "properties": {
@@ -1430,6 +1442,13 @@
         "AgentPromptConfirmedParams": {
           "description": "Types a prompt like `agent.prompt` and answers only once the agent shows it accepted it: the\nturn report of the prompt (Claude's `UserPromptSubmit`, Pi's turn start) for an agent that\nreports turns, else the agent's state turning `working` after the typing; a state the agent\nalready had never counts. A prompt for an agent that is `working` waits, untyped, for its\nstate to change to anything else (its `idle` event) and is typed then. A dialog (`blocked`)\nor an agent not ready is refused before typing, naming the dialog when screen detection\nrecognizes it; a dialog that appears after typing, before the acknowledgement, answers\n`agent_prompt_blocked` without typing again. It has no timeout:\nit waits for one of these events, the agent's exit, or the caller closing the connection.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that\nowns the assignment herdr registers, whose inbox its supervision findings go to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -1452,6 +1471,13 @@
         },
         "AgentPromptParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that\nowns the assignment herdr registers, whose inbox its supervision findings go to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -1496,6 +1522,13 @@
         "AgentPromptTrackedParams": {
           "description": "Types a prompt like `agent.prompt` and returns at once with the request herdr follows\n(`prompt_request`), for `agent.wait_turn`. Refused with `turn_tracking_unsupported`, before\nanything is typed, when the agent does not report its turns.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that\nowns the assignment herdr registers, whose inbox its supervision findings go to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -1519,6 +1552,13 @@
         "AgentPromptTurnParams": {
           "description": "Sends a prompt like `agent.prompt` and waits until the turn that prompt started ends, as the\nagent's integration reports it. Refused with `turn_tracking_unsupported`, before anything is\ntyped, when the agent does not report its turns.",
           "properties": {
+            "caller_pane_id": {
+              "description": "The pane that sends the prompt (the caller's `HERDR_PANE_ID`): the coordinator that\nowns the assignment herdr registers, whose inbox its supervision findings go to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "prefer_workspace_id": {
               "description": "Workspace whose agent names take precedence when `target` is an agent\nname: a name found there resolves even if other workspaces use it too;\na name absent there resolves across all workspaces as before.",
               "type": [
@@ -2082,7 +2122,7 @@
           "type": "object"
         },
         "AgentWaitVerdictParams": {
-          "description": "Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), the agent\nasks something (`blocked`, or an open question) or its pane goes away, and answers which.\nA verdict recorded before the wait, also by the server a live handoff replaced, answers at\nonce. It has no timeout: every outcome is an event, and a request herdr does not know\nanswers `unknown_request` at once.",
+          "description": "Waits until herdr records the verdict of a prompt's assignment (`agent.verdict`), a newer\nprompt into the same pane supersedes it, the agent asks something (`blocked`, or an open\nquestion) or its pane goes away, and answers which. A verdict recorded before the wait, also\nby the server a live handoff replaced, answers at once. It has no timeout: every outcome is\nan event, and a request herdr does not know answers `unknown_request` at once. An answer\nwith a verdict is not its delivery: the waiter acknowledges it with `agent.ack_verdict`,\nsent as the next request on the same connection (the server reads it there until the\nclient closes) or on its own; until then the verdict counts as undelivered.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -11049,6 +11089,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.ack_verdict",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentAckVerdictParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -11286,8 +11342,17 @@
               "minimum": 0,
               "type": "integer"
             },
-            "delivered_ms": {
+            "answered_ms": {
               "description": "When an `agent.wait_verdict` first answered with the verdict, Unix milliseconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "delivered_ms": {
+              "description": "When the waiter acknowledged the verdict (`agent.ack_verdict`), Unix milliseconds.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -11301,6 +11366,13 @@
             },
             "request_id": {
               "type": "string"
+            },
+            "superseded_by": {
+              "description": "The newer prompt into the same pane that started before this assignment's verdict and\nclosed it: this assignment never takes that work's verdict.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "verdict": {
               "anyOf": [
@@ -11881,6 +11953,11 @@
             {
               "const": "verdict",
               "description": "Herdr recorded the assignment's verdict; see `assignment.verdict`.",
+              "type": "string"
+            },
+            {
+              "const": "superseded",
+              "description": "A newer prompt into the same pane started before the verdict and closed this\nassignment; see `assignment.superseded_by`, whose verdict to wait for instead.",
               "type": "string"
             },
             {
@@ -18204,7 +18281,12 @@
             },
             {
               "const": "verdict_undelivered",
-              "description": "Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or\n`WORKER-BLOCKED` line) and no `agent.wait_verdict` received it while none waits for\nit: its waiter was never started, ended on something else, gave up or was killed.",
+              "description": "Herdr recorded the verdict of a prompt's assignment (a pane worker's `WORKER-DONE` or\n`WORKER-BLOCKED` line) and no waiter acknowledged it (`agent.ack_verdict`) while none\nwaits for it: its waiter was never started, ended on something else, gave up, or was\nkilled before or after the answer was written.",
+              "type": "string"
+            },
+            {
+              "const": "stopped_without_verdict",
+              "description": "A pane worker's turn ended (Claude's `Stop`, no background task left) with its\nassignment started and no `WORKER` line, and no turn started since: it asks\nsomething, stopped early, or forgot the line.",
               "type": "string"
             }
           ]
