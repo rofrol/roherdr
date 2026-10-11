@@ -11,6 +11,31 @@ constrain it.
 Agents may do these from the top without asking when the user tells them to
 work through the TODO (the user's global agent rules, "Working through TODO.md").
 
+- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
+  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
+  repository; use herdr's own copy (a `herdr todo edit` command) so any
+  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
+  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
+  in one repository and whose worker works in another, and a configurable
+  main branch per repository (`.herdr/`); items spanning both (a tools
+  commit, a release tag, a rormpc commit) need ordered steps across
+  repositories.
+  Revised 2026-10-12 (the user rejected the override stopgap: "what a
+  crappy workaround", asked for a proper fix; round 20261012-010700, sol,
+  MiMo, DeepSeek agreeing): moved to the front. Slice 1 now: the driver
+  reads the target repository's default branch from git everywhere it
+  says `master` (base, cherry-pick target, `git cherry`, ls-remote, fetch,
+  push), tested with `main`, a detached HEAD, no remote and a stale
+  origin/HEAD. Then, by the user's own rule (one space and one coordinator
+  per git repository), rormpc-tools gets its own space, coordinator and
+  TODO.md (the rormpc coordinator and the user decide; rormpc's AGENTS.md
+  says todo-rormpc owns both today); `--repo` is deferred (all three: it
+  makes one coordinator drive another repository, the boundary the user
+  rejected). Cross-repository work becomes items in two backlogs with a
+  dependency: a handover that names the landed commit or version and
+  wakes the dependent coordinator (its own item); release recipes come
+  before the release item.
+
 - [ ] A running todo run shows in its coordinator's space (the user, [t-rht4pyff]
   2026-10-11, looking at the herdr space during an install: "why is
   nothing happening here? ask the models, fix the process"). The driver was
@@ -1593,16 +1618,6 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
   at or after the turn's start; only earlier ones get the renew-or-withdraw
   reminder. Left: the duplicate coordinator/worker question (the second
   classify-x-posts report above).
-
-- [ ] `herdr todo run` for repositories unlike herdr (rormpc, 2026-10-11, [t-oe3wrkvz]
-  reports r-8, r-9): (1) the TODO step needs `scripts/todo_edit.py` in the
-  repository; use herdr's own copy (a `herdr todo edit` command) so any
-  repository works; (2) one coordinator owns rormpc and rormpc-tools (items
-  live in rormpc's TODO.md, rormpc-tools uses `main`): a run whose item is
-  in one repository and whose worker works in another, and a configurable
-  main branch per repository (`.herdr/`); items spanning both (a tools
-  commit, a release tag, a rormpc commit) need ordered steps across
-  repositories.
 
 - [ ] Headless workers get granted network and file access instead of a [t-dy4nxuj2]
   pane fallback (the user via the guix coordinator, 2026-10-11: "a
