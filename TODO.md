@@ -1965,6 +1965,17 @@ work through the TODO (the user's global agent rules, "Working through TODO.md")
      coordinator tells the owner which worker pane waits for his yes.
   Open: whether the hook can tell a real click from a forged answer
   (state the threat model's floor).
+  Clarified 2026-10-12 (the user: "I thought the coordinator gives the
+  worker the permissions and access it needs; ask the models"; sol, MiMo,
+  DeepSeek agreeing): it does, within the owner's approval. The
+  coordinator delegates (picks the worker, the task, the subset of the
+  approved access, narrowing, order) and requests the grant; herdr checks
+  the request against the owner-click record, mints the grant and
+  enforces it; the worker checks herdr, not the text. Only something new
+  or wider (a new host, credential, path, destructive action) needs the
+  owner's click. Example: "Rebuild and deploy <a friend>'s box" lets the
+  coordinator grant a worker "run deploy.sh on host X" with ssh to X, not
+  ssh to host Y.
 
 ## Proposed
 
