@@ -194,10 +194,13 @@ fi
 # In a tab with the role `coordinator`, a turn that ends by waiting for the user's go-ahead ("when
 # you say continue", "should I continue?") while no background task of the session runs is blocked
 # once too, so the coordinator goes on with the next approved item or asks its open questions.
-# A coordinator's stop is also blocked, every time, while `herdr worker obligations` lists a worker
-# event it has not acknowledged (a question, a turn end, the worker's end); the server derives that
-# list, so it ends once the coordinator answers or acknowledges (`herdr worker ack`). When herdr
-# cannot be asked, the stop goes through and the reason goes to stderr.
+# A coordinator's stop is also blocked while `herdr worker obligations` lists a worker event it has
+# not acknowledged (a question, a turn end, the worker's end); the server derives that list, so it
+# ends once the coordinator answers or acknowledges (`herdr worker ack`). At most three stops in a
+# row for the same obligations after the same message of the user are blocked (the ack may be
+# denied); the next one goes through and herdr lists the pane in the user's `?` list with the ack
+# that was needed, once. When herdr cannot be asked, the stop goes through and the reason goes to
+# stderr.
 # A coordinator's stop that leaves its TODO stalled is blocked with the next command to run
 # (`stall_would_block` in the log): when the Stop input's `background_tasks` is present and empty,
 # the turn reported or asked nothing, the user's last message is no plain stop, and herdr's
@@ -279,6 +282,7 @@ PLAIN_STOP = re.compile(
 )
 STALL_STREAK = 3
 STALL_CAPPED = "three would-blocks in a row"
+OBLIGATION_STREAK = 3
 # What Claude Code writes as a user message when a Stop hook blocks: not the user's.
 HOOK_FEEDBACK = "Stop hook feedback:"
 
@@ -522,35 +526,6 @@ if runs_workers(hook_input.get("transcript_path")):
     role_known = True
     if role == COORDINATOR_ROLE:
         obligations = worker_obligations()
-if obligations:
-    seqs = ", ".join(f"`herdr worker ack {e.get('worker_id')} {e.get('seq')}`" for e in obligations)
-    try:
-        state_dir = os.path.join(
-            os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
-        )
-        os.makedirs(state_dir, exist_ok=True)
-        with open(os.path.join(state_dir, "awaiting-reply-stop.jsonl"), "a", encoding="utf-8") as log:
-            log.write(json.dumps({
-                "time": time.time(),
-                "pane": os.environ.get("HERDR_PANE_ID"),
-                "session": hook_input.get("session_id"),
-                "role": role,
-                "obligations": [obligation_text(e) for e in obligations],
-                "blocked": mode != "shadow",
-            }, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    if mode != "shadow":
-        print(json.dumps({
-            "decision": "block",
-            "reason": (
-                "Herdr: workers you started need you before you stop: "
-                + "; ".join(obligation_text(e) for e in obligations)
-                + ". Handle each (answer the question or escalate it to the user, review the "
-                "ended turn or the ended worker), then acknowledge it: " + seqs + "."
-            ),
-        }))
-        raise SystemExit(0)
 # The second stop of a turn the hook already blocked is never blocked again, but it may still
 # be marked: the command the agent was asked to run may have been denied too.
 stop_hook_active = bool(hook_input.get("stop_hook_active"))
@@ -633,6 +608,112 @@ if isinstance(transcript, str) and transcript:
 if not final_text.strip():
     final_text = last_text
 
+state_dir = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
+)
+streak_path = os.path.join(state_dir, "coordinator-stall-shadow.json")
+session = str(hook_input.get("session_id") or "")
+streaks = {}
+try:
+    with open(streak_path, encoding="utf-8") as handle:
+        streaks = json.load(handle)
+except (OSError, ValueError):
+    pass
+streaks = streaks if isinstance(streaks, dict) else {}
+
+
+def save_streaks():
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        kept = dict(list(streaks.items())[-100:])
+        with open(streak_path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(kept, handle)
+        os.replace(streak_path + ".tmp", streak_path)
+    except OSError:
+        pass
+
+
+def obligation_stop(entry, prompt_key, held, mode):
+    """(entry, count, blocked) of a stop while `held` obligations are listed: `entry` is the saved
+    count for this session (kept only for the same message of the user and the same obligations),
+    `count` the blocks so far, `blocked` whether this stop is blocked too."""
+    if (
+        not isinstance(entry, dict)
+        or entry.get("prompt") != prompt_key
+        or entry.get("obligations") != held
+    ):
+        entry = {}
+    count = entry.get("streak") if isinstance(entry.get("streak"), int) else 0
+    return entry, count, mode != "shadow" and count < OBLIGATION_STREAK
+
+
+# The obligation block: at most OBLIGATION_STREAK stops in a row for the same obligations after the
+# same message of the user, because a command the agent cannot run (the auto-mode classifier
+# denied the ack) would block every stop for ever. The next stop goes through and herdr lists the
+# pane in the user's `?` list naming the command that was needed, once. The count sits beside the
+# stall check's streaks; a new message of the user or a change of the obligations starts it again.
+obligation_key = "obligations:" + session
+if obligations:
+    acks = [f"herdr worker ack {e.get('worker_id')} {e.get('seq')}" for e in obligations]
+    held = sorted(f"{e.get('worker_id')}:{e.get('seq')}" for e in obligations)
+    entry, count, obligation_blocked = obligation_stop(
+        streaks.get(obligation_key), last_prompt_key, held, mode
+    )
+    obligation_escalated = False
+    if (
+        mode != "shadow"
+        and not obligation_blocked
+        and not entry.get("escalated")
+        and os.environ.get("HERDR_SOCKET_PATH")
+    ):
+        more = f" (+{len(acks) - 1})" if len(acks) > 1 else ""
+        obligation_escalated = ask_server(
+            "pane.report_awaiting_reply",
+            {"pane_id": os.environ["HERDR_PANE_ID"], "question": "Run: " + acks[0] + more},
+        ) is not None
+    if session and (obligation_blocked or obligation_escalated):
+        streaks.pop(obligation_key, None)
+        streaks[obligation_key] = {
+            "streak": count + 1 if obligation_blocked else count,
+            "prompt": last_prompt_key,
+            "obligations": held,
+            "escalated": obligation_escalated or bool(entry.get("escalated")),
+        }
+        save_streaks()
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        with open(os.path.join(state_dir, "awaiting-reply-stop.jsonl"), "a", encoding="utf-8") as log:
+            log.write(json.dumps({
+                "time": time.time(),
+                "pane": os.environ.get("HERDR_PANE_ID"),
+                "session": hook_input.get("session_id"),
+                "role": role,
+                "obligations": [obligation_text(e) for e in obligations],
+                "blocked": obligation_blocked,
+                "obligation_streak": count + 1 if obligation_blocked else count,
+                "obligation_escalated": obligation_escalated,
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    if obligation_blocked:
+        print(json.dumps({
+            "decision": "block",
+            "reason": (
+                "Herdr: workers you started need you before you stop: "
+                + "; ".join(obligation_text(e) for e in obligations)
+                + ". Handle each (answer the question or escalate it to the user, review the "
+                "ended turn or the ended worker), then acknowledge it: "
+                + ", ".join(f"`{ack}`" for ack in acks)
+                + ". Block %d of %d; after that the stop goes through and the user is asked to "
+                "run the command." % (count + 1, OBLIGATION_STREAK)
+            ),
+        }))
+        raise SystemExit(0)
+elif obligations == [] and obligation_key in streaks:
+    # The obligations were resolved: the next ones count from zero.
+    streaks.pop(obligation_key, None)
+    save_streaks()
+
 printed = printed_command(final_text)
 question = looks_like_question(final_text) or printed
 blocked_calls = bool(last_batch) and all(last_batch)
@@ -705,18 +786,6 @@ stall_facts = {
     "obligations": bool(obligations),
     "user_stop": is_plain_stop(last_prompt),
 }
-state_dir = os.path.join(
-    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr"
-)
-streak_path = os.path.join(state_dir, "coordinator-stall-shadow.json")
-session = str(hook_input.get("session_id") or "")
-streaks = {}
-try:
-    with open(streak_path, encoding="utf-8") as handle:
-        streaks = json.load(handle)
-except (OSError, ValueError):
-    pass
-streaks = streaks if isinstance(streaks, dict) else {}
 streak_entry = streaks.get(session)
 # A streak counts the stops after one message of the user; a new message starts it again.
 if not isinstance(streak_entry, dict) or streak_entry.get("prompt") != last_prompt_key:
@@ -758,14 +827,7 @@ if session and (stall_would_block or stall_escalated or (session in streaks and 
         streaks[session] = dict(streak_entry, escalated=True)
     else:
         streaks.pop(session, None)
-    try:
-        os.makedirs(state_dir, exist_ok=True)
-        kept = dict(list(streaks.items())[-100:])
-        with open(streak_path + ".tmp", "w", encoding="utf-8") as handle:
-            json.dump(kept, handle)
-        os.replace(streak_path + ".tmp", streak_path)
-    except OSError:
-        pass
+    save_streaks()
 try:
     os.makedirs(state_dir, exist_ok=True)
     with open(os.path.join(state_dir, "awaiting-reply-stop.jsonl"), "a", encoding="utf-8") as log:

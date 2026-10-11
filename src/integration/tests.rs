@@ -5061,6 +5061,34 @@ fn run_stop_check_with_workers(
     obligations: &str,
     herdr_exit: i32,
 ) -> (String, String, String, Vec<String>) {
+    let state = unique_base();
+    let (stdout, stderr, args, requests) = run_stop_check_with_workers_in(
+        &state,
+        transcript_lines,
+        stop_hook_active,
+        role,
+        obligations,
+        herdr_exit,
+    );
+    let _ = fs::remove_dir_all(state);
+    let methods = requests
+        .iter()
+        .map(|request| request["method"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    (stdout, stderr, args, methods)
+}
+
+/// [`run_stop_check_with_workers`] with herdr's state (the hook's streaks) kept in `state`
+/// across runs; returns the socket requests instead of their methods.
+#[cfg(unix)]
+fn run_stop_check_with_workers_in(
+    state: &Path,
+    transcript_lines: &[Value],
+    stop_hook_active: bool,
+    role: &'static str,
+    obligations: &str,
+    herdr_exit: i32,
+) -> (String, String, String, Vec<Value>) {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
@@ -5101,7 +5129,7 @@ fn run_stop_check_with_workers(
         .env("HERDR_PANE_ID", "p1")
         .env("HERDR_SOCKET_PATH", &server.path)
         .env("HERDR_BIN_PATH", &fake_herdr)
-        .env("XDG_STATE_HOME", base.join("state"))
+        .env("XDG_STATE_HOME", state)
         .env_remove("CURSOR_VERSION")
         .env_remove("HERDR_AWAITING_REPLY_STOP")
         .env_remove("HERDR_AWAITING_REPLY_INSTRUCTIONS")
@@ -5125,14 +5153,14 @@ fn run_stop_check_with_workers(
         .unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
-    let methods = server.methods();
+    let requests = server.requests();
     let args = fs::read_to_string(&capture).unwrap_or_default();
     let _ = fs::remove_dir_all(base);
     (
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
         args,
-        methods,
+        requests,
     )
 }
 
@@ -5191,6 +5219,140 @@ fn claude_stop_check_blocks_a_coordinator_while_its_workers_need_it() {
             "{methods:?}"
         );
     }
+}
+
+/// The `worker obligations` reply naming these (worker, seq) pairs as turn ends.
+#[cfg(unix)]
+fn turn_end_obligations(held: &[(&str, u64)]) -> String {
+    let obligations: Vec<Value> = held
+        .iter()
+        .map(|(worker, seq)| {
+            json!({"worker_id": worker, "reason": "turn_end", "seq": seq, "owner_pane_id": "p1"})
+        })
+        .collect();
+    json!({"id": "x", "result": {"type": "worker_obligations", "obligations": obligations}})
+        .to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_stop_check_lets_a_denied_ack_stop_after_three_blocks_and_asks_the_user() {
+    let state = unique_base();
+    let held = turn_end_obligations(&[("w12", 40), ("w13", 41)]);
+    let transcript = coordinator_transcript("herdr worker start --name w12 --prompt go");
+    let stop = |transcript: &[Value], obligations: &str| {
+        let (stdout, _, _, requests) =
+            run_stop_check_with_workers_in(&state, transcript, true, "coordinator", obligations, 0);
+        let escalations: Vec<String> = requests
+            .iter()
+            .filter(|request| request["method"] == "pane.report_awaiting_reply")
+            .map(|request| {
+                request["params"]["question"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .collect();
+        let reason = if stdout.trim().is_empty() {
+            None
+        } else {
+            let decision: Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(decision["decision"], "block");
+            Some(decision["reason"].as_str().unwrap().to_owned())
+        };
+        (reason, escalations)
+    };
+    // `ack` is the acknowledgement of w13's event the reason names (its seq changes below).
+    let assert_block = |(reason, escalations): (Option<String>, Vec<String>), n: u32, ack: &str| {
+        let reason = reason.unwrap_or_else(|| panic!("stop {n} was not blocked"));
+        assert!(reason.contains(&format!("Block {n} of 3")), "{reason}");
+        assert!(reason.contains("`herdr worker ack w12 40`"), "{reason}");
+        assert!(reason.contains(&format!("`{ack}`")), "{reason}");
+        assert!(escalations.is_empty(), "{escalations:?}");
+    };
+
+    for n in 1..=3 {
+        assert_block(stop(&transcript, &held), n, "herdr worker ack w13 41");
+    }
+    // The fourth stop goes through, and the user's `?` list names the command that was needed.
+    let (reason, escalations) = stop(&transcript, &held);
+    assert_eq!(reason, None);
+    assert_eq!(escalations, ["Run: herdr worker ack w12 40 (+1)"]);
+    // Once: later stops go through without asking again.
+    assert_eq!(stop(&transcript, &held), (None, Vec::new()));
+
+    // A new message of the user starts the count again.
+    let mut prompted = transcript.clone();
+    prompted.push(json!({"type": "user", "message": {"role": "user", "content": "go on"}}));
+    prompted.push(
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Item 3 is committed."}]}}),
+    );
+    assert_block(stop(&prompted, &held), 1, "herdr worker ack w13 41");
+    // Stop hook feedback is no message of the user.
+    let mut fed_back = prompted.clone();
+    fed_back.push(
+        json!({"type": "user", "message": {"role": "user", "content":
+        "Stop hook feedback:\nHerdr: workers you started need you"}}),
+    );
+    assert_block(stop(&fed_back, &held), 2, "herdr worker ack w13 41");
+    // Other obligations count from one.
+    let changed = turn_end_obligations(&[("w12", 40), ("w13", 42)]);
+    assert_block(stop(&fed_back, &changed), 1, "herdr worker ack w13 42");
+    assert_block(stop(&fed_back, &changed), 2, "herdr worker ack w13 42");
+    // So do the same ones once they were resolved in between.
+    assert_eq!(
+        stop(&fed_back, &turn_end_obligations(&[])),
+        (None, Vec::new())
+    );
+    assert_block(stop(&fed_back, &changed), 1, "herdr worker ack w13 42");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// The stop check's obligation count (`obligation_stop`), run on its own without herdr: the same
+/// obligations after the same message of the user count up to three blocks; another message,
+/// other obligations or shadow mode do not continue it.
+#[test]
+fn claude_stop_check_counts_obligation_blocks_per_message_and_obligations() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let script = include_str!("assets/claude/herdr-agent-state.sh");
+    let start = script
+        .find("def obligation_stop(")
+        .expect("the hook defines obligation_stop");
+    let function = &script[start..start + script[start..].find("\n\n\n").unwrap()];
+    let cases = r#"
+held = ["w12:40", "w13:41"]
+entry, count, blocked = obligation_stop(None, "p1", held, "block")
+assert (entry, count, blocked) == ({}, 0, True), (entry, count, blocked)
+saved = {"streak": 2, "prompt": "p1", "obligations": held}
+assert obligation_stop(saved, "p1", held, "block") == (saved, 2, True)
+saved = {"streak": 3, "prompt": "p1", "obligations": held, "escalated": True}
+assert obligation_stop(saved, "p1", held, "block") == (saved, 3, False)
+assert obligation_stop(saved, "p2", held, "block") == ({}, 0, True)
+assert obligation_stop(saved, "p1", ["w12:40", "w13:42"], "block") == ({}, 0, True)
+assert obligation_stop({"streak": "x", "prompt": "p1", "obligations": held}, "p1", held,
+                       "block")[1:] == (0, True)
+assert obligation_stop(None, "p1", held, "shadow") == ({}, 0, False)
+print("ok")
+"#;
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("OBLIGATION_STREAK = 3\n{function}\n{cases}").as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
 }
 
 #[cfg(unix)]
